@@ -4,7 +4,7 @@ ADR-0004 (docs/decisions/0004-atlas-portable-app-p0.md) Consequences: the portab
 needs a production entry (`uvicorn.run(app)`, `freeze_support()`, no reload/workers), a frozen-aware
 dispatch in backend/ingest.py (inside a PyInstaller exe `sys.executable` IS the app — relaunching it
 on a repo-root .py respawns the server, not the engine), ingest-from-folder beside ZIP ingest, and a
-`--selftest` that fails LOUD on the silent-degrade assets (explorer template, OUI/port KBs,
+`--selftest` that fails LOUD on the silent-degrade assets (explorer template, OUI/port/EoL KBs,
 docx/pptx extras, frontend dist).
 
 Same harness discipline as the sibling files: in-process via TestClient / direct calls, the engine
@@ -191,6 +191,7 @@ def test_selftest_green_on_dev_checkout(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "PASS" in out
+    assert "eol-kb" in out and "verified-authoritative" in out
 
 
 def test_selftest_fails_loud_on_missing_frontend_dist(tmp_path, capsys):
@@ -230,6 +231,77 @@ def test_selftest_fails_when_oui_kb_degraded(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "oui" in out.lower() and "authoritative" in out.lower()
+
+
+def test_selftest_fails_when_retained_eol_evidence_is_missing(monkeypatch, tmp_path, capsys):
+    """A wheel must carry its compact Cisco fixture; runtime semantics alone are not authority."""
+    from cisco_toolkit import eoldb
+
+    monkeypatch.setattr(
+        eoldb,
+        "registry_health",
+        lambda: {
+            "status": "semantic-build-provenance-source-unverified",
+            "integrity_verified": False,
+            "schema_verified": True,
+            "build_provenance_verified": True,
+            "retained_source_bytes_verified": False,
+            "source_authoritative": False,
+            "source_fresh": True,
+            "row_count": 44,
+            "bulletin_count": 17,
+            "bulletin_cited_rows": 44,
+            "fixture_bound_rows": 0,
+            "unresolved_reference_rows": 0,
+            "error": "Cisco EoL packaged fixture is unavailable",
+        },
+    )
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>", encoding="utf-8")
+
+    rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "eol-kb" in out
+    assert "retained fixture missing or invalid" in out
+    assert "SELFTEST: FAIL" in out
+
+
+def test_selftest_fails_when_eol_fixture_is_not_semantically_bound(monkeypatch, tmp_path, capsys):
+    """Retained bytes are insufficient when their claims no longer match runtime lifecycle rows."""
+    from cisco_toolkit import eoldb
+
+    monkeypatch.setattr(
+        eoldb,
+        "registry_health",
+        lambda: {
+            "status": "invalid",
+            "integrity_verified": True,
+            "schema_verified": True,
+            "build_provenance_verified": False,
+            "retained_source_bytes_verified": True,
+            "source_authoritative": False,
+            "source_fresh": True,
+            "row_count": 44,
+            "bulletin_count": 17,
+            "bulletin_cited_rows": 44,
+            "fixture_bound_rows": 44,
+            "unresolved_reference_rows": 0,
+            "error": "runtime semantic digest mismatch",
+        },
+    )
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>", encoding="utf-8")
+
+    rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "eol-kb" in out
+    assert "runtime semantic binding FAILED" in out
 
 
 def test_selftest_flag_exits_with_failure_code(tmp_path):

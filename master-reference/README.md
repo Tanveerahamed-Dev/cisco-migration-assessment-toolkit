@@ -35,6 +35,277 @@ remains static and dependency-light. Oxlint enforces correctness,
 accessibility, import, Node.js, React, and Next.js rules with warnings treated
 as failures. The audit covers runtime and build-time dependencies.
 
+### Image metadata dependency boundary
+
+Vinext 0.0.50's exact `image-size` edge is overridden to the private, tracked
+`vendor/bounded-image-size` package. Its parser snapshots at most 512 bytes,
+validates bounded PNG IHDR metadata, recognizes only a quote-balanced and
+terminated SVG root marker, and rejects every other image family. Contract
+tests resolve the dependency from Vinext's own module location, bind the exact
+lock and local-package source receipt, exercise real tracked PNG/SVG assets,
+reject static image imports and metadata-route files across the exact Git-owned
+JS/TS path set, and run hostile inputs in watchdog subprocesses.
+
+This is a narrow Vinext-edge replacement, not an advisory waiver. Next 16.2.12
+contains compiled image-parser code that npm overrides cannot replace,
+including an image-size implementation for which exact ICNS and JXL inputs
+demonstrate zero-progress behavior in isolated watchdogs. The related compiled
+detector bundle is present, but this contract does not claim its runtime
+reachability. The release pipeline keeps that residual and the missing
+external source-authenticated applicability/VEX review explicitly blocked even
+when an offline npm audit reports no registry finding.
+
+Production builds also create a lossless Sites packaging profile. The canonical
+projection and compression JSON receipts remain byte-for-byte reconstructable,
+but `dist` stores only their deterministic `.json.gz` representations; the
+outer deployment receipt uses the same representation. Its v1.2 contract keeps
+non-projection files (including both inner receipt representations) in a direct
+ledger and binds the projection-module ledger once through the fully validated
+compression receipt; the count, bytes, and digest cover their sorted physical
+union and exclude only the outer representation itself. Every generated `.mjs`
+payload in `dist` is likewise replaced by a deterministic, receipt-bound
+`.mjs.gz` member. The
+Worker serves that member at the original virtual module URL with explicit gzip
+and JavaScript response headers. Build tests require fixed-header single-member bounded expansion,
+exact raw/representation SHA-256 joins, exact module census, module gunzip
+equivalence, no uncompressed deployment duplicate, and a complete expanded
+`dist` below the Sites limit. For body-bearing GETs
+whose asset binding omits encoding metadata—including when it infers
+JavaScript from the compound suffix—the Worker accepts the response only after
+replay-safe validation against the
+[`CANONICAL_GZIP_HEADER_BYTES`](build/gzip-contract.js) owner registered in
+[`docs/ssot.md`](../docs/ssot.md); ambiguous plaintext remains a categorical
+failure. Metadata-only HEAD accepts an encoded-asset MIME but refuses the
+ambiguous JavaScript/no-encoding tuple. Full-member hash and gunzip proof
+remains a build/deployment receipt rather than a runtime-prefix claim. The
+authored `public` projection and offline reference corpus remain uncompressed
+and source-bound.
+
+The Python side is independently gated:
+
+```powershell
+python -m pytest tests -q
+python -m ruff check atlas_privacy.py compiler governance continuity release cli tests
+```
+
+## Whole-repository compiler
+
+The exact tracked Git tree is the census. From this directory, compile a clean
+commit and validate every emitted envelope against the tracked schemas:
+
+```powershell
+python -m compiler --repo-root .. --output C:\tmp\atlas-compiler
+python -m compiler.schema_validation --input C:\tmp\atlas-compiler
+node build/projection/build.mjs --input C:\tmp\atlas-compiler --output public\atlas-projection
+```
+
+`manifest.json` binds the commit, HEAD tree, index census, derived source-tree
+digest, every record group and every chunk. Exact-clean compilation reads each
+fully exposed file from its raw selected-commit Git blob; checkout filters such
+as `core.autocrlf` therefore cannot change source, line, or tree digests. A
+separate worktree snapshot plus before/after Git checks still detects local
+changes. Restricted payloads are never read.
+
+Compiler corpus contract `1.2.0` keeps hard structural invariants separate from
+semantic acceptance gates. Every successfully parsed safe source has exactly
+one typed, parser-owned `structural_entities` root (for example a Python module,
+TypeScript SourceFile, stylesheet, template, configuration, workflow, structured
+document, or plain-text document). Every safe nonblank line must resolve to a
+same-file symbol or that structural root; a file census ID can never satisfy
+Level 1. Roots carry exact source range, parser/language/role and raw-Git
+provenance plus explicit generated-origin uncertainty, but never claim runtime
+behavior. The compiler may therefore prove 100% tracked-file, exact-line, root,
+and structural-mapping coverage while still blocking behavioral, runtime,
+executed-coverage, binary-review, or Level-4 claims.
+
+The required `consequential_claim_facets` group emits one schema-validated,
+payload-omitting fingerprint record for each field-atomic candidate in the bounded
+curated-content census. Its manifest receipt is the count owner; the records
+carry stable facet identity, selected-commit Git-blob provenance, an RFC 6901
+source pointer, classification and review state, and only grounding/value
+digests. They contain no claim values, but their unsalted fingerprints are
+staleness bindings rather than confidentiality; low-entropy values may be
+dictionary-recoverable. They provide no independent review, rendered-sink
+closure, sentence-level completeness, or global claim closure. The bounded
+census therefore remains explicitly incomplete and its global
+closure gate remains false.
+
+Three additive rendered-sink lineage contracts currently join bounded subsets
+of those immutable facet subjects to actual presentation slots: Open Horizon in
+the PDF and canonical `/gaps` route, the Capability Catalog in the PDF and
+canonical unfiltered `/capabilities` route, and the nine Atlas Core outcome
+success signals in the PDF outcomes section and `/product#core-outcome-contracts`.
+The PDF gate carries their
+payload-omitting mapping receipts, while PDF text extraction and rendered-DOM
+tests independently reconcile visible observations. None of these slices is a global
+rendered-claim universe: undeclared sources, routes and renderer states, as well
+as fixed, computed, joined and conditional claims, remain unresolved. A local
+mapping PASS never changes review state, supplies claim evidence, authorizes
+publication, or closes the global consequential-claim gate.
+
+Safe UTF-8 source is emitted only in per-file content-hashed chunks. Each source
+record carries its Git blob OID and byte basis. Restricted paths, symlinks, Git
+links and all decoded binary payloads remain metadata-only; their size comes
+from Git object metadata without reading the payload. Binary records retain Git
+object identity, size and media type, and explicitly remain pending format-aware
+or manual privacy review.
+
+## Read-only continuity CLI
+
+The continuity package reads an exact compiler bundle without mutating the
+repository or making network calls:
+
+```powershell
+python -m continuity query --compiler-output C:\tmp\atlas-compiler --id urn:atlas:...
+python -m continuity query --compiler-output C:\tmp\atlas-compiler --path cisco_toolkit/ssot.py --line 1
+python -m continuity validate-envelope --repo-root .. --compiler-output C:\tmp\atlas-compiler --envelope task-envelope.json
+python -m continuity validate-completion --repo-root .. --compiler-output C:\tmp\atlas-compiler --envelope task-envelope.json --receipt completion-receipt.json
+```
+
+Device writes, Vault writes, client-data ingestion and public publication are
+unwaivable. See `continuity/README.md` for the schemas and abstention behavior.
+
+## Exact-source release outputs
+
+The deterministic release builder consumes a **complete, clean** output from
+`master-reference/compiler` plus the five curated content contracts. It
+revalidates every manifest receipt and chunk before emitting the machine
+reference, owner handbook, engineering dossier, source/symbol indexes,
+capability and decision reports, enhancement brief, agent pack, CycloneDX
+SBOM, provenance, self-contained HTML, offline ZIP, preservation pack,
+preservation-coverage ledger and family attestation. `content/output-contract.json`
+is the shared denominator for UI labels and emitted member names.
+
+Run from `master-reference` after producing the compiler output:
+
+```powershell
+python -m cli build `
+  --repo-root .. `
+  --compiler-output C:\path\to\compiler-output `
+  --output C:\path\to\new-empty-release-directory
+```
+
+The release command generates the deterministic source-bound Master Reference
+PDF by default and records its renderer/input receipt. `--no-pdf` is an
+explicitly incomplete preview; `--pdf` accepts a separately rendered input.
+Successful PDF generation is not independent visual approval. An external PDF
+also leaves binary-container privacy review explicitly blocked.
+
+The builder revalidates HEAD, tree, clean tracked status, index mode/blob/path
+census and every full-exposure file hash before, after and at finalization.
+Metadata-only content is never opened. Artifacts are assembled in a sibling
+staging directory and atomically published only after schema, privacy, output
+contract and exact-source reconciliation succeeds; a failed build leaves no
+plausible partial family.
+
+The builder never generates keys or stores secrets. An owner may separately
+sign the exact canonical manifest with an existing off-repository Ed25519 key:
+
+```powershell
+python -m cli sign --manifest C:\release\release-manifest.json `
+  --private-key D:\offline-owner-key\atlas-ed25519.pem `
+  --signature C:\release\release-manifest.sig.json --prompt-passphrase
+
+python -m cli verify --manifest C:\release\release-manifest.json `
+  --signature C:\release\release-manifest.sig.json `
+  --public-key C:\trusted\atlas-ed25519.pub
+
+# Unsigned previews can still be checked for byte-for-byte internal integrity:
+python -m cli verify-family --manifest C:\release\release-manifest.json
+```
+
+An independent reviewer may also verify a separately stored, canonical review
+of the compiler's bounded curated-claim subjects. The review payload,
+signature, external trust policy, and trusted reviewer public key must remain
+outside the exact-census release directory:
+
+```powershell
+python -m cli verify-claim-review `
+  --repo-root .. `
+  --compiler-output C:\path\to\compiler-output `
+  --payload D:\review-custody\claim-review.json `
+  --signature D:\review-custody\claim-review.sig.json `
+  --trust-policy D:\review-custody\reviewer-policy.json `
+  --public-key D:\review-custody\independent-reviewer.pub
+```
+
+This command reads only: it validates canonical bounded inputs, verifies a
+purpose-bound Ed25519 signature against the separately supplied policy/key,
+rejoins every signed row to the exact compiler subjects, revalidates source
+before and after, and writes its receipt only to stdout. Even an all-PASS
+bounded review reports `current_gate_promoted=false` and
+`global_gate_closed=false`; rendered-sink coverage, binary evidence, release
+signature, recovery, and publication authority remain independent gates.
+
+Review payload records are ordered lexically by `facet_id`; `records_digest`
+is SHA-256 over their canonical JSON array including the trailing LF. External
+signers should call
+`release.authenticated_review.consequential_claim_review_signing_material()`
+and sign its returned bytes exactly. The owned construction is the fixed
+domain `ATLAS-AUTHENTICATED-REVIEW\0v1\0`, purpose, target schema version,
+SHA-256 of the canonical trust-policy bytes, and the canonical payload bytes,
+with the documented NUL separators. The policy and key are caller-selected
+external trust inputs: the verifier proves consistency with that exact policy
+snapshot, but does not discover its authority, freshness, revocation history,
+or custody from the repository or signature envelope.
+
+A generated-PDF family has a separate detached visual-review boundary. Review
+inputs must resolve outside the exact-census family; the CLI enforces that
+structural separation and binds the exact manifest, family-attestation,
+PDF-gate, source-bound PDF bytes, source identities, render profile, and one
+signed row for every PDF page:
+
+```powershell
+python -m cli verify-pdf-review `
+  --repo-root .. `
+  --manifest C:\release\release-manifest.json `
+  --payload D:\review-custody\pdf-review.json `
+  --signature D:\review-custody\pdf-review.sig.json `
+  --trust-policy D:\review-custody\pdf-reviewer-policy.json `
+  --public-key D:\review-custody\independent-pdf-reviewer.pub
+```
+
+`pdf-review/1` accepts only the deterministic
+`generated_visual_review_pending` family shape. Page rows must be ordered
+exactly from 1 through the PDF page count and bind each rendered PNG by byte
+count and SHA-256; aggregate counts alone are not evidence that every distinct
+page was reviewed. Those PNG hashes and the renderer profile are authenticated
+reviewer assertions: v1 does not accept PNG bytes or mechanically rerender the
+PDF, so it does not independently prove PDF-to-PNG provenance. The verifier
+recomputes the render-profile, page-ledger,
+fixed-check, and non-circular review-evidence digests, requires a policy that
+asserts independence from both the PDF producer and release builder, reloads
+the family and all four external inputs after verification, and emits canonical
+`pdf-review-result/1` bytes only to stdout. External signers should compute the
+summary digest with `release.pdf_review.pdf_review_evidence_sha256()` and sign
+the bytes returned by `release.pdf_review.pdf_review_signing_material()`; the
+domain is `ATLAS-PDF-REVIEW\0v1\0`.
+
+Path separation prevents accidentally treating a family sibling as external
+review evidence; it does not prove custody or independence because hardlinks
+and storage administration remain outside the verifier. The caller must still
+authenticate the policy/key source separately.
+
+Even an authenticated all-page PASS reports
+`verified_visual_pass_not_promoted`. Current/global gate promotion, family
+mutation, owner-manifest signature, accessibility review, binary-privacy
+review, and publication authority are all fixed false. A visual reviewer may
+therefore report layout evidence without accidentally claiming assistive
+technology coverage or binary-container privacy. No accepted signed PDF-review
+envelope is currently stored or inferred from prior conversational QA.
+
+Verification checks the signature against the separately supplied public-key
+fingerprint and every artifact byte count/SHA-256 receipt in the manifest; it
+also rejects undeclared siblings, inventory/attestation divergence, and PDF
+metadata that is not bound to the manifest source. It does not
+convert an unsigned or visually unreviewed preview into an approved publication.
+
+Without that signature, the family remains a blocked unsigned preview. Failed
+semantic acceptance, missing/current Graphify, omitted PDF, or pending
+independent review keeps the manifest at `unsigned_preview_incomplete` and the
+corresponding gate explains why. Public publication and private-key recovery
+remain separate explicit owner decisions.
+
 ## Design contract
 
 - repository-owned content; no runtime content fetch

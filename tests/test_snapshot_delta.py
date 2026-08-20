@@ -69,9 +69,10 @@ def test_delta_tolerates_snapshots_without_computed_keys():
     assert d["health"]["n_regressed"] == 0 and d["findings"]["n_opened"] == 0
 
 
-def _routes_snap(routes):
+def _routes_snap(routes, interfaces=None):
     hosts = list(routes)
-    return {"devices": {h: {} for h in hosts}, "interfaces": {h: {} for h in hosts},
+    return {"devices": {h: {} for h in hosts},
+            "interfaces": interfaces or {h: {} for h in hosts},
             "health_scores": [], "punchlist": [], "routes": routes}
 
 
@@ -82,8 +83,10 @@ def test_delta_flags_a_computed_reachability_regression():
     base = {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
                    {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2"}],
             "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}
+    interfaces = {"R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+                  "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}}}
     after = {k: [r for r in v if not (k == "R1" and r.get("source") == "ospf")] for k, v in base.items()}
-    d = compute_snapshot_delta(_routes_snap(base), _routes_snap(after))
+    d = compute_snapshot_delta(_routes_snap(base, interfaces), _routes_snap(after, interfaces))
     assert d["reachability"]["pairs_tested"] >= 1
     assert len(d["reachability"]["newly_blocked"]) >= 1
     assert d["verdict"] == "REGRESSED" and "newly blocked" in d["verdict_note"]
@@ -113,9 +116,11 @@ def test_delta_flags_a_null0_blackhole_cutover_regression():
     base = {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"}, {"prefix": "10.0.0.0/30", "source": "connected"},
                    {"prefix": "10.0.2.0/24", "source": "static", "next_hop": "10.0.0.2"}],
             "R2": [{"prefix": "10.0.2.0/24", "source": "connected"}, {"prefix": "10.0.0.0/30", "source": "connected"}]}
+    interfaces = {"R1": {"Gi0/1": {"svi_ip": "10.0.0.1/30"}},
+                  "R2": {"Gi0/1": {"svi_ip": "10.0.0.2/30"}}}
     after = {k: list(v) for k, v in base.items()}
     after["R2"] = after["R2"] + [{"prefix": "10.0.2.0/25", "source": "static", "next_hop": "", "out_intf": "Null0"}]
-    d = compute_snapshot_delta(_routes_snap(base), _routes_snap(after))
+    d = compute_snapshot_delta(_routes_snap(base, interfaces), _routes_snap(after, interfaces))
     assert len(d["reachability"]["newly_blocked"]) >= 1
     assert d["verdict"] == "REGRESSED" and "newly blocked" in d["verdict_note"]
 

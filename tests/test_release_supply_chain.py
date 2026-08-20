@@ -102,7 +102,10 @@ def test_pull_request_workflows_cannot_select_self_hosted_runners():
             if line.strip().startswith("runs-on:")
         ]
         assert runs_on
-        assert all(value in {"ubuntu-latest", "${{ matrix.os }}"} for value in runs_on)
+        assert all(
+            value in {"ubuntu-latest", "windows-2025", "${{ matrix.os }}"}
+            for value in runs_on
+        )
 
 
 def test_no_workflow_that_handles_pull_requests_can_select_self_hosted_runners():
@@ -193,6 +196,39 @@ def test_ci_distribution_job_pins_tools_and_rechecks_immutable_source():
     assert body.count("--source-commit") == 2
     assert body.count("--source-tree") == 2
     assert "Reverify the exact archive bytes immediately before preservation" in body
+
+
+@pytest.mark.parametrize(
+    ("workflow", "install_command", "selftest_line"),
+    (
+        (
+            "ci.yml",
+            "pip install --force-reinstall dist/*.whl",
+            "          assesshub --selftest\n",
+        ),
+        (
+            "release.yml",
+            "pip install --force-reinstall dist/*.whl",
+            "          assesshub --selftest\n",
+        ),
+        (
+            "release-selfhosted.yml",
+            "pip install --quiet $wheel",
+            '          & "$env:RUNNER_TEMP\\smoke-venv\\Scripts\\assesshub.exe" --selftest\n',
+        ),
+    ),
+)
+def test_installed_wheel_selftest_gates_every_release_path(
+    workflow, install_command, selftest_line
+):
+    """The EoL authority check is meaningful only if every built-wheel path executes it."""
+    body = _workflow(workflow)
+    install_at = body.index(install_command)
+    selftest_at = body.index(selftest_line)
+
+    assert install_at < selftest_at
+    assert "('eol', eoldb.registry_health())" in body[selftest_at:]
+    assert "registry_integrity as R" in body[selftest_at:]
 
 
 def test_immutable_checkout_helper_accepts_only_a_stable_clean_tree(tmp_path):

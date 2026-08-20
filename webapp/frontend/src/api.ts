@@ -31,7 +31,7 @@ export interface LifecycleSummary {
   near_eos?: number | string;
   past_ldos?: number | string;
   active?: number | string;
-  /** Assets whose support state could NOT be determined (no EoX match). A gap, never a clean result. */
+  /** Assets with no exact EoX row or incomplete retained source/date authority. A gap, never clean. */
   unknown?: number;
   n_devices?: number;
   assessed?: number;
@@ -68,6 +68,38 @@ export interface SnapshotMeta {
   summary: Summary;
 }
 
+/** Coverage-honest projection returned by `/api/snapshots/{id}/graph`.
+ *
+ * `is_bridge: false` is a redundancy verdict only when `bridge_assessed` is true. Older snapshots
+ * and partially computed projections can carry a perfectly drawable edge whose bridge status was
+ * never measured, so consumers must preserve the third state instead of collapsing it to healthy.
+ */
+export interface TopologyNode {
+  id: string;
+  band: string;
+  score: number | null;
+  role: string;
+  degree: number;
+  keystone: boolean;
+}
+
+export interface TopologyEdge {
+  source: string;
+  target: string;
+  bridge_assessed?: boolean;
+  is_bridge: boolean;
+  pairs_cut: number;
+}
+
+export interface TopologyGraphData {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  /** True when at least one link-centrality record was available; inspect each edge as well. */
+  link_centrality_assessed?: boolean;
+  /** Discovered CDP peers which were not present as collected switch nodes in this snapshot. */
+  offscan_peers?: string[];
+}
+
 export interface Campaign {
   id: number;
   name: string;
@@ -84,6 +116,16 @@ export interface Deliverable {
   label: string;
   ext: string;
   available: boolean;
+  producer?: "engine-cli" | "assesshub-snapshot";
+  engine_cli_member?: boolean;
+  stage?: "pre-cutover";
+}
+
+export interface ArtifactFamilyMeta {
+  pre_cutover: number;
+  engine_cli: number;
+  assesshub_only_pre_cutover: number;
+  conditional_post_execution: number;
 }
 
 // ADR-0004 D1: served from the brand SSOT (cisco_toolkit/brand_tokens.py) — the SPA renders these,
@@ -101,7 +143,60 @@ export interface Meta {
   bands: string[];
   section_labels: Array<{ key: string; label: string }>;
   deliverables: Deliverable[];
+  artifact_family?: ArtifactFamilyMeta;
   app: AppIdentity;
+}
+
+export interface CurrentBaselineBlocker {
+  device: string;
+  wave: string;
+  category: string;
+  severity: string;
+  check: string;
+  command?: string;
+  expect: string;
+  why?: string;
+  evidence_state: string;
+  projection_custody: string;
+  source_key: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
+}
+
+export interface CurrentBaselineGate {
+  schema: string;
+  verdict: "BLOCKED" | "INDETERMINATE" | "CLEAR" | "NOT_ASSESSED" | string;
+  assessed?: boolean;
+  note: string;
+  n_blockers?: number;
+  fleet_n_blockers?: number;
+  summary?: {
+    n_items?: number;
+    n_blockers?: number;
+    n_blockers_returned?: number;
+    blockers_capped?: boolean;
+    by_state?: Partial<Record<"degraded" | "review" | "not_verified", number>>;
+    by_wave?: Record<string, number>;
+  };
+  blockers?: CurrentBaselineBlocker[];
+  integrity?: { valid?: boolean; failures?: string[] };
+  limitations?: string[];
+}
+
+export interface ValidationCheck {
+  device?: string;
+  wave?: string;
+  category: string;
+  severity: string;
+  check: string;
+  command: string;
+  expect: string;
+  why?: string;
+  evidence_state?: string;
+  projection_custody?: string;
+  source_key?: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
 }
 
 export interface CutoverWave {
@@ -126,9 +221,11 @@ export interface CutoverWave {
   n_fail: number;
   n_warn: number;
   blockers: Array<{ check: string; status: string; note: string; phase: string }>;
+  current_baseline?: CurrentBaselineGate;
+  baseline_blockers?: CurrentBaselineBlocker[];
   critical_crosslayer: Array<{ id: string; title: string; layers: string; recommendation: string }>;
   remediation: Array<{ device: string; title: string; category: string; severity: string; why: string }>;
-  validation: Array<{ category: string; severity: string; check: string; command: string; expect: string }>;
+  validation: ValidationCheck[];
   run_of_show: Array<{ phase: string; action: string }>;
 }
 
@@ -142,11 +239,19 @@ export interface ExecStep {
 }
 
 export interface ExecCheck {
+  device?: string;
+  wave?: string;
   category: string;
   severity: string;
   check: string;
   command: string;
   expect: string;
+  why?: string;
+  evidence_state?: string;
+  projection_custody?: string;
+  source_key?: string;
+  baseline_state?: string;
+  baseline_blocker?: boolean;
   result: "pending" | "pass" | "fail" | "na";
   observed: string;
   at: string | null;
@@ -165,6 +270,8 @@ export interface ExecWave {
   est_window_minutes: number;
   est_window_label: string;
   blockers: Array<{ check: string; status: string; note: string; phase: string }>;
+  current_baseline?: CurrentBaselineGate;
+  baseline_blockers?: CurrentBaselineBlocker[];
   steps: ExecStep[];
   checks: ExecCheck[];
   closeout: { decision: string | null; at: string | null; by: string; note: string };
@@ -180,6 +287,10 @@ export interface ExecutionState {
   started_at: string;
   ended_at: string | null;
   plan_summary: CutoverPlan["summary"];
+  /** Full start-snapshot blocker receipt frozen when the execution record is created. */
+  baseline_blockers?: CurrentBaselineBlocker[];
+  /** Explicit occurrence-preserving subset that could not be assigned to an execution wave. */
+  unbound_baseline_blockers?: CurrentBaselineBlocker[];
   waves: ExecWave[];
   events: Array<{ at: string; kind: string; wave: string; text: string; by: string }>;
   progress: {
@@ -249,8 +360,13 @@ export interface CutoverPlan {
     gates: Record<string, number>;
     statement: string;
     methodology?: string[];
+    current_baseline?: CurrentBaselineGate;
+    n_baseline_blockers?: number;
+    n_unbound_baseline_blockers?: number;
+    baseline_blockers_capped?: boolean;
   };
   waves: CutoverWave[];
+  baseline_blockers?: CurrentBaselineBlocker[];
 }
 
 // V3.23.163: the senior-engineer design review (engine compute_architecture_review — the same
@@ -361,7 +477,18 @@ export interface DesignDimension {
 }
 export interface DesignTargetState {
   dimensions: DesignDimension[];
-  replacement_bom: { replace_now: [string, number][]; refresh_soon: [string, number][]; n_replace: number; n_refresh: number; note: string };
+  replacement_bom: {
+    replace_now: [string, number][];
+    refresh_soon: [string, number][];
+    undetermined?: [string, number][];
+    n_replace: number;
+    n_refresh: number;
+    n_near?: number;
+    n_past_eos?: number;
+    n_undetermined?: number;
+    n_not_assessed?: number;
+    note: string;
+  };
   addressing_plan: {
     status: string; mode?: string; observed_vlans?: number; requirement_needed?: string; note: string;
     n_census_vlans?: number; n_unsizable?: number;
@@ -592,7 +719,7 @@ export const api = {
     fetch(`/api/snapshots/${id}/section/${name}`).then((r) => j<{ section: string; data: any }>(r)),
   deleteSnapshot: (id: number) => fetch(`/api/snapshots/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
   graph: (id: number) =>
-    fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
+    fetch(`/api/snapshots/${id}/graph`).then((r) => j<TopologyGraphData>(r)),
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   archreview: (id: number) => fetch(`/api/snapshots/${id}/archreview`).then((r) => j<ArchReview>(r)),
   design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),

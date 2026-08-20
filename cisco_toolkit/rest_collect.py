@@ -1,11 +1,12 @@
-"""Read-only REST collectors for controller-based fabrics — Cisco ACI / APIC and Catalyst SD-WAN / vManage.
+"""Read-only REST collectors for APIC, vManage, ISE, and FMC controller evidence.
 
 The engine's primary ingestion is offline SSH ``show``-text; a controller fabric exposes its state only via a
 northbound REST API, so this module is the LIVE collection front door for those fabrics. It authenticates with a
 read-only credential, GETs the managed objects / dataservice endpoints the OFFLINE parsers already understand
-(``parse_aci_*`` / ``parse_sdwan_*``), and writes one raw JSON file per query into a device directory using the
-SAME filename transform ``--no-collect`` reads (``cmd.replace(" ","_")…replace("/","_")+".txt"``). Collection and
-analysis stay fully decoupled: this writes the evidence files; ``build_aci`` / ``build_sdwan`` + the detectors
+(``parse_aci_*`` / ``parse_sdwan_*`` / ``parse_ise_*`` / ``parse_fmc_*``), and writes one raw JSON file per query
+into a device directory using the SAME filename transform ``--no-collect`` reads
+(``cmd.replace(" ","_")…replace("/","_")+".txt"``). Collection and
+analysis stay fully decoupled: this writes the evidence files; the matching offline builders + detectors
 analyse them unchanged. So the whole downstream — snapshot, design_blueprint, deliverables, dashboards — is reused.
 
 SAFETY DOCTRINE (read this before pointing it at a fabric):
@@ -15,8 +16,8 @@ SAFETY DOCTRINE (read this before pointing it at a fabric):
     GETs can POST, so unlike the SSH ``show``-only collector there is no protocol-level read-only floor. Use a
     DEDICATED AAA account bound to a read-only RBAC role. The password is used once for login and is NEVER written
     to the snapshot, the collection dir, or any log.
-  * **Opt-in only.** Nothing here runs on import or as part of ``cisco-assess``; a human invokes ``collect_apic`` /
-    ``collect_vmanage`` (or the ``__main__`` CLI) with the controller URL + credentials + engagement authorization.
+  * **Opt-in only.** Nothing here runs on import or as part of ``cisco-assess``; a human invokes a function in
+    ``CONTROLLER_COLLECTORS`` (or the ``__main__`` CLI) with the controller URL + credentials + authorization.
     Mirrors the SSH collector's 'never run a live collection unless explicitly asked' doctrine.
   * **TLS** verifies by default; pass ``verify_tls=False`` only for a lab/sandbox with a self-signed cert (logged).
 """
@@ -479,6 +480,16 @@ def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verif
     return written
 
 
+# The live controller-channel denominator. The CLI and catalog-truth ratchet both read this registry so adding,
+# removing, or renaming a collector cannot silently leave a second hand-maintained choice list behind.
+CONTROLLER_COLLECTORS = {
+    "apic": collect_apic,
+    "vmanage": collect_vmanage,
+    "ise": collect_ise,
+    "fmc": collect_fmc,
+}
+
+
 # --- CLI credential resolution (review 2026-07-28 #57) ---------------------------------------------------
 # The password of a production APIC / vManage / ISE / FMC read-only account must not have to be typed on a
 # command line: argv is world-readable in the process table (`ps -ef`, Task Manager / WMI Win32_Process),
@@ -531,7 +542,7 @@ if __name__ == "__main__":                                           # opt-in CL
                                             "ISE + Secure Firewall Mgmt Center (FMC). Writes JSON exports a "
                                             "`cisco-assess --no-collect` run then analyses. Use a DEDICATED "
                                             "READ-ONLY account; opt-in only.")
-    p.add_argument("fabric", choices=["apic", "vmanage", "ise", "fmc"])
+    p.add_argument("fabric", choices=tuple(CONTROLLER_COLLECTORS))
     p.add_argument("--url", required=True, help="https://<controller>")
     p.add_argument("--user", required=True)
     p.add_argument("--password", help="DISCOURAGED: argv is visible in the process table and shell history. "
@@ -547,7 +558,7 @@ if __name__ == "__main__":                                           # opt-in CL
         p.error(f"no password resolved: pass --password-env VAR, set ${_REST_PASS_ENV} or ${_SSH_PASS_ENV}, "
                 f"or run interactively to be prompted (refusing to attempt a blank-credential login against "
                 f"a production controller -- a failed auth can trip account lockout)")
-    fn = {"apic": collect_apic, "vmanage": collect_vmanage, "ise": collect_ise, "fmc": collect_fmc}[a.fabric]
+    fn = CONTROLLER_COLLECTORS[a.fabric]
     files = fn(a.url, a.user, _pw, a.out_dir, verify_tls=not a.insecure)
     print(f"wrote {len(files)} export file(s):")
     for f in files:

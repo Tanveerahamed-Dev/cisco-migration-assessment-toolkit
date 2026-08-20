@@ -193,6 +193,22 @@ Migration_Assessment_Template_*
 _verify_nrfu.py
 /blast_radius_explorer.html
 
+# Atlas Master Reference deterministic projections and release bundles. These
+# are exact-source derivatives, never authored source; each carries its own
+# manifest and is regenerated from a clean tracked tree.
+/master-reference/public/atlas-projection/
+/master-reference/.atlas-compiler/
+/master-reference/artifacts/
+/master-reference/tsconfig.tsbuildinfo
+
+# Local Sites/Cloudflare packaging state. The deployment archives are generated
+# from tracked source and exceed GitHub's single-file limit; this repository's
+# Master Reference package remains npm/package-lock managed.
+/.wrangler/
+/master-reference/sites-*.tar.gz
+/master-reference/pnpm-lock.yaml
+/master-reference/pnpm-workspace.yaml
+
 # design-sync (claude.ai/design converter) — staged scripts, build output, machine state.
 # The durable set (.design-sync/config.json, NOTES.md, conventions.md, previews/, docs/, overrides/) IS committed.
 .ds-sync/

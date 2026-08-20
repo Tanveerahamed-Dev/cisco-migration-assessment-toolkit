@@ -152,8 +152,17 @@ python COLLECT_PARSE_V3_23_0.py \
 # Diff two previously saved snapshots into a change workbook (no SSH, no template)
 python COLLECT_PARSE_V3_23_0.py --compare old_snapshot.json new_snapshot.json
 
+# CI/change-pipeline mode: write the same artifacts, then exit 2 unless the combined cutover gate passes
+python COLLECT_PARSE_V3_23_0.py --compare old_snapshot.json new_snapshot.json --fail-on-compare-gate
+
 # Trend a SERIES of snapshots across the migration into a campaign workbook (oldest first)
 python COLLECT_PARSE_V3_23_0.py --trend wave0.snapshot.json wave1.snapshot.json wave2.snapshot.json
+
+# Evaluate a finite synthetic traffic catalog during the same evidence-producing run
+python COLLECT_PARSE_V3_23_0.py \
+    --devices-file devices.json \
+    --template Migration_Assessment_Template_Updated.xlsx \
+    --traffic-intents cisco_toolkit/data/traffic-intents.example.json
 
 # See every option
 python COLLECT_PARSE_V3_23_0.py --help
@@ -165,6 +174,10 @@ python -m cisco_toolkit.manifest verify path/to/run.run_manifest.json
 python -m cisco_toolkit.manifest verify path/to/run.run_manifest.json --metadata-only
 ```
 
+`--compare` reports one combined cutover gate across the observed snapshot delta and the bounded
+FIB/path-intent Pre-Change Certificate. The certificate verdict never overrides a protocol or other
+observed regression; use `--fail-on-compare-gate` when automation must stop on any non-`PASS` result.
+
 Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 `--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` / `--no-crd` /
 `--no-engagement`
@@ -172,11 +185,35 @@ Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
-sheet between two endpoints), and `--redact` (pseudonymize IPs / MACs / serials across the
+sheet between two endpoints), `--traffic-intents FILE` (evaluate the bounded catalog in
+[`cisco_toolkit/data/traffic-intents.example.json`](cisco_toolkit/data/traffic-intents.example.json)
+and add the canonical
+**Traffic Assurance** snapshot/workbook result), and `--redact` (pseudonymize IPs / MACs / serials across the
 **whole output bundle** — the snapshot JSON, the HTML explorer, **and** the always-produced
 `.xlsx` workbook — consistent and subnet-preserving, hostnames kept — so every deliverable can
 be shared without leaking real addressing). See
 [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) for the full feature set.
+
+Traffic Assurance accepts a finite list of exact IPv4 TCP/UDP five-tuples, requested
+forward/return directions, an optional observed MTU requirement, and at most one synthetic
+node/site/link failure per row. It is available only on a full assessment run; combining
+`--traffic-intents` with `--compare` or `--trend` is refused because those modes do not publish
+the result. A hard verdict requires same-run capture/parser custody, exact scoped-route and
+configuration bindings, all applicable modeled forwarding gates accounted for, and no
+categorical-unmodeled gate or modeled-projection gap.
+Incomplete, stale, or malformed custody, configured NAT, and an applicable stateful or
+categorically unmodeled forwarding gate produce an explicit indeterminate/not-observed result
+rather than a guessed permit or deny. Even when that bounded control-plane projection is proven,
+it does not claim tunnel state or underlay delivery, endpoint attachment or L2 delivery, live
+sessions, application success, or field behavior; those remain not assessed. The always-present
+`unknown_evidence` snapshot block separately aggregates parser exceptions, suspicious zero-yield,
+and unsupported diagnostic shapes without copying raw evidence or identifiers; it is a triage
+queue, not proof that every vendor syntax is modeled.
+
+The example is package data in both the wheel and source distribution. From an installed toolkit,
+print its absolute path with `python -c "from importlib.resources import files;
+print(files('cisco_toolkit').joinpath('data/traffic-intents.example.json'))"`, then pass that path to
+`cisco-assess --traffic-intents`.
 
 ### Devices file
 
@@ -238,7 +275,7 @@ the network — and a one-sentence engineer's verdict each. An axis without
 evidence reads *not assessed*, never healthy-by-silence. The top row is the
 scariest box in the fleet; the compound patterns also fold into the punch-list.
 
-**Explorer — eleven modes over one topology.** Pan/zoom the graph; search by
+**Explorer — 14 modes over one topology.** Pan/zoom the graph; search by
 switch / IP / MAC; filter by VLAN. The modes:
 
 - **Blast radius** — click a switch to simulate its removal and see what it strands.
@@ -252,13 +289,18 @@ switch / IP / MAC; filter by VLAN. The modes:
   switch in any mode opens its dossier, led by the engine's **Engineer's verdict** card.
 - **Protocols** — routing-protocol topology, redistribution boundaries, adjacency health.
 - **Cross-Layer** — findings that compound across layers into one real migration risk.
-- **Causality** — each structural SPOF as a trigger → mechanism → impact → mitigation chain.
+- **Causal Flow** — each structural SPOF as a trigger → mechanism → impact → mitigation chain.
 - **Waves** — the migration move-groups in recommended cutover order, each with its readiness
   verdict, scenario (make-before-break vs hard cutover) and post-cutover validation checks.
 - **Apps** — application domains (workloads) with footprint, criticality tier and inter-domain
   coupling — the unit the business actually migrates.
 - **Review** — the senior-engineer architecture review: leading-practice checks across eight
   design domains with an A–F conformance grade and not-assessable honesty.
+- **Design** — the evidence-gated target-state blueprint: recommended decisions, trade-offs,
+  affected devices, and the requirement questions that remain open.
+- **Cable Map** — a role-tiered physical view of CDP/LLDP cabling, with operational state,
+  port-channel membership, and uncollected links kept visibly not observed.
+- **3D** — an orbitable tiered fabric view with device health, selection, and link highlighting.
 
 The explorer is a single self-contained file (no server, no external assets) and
 runs fully offline — safe to email or open from a USB stick.

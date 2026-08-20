@@ -21,6 +21,7 @@ without it, and a missing library is a warning + skip (the run's workbook/explor
 saved), exactly like the HTML explorer's template-missing path.
 """
 import logging
+import re
 import textwrap
 from collections import Counter
 from datetime import datetime
@@ -504,8 +505,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         doc.add_paragraph(
             f"As of the assessment date {lr.get('asof', '')} (when the evidence was collected), of {ls.get('n_devices', 0)} device(s): "
             f"{ls.get('n_past_ldos', 0)} are PAST Cisco's last day of support (no software fixes / no TAC), "
-            f"{ls.get('n_near', 0)} reach end-of-support within a year, {ls.get('n_active', 0)} are active, "
-            f"{ls.get('n_unknown', 0)} unknown. End-of-support hardware is a hard migration driver.")
+            f"{ls.get('n_near', 0)} reach end-of-support within a year, "
+            f"{ls.get('n_past_eos', 0)} are past end-of-sale with LDoS still future (date band only; "
+            f"support entitlement not inferred), {ls.get('n_active', 0)} are in the "
+            f"pre-EoS date band (schema: Active; not a support-entitlement claim), and "
+            f"{ls.get('n_unknown', 0)} device(s) are NOT ASSESSED. End-of-support hardware is a hard migration driver.")
+        if ls.get("n_unknown"):
+            doc.add_paragraph(
+                "NOT ASSESSED means either no exact EoX row matched the collected PID or the matched "
+                "row's retained source/date authority was withheld or incomplete. Lifecycle position "
+                "and support entitlement remain undetermined until both are verified.")
         _label_run(doc.add_paragraph(), "Reference note:", lr.get("note", ""), GREY)
         rows = [[p.get("platform"), p.get("count"), p.get("band"), p.get("ldos") or "—"]
                 for p in _R(ls.get("by_platform"))]
@@ -696,9 +705,982 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 "; ".join(str(_s) for _s in _as_list(_as_dict(f.get("summary")).get("spofs"))) or "none"]
                for f in fpaths], widths=[2.8, 1.4, 0.9, 2.4])
 
+    # Runtime protocol coverage is a first-class receipt, not something inferred from the
+    # sparse health/advisory arrays.  Render the section even when all three artifacts are
+    # empty so a legacy or failed run cannot disappear into apparent protocol cleanliness.
+    phealth = _R(snap_dict.get("protocol_health"))
     pintel = _R(snap_dict.get("protocol_intelligence"))
+    passess = _as_dict(snap_dict.get("protocol_assessability"))
+    pa_rows = _R(passess.get("rows"))
+    pa_valid = passess.get("schema") == "protocol_assessability/1" and bool(pa_rows)
+    doc.add_heading("6.5 Protocol behaviour & remediation", level=2)
+
+    # VTP safety is a closed local-status audit receipt, distinct from sparse
+    # protocol health/intelligence.  The runbook accepts only the serialized
+    # embedded projection; it never promotes a persisted current-run claim.
+    vtp_input = snap_dict.get("vtp_safety_baseline")
+    try:
+        from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
+
+        vtp_view = validate_vtp_safety_baseline(vtp_input, require_current_run=False)
+    except Exception:
+        vtp_view = {}
+    vtp_valid = bool(
+        isinstance(vtp_view, dict)
+        and vtp_view.get("valid") is True
+        and isinstance(vtp_view.get("baseline"), dict)
+        and vtp_view["baseline"].get("schema") == "vtp_safety_baseline/1"
+        and vtp_view["baseline"].get("projection_custody") == "embedded_unverified"
+        and isinstance(vtp_view.get("rows"), list)
+        and isinstance(vtp_view["baseline"].get("coverage"), list)
+        and isinstance(vtp_view["baseline"].get("summary"), dict)
+    )
+
+    def _vtp_text(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        return str(value) if isinstance(value, (str, int, float)) else ""
+
+    def _vtp_findings(value) -> str:
+        if not isinstance(value, list):
+            return ""
+        parts = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            part = " — ".join(filter(None, (
+                _vtp_text(item.get("code")), _vtp_text(item.get("issue")),
+            )))
+            if part:
+                parts.append(part)
+        return "; ".join(parts)
+
+    if vtp_valid:
+        vtp_receipt = vtp_view["baseline"]
+        vtp_rows = [row for row in vtp_view["rows"] if isinstance(row, dict)]
+        vtp_coverage = [cell for cell in vtp_receipt["coverage"] if isinstance(cell, dict)]
+        if len(vtp_rows) != len(vtp_view["rows"]) or len(vtp_coverage) != len(vtp_receipt["coverage"]):
+            vtp_valid = False
+    if vtp_valid:
+        vtp_summary = vtp_receipt["summary"]
+        vtp_by_status = vtp_summary["by_status"]
+        vtp_by_coverage = vtp_summary["by_coverage_status"]
+        vtp_coverage_by_host = {cell["switch"]: cell for cell in vtp_coverage}
+        vtp_verdict = _vtp_text(vtp_receipt.get("verdict")) or "NOT ASSESSED"
+        doc.add_paragraph(
+            "VTP safety gate — observed local show vtp status. "
+            f"Verdict: {vtp_verdict.upper()}. Across {vtp_summary['n_rows']} subject row(s), "
+            f"{vtp_by_status['review']} require review, {vtp_by_status['not_verified']} are not "
+            f"verified, and {vtp_by_status['assessed']} are boundedly assessed; "
+            f"{vtp_summary['n_high_revision_servers']} VTP Server row(s) carry configuration revision "
+            "100 or higher. That threshold is a conservative heuristic requiring explicit REVIEW, "
+            "not proof that an overwrite will occur. Matching a high revision is NOT ACCEPTANCE. "
+            "Receipt custody: embedded_unverified."
+        )
+        coverage_copy = (
+            "Host coverage (producer-owned fleet census; distinct from subject rows): "
+            f"{vtp_summary['n_hosts']} host(s), {vtp_summary['n_subject_hosts']} subject host(s); "
+            f"coverage cells — {vtp_by_coverage['review']} review, "
+            f"{vtp_by_coverage['not_verified']} not verified, {vtp_by_coverage['assessed']} assessed, "
+            f"and {vtp_by_coverage['not_applicable']} not applicable. Coverage detail is used only "
+            "for the corresponding host; fleet totals come from summary.by_coverage_status."
+        )
+        if vtp_verdict.upper() == "NOT_APPLICABLE":
+            coverage_copy += (
+                " NOT_APPLICABLE means no positive local VTP-status subject was identified in the "
+                "bounded input; it is not proof that VTP is absent from the platform or network."
+            )
+        coverage_run = doc.add_paragraph().add_run(coverage_copy)
+        if vtp_by_coverage["review"] or vtp_by_coverage["not_verified"] \
+                or vtp_verdict.upper() == "NOT_APPLICABLE":
+            coverage_run.bold = True
+            coverage_run.font.color.rgb = RGBColor(0x7F, 0x60, 0x00)
+        doc.add_paragraph(
+            "Boundaries: this receipt observes one local status record only. It establishes no "
+            "VLAN-database equality or contents, advertisement or per-VLAN propagation, intended "
+            "version/compatibility, pruning, password/authentication, freshness, simultaneous state, "
+            "failover, revision-reset safety, or cutover-authorization proof. Raw captures, hashes, "
+            "source locators, and filesystem paths are not rendered. The protocol-health and "
+            "protocol-intelligence detail below remains a separate observed/advisory projection."
+        )
+        vtp_blockers = [
+            row for row in vtp_rows if row.get("status") in {"review", "not_verified"}
+        ]
+        vtp_ordinary = [row for row in vtp_rows if row.get("status") == "assessed"]
+        vtp_shown = vtp_blockers + vtp_ordinary[:50]
+        if vtp_shown:
+            doc.add_paragraph(
+                "VTP safety subjects (every REVIEW and NOT VERIFIED row, including each subject "
+                "coverage gap, is rendered outside the 50-row assessed display cap):"
+            )
+
+            def _vtp_observed(row):
+                domain = _vtp_text(row.get("domain")) if row.get("domain_present") is True else "not reported"
+                if row.get("domain_present") is True and not domain:
+                    domain = "empty"
+                revision = _vtp_text(row.get("revision")) if row.get("revision_present") is True else "not reported"
+                version = _vtp_text(row.get("version")) if row.get("version_present") is True else "not reported"
+                return (
+                    f"mode {_vtp_text(row.get('mode')) or 'unknown'} · domain {domain} · "
+                    f"revision {revision} · running version {version}"
+                )
+
+            table(
+                ["Status", "Device / platform", "Observed local status", "Capture / parser",
+                 "Command / custody", "Acceptance / finding"],
+                [[
+                    _vtp_text(row.get("status")).replace("_", " ").upper(),
+                    f"{_vtp_text(row.get('switch'))} · {_vtp_text(row.get('platform')) or '—'}",
+                    _vtp_observed(row),
+                    f"{_vtp_text(vtp_coverage_by_host.get(row.get('switch'), {}).get('capture_status')) or 'not reported'} / "
+                    f"{_vtp_text(vtp_coverage_by_host.get(row.get('switch'), {}).get('parser_status')) or 'not reported'}",
+                    f"{_vtp_text(row.get('command')) or 'show vtp status'} · "
+                    f"{_vtp_text(row.get('projection_custody')) or 'embedded_unverified'}",
+                    "\n".join(filter(None, (
+                        _vtp_text(row.get("acceptance")), _vtp_findings(row.get("findings")),
+                    ))) or "—",
+                ] for row in vtp_shown],
+                widths=[1.1, 1.8, 2.4, 1.6, 2.1, 4.0],
+            )
+        if len(vtp_ordinary) > 50:
+            doc.add_paragraph(
+                f"All {len(vtp_blockers)} blocker row(s) are shown; 50 of "
+                f"{len(vtp_ordinary)} assessed row(s) are shown. The VTP Safety workbook sheet uses "
+                "the same bounded projection."
+            )
+    if not vtp_valid:
+        doc.add_paragraph(
+            "VTP safety gate — Verdict: NOT ASSESSED. vtp_safety_baseline/1 is absent, malformed, "
+            "or not an embedded-unverified serialized receipt. No rejected receipt leaves, counts, "
+            "or VTP safety conclusion are shown. Re-collect and validate show vtp status before "
+            "acceptance; zero visible rows is not proof that VTP is absent."
+        )
+
+    # IPv6 routing adjacency is a separately owned observed-runtime receipt.
+    # Only a validated serialized audit copy is projected here; persisted JSON
+    # cannot claim the process-local custody required by the decision owner.
+    ipv6_input = snap_dict.get("ipv6_routing_adjacency_baseline")
+    try:
+        from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
+
+        ipv6_view = validate_ipv6_routing_adjacency_baseline(
+            ipv6_input, require_current_run=False,
+        )
+    except Exception:
+        ipv6_view = {}
+    ipv6_valid = bool(
+        isinstance(ipv6_view, dict)
+        and ipv6_view.get("valid") is True
+        and isinstance(ipv6_view.get("baseline"), dict)
+        and ipv6_view["baseline"].get("schema") == "ipv6_routing_adjacency_baseline/1"
+        and ipv6_view["baseline"].get("projection_custody") == "embedded_unverified"
+        and isinstance(ipv6_view.get("rows"), list)
+        and isinstance(ipv6_view["baseline"].get("coverage"), list)
+        and isinstance(ipv6_view["baseline"].get("summary"), dict)
+    )
+
+    def _ipv6_text(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        return str(value) if isinstance(value, (str, int, float)) else ""
+
+    def _ipv6_findings(value) -> str:
+        if not isinstance(value, list):
+            return ""
+        parts = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            part = " — ".join(filter(None, (
+                _ipv6_text(item.get("code")), _ipv6_text(item.get("issue")),
+            )))
+            if part:
+                parts.append(part)
+        return "; ".join(parts)
+
+    if ipv6_valid:
+        ipv6_receipt = ipv6_view["baseline"]
+        ipv6_rows = [row for row in ipv6_view["rows"] if isinstance(row, dict)]
+        ipv6_coverage = [
+            cell for cell in ipv6_receipt["coverage"] if isinstance(cell, dict)
+        ]
+        if (
+            len(ipv6_rows) != len(ipv6_view["rows"])
+            or len(ipv6_coverage) != len(ipv6_receipt["coverage"])
+        ):
+            ipv6_valid = False
+    if ipv6_valid:
+        ipv6_summary = ipv6_receipt["summary"]
+        ipv6_by_status = ipv6_summary["by_status"]
+        ipv6_by_coverage = ipv6_summary["by_coverage_status"]
+        ipv6_coverage_by_subject = {
+            (cell.get("switch"), cell.get("protocol")): cell
+            for cell in ipv6_coverage
+        }
+        ipv6_verdict = _ipv6_text(ipv6_receipt.get("verdict")) or "NOT ASSESSED"
+        doc.add_paragraph(
+            "IPv6 routing adjacency gate — observed default/global OSPFv3 and IPv6-unicast BGP. "
+            f"Verdict: {ipv6_verdict.upper()}. Across {ipv6_summary['n_rows']} observed adjacency "
+            f"row(s), {ipv6_by_status['degraded']} are degraded, {ipv6_by_status['review']} "
+            f"require review, {ipv6_by_status['not_verified']} are not verified, and "
+            f"{ipv6_by_status['assessed']} are boundedly assessed; "
+            f"{ipv6_summary['n_ospfv3_rows']} OSPFv3 row(s) and "
+            f"{ipv6_summary['n_bgpv6_rows']} BGPv6 row(s) were published. Every DEGRADED, "
+            "REVIEW, and NOT VERIFIED row is a pre-cutover blocker; matching a degraded state "
+            "is NOT ACCEPTANCE. Receipt custody: embedded_unverified."
+        )
+        coverage_copy = (
+            "Fleet coverage (producer-owned census; distinct from adjacency rows): "
+            f"{ipv6_summary['n_hosts']} host(s), {ipv6_summary['n_subject_hosts']} subject host(s); "
+            "host-family/input cells — "
+            f"{ipv6_by_coverage['degraded']} degraded, {ipv6_by_coverage['review']} review, "
+            f"{ipv6_by_coverage['not_verified']} not verified, "
+            f"{ipv6_by_coverage['assessed']} assessed, and "
+            f"{ipv6_by_coverage['not_applicable']} not applicable. Coverage detail qualifies only "
+            "the corresponding host and input; fleet totals come from summary.by_coverage_status."
+        )
+        if ipv6_verdict.upper() == "NOT_APPLICABLE":
+            coverage_copy += (
+                " NOT_APPLICABLE means no positive bounded subject was identified; it is not proof "
+                "that IPv6 routing or an expected adjacency is absent."
+            )
+        coverage_run = doc.add_paragraph().add_run(coverage_copy)
+        if (
+            ipv6_by_coverage["degraded"]
+            or ipv6_by_coverage["review"]
+            or ipv6_by_coverage["not_verified"]
+            or ipv6_verdict.upper() == "NOT_APPLICABLE"
+        ):
+            coverage_run.bold = True
+            coverage_run.font.color.rgb = RGBColor(0x7F, 0x60, 0x00)
+        doc.add_paragraph(
+            "Boundaries: observed default/global runtime peers only; no configured or expected-peer "
+            "denominator. Empty or NOT_APPLICABLE evidence is not proof of absence. OSPFv3 process, "
+            "area, network type, timers, authentication, LSDB correctness, persistence, and convergence "
+            "history are incomplete or outside this receipt. BGPv6 policy, activation intent, route "
+            "correctness, other VRFs/address families, and configured-but-unobserved peers remain outside "
+            "it; RIB/FIB/path selection, freshness, simultaneity, interoperability, and cutover "
+            "authorization are unproved. IPv6 route-summary counts are point-in-time census context; "
+            "BGP prefix counts are informational and are not pinned acceptance targets. Raw captures, hashes, "
+            "source locators, and filesystem paths are not rendered. The before/after "
+            "protocol_adjacency_delta/1 comparator remains bounded to IPv4 OSPF, BGP, and EIGRP; "
+            "this current-state IPv6 receipt still reaches the shared current-baseline gate."
+        )
+        ipv6_blockers = [
+            row for row in ipv6_rows
+            if row.get("status") in {"degraded", "review", "not_verified"}
+        ]
+        ipv6_ordinary = [row for row in ipv6_rows if row.get("status") == "assessed"]
+        ipv6_shown = ipv6_blockers + ipv6_ordinary[:50]
+        if ipv6_shown:
+            doc.add_paragraph(
+                "IPv6 routing adjacency subjects (every DEGRADED, REVIEW, and NOT VERIFIED row is "
+                "rendered outside the 50-row assessed display cap):"
+            )
+
+            def _ipv6_observed(row):
+                protocol = _ipv6_text(row.get("protocol")) or "unknown protocol"
+                peer = _ipv6_text(row.get("peer")) or "peer not reported"
+                raw_state = _ipv6_text(row.get("state_raw")) or "state not reported"
+                normalized = _ipv6_text(row.get("state")) or "not reported"
+                interface = _ipv6_text(row.get("interface")) or "—"
+                process = _ipv6_text(row.get("process")) or "—"
+                remote_as = _ipv6_text(row.get("remote_as")) or "—"
+                role = _ipv6_text(row.get("role")) or "—"
+                prefixes = (
+                    _ipv6_text(row.get("prefix_count"))
+                    if row.get("prefix_count_present") is True else "not reported"
+                )
+                return (
+                    f"{protocol} peer {peer} · exact state {raw_state} · normalized {normalized} · "
+                    f"process {process} · interface {interface} · remote AS {remote_as} · "
+                    f"role {role} · prefixes {prefixes}"
+                )
+
+            table(
+                ["Status", "Device / platform", "Observed peer / state", "Capture / parser",
+                 "Command / custody", "Acceptance / finding"],
+                [[
+                    _ipv6_text(row.get("status")).replace("_", " ").upper(),
+                    f"{_ipv6_text(row.get('switch'))} · {_ipv6_text(row.get('platform')) or '—'}",
+                    _ipv6_observed(row),
+                    f"{_ipv6_text(ipv6_coverage_by_subject.get((row.get('switch'), row.get('protocol')), {}).get('capture_status')) or 'not reported'} / "
+                    f"{_ipv6_text(ipv6_coverage_by_subject.get((row.get('switch'), row.get('protocol')), {}).get('parser_status')) or 'not reported'}",
+                    f"{_ipv6_text(row.get('command'))} · "
+                    f"{_ipv6_text(row.get('projection_custody')) or 'embedded_unverified'}",
+                    "\n".join(filter(None, (
+                        _ipv6_text(row.get("acceptance")),
+                        _ipv6_findings(row.get("findings")),
+                    ))) or "—",
+                ] for row in ipv6_shown],
+                widths=[1.1, 1.8, 3.5, 1.5, 2.2, 4.0],
+            )
+        if len(ipv6_ordinary) > 50:
+            doc.add_paragraph(
+                f"All {len(ipv6_blockers)} blocker row(s) are shown; 50 of "
+                f"{len(ipv6_ordinary)} assessed row(s) are shown. The IPv6 Routing workbook sheet "
+                "and Explorer use the same bounded projection."
+            )
+    if not ipv6_valid:
+        doc.add_paragraph(
+            "IPv6 routing adjacency gate — Verdict: NOT ASSESSED. "
+            "ipv6_routing_adjacency_baseline/1 is absent, malformed, or not an "
+            "embedded-unverified serialized receipt. No rejected receipt leaves, counts, or IPv6 "
+            "routing conclusion are shown. Re-collect and validate IPv6 route-summary, OSPFv3 "
+            "neighbor, and BGP IPv6-unicast summary evidence before acceptance; zero visible rows "
+            "is not proof that IPv6 routing or expected peers are absent."
+        )
+
+    # The configured-peer receipt is a distinct denominator from sparse observed protocol
+    # health.  Render it even when absent so an older/failed snapshot cannot read as zero
+    # configured peers.  Only typed receipt leaves are projected; raw configuration/debug
+    # objects never enter this document.
+    bgp_baseline = _as_dict(snap_dict.get("bgp_configured_peer_baseline"))
+
+    bgp_coverage_status_order = (
+        "degraded", "review", "not_verified", "assessed", "not_applicable",
+    )
+
+    def _bgp_coverage_census(receipt):
+        """Validate the producer-owned fleet census without using rows as its display owner."""
+
+        summary = _as_dict(receipt.get("summary"))
+        by_coverage = summary.get("by_coverage_status")
+        coverage = receipt.get("coverage")
+        if (
+            not isinstance(by_coverage, dict)
+            or set(by_coverage) != set(bgp_coverage_status_order)
+            or not isinstance(coverage, list)
+        ):
+            return None
+        counts = {}
+        for status in bgp_coverage_status_order:
+            value = by_coverage.get(status)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                return None
+            counts[status] = value
+        n_hosts = summary.get("n_hosts")
+        n_subject_hosts = summary.get("n_subject_hosts")
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in (n_hosts, n_subject_hosts)
+        ):
+            return None
+        if n_subject_hosts > n_hosts or n_hosts != len(coverage) or sum(counts.values()) != n_hosts:
+            return None
+        row_counts = {status: 0 for status in bgp_coverage_status_order}
+        seen_switches = set()
+        subject_hosts = 0
+        for row in coverage:
+            if not isinstance(row, dict):
+                return None
+            switch, subject, status = row.get("switch"), row.get("subject"), row.get("status")
+            if (
+                not isinstance(switch, str) or not switch
+                or switch in seen_switches
+                or not isinstance(subject, bool)
+                or status not in row_counts
+                or (subject and status == "not_applicable")
+            ):
+                return None
+            seen_switches.add(switch)
+            subject_hosts += int(subject)
+            row_counts[status] += 1
+        if subject_hosts != n_subject_hosts or row_counts != counts:
+            return None
+        return {
+            "n_hosts": n_hosts,
+            "n_subject_hosts": n_subject_hosts,
+            "by_coverage_status": counts,
+        }
+
+    bgp_coverage_census = _bgp_coverage_census(bgp_baseline)
+    bgp_valid = (
+        bgp_baseline.get("schema") == "bgp_configured_peer_baseline/1"
+        and isinstance(bgp_baseline.get("rows"), list)
+        and bgp_coverage_census is not None
+    )
+    bgp_rows = _R(bgp_baseline.get("rows")) if bgp_valid else []
+
+    def _bgp_text(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            text = "yes" if value else "no"
+        elif isinstance(value, (str, int, float)):
+            text = str(value)
+        else:
+            return ""
+        return re.sub(
+            r"(?i)(\b(?:password|secret|community)\b(?:\s+\d+)?\s+)([^\s,;]+)",
+            r"\1[REDACTED]", text,
+        )
+
+    def _bgp_findings(value) -> str:
+        if isinstance(value, list):
+            return "; ".join(filter(None, (_bgp_findings(item) for item in value)))
+        if isinstance(value, dict):
+            return " — ".join(filter(None, (
+                _bgp_text(value.get(key))
+                for key in ("code", "title", "message", "finding", "detail", "issue")
+            )))
+        return _bgp_text(value)
+
+    if bgp_valid:
+        bgp_active = [
+            row for row in bgp_rows
+            if str(row.get("activation") or "").strip().lower() == "active"
+        ]
+        bgp_established = sum(
+            str(row.get("status") or "").strip().lower() == "assessed" for row in bgp_rows
+        )
+        bgp_configured = sum(bool(str(row.get("configured_remote_as") or "").strip()) for row in bgp_rows)
+        bgp_by_status = Counter(str(row.get("status") or "").strip().lower() for row in bgp_rows)
+        bgp_degraded = bgp_by_status["degraded"]
+        bgp_review = bgp_by_status["review"]
+        bgp_unverified = bgp_by_status["not_verified"]
+        bgp_verdict = _bgp_text(bgp_baseline.get("verdict")) or "NOT ASSESSED"
+        bgp_custody = _bgp_text(bgp_baseline.get("projection_custody")) or "not verified"
+        bgp_summary = _as_dict(bgp_baseline.get("summary"))
+
+        def _bgp_summary_count(key, fallback):
+            value = bgp_summary.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else fallback
+
+        bgp_configured = _bgp_summary_count("n_configured_peers", bgp_configured)
+        bgp_active_count = _bgp_summary_count("n_active_peers", len(bgp_active))
+        bgp_established = _bgp_summary_count("n_established", bgp_established)
+        bgp_degraded = _bgp_summary_count("n_degraded", bgp_degraded)
+        bgp_review = _bgp_summary_count("n_review", bgp_review)
+        bgp_unverified = _bgp_summary_count("n_not_verified", bgp_unverified)
+        doc.add_paragraph(
+            "Configured BGP peer gate — default/global IPv4 unicast. "
+            f"Verdict: {bgp_verdict.upper()}. Across {bgp_configured} configured literal peers, "
+            f"{bgp_established} of {bgp_active_count} configured-active "
+            f"literal peers are Established. Peer rows: {bgp_degraded} degraded, "
+            f"{bgp_review} require review, and "
+            f"{bgp_unverified} are not verified. Receipt custody: {bgp_custody}. A configured-active "
+            "peer absent from a usable summary is a blocker. This does not validate VRFs, IPv6, "
+            "VPNv4/EVPN, peer groups/templates, dynamic peers, policy, routes, best path, RPKI, "
+            "convergence, freshness, interoperability, or cutover authorization. CLEAR applies only "
+            "to this bounded configured-peer denominator."
+        )
+        coverage_counts = bgp_coverage_census["by_coverage_status"]
+        coverage_copy = (
+            "Host coverage (distinct from peer rows): "
+            f"{bgp_coverage_census['n_hosts']} host(s) · "
+            f"{bgp_coverage_census['n_subject_hosts']} subject host(s) · coverage cells — "
+            f"{coverage_counts['degraded']} degraded, {coverage_counts['review']} review, "
+            f"{coverage_counts['not_verified']} not verified, "
+            f"{coverage_counts['assessed']} assessed, and "
+            f"{coverage_counts['not_applicable']} not applicable."
+        )
+        if bgp_verdict.upper() == "NOT_APPLICABLE":
+            coverage_copy += (
+                " NOT_APPLICABLE means no in-scope literal peer subject was identified; it is not "
+                "proof that BGP is absent or that configuration coverage is complete."
+            )
+        coverage_qualified = bool(
+            coverage_counts["degraded"]
+            or coverage_counts["review"]
+            or coverage_counts["not_verified"]
+            or bgp_verdict.upper() == "NOT_APPLICABLE"
+        )
+        coverage_paragraph = doc.add_paragraph()
+        coverage_run = coverage_paragraph.add_run(("⚠ " if coverage_qualified else "") + coverage_copy)
+        coverage_run.bold = coverage_qualified
+        if coverage_qualified:
+            coverage_run.font.color.rgb = RGBColor(0x7F, 0x60, 0x00)
+        bgp_blockers = [
+            row for row in bgp_rows
+            if str(row.get("status") or "").strip().lower() in {"degraded", "review", "not_verified"}
+        ]
+        if bgp_blockers:
+            doc.add_paragraph(
+                "Configured BGP peer blockers (all rendered; these rows are outside the ordinary "
+                "protocol display cap):"
+            )
+            table(
+                ["Status", "Device", "Peer", "Configured / runtime AS", "Runtime state",
+                 "Custody / source", "Acceptance / finding"],
+                [[
+                    _bgp_text(row.get("status")).replace("_", " ").upper(),
+                    _bgp_text(row.get("switch")),
+                    _bgp_text(row.get("peer")),
+                    f"{_bgp_text(row.get('configured_remote_as')) or '—'} / "
+                    f"{_bgp_text(row.get('runtime_remote_as')) or '—'}",
+                    _bgp_text(row.get("runtime_state")) or _bgp_text(row.get("runtime_state_raw")) or "—",
+                    f"{_bgp_text(row.get('projection_custody')) or bgp_custody} · "
+                    f"{_bgp_text(row.get('source_key')) or '—'}",
+                    "\n".join(filter(None, (
+                        _bgp_text(row.get("acceptance")), _bgp_findings(row.get("findings"))
+                    ))) or "—",
+                ] for row in bgp_blockers],
+                widths=[1.2, 1.4, 1.4, 1.5, 1.4, 2.4, 3.3],
+            )
+    else:
+        doc.add_paragraph(
+            "Configured BGP peer gate — default/global IPv4 unicast. Verdict: NOT ASSESSED. "
+            "Established/configured-active/degraded/review/not-verified counts are unavailable because "
+            "bgp_configured_peer_baseline/1 is absent or malformed. No configured-peer completeness or "
+            "health conclusion is asserted. The bounded gate excludes VRFs, IPv6, VPNv4/EVPN, peer "
+            "groups/templates, dynamic peers, policy, routes, best path, RPKI, convergence, freshness, "
+            "interoperability, and cutover authorization."
+        )
+
+    # Configured FHRP groups are a second denominator, distinct from the sparse runtime-health
+    # rows and from the configured BGP peer gate above. Coverage is host × subtype (HSRP, VRRP,
+    # GLBP), while group rows count concrete local group subjects; never alias those two units.
+    fhrp_baseline = _as_dict(snap_dict.get("fhrp_configured_group_baseline"))
+    fhrp_group_states = (
+        "degraded", "review", "not_verified", "assessed", "administratively_disabled",
+    )
+    fhrp_coverage_states = (
+        "degraded", "review", "not_verified", "assessed", "not_applicable",
+    )
+    fhrp_protocols = ("HSRP", "VRRP", "GLBP")
+
+    def _fhrp_counts(raw, vocabulary):
+        if not isinstance(raw, dict) or list(raw) != list(vocabulary):
+            return None
+        out = {}
+        for status in vocabulary:
+            count = raw.get(status)
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                return None
+            out[status] = count
+        return out
+
+    def _fhrp_view(receipt):
+        try:
+            from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
+
+            validated = validate_fhrp_configured_group_baseline(receipt)
+        except Exception:
+            return None
+        if not isinstance(validated, dict) or validated.get("valid") is not True:
+            return None
+        receipt = _as_dict(validated.get("baseline"))
+        summary = _as_dict(receipt.get("summary"))
+        rows, coverage = receipt.get("rows"), receipt.get("coverage")
+        if (
+            receipt.get("schema") != "fhrp_configured_group_baseline/1"
+            or _as_dict(receipt.get("scope")) != {
+                "routing_instance": "default", "afi": "ipv4", "group_kind": "direct_literal_local",
+            }
+            or not isinstance(rows, list) or not isinstance(coverage, list)
+        ):
+            return None
+        by_status = _fhrp_counts(summary.get("by_status"), fhrp_group_states)
+        by_coverage = _fhrp_counts(summary.get("by_coverage_status"), fhrp_coverage_states)
+        if by_status is None or by_coverage is None:
+            return None
+        safe_rows = [row for row in rows if isinstance(row, dict)]
+        safe_coverage = [row for row in coverage if isinstance(row, dict)]
+        if len(safe_rows) != len(rows) or len(safe_coverage) != len(coverage):
+            return None
+        row_counts = {status: 0 for status in fhrp_group_states}
+        identities = set()
+        for row in safe_rows:
+            identity = (row.get("switch"), row.get("protocol"), row.get("interface"), row.get("group"))
+            status = row.get("status")
+            if (
+                status not in row_counts or identity in identities
+                or not all(isinstance(part, str) and part for part in identity)
+                or row.get("protocol") not in fhrp_protocols
+            ):
+                return None
+            identities.add(identity)
+            row_counts[status] += 1
+        if row_counts != by_status:
+            return None
+        row_summary_expected = {
+            "n_configured_groups": sum(row.get("configured") is True for row in safe_rows),
+            "n_active_groups": sum(row.get("activation") == "active" for row in safe_rows),
+            "n_runtime_groups": sum(row.get("runtime_observed") is True for row in safe_rows),
+            "n_assessed": row_counts["assessed"],
+            "n_degraded": row_counts["degraded"],
+            "n_review": row_counts["review"],
+            "n_not_verified": row_counts["not_verified"],
+            "n_disabled": row_counts["administratively_disabled"],
+        }
+        if any(
+            not isinstance(summary.get(key), int)
+            or isinstance(summary.get(key), bool)
+            or summary.get(key) != value
+            for key, value in row_summary_expected.items()
+        ):
+            return None
+        coverage_counts = {status: 0 for status in fhrp_coverage_states}
+        keys, hosts, subject_hosts, subject_cells = set(), set(), set(), 0
+        for row in safe_coverage:
+            switch, protocol = row.get("switch"), row.get("protocol")
+            subject, status = row.get("subject"), row.get("status")
+            key = (switch, protocol)
+            if (
+                not isinstance(switch, str) or not switch or protocol not in fhrp_protocols
+                or key in keys or not isinstance(subject, bool) or status not in coverage_counts
+                or (subject and status == "not_applicable")
+            ):
+                return None
+            keys.add(key)
+            hosts.add(switch)
+            coverage_counts[status] += 1
+            if subject:
+                subject_cells += 1
+                subject_hosts.add(switch)
+        if coverage_counts != by_coverage:
+            return None
+        expected = {
+            "n_hosts": len(hosts), "n_coverage_cells": len(safe_coverage),
+            "n_subject_hosts": len(subject_hosts), "n_subject_cells": subject_cells,
+        }
+        if any(
+            not isinstance(summary.get(key), int) or isinstance(summary.get(key), bool)
+            or summary.get(key) != value for key, value in expected.items()
+        ) or (safe_coverage and len(safe_coverage) != len(hosts) * len(fhrp_protocols)):
+            return None
+        return {
+            "rows": safe_rows, "summary": summary, "by_status": by_status,
+            "by_coverage_status": by_coverage,
+        }
+
+    def _fhrp_text(value):
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            text = "yes" if value else "no"
+        elif isinstance(value, (str, int, float)):
+            text = str(value)
+        else:
+            return ""
+        return re.sub(
+            r"(?i)(\b(?:password|secret|community|authentication(?:\s+(?:text|md5))?|key-string)\b"
+            r"(?:\s+\d+)?\s+)([^\s,;]+)", r"\1[REDACTED]", text,
+        )
+
+    def _fhrp_findings(value):
+        if isinstance(value, list):
+            return "; ".join(filter(None, (_fhrp_findings(item) for item in value)))
+        if isinstance(value, dict):
+            return " — ".join(filter(None, (
+                _fhrp_text(value.get(key))
+                for key in ("code", "title", "message", "finding", "detail", "issue")
+            )))
+        return _fhrp_text(value)
+
+    fhrp_view = _fhrp_view(fhrp_baseline)
+    if fhrp_view:
+        fhrp_rows, fhrp_summary = fhrp_view["rows"], fhrp_view["summary"]
+        group_counts, coverage_counts = fhrp_view["by_status"], fhrp_view["by_coverage_status"]
+        fhrp_verdict = _fhrp_text(fhrp_baseline.get("verdict")) or "NOT ASSESSED"
+        fhrp_custody = _fhrp_text(fhrp_baseline.get("projection_custody")) or "not verified"
+        configured = fhrp_summary.get("n_configured_groups", sum(row.get("configured") is True for row in fhrp_rows))
+        active = fhrp_summary.get("n_active_groups", sum(row.get("activation") == "active" for row in fhrp_rows))
+        runtime = fhrp_summary.get("n_runtime_groups", sum(row.get("runtime_observed") is True for row in fhrp_rows))
+        doc.add_paragraph(
+            "Configured FHRP group gate — default/global IPv4 direct literal local groups. "
+            f"Verdict: {fhrp_verdict.upper()}. Group rows: {configured} configured, {active} configured-active, "
+            f"{runtime} runtime-observed, {group_counts['assessed']} assessed, {group_counts['degraded']} degraded, "
+            f"{group_counts['review']} review, {group_counts['not_verified']} not verified, and "
+            f"{group_counts['administratively_disabled']} administratively disabled. Receipt custody: "
+            f"{fhrp_custody}. A configured-active local group absent from usable subtype runtime evidence is "
+            "a blocker. CLEAR applies only to this bounded denominator. Excludes VRFs, IPv6, templates, "
+            "inheritance, dynamic constructs, secondary VIPs, expected member count, timers, authentication, "
+            "preemption, tracking behavior, simultaneous election, failover, convergence, freshness, "
+            "interoperability, and cutover authorization; NX-OS configured-group parsing is limited to "
+            "nested HSRP."
+        )
+        coverage_copy = (
+            "Host × subtype coverage (distinct from group rows): "
+            f"{fhrp_summary['n_hosts']} host(s) · {fhrp_summary['n_coverage_cells']} HSRP/VRRP/GLBP cell(s) · "
+            f"{fhrp_summary['n_subject_hosts']} subject host(s) · {fhrp_summary['n_subject_cells']} subject cell(s) · "
+            f"coverage cells — {coverage_counts['degraded']} degraded, {coverage_counts['review']} review, "
+            f"{coverage_counts['not_verified']} not verified, {coverage_counts['assessed']} assessed, and "
+            f"{coverage_counts['not_applicable']} not applicable."
+        )
+        if fhrp_verdict.upper() == "NOT_APPLICABLE":
+            coverage_copy += (
+                " NOT_APPLICABLE means no in-scope literal local group subject was identified; it is not "
+                "proof that FHRP is absent or that configuration coverage is complete."
+            )
+        qualified = bool(
+            coverage_counts["degraded"] or coverage_counts["review"]
+            or coverage_counts["not_verified"] or fhrp_verdict.upper() == "NOT_APPLICABLE"
+        )
+        run = doc.add_paragraph().add_run(("⚠ " if qualified else "") + coverage_copy)
+        run.bold = qualified
+        if qualified:
+            run.font.color.rgb = RGBColor(0x7F, 0x60, 0x00)
+        blockers = [
+            row for row in fhrp_rows
+            if str(row.get("status") or "").strip().lower() in {"degraded", "review", "not_verified"}
+        ]
+        if blockers:
+            doc.add_paragraph(
+                "Configured FHRP group blockers (all rendered; these rows are outside the ordinary "
+                "protocol display cap):"
+            )
+            table(
+                ["Status", "Device", "Subtype / local identity", "Configured / runtime VIP",
+                 "Runtime state", "Custody / source", "Acceptance / finding"],
+                [[
+                    _fhrp_text(row.get("status")).replace("_", " ").upper(),
+                    _fhrp_text(row.get("switch")),
+                    f"{_fhrp_text(row.get('protocol'))} {_fhrp_text(row.get('interface'))} "
+                    f"group {_fhrp_text(row.get('group'))}",
+                    f"{_fhrp_text(row.get('configured_vip')) or '—'} / "
+                    f"{_fhrp_text(row.get('runtime_vip')) or '—'}",
+                    _fhrp_text(row.get("runtime_state"))
+                    or _fhrp_text(row.get("runtime_state_raw")) or "—",
+                    f"{_fhrp_text(row.get('projection_custody')) or fhrp_custody} · "
+                    f"{_fhrp_text(row.get('source_key')) or '—'}",
+                    "\n".join(filter(None, (
+                        _fhrp_text(row.get("acceptance")), _fhrp_findings(row.get("findings"))
+                    ))) or "—",
+                ] for row in blockers],
+                widths=[1.0, 1.2, 2.0, 1.6, 1.4, 2.3, 3.2],
+            )
+    else:
+        doc.add_paragraph(
+            "Configured FHRP group gate — default/global IPv4 direct literal local groups. Verdict: NOT "
+            "ASSESSED. Group-row and host × subtype coverage counts are unavailable because "
+            "fhrp_configured_group_baseline/1 is absent or malformed. No configured-group completeness or "
+            "health conclusion is asserted. Absence of rows is not proof that FHRP is absent."
+        )
+
+    # The redundancy-domain owner is distinct from configured local-group truth:
+    # it joins every current normalized SVI member inside the exact observed IPv4
+    # VLAN/VRF/subnet. Persisted DOCX input must remain embedded-unverified.
+    fhrp_domain_input = _as_dict(snap_dict.get("fhrp_redundancy_domain_baseline"))
+    try:
+        from cisco_toolkit.fhrp_redundancy import (
+            validate_fhrp_redundancy_domain_baseline,
+        )
+
+        fhrp_domain_view = validate_fhrp_redundancy_domain_baseline(fhrp_domain_input)
+    except Exception:
+        fhrp_domain_view = {}
+    fhrp_domain_valid = (
+        isinstance(fhrp_domain_view, dict)
+        and fhrp_domain_view.get("valid") is True
+        and isinstance(fhrp_domain_view.get("baseline"), dict)
+        and fhrp_domain_view["baseline"].get("schema") == "fhrp_redundancy_domain_baseline/1"
+        and fhrp_domain_view["baseline"].get("projection_custody") == "embedded_unverified"
+        and isinstance(fhrp_domain_view.get("rows"), list)
+        and isinstance(fhrp_domain_view["baseline"].get("domains"), list)
+    )
+    if fhrp_domain_valid:
+        fhrp_domain_receipt = fhrp_domain_view["baseline"]
+        fhrp_domain_rows = [
+            row for row in fhrp_domain_view["rows"] if isinstance(row, dict)
+        ]
+        if len(fhrp_domain_rows) != len(fhrp_domain_view["rows"]):
+            fhrp_domain_valid = False
+    if fhrp_domain_valid:
+        fhrp_domain_source_valid = bool(
+            isinstance(fhrp_domain_receipt.get("source_receipt"), dict)
+            and fhrp_domain_receipt["source_receipt"].get("valid") is True
+        )
+        fhrp_domain_verdict = _fhrp_text(fhrp_domain_receipt.get("verdict")) or "NOT ASSESSED"
+        fhrp_domain_statuses = {
+            status: sum(str(row.get("status") or "") == status for row in fhrp_domain_rows)
+            for status in ("degraded", "review", "not_verified", "assessed")
+        }
+        doc.add_paragraph(
+            "FHRP redundancy-domain composition gate — exact observed IPv4 VLAN + normalized VRF + "
+            f"subnet. Verdict: {'NOT VERIFIED' if not fhrp_domain_source_valid else fhrp_domain_verdict.upper()}. "
+            f"{len(fhrp_domain_rows)} current normalized SVI member row(s) across "
+            f"{len(fhrp_domain_receipt['domains'])} observed domain(s): "
+            f"{fhrp_domain_statuses['degraded']} degraded, {fhrp_domain_statuses['review']} review, "
+            f"{fhrp_domain_statuses['not_verified']} not verified, and "
+            f"{fhrp_domain_statuses['assessed']} assessed. Receipt custody: embedded_unverified. "
+            "Candidate identity is subtype + group + virtual IP. Zero positive participation is REVIEW "
+            "because intended membership is unresolved, not a proven unprotected gateway or failure. "
+            "Matching unresolved composition is NOT ACCEPTANCE."
+        )
+        if not fhrp_domain_source_valid:
+            run = doc.add_paragraph().add_run(
+                "The closed owner receipt is structurally valid, but its current-run configured-group/SVI "
+                "source receipt is not verified. Zero published rows is not evidence of absence or complete "
+                "intent; re-collect both inputs before acceptance."
+            )
+            run.bold = True
+            run.font.color.rgb = RGBColor(0x7F, 0x60, 0x00)
+        if fhrp_domain_verdict.upper() == "NOT_APPLICABLE":
+            run = doc.add_paragraph().add_run(
+                "NOT_APPLICABLE means no subject was identified; it is not proof that FHRP is absent "
+                "or that intended membership is complete."
+            )
+            run.bold = True
+            run.font.color.rgb = RGBColor(0x7F, 0x60, 0x00)
+        doc.add_paragraph(
+            "Boundaries: current normalized in-scope SVI members and observed IPv4 domains only. "
+            "No expected/off-scan member count or identity, simultaneous roles, timers, authentication, "
+            "tracking, failover behavior, convergence, freshness, interoperability, or cutover "
+            "authorization is established."
+        )
+        domain_blockers = [
+            row for row in fhrp_domain_rows
+            if str(row.get("status") or "") in {"degraded", "review", "not_verified"}
+        ]
+        domain_ordinary = [
+            row for row in fhrp_domain_rows
+            if str(row.get("status") or "") not in {"degraded", "review", "not_verified"}
+        ]
+        domain_shown = domain_blockers + domain_ordinary[:50]
+        if domain_shown:
+            doc.add_paragraph(
+                "FHRP redundancy-domain members (every degraded, review, and not-verified row is "
+                "rendered outside the 50-row ordinary display cap):"
+            )
+            table(
+                ["Status", "Device / SVI", "Observed domain", "Participation / candidate",
+                 "Role", "Custody / source / command", "Acceptance / finding"],
+                [[
+                    _fhrp_text(row.get("status")).replace("_", " ").upper(),
+                    f"{_fhrp_text(row.get('switch'))} · {_fhrp_text(row.get('interface'))} · "
+                    f"{_fhrp_text(row.get('svi_ip'))}",
+                    f"VLAN {_fhrp_text(row.get('vlan'))} · VRF "
+                    f"{_fhrp_text(row.get('vrf')) or 'global'} · {_fhrp_text(row.get('subnet'))}",
+                    f"{_fhrp_text(row.get('participation')).replace('_', ' ').upper()} · "
+                    f"{_fhrp_text(row.get('candidate_key')) or 'no positive candidate'}",
+                    f"{_fhrp_text(row.get('protocol')) or '—'} group "
+                    f"{_fhrp_text(row.get('group')) or '—'} VIP "
+                    f"{_fhrp_text(row.get('virtual_ip')) or '—'} · "
+                    f"{_fhrp_text(row.get('role')) or '—'}",
+                    f"{_fhrp_text(row.get('projection_custody')) or 'embedded_unverified'} · "
+                    f"{_fhrp_text(row.get('source_key')) or '—'} · "
+                    f"{_fhrp_text(row.get('command')) or '—'}",
+                    "\n".join(filter(None, (
+                        _fhrp_text(row.get("acceptance")),
+                        _fhrp_findings(row.get("findings")),
+                    ))) or "—",
+                ] for row in domain_shown],
+                widths=[1.0, 1.9, 2.1, 2.0, 1.8, 2.8, 3.4],
+            )
+        if len(domain_ordinary) > 50:
+            doc.add_paragraph(
+                f"All {len(domain_blockers)} blocker row(s) are shown; 50 of "
+                f"{len(domain_ordinary)} ordinary row(s) are shown. Inspect the uncapped FHRP Domains "
+                "workbook sheet for the remainder."
+            )
+    else:
+        doc.add_paragraph(
+            "FHRP redundancy-domain composition gate — Verdict: NOT ASSESSED. "
+            "fhrp_redundancy_domain_baseline/1 is absent, malformed, or not an embedded-unverified "
+            "serialized receipt. No rejected receipt leaves, member counts, or domain-composition "
+            "conclusion are shown. Re-collect and validate the source evidence before acceptance."
+        )
+
+    if pa_valid:
+        pa_states = Counter(str(row.get("state") or "unknown") for row in pa_rows)
+        n_cells = len(pa_rows)
+        n_assessed = pa_states["assessed"]
+        n_partial = pa_states["partial"]
+        n_not_assessed = max(0, n_cells - n_assessed - n_partial)
+        n_health_rows = sum(bool(row.get("health_row_emitted")) for row in pa_rows)
+        doc.add_paragraph(
+            f"Runtime assessability: {n_health_rows} of {n_cells} device × protocol-family cells "
+            f"emitted a bounded health row; {n_assessed} assessed, {n_partial} partial, and "
+            f"{n_not_assessed} not assessable. Missing rows are never interpreted as healthy or as "
+            "proof that the protocol is absent. This receipt reports current-run collection/parser "
+            "reachability, not an expected-neighbor or configured-protocol denominator.")
+
+        family_order = [str(family.get("protocol") or "")
+                        for family in _R(passess.get("families"))]
+        if not family_order:
+            family_order = sorted({str(row.get("protocol") or "") for row in pa_rows})
+        family_rows = []
+        for protocol in family_order:
+            cells = [row for row in pa_rows if row.get("protocol") == protocol]
+            states = Counter(str(row.get("state") or "unknown") for row in cells)
+            partial = states["partial"]
+            assessed = states["assessed"]
+            not_assessed = max(0, len(cells) - assessed - partial)
+            family_rows.append([
+                protocol,
+                assessed,
+                partial,
+                not_assessed,
+                sum(bool(row.get("health_row_emitted")) for row in cells),
+            ])
+        table(["Protocol family", "Assessed", "Partial", "Not assessable", "Health rows"],
+              family_rows, widths=[1.5, 0.9, 0.9, 1.2, 1.0])
+
+        gaps = [row for row in pa_rows if row.get("state") != "assessed"]
+        if gaps:
+            doc.add_paragraph("Current-run protocol evidence gaps requiring collection or parser review:")
+            table(["State", "Switch", "Protocol", "Capture / input states"],
+                  [[str(row.get("state") or "").replace("_", " ").upper(),
+                    row.get("switch", ""), row.get("protocol", ""),
+                    "; ".join(f"{name}={value}" for name, value in
+                              _as_dict(row.get("input_states")).items())]
+                   for row in gaps[:18]], widths=[1.4, 1.8, 1.2, 3.8])
+            _disclose(doc, len(gaps), 18, "protocol evidence gap(s)",
+                      "Collection Completeness",
+                      "Use its Protocol assessability block. The family summary above counts the full "
+                      "receipt; each omitted gap remains "
+                      "not assessable until its stated capture is supplied.")
+    else:
+        doc.add_paragraph(
+            f"Runtime protocol assessability receipt unavailable ({len(phealth)} observed health "
+            "row(s) carried separately). Observed health rows or a lack of "
+            "advisories cannot establish device × family coverage; no fleet-wide protocol health "
+            "conclusion is asserted.")
+
+    # Keep the sparse observed-state evidence visible independently of advisory doctrine.  A
+    # family such as EIGRP can emit a useful presence-only health row while correctly emitting no
+    # protocol_intelligence advisory; hiding it made the runbook disagree with the workbook and
+    # snapshot.  Seed the bounded table with one severity-ranked row per observed family, then use
+    # the remaining budget for the next most severe rows, so a noisy family cannot crowd out all
+    # evidence from another family.
+    if phealth:
+        _ph_cap = 18
+        _ph_ranked = sorted(
+            phealth,
+            key=lambda row: (
+                _SEV_ORDER.get(row.get("severity"), 9),
+                str(row.get("protocol") or ""),
+                str(row.get("switch") or ""),
+            ),
+        )
+        _ph_family_first = []
+        _ph_remaining = []
+        _ph_seen_families = set()
+        for row in _ph_ranked:
+            family = str(row.get("protocol") or "Unknown")
+            if family not in _ph_seen_families:
+                _ph_seen_families.add(family)
+                _ph_family_first.append(row)
+            else:
+                _ph_remaining.append(row)
+        _ph_shown = (_ph_family_first + _ph_remaining)[:_ph_cap]
+        _ph_family_word = "family" if len(_ph_seen_families) == 1 else "families"
+        doc.add_paragraph(
+            f"Observed protocol health: {len(phealth)} current-run row(s) across "
+            f"{len(_ph_seen_families)} observed {_ph_family_word}. These are bounded observations; "
+            "Info means no supported issue was observed in that row, not fleet-wide protocol health.")
+
+        def _ph_text(value, width=180) -> str:
+            text = str(value or "").strip()
+            return textwrap.shorten(text, width=width, placeholder=" …") if text else "—"
+
+        table(["Severity", "Switch", "Protocol", "Observed summary", "Detail"],
+              [[row.get("severity", ""), row.get("switch", ""), row.get("protocol", ""),
+                _ph_text(row.get("summary")), _ph_text(row.get("detail"))]
+               for row in _ph_shown],
+              widths=[0.9, 1.7, 1.1, 3.2, 3.1])
+        _disclose(doc, len(phealth), len(_ph_shown), "observed protocol-health row(s)",
+                  "Protocol Health",
+                  "The bounded runbook table preserves at least one observed row per family before "
+                  "using its remaining row budget.")
+
     if pintel:
-        doc.add_heading("6.5 Protocol behaviour & remediation", level=2)
         n_high = sum(1 for r in pintel if r.get("severity") == "High")
         by_proto = sorted({r.get("protocol", "") for r in pintel})
         doc.add_paragraph(
@@ -1354,11 +2336,35 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                    for sc, pb in sorted(seen_sc.items())], widths=[1.3, 2.7, 2.7, 2.7])
 
     # 11.3 generated per-wave post-cutover verification plan (NEW-V3.23.143): the concrete checks +
-    # commands + expected good result (captured from the pre-cutover state) to run after each wave.
+    # commands + observed baseline / acceptance condition to run after each wave.
     vp = _as_dict(snap_dict.get("validation_plan"))
     vp_by_wave = _as_dict(vp.get("by_wave"))
     if vp_by_wave:
         vs = _as_dict(vp.get("summary"))
+
+        def _validation_blocker(it):
+            state = str(it.get("evidence_state") or "").strip().lower()
+            expected = str(it.get("expect") or "").strip().upper()
+            return state in {"degraded", "review", "not_verified"} or expected.startswith(
+                ("PRE-CUTOVER DEGRADED — BLOCKER:", "PRE-CUTOVER REVIEW — BLOCKER:",
+                 "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER:",
+                 "ROUTING BASELINE NOT VERIFIED — BLOCKER:",
+                 "ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:")
+            )
+
+        def _validation_acceptance(it):
+            acceptance = str(it.get("expect") or "")
+            state = str(it.get("evidence_state") or "").strip()
+            custody = str(it.get("projection_custody") or "").strip()
+            source = str(it.get("source_key") or "").strip()
+            if not (state or custody or source):
+                return acceptance
+            if custody == "embedded_unverified":
+                custody = "embedded_unverified (embedded projection; integrity unverified)"
+            evidence = (f"Evidence state: {state or '—'} | Projection custody: {custody or '—'} | "
+                        f"Source: {source or '—'}")
+            return acceptance + ("\n" if acceptance else "") + evidence
+
         # 'validation group(s)', not 'wave(s)': validation_plan.by_wave buckets are per move-group ("Group N",
         # the 3 groups with checks), a distinct unit from the sequenced wave_plan waves (the 9). Reserve 'wave'
         # for those; here the count is the validation-group count so the noun must match it.
@@ -1367,19 +2373,30 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             f"{vs.get('n_items', 0)} check(s) across {vs.get('n_waves', 0)} validation group(s) "
             # 'each wave's cutover' below is the RESERVED sense: cutover happens in the sequenced wave_plan
             # waves. Only the COUNT noun above is corrected (it counts validation groups, not waves).
-            f"({vs.get('n_high', 0)} High/Critical). After each wave's cutover run these and confirm the "
-            "result matches the 'Expect' column — it is the known-good output captured from the "
-            "pre-cutover state, so a deviation is a regression. Full detail is in the 'Cutover "
-            "Validation' workbook sheet.")
+            f"({vs.get('n_high', 0)} High/Critical). After each wave's cutover run these and compare the "
+            "result with the observed baseline / acceptance column. A PRE-CUTOVER DEGRADED row is a blocker "
+            "to resolve or explicitly risk-accept before the window; matching that degraded state after "
+            "cutover is not success. A PRE-CUTOVER REVIEW row is also a blocker and requires live simultaneous "
+            "verification. Any BASELINE NOT VERIFIED row is a blocker, not an acceptance target: re-collect "
+            "the protocol evidence or explicitly disposition the gap before the window. Evidence-bearing rows "
+            "name their evidence state, embedded-projection custody boundary, and source locator. Full detail "
+            "is in the 'Cutover Validation' workbook sheet.")
         for wave, vits in vp_by_wave.items():
-            vits = _R(vits)   # a per-group checklist that is a truthy non-list must not crash slicing/len
+            vits = [_as_dict(it) for it in _R(vits)]
+            # Evidence-state blockers are cutover gates, not optional detail. Keep every one outside the bounded
+            # 14-row allowance used for ordinary checks, then disclose only the ordinary rows that remain.
+            evidence_blockers = [it for it in vits if _validation_blocker(it)]
+            ordinary = [it for it in vits if not _validation_blocker(it)]
+            shown = evidence_blockers + ordinary[:14]
             doc.add_heading(f"Validation group: {wave}", level=3)
-            table(["Device", "Category", "Check", "Command", "Expect (good result)"],
-                  [[it.get("device"), it.get("category"), it.get("check"), it.get("command"), it.get("expect")]
-                   for it in vits[:14]], widths=[1.6, 1.1, 2.6, 2.2, 2.5])
-            if len(vits) > 14:
-                doc.add_paragraph(f"…and {len(vits) - 14} more check(s) for {wave} — see the 'Cutover "
-                                  "Validation' workbook sheet.")
+            table(["Device", "Category", "Check", "Command", "Observed baseline / acceptance"],
+                  [[it.get("device"), it.get("category"), it.get("check"), it.get("command"),
+                    _validation_acceptance(it)] for it in shown],
+                  widths=[1.6, 1.1, 2.6, 2.2, 2.5])
+            omitted = len(ordinary) - min(len(ordinary), 14)
+            if omitted:
+                doc.add_paragraph(f"…and {omitted} more ordinary check(s) for {wave} — see the 'Cutover "
+                                  "Validation' workbook sheet. Every evidence-state blocker is retained above.")
 
     # ===== 12. War-Room Decision Logic & Open Unknowns =====
     doc.add_heading("12. War-Room Decision Logic & Open Unknowns", level=1)

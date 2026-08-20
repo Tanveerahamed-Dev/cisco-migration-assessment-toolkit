@@ -1,0 +1,31 @@
+{
+  "intents": [
+    {
+      "id": "client-to-api",
+      "title": "Synthetic client to API over HTTPS",
+      "src": "192.0.2.10",
+      "dst": "198.51.100.20",
+      "protocol": "tcp",
+      "src_port": 49152,
+      "dst_port": 443,
+      "expected": "permit",
+      "return_required": true,
+      "required_mtu": 1500
+    },
+    {
+      "id": "guest-to-admin-denied",
+      "title": "Synthetic guest access denied at the policy boundary",
+      "src": "203.0.113.25",
+      "dst": "198.51.100.50",
+      "protocol": "tcp",
+      "src_port": 53000,
+      "dst_port": 22,
+      "expected": "deny",
+      "return_required": false,
+      "failure": {
+        "action": "fail_node",
+        "id": "edge-2"
+      }
+    }
+  ]
+}

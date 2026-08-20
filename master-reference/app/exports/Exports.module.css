@@ -1,0 +1,137 @@
+.dossierGrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dossier {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  min-width: 0;
+  padding: clamp(1rem, 2vw, 1.5rem);
+  scroll-margin-top: 1rem;
+}
+
+.dossier:target {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px rgb(79 209 197 / 0.14);
+}
+
+.dossier > header {
+  align-items: start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.dossier h3 {
+  font-size: 1.1rem;
+  margin: 0.45rem 0 0;
+}
+
+.dossier code {
+  color: var(--cyan);
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.decision {
+  color: var(--ink-soft);
+  line-height: 1.6;
+  min-height: 3.2em;
+}
+
+.dossier dl {
+  display: grid;
+  gap: 0;
+  margin: 1rem 0;
+}
+
+.dossier dl > div {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(115px, 0.34fr) minmax(0, 1fr);
+  padding: 0.72rem 0;
+}
+
+.dossier dt,
+.detailGrid h4 {
+  color: var(--ink-faint);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dossier dd {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dossier dd a,
+.detailGrid a {
+  color: var(--cyan);
+}
+
+.dossier details {
+  border-top: 1px solid var(--line);
+  padding-top: 0.9rem;
+}
+
+.dossier summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.detailGrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 1rem;
+}
+
+.detailGrid section {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 0.8rem;
+}
+
+.detailGrid h4 {
+  margin: 0 0 0.5rem;
+}
+
+.detailGrid ul,
+.detailGrid p {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.detailGrid p {
+  display: grid;
+  gap: 0.35rem;
+  padding-left: 0;
+}
+
+@media (max-width: 900px) {
+  .dossierGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .dossier dl > div,
+  .detailGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .decision {
+    min-height: 0;
+  }
+}

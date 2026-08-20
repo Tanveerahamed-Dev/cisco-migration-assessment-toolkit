@@ -3957,6 +3957,111 @@ _UNIVERSAL_ARCH_ADDENDUM = json.loads('[{"id": "aci-critical-fault-raised", "tit
 DOCTRINE.extend(_UNIVERSAL_ARCH_ADDENDUM)
 
 
+# Lifecycle disposition is deliberately three decisions, not one overloaded "EoL" principle.  A
+# Past-LDoS asset must leave the forwarding path now; a Near-LDoS asset needs a dated replacement
+# before its recorded deadline; a Past-EoS asset needs refresh planning while LDoS is still future.
+# Keeping those acceptance contracts separate prevents a planning-only band from inheriting the
+# Critical decision's immediate-removal NRFU.  Lifecycle dates never establish serial-numbered
+# support entitlement; that evidence remains a separate record.
+_LIFECYCLE_DISPOSITION_ADDENDUM = [
+    {
+        "id": "lifecycle-near-ldos-refresh-before-deadline",
+        "title": "Schedule Near-LDoS hardware replacement before the recorded support deadline",
+        "domain": "methodology",
+        "priority": "High",
+        "engine_actionable": True,
+        "design_intent": (
+            "Hardware within one year of its recorded Last Day of Support has a bounded change window. "
+            "Giving it a separately owned, dated refresh decision preserves time for procurement, staged "
+            "migration, and rollback instead of turning the LDoS date into an outage-driven flag day."
+        ),
+        "tradeoffs": (
+            "Earlier CapEx and migration effort versus a shrinking procurement and validation window; "
+            "deferral preserves budget briefly but raises deadline and change-concentration risk."
+        ),
+        "trigger": "A lifecycle_risk device is in the canonical Near-LDoS band.",
+        "observable": (
+            "Directly observable from lifecycle_risk.per_device[].band when the retained offline EoX "
+            "bulletin and its complete dates verify. The date band does not prove support entitlement."
+        ),
+        "recommended_action": (
+            "Assign an owner, approved target disposition, budget, and implementation window before the "
+            "recorded LDoS; verify exact PID/serial and any required contract entitlement separately."
+        ),
+        "alternatives": (
+            "A documented exception may retain the asset temporarily with explicit outage/spares exposure, "
+            "but it does not change the recorded lifecycle deadline."
+        ),
+        "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence",
+    },
+    {
+        "id": "lifecycle-past-eos-refresh-planning",
+        "title": "Place Past-EoS hardware in an owned refresh plan while recorded LDoS remains future",
+        "domain": "methodology",
+        "priority": "Medium",
+        "engine_actionable": True,
+        "design_intent": (
+            "End of Sale closes normal new-product ordering, but it is not Last Day of Support. Recording a "
+            "separate refresh disposition protects investment planning without falsely declaring the asset "
+            "unsupported or requiring immediate removal."
+        ),
+        "tradeoffs": (
+            "Planned refresh consumes future budget and engineering capacity; deferral may be reasonable "
+            "while LDoS remains future, but narrows sourcing and migration choices over time."
+        ),
+        "trigger": "A lifecycle_risk device is in the canonical Past-EoS band with recorded LDoS still future.",
+        "observable": (
+            "Directly observable from lifecycle_risk.per_device[].band when the retained offline EoX "
+            "bulletin and its complete dates verify. Neither the band nor device CLI proves entitlement."
+        ),
+        "recommended_action": (
+            "Record an owner, budget horizon, target disposition, and refresh date before recorded LDoS; "
+            "verify exact PID/serial and any required contract entitlement in separate evidence."
+        ),
+        "alternatives": (
+            "Retain as a carry-forward candidate only through an explicit, dated risk acceptance that is "
+            "reviewed against the approaching LDoS and available spares."
+        ),
+        "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk retained EoX evidence",
+    },
+    {
+        "id": "lifecycle-unknown-resolve-authority",
+        "title": "Resolve lifecycle authority before approving hardware carry-forward or procurement",
+        "domain": "methodology",
+        "priority": "Medium",
+        "engine_actionable": True,
+        "design_intent": (
+            "An Unknown band or a missing lifecycle row is a coverage gap, not a healthy asset. Exact model "
+            "identity and retained source/date authority must be resolved before the design can decide whether "
+            "to retain, refresh, or replace the device."
+        ),
+        "tradeoffs": (
+            "Closing inventory and evidence gaps costs discovery time; proceeding without it may understate "
+            "CapEx, retain obsolete hardware, or order against an incorrectly normalized platform."
+        ),
+        "trigger": (
+            "A fleet device has lifecycle_risk band Unknown, or the lifecycle axis emitted no row for an "
+            "inventoried device."
+        ),
+        "observable": (
+            "Directly observable from lifecycle_risk.per_device coverage against the device/collection census. "
+            "Unknown means no exact EoX row matched or the matched row's retained source/complete dates did not verify."
+        ),
+        "recommended_action": (
+            "Collect exact PID and serial and resolve normalization. Either match a verified dated bulletin, "
+            "or preserve a time-stamped authoritative EoX no-notice check with an owner, review date, and "
+            "contingency/risk acceptance; verify entitlement separately and keep no-notice assets Unknown."
+        ),
+        "alternatives": (
+            "Carry the device only as an explicit unknown with contingency budget and a dated evidence-closure "
+            "owner; do not classify it as Active or place it in a procurement bucket by subtraction."
+        ),
+        "citation": "Cisco Product Lifecycle Policy; engine lifecycle_risk coverage and provenance contract",
+    },
+]
+DOCTRINE.extend(_LIFECYCLE_DISPOSITION_ADDENDUM)
+
+
 
 # ---------------------------------------------------------------------------- coverage honesty
 # `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this

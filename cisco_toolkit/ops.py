@@ -205,18 +205,35 @@ def _known_issues(ev: dict) -> tuple:
     if lc_sum:
         n_ldos = lc_sum.get("n_past_ldos")
         n_eos = lc_sum.get("n_past_eos")
+        n_near = lc_sum.get("n_near")
         n_unk = lc_sum.get("n_unknown")
-        if n_ldos or n_eos:
+        if n_ldos:
             issues.append((
                 "Lifecycle Risk",
-                f"{n_ldos or 0} device(s) past last-date-of-support / {n_eos or 0} past end-of-sale — "
-                "no vendor bug/PSIRT remediation path until migrated.",
+                f"{n_ldos} device(s) past last-day-of-support — no standard vendor bug/PSIRT "
+                "remediation path until migrated.",
                 "(see Lifecycle Risk sheet)",
                 "Standing caveat until the fleet is migrated: an unfixable defect on a past-LDoS platform is "
                 "a when-not-if incident. Feed into budget and the migration wave order."))
-        elif not n_unk:
+        if n_near:
             issues.append((
-                "Lifecycle Risk", "No past-LDoS / past-EoS platform flagged at assessment.",
+                "Lifecycle Risk",
+                f"{n_near} device(s) are within one year of LDoS — the recorded replacement window "
+                "is finite; contract entitlement is not inferred.",
+                "(see Lifecycle Risk sheet)",
+                "Validate exact PID, LDoS date, replacement lead time, and any serial-numbered support "
+                "entitlement; schedule the refresh before the recorded deadline."))
+        if n_eos:
+            issues.append((
+                "Lifecycle Risk",
+                f"{n_eos} device(s) past end-of-sale with LDoS still future — plan refresh before the "
+                "recorded support-lifecycle deadline; contract entitlement is not inferred.",
+                "(see Lifecycle Risk sheet)",
+                "Validate exact PID, LDoS date, replacement lead time, and any serial-numbered support "
+                "entitlement; schedule the refresh before LDoS."))
+        if not n_ldos and not n_eos and not n_near and not n_unk:
+            issues.append((
+                "Lifecycle Risk", "No Past-LDoS, Near-LDoS, or Past-EoS platform flagged at assessment.",
                 "(fleet)", "Re-check EoX bands quarterly (§8); lifecycle status drifts as Cisco publishes notices."))
         # COVERAGE, not a clean bill — and an INDEPENDENT `if`, not an `elif` chained behind the
         # findings above. Subordinated, this fired only when the fleet had ZERO past-LDoS and ZERO
@@ -230,15 +247,16 @@ def _known_issues(ev: dict) -> tuple:
                 # Same source axis, so the same axis label: this is a SECOND row on the Lifecycle
                 # Risk axis, not a different axis. The register renders one row per fact.
                 "Lifecycle Risk",
-                f"{n_unk} device(s) have UNDETERMINED support status — no EoX bulletin in the "
-                "offline KB matched their platform, so no lifecycle band was assigned. This is not "
+                f"{n_unk} device(s) have UNDETERMINED support status — no authoritative lifecycle "
+                "band was assigned because either no exact EoX row matched or the matched row's "
+                "source/date authority was withheld. This is not "
                 "a clean result, and it is separate from whatever was found on the devices that "
                 "could be banded.",
                 "(see Lifecycle Risk sheet)",
                 "Resolve each undetermined platform against Cisco's EoX portal before relying on "
                 "this section; until then treat their support state as unknown, not supported."))
     else:
-        absent.append(("Lifecycle Risk (past-LDoS / past-EoS platforms)",
+        absent.append(("Lifecycle Risk (Past-LDoS / Near-LDoS / Past-EoS platforms)",
                        "re-run the assessment with a current engine to populate the hardware-lifecycle bands."))
 
     # -- qos_audit: doctrine gaps (a best-effort media fabric is a caveat) --

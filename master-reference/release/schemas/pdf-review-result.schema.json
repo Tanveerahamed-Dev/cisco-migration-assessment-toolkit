@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/pdf-review-result/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "purpose", "signature_verified", "family_integrity_verified", "pdf_subject_verified", "visual_review_complete", "visual_review_passed", "current_gate_promoted", "global_gate_closed", "release_family_mutated", "owner_manifest_signature_verified", "accessibility_review_established", "binary_privacy_review_established", "publication_authority_granted", "source_commit", "head_tree_oid", "index_digest", "source_tree_digest", "release_manifest_sha256", "family_attestation_sha256", "pdf_gate_sha256", "pdf_path", "pdf_sha256", "pdf_bytes", "pdf_page_count", "pdf_input_digest", "release_status", "publication_status", "family_independent_verification_verdict", "pdf_gate_status", "pdf_gate_independent_verification_verdict", "payload_sha256", "trust_policy_sha256", "signer_key_fingerprint", "render_profile_digest", "page_reviews_digest", "rendered_page_count", "reviewed_page_count", "passed_page_count", "blocked_page_count", "checks_digest", "review_evidence_sha256", "verification_boundary"],
+  "properties": {
+    "schema_version": {"const": "pdf-review-result/1"},
+    "status": {"enum": ["verified_visual_pass_not_promoted", "verified_visual_blocked_not_promoted"]},
+    "purpose": {"const": "pdf_visual_review"},
+    "signature_verified": {"const": true},
+    "family_integrity_verified": {"const": true},
+    "pdf_subject_verified": {"const": true},
+    "visual_review_complete": {"type": "boolean"},
+    "visual_review_passed": {"type": "boolean"},
+    "current_gate_promoted": {"const": false},
+    "global_gate_closed": {"const": false},
+    "release_family_mutated": {"const": false},
+    "owner_manifest_signature_verified": {"const": false},
+    "accessibility_review_established": {"const": false},
+    "binary_privacy_review_established": {"const": false},
+    "publication_authority_granted": {"const": false},
+    "source_commit": {"$ref": "#/$defs/gitOid"},
+    "head_tree_oid": {"$ref": "#/$defs/gitOid"},
+    "index_digest": {"$ref": "#/$defs/digest"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "release_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "family_attestation_sha256": {"$ref": "#/$defs/digest"},
+    "pdf_gate_sha256": {"$ref": "#/$defs/digest"},
+    "pdf_path": {"const": "master-reference.pdf"},
+    "pdf_sha256": {"$ref": "#/$defs/digest"},
+    "pdf_bytes": {"type": "integer", "minimum": 8, "maximum": 9007199254740991},
+    "pdf_page_count": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "pdf_input_digest": {"$ref": "#/$defs/digest"},
+    "release_status": {"const": "unsigned_preview_incomplete"},
+    "publication_status": {"const": "not_authorized"},
+    "family_independent_verification_verdict": {"const": "BLOCK"},
+    "pdf_gate_status": {"const": "generated_visual_review_pending"},
+    "pdf_gate_independent_verification_verdict": {"const": "BLOCK"},
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "trust_policy_sha256": {"$ref": "#/$defs/digest"},
+    "signer_key_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "render_profile_digest": {"$ref": "#/$defs/digest"},
+    "page_reviews_digest": {"$ref": "#/$defs/digest"},
+    "rendered_page_count": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "reviewed_page_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "passed_page_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "blocked_page_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "checks_digest": {"$ref": "#/$defs/digest"},
+    "review_evidence_sha256": {"$ref": "#/$defs/digest"},
+    "verification_boundary": {"const": "The signed full-document visual review is verified against one immutable generated PDF family. No current gate is promoted; owner-manifest signature, accessibility, binary privacy, global closure, recovery, and publication authority remain separate."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "verified_visual_pass_not_promoted"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "visual_review_complete": {"const": true},
+          "visual_review_passed": {"const": true},
+          "blocked_page_count": {"const": 0}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "verified_visual_blocked_not_promoted"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "visual_review_passed": {"const": false}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}
+  }
+}

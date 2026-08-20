@@ -63,6 +63,10 @@ def test_content_in_zero_out_is_recorded_with_attribution(tmp_path, ledger):
     assert ev["lines_in"] >= 3
     pp = rep["per_parser"]["probe_zero"]
     assert pp["calls"] == 1 and pp["with_content"] == 1 and pp["zero_yield"] == 1
+    assert rep["receipts"] == [{
+        "parser": "probe_zero", "device": "SW-CORE-01", "cmd": "show ip route",
+        "calls": 1, "with_entities": 0, "zero_yield": 1, "errors": 0,
+    }]
 
 
 def test_absent_capture_is_not_a_yield_event(ledger):
@@ -104,6 +108,7 @@ def test_entities_out_is_not_an_event(tmp_path, ledger):
     assert rep["summary"]["zero_yield_suspect"] == 0
     pp = rep["per_parser"]["probe_entities"]
     assert pp["calls"] == 1 and pp["with_content"] == 1 and pp["zero_yield"] == 0
+    assert rep["receipts"][0]["with_entities"] == 1
 
 
 def test_parser_exception_on_content_is_recorded_as_error_event(tmp_path, ledger):
@@ -242,7 +247,7 @@ def test_reset_clears_everything(tmp_path, ledger):
     cmdio._safe_parse(probe_zero, out)
     cmdio.reset_parse_ledger()
     rep = cmdio.parse_yield_report()
-    assert rep["events"] == [] and rep["per_parser"] == {}
+    assert rep["events"] == [] and rep["per_parser"] == {} and rep["receipts"] == []
     assert rep["summary"]["zero_yield_suspect"] == 0
 
 

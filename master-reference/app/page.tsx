@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { MasterReference } from "./MasterReference";
+import { OwnerCockpit } from "./atlas/OwnerCockpit";
 
 export const metadata: Metadata = {
   title: "Enhancements · Master Reference",
@@ -8,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function Home() {
-  return <MasterReference />;
+  return <OwnerCockpit />;
 }

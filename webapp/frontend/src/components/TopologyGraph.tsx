@@ -1,5 +1,5 @@
-import { lazy, Suspense, useMemo, useRef, useState } from "react";
-import { api, bandColor } from "../api";
+import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { api, bandColor, type TopologyGraphData, type TopologyNode } from "../api";
 import { shortName } from "./CableMap";
 import { ErrorBox, Loading, SkelLines, useAsync } from "./ui";
 
@@ -10,14 +10,14 @@ import { ErrorBox, Loading, SkelLines, useAsync } from "./ui";
 // The 3D fabric stays code-split: it pulls three.js + react-force-graph-3d (~750KB gzip), so it loads
 // only when the user toggles 3D. This SVG view stays the eager default + reduced-motion path.
 const Topology3D = lazy(() => import("./Topology3D"));
+const EMPTY_STRANDED: readonly string[] = [];
 
 interface Pos { x: number; y: number }
-export interface LaidNode {
-  id: string; band: string; score: number | null; role: string; degree: number; keystone: boolean;
+export interface LaidNode extends TopologyNode {
   x: number; y: number; lane: number;
 }
 export interface LaidEdge {
-  source: LaidNode; target: LaidNode; is_bridge: boolean; pairs_cut: number;
+  source: LaidNode; target: LaidNode; bridge_assessed: boolean; is_bridge: boolean; pairs_cut: number;
   a: Pos; b: Pos;   // stub anchors on the two chassis edges
 }
 export interface LaneMeta { key: string; label: string; count: number; top: number; height: number }
@@ -30,7 +30,7 @@ const ROLE_ORDER = ["core", "distribution", "access", "edge"];
  *  core → distribution → access → edge order (other roles after, unclassified last), barycenter-ordered
  *  within each lane to keep linked switches near each other, wrapped into rows of MAXROW at fleet
  *  scale, with per-link stub anchors on the facing chassis edges. Pure + exported for unit tests. */
-export function layout(raw: { nodes: any[]; edges: any[] }): {
+export function layout(raw: Pick<TopologyGraphData, "nodes" | "edges">): {
   nodes: LaidNode[]; links: LaidEdge[]; lanes: LaneMeta[]; W: number; H: number;
 } {
   const nodes: LaidNode[] = raw.nodes.map((n) => ({ ...n, x: 0, y: 0, lane: 0 }));
@@ -103,7 +103,14 @@ export function layout(raw: { nodes: any[]; edges: any[] }): {
   for (const e of raw.edges) {
     const s = byId.get(e.source), t = byId.get(e.target);
     if (!s || !t) continue;
-    links.push({ source: s, target: t, is_bridge: !!e.is_bridge, pairs_cut: Number(e.pairs_cut) || 0, a: { x: 0, y: 0 }, b: { x: 0, y: 0 } });
+    links.push({
+      source: s, target: t, bridge_assessed: e.bridge_assessed === true,
+      // `is_bridge` is not a verdict without its explicit assessment bit. Gate it here so every
+      // 2D consumer fails closed even if a legacy or inconsistent payload carries a stale `true`.
+      is_bridge: e.bridge_assessed === true && e.is_bridge === true,
+      pairs_cut: Number(e.pairs_cut) || 0,
+      a: { x: 0, y: 0 }, b: { x: 0, y: 0 },
+    });
   }
   type Slot = { l: LaidEdge; end: "a" | "b"; ox: number; oid: string };
   const slots = new Map<string, { top: Slot[]; bottom: Slot[] }>();
@@ -140,6 +147,83 @@ export function linkPath(l: LaidEdge): string {
 
 const unassessed = (n: { band: string }) => !n.band || n.band === "Insufficient Data";
 
+export interface FailureImpact {
+  /** Deterministic stand-in for the fabric's northbound/root attachment: best-connected assessed node, id tie-break. */
+  anchor: string | null;
+  baselineReachable: number;
+  failedWasReachable: boolean;
+  /** The removed device is itself the reference, so loss-of-reference is tautological, not impact. */
+  referenceFailed: boolean;
+  /** Nodes that lose their resolved path to `anchor` when `failed` is removed. */
+  stranded: string[];
+}
+
+/** Re-solve the resolved topology without one device.
+ *
+ * This intentionally reports the result *inside the observed graph*, not a real-world bound: an
+ * unobserved alternate link can shrink the set, while an uncollected downstream device can enlarge
+ * it. The caller must keep that uncertainty visible next to the count.
+ */
+export function counterfactualFailure(
+  raw: Pick<TopologyGraphData, "nodes" | "edges">,
+  failed: string,
+): FailureImpact {
+  const ids = new Set(raw.nodes.map((n) => n.id));
+  const adj = new Map<string, Set<string>>();
+  for (const id of ids) adj.set(id, new Set());
+  for (const e of raw.edges) {
+    if (!ids.has(e.source) || !ids.has(e.target) || e.source === e.target) continue;
+    adj.get(e.source)!.add(e.target);
+    adj.get(e.target)!.add(e.source);
+  }
+
+  const candidates = raw.nodes
+    .filter((n) => !unassessed(n))
+    .sort((a, b) => (adj.get(b.id)!.size - adj.get(a.id)!.size)
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const anchor = candidates[0]?.id ?? null;
+  if (anchor === null || !ids.has(failed)) {
+    return { anchor, baselineReachable: 0, failedWasReachable: false, referenceFailed: false, stranded: [] };
+  }
+
+  const reach = (skip: string | null): Set<string> => {
+    const seen = new Set<string>();
+    if (anchor === skip) return seen;
+    const queue = [anchor];
+    seen.add(anchor);
+    for (let i = 0; i < queue.length; i++) {
+      for (const next of adj.get(queue[i]) || []) {
+        if (next === skip || seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return seen;
+  };
+
+  const baseline = reach(null);
+  if (failed === anchor) {
+    return {
+      anchor,
+      baselineReachable: baseline.size,
+      failedWasReachable: true,
+      referenceFailed: true,
+      stranded: [],
+    };
+  }
+  const after = reach(failed);
+  const stranded = [...baseline]
+    .filter((id) => id !== failed && !after.has(id))
+    .sort((a, b) => a.localeCompare(b));
+  return {
+    anchor,
+    baselineReachable: baseline.size,
+    failedWasReachable: baseline.has(failed),
+    referenceFailed: false,
+    stranded,
+  };
+}
+
 export default function TopologyGraph({ snapId }: { snapId: number }) {
   const g = useAsync(() => api.graph(snapId), [snapId]);
   const [linkedOnly, setLinkedOnly] = useState(false);
@@ -152,19 +236,37 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   const [opened3d, setOpened3d] = useState(false);
   const [t, setT] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const previousSnap = useRef(snapId);
+  // This component stays at one tree position while Snapshot changes ids. Clear snapshot-specific
+  // interaction before paint so a stale selection cannot fade the next graph or auto-run a failure.
+  useLayoutEffect(() => {
+    if (previousSnap.current === snapId) return;
+    previousSnap.current = snapId;
+    setHover(null);
+    setSel(null);
+    setT({ x: 0, y: 0, k: 1 });
+    drag.current = null;
+  }, [snapId]);
 
   const model = useMemo(() => {
     if (!g.data) return null;
     if (!linkedOnly) return g.data;
     // Coverage-honest declutter (CableMap's "Fabric only" sibling): hide only link-less switches,
     // always disclosing the count — hidden is hidden, never silently absent.
-    const keep = new Set(g.data.nodes.filter((n: any) => n.degree > 0).map((n: any) => n.id));
+    const keep = new Set(g.data.nodes.filter((n) => n.degree > 0).map((n) => n.id));
     return {
-      nodes: g.data.nodes.filter((n: any) => keep.has(n.id)),
-      edges: g.data.edges.filter((e: any) => keep.has(e.source) && keep.has(e.target)),
+      ...g.data,
+      nodes: g.data.nodes.filter((n) => keep.has(n.id)),
+      edges: g.data.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
     };
   }, [g.data, linkedOnly]);
   const view = useMemo(() => (model ? layout(model) : null), [model]);
+  const impact = useMemo(
+    () => (sel && g.data ? counterfactualFailure(g.data, sel) : null),
+    [g.data, sel],
+  );
+  const stranded = useMemo(() => new Set(impact?.stranded || []), [impact]);
+  const failureVisible = !!(sel && impact && impact.anchor !== null && impact.failedWasReachable && !impact.referenceFailed);
   // Port stubs, indexed once per layout. This used to be a `view.links.flatMap(...)` INSIDE the
   // per-node render map — O(nodes x links) on EVERY render, and this component re-renders on every
   // mousemove of a pan-drag (setT) and on every chassis hover (setHover). At fleet scale (~300
@@ -185,7 +287,15 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   if (g.error) return <ErrorBox msg={g.error} />;
   if (!g.data || !g.data.nodes.length || !view)
     return <div className="faint" style={{ fontSize: 13 }}>No topology to draw.</div>;
-  const nUnlinked = g.data.nodes.filter((n: any) => !n.degree).length;
+  const nUnlinked = g.data.nodes.filter((n) => !n.degree).length;
+  const nAssessedEdges = g.data.edges.filter((e) => e.bridge_assessed === true).length;
+  const nUnassessedEdges = g.data.edges.length - nAssessedEdges;
+  const centralityDeclared = g.data.link_centrality_assessed === true;
+  const assessmentIncomplete = g.data.edges.length > 0 && (!centralityDeclared || nUnassessedEdges > 0);
+  // Runtime guard preserves coverage honesty against an older backend that predates this field.
+  const offscanPeers = Array.isArray(g.data.offscan_peers)
+    ? g.data.offscan_peers.filter((p): p is string => typeof p === "string" && !!p.trim())
+    : [];
   // NOT-OBSERVED, never "no SPOFs here". A fleet drawn with ZERO links is not evidence of an
   // unlinked estate: /graph resolves a CDP neighbour by matching a CANONICALISED (lower-cased,
   // domain-stripped) name against the RAW snapshot hostnames, so an estate whose hostnames are not
@@ -203,8 +313,10 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       if (e.target.id === focus) neighbors.add(e.source.id);
     }
   }
-  const dim = (id: string) => (focus ? !neighbors.has(id) : false);
-  const selNode = sel ? view.nodes.find((n) => n.id === sel) ?? g.data.nodes.find((n: any) => n.id === sel) : null;
+  const dim = (id: string) => failureVisible
+    ? id !== sel && !stranded.has(id)
+    : (focus ? !neighbors.has(id) : false);
+  const selNode = sel ? view.nodes.find((n) => n.id === sel) ?? g.data.nodes.find((n) => n.id === sel) : null;
   const selDeg = sel ? view.links.filter((e) => e.source.id === sel || e.target.id === sel).length : 0;
 
   const onWheel = (e: React.WheelEvent) => {
@@ -231,7 +343,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   );
 
   const selPanel = (glass: boolean) => selNode && (
-    <div style={{ position: "absolute", top: 10, right: 10, background: glass ? "color-mix(in srgb, var(--surface) 80%, transparent)" : "var(--surface)", backdropFilter: glass ? "blur(12px)" : undefined, border: "1px solid var(--border-strong)", borderRadius: 9, padding: "10px 13px", boxShadow: "var(--shadow)", maxWidth: 240, fontSize: 12 }}>
+    <div style={{ position: "absolute", top: 10, right: 10, background: glass ? "color-mix(in srgb, var(--surface) 80%, transparent)" : "var(--surface)", backdropFilter: glass ? "blur(12px)" : undefined, border: "1px solid var(--border-strong)", borderRadius: 9, padding: "10px 13px", boxShadow: "var(--shadow)", maxWidth: 300, fontSize: 12 }}>
       <div className="row-flex" style={{ gap: 8, marginBottom: 6 }}>
         <span className="sw" style={{ width: 11, height: 11, borderRadius: 3, background: bandColor(selNode.band || "") }} />
         <b className="mono" style={{ fontSize: 14 }}>{selNode.id}</b>
@@ -239,6 +351,28 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       <div className="dim">Band: <b style={{ color: "var(--text)" }}>{selNode.band || "—"}</b> · score {selNode.score ?? "—"}/100</div>
       <div className="dim">Role: {selNode.role || "—"}</div>
       <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"}{selNode.keystone ? " · keystone" : ""}</div>
+      <div data-testid="topology-failure-impact" style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)", lineHeight: 1.35 }}>
+        {!impact?.anchor ? (
+          <span style={{ color: "var(--crit)" }}><b>[NOT ASSESSED]</b> No assessed device is available as the failure-analysis anchor.</span>
+        ) : impact.referenceFailed ? (
+          <span style={{ color: "var(--crit)" }}>
+            <b>[REFERENCE ANCHOR SELECTED]</b> <span className="mono">{impact.anchor}</span> is the comparison reference (the best-connected assessed device), so deleting it makes loss of that reference tautological; no failure-impact count is claimed.
+          </span>
+        ) : !impact.failedWasReachable ? (
+          <span style={{ color: "var(--text-dim)" }}>
+            <b>[OUTSIDE BASELINE]</b> This device was not reachable from anchor <span className="mono">{impact.anchor}</span> before failure; no counterfactual is claimed.
+          </span>
+        ) : (
+          <>
+            <div style={{ color: impact.stranded.length ? "var(--crit)" : "var(--text)" }}>
+              <b>{impact.stranded.length}</b> baseline-reached device{impact.stranded.length === 1 ? "" : "s"} lose{impact.stranded.length === 1 ? "s" : ""} the resolved path to reference anchor <span className="mono">{impact.anchor}</span> (the best-connected assessed device) if this device fails.
+            </div>
+            <div className="faint" style={{ marginTop: 4 }}>
+              Resolved-topology result, not a fleet-wide bound: an unobserved alternate link can shrink it; an uncollected downstream device can enlarge it.
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 
@@ -251,6 +385,28 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
 
   return (
     <div>
+      {assessmentIncomplete && (
+        <div className="panel" role="status" data-testid="topology-assessment-gap"
+          style={{ padding: "8px 12px", marginBottom: 10, borderColor: "var(--crit)", fontSize: 12 }}>
+          <b style={{ color: "var(--crit)" }}>
+            [{nAssessedEdges ? "PARTIAL ASSESSMENT" : "NOT ASSESSED"}] — explicit per-link single-point evidence is present for {nAssessedEdges} of {g.data.edges.length} resolved links{centralityDeclared ? "." : "; graph-level assessment evidence is absent."}
+          </b>{" "}
+          <span className="dim">
+            Dashed links are discovered connections whose redundancy was not measured. They are not healthy or redundant verdicts.
+          </span>
+        </div>
+      )}
+      {offscanPeers.length > 0 && (
+        <div className="panel" role="status" data-testid="topology-offscan-gap"
+          style={{ padding: "8px 12px", marginBottom: 10, borderColor: "var(--crit)", fontSize: 12 }}>
+          <b style={{ color: "var(--crit)" }}>
+            [PARTIAL TOPOLOGY] — {offscanPeers.length} discovered peer{offscanPeers.length === 1 ? " was" : "s were"} outside this snapshot and {offscanPeers.length === 1 ? "is" : "are"} not drawn.
+          </b>{" "}
+          <span className="dim">
+            Missing devices can hide additional paths or failure impact. Observed: {offscanPeers.slice(0, 4).map((p) => p.length > 48 ? `${p.slice(0, 45)}…` : p).join(", ")}{offscanPeers.length > 4 ? `, +${offscanPeers.length - 4} more` : ""}.
+          </span>
+        </div>
+      )}
       {noLinks && (
         <div className="panel" role="status" style={{ padding: "8px 12px", marginBottom: 10, borderColor: "var(--crit)", fontSize: 12 }}>
           <b style={{ color: "var(--crit)" }}>[NOT OBSERVED] — no inter-switch link resolved for any of the {g.data.nodes.length} switches.</b>{" "}
@@ -266,7 +422,9 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
           {legendBands.map((b) => (
             <span className="item" key={b}><span className="sw" style={{ background: bandColor(b) }} /> {b}</span>
           ))}
-          <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px solid var(--crit)", display: "inline-block" }} /> single point of failure</span>
+          {nAssessedEdges > 0 && <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px solid var(--crit)", display: "inline-block" }} /> assessed single point of failure</span>}
+          {nUnassessedEdges > 0 && <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px dashed var(--text)", display: "inline-block" }} /> redundancy not assessed</span>}
+          {failureVisible && <span className="item"><span style={{ width: 16, height: 0, borderTop: "3px dashed var(--crit)", display: "inline-block" }} /> selected failure — loses path to {impact!.anchor}</span>}
           <span className="item"><span style={{ width: 9, height: 9, background: "var(--accent)", transform: "rotate(45deg)", display: "inline-block" }} /> keystone</span>
         </div>
         <div className="row-flex" style={{ gap: 8 }}>
@@ -296,6 +454,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
         <div className="tabfade" style={{ position: "relative", display: mode === "3d" ? undefined : "none" }}>
           <Suspense fallback={<div style={{ height: 480, display: "grid", placeItems: "center", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)" }}><Loading label="Loading 3D engine…" /></div>}>
             <Topology3D raw={model!} sel={sel} hover={hover} active={mode === "3d"}
+              failureAnchor={failureVisible ? impact?.anchor ?? null : null} stranded={impact?.stranded ?? EMPTY_STRANDED}
               onPick={(id) => setSel((s) => (s === id ? null : id))} onHover={setHover} />
           </Suspense>
           {selPanel(true)}
@@ -324,28 +483,49 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
             ))}
             {/* links (under the chassis) */}
             {view.links.map((e, i) => {
-              const lit = focus ? (e.source.id === focus || e.target.id === focus) : false;
-              const faded = focus && !lit;
+              const failureEdge = failureVisible && !!sel && (
+                e.source.id === sel || e.target.id === sel
+                || (stranded.has(e.source.id) && stranded.has(e.target.id))
+              );
+              // Valid failure analysis highlights removed/stranded paths. A fail-closed selection
+              // (reference anchor or outside baseline) falls back to ordinary neighbor focus so it
+              // does not dim every link while the panel says no counterfactual was claimed.
+              const lit = failureVisible
+                ? failureEdge
+                : !!focus && (e.source.id === focus || e.target.id === focus);
+              const faded = !!focus && !lit;
+              const notAssessed = !e.bridge_assessed;
               return (
                 <path key={i} d={linkPath(e)} fill="none"
-                  stroke={e.is_bridge ? "var(--crit)" : "var(--border-strong)"}
-                  strokeWidth={lit ? 3 : e.is_bridge ? 1.8 + Math.min(1.6, e.pairs_cut * 0.2) : 1.4}
-                  strokeOpacity={faded ? 0.1 : e.is_bridge ? 0.75 : 0.55} strokeLinecap="round" />
+                  stroke={failureEdge || e.is_bridge ? "var(--crit)" : notAssessed ? "var(--text)" : "var(--border-strong)"}
+                  strokeWidth={lit ? 3 : e.is_bridge ? 1.8 + Math.min(1.6, e.pairs_cut * 0.2) : notAssessed ? 2 : 1.4}
+                  strokeOpacity={faded ? 0.1 : failureEdge ? 0.9 : e.is_bridge ? 0.75 : notAssessed ? 0.85 : 0.55}
+                  strokeDasharray={failureEdge ? "3 3" : notAssessed ? "7 4" : undefined}
+                  strokeLinecap="round">
+                  <title>{failureEdge
+                    ? "Path removed or stranded in the selected-device failure counterfactual"
+                    : e.is_bridge ? "Assessed single point of failure"
+                    : notAssessed ? "Redundancy not assessed — discovered link, not a healthy verdict"
+                    : "Assessed non-bridge link"}</title>
+                </path>
               );
             })}
             {/* switch chassis */}
             {view.nodes.map((n) => {
               const faded = dim(n.id);
               const na = unassessed(n);
+              const isStranded = failureVisible && stranded.has(n.id);
               const stubs = stubsByNode.get(n.id) || [];
               return (
                 <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: "pointer", opacity: faded ? 0.25 : 1 }}
                   onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}
                   onClick={() => setSel((s) => (s === n.id ? null : n.id))}>
                   <rect x={-NW / 2} y={-NH / 2} rx={9} width={NW} height={NH}
-                    fill={na ? "var(--surface)" : `color-mix(in srgb, var(--surface) 86%, ${bandColor(n.band)})`}
-                    stroke={sel === n.id ? "var(--accent)" : na ? "var(--text-faint)" : "var(--border-strong)"}
-                    strokeWidth={sel === n.id ? 2.4 : 1.5} strokeDasharray={na && sel !== n.id ? "4 4" : undefined} />
+                    fill={isStranded ? "color-mix(in srgb, var(--surface) 72%, var(--crit))" : na ? "var(--surface)" : `color-mix(in srgb, var(--surface) 86%, ${bandColor(n.band)})`}
+                    stroke={sel === n.id ? "var(--accent)" : isStranded ? "var(--crit)" : na ? "var(--text-faint)" : "var(--border-strong)"}
+                    strokeWidth={sel === n.id ? 2.4 : isStranded ? 2.2 : 1.5} strokeDasharray={na && sel !== n.id ? "4 4" : undefined}>
+                    {isStranded && <title>Loses its resolved path to {impact!.anchor} if {sel} fails</title>}
+                  </rect>
                   <circle cx={-NW / 2 + 13} cy={-NH / 2 + 13} r={5} fill={bandColor(n.band || "")} stroke="var(--surface)" strokeWidth={1.5}>
                     <title>{n.band || "[NOT OBSERVED]"}</title>
                   </circle>
@@ -374,8 +554,8 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       )}
       <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
         {view.nodes.length} switches · {view.links.length} links · {mode === "3d"
-          ? "true-3D fabric — drag to orbit, scroll to zoom, click a switch to focus."
-          : "role-tiered fabric — click a switch to trace its blast radius · scroll to zoom, drag to pan."}
+          ? "true-3D fabric — drag to orbit, scroll to zoom, click a switch to simulate failure."
+          : "role-tiered fabric — click a switch to simulate failure · scroll to zoom, drag to pan."}
       </div>
     </div>
   );

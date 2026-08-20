@@ -13,8 +13,11 @@ _REQUIRED = {
     "COLLECT_PARSE_V3_23_0.py": "def main(): pass\n",
     "cisco_toolkit/__init__.py": "\n",
     "cisco_toolkit/blast_radius_explorer.html": "<!doctype html>\n",
+    "cisco_toolkit/data/eol-bulletins.json": "synthetic-eol-evidence",
     "cisco_toolkit/data/oui_registry.tsv.gz": "synthetic-oui-pack",
     "cisco_toolkit/data/port_registry.tsv.gz": "synthetic-port-pack",
+    "cisco_toolkit/data/registry_manifest.json": "{}\n",
+    "cisco_toolkit/data/traffic-intents.example.json": '{"intents": []}\n',
     "webapp/backend/__init__.py": "\n",
     "cisco_migration_assessment_toolkit-3.31.0.dist-info/METADATA": "Name: test\n",
     "cisco_migration_assessment_toolkit-3.31.0.dist-info/WHEEL": "Wheel-Version: 1.0\n",
@@ -77,8 +80,11 @@ def test_client_generated_or_unexpected_members_are_rejected(tmp_path: Path, mem
     (
         "COLLECT_PARSE_V3_23_0.py",
         "cisco_toolkit/blast_radius_explorer.html",
+        "cisco_toolkit/data/eol-bulletins.json",
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
+        "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
     ),
 )
 def test_required_runtime_assets_cannot_silently_disappear(tmp_path: Path, required: str) -> None:

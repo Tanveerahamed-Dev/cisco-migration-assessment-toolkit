@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { bandColor } from "../api";
+import { bandColor, type TopologyGraphData } from "../api";
 import { Loading } from "./ui";
 
 // This whole module is lazy-imported by TopologyGraph, so neither three.js nor the graph engine
@@ -10,6 +10,9 @@ const ForceGraph3D = lazy(() => import("react-force-graph-3d")) as unknown as Co
 
 const reduceMotion = () =>
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+const isAssessedBridge = (link: any) =>
+  link.bridge_assessed === true && link.is_bridge === true;
 
 /* Resolve the design-token colours (CSS `var(--…)`) to concrete rgb() strings WebGL can use,
    re-resolving whenever the theme flips. Same band vocabulary as the SVG view. */
@@ -28,7 +31,7 @@ function useThemeColors() {
     const get = (expr: string) => { probe.style.color = ""; probe.style.color = expr; return getComputedStyle(probe).color || "#888"; };
     const bands: Record<string, string> = {};
     for (const b of BANDS) bands[b] = get(bandColor(b));
-    const out = { bg: get("var(--surface-2)"), crit: get("var(--crit)"), edge: get("var(--border-strong)"), accent: get("var(--accent)"), faint: get("var(--text-faint)"), bands };
+    const out = { bg: get("var(--surface-2)"), crit: get("var(--crit)"), edge: get("var(--border-strong)"), accent: get("var(--accent)"), text: get("var(--text)"), faint: get("var(--text-faint)"), bands };
     document.body.removeChild(probe);
     return out;
   }, [tick]);
@@ -93,11 +96,13 @@ export function topoNodeLabel(n: any): string {
    The parent keeps this mounted once opened and flips `active`: while inactive (hidden behind
    display:none) the engine's rAF loop is PAUSED, so a hidden fabric costs zero frames but keeps
    its camera pose, settled layout and WebGL context for an instant, coherent return. */
-export default function Topology3D({ raw, sel, hover, active, onPick, onHover }: {
-  raw: { nodes: any[]; edges: any[] };
+export default function Topology3D({ raw, sel, hover, active, failureAnchor, stranded, onPick, onHover }: {
+  raw: Pick<TopologyGraphData, "nodes" | "edges">;
   sel: string | null;
   hover: string | null;
   active: boolean;
+  failureAnchor: string | null;
+  stranded: readonly string[];
   onPick: (id: string | null) => void;
   onHover: (id: string | null) => void;
 }) {
@@ -105,6 +110,8 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
   const fg = useRef<any>(null);
   const [dim, setDim] = useState({ w: 840, h: 480 });
   const colors = useThemeColors();
+  const strandedSet = useMemo(() => new Set(stranded), [stranded]);
+  const failureActive = !!sel && failureAnchor !== null;
 
   useEffect(() => {
     if (!wrap.current) return;
@@ -156,15 +163,16 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
     (n: any) => switchMesh(colors.bands[n.band] ?? colors.faint, n.degree ?? 0, (n.degree ?? 0) >= 4 || !!n.keystone),
     [colors]);
 
-  /* Neighbor-aware dim, IDENTICAL semantics to the 2D view (focus = sel ?? hover; the focus node
-     and its direct neighbors stay full, everything else drops to opacity .25; the selected
-     chassis additionally glows brighter — the 3D analogue of 2D's accent stroke). Applied by
+  /* Failure-aware emphasis, identical to the 2D view: a valid selected-device counterfactual keeps
+     the failed device + stranded nodes full and fades the unaffected fabric. Hover (and selections
+     outside the anchor baseline) retains the direct-neighbor focus behavior. Stranded chassis get
+     a red emissive/port treatment while retaining their health-band body tint. Applied by
      mutating the already-built materials via the library's node.__threeObj back-reference —
      never by swapping the mesh factory, which would trigger the full-fleet rebuild above. */
   const applyDim = useCallback(() => {
     const focus = sel ?? hover;
     const nbrs = new Set<string>();
-    if (focus) {
+    if (focus && !failureActive) {
       nbrs.add(focus);
       for (const e of raw.edges) {
         if (e.source === focus) nbrs.add(e.target);
@@ -176,7 +184,8 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
       const obj: THREE.Object3D | undefined = n.__threeObj;
       if (!obj) continue;
       touched = true;
-      const faded = focus ? !nbrs.has(n.id) : false;
+      const isStranded = failureActive && strandedSet.has(n.id);
+      const faded = failureActive ? n.id !== sel && !isStranded : (focus ? !nbrs.has(n.id) : false);
       obj.traverse((o: any) => {
         const m = o.material;
         if (!m) return;
@@ -184,17 +193,29 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
         m.opacity = faded ? 0.25 : 1;
       });
       const chassis: any = obj.children?.[0];
-      if (chassis?.material?.emissiveIntensity !== undefined)
-        chassis.material.emissiveIntensity = n.id === sel ? 0.55 : 0.2;
+      const restingColor = colors.bands[n.band] ?? colors.faint;
+      if (chassis?.material?.emissiveIntensity !== undefined) {
+        chassis.material.emissive.set(isStranded ? colors.crit : restingColor);
+        chassis.material.emissiveIntensity = isStranded ? 0.75 : n.id === sel ? 0.55 : 0.2;
+      }
+      const ports: any = obj.children?.[1];
+      if (ports?.material?.color) ports.material.color.set(isStranded ? colors.crit : restingColor);
     }
     return touched;
-  }, [sel, hover, raw, graphData]);
+  }, [sel, hover, failureActive, strandedSet, raw, graphData, colors]);
 
   // Re-apply on state change; the engine-tick hook below covers the window before the library
   // has attached __threeObj (fresh mount, or a graphData swap that rebuilt every node).
   const dimInit = useRef(false);
   useEffect(() => { dimInit.current = false; }, [graphData]);
   useEffect(() => { applyDim(); }, [applyDim, colors, active]);
+
+  const isFailureLink = useCallback((link: any) => {
+    if (!failureActive || !sel) return false;
+    const endpoint = (value: any) => typeof value === "string" ? value : value?.id;
+    const source = endpoint(link.source), target = endpoint(link.target);
+    return source === sel || target === sel || (strandedSet.has(source) && strandedSet.has(target));
+  }, [failureActive, sel, strandedSet]);
 
   return (
     <div ref={wrap} style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--surface-2)", boxShadow: "var(--shadow)" }}>
@@ -216,13 +237,19 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
             if (!activeRef.current) { fg.current?.pauseAnimation?.(); return; }
             if (!dimInit.current) dimInit.current = applyDim();
           }}
-          linkColor={(l: any) => (l.is_bridge ? colors.crit : colors.edge)}
-          linkWidth={(l: any) => (l.is_bridge ? 1.4 : 0.4)}
-          linkOpacity={0.5}
-          linkDirectionalParticles={(l: any) => (reduceMotion() ? 0 : l.is_bridge ? 4 : manyLinks ? 0 : 2)}
-          linkDirectionalParticleWidth={(l: any) => (l.is_bridge ? 2.4 : 1.2)}
-          linkDirectionalParticleSpeed={(l: any) => (l.is_bridge ? 0.012 : 0.006)}
-          linkDirectionalParticleColor={(l: any) => (l.is_bridge ? colors.crit : colors.accent)}
+          linkColor={(l: any) => failureActive
+            ? (isFailureLink(l) ? colors.crit : colors.faint)
+            : (isAssessedBridge(l) ? colors.crit : l.bridge_assessed === true ? colors.edge : colors.text)}
+          linkWidth={(l: any) => failureActive
+            ? (isFailureLink(l) ? 2 : 0.25)
+            : (isAssessedBridge(l) ? 1.4 : l.bridge_assessed === true ? 0.4 : 0.9)}
+          linkOpacity={0.58}
+          linkDirectionalParticles={(l: any) => (reduceMotion() ? 0
+            : failureActive ? (isFailureLink(l) ? 5 : 0)
+            : isAssessedBridge(l) ? 4 : manyLinks ? 0 : 2)}
+          linkDirectionalParticleWidth={(l: any) => (isFailureLink(l) ? 3 : isAssessedBridge(l) ? 2.4 : 1.2)}
+          linkDirectionalParticleSpeed={(l: any) => (isFailureLink(l) || isAssessedBridge(l) ? 0.012 : 0.006)}
+          linkDirectionalParticleColor={(l: any) => (isFailureLink(l) || isAssessedBridge(l) ? colors.crit : l.bridge_assessed === true ? colors.accent : colors.text)}
           enableNodeDrag={false}
           onNodeClick={(n: any) => onPick(n.id)}
           onNodeHover={(n: any) => onHover(n ? n.id : null)}
@@ -230,8 +257,10 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
         />
       </Suspense>
       <div style={{ position: "absolute", left: 10, bottom: 10, fontSize: 11, color: "var(--text-faint)", pointerEvents: "none", background: "color-mix(in srgb, var(--surface) 70%, transparent)", backdropFilter: "blur(8px)", border: "1px solid var(--border)", borderRadius: 7, padding: "4px 8px" }}>
-        drag to orbit · scroll to zoom · click a switch to focus
-        {manyLinks && !reduceMotion() ? " · flow particles on SPOF links only (fleet scale)" : ""}
+        drag to orbit · scroll to zoom · click a switch to simulate failure
+        {failureAnchor !== null ? ` · red = loses path to ${failureAnchor}` : ""}
+        {raw.edges.some((e) => e.bridge_assessed !== true) ? " · bright links = redundancy not assessed" : ""}
+        {manyLinks && !reduceMotion() ? " · flow particles on SPOF/failure links only (fleet scale)" : ""}
       </div>
     </div>
   );

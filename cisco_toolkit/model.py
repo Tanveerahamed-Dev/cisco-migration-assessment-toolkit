@@ -55,6 +55,9 @@ class InterfaceData:
     hsrp_behavior: str = ""
     multicast_info: str = ""
     svi_ip: str = ""  # NEW-V14.3 (the SVI's own 'ip address' = gateway IP; for SVI/Gateway sheet)
+    # Complete configured address set, including secondary addresses. ``svi_ip`` remains the primary address for
+    # existing sheets; Traffic Assurance uses this set to avoid applying data-plane ACLs to local-stack traffic.
+    svi_ips: str = ""
     # NEW-V14.7 per-VLAN STP detail (compressed VLAN/instance ranges) for the STP Detail sheet
     stp_fwd_vlans: str = ""
     stp_blk_vlans: str = ""
@@ -65,8 +68,52 @@ class InterfaceData:
     # NEW-V3.23.x (L4/ACL flagging): ACL name applied to this interface/SVI (from run-config 'ip access-group')
     acl_in: str = ""
     acl_out: str = ""
+    acl_in_unmodeled: str = ""
+    acl_out_unmodeled: str = ""
+    # ASA/FTD attachments are global commands (`access-group ... interface ...`), not interface-block lines.
+    # Keep them distinct so full-config custody, rather than the scoped-interface receipt, owns their absence.
+    global_acl_in: str = ""
+    global_acl_out: str = ""
+    global_policy_gates: str = ""
+    # Positive per-interface provenance: True only when this exact interface block was emitted by
+    # parse_run_config_interfaces.  Host-level parser success cannot prove that a default blank ACL/MTU on some
+    # other interface was observed rather than inherited from this dataclass.
+    run_config_observed: bool = False
     # NEW-V3.23.49 (path-MTU mismatch): interface MTU from run-config (blank = default ~1500); jumbo-frame detection
     mtu: str = ""
+    # Preserve the two configured layers: IPv4 uses ip_mtu when explicit, else link_mtu. ``mtu`` remains the
+    # effective IPv4 value for existing consumers.
+    link_mtu: str = ""
+    ip_mtu: str = ""
+    mtu_semantics: str = ""
+    # Configured ingress forwarding gates. Traffic Assurance discloses and abstains until their semantics are modeled.
+    pbr_policy: str = ""
+    urpf_mode: str = ""
+    security_zone: str = ""
+    service_policy_in: str = ""
+    service_policy_out: str = ""
+    inspection_policy_in: str = ""
+    inspection_policy_out: str = ""
+    crypto_map: str = ""
+    tunnel_protection: str = ""
+    # Configured forwarding boundaries that are deliberately not simulated by Traffic Assurance v1. Values
+    # are parser-owned categorical tokens (or a validated numeric MPLS MTU), never retained raw commands.
+    trustsec_sgacl: str = ""
+    wccp_redirection_in: str = ""
+    wccp_redirection_out: str = ""
+    tcp_intercept: str = ""
+    mpls_forwarding: str = ""
+    mpls_mtu: str = ""
+    flowspec_policy: str = ""
+    ips_policy_in: str = ""
+    ips_policy_out: str = ""
+    admission_policy: str = ""
+    # Registry-backed census of forwarding-gate syntax seen by the interface parser. The ``unmodeled`` field
+    # is a fail-closed categorical receipt for a recognized family whose exact grammar was not consumed.
+    forwarding_gate_candidates: str = ""
+    forwarding_gate_unmodeled: str = ""
+    # Global ``vlan filter`` attachment projected onto this SVI. The ordered VACL remains unmodeled.
+    vacl_policy: str = ""
     # NEW (DHCP-relay reachability): 'ip helper-address' / 'ip dhcp relay address' targets on this SVI/L3
     # interface (comma-joined; blank = no relay). Lets the explorer flag client subnets whose gateway has no
     # relay, or whose relay server isn't routable from the gateway (a classic silent post-cutover black-hole).

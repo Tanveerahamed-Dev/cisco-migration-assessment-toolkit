@@ -1,22 +1,25 @@
-"""Generate the engine's narrative deliverables (runbook / design doc / MOP / exec deck) from a stored
-snapshot, for download from the web UI.
+"""Generate registry-declared snapshot deliverables for download from AssessHub.
 
-Each generator in the engine is a pure snapshot-reader with the same shape as the explorer writer
-(`write_*(output_path, snap_dict, label)`), so this re-uses them verbatim — the file a user downloads
-here is byte-identical to what the CLI pipeline emits. python-docx / python-pptx are optional engine
-deps; if a lib is absent the matching deliverable reports unavailable rather than erroring.
+Engine-backed entries reuse the engine writer. Cutover and NRFU are explicitly AssessHub-owned
+syntheses; the conditional PIR has a separate execution-report route and is intentionally absent
+from this snapshot catalogue. Optional dependencies remain fail-soft: an unavailable renderer is
+reported as unavailable instead of becoming a generation failure.
 """
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
 from typing import Dict
 
 from . import engine  # noqa: F401  (import bootstraps sys.path so cisco_toolkit.* resolves)
+from cisco_toolkit.docmeta import (  # noqa: E402  (engine establishes package path in portable mode)
+    ASSESSHUB_DOWNLOAD_SPECS,
+    ArtifactSpec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,34 +81,12 @@ def gate_disclosure(kind: str, gate_root: str = ".") -> dict | None:
         return None
 
 
-_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-
-
-@dataclass(frozen=True)
-class Spec:
-    key: str
-    label: str
-    ext: str
-    media: str
-    needs: str  # the optional library it requires
-
-
-SPECS: Dict[str, Spec] = {
-    "engagement": Spec("engagement", "Engagement Workflow & Plan of Record", "docx", _DOCX, "python-docx"),
-    "crd": Spec("crd", "Customer Requirements Document (CRD)", "docx", _DOCX, "python-docx"),
-    "runbook": Spec("runbook", "Assessment & Migration Runbook", "docx", _DOCX, "python-docx"),
-    "design": Spec("design", "As-Built Network Design Document", "docx", _DOCX, "python-docx"),
-    "archreview": Spec("archreview", "Architecture Review & Conformance Report", "docx", _DOCX,
-                       "python-docx"),
-    "mop": Spec("mop", "Per-Wave Method of Procedure", "docx", _DOCX, "python-docx"),
-    "cutover": Spec("cutover", "Cutover Plan (Run-of-Show)", "docx", _DOCX, "python-docx"),
-    "nrfu": Spec("nrfu", "Network Ready-For-Use (NRFU) Test Plan", "docx", _DOCX, "python-docx"),
-    "opshandbook": Spec("opshandbook", "Operations Handbook", "docx", _DOCX, "python-docx"),
-    "deck": Spec("deck", "Executive Presentation Deck", "pptx", _PPTX, "python-pptx"),
-}
-
-_LIB_MODULE = {"python-docx": "docx", "python-pptx": "pptx"}
+# Compatibility name retained for callers that used the old web-local dataclass. Membership,
+# labels, media, dependencies and producers now all come from docmeta.ARTIFACT_SPECS.
+Spec = ArtifactSpec
+SPECS: Dict[str, ArtifactSpec] = {spec.key: spec for spec in ASSESSHUB_DOWNLOAD_SPECS}
+_LIB_MODULE = {spec.needs: spec.dependency_module for spec in ASSESSHUB_DOWNLOAD_SPECS
+               if spec.needs and spec.dependency_module}
 
 
 def _have(lib: str) -> bool:
@@ -114,7 +95,9 @@ def _have(lib: str) -> bool:
 
 def availability() -> Dict[str, bool]:
     """Which deliverables can be generated on this server (depends on the optional libs)."""
-    return {key: _have(spec.needs) for key, spec in SPECS.items()}
+    by_library = {lib: _have(lib) for lib in _LIB_MODULE}
+    return {key: bool(spec.needs and by_library.get(spec.needs, False))
+            for key, spec in SPECS.items()}
 
 
 def have_docx() -> bool:
@@ -122,10 +105,28 @@ def have_docx() -> bool:
     return _have("python-docx")
 
 
+def resolve_writer(spec: ArtifactSpec):
+    """Resolve a registry-owned writer through the backend package that is actually running.
+
+    AssessHub supports both ``backend.*`` (the documented Uvicorn/dev entry) and
+    ``webapp.backend.*`` (the installed/production entry). Importing the registry's absolute
+    ``webapp.backend.*`` owner while ``backend.*`` is live creates a second module object, so
+    patches and module state attach to a producer the route never calls. Keep the registry's
+    production owner for packaging, but bind web-local writers to this module's package identity.
+    """
+    module_name = spec.writer_module or ""
+    web_prefix = "webapp.backend."
+    if module_name.startswith(web_prefix):
+        module_name = __package__ + "." + module_name.removeprefix(web_prefix)
+    module = importlib.import_module(module_name)
+    return getattr(module, spec.writer_name or "")
+
+
 def catalogue() -> list:
-    """Spec + availability, for the UI."""
+    """Canonical snapshot-download metadata plus live renderer availability, for the UI."""
     avail = availability()
-    return [{"key": s.key, "label": s.label, "ext": s.ext, "available": avail[s.key]}
+    return [{"key": s.key, "label": s.label, "ext": s.ext, "available": avail[s.key],
+             "producer": s.producer, "engine_cli_member": s.cli_produced, "stage": s.stage}
             for s in SPECS.values()]
 
 
@@ -161,7 +162,7 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
     Not-silent is the part that changed. "The CLI is the enforcement point" was defensible when
     the browser was a developer convenience; ADR-0004 made AssessHub the primary field interface,
     where that reads as "the enforcement point is the door nobody uses" — an engineer refused at
-    the CLI can click Download and get a byte-identical file. That bypass is now visible in the
+    the CLI can click Download and invoke the same writer. That bypass is now visible in the
     log and on the response (`X-Gate-Status`, set by the route) instead of being invisible.
 
     KNOWN RESIDUAL — the disclosure does not travel inside the .docx, so a forwarded document
@@ -177,31 +178,9 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
         logger.warning("[GATE %s] %s generated from AssessHub with unsatisfied document gates: %s "
                        "-- disclosed, not blocked (see deliverables.generate docstring)",
                        disclosure["status"].upper(), kind, disclosure)
-    if kind == "engagement":
-        from cisco_toolkit.engagement import write_engagement_docx as write
-    elif kind == "crd":
-        from cisco_toolkit.crd import write_crd_docx as write
-    elif kind == "runbook":
-        from cisco_toolkit.runbook import write_runbook_docx as write
-    elif kind == "design":
-        from cisco_toolkit.design import write_design_doc_docx as write
-    elif kind == "archreview":
-        # Computes the review from the stored snapshot when the section is absent (older snapshots).
-        from cisco_toolkit.archreview import write_archreview_docx as write
-    elif kind == "mop":
-        from cisco_toolkit.mop import write_mop_docx as write
-    elif kind == "cutover":
-        # AssessHub synthesis — written in the web layer, not the engine (see cutover_docx).
-        from .cutover_docx import write_cutover_docx as write
-    elif kind == "nrfu":
-        # AssessHub synthesis — NRFU / Acceptance Test Plan in the web layer (see nrfu_docx).
-        from .nrfu_docx import write_nrfu_docx as write
-    elif kind == "opshandbook":
-        from cisco_toolkit.ops import write_ops_handbook_docx as write
-    elif kind == "deck":
-        from cisco_toolkit.deck import write_executive_deck_pptx as write
-    else:  # pragma: no cover - guarded by the caller
-        raise KeyError(kind)
+    # Producer dispatch is registry-owned too. validate_artifact_registry refuses any listed
+    # download without a module/function, so catalogue membership cannot become an orphan.
+    write = resolve_writer(spec)
 
     fd, path = tempfile.mkstemp(suffix="." + spec.ext, prefix=f"assesshub_{kind}_")
     os.close(fd)

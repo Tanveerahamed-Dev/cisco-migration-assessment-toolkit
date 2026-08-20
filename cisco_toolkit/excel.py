@@ -32,6 +32,7 @@ from cisco_toolkit.parse import (
 from cisco_toolkit.textutils import (
     PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed, xml_safe,
 )
+from cisco_toolkit.traffic_assurance import TRAFFIC_ASSURANCE_SET_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -1263,8 +1264,1282 @@ def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
 
 PROTOCOL_HEALTH_SHEET_NAME = "Protocol Health"
 
-def write_protocol_health_sheet(wb, records: List[dict]) -> None:
-    """Write the 'Protocol Health' sheet from compute_protocol_health()."""
+BGP_PEER_INTENT_SHEET_NAME = "BGP Peer Intent"
+FHRP_GROUP_INTENT_SHEET_NAME = "FHRP Group Intent"
+FHRP_REDUNDANCY_DOMAIN_SHEET_NAME = "FHRP Domains"
+VTP_SAFETY_SHEET_NAME = "VTP Safety"
+IPV6_ROUTING_SHEET_NAME = "IPv6 Routing"
+_BGP_PEER_SCOPE = "default/global IPv4 unicast · literal peers only"
+_BGP_PEER_EXCLUSIONS = (
+    "VRFs, IPv6, VPNv4/EVPN, peer groups/templates, dynamic peers, policy, routes, "
+    "best path, RPKI, convergence, freshness, interoperability, and cutover authorization"
+)
+_BGP_SECRET_VALUE_RE = re.compile(
+    r"(?i)(\b(?:password|secret|community)\b(?:\s+\d+)?\s+)([^\s,;]+)"
+)
+_BGP_COVERAGE_STATUS_ORDER = (
+    "degraded", "review", "not_verified", "assessed", "not_applicable",
+)
+_FHRP_GROUP_STATUS_ORDER = (
+    "degraded", "review", "not_verified", "assessed", "administratively_disabled",
+)
+_FHRP_COVERAGE_STATUS_ORDER = (
+    "degraded", "review", "not_verified", "assessed", "not_applicable",
+)
+_FHRP_PROTOCOLS = ("HSRP", "VRRP", "GLBP")
+_FHRP_GROUP_SCOPE = "default/global IPv4 · direct literal local HSRP/VRRP/GLBP groups"
+_FHRP_GROUP_EXCLUSIONS = (
+    "VRFs, IPv6, templates/inheritance/dynamic constructs, secondary VIPs, expected member count, "
+    "timers, authentication, preemption, tracking behavior, simultaneous election, failover, "
+    "convergence, freshness, interoperability, and cutover authorization; NX-OS configured-group "
+    "parsing is limited to nested HSRP"
+)
+_FHRP_SECRET_VALUE_RE = re.compile(
+    r"(?i)(\b(?:password|secret|community|authentication(?:\s+(?:text|md5))?|key-string)\b"
+    r"(?:\s+\d+)?\s+)([^\s,;]+)"
+)
+
+
+def _bgp_operator_text(value) -> str:
+    """Return bounded, secret-scrubbed operator copy from the typed BGP receipt.
+
+    This writer deliberately never projects raw configuration.  A persisted or
+    caller-built snapshot is still untrusted input, so even the receipt's safe
+    narrative leaves are scrubbed before they enter the workbook.
+    """
+
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float, str)):
+        text = str(value)
+    else:
+        return ""
+    return _BGP_SECRET_VALUE_RE.sub(r"\1[REDACTED]", text)
+
+
+def _bgp_findings_text(value) -> str:
+    """Project only documented finding leaves; never stringify an arbitrary object."""
+
+    if isinstance(value, list):
+        parts = [_bgp_findings_text(item) for item in value]
+        return "; ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        # These are presentation-safe contract leaves.  Unknown keys (including
+        # raw config/debug payloads) are intentionally ignored.
+        parts = [
+            _bgp_operator_text(value.get(key))
+            for key in ("code", "title", "message", "finding", "detail", "issue")
+        ]
+        return " — ".join(part for part in parts if part)
+    return _bgp_operator_text(value)
+
+
+def _bgp_admin_condition(activation) -> str:
+    text = _bgp_operator_text(activation).strip()
+    lowered = text.lower().replace("_", " ")
+    if any(token in lowered for token in ("shutdown", "disabled", "inactive", "not activated")):
+        return "administratively disabled"
+    if any(token in lowered for token in ("active", "activated", "enabled")):
+        return "configured active"
+    return "not stated"
+
+
+def _bgp_coverage_census(receipt):
+    """Return the producer-owned fleet coverage census, or ``None`` fail-closed.
+
+    ``summary.by_coverage_status`` is the fleet denominator.  Coverage rows are
+    checked only to reject a non-reconciling receipt; their derived counts are
+    never used for display, so they do not become a second aggregate owner.
+    """
+
+    summary = _sec_dict(receipt.get("summary"))
+    by_coverage = summary.get("by_coverage_status")
+    coverage = receipt.get("coverage")
+    if not isinstance(by_coverage, dict) or set(by_coverage) != set(_BGP_COVERAGE_STATUS_ORDER):
+        return None
+    if not isinstance(coverage, list):
+        return None
+    counts = {}
+    for status in _BGP_COVERAGE_STATUS_ORDER:
+        value = by_coverage.get(status)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        counts[status] = value
+    n_hosts = summary.get("n_hosts")
+    n_subject_hosts = summary.get("n_subject_hosts")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in (n_hosts, n_subject_hosts)
+    ):
+        return None
+    if n_subject_hosts > n_hosts or n_hosts != len(coverage) or sum(counts.values()) != n_hosts:
+        return None
+    seen_switches = set()
+    row_counts = {status: 0 for status in _BGP_COVERAGE_STATUS_ORDER}
+    subject_hosts = 0
+    for row in coverage:
+        if not isinstance(row, dict):
+            return None
+        switch = row.get("switch")
+        subject = row.get("subject")
+        status = row.get("status")
+        if (
+            not isinstance(switch, str) or not switch
+            or switch in seen_switches
+            or not isinstance(subject, bool)
+            or status not in row_counts
+            or (subject and status == "not_applicable")
+        ):
+            return None
+        seen_switches.add(switch)
+        subject_hosts += int(subject)
+        row_counts[status] += 1
+    if subject_hosts != n_subject_hosts or row_counts != counts:
+        return None
+    return {
+        "n_hosts": n_hosts,
+        "n_subject_hosts": n_subject_hosts,
+        "by_coverage_status": counts,
+    }
+
+
+def _bgp_coverage_copy(census, verdict: str) -> str:
+    counts = census["by_coverage_status"]
+    text = (
+        "Host coverage (distinct from peer rows): "
+        f"{census['n_hosts']} host(s) · {census['n_subject_hosts']} subject host(s) · "
+        f"coverage cells — {counts['degraded']} degraded, {counts['review']} review, "
+        f"{counts['not_verified']} not verified, {counts['assessed']} assessed, and "
+        f"{counts['not_applicable']} not applicable."
+    )
+    if verdict.strip().upper() == "NOT_APPLICABLE":
+        text += (
+            " NOT_APPLICABLE means no in-scope literal peer subject was identified; it is not "
+            "proof that BGP is absent or that configuration coverage is complete."
+        )
+    return text
+
+
+def write_bgp_configured_peer_sheet(wb, baseline) -> None:
+    """Write the uncapped configured BGP peer denominator.
+
+    ``baseline`` is the published ``bgp_configured_peer_baseline/1`` receipt.
+    The sheet is a projection only: it does not parse configuration, rejoin
+    peers, or promote persisted custody.  Every configured peer row is kept so
+    a blocker cannot disappear behind a display budget.
+    """
+
+    receipt = _sec_dict(baseline)
+    coverage_census = _bgp_coverage_census(receipt)
+    valid = (
+        receipt.get("schema") == "bgp_configured_peer_baseline/1"
+        and isinstance(receipt.get("rows"), list)
+        and coverage_census is not None
+    )
+    rows = _sec_rows(receipt.get("rows")) if valid else []
+    ws = _new_sheet(wb, BGP_PEER_INTENT_SHEET_NAME)
+
+    headers = [
+        "Device", "Bounded scope", "Peer", "Local AS",
+        "Configured remote AS", "Runtime AS", "Activation", "Admin condition",
+        "Observed in summary", "Runtime state (normalized / raw)", "Status",
+        "Projection custody", "Source locator", "Acceptance / finding",
+    ]
+    last_col = len(headers)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    verdict = _bgp_operator_text(receipt.get("verdict") if valid else "NOT ASSESSED") or "NOT ASSESSED"
+    banner = (
+        f"CONFIGURED BGP PEER GATE — DEFAULT/GLOBAL IPv4 UNICAST · {verdict.upper()}. "
+        "A configured-active literal peer absent from a usable summary is a blocker. "
+        f"Excludes {_BGP_PEER_EXCLUSIONS}."
+    )
+    banner_cell = ws.cell(1, 1, banner)
+    banner_cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    banner_cell.fill = PatternFill(
+        "solid", fgColor="C00000" if verdict.strip().upper() in {"BLOCKED", "FAIL", "DEGRADED"} else WORKBOOK_NAVY_HEX
+    )
+    banner_cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 48
+
+    active_rows = [
+        row for row in rows
+        if str(row.get("activation") or "").strip().lower() == "active"
+    ]
+    established = sum(str(row.get("status") or "").strip().lower() == "assessed" for row in rows)
+    configured = sum(bool(str(row.get("configured_remote_as") or "").strip()) for row in rows)
+    by_status = {
+        status: sum(str(row.get("status") or "").strip().lower() == status for row in rows)
+        for status in ("degraded", "review", "not_verified")
+    }
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+    custody = _bgp_operator_text(receipt.get("projection_custody")) or "not verified"
+    summary = _sec_dict(receipt.get("summary")) if valid else {}
+
+    def _summary_count(key, fallback):
+        value = summary.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else fallback
+
+    configured = _summary_count("n_configured_peers", configured)
+    active_count = _summary_count("n_active_peers", len(active_rows))
+    established = _summary_count("n_established", established)
+    by_status["degraded"] = _summary_count("n_degraded", by_status["degraded"])
+    by_status["review"] = _summary_count("n_review", by_status["review"])
+    by_status["not_verified"] = _summary_count("n_not_verified", by_status["not_verified"])
+    ws.cell(
+        2, 1,
+        f"Peer rows — configured: {configured} · configured-active: {active_count} · "
+        f"Established: {established} · degraded: {by_status['degraded']} · review: {by_status['review']} · "
+        f"not verified: {by_status['not_verified']} · Receipt custody: {custody}. "
+        "CLEAR, when shown, applies only to this bounded denominator.",
+    ).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(2, 1).font = Font(name="Calibri", bold=True, color="7F0000" if any(by_status.values()) else "1F1F1F")
+    ws.row_dimensions[2].height = 34
+
+    if not valid:
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
+        cell = ws.cell(
+            3, 1,
+            "NOT ASSESSED — bgp_configured_peer_baseline/1 is unavailable or malformed. "
+            "No configured-peer completeness or health conclusion is asserted.",
+        )
+        cell.fill = PatternFill("solid", fgColor="FCE5CD")
+        cell.font = Font(bold=True, color="7F6000")
+        cell.alignment = Alignment(wrap_text=True)
+    else:
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
+        coverage_counts = coverage_census["by_coverage_status"]
+        cell = ws.cell(3, 1, _bgp_coverage_copy(coverage_census, verdict))
+        qualified = bool(
+            coverage_counts["degraded"]
+            or coverage_counts["review"]
+            or coverage_counts["not_verified"]
+            or verdict.strip().upper() == "NOT_APPLICABLE"
+        )
+        cell.fill = PatternFill("solid", fgColor="FFF2CC" if qualified else "E2F0D9")
+        cell.font = Font(bold=qualified, color="7F6000" if qualified else "1F1F1F")
+        cell.alignment = Alignment(wrap_text=True)
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(4, col, header)
+        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+        cell.fill = PatternFill("solid", fgColor=_CENSUS_HDR_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[4].height = 32
+
+    for row_index, row in enumerate(rows, 5):
+        normalized = _bgp_operator_text(row.get("runtime_state"))
+        raw = _bgp_operator_text(row.get("runtime_state_raw"))
+        runtime_state = normalized + (f" / {raw}" if raw and raw != normalized else "")
+        status = _bgp_operator_text(row.get("status")) or "not_verified"
+        acceptance = _bgp_operator_text(row.get("acceptance"))
+        finding = _bgp_findings_text(row.get("findings"))
+        vals = [
+            _bgp_operator_text(row.get("switch")),
+            _BGP_PEER_SCOPE,
+            _bgp_operator_text(row.get("peer")),
+            _bgp_operator_text(row.get("local_as")),
+            _bgp_operator_text(row.get("configured_remote_as")),
+            _bgp_operator_text(row.get("runtime_remote_as")),
+            _bgp_operator_text(row.get("activation")),
+            _bgp_admin_condition(row.get("activation")),
+            _bgp_operator_text(row.get("runtime_observed")) or "unknown",
+            runtime_state or "—",
+            status.replace("_", " ").upper(),
+            _bgp_operator_text(row.get("projection_custody")) or custody,
+            _bgp_operator_text(row.get("source_key")),
+            "\n".join(part for part in (acceptance, finding) if part),
+        ]
+        status_key = str(row.get("status") or "").strip().lower()
+        if status_key == "degraded":
+            row_fill, row_font = "F4CCCC", "7F0000"
+        elif status_key in {"review", "not_verified"}:
+            row_fill, row_font = "FCE5CD", "7F6000"
+        elif status_key in {"assessed", "established"}:
+            row_fill, row_font = "E2F0D9", "1F1F1F"
+        else:
+            row_fill, row_font = None, "1F1F1F"
+        for col, value in enumerate(vals, 1):
+            cell = ws.cell(row_index, col, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=col in {2, 7, 8, 10, 12, 13, 14})
+            if row_fill:
+                cell.fill = PatternFill("solid", fgColor=row_fill)
+                cell.font = Font(bold=status_key in {"degraded", "review", "not_verified"}, color=row_font)
+
+    widths = [22, 31, 20, 12, 19, 14, 18, 24, 18, 28, 18, 28, 38, 64]
+    for col, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = "A5"
+    ws.auto_filter.ref = f"A4:{get_column_letter(last_col)}{max(4, 4 + len(rows))}"
+    logger.info(
+        "  [OK] '%s' sheet: %d configured peer row(s), %d blocker(s)",
+        BGP_PEER_INTENT_SHEET_NAME, len(rows), sum(by_status.values()),
+    )
+
+
+def _fhrp_operator_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if not isinstance(value, (str, int, float)):
+        return ""
+    return _FHRP_SECRET_VALUE_RE.sub(r"\1[REDACTED]", str(value))
+
+
+def _fhrp_findings_text(value) -> str:
+    if isinstance(value, list):
+        return "; ".join(filter(None, (_fhrp_findings_text(item) for item in value)))
+    if isinstance(value, dict):
+        return " — ".join(filter(None, (
+            _fhrp_operator_text(value.get(key))
+            for key in ("code", "title", "message", "finding", "detail", "issue")
+        )))
+    return _fhrp_operator_text(value)
+
+
+def _fhrp_surface_receipt(value):
+    """Fail closed unless group-row and host×subtype censuses reconcile exactly."""
+
+    try:
+        from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
+
+        validated = validate_fhrp_configured_group_baseline(value)
+    except Exception:
+        return None
+    if not isinstance(validated, dict) or validated.get("valid") is not True:
+        return None
+    receipt = _sec_dict(validated.get("baseline"))
+    rows = receipt.get("rows")
+    coverage = receipt.get("coverage")
+    summary = _sec_dict(receipt.get("summary"))
+    scope = _sec_dict(receipt.get("scope"))
+    if (
+        receipt.get("schema") != "fhrp_configured_group_baseline/1"
+        or scope != {
+            "routing_instance": "default", "afi": "ipv4", "group_kind": "direct_literal_local",
+        }
+        or not isinstance(rows, list)
+        or not isinstance(coverage, list)
+    ):
+        return None
+
+    def _counts(raw, vocabulary):
+        if not isinstance(raw, dict) or list(raw) != list(vocabulary):
+            return None
+        out = {}
+        for status in vocabulary:
+            count = raw.get(status)
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                return None
+            out[status] = count
+        return out
+
+    by_status = _counts(summary.get("by_status"), _FHRP_GROUP_STATUS_ORDER)
+    by_coverage = _counts(summary.get("by_coverage_status"), _FHRP_COVERAGE_STATUS_ORDER)
+    if by_status is None or by_coverage is None:
+        return None
+
+    safe_rows = _sec_rows(rows)
+    if len(safe_rows) != len(rows):
+        return None
+    row_counts = {status: 0 for status in _FHRP_GROUP_STATUS_ORDER}
+    identities = set()
+    for row in safe_rows:
+        status = row.get("status")
+        identity = (row.get("switch"), row.get("protocol"), row.get("interface"), row.get("group"))
+        if (
+            status not in row_counts
+            or identity in identities
+            or not all(isinstance(part, str) and part for part in identity)
+            or row.get("protocol") not in _FHRP_PROTOCOLS
+        ):
+            return None
+        identities.add(identity)
+        row_counts[status] += 1
+    if row_counts != by_status:
+        return None
+    row_summary_expected = {
+        "n_configured_groups": sum(row.get("configured") is True for row in safe_rows),
+        "n_active_groups": sum(row.get("activation") == "active" for row in safe_rows),
+        "n_runtime_groups": sum(row.get("runtime_observed") is True for row in safe_rows),
+        "n_assessed": row_counts["assessed"],
+        "n_degraded": row_counts["degraded"],
+        "n_review": row_counts["review"],
+        "n_not_verified": row_counts["not_verified"],
+        "n_disabled": row_counts["administratively_disabled"],
+    }
+    if any(
+        not isinstance(summary.get(key), int)
+        or isinstance(summary.get(key), bool)
+        or summary.get(key) != expected
+        for key, expected in row_summary_expected.items()
+    ):
+        return None
+
+    safe_coverage = _sec_rows(coverage)
+    if len(safe_coverage) != len(coverage):
+        return None
+    coverage_counts = {status: 0 for status in _FHRP_COVERAGE_STATUS_ORDER}
+    coverage_keys = set()
+    subject_hosts = set()
+    subject_cells = 0
+    hosts = set()
+    for cell in safe_coverage:
+        switch, protocol = cell.get("switch"), cell.get("protocol")
+        subject, status = cell.get("subject"), cell.get("status")
+        key = (switch, protocol)
+        if (
+            not isinstance(switch, str) or not switch
+            or protocol not in _FHRP_PROTOCOLS
+            or key in coverage_keys
+            or not isinstance(subject, bool)
+            or status not in coverage_counts
+            or (subject and status == "not_applicable")
+        ):
+            return None
+        coverage_keys.add(key)
+        hosts.add(switch)
+        coverage_counts[status] += 1
+        if subject:
+            subject_cells += 1
+            subject_hosts.add(switch)
+    if coverage_counts != by_coverage:
+        return None
+
+    count_fields = (
+        ("n_hosts", len(hosts)),
+        ("n_coverage_cells", len(safe_coverage)),
+        ("n_subject_hosts", len(subject_hosts)),
+        ("n_subject_cells", subject_cells),
+    )
+    if any(
+        not isinstance(summary.get(key), int)
+        or isinstance(summary.get(key), bool)
+        or summary.get(key) != expected
+        for key, expected in count_fields
+    ):
+        return None
+    if safe_coverage and len(safe_coverage) != len(hosts) * len(_FHRP_PROTOCOLS):
+        return None
+    return {
+        "receipt": receipt,
+        "rows": safe_rows,
+        "coverage": safe_coverage,
+        "summary": summary,
+        "by_status": by_status,
+        "by_coverage_status": by_coverage,
+    }
+
+
+def _fhrp_coverage_copy(view, verdict: str) -> str:
+    summary, counts = view["summary"], view["by_coverage_status"]
+    text = (
+        "Host × subtype coverage (distinct from group rows): "
+        f"{summary['n_hosts']} host(s) · {summary['n_coverage_cells']} HSRP/VRRP/GLBP cell(s) · "
+        f"{summary['n_subject_hosts']} subject host(s) · {summary['n_subject_cells']} subject cell(s) · "
+        f"coverage cells — {counts['degraded']} degraded, {counts['review']} review, "
+        f"{counts['not_verified']} not verified, {counts['assessed']} assessed, and "
+        f"{counts['not_applicable']} not applicable."
+    )
+    if verdict.strip().upper() == "NOT_APPLICABLE":
+        text += (
+            " NOT_APPLICABLE means no in-scope literal local group subject was identified; it is not "
+            "proof that FHRP is absent or that configuration coverage is complete."
+        )
+    return text
+
+
+def write_fhrp_configured_group_sheet(wb, baseline) -> None:
+    """Write the uncapped configured FHRP group denominator projection."""
+
+    view = _fhrp_surface_receipt(baseline)
+    receipt = view["receipt"] if view else {}
+    rows = view["rows"] if view else []
+    summary = view["summary"] if view else {}
+    ws = _new_sheet(wb, FHRP_GROUP_INTENT_SHEET_NAME)
+    headers = [
+        "Device", "Subtype", "Interface", "Group", "Bounded scope", "Configured",
+        "Configured VIP", "Activation", "Runtime observed", "Runtime VIP",
+        "Runtime state (normalized / raw)", "Status", "Projection custody",
+        "Source locator", "Acceptance / finding",
+    ]
+    last_col = len(headers)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    verdict = _fhrp_operator_text(receipt.get("verdict") if view else "NOT ASSESSED") or "NOT ASSESSED"
+    banner = (
+        f"CONFIGURED FHRP GROUP GATE — DEFAULT/GLOBAL IPv4 · DIRECT LITERAL LOCAL GROUPS · {verdict.upper()}. "
+        "A configured-active local group absent from usable subtype runtime evidence is a blocker. "
+        f"Excludes {_FHRP_GROUP_EXCLUSIONS}."
+    )
+    cell = ws.cell(1, 1, banner)
+    cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    cell.fill = PatternFill(
+        "solid", fgColor="C00000" if verdict.strip().upper() == "BLOCKED" else WORKBOOK_NAVY_HEX,
+    )
+    cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 52
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+    if view:
+        by_status = view["by_status"]
+        configured = summary.get("n_configured_groups", sum(row.get("configured") is True for row in rows))
+        active = summary.get("n_active_groups", sum(row.get("activation") == "active" for row in rows))
+        runtime = summary.get("n_runtime_groups", sum(row.get("runtime_observed") is True for row in rows))
+        custody = _fhrp_operator_text(receipt.get("projection_custody")) or "not verified"
+        summary_copy = (
+            f"Group rows — configured: {configured} · configured-active: {active} · runtime-observed: {runtime} · "
+            f"assessed: {by_status['assessed']} · degraded: {by_status['degraded']} · "
+            f"review: {by_status['review']} · not verified: {by_status['not_verified']} · "
+            f"administratively disabled: {by_status['administratively_disabled']} · Receipt custody: {custody}. "
+            "CLEAR, when shown, applies only to this bounded denominator."
+        )
+    else:
+        summary_copy = (
+            "NOT ASSESSED — fhrp_configured_group_baseline/1 is unavailable or malformed. "
+            "No configured-group completeness or health conclusion is asserted."
+        )
+    summary_cell = ws.cell(2, 1, summary_copy)
+    summary_cell.alignment = Alignment(vertical="center", wrap_text=True)
+    summary_cell.font = Font(name="Calibri", bold=True, color="1F1F1F")
+    ws.row_dimensions[2].height = 40
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
+    if view:
+        coverage_copy = _fhrp_coverage_copy(view, verdict)
+        coverage_counts = view["by_coverage_status"]
+        qualified = bool(
+            coverage_counts["degraded"] or coverage_counts["review"]
+            or coverage_counts["not_verified"] or verdict.upper() == "NOT_APPLICABLE"
+        )
+        coverage_cell = ws.cell(3, 1, coverage_copy)
+        coverage_cell.fill = PatternFill("solid", fgColor="FFF2CC" if qualified else "E2F0D9")
+        coverage_cell.font = Font(bold=qualified, color="7F6000" if qualified else "1F1F1F")
+    else:
+        coverage_cell = ws.cell(
+            3, 1,
+            "Host × subtype coverage counts are unavailable; absence of group rows is not proof that FHRP is absent.",
+        )
+        coverage_cell.fill = PatternFill("solid", fgColor="FCE5CD")
+        coverage_cell.font = Font(bold=True, color="7F6000")
+    coverage_cell.alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[3].height = 42
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(4, col, header)
+        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+        cell.fill = PatternFill("solid", fgColor=_CENSUS_HDR_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[4].height = 34
+
+    for row_index, row in enumerate(rows, 5):
+        normalized = _fhrp_operator_text(row.get("runtime_state"))
+        raw = _fhrp_operator_text(row.get("runtime_state_raw"))
+        state = normalized + (f" / {raw}" if raw and raw != normalized else "")
+        status = _fhrp_operator_text(row.get("status")) or "not_verified"
+        acceptance = _fhrp_operator_text(row.get("acceptance"))
+        finding = _fhrp_findings_text(row.get("findings"))
+        vals = [
+            _fhrp_operator_text(row.get("switch")), _fhrp_operator_text(row.get("protocol")),
+            _fhrp_operator_text(row.get("interface")), _fhrp_operator_text(row.get("group")),
+            _FHRP_GROUP_SCOPE, _fhrp_operator_text(row.get("configured")),
+            _fhrp_operator_text(row.get("configured_vip")) or "—",
+            _fhrp_operator_text(row.get("activation")) or "not stated",
+            _fhrp_operator_text(row.get("runtime_observed")) or "unknown",
+            _fhrp_operator_text(row.get("runtime_vip")) or "—", state or "—",
+            status.replace("_", " ").upper(),
+            _fhrp_operator_text(row.get("projection_custody"))
+            or _fhrp_operator_text(receipt.get("projection_custody")) or "not verified",
+            _fhrp_operator_text(row.get("source_key")),
+            "\n".join(part for part in (acceptance, finding) if part) or "—",
+        ]
+        status_key = str(row.get("status") or "").strip().lower()
+        row_fill = (
+            "F4CCCC" if status_key == "degraded" else
+            "FCE5CD" if status_key in {"review", "not_verified"} else
+            "E2F0D9" if status_key == "assessed" else None
+        )
+        for col, value in enumerate(vals, 1):
+            cell = ws.cell(row_index, col, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=col in {5, 7, 8, 10, 11, 13, 14, 15})
+            if row_fill:
+                cell.fill = PatternFill("solid", fgColor=row_fill)
+                cell.font = Font(bold=status_key in {"degraded", "review", "not_verified"})
+
+    widths = [22, 10, 20, 10, 38, 12, 18, 18, 18, 18, 28, 18, 28, 40, 66]
+    for col, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = "A5"
+    ws.auto_filter.ref = f"A4:{get_column_letter(last_col)}{max(4, 4 + len(rows))}"
+    logger.info(
+        "  [OK] '%s' sheet: %d configured group row(s), %d blocker(s)",
+        FHRP_GROUP_INTENT_SHEET_NAME, len(rows),
+        sum(view["by_status"][status] for status in ("degraded", "review", "not_verified")) if view else 0,
+    )
+
+
+def _fhrp_redundancy_domain_surface_receipt(value):
+    """Return only a strict serialized domain receipt; rejected leaves never escape."""
+
+    try:
+        from cisco_toolkit.fhrp_redundancy import (
+            validate_fhrp_redundancy_domain_baseline,
+        )
+
+        view = validate_fhrp_redundancy_domain_baseline(value)
+    except Exception:
+        return None
+    if not isinstance(view, dict) or view.get("valid") is not True:
+        return None
+    receipt = view.get("baseline")
+    rows = view.get("rows")
+    domains = view.get("domains")
+    if not isinstance(domains, list):
+        domains = receipt.get("domains")
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != "fhrp_redundancy_domain_baseline/1"
+        or receipt.get("projection_custody") != "embedded_unverified"
+        or not isinstance(rows, list)
+        or not isinstance(domains, list)
+        or any(not isinstance(row, dict) for row in rows)
+        or any(not isinstance(domain, dict) for domain in domains)
+    ):
+        return None
+    return {"receipt": receipt, "rows": rows, "domains": domains}
+
+
+def write_fhrp_redundancy_domain_sheet(wb, baseline) -> None:
+    """Write the uncapped authoritative serialized FHRP-domain projection."""
+
+    view = _fhrp_redundancy_domain_surface_receipt(baseline)
+    receipt = view["receipt"] if view else {}
+    rows = view["rows"] if view else []
+    source_verified = bool(
+        view and isinstance(receipt.get("source_receipt"), dict)
+        and receipt["source_receipt"].get("valid") is True
+    )
+    ws = _new_sheet(wb, FHRP_REDUNDANCY_DOMAIN_SHEET_NAME)
+    headers = [
+        "Status", "Device", "Interface", "SVI IP", "VLAN", "VRF",
+        "Observed IPv4 subnet", "Participation", "Subtype", "Group",
+        "Virtual IP", "Role", "Domain identity", "Candidate identity",
+        "Projection custody", "Source locator", "Command", "Acceptance / finding",
+    ]
+    last_col = len(headers)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    verdict = _fhrp_operator_text(receipt.get("verdict") if view else "NOT ASSESSED") or "NOT ASSESSED"
+    blocker_statuses = {"degraded", "review", "not_verified"}
+    blocker_count = sum(str(row.get("status") or "") in blocker_statuses for row in rows)
+    banner = (
+        f"FHRP REDUNDANCY-DOMAIN GATE · {verdict.upper()}. Exact domain identity is VLAN + "
+        "normalized VRF + observed IPv4 subnet; candidate identity is subtype + group + virtual IP. "
+        "Zero positive participation is REVIEW because intended membership is unresolved, not a "
+        "proven unprotected gateway or failure. Matching unresolved composition is NOT ACCEPTANCE."
+    ) if source_verified else (
+        "FHRP REDUNDANCY-DOMAIN GATE · NOT VERIFIED. The embedded receipt is structurally valid, "
+        "but its current-run configured-group/SVI source receipt is not verified. No member or "
+        "domain-composition conclusion is asserted and no rejected source leaves are shown."
+    ) if view else (
+        "FHRP REDUNDANCY-DOMAIN GATE · NOT ASSESSED. "
+        "fhrp_redundancy_domain_baseline/1 is absent, malformed, or not an embedded-unverified "
+        "serialized receipt. No rejected receipt leaves or domain-composition conclusion are shown."
+    )
+    cell = ws.cell(1, 1, banner)
+    cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    cell.fill = PatternFill(
+        "solid", fgColor="C00000" if verdict.upper() == "BLOCKED" else
+        "BF9000" if blocker_count or verdict.upper() in {"INDETERMINATE", "NOT_APPLICABLE"} else
+        WORKBOOK_NAVY_HEX,
+    )
+    cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 58
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+    if source_verified:
+        counts = {
+            status: sum(str(row.get("status") or "") == status for row in rows)
+            for status in ("degraded", "review", "not_verified", "assessed")
+        }
+        copy = (
+            f"Published member rows: {len(rows)} across {len(view['domains'])} observed domain(s) · "
+            f"{counts['degraded']} degraded · {counts['review']} review · "
+            f"{counts['not_verified']} not verified · {counts['assessed']} assessed · "
+            "Receipt custody: embedded_unverified. Every blocker row is rendered; this workbook sheet "
+            "has no ordinary-row cap."
+        )
+        if verdict.upper() == "NOT_APPLICABLE":
+            copy += (
+                " NOT_APPLICABLE means no subject was identified; it is not proof that FHRP is "
+                "absent or that intended membership is complete."
+            )
+    elif view:
+        copy = (
+            "NOT VERIFIED — the closed owner receipt reports no source-bound subject denominator. "
+            "Re-collect both the configured-group receipt and normalized SVI projection before "
+            "acceptance; zero published rows is not evidence of absence or complete intent."
+        )
+    else:
+        copy = (
+            "NOT VERIFIED — authoritative member/domain counts are unavailable. Re-collect and "
+            "validate the source receipt before acceptance."
+        )
+    ws.cell(2, 1, copy).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(2, 1).font = Font(
+        bold=not source_verified or bool(blocker_count),
+        color="7F6000" if not source_verified or blocker_count else "1F1F1F",
+    )
+    ws.row_dimensions[2].height = 46
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
+    limits = (
+        "Boundaries: current normalized in-scope SVI members and observed IPv4 domains only. "
+        "No expected/off-scan member count or identity, simultaneous roles, timers, authentication, "
+        "tracking, failover behavior, convergence, freshness, interoperability, or cutover "
+        "authorization is established."
+    )
+    ws.cell(3, 1, limits).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(3, 1).font = Font(italic=True, color="666666")
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(4, col, header)
+        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+        cell.fill = PatternFill("solid", fgColor=_CENSUS_HDR_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for row_index, row in enumerate(rows, 5):
+        status_key = str(row.get("status") or "not_verified")
+        finding = _fhrp_findings_text(row.get("findings"))
+        acceptance = _fhrp_operator_text(row.get("acceptance"))
+        vals = [
+            status_key.replace("_", " ").upper(),
+            _fhrp_operator_text(row.get("switch")),
+            _fhrp_operator_text(row.get("interface")),
+            _fhrp_operator_text(row.get("svi_ip")),
+            _fhrp_operator_text(row.get("vlan")),
+            _fhrp_operator_text(row.get("vrf")) or "global",
+            _fhrp_operator_text(row.get("subnet")),
+            _fhrp_operator_text(row.get("participation")).replace("_", " ").upper(),
+            _fhrp_operator_text(row.get("protocol")) or "—",
+            _fhrp_operator_text(row.get("group")) or "—",
+            _fhrp_operator_text(row.get("virtual_ip")) or "—",
+            _fhrp_operator_text(row.get("role")) or "—",
+            _fhrp_operator_text(row.get("domain_key")),
+            _fhrp_operator_text(row.get("candidate_key")) or "—",
+            _fhrp_operator_text(row.get("projection_custody")) or "embedded_unverified",
+            _fhrp_operator_text(row.get("source_key")) or "—",
+            _fhrp_operator_text(row.get("command")) or "—",
+            "\n".join(part for part in (acceptance, finding) if part) or "—",
+        ]
+        fill = (
+            "F4CCCC" if status_key == "degraded" else
+            "FCE5CD" if status_key in {"review", "not_verified"} else
+            "E2F0D9" if status_key == "assessed" else "FCE5CD"
+        )
+        for col, value in enumerate(vals, 1):
+            cell = ws.cell(row_index, col, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=col >= 7)
+            cell.fill = PatternFill("solid", fgColor=fill)
+            if status_key in blocker_statuses:
+                cell.font = Font(bold=True if col == 1 else False)
+
+    widths = [18, 22, 18, 18, 10, 18, 24, 18, 10, 10, 18, 14, 48, 44, 24, 42, 28, 70]
+    for col, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = "A5"
+    ws.auto_filter.ref = f"A4:{get_column_letter(last_col)}{max(4, 4 + len(rows))}"
+    logger.info(
+        "  [OK] '%s' sheet: %d member row(s), %d blocker(s)",
+        FHRP_REDUNDANCY_DOMAIN_SHEET_NAME, len(rows), blocker_count,
+    )
+
+
+def _vtp_surface_receipt(value):
+    """Return only a validated serialized VTP audit receipt.
+
+    Workbook output is an audit projection, never a current-run decision owner.
+    Requiring ``embedded_unverified`` also prevents a persisted object from
+    claiming process-local source custody merely by carrying that string.
+    """
+
+    try:
+        from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
+
+        view = validate_vtp_safety_baseline(value, require_current_run=False)
+    except Exception:
+        return None
+    if not isinstance(view, dict) or view.get("valid") is not True:
+        return None
+    receipt = view.get("baseline")
+    rows = view.get("rows")
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != "vtp_safety_baseline/1"
+        or receipt.get("projection_custody") != "embedded_unverified"
+        or not isinstance(rows, list)
+        or any(not isinstance(row, dict) for row in rows)
+    ):
+        return None
+    coverage = receipt.get("coverage")
+    summary = receipt.get("summary")
+    if (
+        not isinstance(coverage, list)
+        or any(not isinstance(cell, dict) for cell in coverage)
+        or not isinstance(summary, dict)
+        or not isinstance(summary.get("by_coverage_status"), dict)
+    ):
+        return None
+    return {
+        "receipt": receipt,
+        "rows": rows,
+        "coverage": coverage,
+        "coverage_by_host": {cell["switch"]: cell for cell in coverage},
+        "summary": summary,
+    }
+
+
+def _vtp_operator_text(value) -> str:
+    """Project a bounded typed scalar; arbitrary/debug objects never stringify."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if not isinstance(value, (str, int, float)):
+        return ""
+    return str(value)
+
+
+def _vtp_findings_text(value) -> str:
+    """Render only the validator-authorized finding code and issue leaves."""
+
+    if not isinstance(value, list):
+        return ""
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        code = _vtp_operator_text(item.get("code"))
+        issue = _vtp_operator_text(item.get("issue"))
+        text = " — ".join(part for part in (code, issue) if part)
+        if text:
+            parts.append(text)
+    return "; ".join(parts)
+
+
+def write_vtp_safety_sheet(wb, baseline) -> None:
+    """Write the closed local VTP safety audit projection.
+
+    Every REVIEW / NOT VERIFIED subject row is outside the presentation cap;
+    at most the first 50 assessed rows are shown.  The fleet coverage census is
+    copied only from the validated producer-owned ``summary.by_coverage_status``
+    map.  Raw captures, hashes, source locators, and filesystem paths are never
+    rendered.
+    """
+
+    view = _vtp_surface_receipt(baseline)
+    receipt = view["receipt"] if view else {}
+    summary = view["summary"] if view else {}
+    rows = view["rows"] if view else []
+    coverage_by_host = view["coverage_by_host"] if view else {}
+    blockers = [row for row in rows if row.get("status") in {"review", "not_verified"}]
+    ordinary = [row for row in rows if row.get("status") == "assessed"]
+    shown = blockers + ordinary[:50]
+
+    ws = _new_sheet(wb, VTP_SAFETY_SHEET_NAME)
+    headers = [
+        "Status", "Device", "Platform", "Observed mode", "Observed domain",
+        "Observed revision", "Observed running version", "Capture status",
+        "Parser status", "Command", "Projection custody", "Acceptance / finding",
+    ]
+    last_col = len(headers)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    verdict = _vtp_operator_text(receipt.get("verdict") if view else "NOT ASSESSED") or "NOT ASSESSED"
+    banner = (
+        f"VTP SAFETY GATE — OBSERVED LOCAL SHOW VTP STATUS · {verdict.upper()}. "
+        "A VTP Server configuration revision of 100 or higher is a REVIEW heuristic, not proof "
+        "that an overwrite will occur; matching a high revision is NOT ACCEPTANCE."
+    ) if view else (
+        "VTP SAFETY GATE — NOT ASSESSED. vtp_safety_baseline/1 is absent, malformed, or not an "
+        "embedded-unverified serialized receipt. No rejected receipt leaves or VTP safety conclusion are shown."
+    )
+    cell = ws.cell(1, 1, banner)
+    cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    cell.fill = PatternFill(
+        "solid", fgColor="BF9000" if blockers or verdict.upper() in {"INDETERMINATE", "NOT_APPLICABLE"}
+        else WORKBOOK_NAVY_HEX,
+    )
+    cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 54
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+    if view:
+        by_status = summary["by_status"]
+        row_copy = (
+            f"Subject rows: {summary['n_rows']} · {by_status['review']} review · "
+            f"{by_status['not_verified']} not verified · {by_status['assessed']} assessed · "
+            f"{summary['n_high_revision_servers']} high-revision server(s). Receipt custody: "
+            "embedded_unverified. Every blocker row is shown; only the first 50 assessed rows are shown."
+        )
+        if len(ordinary) > 50:
+            row_copy += f" {len(ordinary) - 50} additional assessed row(s) are omitted from this sheet."
+    else:
+        row_copy = (
+            "NOT ASSESSED — authoritative subject-row counts are unavailable. Re-collect and validate "
+            "the VTP status evidence before acceptance."
+        )
+    ws.cell(2, 1, row_copy).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(2, 1).font = Font(bold=not view or bool(blockers), color="7F6000" if not view or blockers else "1F1F1F")
+    ws.row_dimensions[2].height = 42
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
+    if view:
+        coverage_counts = summary["by_coverage_status"]
+        coverage_copy = (
+            "Host coverage (producer-owned fleet census; distinct from subject rows): "
+            f"{summary['n_hosts']} host(s) · {summary['n_subject_hosts']} subject host(s) · "
+            f"coverage cells — {coverage_counts['review']} review, "
+            f"{coverage_counts['not_verified']} not verified, {coverage_counts['assessed']} assessed, "
+            f"and {coverage_counts['not_applicable']} not applicable."
+        )
+        if verdict.upper() == "NOT_APPLICABLE":
+            coverage_copy += (
+                " NOT_APPLICABLE means no positive local VTP-status subject was identified in the bounded "
+                "input; it is not proof that VTP is absent from the platform or network."
+            )
+    else:
+        coverage_copy = (
+            "Host coverage counts are unavailable; zero visible VTP rows is not proof that VTP is absent."
+        )
+    ws.cell(3, 1, coverage_copy).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(3, 1).fill = PatternFill("solid", fgColor="FFF2CC" if not view or blockers or verdict.upper() == "NOT_APPLICABLE" else "E2F0D9")
+    ws.cell(3, 1).font = Font(bold=not view or bool(blockers) or verdict.upper() == "NOT_APPLICABLE", color="7F6000" if not view or blockers or verdict.upper() == "NOT_APPLICABLE" else "1F1F1F")
+    ws.row_dimensions[3].height = 46
+
+    ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=last_col)
+    limits = (
+        "Boundaries: local status only. No VLAN-database equality/content, advertisement or per-VLAN "
+        "propagation, intended-version/compatibility, pruning, password/authentication, freshness, "
+        "simultaneous state, failover, revision-reset safety, or cutover-authorization proof is established. "
+        "Raw captures, hashes, source locators, and filesystem paths are not rendered."
+    )
+    ws.cell(4, 1, limits).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(4, 1).font = Font(italic=True, color="666666")
+    ws.row_dimensions[4].height = 44
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(5, col, header)
+        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+        cell.fill = PatternFill("solid", fgColor=_CENSUS_HDR_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[5].height = 34
+
+    for row_index, row in enumerate(shown, 6):
+        coverage = coverage_by_host.get(row.get("switch"), {})
+        status = _vtp_operator_text(row.get("status")) or "not_verified"
+        revision = _vtp_operator_text(row.get("revision")) if row.get("revision_present") is True else "not reported"
+        domain = _vtp_operator_text(row.get("domain")) if row.get("domain_present") is True else "not reported"
+        if row.get("domain_present") is True and not domain:
+            domain = "empty"
+        version = _vtp_operator_text(row.get("version")) if row.get("version_present") is True else "not reported"
+        acceptance = _vtp_operator_text(row.get("acceptance"))
+        finding = _vtp_findings_text(row.get("findings"))
+        vals = [
+            status.replace("_", " ").upper(),
+            _vtp_operator_text(row.get("switch")),
+            _vtp_operator_text(row.get("platform")) or "—",
+            _vtp_operator_text(row.get("mode")) or "unknown",
+            domain,
+            revision,
+            version,
+            _vtp_operator_text(coverage.get("capture_status")) or "not reported",
+            _vtp_operator_text(coverage.get("parser_status")) or "not reported",
+            _vtp_operator_text(row.get("command")) or "show vtp status",
+            _vtp_operator_text(row.get("projection_custody")) or "embedded_unverified",
+            "\n".join(part for part in (acceptance, finding) if part) or "—",
+        ]
+        fill = "FCE5CD" if status in {"review", "not_verified"} else "E2F0D9"
+        for col, value in enumerate(vals, 1):
+            cell = ws.cell(row_index, col, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=col >= 4)
+            cell.fill = PatternFill("solid", fgColor=fill)
+            if status in {"review", "not_verified"} and col == 1:
+                cell.font = Font(bold=True, color="7F6000")
+
+    widths = [18, 22, 15, 17, 22, 18, 22, 18, 18, 22, 25, 78]
+    for col, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = "A6"
+    ws.auto_filter.ref = f"A5:{get_column_letter(last_col)}{max(5, 5 + len(shown))}"
+    logger.info(
+        "  [OK] '%s' sheet: %d displayed row(s), %d blocker(s), %d assessed row(s) omitted",
+        VTP_SAFETY_SHEET_NAME, len(shown), len(blockers), max(0, len(ordinary) - 50),
+    )
+
+
+def _ipv6_routing_surface_receipt(value):
+    """Return only a validated serialized IPv6 routing audit receipt.
+
+    A workbook is an audit projection, not a current-run decision owner.  The
+    explicit custody check prevents persisted JSON from promoting a serialized
+    ``current_run_source_bound`` claim.
+    """
+
+    try:
+        from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
+
+        view = validate_ipv6_routing_adjacency_baseline(value, require_current_run=False)
+    except Exception:
+        return None
+    if not isinstance(view, dict) or view.get("valid") is not True:
+        return None
+    receipt = view.get("baseline")
+    rows = view.get("rows")
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != "ipv6_routing_adjacency_baseline/1"
+        or receipt.get("projection_custody") != "embedded_unverified"
+        or not isinstance(rows, list)
+        or any(not isinstance(row, dict) for row in rows)
+    ):
+        return None
+    coverage = receipt.get("coverage")
+    summary = receipt.get("summary")
+    if (
+        not isinstance(coverage, list)
+        or any(not isinstance(cell, dict) for cell in coverage)
+        or not isinstance(summary, dict)
+        or not isinstance(summary.get("by_status"), dict)
+        or not isinstance(summary.get("by_coverage_status"), dict)
+    ):
+        return None
+    return {
+        "receipt": receipt,
+        "rows": rows,
+        "coverage": coverage,
+        "coverage_by_subject": {
+            (cell.get("switch"), cell.get("protocol")): cell for cell in coverage
+        },
+        "summary": summary,
+    }
+
+
+def _ipv6_routing_operator_text(value) -> str:
+    """Project one bounded typed scalar; arbitrary/debug objects never stringify."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value) if isinstance(value, (str, int, float)) else ""
+
+
+def _ipv6_routing_findings_text(value) -> str:
+    """Render only validator-authorized finding code and issue leaves."""
+
+    if not isinstance(value, list):
+        return ""
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = " — ".join(filter(None, (
+            _ipv6_routing_operator_text(item.get("code")),
+            _ipv6_routing_operator_text(item.get("issue")),
+        )))
+        if text:
+            parts.append(text)
+    return "; ".join(parts)
+
+
+def write_ipv6_routing_adjacency_sheet(wb, baseline) -> None:
+    """Write the closed IPv6 OSPFv3/BGPv6 adjacency audit projection.
+
+    Every degraded, review, and not-verified row survives the display cap; at
+    most the first 50 assessed rows are shown.  Fleet coverage is copied only
+    from the producer-owned ``summary.by_coverage_status`` census.  Per-input
+    coverage is used solely to qualify a matching row.  Raw captures, hashes,
+    source locators, and filesystem paths are never rendered.
+    """
+
+    view = _ipv6_routing_surface_receipt(baseline)
+    receipt = view["receipt"] if view else {}
+    summary = view["summary"] if view else {}
+    rows = view["rows"] if view else []
+    coverage_by_subject = view["coverage_by_subject"] if view else {}
+    blocker_statuses = {"degraded", "review", "not_verified"}
+    blockers = [row for row in rows if row.get("status") in blocker_statuses]
+    ordinary = [row for row in rows if row.get("status") == "assessed"]
+    shown = blockers + ordinary[:50]
+
+    ws = _new_sheet(wb, IPV6_ROUTING_SHEET_NAME)
+    headers = [
+        "Status", "Device", "Platform", "Protocol", "Observed peer", "Process",
+        "Interface", "Remote AS", "Role", "Observed state", "Normalized state",
+        "Observed prefixes", "Capture status", "Parser status", "Command",
+        "Projection custody", "Acceptance / finding",
+    ]
+    last_col = len(headers)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    verdict = _ipv6_routing_operator_text(
+        receipt.get("verdict") if view else "NOT ASSESSED"
+    ) or "NOT ASSESSED"
+    banner = (
+        "IPV6 ROUTING ADJACENCY GATE — OBSERVED OSPFV3 AND IPV6-UNICAST BGP · "
+        f"{verdict.upper()}. Every DEGRADED, REVIEW, and NOT VERIFIED row is a "
+        "pre-cutover blocker; matching a degraded state is NOT ACCEPTANCE."
+    ) if view else (
+        "IPV6 ROUTING ADJACENCY GATE — NOT ASSESSED. "
+        "ipv6_routing_adjacency_baseline/1 is absent, malformed, or not an "
+        "embedded-unverified serialized receipt. No rejected receipt leaves or IPv6 routing "
+        "conclusion are shown."
+    )
+    cell = ws.cell(1, 1, banner)
+    cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    cell.fill = PatternFill(
+        "solid", fgColor="C00000" if any(row.get("status") == "degraded" for row in blockers)
+        else "BF9000" if blockers or verdict.upper() in {"INDETERMINATE", "NOT_APPLICABLE"}
+        else WORKBOOK_NAVY_HEX,
+    )
+    cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 54
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+    if view:
+        by_status = summary["by_status"]
+        row_copy = (
+            f"Observed adjacency rows: {summary['n_rows']} · {by_status['degraded']} degraded · "
+            f"{by_status['review']} review · {by_status['not_verified']} not verified · "
+            f"{by_status['assessed']} assessed. OSPFv3: {summary['n_ospfv3_rows']} · "
+            f"BGPv6: {summary['n_bgpv6_rows']}. Receipt custody: embedded_unverified. "
+            "Every blocker row is shown; only the first 50 assessed rows are shown."
+        )
+        if len(ordinary) > 50:
+            row_copy += f" {len(ordinary) - 50} additional assessed row(s) are omitted from this sheet."
+    else:
+        row_copy = (
+            "NOT ASSESSED — authoritative row counts are unavailable. Re-collect and validate "
+            "IPv6 route-summary, OSPFv3-neighbor, and BGP IPv6-unicast summary evidence before acceptance."
+        )
+    ws.cell(2, 1, row_copy).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(2, 1).font = Font(
+        bold=not view or bool(blockers),
+        color="7F6000" if not view or blockers else "1F1F1F",
+    )
+    ws.row_dimensions[2].height = 44
+
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
+    if view:
+        coverage_counts = summary["by_coverage_status"]
+        coverage_copy = (
+            "Fleet coverage (producer-owned census; distinct from adjacency rows): "
+            f"{summary['n_hosts']} host(s) · {summary['n_subject_hosts']} subject host(s) · "
+            "host-family/input cells — "
+            f"{coverage_counts['degraded']} degraded, {coverage_counts['review']} review, "
+            f"{coverage_counts['not_verified']} not verified, {coverage_counts['assessed']} assessed, "
+            f"and {coverage_counts['not_applicable']} not applicable. Coverage records are drilldown "
+            "only; fleet totals come from summary.by_coverage_status."
+        )
+        if verdict.upper() == "NOT_APPLICABLE":
+            coverage_copy += (
+                " NOT_APPLICABLE means no positive bounded subject was identified; it is not proof "
+                "that IPv6 routing or an expected adjacency is absent."
+            )
+    else:
+        coverage_copy = (
+            "Fleet coverage counts are unavailable; zero visible adjacency rows is not proof that "
+            "IPv6 routing or expected peers are absent."
+        )
+    ws.cell(3, 1, coverage_copy).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(3, 1).fill = PatternFill(
+        "solid", fgColor="FFF2CC" if not view or blockers or verdict.upper() == "NOT_APPLICABLE"
+        else "E2F0D9",
+    )
+    ws.cell(3, 1).font = Font(
+        bold=not view or bool(blockers) or verdict.upper() == "NOT_APPLICABLE",
+        color="7F6000" if not view or blockers or verdict.upper() == "NOT_APPLICABLE" else "1F1F1F",
+    )
+    ws.row_dimensions[3].height = 54
+
+    ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=last_col)
+    ws.cell(4, 1, (
+        "Boundaries: observed default/global runtime OSPFv3 and IPv6-unicast BGP peers only; no "
+        "configured or expected-peer denominator. Empty or NOT_APPLICABLE evidence is not proof of "
+        "absence. OSPFv3 process, area, network type, timers, authentication, LSDB correctness, "
+        "persistence, and convergence history are incomplete or outside this receipt. BGPv6 policy, "
+        "activation intent, route correctness, other VRFs/address families, and configured-but-unobserved "
+        "peers remain outside it; RIB/FIB/path selection, freshness, simultaneity, interoperability, and "
+        "cutover authorization are unproved. IPv6 route-summary counts are point-in-time census context; "
+        "BGP prefix counts are informational and are not pinned acceptance targets. Raw captures, hashes, "
+        "source locators, and filesystem paths are not rendered."
+    )).alignment = Alignment(vertical="center", wrap_text=True)
+    ws.cell(4, 1).font = Font(italic=True, color="666666")
+    ws.row_dimensions[4].height = 58
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(5, col, header)
+        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+        cell.fill = PatternFill("solid", fgColor=_CENSUS_HDR_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[5].height = 36
+
+    for row_index, row in enumerate(shown, 6):
+        status = _ipv6_routing_operator_text(row.get("status")) or "not_verified"
+        protocol = _ipv6_routing_operator_text(row.get("protocol"))
+        coverage = coverage_by_subject.get((row.get("switch"), row.get("protocol")), {})
+        prefix_count = (
+            _ipv6_routing_operator_text(row.get("prefix_count"))
+            if row.get("prefix_count_present") is True else "not reported"
+        )
+        acceptance = _ipv6_routing_operator_text(row.get("acceptance"))
+        finding = _ipv6_routing_findings_text(row.get("findings"))
+        vals = [
+            status.replace("_", " ").upper(),
+            _ipv6_routing_operator_text(row.get("switch")),
+            _ipv6_routing_operator_text(row.get("platform")) or "—",
+            protocol,
+            _ipv6_routing_operator_text(row.get("peer")),
+            _ipv6_routing_operator_text(row.get("process")) or "—",
+            _ipv6_routing_operator_text(row.get("interface")) or "—",
+            _ipv6_routing_operator_text(row.get("remote_as")) or "—",
+            _ipv6_routing_operator_text(row.get("role")) or "—",
+            _ipv6_routing_operator_text(row.get("state_raw")) or "not reported",
+            _ipv6_routing_operator_text(row.get("state")) or "not reported",
+            prefix_count,
+            _ipv6_routing_operator_text(coverage.get("capture_status")) or "not reported",
+            _ipv6_routing_operator_text(coverage.get("parser_status")) or "not reported",
+            _ipv6_routing_operator_text(row.get("command")),
+            _ipv6_routing_operator_text(row.get("projection_custody")) or "embedded_unverified",
+            "\n".join(part for part in (acceptance, finding) if part) or "—",
+        ]
+        fill = "F4CCCC" if status == "degraded" else (
+            "FCE5CD" if status in {"review", "not_verified"} else "E2F0D9"
+        )
+        for col, value in enumerate(vals, 1):
+            cell = ws.cell(row_index, col, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=col >= 4)
+            cell.fill = PatternFill("solid", fgColor=fill)
+            if status in blocker_statuses and col == 1:
+                cell.font = Font(bold=True, color="9C0006" if status == "degraded" else "7F6000")
+
+    widths = [18, 22, 15, 14, 34, 15, 22, 14, 16, 24, 18, 18, 18, 18, 36, 24, 78]
+    for col, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = "A6"
+    ws.auto_filter.ref = f"A5:{get_column_letter(last_col)}{max(5, 5 + len(shown))}"
+    logger.info(
+        "  [OK] '%s' sheet: %d displayed row(s), %d blocker(s), %d assessed row(s) omitted",
+        IPV6_ROUTING_SHEET_NAME, len(shown), len(blockers), max(0, len(ordinary) - 50),
+    )
+
+
+def write_protocol_health_sheet(wb, records: List[dict], *, unavailable: bool = False) -> None:
+    """Write sparse observed-state rows from ``compute_protocol_health``.
+
+    A missing row is not a healthy row.  The exact per-device/family denominator
+    is rendered in the Protocol assessability block on Collection Completeness.
+    """
 
     ws = _new_sheet(wb, PROTOCOL_HEALTH_SHEET_NAME)
     headers = ["Switch", "Protocol", "Summary", "Detail", "Health"]
@@ -1273,7 +2548,14 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343")
         c.alignment = Alignment(horizontal="center")
-    word = {"High": "DEGRADED", "Medium": "WARNING", "Low": "MINOR", "Info": "OK"}
+    word = {"High": "DEGRADED", "Medium": "WARNING", "Low": "MINOR",
+            "Info": "OBSERVED · NO SUPPORTED ISSUE"}
+    if unavailable:
+        ws.cell(2, 1, "UNVERIFIED - protocol-health computation failed or was unavailable; "
+                      "no control-plane health conclusion is asserted.")
+    elif not records:
+        ws.cell(2, 1, "NO OBSERVED PROTOCOL HEALTH ROWS - absence is not healthy. Review the runtime "
+                      "Protocol assessability receipt on Collection Completeness.")
     for r, rec in enumerate(records, 2):
         vals = [rec["switch"], rec["protocol"], rec["summary"], rec["detail"],
                 word.get(rec["severity"], rec["severity"])]
@@ -1282,7 +2564,7 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
             if col == 5 and rec["severity"] in _SEV_FILL:
                 c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
                 c.font = Font(bold=True)
-    for i, w in enumerate([16, 13, 46, 50, 11], 1):
+    for i, w in enumerate([16, 13, 46, 50, 32], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     n_bad = sum(1 for x in records if x["severity"] in ("High", "Medium"))
@@ -1656,15 +2938,17 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
 
 COLLECTION_COMPLETENESS_SHEET_NAME = "Collection Completeness"   # NEW-V3.23.109
 
-def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict] = None) -> None:
+def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict] = None,
+                                        protocol_assessability: Optional[dict] = None) -> None:
     """Write the 'Collection Completeness' sheet from compute_collection_completeness(): the
     pre-assessment blind-spot list -- inventory devices that were not collected / only partially
     collected, and which essential commands are missing. Lead row is the summary.
 
     Plan A / Tier-1 #3: a PARSE YIELD section follows the device rows — commands that returned
     real content but whose parser produced 0 entities (collected-but-unparsed evidence; a
-    possible platform-variant format gap, NEVER a device verdict). Appended BELOW the existing
-    layout so the frozen sheet-schema header row is untouched."""
+    possible platform-variant format gap, NEVER a device verdict). When supplied, the runtime
+    protocol-assessability receipt follows it with the exact seven-family x device denominator.
+    Both additions stay BELOW the existing layout so the frozen sheet-schema header is untouched."""
     ws = _new_sheet(wb, COLLECTION_COMPLETENESS_SHEET_NAME)
     s = (cc or {}).get("summary") or {}
     ws.cell(1, 1, "Inventory").font = Font(bold=True)
@@ -1681,7 +2965,9 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
     fill = {"not collected": "F4CCCC", "partial": "FCE5CD"}
     rows = (cc or {}).get("devices") or []
     if not rows:
-        ws.cell(4, 1, "All inventory devices fully collected — no blind spots.")
+        ws.cell(4, 1, "All inventory devices satisfy the baseline essential command groups — "
+                      "no baseline collection blind spots. Protocol-specific evidence gaps may "
+                      "remain; review the Protocol assessability receipt below.")
     for r, d in enumerate(rows, 4):
         vals = [d.get("status", ""), d.get("host", ""), f"{d.get('data_quality', 0)}%",
                 ", ".join(d.get("missing", []))]
@@ -1729,14 +3015,70 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
         ws.cell(r, 1, "… event list truncated at the cap — per-parser counters above carry "
                       "the full counts").font = Font(italic=True)
 
-    # widths serve BOTH stacked sections (Status/Class, Device/Parser, quality/Device,
-    # missing-commands/Command, -/Lines-in) — D keeps the original 46 for the long lists
-    for i, w in enumerate([21, 34, 24, 46, 10], 1):
+    # --- Runtime protocol assessability — one exact row per inventory device x seven families ---
+    pa_rows: List[dict] = []
+    pa_summary: dict = {}
+    if protocol_assessability is not None:
+        pa = protocol_assessability if isinstance(protocol_assessability, dict) else {}
+        pa_rows = [row for row in (pa.get("rows") or []) if isinstance(row, dict)]
+        pa_summary = pa.get("summary") if isinstance(pa.get("summary"), dict) else {}
+        contract_by_protocol = {
+            family.get("protocol"): family
+            for family in (pa.get("families") or []) if isinstance(family, dict)
+        }
+        pa0 = r + (1 if py.get("events_truncated") else 0) + 2
+        ws.cell(pa0, 1, "Protocol assessability — runtime family × device receipt").font = Font(bold=True)
+        if pa.get("schema") != "protocol_assessability/1" or not pa_rows:
+            ws.cell(pa0, 3, "UNAVAILABLE — no family/device protocol coverage conclusion is asserted. "
+                            "Absence of health rows is not healthy.").font = Font(italic=True)
+        else:
+            by_state = pa_summary.get("by_state") if isinstance(pa_summary.get("by_state"), dict) else {}
+            n_assessed = by_state.get("assessed", 0)
+            n_partial = by_state.get("partial", 0)
+            n_cells = pa_summary.get("n_cells", len(pa_rows))
+            n_unassessed = max(0, n_cells - n_assessed - n_partial)
+            ws.cell(pa0, 3, f"health row emitted for {pa_summary.get('n_health_rows', 0)} of {n_cells} "
+                            f"host-family cells · {n_assessed} assessed · {n_partial} partial · "
+                            f"{n_unassessed} abstained/unassessed — missing is never healthy").font = Font(italic=True)
+        pa_headers = ["Assessment", "Device", "Protocol", "Capture / input states", "Boundary and next action"]
+        for col, header in enumerate(pa_headers, 1):
+            cell = ws.cell(pa0 + 1, col, header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="434343")
+            cell.alignment = Alignment(horizontal="center")
+        pa_fill = {
+            "assessed": "D9EAD3",
+            "partial": "FFF2CC",
+            "captured_no_record": "FCE5CD",
+            "captured_empty": "FCE5CD",
+            "capture_error": "F4CCCC",
+            "not_collected": "F4CCCC",
+            "analysis_unavailable": "F4CCCC",
+        }
+        for row_number, record in enumerate(pa_rows, pa0 + 2):
+            state = str(record.get("state", ""))
+            input_states = record.get("input_states") if isinstance(record.get("input_states"), dict) else {}
+            capture = str(record.get("capture_state", ""))
+            state_text = "; ".join(f"{name}={value}" for name, value in input_states.items())
+            contract = contract_by_protocol.get(record.get("protocol"), {})
+            next_action = str(contract.get("recollect", "") or "") if isinstance(contract, dict) else ""
+            reason = str(record.get("reason", "") or "")
+            vals = [state.replace("_", " ").upper(), record.get("switch", ""),
+                    record.get("protocol", ""), f"{capture} · {state_text}".rstrip(" ·"),
+                    reason + (f" Next: {next_action}" if next_action else "")]
+            for col, value in enumerate(vals, 1):
+                cell = ws.cell(row_number, col, value)
+                if col == 1 and state in pa_fill:
+                    cell.fill = PatternFill("solid", fgColor=pa_fill[state])
+                    cell.font = Font(bold=True)
+
+    # widths serve all three stacked sections; E carries the assessability boundary + recollection action.
+    for i, w in enumerate([24, 34, 24, 52, 86], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A4"
     logger.info(f"  [OK] '{COLLECTION_COMPLETENESS_SHEET_NAME}' sheet: {len(rows)} blind spot(s) "
                 f"of {s.get('inventory', 0)} inventory device(s); parse-yield suspects: "
-                f"{ps.get('zero_yield_suspect', 0)}")
+                f"{ps.get('zero_yield_suspect', 0)}; protocol assessability rows: {len(pa_rows)}")
 
 
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
@@ -2287,7 +3629,9 @@ VALIDATION_PLAN_SHEET_NAME = "Cutover Validation"   # NEW-V3.23.143 (per-wave po
 
 def write_validation_plan_sheet(wb, vp: dict) -> None:
     """Write 'Cutover Validation' from compute_validation_plan(): the per-wave checks to run AFTER each
-    cutover, each with the command + the expected good result captured from the pre-cutover state. Row 1
+    cutover, each with the command plus its observed baseline and acceptance condition.  A degraded
+    baseline is a blocker, never an accepted-good target.  Evidence-bearing rows additionally disclose
+    the producer-owned evidence state, embedded-projection custody boundary, and source locator.  Row 1
     carries the how-to-use banner."""
     if VALIDATION_PLAN_SHEET_NAME in wb.sheetnames:
         del wb[VALIDATION_PLAN_SHEET_NAME]
@@ -2295,8 +3639,33 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
     p = vp or {}
     items = p.get("items") or []
     s = p.get("summary") or {}
-    b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Run after each wave's cutover to confirm it succeeded."))
-    b.font = Font(bold=True, color="1F6E43", size=10)
+
+    def _evidence_blocker(it) -> bool:
+        if not isinstance(it, dict):
+            return False
+        state = str(it.get("evidence_state") or "").strip().lower()
+        expected = str(it.get("expect") or "").strip().upper()
+        return state in {"degraded", "review", "not_verified"} or expected.startswith(
+            ("PRE-CUTOVER DEGRADED — BLOCKER:", "PRE-CUTOVER REVIEW — BLOCKER:",
+             "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER:",
+             "ROUTING BASELINE NOT VERIFIED — BLOCKER:",
+             "ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:")
+        )
+
+    def _custody_label(value) -> str:
+        token = str(value or "").strip()
+        if token == "embedded_unverified":
+            return "embedded_unverified — embedded projection; integrity unverified"
+        return token or "—"
+
+    evidence_blockers = [it for it in items if _evidence_blocker(it)]
+    banner = p.get("banner") or "Run after each wave's cutover to confirm it succeeded."
+    if evidence_blockers and "Evidence-state blockers apply to every protocol" not in banner:
+        banner += (" Evidence-state blockers apply to every protocol: DEGRADED, REVIEW, and BASELINE NOT "
+                   "VERIFIED rows require resolution, re-collection, or explicit disposition before "
+                   "acceptance; matching a degraded observation is not acceptance.")
+    b = ws.cell(1, 1, ("⚠ " if evidence_blockers else "✓ ") + banner)
+    b.font = Font(bold=True, color="9C5700" if evidence_blockers else "1F6E43", size=10)
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     # 'validation group(s)', not 'wave(s)': n_waves here is the validation_plan.by_wave count (per move-group,
     # the 3 groups with checks) -- a distinct unit from the sequenced wave_plan waves (the 9). Mirrors the
@@ -2307,7 +3676,8 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
                   + ", ".join(f"{k} {v}" for k, v in (s.get("by_category") or {}).items())).font = Font(size=10)
     hdr_row = 4
     cols = ["#", "Wave", "Device", "Platform", "Category", "Severity", "Check",
-            "Command", "Expect (good result)", "Why it matters"]
+            "Command", "Observed baseline / acceptance", "Evidence state",
+            "Projection custody", "Source key", "Why it matters"]
     for i, h in enumerate(cols, 1):
         c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
         c.fill = PatternFill("solid", fgColor="1F6E43")
@@ -2318,15 +3688,24 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
     r = hdr_row + 1
     for n, it in enumerate(items, 1):
         vals = [n, it.get("wave"), it.get("device"), it.get("platform"), it.get("category"),
-                it.get("severity"), it.get("check"), it.get("command"), it.get("expect"), it.get("why")]
+                it.get("severity"), it.get("check"), it.get("command"), it.get("expect"),
+                it.get("evidence_state") or "—", _custody_label(it.get("projection_custody")),
+                it.get("source_key") or "—", it.get("why")]
         for col, v in enumerate(vals, 1):
-            c = ws.cell(r, col, v); c.font = (MONO if col in (8, 9) else DAT)
+            c = ws.cell(r, col, v); c.font = (MONO if col in (8, 9, 11, 12) else DAT)
             c.alignment = Alignment(horizontal="center" if col in (1, 4, 6) else "left",
-                                    vertical="top", wrap_text=col in (7, 8, 9, 10))
+                                    vertical="top", wrap_text=col in (7, 8, 9, 10, 11, 12, 13))
             if col == 6:
                 c.fill = PatternFill("solid", fgColor=SEVFILL.get(v, "FFFFFF"))
+            if col == 10:
+                c.fill = PatternFill("solid", fgColor={
+                    "assessed": "D9EAD3", "degraded": "F4CCCC",
+                    "review": "FFF2CC", "not_verified": "FFF2CC",
+                }.get(str(v).strip().lower(), "EFEFEF"))
+            if col == 11 and str(it.get("projection_custody") or "") == "embedded_unverified":
+                c.fill = PatternFill("solid", fgColor="FFF2CC")
         r += 1
-    for i, w in enumerate([5, 12, 22, 9, 14, 10, 40, 34, 40, 50], 1):
+    for i, w in enumerate([5, 12, 22, 9, 14, 10, 40, 34, 42, 16, 36, 42, 50], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{VALIDATION_PLAN_SHEET_NAME}' sheet: {len(items)} check(s), "
                 f"{s.get('n_waves', 0)} validation group(s)")
@@ -2345,9 +3724,26 @@ def write_nrfu_commands_sheet(wb, nc: dict) -> None:
     ws = _new_sheet(wb, NRFU_COMMANDS_SHEET_NAME)
     p = nc or {}
     s = p.get("summary") or {}
-    b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Four-phase NRFU certification pack: confirm each "
-                                                 "read-only command's output matches the expected value."))
-    b.font = Font(bold=True, color="1F4E79", size=10)
+    evidence_cases = [
+        case
+        for wave in p.get("waves") or []
+        for dev in wave.get("devices") or []
+        for case in dev.get("cases") or []
+        if case.get("evidence_state")
+    ]
+    evidence_blockers = [
+        case for case in evidence_cases
+        if str(case.get("evidence_state") or "").strip().lower() in
+        {"degraded", "review", "not_verified"}
+    ]
+    banner = p.get("banner") or ("Four-phase NRFU certification pack: confirm each read-only command's "
+                                  "output meets its stated acceptance criterion.")
+    if evidence_blockers and "Evidence-state blockers apply to every protocol" not in banner:
+        banner += (" Evidence-state blockers apply to every protocol: DEGRADED, REVIEW, and BASELINE NOT "
+                   "VERIFIED cases require resolution, re-collection, or explicit disposition before "
+                   "acceptance; matching a degraded observation is not acceptance.")
+    b = ws.cell(1, 1, ("⚠ " if evidence_blockers else "✓ ") + banner)
+    b.font = Font(bold=True, color="9C5700" if evidence_blockers else "1F4E79", size=10)
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     _byp = s.get("by_phase") or {}
     ws.cell(2, 1, f"{s.get('n_cases', 0)} case(s) across {s.get('n_waves', 0)} wave(s) / "
@@ -2357,7 +3753,7 @@ def write_nrfu_commands_sheet(wb, nc: dict) -> None:
                     f"{s.get('n_human_executed', 0)} human-executed (Phase IV)").font = Font(size=10)
     hdr_row = 4
     cols = ["#", "Wave", "Device", "Dialect", "Case ID", "Phase", "Scope",
-            "Command", "Expected (from snapshot)", "Source key"]
+            "Command", "Expected (from snapshot)", "Evidence state", "Projection custody", "Source key"]
     for i, h in enumerate(cols, 1):
         c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
         c.fill = PatternFill("solid", fgColor="1F4E79")
@@ -2375,17 +3771,28 @@ def write_nrfu_commands_sheet(wb, nc: dict) -> None:
                 ph = case.get("phase")
                 vals = [n, w.get("wave_id"), dev.get("host"), dev.get("platform_dialect"),
                         case.get("id"), ROMAN.get(ph, ph), case.get("scope"),
-                        case.get("command"), case.get("expected"), case.get("source_key")]
+                        case.get("command"), case.get("expected"), case.get("evidence_state") or "—",
+                        case.get("projection_custody") or "—", case.get("source_key")]
                 for col, v in enumerate(vals, 1):
-                    c = ws.cell(r, col, v); c.font = (MONO if col in (5, 8, 9, 10) else DAT)
+                    c = ws.cell(r, col, v); c.font = (MONO if col in (5, 8, 9, 12) else DAT)
                     c.alignment = Alignment(horizontal="center" if col in (1, 4, 6, 7) else "left",
-                                            vertical="top", wrap_text=col in (8, 9, 10))
+                                            vertical="top", wrap_text=col in (8, 9, 10, 11, 12))
                     if col == 6:
                         c.fill = PatternFill("solid", fgColor=PHASEFILL.get(ph, "FFFFFF"))
+                state = str(case.get("evidence_state") or "").strip().lower()
+                state_fill = {
+                    "assessed": "D9EAD3", "degraded": "F4CCCC",
+                    "review": "FFF2CC", "not_verified": "FFF2CC",
+                }.get(state)
+                if state_fill:
+                    ws.cell(r, 9).fill = PatternFill("solid", fgColor=state_fill)
+                    ws.cell(r, 10).fill = PatternFill("solid", fgColor=state_fill)
+                if case.get("projection_custody") == "embedded_unverified":
+                    ws.cell(r, 11).fill = PatternFill("solid", fgColor="FFF2CC")
                 if str(case.get("expected", "")).startswith("[NOT OBSERVED"):
                     ws.cell(r, 9).fill = PatternFill("solid", fgColor="EFEFEF")
                 r += 1
-    for i, w in enumerate([5, 12, 22, 9, 18, 8, 12, 34, 52, 32], 1):
+    for i, w in enumerate([5, 12, 22, 9, 18, 8, 12, 34, 52, 16, 20, 32], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{NRFU_COMMANDS_SHEET_NAME}' sheet: {s.get('n_cases', 0)} case(s), "
                 f"{s.get('n_waves', 0)} wave(s)")
@@ -2747,6 +4154,207 @@ def write_path_intents_sheet(wb, pa: dict) -> None:
     for i, w in enumerate([20, 18, 18, 12, 14, 28], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{PATH_INTENTS_SHEET_NAME}' sheet: {len(rows)} intent(s)")
+
+
+TRAFFIC_ASSURANCE_SHEET_NAME = "Traffic Assurance"
+_TRAFFIC_ASSURANCE_COLUMNS = [
+    "Projection State", "Coverage Disclosure", "Canonical Summary", "Set Schema", "Set Owner", "Record #",
+    "Flow ID", "Source", "Destination", "Protocol", "Source Port", "Destination Port",
+    "Expected", "Return Required", "Required MTU", "VRF", "Valid", "Validation Errors", "Supported",
+    "Custody Trust",
+    "Overall Verdict", "Verdict Reasons", "Unsupported Semantics",
+    "Path Forward", "Path Return", "RPF Verdict", "Symmetric",
+    "Policy Forward", "Policy Return", "MTU Forward", "MTU Return",
+    "ECMP Forward", "ECMP Return", "Failure Requested", "Failure Action", "Failure Status", "Failure Verdict",
+    "Claims", "NRFU Test IDs", "Sources", "Limitations", "Result Schema", "Result Owner",
+]
+_TRAFFIC_ASSURANCE_DISCLOSURES = {
+    "ready": "Canonical projection only; path, policy, MTU, and ECMP are not recalculated in the workbook.",
+    "empty": "[EMPTY] The canonical set contains zero result records; no traffic assurance is implied.",
+    "loading": "[LOADING] Canonical traffic-assurance results are not available; no assurance is implied.",
+    "error": "[ERROR] The canonical traffic-assurance set is unavailable or malformed; no assurance is implied.",
+    "not_supplied": "[NOT ASSESSED] A canonical traffic-assurance set was not supplied; no assurance is implied.",
+}
+_TRAFFIC_ASSURANCE_FILL = {
+    "proven": "C6EFCE",
+    "refuted": "FFC7CE",
+    "not_observed": "D9D9D9",
+    "indeterminate": "FFEB9C",
+    "not_requested": "EFEFEF",
+    "ready": "C6EFCE",
+    "empty": "D9D9D9",
+    "loading": "DDEBF7",
+    "error": "FFC7CE",
+    "not_supplied": "D9D9D9",
+}
+
+
+def _traffic_assurance_scalar(value, *, absent="[NOT OBSERVED]"):
+    """Return only workbook-safe scalar data; never stringify a nested/raw evidence object."""
+    if value is None:
+        return absent
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return value
+    return "[MALFORMED SCALAR]"
+
+
+def _traffic_assurance_list(value, *, absent="[NOT OBSERVED]") -> str:
+    """Render an ordered canonical string list without exposing arbitrary nested payloads."""
+    if value is None:
+        return absent
+    if not isinstance(value, list):
+        return "[MALFORMED LIST]"
+    if not value:
+        return "[none]"
+    return "; ".join(str(_traffic_assurance_scalar(item, absent="[missing item]")) for item in value)
+
+
+def _traffic_assurance_nested(row: dict, *path):
+    current = row
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _traffic_assurance_summary(payload: dict) -> str:
+    """Project the producer's summary verbatim; deliberately do not recount result rows here."""
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return "[NOT OBSERVED] Canonical summary is absent or malformed"
+    keys = ("n", "proven", "refuted", "not_observed", "indeterminate", "invalid")
+    return "; ".join(
+        f"{key}={_traffic_assurance_scalar(summary.get(key))}"
+        for key in keys
+    )
+
+
+def _traffic_assurance_claims(value) -> str:
+    """Project typed-claim identity and verdict fields without serializing unknown claim extensions."""
+    if value is None:
+        return "[NOT OBSERVED]"
+    if not isinstance(value, list):
+        return "[MALFORMED LIST]"
+    if not value:
+        return "[none]"
+    rendered = []
+    for claim in value:
+        if not isinstance(claim, dict):
+            rendered.append("[MALFORMED CLAIM]")
+            continue
+        scalar = _traffic_assurance_scalar
+        rendered.append(
+            f"{scalar(claim.get('id'))}: {scalar(claim.get('predicate'))}="
+            f"{scalar(claim.get('verdict'))} [{scalar(claim.get('applicability'), absent='applicable')}]"
+        )
+    return "; ".join(rendered)
+
+
+def _traffic_assurance_projection_state(payload) -> tuple:
+    if payload is None:
+        return "not_supplied", None
+    if not isinstance(payload, dict):
+        return "error", None
+    declared_state = str(payload.get("state") or payload.get("status") or "").strip().lower()
+    if declared_state == "loading":
+        return "loading", payload
+    if declared_state == "error":
+        return "error", payload
+    if payload.get("schema") != TRAFFIC_ASSURANCE_SET_SCHEMA:
+        return "error", payload
+    if not isinstance(payload.get("results"), list):
+        return "error", payload
+    return ("ready" if payload["results"] else "empty"), payload
+
+
+def _traffic_assurance_result_values(payload: dict, row, index: int) -> list:
+    summary = _traffic_assurance_summary(payload)
+    if not isinstance(row, dict):
+        return [
+            "error", "[ERROR] Canonical result record is malformed; it was not silently dropped.",
+            summary, _traffic_assurance_scalar(payload.get("schema")),
+            _traffic_assurance_scalar(payload.get("owner")), index, "[MALFORMED RESULT]",
+        ] + ["[NOT OBSERVED]"] * (len(_TRAFFIC_ASSURANCE_COLUMNS) - 7)
+
+    intent = row.get("intent") if isinstance(row.get("intent"), dict) else {}
+    failure = row.get("failure") if isinstance(row.get("failure"), dict) else {}
+    scalar = _traffic_assurance_scalar
+    nested = _traffic_assurance_nested
+    return [
+        "ready", _TRAFFIC_ASSURANCE_DISCLOSURES["ready"], summary,
+        scalar(payload.get("schema")), scalar(payload.get("owner")), index,
+        scalar(intent.get("id")), scalar(intent.get("src")), scalar(intent.get("dst")),
+        scalar(intent.get("protocol")), scalar(intent.get("src_port")), scalar(intent.get("dst_port")),
+        scalar(intent.get("expected")), scalar(intent.get("return_required")),
+        scalar(intent.get("required_mtu"), absent="not requested"),
+        scalar(intent.get("vrf"), absent="default / not declared"),
+        scalar(row.get("valid")), _traffic_assurance_list(row.get("validation_errors")),
+        scalar(row.get("supported")), scalar(row.get("custody_trust")), scalar(row.get("verdict")),
+        _traffic_assurance_list(row.get("verdict_reasons")),
+        _traffic_assurance_list(row.get("unsupported_semantics")),
+        scalar(nested(row, "dimensions", "path", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "path", "reverse", "verdict")),
+        scalar(nested(row, "dimensions", "path", "rpf_verdict")),
+        scalar(nested(row, "dimensions", "path", "symmetric")),
+        scalar(nested(row, "dimensions", "policy", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "policy", "reverse", "verdict")),
+        scalar(nested(row, "dimensions", "mtu", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "mtu", "reverse", "verdict")),
+        scalar(nested(row, "dimensions", "ecmp", "forward", "verdict")),
+        scalar(nested(row, "dimensions", "ecmp", "reverse", "verdict")),
+        scalar(failure.get("requested")), scalar(failure.get("action"), absent="not requested"),
+        scalar(failure.get("status")), scalar(failure.get("verdict")), _traffic_assurance_claims(row.get("claims")),
+        _traffic_assurance_list(row.get("nrfu_test_ids")), _traffic_assurance_list(row.get("sources")),
+        _traffic_assurance_list(row.get("limitations")),
+        scalar(row.get("schema")), scalar(row.get("owner")),
+    ]
+
+
+def write_traffic_assurance_sheet(wb, traffic_assurance_set) -> None:
+    """Render a canonical ``traffic_assurance_set/1`` without performing assurance calculations.
+
+    The result sequence and producer-owned summary are preserved as supplied. Only an allowlisted scalar
+    projection is written: raw hops, ACL stages, capture bodies, cutover evidence, and unknown extension fields
+    never enter the workbook. Loading, empty, malformed/error, and absent inputs each produce an explicit row;
+    none can look like a successful zero-result assessment.
+    """
+    state, payload = _traffic_assurance_projection_state(traffic_assurance_set)
+    ws = _new_sheet(wb, TRAFFIC_ASSURANCE_SHEET_NAME)
+    _census_header(ws, _TRAFFIC_ASSURANCE_COLUMNS)
+    rows = payload.get("results") if state == "ready" else []
+    if state == "ready":
+        rendered = [_traffic_assurance_result_values(payload, row, index)
+                    for index, row in enumerate(rows, 1)]
+    else:
+        summary = _traffic_assurance_summary(payload) if isinstance(payload, dict) else "[NOT OBSERVED]"
+        set_schema = _traffic_assurance_scalar(payload.get("schema")) if isinstance(payload, dict) else "[NOT OBSERVED]"
+        set_owner = _traffic_assurance_scalar(payload.get("owner")) if isinstance(payload, dict) else "[NOT OBSERVED]"
+        rendered = [[state, _TRAFFIC_ASSURANCE_DISCLOSURES[state], summary, set_schema, set_owner]
+                    + [""] * (len(_TRAFFIC_ASSURANCE_COLUMNS) - 5)]
+
+    verdict_headers = {
+        "Overall Verdict", "Path Forward", "Path Return", "Policy Forward", "Policy Return",
+        "MTU Forward", "MTU Return", "ECMP Forward", "ECMP Return", "Failure Verdict",
+    }
+    for row_number, values in enumerate(rendered, 2):
+        ws.append(values)
+        for column, header in enumerate(_TRAFFIC_ASSURANCE_COLUMNS, 1):
+            cell = ws.cell(row_number, column)
+            cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            key = str(cell.value or "").strip().lower()
+            if header == "Projection State" or header in verdict_headers:
+                fill = _TRAFFIC_ASSURANCE_FILL.get(key)
+                if fill:
+                    cell.fill = PatternFill("solid", fgColor=fill)
+            if header in verdict_headers:
+                cell.font = Font(name="Calibri", size=10, bold=True)
+
+    _census_autofit(ws, len(_TRAFFIC_ASSURANCE_COLUMNS), len(rendered) + 1)
+    logger.info("  [OK] '%s' sheet: state %s, %d canonical result record(s)",
+                TRAFFIC_ASSURANCE_SHEET_NAME, state, len(rows))
 
 
 # Shared severity palette for the V3.23.164-.167 axis sheets (V3.23.171). The four writers each
@@ -3282,8 +4890,10 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
     s = L.get("summary") or {}
     ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
     ws.cell(2, 1, f"Lifecycle bands as of collection date {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
-                  f"{s.get('n_near', 0)} within 1yr · {s.get('n_active', 0)} active · "
-                  f"{s.get('n_unknown', 0)} unknown (of {s.get('n_devices', 0)}).").font = Font(size=10)
+                  f"{s.get('n_near', 0)} within 1yr · {s.get('n_past_eos', 0)} past end-of-sale "
+                  f"(LDoS still future; entitlement not inferred) · {s.get('n_active', 0)} pre-EoS date band "
+                  f"(schema: Active) · {s.get('n_unknown', 0)} NOT ASSESSED "
+                  f"(of {s.get('n_devices', 0)}).").font = Font(size=10)
     ws.cell(3, 1, L.get("note", "")).font = Font(size=9, italic=True, color="808080")
     BANDFILL = {"Past-LDoS": "F4CCCC", "Near-LDoS": "FCE4D6", "Past-EoS": "FFF2CC",
                 "Active": "D9EAD3", "Unknown": "EFEFEF"}
@@ -3617,11 +5227,136 @@ def write_addressing_conflicts_sheet(wb, all_interfaces: Dict[str, Dict[str, Int
                 f"{len(c['dup_ip'])} dup-IP, {len(c['dup_subnet'])} overlap")
 
 
-def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
-    """Fabric-wide first-hop-redundancy (FHRP) consistency (mirrors the explorer's fhrpConsistency): for each
-    VLAN with >=2 gateways (SVIs), flag FAKE redundancy -- a gateway running no FHRP, different FHRP groups,
-    different virtual IPs, mixed protocols, or two actives (split-brain). Reuses parse._parse_fhrp. Returns
-    [{vid, issues:[str], members:[{host,proto,group,vip,role,fhrp}]}] for VLANs with an issue (empty when clean)."""
+def compute_fhrp_consistency(
+        all_interfaces: Dict[str, Dict[str, InterfaceData]],
+        fhrp_redundancy_domain_baseline: Optional[dict] = None) -> List[dict]:
+    """Return the legacy ``snap['fhrp']`` compatibility projection.
+
+    When the authoritative redundancy-domain receipt is supplied, this function
+    projects *its* classifications and never recomputes domain health.  The
+    omitted-argument path is retained for older callers, but is explicitly a
+    legacy, embedded-unverified heuristic: it can identify observations worth
+    review, never prove intended membership, simultaneous roles, or a complete
+    redundancy design.
+    """
+    if fhrp_redundancy_domain_baseline is not None:
+        try:
+            from cisco_toolkit.fhrp_redundancy import (
+                validate_fhrp_redundancy_domain_baseline,
+            )
+
+            view = validate_fhrp_redundancy_domain_baseline(
+                fhrp_redundancy_domain_baseline,
+                require_current_run=True,
+            )
+        except Exception:
+            view = {}
+        if not isinstance(view, dict) or view.get("valid") is not True:
+            # Do not copy a rejected receipt's leaves.  This unbound row makes
+            # the old punch-list/remediation path abstain instead of treating
+            # malformed input as an empty/clean issue list.
+            return [{
+                "vid": "",
+                "vrf": "",
+                "subnet": "",
+                "domain_key": "",
+                "status": "not_verified",
+                "authoritative": True,
+                "projection_custody": "unverified",
+                "issues": [
+                    "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER: the authoritative "
+                    "receipt is unavailable, malformed, or not current-run source-bound; no "
+                    "domain-composition conclusion is asserted. Re-collect and validate the "
+                    "source evidence before acceptance."
+                ],
+                "members": [],
+            }]
+
+        receipt = view.get("baseline") if isinstance(view.get("baseline"), dict) else {}
+        source_receipt = (
+            receipt.get("source_receipt")
+            if isinstance(receipt.get("source_receipt"), dict) else {}
+        )
+        if source_receipt.get("valid") is not True:
+            return [{
+                "vid": "",
+                "vrf": "",
+                "subnet": "",
+                "domain_key": "",
+                "status": "not_verified",
+                "authoritative": True,
+                "projection_custody": "embedded_unverified",
+                "issues": [
+                    "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER: the closed owner receipt "
+                    "has no verified current-run configured-group/SVI source denominator. "
+                    "Re-collect both inputs before acceptance; zero member rows is not evidence "
+                    "of absence or complete intent."
+                ],
+                "members": [],
+            }]
+        rows = view.get("rows") if isinstance(view.get("rows"), list) else []
+        by_domain: Dict[str, List[dict]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            domain_key = row.get("domain_key")
+            if isinstance(domain_key, str) and domain_key:
+                by_domain.setdefault(domain_key, []).append(row)
+
+        status_copy = {
+            "degraded": (
+                "FHRP redundancy-domain evidence is DEGRADED by a bounded local "
+                "configured/runtime fault. Restore it or explicitly disposition the baseline "
+                "before acceptance; matching this state is NOT ACCEPTANCE."
+            ),
+            "review": (
+                "FHRP domain composition REVIEW — observed members or candidate sets do not "
+                "establish intended participation. Verify intended members and explicitly "
+                "disposition the composition before acceptance."
+            ),
+            "not_verified": (
+                "FHRP REDUNDANCY DOMAIN NOT VERIFIED — BLOCKER: source or domain evidence "
+                "could not be verified. Re-collect before acceptance."
+            ),
+        }
+        out: List[dict] = []
+        for domain_key in sorted(by_domain, key=str.casefold):
+            domain_rows = by_domain[domain_key]
+            statuses = {str(row.get("status") or "") for row in domain_rows}
+            status = (
+                "degraded" if "degraded" in statuses else
+                "not_verified" if "not_verified" in statuses else
+                "review" if "review" in statuses else "assessed"
+            )
+            if status == "assessed":
+                continue
+            first = domain_rows[0]
+            members = [{
+                "host": row.get("switch") or "",
+                "interface": row.get("interface") or "",
+                "svi_ip": row.get("svi_ip") or "",
+                "proto": row.get("protocol") or "",
+                "group": row.get("group") or "",
+                "vip": row.get("virtual_ip") or "",
+                "role": row.get("role") or "",
+                "fhrp": row.get("participation") == "positive",
+                "participation": row.get("participation") or "not_verified",
+                "candidate_key": row.get("candidate_key") or "",
+                "status": row.get("status") or status,
+            } for row in domain_rows]
+            out.append({
+                "vid": first.get("vlan") or "",
+                "vrf": first.get("vrf") or "",
+                "subnet": first.get("subnet") or "",
+                "domain_key": domain_key,
+                "status": status,
+                "authoritative": True,
+                "projection_custody": receipt.get("projection_custody") or "embedded_unverified",
+                "issues": [status_copy[status]],
+                "members": members,
+            })
+        return out
+
     from cisco_toolkit.parse import _parse_fhrp
     # VLAN IDs are locally significant.  Reusing VLAN 10 in two VRFs or disconnected IP
     # domains must not merge independent FHRP groups into one fabricated split-brain set.
@@ -3653,7 +5388,15 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
         issues: List[str] = []
         if not withf:
             issues.append(f"{len(gws)} gateways but no FHRP — no first-hop redundancy")
+            issues[0] = (
+                f"LEGACY FALLBACK — NOT VERIFIED review: {len(gws)} gateway SVIs have no "
+                "positive FHRP observation; "
+                "intended participation is unresolved"
+            )
             out.append({"vid": vid, "vrf": vrf, "subnet": subnet,
+                        "domain_key": f"vlan={vid}|vrf={vrf or 'global'}|subnet={subnet}",
+                        "status": "review", "authoritative": False,
+                        "projection_custody": "legacy_unverified",
                         "issues": issues, "members": det}); continue
         protos = {x["proto"] for x in withf}
         groups = {x["group"] for x in withf if x["group"]}
@@ -3664,56 +5407,105 @@ def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]
         backups = [x for x in withf if x["role"] in backup_roles]
         unknown_roles = [x for x in withf if x["role"] not in forward_roles | backup_roles]
         if without:
-            issues.append(f"{', '.join(x['host'] for x in without)} runs no FHRP — unprotected, independent gateway")
+            issues.append(
+                f"legacy review: {', '.join(x['host'] for x in without)} has zero positive "
+                "FHRP participation observed; intended group membership is unresolved"
+            )
         if len(protos) > 1:
-            issues.append(f"mixed FHRP protocols ({' vs '.join(sorted(protos))})")
+            issues.append(
+                f"mixed FHRP protocols were observed ({' vs '.join(sorted(protos))}); "
+                "intended candidate composition is unresolved"
+            )
         if any(not x["group"] for x in withf):
             issues.append("one or more FHRP members has no observed group identifier")
         if any(not x["vip"] for x in withf):
             issues.append("one or more FHRP members has no observed virtual IP")
         if len(groups) > 1:
-            issues.append(f"different FHRP groups (grp {' vs '.join(sorted(groups))}) — not one redundancy group")
+            issues.append(
+                f"different FHRP groups were observed (grp {' vs '.join(sorted(groups))}); "
+                "the legacy projection cannot establish intended candidate membership"
+            )
         elif len(vips) > 1:
-            issues.append(f"same group but different virtual IPs ({' vs '.join(sorted(vips))})")
+            issues.append(
+                f"the same observed group carries different virtual IPs ({' vs '.join(sorted(vips))}); "
+                "intended candidate composition is unresolved"
+            )
         if len(groups) == 1 and not actives:
-            issues.append("no observed Active/Master router - the forwarding owner is unverified")
+            issues.append(
+                "no observed Active/Master router - the sequential forwarding-owner view is unverified"
+            )
         if len(groups) == 1 and not backups:
-            issues.append("no observed Standby/Backup/Listen member - usable failover is unverified")
+            issues.append(
+                "no observed Standby/Backup/Listen member - intended membership and usable failover are unverified"
+            )
         if unknown_roles:
             issues.append("unrecognized FHRP role(s) on "
                           + ", ".join(f"{x['host']} ({x['role'] or 'blank'})" for x in unknown_roles))
         if len(groups) == 1 and len(actives) > 1:
-            issues.append(f"two active routers ({', '.join(x['host'] for x in actives)}) — split-brain")
+            issues.append(
+                f"multiple Active/Master roles were observed in sequential captures "
+                f"({', '.join(x['host'] for x in actives)}); simultaneity and intent are unresolved"
+            )
         if issues:
+            issues.insert(
+                0,
+                "LEGACY FALLBACK — NOT VERIFIED: heuristic-only composition; intended membership "
+                "and completeness are unresolved.",
+            )
             out.append({"vid": vid, "vrf": vrf, "subnet": subnet,
+                        "domain_key": f"vlan={vid}|vrf={vrf or 'global'}|subnet={subnet}",
+                        "status": "review", "authoritative": False,
+                        "projection_custody": "legacy_unverified",
                         "issues": issues, "members": det})
     return out
 
 
 FHRP_CONSISTENCY_SHEET_NAME = "FHRP Consistency"
 
-def write_fhrp_consistency_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write the 'FHRP Consistency' sheet: VLANs whose >=2 gateways have MISconfigured first-hop redundancy
-    (fake redundancy that fails silently at failover). Surfaces the explorer's FHRP-consistency finding."""
-    rows = compute_fhrp_consistency(all_interfaces)
+def write_fhrp_consistency_sheet(
+        wb, all_interfaces: Dict[str, Dict[str, InterfaceData]],
+        fhrp_redundancy_domain_baseline: Optional[dict] = None) -> None:
+    """Write the compatibility view without presenting a heuristic as clean truth."""
+    rows = compute_fhrp_consistency(
+        all_interfaces, fhrp_redundancy_domain_baseline)
     ws = _new_sheet(wb, FHRP_CONSISTENCY_SHEET_NAME)
-    for col, h in enumerate(["VLAN", "Issue", "Gateways"], 1):
+    for col, h in enumerate(["Status", "VLAN", "VRF", "Observed IPv4 subnet", "Issue", "Observed members"], 1):
         cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
     r = 2
     for row in rows:
         mem = "; ".join(
-            f"{x['host']} " + (f"{x['proto']} grp {x['group']} {x['role']}".strip() if x["fhrp"] else "no FHRP")
+            f"{x.get('host', '')} {x.get('interface', '')} " +
+            (f"{x.get('proto', '')} grp {x.get('group', '')} {x.get('role', '')}".strip()
+             if x.get("fhrp") else
+             f"participation {x.get('participation', 'zero-observed')}")
             for x in row["members"])
-        ic = ws.cell(r, 1, f"VLAN {row['vid']}"); ic.font = Font(bold=True, color="C00000")
-        ws.cell(r, 2, "; ".join(row["issues"])); ws.cell(r, 3, mem)
+        status = str(row.get("status") or "not_verified").replace("_", " ").upper()
+        ic = ws.cell(r, 1, status); ic.font = Font(bold=True, color="C00000")
+        ws.cell(r, 2, f"VLAN {row.get('vid')}" if row.get("vid") != "" else "(unbound)")
+        ws.cell(r, 3, row.get("vrf") or "global")
+        ws.cell(r, 4, row.get("subnet") or "not verified")
+        ws.cell(r, 5, "; ".join(row.get("issues") or [])); ws.cell(r, 6, mem or "not verified")
         r += 1
     if r == 2:
-        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No FHRP misconfigurations on multi-gateway VLANs")
-    for i, w in enumerate([12, 70, 50], 1):
+        if fhrp_redundancy_domain_baseline is None:
+            copy = (
+                "LEGACY FALLBACK — NOT VERIFIED: no review row was emitted by the sparse heuristic. "
+                "This is not a completeness, intended-membership, or redundancy-health conclusion."
+            )
+        else:
+            copy = (
+                "No degraded, review, or not-verified compatibility row was projected from the "
+                "validated FHRP redundancy-domain receipt. Consult the authoritative FHRP Domains "
+                "sheet; this compatibility view is not independent proof of complete intent."
+            )
+        ws.cell(2, 1, "BOUNDED VIEW"); ws.cell(2, 5, copy)
+    for i, w in enumerate([18, 12, 18, 24, 84, 72], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    logger.info(f"  [OK] '{FHRP_CONSISTENCY_SHEET_NAME}' sheet: {len(rows)} VLAN(s) with FHRP issues")
+    logger.info(
+        "  [OK] '%s' compatibility sheet: %d domain review row(s)",
+        FHRP_CONSISTENCY_SHEET_NAME, len(rows))
 
 
 def _trunk_link_ends(all_interfaces: Dict[str, Dict[str, InterfaceData]]):

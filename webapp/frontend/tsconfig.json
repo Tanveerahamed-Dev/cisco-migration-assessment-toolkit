@@ -17,6 +17,5 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "//": "Tests + their setup are run and type-transpiled by Vitest, NOT the production build — excluded so `tsc -p tsconfig.json` (the build gate) stays exactly as it was and needs no test-only types.",
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
 }

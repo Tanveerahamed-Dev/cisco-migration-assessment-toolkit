@@ -81,6 +81,21 @@ def test_compound_eol_keystone_fires_and_floors_the_band():
     assert dd["summary"]["n_compound"] == 2
 
 
+def test_near_ldos_compounds_do_not_claim_support_is_already_lost():
+    dd = compute_device_dossiers(
+        health_scores=[{"switch": "near1", "score": 18, "band": "Critical", "role": "distribution"}],
+        failure_impact=[{"host": "near1", "severity": "High", "stranded": 230,
+                         "vlans_impacted": 12}],
+        lifecycle_risk={"per_device": [{"host": "near1", "model": "M", "band": "Near-LDoS"}]})
+    compounds = dd["per_device"][0]["compound"]
+    assert {c["code"] for c in compounds} >= {"CR-01", "CR-02"}
+    text = " ".join(c["title"] + " " + c["basis"] for c in compounds)
+    assert "within one year" in text
+    assert "support entitlement is not inferred" in text
+    assert "unsupportable" not in text
+    assert "no TAC escalation path" not in text
+
+
 def test_unscanned_host_is_na_not_clean():
     # known only through EoL evidence -> physical/protocol must be 'na', never silently ok
     dd = compute_device_dossiers(
@@ -88,8 +103,22 @@ def test_unscanned_host_is_na_not_clean():
                                         "sw_version": "16.9", "band": "Active"}]})
     (d,) = dd["per_device"]
     states = {e["axis"]: e["state"] for e in d["exposures"]}
+    hardware = next(e for e in d["exposures"] if e["axis"] == "Hardware EoL")
     assert states["Physical"] == "na" and states["Protocol"] == "na"
     assert states["Hardware EoL"] == "ok"
+    assert "pre-EoS date position" in hardware["label"]
+    assert "support entitlement not assessed" in hardware["label"]
+    assert "supported" not in hardware["label"].lower()
+
+
+def test_unknown_hardware_band_names_both_authority_failure_paths():
+    dd = compute_device_dossiers(
+        lifecycle_risk={"per_device": [{"host": "wan1", "model": "ISR4451", "band": "Unknown"}]})
+    hardware = next(e for e in dd["per_device"][0]["exposures"] if e["axis"] == "Hardware EoL")
+    assert hardware["state"] == "na"
+    assert "no exact EoX row matched" in hardware["label"]
+    assert "source/date authority was withheld" in hardware["label"]
+    assert "model not in the EoL KB" not in hardware["label"]
 
 
 def test_ranking_is_band_then_index_then_host():

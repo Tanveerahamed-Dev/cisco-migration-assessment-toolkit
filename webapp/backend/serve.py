@@ -12,7 +12,7 @@ The `assesshub` console script and the frozen `Atlas.exe` (P2, PyInstaller one-f
    how the exe impersonates the engine while ingest keeps its child-process isolation and hard
    timeout. It is checked BEFORE argparse: engine flags are the engine's surface, not ours.
 3. ``--selftest`` / ``--version`` — the fail-loud gate over the assets that otherwise degrade
-   SILENTLY when missing (explorer template, OUI/port KBs, docx/pptx extras, frontend dist).
+   SILENTLY when missing (explorer template, OUI/port/EoL KBs, docx/pptx extras, frontend dist).
 4. Production serve: ``uvicorn.run(<app object>)`` — the object, never an import string, so reload
    is structurally impossible; workers are never configured (one process owns the SQLite store).
    Browser auto-open unless ``--no-browser``. The boot is hardened (ADR-0004 P3 unplug-safety):
@@ -39,6 +39,7 @@ from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
 
 from cisco_toolkit.brand_tokens import APP_TITLE
+from cisco_toolkit.docmeta import artifact_family_metadata
 
 # The frozen exe re-invokes ITSELF with this first argument to become the engine CLI child
 # (see backend/ingest.py:_engine_argv, the only producer).
@@ -257,7 +258,7 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
           None if tpl.is_file() and tpl.stat().st_size > 10_000
           else f"missing/truncated at {tpl} — every explorer render would fail")
 
-    from cisco_toolkit import ouidb, portdb, registry_integrity
+    from cisco_toolkit import eoldb, ouidb, portdb, registry_integrity
 
     oui_health = ouidb.registry_health()
     oui_rows = oui_health.get("row_count")
@@ -312,11 +313,52 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
                + ("" if port_health.get("official_source_authoritative")
                   else " [IANA source chain unverified or stale]"))
 
+    eol_health = eoldb.registry_health()
+    eol_rows = eol_health.get("row_count")
+    eol_detail = (
+        f"{eol_rows or 0} model scopes; "
+        f"{eol_health.get('bulletin_count', 0)} Cisco bulletins; "
+        f"provenance={eol_health.get('status', 'unknown')}"
+    )
+    # Unlike the large IEEE/IANA source corpus, the compact retained Cisco bulletin fixture ships
+    # with the wheel and frozen Atlas bundle. There is therefore no cannot-check-here exception for
+    # lifecycle claims: installed code must verify the retained bytes, their exact semantic binding
+    # to every runtime PID/date/URL claim, and freshness. Without this check an otherwise-green
+    # release can install successfully yet make the engine's lifecycle phase fail when it first
+    # consumes a row.
+    eol_usable = (
+        registry_integrity.pack_is_usable(eol_health)
+        and eol_health.get("schema_verified") is True
+        and eol_health.get("build_provenance_verified") is True
+        and eol_health.get("retained_source_bytes_verified") is True
+        and eol_health.get("source_authoritative") is True
+        and eol_health.get("source_fresh") is True
+        and isinstance(eol_rows, int)
+        and eol_rows > 0
+        and eol_health.get("bulletin_cited_rows") == eol_rows
+        and eol_health.get("fixture_bound_rows") == eol_rows
+        and eol_health.get("unresolved_reference_rows") == 0
+    )
+    check(
+        f"eol-kb [{eol_detail}]",
+        None if eol_usable
+        else "Lifecycle registry lacks authoritative retained Cisco bulletin evidence — "
+             f"{eol_health.get('error') or eol_health.get('status', 'unknown')}"
+             + ("" if eol_health.get("retained_source_bytes_verified")
+                else " [retained fixture missing or invalid]")
+             + ("" if eol_health.get("build_provenance_verified")
+                else " [runtime semantic binding FAILED]")
+             + ("" if eol_health.get("source_fresh")
+                else " [source evidence stale or future-dated]"),
+    )
+
     import importlib.util as _ilu
 
+    family = artifact_family_metadata()
     check("python-docx", None if _ilu.find_spec("docx")
-          else "python-docx not importable — the DOCX document family is dead (ADR-0004 D2 "
-               "ships the full 12-document family)")
+          else "python-docx not importable — registry-declared DOCX artifacts are dead "
+               f"({family['pre_cutover']} pre-cutover artifacts plus "
+               f"{family['conditional_post_execution']} conditional post-execution artifact)")
     check("python-pptx", None if _ilu.find_spec("pptx")
           else "python-pptx not importable — the executive deck is dead (ADR-0004 D2)")
 
@@ -525,7 +567,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-browser", action="store_true",
                         help="do not auto-open the UI in a browser")
     parser.add_argument("--selftest", action="store_true",
-                        help="verify the silent-degrade assets (explorer template, OUI/port KBs, "
+                        help="verify the silent-degrade assets (explorer template, OUI/port/EoL KBs, "
                              "docx/pptx, frontend dist, engine entry, DB + backup dirs) and exit "
                              "non-zero on any failure")
     parser.add_argument("--redact-folder", default=None, metavar="DIR",

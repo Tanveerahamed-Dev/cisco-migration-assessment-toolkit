@@ -111,12 +111,7 @@ _SAMPLE_FLEET = os.path.join(ROOT, "webapp", "sample_data", "sample_fleet.snapsh
 # fleet never collected/populated that section -- coverage-honest signal_absent, NOT a bug. PINNED so a
 # newly-unresolved field (a real regression) OR a newly-populated one (progress) trips the test and gets
 # reconciled consciously, never silently absorbed (doctrine 3: "not observed" != "healthy").
-_SIGNAL_ABSENT_IN_FLEET = {
-    # no multi-gateway-VLAN FHRP-inconsistency row in the sample fleet -> snap['fhrp'] == []
-    ("fhrp-fake-redundancy", "fhrp[].vid"),
-    ("fhrp-fake-redundancy", "fhrp[].issues"),
-    ("fhrp-fake-redundancy", "fhrp[].members"),
-}
+_SIGNAL_ABSENT_IN_FLEET = set()
 
 
 def _tokenize_cited_field(field):
@@ -245,6 +240,23 @@ def test_source_commands_reuse_the_shared_punchlist_map_where_a_family_maps():
     assert by_key["l1-err-disabled"]["source_command"] == P["L1"]
     assert by_key["sec-no-aaa"]["source_command"] == P["Security"]
     assert by_key["stp-accidental-root"]["source_command"] == P["STP"]
+
+
+def test_lifecycle_detectors_abstain_when_matched_authority_is_incomplete():
+    """Unknown includes exact matches whose retained source/date evidence cannot support a date band."""
+    by_key = {d["key"]: d for d in compute_detector_schema()["detectors"]}
+    for key in ("lifecycle-past-ldos", "lifecycle-near-ldos", "lifecycle-past-eos"):
+        detector = by_key[key]
+        assert "source/date authority is incomplete" in detector["abstains_when"]
+        assert "band == Unknown" in detector["abstains_when"]
+        assert "not proof of contract entitlement" in detector["checks"]
+
+    assert "asof > LDoS" in by_key["lifecycle-past-ldos"]["threshold"]
+    assert "LDoS date itself is not past" in by_key["lifecycle-past-ldos"]["threshold"]
+    assert "asof > EoS" in by_key["lifecycle-past-eos"]["threshold"]
+    assert "more than one year away" in by_key["lifecycle-past-eos"]["threshold"]
+    assert "0 <= (LDoS - asof) / 365.25 <= 1.0" in by_key["lifecycle-near-ldos"]["threshold"]
+    assert "lifecycle_risk.summary.n_near" in by_key["lifecycle-near-ldos"]["cited_fields"]
 
 
 # ---------------------------------------------------------------- compute-fn shape + reconcile ---

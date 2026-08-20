@@ -3,6 +3,7 @@ contract embedded in the HTML and written beside every workbook) and render outp
 Blast-Radius Explorer HTML (write_html_explorer) and the '--compare OLD NEW' diff workbook
 (write_diff_workbook). Extracted verbatim from COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps
 29-30 (behaviour byte-identical). Depends on openpyxl + stdlib + the package's model/__version__."""
+import ipaddress
 import json
 import logging
 import os
@@ -15,6 +16,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from cisco_toolkit import __version__
+from cisco_toolkit.analyze import (compute_current_baseline_gate,
+                                   normalize_routing_adjacency_state)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
 from cisco_toolkit.textutils import is_finite_num, xml_safe as _cv
@@ -273,6 +276,395 @@ def _devices_cell(devices, width: int = _DEVICES_CELL_WIDTH) -> str:
     return ", ".join(shown) + (f" (+{hidden} more)" if hidden else "")
 
 
+_PROTOCOL_RECEIPT_FAMILIES = ("STP", "EtherChannel", "VTP", "OSPF", "BGP", "EIGRP", "FHRP")
+_PROTOCOL_ADJACENCY_FAMILIES = ("OSPF", "BGP", "EIGRP")
+_PROTOCOL_RECEIPT_STATES = {
+    "assessed", "partial", "captured_no_record", "captured_empty",
+    "capture_error", "not_collected", "analysis_unavailable",
+}
+
+
+def _protocol_text(value: Any) -> str:
+    """A strict text leaf for the embedded protocol projections.
+
+    Device/peer identities are strings in the engine schema.  Stringifying a dict/list here would turn a
+    malformed upload into a plausible identity and could merge unrelated rows, so containers and scalars
+    abstain instead.  This helper is deliberately narrower than ``_hkey`` because these values participate
+    in a cutover gate, not just a crash-safe display.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _protocol_peer_key(peer: str) -> str:
+    """Canonical comparison identity while retaining the producer's raw peer text for display."""
+    try:
+        return ipaddress.ip_address(peer).exploded.casefold()
+    except ValueError:
+        return peer.casefold()
+
+
+def _protocol_receipt_view(snap: dict) -> dict:
+    """Validate and index the exact ``protocol_assessability/1`` denominator.
+
+    A hand-trimmed or foreign snapshot must not be allowed to keep the word ``assessed`` on the few rows it
+    retained.  The receipt is therefore accepted only when its closed seven-family denominator and summary
+    reconcile exactly.  The comparison remains total: invalid receipts return a reason instead of raising.
+    """
+    present = "protocol_assessability" in snap
+    pa = snap.get("protocol_assessability")
+    if not isinstance(pa, dict):
+        return {"present": present, "valid": False, "index": {},
+                "reason": "protocol assessability receipt is missing" if not present else
+                          "protocol assessability receipt has an unusable shape"}
+    if pa.get("schema") != "protocol_assessability/1":
+        return {"present": True, "valid": False, "index": {},
+                "reason": "protocol assessability receipt schema is not protocol_assessability/1"}
+
+    families = pa.get("families")
+    rows = pa.get("rows")
+    summary = pa.get("summary")
+    family_names = tuple(
+        _protocol_text(item.get("protocol")) for item in families if isinstance(item, dict)
+    ) if isinstance(families, list) else ()
+    if family_names != _PROTOCOL_RECEIPT_FAMILIES:
+        return {"present": True, "valid": False, "index": {},
+                "reason": "protocol assessability family denominator is incomplete or reordered"}
+    if not isinstance(rows, list) or not isinstance(summary, dict):
+        return {"present": True, "valid": False, "index": {},
+                "reason": "protocol assessability rows or summary have an unusable shape"}
+
+    n_devices = summary.get("n_devices")
+    n_families = summary.get("n_families")
+    n_cells = summary.get("n_cells")
+    if (not isinstance(n_devices, int) or isinstance(n_devices, bool) or n_devices < 0
+            or n_families != len(_PROTOCOL_RECEIPT_FAMILIES)
+            or n_cells != len(rows)
+            or n_cells != n_devices * len(_PROTOCOL_RECEIPT_FAMILIES)):
+        return {"present": True, "valid": False, "index": {},
+                "reason": "protocol assessability summary does not reconcile to its exact denominator"}
+
+    index: Dict[tuple, dict] = {}
+    hosts: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            return {"present": True, "valid": False, "index": {},
+                    "reason": "protocol assessability contains a malformed row"}
+        host = _protocol_text(row.get("switch"))
+        protocol = _protocol_text(row.get("protocol"))
+        state = _protocol_text(row.get("state"))
+        if not host or protocol not in _PROTOCOL_RECEIPT_FAMILIES or state not in _PROTOCOL_RECEIPT_STATES:
+            return {"present": True, "valid": False, "index": {},
+                    "reason": "protocol assessability contains an invalid switch, family, or state"}
+        if state == "assessed" and row.get("health_row_emitted") is not True:
+            return {"present": True, "valid": False, "index": {},
+                    "reason": "protocol assessability marks a cell assessed without an emitted health row"}
+        key = (host, protocol)
+        if key in index:
+            return {"present": True, "valid": False, "index": {},
+                    "reason": "protocol assessability contains a duplicate switch-family cell"}
+        index[key] = row
+        hosts.add(host)
+    if len(hosts) != n_devices or len(index) != n_cells:
+        return {"present": True, "valid": False, "index": {},
+                "reason": "protocol assessability rows do not reconcile to the device denominator"}
+    return {"present": True, "valid": True, "index": index, "reason": ""}
+
+
+def _protocol_state(protocol: str, raw: str) -> tuple[str, Optional[bool]]:
+    """Normalize only adjacency state semantics, never counters or uptime.
+
+    BGP's numeric State/PfxRcd is Established; the number is a prefix count and must not churn the peer.
+    EIGRP's parser emits ``up <uptime>``; the changing uptime is not a state transition.  OSPF DR/BDR role
+    suffixes likewise do not change adjacency health.
+    """
+    # One Python owner is shared with the single-snapshot Validation/NRFU baseline.  In particular, an
+    # unfamiliar EIGRP token is REVIEW/unclassified rather than definite negative evidence, while the
+    # anchored producer form ``up <uptime>`` remains acceptable and uptime churn is ignored.
+    return normalize_routing_adjacency_state(protocol, _protocol_text(raw))
+
+
+def _protocol_routing_view(snap: dict) -> dict:
+    """Normalize the embedded routing-neighbor projection without inventing absent peers."""
+    raw = snap.get("routing_neighbors")
+    if not isinstance(raw, dict):
+        return {"available": False, "pairs": {}, "malformed_pairs": set(),
+                "reason": "routing_neighbors is missing or has an unusable shape"}
+
+    pairs: Dict[tuple, Dict[str, dict]] = {}
+    malformed_pairs: set[tuple] = set()
+    global_error = ""
+    for host_value, protocols in raw.items():
+        host = _protocol_text(host_value)
+        if not host or not isinstance(protocols, dict):
+            global_error = "routing_neighbors contains a malformed host projection"
+            continue
+        for protocol in _PROTOCOL_ADJACENCY_FAMILIES:
+            value = protocols.get(protocol.lower(), [])
+            pair = (host, protocol)
+            if not isinstance(value, list):
+                malformed_pairs.add(pair)
+                continue
+            records: Dict[str, dict] = {}
+            for item in value:
+                if not isinstance(item, dict):
+                    malformed_pairs.add(pair)
+                    continue
+                peer = _protocol_text(item.get("neighbor"))
+                state_raw = _protocol_text(item.get("state"))
+                if not peer or not state_raw:
+                    malformed_pairs.add(pair)
+                    continue
+                peer_key = _protocol_peer_key(peer)
+                if peer_key in records:
+                    malformed_pairs.add(pair)
+                    continue
+                state, healthy = _protocol_state(protocol, state_raw)
+                records[peer_key] = {
+                    "switch": host,
+                    "protocol": protocol,
+                    "peer": peer,
+                    "state_raw": state_raw,
+                    "state": state,
+                    "healthy": healthy,
+                    "interface": _protocol_text(item.get("interface")),
+                    "address": _protocol_text(item.get("address")),
+                    "as": _protocol_text(item.get("as")),
+                }
+            pairs[pair] = records
+    return {"available": not global_error, "pairs": pairs, "malformed_pairs": malformed_pairs,
+            "reason": global_error}
+
+
+def _protocol_metadata(record: dict) -> tuple:
+    protocol = record.get("protocol")
+    if protocol == "BGP":
+        return (record.get("as", ""),)
+    if protocol == "OSPF":
+        return (record.get("interface", ""), record.get("address", ""))
+    return (record.get("interface", ""),)
+
+
+def compute_protocol_adjacency_delta(old: dict, new: dict, *,
+                                     source_binding: Optional[dict] = None) -> dict:
+    """Evidence-gated before/after delta for baseline-observed OSPF/BGP/EIGRP peers.
+
+    This is deliberately *not* an expected-neighbor health model.  It asks the narrower cutover question:
+    "what happened to peers that the baseline actually observed?"  Every compared host-family cell requires
+    an exact ``protocol_assessability/1`` cell in state ``assessed`` on both sides.  A disappearing last peer
+    makes the after receipt ``captured_no_record`` and is therefore a coverage loss / REVIEW, never a proven
+    down adjacency.  The embedded receipt does not cryptographically bind ``routing_neighbors`` content, so
+    the returned custody label names that limitation even when caller-owned snapshot hashes are present.
+    """
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
+    old_receipt, new_receipt = _protocol_receipt_view(old), _protocol_receipt_view(new)
+    old_routing, new_routing = _protocol_routing_view(old), _protocol_routing_view(new)
+
+    old_pairs = old_routing["pairs"]
+    new_pairs = new_routing["pairs"]
+    scoped_pairs = {pair for pair, peers in old_pairs.items() if peers}
+    if old_receipt["valid"]:
+        scoped_pairs.update(
+            pair for pair, row in old_receipt["index"].items()
+            if pair[1] in _PROTOCOL_ADJACENCY_FAMILIES and row.get("health_row_emitted") is True
+        )
+    scoped_pairs = sorted(scoped_pairs, key=lambda pair: (pair[0].casefold(), pair[0], pair[1]))
+
+    changes: List[dict] = []
+    coverage_gaps: List[dict] = []
+    n_baseline_peers = sum(len(old_pairs.get(pair, {})) for pair in scoped_pairs)
+    n_comparable_cells = 0
+    n_preserved = 0
+    n_state_regressed = 0
+    n_recovered = 0
+    n_no_longer_observed = 0
+    n_added = 0
+    n_metadata_changed = 0
+
+    def _receipt_state(view: dict, pair: tuple) -> str:
+        if not view["valid"]:
+            return "legacy" if not view["present"] else "invalid"
+        row = view["index"].get(pair)
+        return _protocol_text(row.get("state")) if isinstance(row, dict) else "missing_cell"
+
+    def _receipt_row(view: dict, pair: tuple) -> Optional[dict]:
+        row = view["index"].get(pair) if view["valid"] else None
+        return row if isinstance(row, dict) else None
+
+    for pair in scoped_pairs:
+        host, protocol = pair
+        before_state, after_state = _receipt_state(old_receipt, pair), _receipt_state(new_receipt, pair)
+        before_row, after_row = _receipt_row(old_receipt, pair), _receipt_row(new_receipt, pair)
+        reasons: List[str] = []
+        if not old_receipt["valid"]:
+            reasons.append(f"before: {old_receipt['reason']}")
+        elif before_state != "assessed":
+            reasons.append(f"before receipt state is {before_state}")
+        elif (before_row is not None and before_row.get("health_row_emitted") is True
+              and not old_pairs.get(pair)):
+            reasons.append(
+                "before receipt is assessed with an emitted health row but the routing-neighbor projection "
+                "has zero peers"
+            )
+        if not new_receipt["valid"]:
+            reasons.append(f"after: {new_receipt['reason']}")
+        elif after_state != "assessed":
+            reasons.append(f"after receipt state is {after_state}")
+        elif (after_row is not None and after_row.get("health_row_emitted") is True
+              and not new_pairs.get(pair)):
+            reasons.append(
+                "after receipt is assessed with an emitted health row but the routing-neighbor projection "
+                "has zero peers"
+            )
+        if not old_routing["available"]:
+            reasons.append(f"before: {old_routing['reason']}")
+        if not new_routing["available"]:
+            reasons.append(f"after: {new_routing['reason']}")
+        if pair in old_routing["malformed_pairs"]:
+            reasons.append("before routing-neighbor projection is malformed or duplicated")
+        if pair in new_routing["malformed_pairs"]:
+            reasons.append("after routing-neighbor projection is malformed or duplicated")
+        if reasons:
+            coverage_gaps.append({
+                "switch": host,
+                "protocol": protocol,
+                "before_state": before_state,
+                "after_state": after_state,
+                "reason": "Not comparable: " + "; ".join(dict.fromkeys(reasons)),
+            })
+            continue
+
+        n_comparable_cells += 1
+        before_peers = old_pairs.get(pair, {})
+        after_peers = new_pairs.get(pair, {})
+        for peer_key in sorted(before_peers):
+            before = before_peers[peer_key]
+            after = after_peers.get(peer_key)
+            if after is None:
+                n_no_longer_observed += 1
+                changes.append({
+                    "switch": host, "protocol": protocol, "peer": before["peer"],
+                    "before_state": before["state_raw"], "after_state": "not observed",
+                    "result": "no_longer_observed",
+                    "note": ("The peer was present in the baseline but is no longer observed while the family "
+                             "remains assessable. Confirm whether this topology change was intended."),
+                })
+                continue
+
+            # Preservation is orthogonal to a reviewable metadata/role change: the same baseline peer can
+            # remain in an acceptable state while moving interface or changing AS.  Count the preserved
+            # operational relationship and disclose the topology/configuration change separately.
+            if before["healthy"] is True and after["healthy"] is True:
+                n_preserved += 1
+            if before["healthy"] is True and after["healthy"] is False:
+                n_state_regressed += 1
+                changes.append({
+                    "switch": host, "protocol": protocol, "peer": before["peer"],
+                    "before_state": before["state_raw"], "after_state": after["state_raw"],
+                    "result": "state_degraded",
+                    "note": "A previously acceptable observed adjacency entered a parsed unacceptable state.",
+                })
+            elif before["healthy"] is False and after["healthy"] is True:
+                n_recovered += 1
+                changes.append({
+                    "switch": host, "protocol": protocol, "peer": before["peer"],
+                    "before_state": before["state_raw"], "after_state": after["state_raw"],
+                    "result": "recovered",
+                    "note": "A previously unacceptable observed adjacency is now in an acceptable state.",
+                })
+            elif before["state"] != after["state"]:
+                changes.append({
+                    "switch": host, "protocol": protocol, "peer": before["peer"],
+                    "before_state": before["state_raw"], "after_state": after["state_raw"],
+                    "result": "state_changed",
+                    "note": "The parsed adjacency state changed; review the transition in operational context.",
+                })
+            elif _protocol_metadata(before) != _protocol_metadata(after):
+                n_metadata_changed += 1
+                changes.append({
+                    "switch": host, "protocol": protocol, "peer": before["peer"],
+                    "before_state": before["state_raw"], "after_state": after["state_raw"],
+                    "result": "metadata_changed",
+                    "note": "The observed adjacency remains present but its interface, address, or AS changed.",
+                })
+
+        for peer_key in sorted(set(after_peers) - set(before_peers)):
+            after = after_peers[peer_key]
+            n_added += 1
+            changes.append({
+                "switch": host, "protocol": protocol, "peer": after["peer"],
+                "before_state": "not observed", "after_state": after["state_raw"],
+                "result": "added",
+                "note": "A peer not observed in the baseline is now present; confirm that it was intended.",
+            })
+
+    review_changes = sum(
+        1 for item in changes if item["result"] in
+        ("no_longer_observed", "added", "metadata_changed", "state_changed")
+    )
+    both_legacy = not old_receipt["present"] and not new_receipt["present"]
+    if not scoped_pairs:
+        gate = "NOT_ASSESSED"
+        note = ("Protocol adjacency preservation was not assessed: the baseline contained no observed "
+                "OSPF, BGP, or EIGRP peer subject. This is not proof that no peers were configured.")
+    elif n_state_regressed:
+        gate = "REGRESSED"
+        note = (f"Protocol adjacency gate REGRESSED: {n_state_regressed} baseline-observed peer(s) entered "
+                "an unacceptable parsed state. Investigate or roll back before proceeding.")
+    elif coverage_gaps:
+        gate = "NOT_ASSESSED" if both_legacy else "REVIEW"
+        note = (
+            f"Protocol adjacency gate {'NOT ASSESSED' if both_legacy else 'REVIEW'}: "
+            f"{len(coverage_gaps)} baseline device-family cell(s) could not be compared. A previously "
+            "observed peer may no longer be evidenced, but missing/empty/error/parser-gap evidence is not "
+            "proof that it is down or absent. Re-collect before accepting the change."
+        )
+    elif review_changes:
+        gate = "REVIEW"
+        note = (f"Protocol adjacency gate REVIEW: {review_changes} observed topology or state change(s) "
+                "need operator confirmation; no expected-peer intent was inferred.")
+    else:
+        gate = "PASS"
+        note = (f"Protocol adjacency gate PASS: no new adjacency regression was observed across "
+                f"{n_comparable_cells} baseline device-family cell(s). PASS means baseline-observed peers in "
+                "assessable before/after scope did not newly degrade; it does not prove the expected peer set "
+                "is complete.")
+
+    binding = source_binding if isinstance(source_binding, dict) else {}
+    source_bound = bool(binding.get("before") and binding.get("after"))
+    return {
+        "schema": "protocol_adjacency_delta/1",
+        "gate": gate,
+        "assessed": bool(scoped_pairs) and not coverage_gaps,
+        "scope": "baseline_observed",
+        "projection_custody": ("source_bound_embedded_unverified" if source_bound
+                               else "embedded_unverified"),
+        "summary": {
+            "n_baseline_peers": n_baseline_peers,
+            "n_scoped_cells": len(scoped_pairs),
+            "n_comparable_cells": n_comparable_cells,
+            "n_preserved": n_preserved,
+            "n_state_regressed": n_state_regressed,
+            "n_recovered": n_recovered,
+            "n_no_longer_observed": n_no_longer_observed,
+            "n_added": n_added,
+            "n_metadata_changed": n_metadata_changed,
+            "n_coverage_gaps": len(coverage_gaps),
+        },
+        "changes": sorted(changes, key=lambda item: (
+            item["switch"].casefold(), item["switch"], item["protocol"],
+            item["peer"].casefold(), item["result"])),
+        "coverage_gaps": coverage_gaps,
+        "note": note,
+        "limitations": [
+            "The gate preserves baseline-observed peers; it is not an expected-neighbor denominator.",
+            "A peer disappearance is an observed topology change, not proof that the adjacency is down.",
+            "The snapshot source may be hash-bound, but the embedded receipt does not cryptographically bind "
+            "the routing-neighbor projection; projection custody remains unverified.",
+        ],
+    }
+
+
 def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dict] = None,
                            schema_status: Any = None) -> dict:
     """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
@@ -405,10 +797,35 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
                         f"{_cs.get('n_removed', 0)} removed, {n_cables_down} went DOWN, "
                         f"{_cs.get('n_no_longer_observed', 0)} no longer observed")
 
+    # ---- observed routing-adjacency preservation (receipt-gated) ----
+    # This is intentionally separate from sparse protocol_health: the exact assessability receipt tells us
+    # whether each baseline host-family cell can be compared, while routing_neighbors supplies the bounded
+    # observed peers.  The helper never invents an expected-neighbor denominator and names its embedded-
+    # projection custody limitation in the returned result.
+    pdelta = compute_protocol_adjacency_delta(old, new, source_binding=source_binding)
+    _ps = pdelta.get("summary") or {}
+    n_protocol_regressed = int(_ps.get("n_state_regressed") or 0)
+    protocol_review = pdelta.get("gate") == "REVIEW"
+    protocol_phrase = str(pdelta.get("note") or "Protocol adjacency preservation was not assessed.")
+
+    # ---- current-snapshot acceptance baseline ----
+    # The delta deliberately answers only "did this get worse?".  Preserve that semantic, but carry
+    # the independently reconciled current validation baseline so the combined cutover decision cannot
+    # turn an unchanged degraded state into PASS.
+    current_baseline = compute_current_baseline_gate(new.get("validation_plan"))
+    # Minimal dictionaries are also used as unit-level/legacy delta inputs.  Requiring a new acceptance
+    # axis there would silently break the historical direct API.  A real snapshot contract (or any caller
+    # that explicitly carries validation_plan, including an empty one) opts into the acceptance gate.
+    current_baseline_required = (
+        "validation_plan" in new
+        or str(new.get("schema") or "").startswith("collect_parse_snapshot/")
+    )
+
     # ---- verdict ----
     removed_sw = sorted(set(od) - set(nd), key=_skey)
     adverse_delta = bool(
         n_opened_high or regressed or n_newly_blocked or n_ecmp_partial or n_cables_down
+        or n_protocol_regressed
     )
     # Integrity/schema uncertainty dominates the certification verdict.  Keep any adverse
     # observations visible in the note, but never let a real-looking delta imply that the
@@ -426,6 +843,8 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
             observed.append(f"{n_ecmp_partial} apparent blackholing ECMP leg(s)")
         if n_cables_down:
             observed.append(f"{n_cables_down} apparent cable-down transition(s)")
+        if n_protocol_regressed:
+            observed.append(f"{n_protocol_regressed} apparent protocol adjacency state regression(s)")
         observed_note = (
             " Adverse observations that still require investigation: " + "; ".join(observed) + "."
             if observed else ""
@@ -434,7 +853,7 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
             f"Delta certification withheld: {len(integrity_failures)} integrity/schema gap(s) make one "
             "or more analyses unavailable. No missing/failed section was interpreted as clean. "
             + "; ".join(integrity_failures)
-            + f".{observed_note} {cable_phrase}; {reach_phrase}."
+            + f".{observed_note} {cable_phrase}; {reach_phrase}. {protocol_phrase}"
         )
     elif adverse_delta:
         verdict = "REGRESSED"
@@ -445,10 +864,13 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
             bits.append(f"{len(regressed)} switch(es) dropped a health band")
         if n_ecmp_partial:
             bits.append(f"{n_ecmp_partial} sampled flow(s) have a proven blackholing ECMP leg")
+        if n_protocol_regressed:
+            bits.append(f"{n_protocol_regressed} baseline-observed protocol adjacency state regression(s)")
         bits.append(cable_phrase)
         bits.append(reach_phrase)
+        bits.append(protocol_phrase)
         note = "; ".join(bits) + ". Investigate before declaring the cutover good."
-    elif opened or removed_sw or n_went_dark or newly_bad or n_cables_changed:
+    elif opened or removed_sw or n_went_dark or newly_bad or n_cables_changed or protocol_review:
         verdict = "REVIEW"
         cov_bits = []
         if n_went_dark:
@@ -457,13 +879,13 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
             cov_bits.append(f"{len(newly_bad)} newly-collected switch(es) found Critical/Poor")
         note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present"
                 + ("; " + "; ".join(cov_bits) if cov_bits else "")
-                + f"; {cable_phrase}; {reach_phrase}. Confirm these are expected.")
+                + f"; {cable_phrase}; {reach_phrase}; {protocol_phrase} Confirm these are expected.")
     else:
         verdict = "CLEAN"
         note = (
             "Delta-only observation: no health-band regressions or newly opened findings were observed "
             "in the available comparable analyses; "
-            f"{cable_phrase}; {reach_phrase}. This is not a cutover authorization; reconcile the "
+            f"{cable_phrase}; {reach_phrase}; {protocol_phrase} This is not a cutover authorization; reconcile the "
             "Pre-Change Certificate and named blind spots."
         )
 
@@ -486,6 +908,9 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
                      "n_resolved": len(resolved), "n_opened_high": n_opened_high},
         "reachability": rdelta,
         "cabling": cdelta,
+        "protocol_adjacencies": pdelta,
+        "current_baseline": current_baseline,
+        "current_baseline_required": current_baseline_required,
         "integrity": {
             "ok": not integrity_failures,
             "failures": integrity_failures,
@@ -502,8 +927,253 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
         "verdict_note": note,
     }
 
+
+def compute_cutover_gate(delta: dict, certificate: dict,
+                         current_baseline: Optional[dict] = None) -> dict:
+    """Return the one combined before/after decision shown to an operator.
+
+    ``compute_snapshot_delta`` and the Pre-Change Certificate answer different questions.  The former
+    includes observed health, findings, cabling, reachability, and receipt-gated protocol adjacency
+    changes; the latter is deliberately bounded to FIB/path-intent and segmentation checks.  Keeping the
+    precedence here prevents a PASS on that narrower certificate from masking a proven delta regression.
+
+    The function is pure and total so every presentation surface can render the exact same receipt.
+    ``current_baseline`` is optional for backward compatibility with direct legacy callers; when
+    omitted, the receipt embedded by ``compute_snapshot_delta`` is consumed.
+    """
+    delta = _as_dict(delta)
+    certificate = _as_dict(certificate)
+
+    delta_verdict = str(delta.get("verdict") or "INDETERMINATE").strip().upper()
+    if delta_verdict not in {"REGRESSED", "INDETERMINATE", "REVIEW", "CLEAN"}:
+        delta_verdict = "INDETERMINATE"
+    delta_display = str(delta.get("verdict_display") or delta_verdict)
+    certificate_verdict = str(certificate.get("verdict") or "INDETERMINATE").strip().upper()
+    if certificate_verdict not in {"PASS", "CONDITIONAL", "FAIL", "INDETERMINATE"}:
+        certificate_verdict = "INDETERMINATE"
+
+    protocol = _as_dict(delta.get("protocol_adjacencies"))
+    protocol_summary = _as_dict(protocol.get("summary"))
+
+    def _count(name: str) -> int:
+        value = protocol_summary.get(name, 0)
+        return int(value) if (isinstance(value, int) and not isinstance(value, bool) and value >= 0) else 0
+
+    protocol_regressions = _count("n_state_regressed")
+    protocol_coverage_gaps = _count("n_coverage_gaps")
+    protocol_baseline_peers = _count("n_baseline_peers")
+    protocol_gate = str(protocol.get("gate") or "NOT_ASSESSED").strip().upper()
+
+    def _bounded_note(value: Any, fallback: str) -> str:
+        text = value.strip() if isinstance(value, str) else ""
+        text = text or fallback
+        return text if len(text) <= 600 else text[:597] + "..."
+
+    delta_note = _bounded_note(delta.get("verdict_note"), "No delta basis was emitted.")
+    certificate_note = _bounded_note(
+        certificate.get("verdict_note"), "No certificate basis was emitted.")
+
+    # A direct pre-existing caller may supply only the historical delta + certificate pair.  Preserve
+    # its exact receipt shape and precedence.  Every real compute_snapshot_delta result now carries the
+    # current-baseline receipt, including NOT_ASSESSED when the new snapshot omitted a validation plan.
+    delta_requires_baseline = delta.get("current_baseline_required", True)
+    if not isinstance(delta_requires_baseline, bool):
+        delta_requires_baseline = True
+    baseline_supplied = (current_baseline is not None
+                         or ("current_baseline" in delta and delta_requires_baseline))
+    raw_baseline = current_baseline if current_baseline is not None else delta.get("current_baseline")
+
+    def _baseline_receipt(value: Any) -> tuple:
+        block = _as_dict(value)
+        invalid_note = (
+            "Current-baseline receipt is missing or malformed; no all-clear can be established."
+        )
+        if block.get("schema") != "current_baseline_gate/1":
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        baseline_verdict = str(block.get("verdict") or "INDETERMINATE").strip().upper()
+        if baseline_verdict not in {"BLOCKED", "INDETERMINATE", "CLEAR", "NOT_ASSESSED"}:
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        assessed = block.get("assessed")
+        integrity = _as_dict(block.get("integrity"))
+        valid_flag = integrity.get("valid")
+        summary = _as_dict(block.get("summary"))
+        by_state = _as_dict(summary.get("by_state"))
+
+        def count(value: Any) -> Optional[int]:
+            return value if (isinstance(value, int) and not isinstance(value, bool) and value >= 0) else None
+
+        degraded = count(by_state.get("degraded"))
+        review = count(by_state.get("review"))
+        not_verified = count(by_state.get("not_verified"))
+        total = count(summary.get("n_blockers"))
+        returned = count(summary.get("n_blockers_returned"))
+        n_items = count(summary.get("n_items"))
+        blockers = block.get("blockers")
+        capped = summary.get("blockers_capped")
+        counts = (degraded, review, not_verified, total, returned, n_items)
+        if (not isinstance(assessed, bool) or not isinstance(valid_flag, bool)
+                or set(by_state) != {"degraded", "review", "not_verified"}
+                or any(item is None for item in counts) or not isinstance(blockers, list)
+                or not isinstance(capped, bool)):
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        if (total != degraded + review + not_verified or returned != len(blockers)
+                or returned > total or capped != (returned < total)):
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        if any(not isinstance(row, dict)
+               or not isinstance(row.get("evidence_state"), str)
+               or row.get("evidence_state") not in {"degraded", "review", "not_verified"}
+               for row in blockers):
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        returned_counts = {
+            state: sum(row.get("evidence_state") == state for row in blockers)
+            for state in ("degraded", "review", "not_verified")
+        }
+        if any(returned_counts[state] > by_state[state] for state in returned_counts):
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        coherent = (
+            (baseline_verdict == "BLOCKED" and assessed and valid_flag and degraded > 0)
+            or (baseline_verdict == "CLEAR" and assessed and valid_flag and total == 0 and n_items > 0)
+            or (baseline_verdict == "NOT_ASSESSED" and not assessed and valid_flag and total == 0)
+            or (baseline_verdict == "INDETERMINATE" and (
+                (assessed and valid_flag and not degraded and (review or not_verified))
+                or not valid_flag
+            ))
+        )
+        if not coherent:
+            return "INDETERMINATE", invalid_note, 0, 0, 0, 0
+        baseline_note = _bounded_note(block.get("note"), invalid_note)
+        return baseline_verdict, baseline_note, total, degraded, review, not_verified
+
+    if baseline_supplied:
+        (baseline_verdict, baseline_note, baseline_blockers, baseline_degraded,
+         baseline_review, baseline_not_verified) = _baseline_receipt(raw_baseline)
+    else:
+        baseline_verdict = baseline_note = ""
+        baseline_blockers = baseline_degraded = baseline_review = baseline_not_verified = 0
+
+    # The nested protocol block is part of the delta owner's published result.  A malformed or
+    # hand-edited caller must not retain CLEAN while simultaneously carrying a proven protocol
+    # regression/review gate; reconcile toward the stricter observed result.  NOT_ASSESSED remains
+    # deliberately non-poisoning for legacy snapshots with no baseline protocol receipt.
+    if ((protocol_gate == "REGRESSED" or protocol_regressions)
+            and delta_verdict in {"CLEAN", "REVIEW"}):
+        if delta_verdict != "REGRESSED":
+            delta_display = "REGRESSED"
+        delta_verdict = "REGRESSED"
+    elif protocol_gate == "REVIEW" and delta_verdict == "CLEAN":
+        delta_verdict = "REVIEW"
+        delta_display = "REVIEW"
+    elif (protocol_gate == "NOT_ASSESSED" and delta_verdict == "CLEAN"
+          and (protocol_baseline_peers or protocol_coverage_gaps)):
+        # Legacy receipts remain non-poisoning when there was no protocol subject to compare.  Once
+        # baseline peers exist, however, a strict overall cutover PASS would hide the comparator's own
+        # re-collection requirement, so the combined gate must abstain.
+        delta_verdict = "INDETERMINATE"
+        delta_display = "INDETERMINATE"
+
+    # Preserve the established workbook precedence: a proven observed regression is strongest; then
+    # current/certificate blockers; missing evidence; reviewable delta; and certificate conditions.
+    # CLEAR is the only supplied current-baseline state compatible with an overall PASS.
+    if delta_verdict == "REGRESSED":
+        verdict = "REGRESSED"
+    elif baseline_supplied and baseline_verdict == "BLOCKED":
+        verdict = "FAIL"
+    elif certificate_verdict == "FAIL":
+        verdict = "FAIL"
+    elif (delta_verdict == "INDETERMINATE" or certificate_verdict == "INDETERMINATE"
+          or (baseline_supplied and baseline_verdict in {"INDETERMINATE", "NOT_ASSESSED"})):
+        verdict = "INDETERMINATE"
+    elif delta_verdict == "REVIEW":
+        verdict = "REVIEW"
+    elif certificate_verdict == "CONDITIONAL":
+        verdict = "CONDITIONAL"
+    else:
+        verdict = "PASS"
+
+    baseline_basis = (f"Current baseline: {baseline_verdict}. Current-baseline basis: {baseline_note} "
+                      if baseline_supplied else "")
+    note = (f"Delta observation: {delta_display}. Delta basis: {delta_note} "
+            f"{baseline_basis}Pre-Change Certificate: {certificate_verdict}. "
+            f"Certificate basis: {certificate_note}")
+
+    if verdict == "REGRESSED":
+        if protocol_regressions:
+            noun = "regression was" if protocol_regressions == 1 else "regressions were"
+            action = (f"{protocol_regressions} baseline-observed protocol adjacency state {noun} "
+                      "proven; investigate or roll back before proceeding.")
+            if protocol_coverage_gaps:
+                gap_noun = "cell was" if protocol_coverage_gaps == 1 else "cells were"
+                action += (f" {protocol_coverage_gaps} additional protocol comparison {gap_noun} "
+                           "not assessable; re-collect before accepting the change.")
+        else:
+            action = "A before/after regression was proven; investigate or roll back before proceeding."
+    elif verdict == "FAIL":
+        if baseline_supplied and baseline_verdict == "BLOCKED":
+            other = " and the blocking certificate condition(s)" if certificate_verdict == "FAIL" else ""
+            action = (f"Do not proceed; resolve or explicitly disposition {baseline_degraded} definite "
+                      f"current-baseline degradation(s){other}, then re-run the comparison.")
+        else:
+            action = "Do not proceed; resolve the blocking certificate condition(s) and re-run the comparison."
+    elif verdict == "INDETERMINATE":
+        if baseline_supplied and baseline_verdict == "NOT_ASSESSED":
+            action = ("Do not declare the cutover good; generate and reconcile the new snapshot's validation "
+                      "baseline before acceptance.")
+        elif baseline_supplied and baseline_verdict == "INDETERMINATE":
+            action = ("Do not declare the cutover good; repair or verify the current validation baseline and "
+                      "re-run before acceptance.")
+        elif protocol_gate == "NOT_ASSESSED" and protocol_baseline_peers:
+            noun = "peer could" if protocol_baseline_peers == 1 else "peers could"
+            action = (f"{protocol_baseline_peers} baseline-observed protocol {noun} not be compared; "
+                      "re-collect protocol evidence before accepting the change.")
+        else:
+            action = "Do not declare the cutover good; repair the missing or invalid evidence and re-run."
+    elif verdict == "REVIEW":
+        if protocol_coverage_gaps:
+            noun = "cell was" if protocol_coverage_gaps == 1 else "cells were"
+            action = (f"{protocol_coverage_gaps} protocol comparison {noun} not assessable; "
+                      "re-collect and review before accepting the change.")
+        else:
+            action = "Operator review is required before accepting the change."
+    elif verdict == "CONDITIONAL":
+        action = "Clear or explicitly accept every named certificate blind spot before proceeding."
+    else:
+        action = "No blocking condition was observed within the disclosed, bounded comparison scope."
+    operator_note = f"Overall before/after cutover decision: {verdict}. {action}"
+    if verdict != "PASS":
+        operator_note += f" Delta basis: {delta_note}"
+        if baseline_supplied:
+            operator_note += f" Current-baseline basis: {baseline_note}"
+        operator_note += f" Certificate basis: {certificate_note}"
+
+    result = {
+        "schema": "cutover_gate/1",
+        "verdict": verdict,
+        "note": note,
+        "operator_note": operator_note,
+        "delta_verdict": delta_verdict,
+        "delta_display": delta_display,
+        "delta_note": delta_note,
+        "certificate_verdict": certificate_verdict,
+        "certificate_note": certificate_note,
+        "protocol_gate": protocol_gate,
+        "protocol_baseline_peers": protocol_baseline_peers,
+        "protocol_regressions": protocol_regressions,
+        "protocol_coverage_gaps": protocol_coverage_gaps,
+    }
+    if baseline_supplied:
+        result.update({
+            "current_baseline_verdict": baseline_verdict,
+            "current_baseline_note": baseline_note,
+            "current_baseline_blockers": baseline_blockers,
+            "current_baseline_degraded": baseline_degraded,
+            "current_baseline_review": baseline_review,
+            "current_baseline_not_verified": baseline_not_verified,
+        })
+    return result
+
+
 def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = None, *,
-                        source_binding: Optional[dict] = None, schema_status: Any = None) -> None:
+                        source_binding: Optional[dict] = None, schema_status: Any = None) -> dict:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts. `precert` is an optional precomputed
     Pre-Change Validation Certificate (roadmap C1); when None it is computed here, so the
@@ -572,6 +1242,17 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
             old, new, source_hashes=source_binding, schema_status=schema_status)
     rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
     cd0 = (delta.get("cabling") or {}).get("summary") or {}   # physical cable delta (EDA cable-map SSOT)
+    pd0 = delta.get("protocol_adjacencies") or {}              # receipt-gated observed adjacency delta
+    pds0 = pd0.get("summary") or {}
+    bd0 = _as_dict(delta.get("current_baseline"))              # current-snapshot acceptance baseline
+    bds0 = _as_dict(bd0.get("summary"))
+    bd_states0 = _as_dict(bds0.get("by_state"))
+
+    def _protocol_metric(key: str):
+        value = pds0.get(key, 0)
+        # A positive observed result remains useful under partial coverage; a zero does not.  When one
+        # scoped cell is unassessed, render its zero outcomes as an abstention rather than an all-clear.
+        return value if value or pd0.get("assessed") else "—"
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
@@ -583,29 +1264,23 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # the AssessHub compare view and the CLI diff workbook disagreeing at the cutover gate.
     o_sw, n_sw = delta["switches"]["old"], delta["switches"]["new"]
     o_if, n_if = delta["interfaces"]["old"], delta["interfaces"]["new"]
-    cert_verdict = str(cert.get("verdict") or "INDETERMINATE")
-    if delta["verdict"] == "REGRESSED":
-        gate_verdict = "REGRESSED"
-    elif cert_verdict == "FAIL":
-        gate_verdict = "FAIL"
-    elif delta["verdict"] == "INDETERMINATE" or cert_verdict == "INDETERMINATE":
-        gate_verdict = "INDETERMINATE"
-    elif delta["verdict"] == "REVIEW":
-        gate_verdict = "REVIEW"
-    elif cert_verdict == "CONDITIONAL":
-        gate_verdict = "CONDITIONAL"
-    else:
-        gate_verdict = "PASS"
-    gate_note = (
-        f"Delta observation: {delta.get('verdict_display', delta['verdict'])}. "
-        f"Pre-Change Certificate: {cert_verdict}. {cert.get('verdict_note') or delta['verdict_note']}"
-    )
+    gate = compute_cutover_gate(delta, cert)
+    gate_verdict = gate["verdict"]
+    gate_note = gate["note"]
     _VERDICT_FILL = {"PASS": "C6EFCE", "CLEAN": "C6EFCE", "CONDITIONAL": "FFEB9C",
-                     "REVIEW": "FFEB9C", "INDETERMINATE": "D9D9D9",
-                     "FAIL": "FFC7CE", "REGRESSED": "FFC7CE"}
+                     "CLEAR": "C6EFCE", "REVIEW": "FFEB9C", "NOT_ASSESSED": "D9D9D9",
+                     "INDETERMINATE": "D9D9D9", "FAIL": "FFC7CE", "BLOCKED": "FFC7CE",
+                     "REGRESSED": "FFC7CE"}
     metrics = [
         ("CUTOVER GATE VERDICT", "", gate_verdict, gate_note),
         ("DELTA OBSERVATION", "", delta.get("verdict_display", delta["verdict"]), delta["verdict_note"]),
+        ("CURRENT BASELINE GATE", "", bd0.get("verdict", "INDETERMINATE"),
+         bd0.get("note", "Current-baseline receipt is missing or malformed.")),
+        ("Current baseline blockers", "", bds0.get("n_blockers", 0),
+         (f"{bd_states0.get('degraded', 0)} degraded, {bd_states0.get('review', 0)} review, "
+          f"{bd_states0.get('not_verified', 0)} not verified; "
+          f"{bds0.get('n_blockers_returned', 0)} bounded row(s) returned"
+          f"{' (CAPPED)' if bds0.get('blockers_capped') else ''}")),
         ("Switches", o_sw, n_sw, _dnum(o_sw, n_sw)),
         # ...added/removed enumerate the COLLECTED devices, which is a narrower set than the canonical
         # count above whenever the estate holds devices that were inventoried but not collected. Labelled,
@@ -619,6 +1294,13 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         ("Findings opened", "", delta["findings"]["n_opened"],
          f"{delta['findings']['n_opened_high']} High/Critical"),
         ("Findings resolved", "", delta["findings"]["n_resolved"], delta["findings"]["n_resolved"]),
+        ("Protocol adjacency state regressions", "", _protocol_metric("n_state_regressed"),
+         pd0.get("note", "NOT assessed")),
+        ("Protocol adjacencies no longer observed", "", _protocol_metric("n_no_longer_observed"),
+         "Observed topology change; not proof that a peer is down or absent"),
+        ("Protocol adjacency coverage gaps", "", pds0.get("n_coverage_gaps", 0),
+         (f"Gate {pd0.get('gate', 'NOT_ASSESSED')}; projection custody "
+          f"{pd0.get('projection_custody', 'embedded_unverified')}")),
         ("Reachability flows newly blocked", "", len(rd0.get("newly_blocked") or []),
          (f"{rd0.get('pairs_tested', 0)} sampled flow(s) across {rd0.get('subnets_tested', 0)} of "
           f"{rd0.get('subnets_total', 0)} subnet(s){' (CAPPED — coverage incomplete)' if rd0.get('capped') else ''}, "
@@ -637,12 +1319,53 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     for m in metrics:
         for c, v in enumerate(m, 1):
             cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
-        if m[0] == "CUTOVER GATE VERDICT":
+        if m[0] in {"CUTOVER GATE VERDICT", "CURRENT BASELINE GATE"}:
             vc = ws.cell(row=r, column=3)
-            vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(gate_verdict, "FFFFFF"))
+            vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(str(m[2]), "FFFFFF"))
             vc.font = Font(name="Calibri", bold=True, size=11)
         r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 70
+
+    # Current Baseline Gate — actionable rows behind the headline FAIL/INDETERMINATE.  These are the
+    # bounded, reconciled rows emitted by compute_current_baseline_gate, never a second workbook-local
+    # marker parser.  The disclosure row is always present, including an explicit cap state.
+    ws = sheet("Current Baseline Gate",
+               ["State", "Device", "Wave", "Category", "Check",
+                "Observed baseline / acceptance", "Projection custody", "Source key"])
+    r = 2
+    blocker_rows = bd0.get("blockers") if isinstance(bd0.get("blockers"), list) else []
+    for blocker in blocker_rows:
+        if not isinstance(blocker, dict):
+            continue
+        vals = [
+            blocker.get("evidence_state", ""), blocker.get("device", ""),
+            blocker.get("wave", ""), blocker.get("category", ""), blocker.get("check", ""),
+            blocker.get("expect", ""), blocker.get("projection_custody", ""),
+            blocker.get("source_key", ""),
+        ]
+        for c, value in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=_cv(value)); cell.font = DF; cell.alignment = AL
+        fill = "FFC7CE" if blocker.get("evidence_state") == "degraded" else "FFEB9C"
+        ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    cap_state = "CAPPED" if bds0.get("blockers_capped") else "NOT CAPPED"
+    disclosure = (
+        f"Gate {bd0.get('verdict', 'INDETERMINATE')}; returned "
+        f"{bds0.get('n_blockers_returned', 0)} of {bds0.get('n_blockers', 0)} blocker row(s) "
+        f"({cap_state}). Counts cover the full reconciled plan: "
+        f"{bd_states0.get('degraded', 0)} degraded, {bd_states0.get('review', 0)} review, "
+        f"{bd_states0.get('not_verified', 0)} not verified. "
+        f"{bd0.get('note', 'Current-baseline receipt is missing or malformed.')}"
+    )
+    ws.cell(row=r, column=1, value="DISCLOSURE").font = Font(name="Calibri", bold=True, size=10)
+    ws.cell(row=r, column=6, value=_cv(disclosure)).font = DF
+    ws.cell(row=r, column=6).alignment = AL
+    ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor="D9D9D9")
+    autofit(ws, 8)
+    ws.column_dimensions["E"].width = 44
+    ws.column_dimensions["F"].width = 76
+    ws.column_dimensions["G"].width = 28
+    ws.column_dimensions["H"].width = 48
 
     # Interface Changes
     ws = sheet("Interface Changes", ["Hostname", "Port", "Change", "Field: Old -> New"])
@@ -747,6 +1470,36 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     if r == 2:
         ws.cell(row=2, column=1, value="No punch-list findings opened or resolved.").font = DF
     autofit(ws, 5); ws.column_dimensions["E"].width = 70
+
+    # Protocol Adjacency Delta — baseline-observed OSPF/BGP/EIGRP peers, gated by the exact runtime
+    # assessability receipt on BOTH sides.  A coverage gap is rendered as its own row and never as zero peers.
+    ws = sheet("Protocol Adjacency Delta",
+               ["Switch", "Protocol", "Peer", "Before", "After", "Result", "Evidence / next action"])
+    r = 2
+    for item in pd0.get("changes") or []:
+        vals = [item.get("switch", ""), item.get("protocol", ""), item.get("peer", ""),
+                item.get("before_state", ""), item.get("after_state", ""),
+                item.get("result", ""), item.get("note", "")]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
+        result = str(item.get("result") or "")
+        fill = ("FFC7CE" if result == "state_degraded" else
+                "C6EFCE" if result == "recovered" else "FFEB9C")
+        ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    for gap in pd0.get("coverage_gaps") or []:
+        vals = [gap.get("switch", ""), gap.get("protocol", ""), "",
+                gap.get("before_state", ""), gap.get("after_state", ""),
+                "NOT COMPARABLE", gap.get("reason", "")]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
+        ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor="D9D9D9")
+        r += 1
+    if r == 2:
+        ws.cell(row=2, column=1, value=_cv(pd0.get("note") or
+                                          "Protocol adjacency preservation NOT assessed.")).font = DF
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=7)
+    autofit(ws, 7); ws.column_dimensions["G"].width = 72
 
     # Reachability (W2) — computed RIB->FIB flows the change DEFINITIVELY broke (the offline Batfish-peer what-if).
     # Coverage-honest: distinguishes 'tested, no regressions' from 'no routes collected -> not assessed'.
@@ -881,13 +1634,15 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     autofit(ws, 6); ws.column_dimensions["B"].width = 46; ws.column_dimensions["F"].width = 70
 
     wb.save(out_path)
+    return gate
 
 
 # -----------------------------------------------------------------------------
 # Migration CAMPAIGN trend (NEW-V3.23.145). Where compute_snapshot_delta diffs a PAIR (pre/post a single
 # cutover), the campaign tracker ingests a SERIES of collections taken across the whole migration and shows
 # the trajectory: is the network actually getting healthier wave by wave? It extracts the headline metrics
-# per collection (avg health, band mix, punch-list size + Critical/High count, NOT-READY groups, past-EoS),
+# per collection (avg health, band mix, punch-list size + Critical/High count, NOT-READY groups,
+# Past-LDoS),
 # computes the first->last trajectory per metric + an overall IMPROVING/MIXED/REGRESSING verdict, and reuses
 # compute_snapshot_delta for the per-step findings burndown (opened vs resolved). Pure read of N snapshot
 # dicts; tolerant of older snapshots that lack a metric -- it is omitted from the trajectory, never scored as
@@ -956,12 +1711,14 @@ def _trend_point(snap: dict) -> dict:
         "n_punchlist": len(pl) if have_pl else "",
         "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")) if have_pl else "",
         "n_not_ready": readiness["NOT READY"] if have_mr else "",
-        # "Past end-of-support" = Past-LDoS (no TAC / no fixes) — the migration-critical count the
-        # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE, still supported): reading
+        # "Past end-of-support" = Past-LDoS — the migration-critical date-band count the
+        # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE while LDoS remains future;
+        # neither band proves entitlement): reading
         # n_past_eos here showed 0 while 152 boxes were past support (the EoS/LDoS silent-drop class).
         # A count over PARTIAL coverage must not be trended as if it were complete. `past_ldos` is
-        # lower-is-better in _TREND_METRICS, so a fleet whose platforms the offline EoX KB never
-        # matched reports 0 and scores as the BEST possible value — an un-assessed campaign step
+        # lower-is-better in _TREND_METRICS, so a fleet whose platforms lack an exact EoX match or
+        # complete retained source/date authority reports 0 and scores as the BEST possible value —
+        # an un-assessed campaign step
         # reads as an improvement over a fully-assessed earlier one. That is absence converted into
         # a positive signal, which is worse than absence rendered as neutral.
         #
@@ -1014,12 +1771,28 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
             pair_binding = {"before": source_bindings[i], "after": source_bindings[i + 1]}
         d = compute_snapshot_delta(snaps[i], snaps[i + 1],
                                    source_binding=pair_binding, schema_status=schema)
+        pa = d.get("protocol_adjacencies") or {}
+        pas = pa.get("summary") or {}
+        cb = _as_dict(d.get("current_baseline"))
+        cbs = _as_dict(cb.get("summary"))
         steps.append({
             "from": timeline[i]["collection"], "to": timeline[i + 1]["collection"],
             "from_date": timeline[i]["date"], "to_date": timeline[i + 1]["date"],
             "opened": d["findings"]["n_opened"], "opened_high": d["findings"]["n_opened_high"],
             "resolved": d["findings"]["n_resolved"], "net": d["findings"]["n_opened"] - d["findings"]["n_resolved"],
             "regressed": d["health"]["n_regressed"], "improved": d["health"]["n_improved"],
+            "protocol_gate": pa.get("gate", "NOT_ASSESSED"),
+            "protocol_baseline_peers": pas.get("n_baseline_peers", 0),
+            "protocol_state_regressed": pas.get("n_state_regressed", 0),
+            "protocol_recovered": pas.get("n_recovered", 0),
+            "protocol_no_longer_observed": pas.get("n_no_longer_observed", 0),
+            "protocol_added": pas.get("n_added", 0),
+            "protocol_coverage_gaps": pas.get("n_coverage_gaps", 0),
+            "protocol_projection_custody": pa.get("projection_custody", "embedded_unverified"),
+            "protocol_note": pa.get("note", ""),
+            "current_baseline_verdict": cb.get("verdict", "NOT_ASSESSED"),
+            "current_baseline_blockers": cbs.get("n_blockers", 0),
+            "current_baseline_note": cb.get("note", ""),
             "verdict": d["verdict"],
         })
 
@@ -1027,8 +1800,16 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
     lost: List[str] = []
     never: List[str] = []
     verdict, note = "INSUFFICIENT", "Need at least two collections to show a trend."
+    campaign_protocol: dict = {}
     if len(timeline) >= 2:
         first, last = timeline[0], timeline[-1]
+        campaign_binding = None
+        if isinstance(source_bindings, list) and len(source_bindings) >= len(snaps):
+            campaign_binding = {"before": source_bindings[0], "after": source_bindings[-1]}
+        # Compare the campaign ENDPOINTS, not absolute peer counts. A transient peer regression remains in
+        # `steps`, while a regression recovered by the last collection must not mislabel the final trajectory.
+        campaign_protocol = compute_protocol_adjacency_delta(
+            snaps[0], snaps[-1], source_binding=campaign_binding)
         # Metrics whose EVIDENCE was collected in one endpoint of the campaign and not the other. Dropping
         # them from the trajectory is right (they are not comparable) but doing it SILENTLY is the same
         # survivorship trap as a device dropping out: the surviving metrics then set a verdict over a
@@ -1094,6 +1875,11 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
                 verdict = "MIXED"                         # devices went dark -> not a clean improvement
             if lost and verdict in ("IMPROVING", "FLAT"):
                 verdict = "MIXED"                         # lost evidence -> not a clean improvement either
+            protocol_gate = campaign_protocol.get("gate")
+            if protocol_gate == "REGRESSED":
+                verdict = "REGRESSING"                    # definitive endpoint state degradation dominates
+            elif protocol_gate == "REVIEW" and verdict in ("IMPROVING", "FLAT"):
+                verdict = "MIXED"                         # adjacency topology/coverage loss blocks clean progress
         hr = next((r for r in trajectory if r["metric"].startswith("Avg health")), None)
         cr = next((r for r in trajectory if r["metric"].startswith("Critical/High")), None)
         parts = [f"Across {len(timeline)} collections: {better} metric(s) improving, {worse} worsening."]
@@ -1112,6 +1898,9 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
             parts.append(f"NOT COMPARABLE: {len(never)} metric(s) were never measured at EITHER end of "
                          f"this campaign ({', '.join(never)}) -- absent from the trajectory above because "
                          "there is no evidence, NOT because there is nothing to report.")
+        _cps = campaign_protocol.get("summary") or {}
+        if (_cps.get("n_baseline_peers") or 0) > 0 or campaign_protocol.get("gate") != "NOT_ASSESSED":
+            parts.append(str(campaign_protocol.get("note") or ""))
         note = " ".join(parts).strip()
 
         if failed_collections:
@@ -1125,6 +1914,9 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
                 f"partial observation and is not an improvement claim. {detail}. {note}"
             ).strip()
 
+    last_snapshot = snaps[-1] if snaps and isinstance(snaps[-1], dict) else None
+    current_baseline = compute_current_baseline_gate(
+        last_snapshot.get("validation_plan") if last_snapshot is not None else None)
     return {"timeline": timeline, "steps": steps, "trajectory": trajectory,
             # Machine-readable twin of the two NOT-COMPARABLE sentences in verdict_note, so a
             # renderer can show the gap as a row rather than having to parse prose. `lost` = the
@@ -1136,6 +1928,11 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
                 "source_bindings": list(source_bindings) if isinstance(source_bindings, list) else [],
                 "schema_status": schema,
             },
+            "protocol_adjacencies": campaign_protocol,
+            # The trajectory verdict remains a direction-of-travel result.  The last collection's
+            # independent acceptance state travels beside it so a renderer cannot mistake IMPROVING/FLAT
+            # for cutover clearance while a current blocker remains.
+            "current_baseline": current_baseline,
             "verdict": verdict, "verdict_note": note}
 
 
@@ -1176,7 +1973,8 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
     _DIR_FILL = {"improving": "C6EFCE", "worsening": "FFC7CE", "flat": "FFEB9C"}
     _VERDICT_FILL = {"IMPROVING": "C6EFCE", "MIXED": "FFEB9C", "FLAT": "DDEBF7",
                      "REGRESSING": "FFC7CE", "INDETERMINATE": "D9D9D9",
-                     "INSUFFICIENT": "EFEFEF"}
+                     "INSUFFICIENT": "EFEFEF", "CLEAR": "C6EFCE", "BLOCKED": "FFC7CE",
+                     "NOT_ASSESSED": "D9D9D9"}
 
     # ---- Campaign Summary (leads with the trajectory verdict) ----
     ws = sheet("Campaign Summary", ["Metric", "First", "Last", "Delta", "Trajectory"])
@@ -1186,14 +1984,23 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
     vv.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(trend["verdict"], "FFFFFF"))
     ws.cell(row=2, column=3, value=_cv(trend["verdict_note"])).alignment = AL
     ws.merge_cells(start_row=2, start_column=3, end_row=2, end_column=5)
-    r = 4
+    current_baseline = _as_dict(trend.get("current_baseline"))
+    bc = ws.cell(row=3, column=1, value="CURRENT BASELINE GATE")
+    bc.font = Font(name="Calibri", bold=True, size=11)
+    bv = ws.cell(row=3, column=2, value=_cv(current_baseline.get("verdict", "INDETERMINATE")))
+    bv.font = Font(name="Calibri", bold=True, size=11)
+    bv.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(str(bv.value), "FFFFFF"))
+    ws.cell(row=3, column=3, value=_cv(current_baseline.get(
+        "note", "Current-baseline receipt is missing or malformed."))).alignment = AL
+    ws.merge_cells(start_row=3, start_column=3, end_row=3, end_column=5)
+    r = 5
     for t in trend["trajectory"]:
         for c, v in enumerate([t["metric"], t["first"], t["last"], t["delta"], t["direction"]], 1):
             cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
         ws.cell(row=r, column=5).fill = PatternFill("solid", fgColor=_DIR_FILL.get(t["direction"], "FFFFFF"))
         r += 1
     if not trend["trajectory"]:
-        ws.cell(row=4, column=1, value="Not enough comparable metrics across the snapshots.").font = DF
+        ws.cell(row=5, column=1, value="Not enough comparable metrics across the snapshots.").font = DF
     prov = trend.get("provenance") or {}
     binds = prov.get("source_bindings") if isinstance(prov.get("source_bindings"), list) else []
     if binds:
@@ -1251,6 +2058,31 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
         ws.cell(row=2, column=1, value="Need at least two snapshots for a burndown.").font = DF
     autofit(ws, 8)
 
+    # ---- Protocol Adjacencies (source-bound observed delta, one row per consecutive campaign step) ----
+    # Absolute peer totals are intentionally not trajectory metrics: topology and coverage change.  These
+    # columns carry only the receipt-gated before/after classifications owned by compute_snapshot_delta.
+    ws = sheet("Protocol Adjacencies",
+               ["Step", "Gate", "Baseline peers", "State regressed", "Recovered",
+                "No longer observed", "Added", "Coverage gaps", "Projection custody",
+                "Scope / next action"])
+    for i, st in enumerate(trend["steps"], start=2):
+        vals = [f"{st['from']} → {st['to']}", st.get("protocol_gate", "NOT_ASSESSED"),
+                st.get("protocol_baseline_peers", 0), st.get("protocol_state_regressed", 0),
+                st.get("protocol_recovered", 0), st.get("protocol_no_longer_observed", 0),
+                st.get("protocol_added", 0), st.get("protocol_coverage_gaps", 0),
+                st.get("protocol_projection_custody", "embedded_unverified"),
+                st.get("protocol_note", "")]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=i, column=c, value=_cv(v)); cell.font = DF
+            cell.alignment = CEN if 2 <= c <= 8 else AL
+        gate = str(st.get("protocol_gate") or "NOT_ASSESSED")
+        ws.cell(row=i, column=2).fill = PatternFill(
+            "solid", fgColor={"PASS": "C6EFCE", "REVIEW": "FFEB9C", "REGRESSED": "FFC7CE"}.get(
+                gate, "D9D9D9"))
+    if not trend["steps"]:
+        ws.cell(row=2, column=1, value="Need at least two snapshots for a protocol adjacency delta.").font = DF
+    autofit(ws, 10); ws.column_dimensions["I"].width = 38; ws.column_dimensions["J"].width = 72
+
     wb.save(out_path)
     logger.info(f"[OK] Campaign trend: {trend['verdict']} across {len(trend['timeline'])} collections")
 
@@ -1270,8 +2102,9 @@ def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 
 def sparsify_interfaces(snap: dict) -> dict:
     """Return a SHALLOW copy of `snap` whose `interfaces` subtree drops every field equal to its
-    empty-string default (Tier-3 #14 Phase-2). Every InterfaceData field defaults to '', so
-    dropping '' values is lossless -- InterfaceData.from_sparse restores the omitted fields on read
+    empty default (Tier-3 #14 Phase-2). InterfaceData fields default to '' except the positive
+    ``run_config_observed`` boolean, so dropping '' and that field's False value is lossless --
+    InterfaceData.from_sparse restores omitted defaults on read
     (~70% of the interface field-cells are '' on a real fleet). Confined to `interfaces`: `devices`
     (DevicePhysical) has non-'' defaults and stays dense. Applied ONLY to the on-disk snapshot; the
     in-memory snap_dict every in-process consumer reads is left untouched, so this changes nothing
@@ -1279,7 +2112,8 @@ def sparsify_interfaces(snap: dict) -> dict:
     ifaces = snap.get("interfaces")
     if not isinstance(ifaces, dict):
         return snap
-    sparse = {host: {port: {k: v for k, v in rec.items() if v != ""}
+    sparse = {host: {port: {k: v for k, v in rec.items()
+                            if v != "" and not (k == "run_config_observed" and v is False)}
                      for port, rec in ports.items() if isinstance(rec, dict)}
               for host, ports in ifaces.items() if isinstance(ports, dict)}
     return {**snap, "interfaces": sparse}
@@ -1348,10 +2182,15 @@ def _script_safe_json(value) -> str:
 
 
 def _slim_for_embed(snap_dict: dict) -> dict:
-    """Return a display-neutral, size-reduced copy of the snapshot for embedding in the
+    """Return a renderer-scoped, size-reduced copy of the snapshot for embedding in the
     explorer HTML. Pure (input not mutated); see the block comment above for why each
     transform is safe. Defensive: tolerates missing/oddly-typed sections."""
     out = dict(snap_dict)
+    # Traffic Assurance has no dedicated explorer renderer.  Embedding either its governed results or the
+    # supporting custody receipt would create a silent, unused projection with no UI contract; withhold both
+    # until that renderer exists and can preserve the snapshot's exact verdict/custody semantics.
+    out.pop("traffic_assurance", None)
+    out.pop("traffic_evidence_custody", None)
     intf = snap_dict.get("interfaces")
     if isinstance(intf, dict):
         out["interfaces"] = {host: _slim_ports(ports) for host, ports in intf.items()}

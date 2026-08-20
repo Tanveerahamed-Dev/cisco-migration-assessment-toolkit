@@ -345,12 +345,16 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Other non-default VRFs (no gateway SVI — segment no user traffic)",
          ", ".join(ev["other_vrfs"]) or "none"),
         # An all-Unknown fleet counts 0 past-LDoS and printed a bare "0" here -- indistinguishable from
-        # a fleet verified to be fully supported. The workshop writes requirements against this table,
+        # a fleet whose lifecycle date bands were fully assessed. The workshop writes requirements against this table,
         # so the undetermined population must ride in the same cell as the count it qualifies.
         ("Hardware past last-day-of-support (LDoS)",
          f"{lc.get('n_past_ldos', '—')}"
-         + (f" (+ {lc['n_unknown']} device(s) NOT ASSESSED — no EoX bulletin matched them; their "
-            "support state is undetermined, not clear)" if lc.get("n_unknown") else "")),
+         + (f" (+ {lc['n_unknown']} device(s) NOT ASSESSED — no authoritative lifecycle band was "
+            "assigned: either no exact EoX row matched or the matched row's source/date authority "
+            "was withheld; their support state is undetermined, not clear)"
+            if lc.get("n_unknown") else "")),
+        ("Hardware within one year of LDoS (Near-LDoS)", lc.get("n_near", "—")),
+        ("Hardware past end-of-sale with LDoS still future", lc.get("n_past_eos", "—")),
         ("Collection completeness", f"{coll.get('complete', '—')} complete / "
                                     f"{coll.get('partial', '—')} partial / "
                                     f"{coll.get('not_collected', '—')} not collected"),
@@ -577,6 +581,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
                          "CONFIRMED (requirements register)"))
     # Evidence-derived constraint: EoL / past-LDoS hardware forces replacement (from lifecycle_risk).
     _ldos = ev["lifecycle"].get("n_past_ldos")
+    _near = ev["lifecycle"].get("n_near")
     _eos = ev["lifecycle"].get("n_past_eos")
     if isinstance(_ldos, int) and _ldos > 0:
         _ci += 1
@@ -584,11 +589,18 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
                          f"{_ldos} device(s) are past last-day-of-support (LDoS) — these are forced "
                          "replacements the migration cannot carry forward on the current hardware.",
                          "EVIDENCE (lifecycle risk)"))
-    elif isinstance(_eos, int) and _eos > 0:
+    if isinstance(_near, int) and _near > 0:
+        _ci += 1
+        con_rows.append((f"CON-{_ci:03d}",
+                         f"{_near} device(s) are within one year of LDoS — schedule replacement before "
+                         "the recorded deadline; this date band does not establish support entitlement.",
+                         "EVIDENCE (lifecycle risk)"))
+    if isinstance(_eos, int) and _eos > 0:
         _ci += 1
         con_rows.append((f"CON-{_ci:03d}",
                          f"{_eos} device(s) are past end-of-sale (EoS) — plan the hardware refresh within "
-                         "the vendor-support horizon.", "EVIDENCE (lifecycle risk)"))
+                         "the recorded window before LDoS; this date band does not establish support "
+                         "entitlement.", "EVIDENCE (lifecycle risk)"))
     # Neither count fires when the fleet was never banded -- both read 0 -- and the constraints register
     # then carried NO hardware-lifecycle constraint at all, so the workshop wrote requirements as though
     # refresh were a settled non-issue. An undetermined support state is a constraint on the design (it
@@ -603,9 +615,10 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     if isinstance(_unk := ev["lifecycle"].get("n_unknown"), int) and _unk > 0:
         _ci += 1
         con_rows.append((f"CON-{_ci:03d}",
-                         f"{_unk} device(s) could NOT be lifecycle-banded — no "
-                         "EoX bulletin in the offline knowledge base matched them. Their support state "
-                         "is UNDETERMINED, not clear: resolve it against Cisco's published EoX data "
+                         f"{_unk} device(s) could NOT be lifecycle-banded — either no exact EoX row "
+                         "matched or the matched row's retained source/date authority was withheld or "
+                         "incomplete. Their lifecycle position and support entitlement are UNDETERMINED, "
+                         "not clear: resolve them against Cisco's published EoX and entitlement records "
                          "before the target BoM is costed or carried forward.",
                          "COVERAGE GAP (lifecycle risk)"))
     if not (reg["provided"] and reg["constraints"]):

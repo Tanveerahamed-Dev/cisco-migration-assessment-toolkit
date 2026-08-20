@@ -106,7 +106,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - run: python -m pip install --upgrade pip
@@ -138,10 +138,21 @@ jobs:
           python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
-        run: npm ci
+        run: |
+          npm run verify:node
+          npm ci --ignore-scripts
       - name: Audit frontend dependencies
         working-directory: webapp/frontend
-        run: npm audit --audit-level=high
+        env:
+          # npm 11 rejects one path being loaded as both user and global
+          # configuration. Keep both layers isolated without aliasing them.
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
+        run: >-
+          npm audit --audit-level=high
+          --registry=https://registry.npmjs.org/
+          --offline=false
+          --include=prod --include=dev --include=optional --include=peer
 
   package:
     name: Distribution contract
@@ -161,7 +172,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - name: Prove toolchain setup did not change the source
@@ -172,6 +183,7 @@ jobs:
       - name: Rebuild the bundled AssessHub SPA
         working-directory: webapp/frontend
         run: |
+          npm run verify:node
           npm ci
           npm test
           npm run build
@@ -190,7 +202,7 @@ jobs:
       # now a no-op that would only mask an unexpected build output). node_modules stays.
       #
       # FIRST RUN IS THE REAL TEST: these bytes were built on Windows and this job rebuilds on
-      # ubuntu/node-20. Two consecutive builds were verified byte-identical on the authoring machine,
+      # ubuntu/node-24.19.0. Two consecutive builds were verified byte-identical on the authoring machine,
       # but CROSS-PLATFORM reproduction — including Vite's content-hashed filenames — is unproven
       # until this step runs. If it fails, the honest reading is that the bundle is not reproducible
       # across platforms, and the fix is a pinned/containerised build, NOT re-adding the allowlist.
@@ -235,6 +247,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --json-out dist/dist-verification.json
       - name: Prove distribution verification did not change the source
         run: >-
@@ -280,6 +293,9 @@ jobs:
         run: |
           cisco-assess --help
           assesshub --selftest
+          # The selftest and this independent release assertion both require the compact Cisco EoL
+          # fixture to verify in the installed wheel. Only the much larger IEEE/IANA source corpus
+          # may use pack_is_usable's explicitly disclosed cannot-check-here state.
           # Routed through registry_integrity.pack_is_usable — the ONE owner of this question.
           # This line used to carry its own inline conjunction with a comment saying "keep in step
           # with COLLECT_PARSE and serve.py; there are four consumers" — the hand-sync instruction
@@ -290,7 +306,7 @@ jobs:
           # selftest above printed PASS 9/9 and this very next line exited 1 on the same facts
           # (proven on run 30744547871). A duplicated predicate in a workflow file is still a
           # duplicated predicate. Degraded installs are disclosed, not silently passed.
-          python -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+          python -c "import sys; from cisco_toolkit import eoldb, ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health()), ('eol', eoldb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
       - name: Final immutable-source proof before preserving archives
         run: >-
           python .github/scripts/verify_checkout_immutable.py
@@ -305,6 +321,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --expected-json dist/dist-verification.json
       - name: Preserve the verified distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -30,6 +30,10 @@ import synthetic_fixtures as fx          # noqa: E402  (read-only template sourc
 import COLLECT_PARSE_V3_23_0 as cp       # noqa: E402  (the real pipeline entry point)
 
 OUT = os.path.join(_HERE, "sample_fleet.snapshot.json")
+# Stable evidence timestamp for the demo fixture. The real pipeline recovers this from the
+# collection-directory stamp, which makes lifecycle bands and every derived design/executive section
+# deterministic instead of silently exempting them from --check.
+_SAMPLE_COLLECTION_STAMP = "20260807_000000"
 
 # (model line for `show version`, roughly how the EoL KB bands it) — gives lifecycle variety.
 _PLATFORMS = [
@@ -339,20 +343,29 @@ def _make_template(path: str) -> None:
     wb.save(path)
 
 
-# Sections/keys excluded from the --check comparison because they are wall-clock / date-relative.
-# This list is a labelled CACHE of the golden harness's exclusion set (owner:
-# tests/test_pipeline_golden.py :: _run_pipeline — the inline snap.pop(...) block); if the owner
-# grows a new date-relative section, mirror it here or --check will false-fail on that section,
-# which is loud, never silent.
-_VOLATILE_TOP = ("generated_at", "collected_at", "lifecycle_risk", "executive_brief",
-                 "device_dossiers", "design_blueprint", "design_nrfu", "architecture_coverage",
-                 "coverage_matrix", "fact_lineage")
+# The synthetic collection timestamp above freezes all date-relative lifecycle/design derivations.
+# Exclude only the genuine run wall-clock; dropping whole semantic sections made --check approve stale
+# customer-facing wording in exactly those sections.
+_VOLATILE_TOP = ("generated_at",)
 
 
 def _strip_volatile(snap: dict) -> dict:
     out = {k: v for k, v in (snap or {}).items() if k not in _VOLATILE_TOP}
     if isinstance(out.get("attestation"), dict):
         out["attestation"] = {k: v for k, v in out["attestation"].items() if k != "generated_at"}
+    # Registry source ages advance continuously from their retained retrieval timestamps. The
+    # immutable timestamps, freshness bounds/status, hashes, and authority verdicts remain in the
+    # comparison; only the derived wall-clock age is volatile. Mirror the golden harness exactly,
+    # without mutating either snapshot passed to this helper.
+    if isinstance(out.get("data_authorities"), dict):
+        out["data_authorities"] = {
+            name: (
+                {k: v for k, v in health.items() if k != "source_age_days"}
+                if isinstance(health, dict)
+                else health
+            )
+            for name, health in out["data_authorities"].items()
+        }
     return out
 
 
@@ -381,7 +394,7 @@ def main() -> None:
 
     work = tempfile.mkdtemp(prefix="assesshub_sample_")
     try:
-        collection = os.path.join(work, "collection")
+        collection = os.path.join(work, f"collection_{_SAMPLE_COLLECTION_STAMP}")
         _write_collection(collection, cols)
         dev_file = os.path.join(work, "devices.json")
         with open(dev_file, "w", encoding="utf-8") as f:
@@ -422,7 +435,7 @@ def main() -> None:
                 print("regenerate: python webapp/sample_data/build_sample.py")
                 raise SystemExit(2)
             print("sample_fleet.snapshot.json is FRESH — matches the current engine output "
-                  "(volatile/date-relative sections excluded)")
+                  "(only genuine wall-clock leaves excluded)")
             return
         with open(OUT, "w", encoding="utf-8") as _out:
             json.dump(snap, _out, indent=2)

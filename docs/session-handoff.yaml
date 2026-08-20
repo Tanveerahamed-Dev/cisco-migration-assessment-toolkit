@@ -1,3 +1,13 @@
+# HISTORICAL ARCHIVE — this is a point-in-time handoff, not the current work queue.
+document_status: "historical"
+archived_at: "2026-08-07"
+superseded_by:
+  - "CLAUDE.md"
+  - "current Git history and GitHub state"
+archive_notice: >-
+  Preserved as execution history for the 2026-07-18 session. Its phase labels,
+  pull-request sequence, release version, and next-task language are not current
+  instructions and must not be used to resume work.
 generated: "2026-07-18 @ e48237c+ (board was fully merged+green; this branch adds the 18-panel growth + rows 14/baseline; release v3.31.0 PR cut in parallel)"
 stage: "PHASE 0 CLOSED · PHASE 1 accruing (4 full-pipeline REAL rows; judge GATING at TNR 0.727 — floor cleared AT THE CP95 BOUND, 0.436 > 0.25, first time) · PHASE 2 CLOSED (DEC-010) · PHASE 3 closed except P3-E5 (fixture-blocked)"
 last_completed_task_2026_07_18: >-

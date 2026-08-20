@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/consequential-claim-contract.schema.json",
+  "title": "Bounded curated-content consequential-claim census contract",
+  "type": "object",
+  "required": ["schema_version", "contract_kind", "source_universe", "compiler_integrity_claims"],
+  "properties": {
+    "schema_version": {"const": "bounded-curated-consequential-claims/2"},
+    "contract_kind": {"const": "bounded_curated_content_claim_denominator"},
+    "source_universe": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "compiler_integrity_claims": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/integrityClaim"}
+    }
+  },
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "source_universe": {
+          "items": {
+            "properties": {
+              "git_blob_oid": {"$ref": "#/$defs/gitOid40"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "source_universe": {
+          "items": {
+            "properties": {
+              "git_blob_oid": {"$ref": "#/$defs/gitOid64"}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "gitOid40": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "gitOid64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonblankString": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+    "source": {
+      "type": "object",
+      "required": ["path", "git_blob_oid", "classification", "expected_records", "expected_candidates", "grounding", "object_rules"],
+      "properties": {
+        "path": {"$ref": "#/$defs/nonblankString"},
+        "git_blob_oid": {"$ref": "#/$defs/gitOid"},
+        "classification": {"const": "candidate_census"},
+        "expected_records": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "expected_candidates": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "grounding": {"$ref": "#/$defs/grounding"},
+        "object_rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/objectRule"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "grounding": {
+      "type": "object",
+      "required": ["relationships", "declared_owner_fields", "fallback_owner_ref", "require_nonempty"],
+      "properties": {
+        "relationships": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/relationship"}
+        },
+        "declared_owner_fields": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonblankString"}
+        },
+        "fallback_owner_ref": {"$ref": "#/$defs/nonblankString"},
+        "require_nonempty": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "relationship": {
+      "type": "object",
+      "required": ["field", "mode", "registry"],
+      "properties": {
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "mode": {"enum": ["reference_array", "reference_scalar", "relation_scalar"]},
+        "registry": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/nonblankString"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "objectRule": {
+      "type": "object",
+      "required": ["rule_id", "selector", "record_kind", "identity", "expected_records", "fields", "constraints"],
+      "properties": {
+        "rule_id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+        "selector": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\[\\])?$"}
+        },
+        "record_kind": {"$ref": "#/$defs/nonblankString"},
+        "identity": {"$ref": "#/$defs/identity"},
+        "expected_records": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/fieldRule"}
+        },
+        "constraints": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/constraint"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {"kind": {"const": "root"}},
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "field"],
+          "properties": {
+            "kind": {"enum": ["field", "parent_field"]},
+            "field": {"$ref": "#/$defs/nonblankString"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "fields"],
+          "properties": {
+            "kind": {"const": "composite"},
+            "fields": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/nonblankString"}
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "fieldRule": {
+      "type": "object",
+      "required": ["field", "classification", "value_type", "required", "claim_kind"],
+      "properties": {
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "classification": {"enum": ["candidate", "container", "governance_metadata", "identifier_metadata", "label_metadata", "registry_metadata", "relationship_metadata"]},
+        "value_type": {"enum": ["array", "baseline_value", "boolean", "integer", "null", "object", "string", "string_array", "string_array_allow_empty", "string_or_null", "unique_string_array", "unique_string_array_allow_empty"]},
+        "required": {"type": "boolean"},
+        "claim_kind": {"type": ["string", "null"], "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"classification": {"const": "candidate"}}, "required": ["classification"]},
+          "then": {"properties": {"value_type": {"not": {"enum": ["array", "object"]}}}}
+        }
+      ]
+    },
+    "constraint": {
+      "oneOf": [
+        {"$ref": "#/$defs/valueConstraint"},
+        {"$ref": "#/$defs/enumConstraint"},
+        {"$ref": "#/$defs/integerRangeConstraint"},
+        {"$ref": "#/$defs/uniqueFieldConstraint"},
+        {"$ref": "#/$defs/containsReferenceConstraint"},
+        {"$ref": "#/$defs/rootValueConstraint"},
+        {"$ref": "#/$defs/referenceByStateConstraint"},
+        {"$ref": "#/$defs/emptinessByEnumConstraint"},
+        {"$ref": "#/$defs/nullabilityConstraint"}
+      ]
+    },
+    "valueConstraint": {
+      "type": "object",
+      "required": ["kind", "field", "value"],
+      "properties": {
+        "kind": {"const": "const"},
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "value": true
+      },
+      "additionalProperties": false
+    },
+    "rootValueConstraint": {
+      "type": "object",
+      "required": ["kind", "field", "value"],
+      "properties": {
+        "kind": {"const": "root_const"},
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "value": true
+      },
+      "additionalProperties": false
+    },
+    "enumConstraint": {
+      "type": "object",
+      "required": ["kind", "field", "values"],
+      "properties": {
+        "kind": {"const": "enum"},
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonblankString"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "integerRangeConstraint": {
+      "type": "object",
+      "required": ["kind", "field", "minimum", "maximum"],
+      "properties": {
+        "kind": {"const": "integer_range"},
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "minimum": {"type": "integer"},
+        "maximum": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "uniqueFieldConstraint": {
+      "type": "object",
+      "required": ["kind", "field"],
+      "properties": {
+        "kind": {"const": "unique_field"},
+        "field": {"$ref": "#/$defs/nonblankString"}
+      },
+      "additionalProperties": false
+    },
+    "containsReferenceConstraint": {
+      "type": "object",
+      "required": ["kind", "field", "reference"],
+      "properties": {
+        "kind": {"const": "contains_reference"},
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "reference": {"$ref": "#/$defs/nonblankString"}
+      },
+      "additionalProperties": false
+    },
+    "referenceByStateConstraint": {
+      "type": "object",
+      "required": ["kind", "state_field", "owner_values", "owner_field", "gap_exempt_values", "gap_field"],
+      "properties": {
+        "kind": {"const": "reference_by_state"},
+        "state_field": {"$ref": "#/$defs/nonblankString"},
+        "owner_values": {"$ref": "#/$defs/nonemptyUniqueStrings"},
+        "owner_field": {"$ref": "#/$defs/nonblankString"},
+        "gap_exempt_values": {"$ref": "#/$defs/nonemptyUniqueStrings"},
+        "gap_field": {"$ref": "#/$defs/nonblankString"}
+      },
+      "additionalProperties": false
+    },
+    "emptinessByEnumConstraint": {
+      "type": "object",
+      "required": ["kind", "enum_field", "value_field", "empty_values"],
+      "properties": {
+        "kind": {"const": "emptiness_by_enum"},
+        "enum_field": {"$ref": "#/$defs/nonblankString"},
+        "value_field": {"$ref": "#/$defs/nonblankString"},
+        "empty_values": {"$ref": "#/$defs/nonemptyUniqueStrings"}
+      },
+      "additionalProperties": false
+    },
+    "nonemptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/nonblankString"}
+    },
+    "nullabilityConstraint": {
+      "type": "object",
+      "required": ["kind", "field", "cases"],
+      "properties": {
+        "kind": {"const": "nullability_by_enum"},
+        "field": {"$ref": "#/$defs/nonblankString"},
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/nullabilityCase"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "nullabilityCase": {
+      "type": "object",
+      "required": ["value", "null_fields", "non_null_fields"],
+      "properties": {
+        "value": {"$ref": "#/$defs/nonblankString"},
+        "null_fields": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonblankString"}},
+        "non_null_fields": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/nonblankString"}}
+      },
+      "additionalProperties": false
+    },
+    "integrityClaim": {
+      "type": "object",
+      "required": ["predicate", "classification", "consequential"],
+      "properties": {
+        "predicate": {"$ref": "#/$defs/nonblankString"},
+        "classification": {"const": "integrity_metadata"},
+        "consequential": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  }
+}

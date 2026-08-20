@@ -33,7 +33,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - name: Prove toolchain setup did not change the tagged source
@@ -110,6 +110,7 @@ jobs:
         if: steps.existing.outputs.exists == 'false'
         working-directory: webapp/frontend
         run: |
+          npm run verify:node
           npm ci
           npm test
           npm run build
@@ -155,6 +156,8 @@ jobs:
           --allow-untracked-prefix dist
       - name: Verify archive metadata
         run: python -m twine check dist/*.whl dist/*.tar.gz
+      - name: Audit release archive contents (no client evidence / required assets present)
+        run: python tools/audit_wheel.py dist
       - name: Prove metadata validation did not change the tagged source
         run: >-
           python .github/scripts/verify_checkout_immutable.py
@@ -170,6 +173,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --json-out dist/dist-verification.json
       - name: Recompute and compare the trusted distribution proof on a re-run
         if: steps.existing.outputs.exists == 'true'
@@ -177,6 +181,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --expected-json dist/dist-verification.json
           --json-out "${RUNNER_TEMP}/recomputed-dist-verification.json"
       - name: Prove distribution verification did not change the tagged source
@@ -204,6 +209,9 @@ jobs:
         run: |
           cisco-assess --help
           assesshub --selftest
+          # EoL has no wheel-context authority exception: its compact retained Cisco fixture ships
+          # in the wheel and must verify. The cannot-check-here disclosure below is only for the
+          # much larger IEEE/IANA source corpus used to build the OUI/port packs.
           # Routed through registry_integrity.pack_is_usable — the ONE owner of this question
           # (same fix ci.yml received; this copy survived because this workflow's smoke gate had
           # never executed). The old inline conjunction required official_source_authoritative,
@@ -212,7 +220,7 @@ jobs:
           # cannot-check-here case pack_is_usable exists to accept and disclose. Proven on the
           # fleet (run 30819857934): `assesshub --selftest` PASSED via the owner predicate while
           # this very next line exited 1 on the same facts.
-          python -c "import sys; from cisco_toolkit import ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
+          python -c "import sys; from cisco_toolkit import eoldb, ouidb, portdb, registry_integrity as R; pairs = (('oui', ouidb.registry_health()), ('port', portdb.registry_health()), ('eol', eoldb.registry_health())); bad = [(n, h) for n, h in pairs if not R.pack_is_usable(h)]; [print(f'{n}: usable on bytes + build provenance; retained official sources not present in this install form (repo/sdist only)') for n, h in pairs if h.get('official_sources_available') is False and not bad]; sys.exit('registry pack unusable: %r' % (bad,)) if bad else None"
       - name: Final immutable-tagged-source proof before release
         run: >-
           python .github/scripts/verify_checkout_immutable.py
@@ -230,6 +238,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist \
             --source-commit "${{ steps.source.outputs.commit }}" \
             --source-tree "${{ steps.source.outputs.tree }}" \
+            --require-source-binding \
             --expected-json dist/dist-verification.json
           wheel="$(python -c 'import json; print(json.load(open("dist/dist-verification.json", encoding="utf-8"))["wheel"])')"
           sdist="$(python -c 'import json; print(json.load(open("dist/dist-verification.json", encoding="utf-8"))["sdist"])')"

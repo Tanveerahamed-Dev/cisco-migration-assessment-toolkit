@@ -387,21 +387,90 @@ def test_publish_job_keeps_contents_read():
         "workflow-level one, so actions/checkout is left with no token scope. Got: %s" % scopes)
 
 
-def test_webapp_ci_path_filter_covers_what_can_break_it():
-    """None of webapp-ci's three jobs is a required check, so a run the path filter skipped is
-    indistinguishable from a green one at the merge button. The filter must therefore cover the
-    dependency + pytest config the backend suite's result depends on, not only the code it
-    imports. The two lists must also stay identical — GitHub Actions rejects YAML anchors, so
-    they are duplicated by hand."""
+def test_webapp_ci_always_reports_pr_jobs_and_fails_closed_on_scope_errors():
+    """A required check cannot live behind a top-level PR path filter.
+
+    GitHub leaves every check from a path-skipped workflow Pending, which would deadlock an
+    unrelated PR as soon as any webapp job becomes required. The workflow must start for every
+    PR, classify paths once, and skip jobs only at job level. A classifier failure must run and
+    fail each gated job rather than turning it into a successful skip.
+    """
     wf = _read(".github", "workflows", "webapp-ci.yml")
-    lists = [ln for ln in wf.splitlines() if ln.strip().startswith("paths:")]
-    assert len(lists) == 2, "expected a push and a pull_request path filter, got %d" % len(lists)
-    push, pr = (ln.split("paths:", 1)[1].strip() for ln in lists)
-    assert push == pr, "the push and pull_request path filters have drifted apart"
-    for required in ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini",
-                     "webapp/**", "cisco_toolkit/**"):
-        assert required in push, \
-            "%s can break the backend suite but does not trigger webapp-ci" % required
+    triggers = wf.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert "pull_request:" in triggers
+    assert "types: [opened, synchronize, reopened, edited]" in triggers
+    lists = [ln for ln in triggers.splitlines() if ln.strip().startswith("paths:")]
+    assert len(lists) == 1, "only push may retain a top-level path filter: %s" % lists
+
+    scope = wf.split("\n  scope:", 1)[1].split("\n  backend:", 1)[0]
+    assert "fetch-depth: 0" in scope
+    assert "classify_webapp_ci_scope.py" in scope
+    assert "steps.classify.outputs.relevant" in scope
+    assert "Validate the classifier contract" in scope
+    assert "true|false" in scope
+
+    job_sections = {
+        "backend": wf.split("\n  backend:", 1)[1].split("\n  frontend:", 1)[0],
+        "frontend": wf.split("\n  frontend:", 1)[1].split("\n  e2e:", 1)[0],
+        "e2e": wf.split("\n  e2e:", 1)[1].split("\n  visual:", 1)[0],
+        "visual": wf.split("\n  visual:", 1)[1],
+    }
+    required_condition = (
+        "always() && (needs.scope.result != 'success' || "
+        "needs.scope.outputs.relevant == 'true')"
+    )
+    for name, job in job_sections.items():
+        assert "needs: scope" in job, "%s can run without scope classification" % name
+        assert required_condition in job, "%s does not fail closed on scope errors" % name
+        assert "Fail closed when scope classification did not succeed" in job
+        assert "if: ${{ needs.scope.result != 'success' }}" in job
+
+
+def test_webapp_visual_gate_has_one_explicit_hosted_pixel_oracle():
+    """System fonts make a broad ``Windows`` label an ambiguous pixel contract.
+
+    Pull-request code must compare only on the explicit hosted Server 2025 image; the shared
+    self-hosted dev box remains a behavioral-E2E lane and cannot consume the hosted raster set.
+    Canonical refresh is an explicit artifact-only dispatch, never an automatic commit.
+    """
+    webapp = _read(".github", "workflows", "webapp-ci.yml")
+    visual = webapp.split("\n  visual:", 1)[1]
+    assert "runs-on: windows-2025" in visual
+    assert visual.count("\n        run: npm run test:visual\n") == 2
+    assert 'VISUAL_ORACLE_CAPTURE: "1"' in visual
+    assert visual.count("\n        run: npm run test:visual:update\n") == 1
+    assert "actions/upload-artifact@" in visual
+    assert "contents: write" not in webapp
+    candidate_upload = visual.split(
+        "\n      - name: Upload candidate visual baselines", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "success()" in candidate_upload
+    assert "always()" not in candidate_upload
+    provenance = visual.split("\n      - name: Record visual-oracle versions", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "steps.install.outcome == 'success'" in provenance
+    assert ".\\node_modules\\.bin\\playwright.cmd --version" in provenance
+    assert "npx playwright --version" not in provenance
+
+    visual_config = _read("webapp", "frontend", "playwright.visual.config.ts")
+    assert 'VISUAL_BASELINE_ID = "windows-2025-x64"' in _read(
+        "webapp", "frontend", "visual-e2e", "oracle.ts"
+    )
+    for guard in ("GITHUB_ACTIONS", "RUNNER_OS", "RUNNER_ARCH"):
+        assert guard in visual_config
+    assert "test-results/visual-candidates" in visual_config
+    assert "threshold: 0.02" in visual_config
+
+    visual_spec = _read(
+        "webapp", "frontend", "visual-e2e", "design-cards.visual.spec.ts"
+    )
+    assert "threshold: 0.2, maxDiffPixels: TOPOLOGY_RASTER_BUDGET" in visual_spec
+
+    self_hosted = _read(".github", "workflows", "main-selfhosted.yml")
+    assert "test:visual" not in self_hosted, (
+        "the unversioned self-hosted Windows machine cannot share hosted pixel baselines"
+    )
 
 
 def test_no_ci_step_swallows_a_failure_outside_the_documented_report():

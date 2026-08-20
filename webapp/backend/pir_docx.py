@@ -158,6 +158,72 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
         ["Deviations", 0, prog["n_deviations"]],
     ], widths=[2.2, 2.1, 2.2])
 
+    # New execution records freeze the engine-owned current-baseline receipt at run creation.
+    # Carry that authority into the signed PIR; legacy records pre-date the fleet-level fields and
+    # fall back to their per-wave blocker lists.
+    raw_plan_summary = state.get("plan_summary")
+    plan_summary = raw_plan_summary if isinstance(raw_plan_summary, dict) else {}
+    frozen_baseline = plan_summary.get("current_baseline")
+    raw_fleet_blockers = state.get("baseline_blockers")
+    has_fleet_blocker_freeze = isinstance(raw_fleet_blockers, list)
+    frozen_blockers: List[Dict[str, Any]] = (
+        [row for row in raw_fleet_blockers if isinstance(row, dict)]
+        if has_fleet_blocker_freeze else []
+    )
+    if not has_fleet_blocker_freeze:
+        for wave in waves:
+            rows = wave.get("baseline_blockers") if isinstance(wave, dict) else None
+            if isinstance(rows, list):
+                frozen_blockers.extend(row for row in rows if isinstance(row, dict))
+    raw_unbound = state.get("unbound_baseline_blockers")
+    unbound_blockers = (
+        [row for row in raw_unbound if isinstance(row, dict)]
+        if isinstance(raw_unbound, list) else []
+    )
+
+    if isinstance(frozen_baseline, dict) or has_fleet_blocker_freeze:
+        doc.add_heading("Frozen current-baseline acceptance gate", level=2)
+        p = doc.add_paragraph()
+        p.add_run("Verdict at execution start: ").bold = True
+        verdict = (frozen_baseline.get("verdict") if isinstance(frozen_baseline, dict) else None)
+        p.add_run(str(verdict or "NOT_ASSESSED"))
+        if isinstance(frozen_baseline, dict) and frozen_baseline.get("note"):
+            doc.add_paragraph(str(frozen_baseline["note"]))
+        if unbound_blockers:
+            p = doc.add_paragraph()
+            p.add_run("Fleet-level / unbound blockers: ").bold = True
+            p.add_run(
+                f"{len(unbound_blockers)} occurrence(s) were not bound to a scheduled wave. "
+                "They remain acceptance blockers and require resolution, recollection, or explicit "
+                "disposition."
+            )
+        if frozen_blockers:
+            # Mark every unbound occurrence without collapsing genuine duplicate rows. Equality is
+            # safe here because gate-validated blocker fields are scalar JSON values; consuming one
+            # matching entry at a time preserves multiset cardinality.
+            remaining_unbound = list(unbound_blockers)
+
+            def blocker_scope(blocker: Dict[str, Any]) -> str:
+                for index, candidate in enumerate(remaining_unbound):
+                    if blocker == candidate:
+                        remaining_unbound.pop(index)
+                        return "Fleet-level / unbound"
+                return "Scheduled wave"
+
+            table(
+                ["Binding / wave / device", "State", "Check / command", "Custody / source",
+                 "Observed acceptance"],
+                [[
+                    f"{blocker_scope(b)}\n{b.get('wave', '')} / {b.get('device', '')}",
+                    b.get("evidence_state") or b.get("baseline_state", ""),
+                    f"{b.get('check', '')}\n{b.get('command') or 'command not published'}",
+                    f"{b.get('projection_custody') or 'custody not published'}\n"
+                    f"{b.get('source_key') or 'source not published'}",
+                    b.get("expect", ""),
+                ] for b in frozen_blockers],
+                widths=[1.3, 0.7, 1.5, 1.3, 1.9],
+            )
+
     # ---- 2. Planned vs actual, per wave ----
     doc.add_heading("2. Planned vs actual, per wave", level=1)
     rows = []

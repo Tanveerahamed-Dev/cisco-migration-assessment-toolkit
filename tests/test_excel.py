@@ -13,7 +13,12 @@ import pytest
 openpyxl = pytest.importorskip("openpyxl")
 from openpyxl import Workbook, load_workbook  # noqa: E402
 
-from cisco_toolkit.excel import _xls_sanitize, harden_workbook, write_endpoint_census_sheet  # noqa: E402
+from cisco_toolkit.excel import (  # noqa: E402
+    _xls_sanitize,
+    harden_workbook,
+    write_endpoint_census_sheet,
+    write_lifecycle_risk_sheet,
+)
 from cisco_toolkit.model import InterfaceData  # noqa: E402
 
 _DIRTY = "EDGE-SW1\x07\x1b[31m desc\x0b end\x00"   # BEL + ESC-seq + VT + NUL embedded in a device string
@@ -96,6 +101,29 @@ def test_endpoint_census_sheet_survives_control_char_in_device_text(tmp_path):
             for c in row if isinstance(c.value, str)]
     assert any("EDGE-SW1" in v for v in vals)                       # neighbour text survived
     assert not any("\x07" in v or "\x1b" in v or "\x0b" in v for v in vals)   # control chars gone
+
+
+def test_lifecycle_sheet_renders_active_as_date_position_not_entitlement():
+    wb = harden_workbook(Workbook())
+    write_lifecycle_risk_sheet(wb, {
+        "asof": "2026-08-07",
+        "summary": {
+            "n_devices": 6,
+            "n_past_ldos": 0,
+            "n_near": 0,
+            "n_past_eos": 3,
+            "n_active": 2,
+            "n_unknown": 1,
+            "by_platform": [],
+        },
+        "note": "Support entitlement was not assessed.",
+        "per_device": [],
+    })
+    summary = wb["Lifecycle Risk"].cell(2, 1).value
+    assert "3 past end-of-sale (LDoS still future; entitlement not inferred)" in summary
+    assert "2 pre-EoS date band (schema: Active)" in summary
+    assert "1 NOT ASSESSED" in summary
+    assert "2 active" not in summary.lower()
 
 
 def test_append_interface_rows_survives_control_char_no_silent_port_drop(tmp_path):

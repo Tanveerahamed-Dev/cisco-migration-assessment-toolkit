@@ -41,7 +41,7 @@ def test_golden_drift_dossier_reads_na_when_no_baseline_derived():
 # ---------------------------------------------------------------- LIFEC-04 ---
 def test_near_ldos_band_compares_unrounded_delta():
     """LIFEC-04 (rounding half -- the other half, making the LDoS day itself 'Past', was REFUTED: LDoS = Last
-    Day of Support, so support still exists ON that date; test_lifecycle_boundary_drift_guard locks the strict
+    date itself is not yet past; test_lifecycle_boundary_drift_guard locks the strict
     `>`). years_to_ldos was ROUNDED before the <= 1.0 band test, so a device genuinely ~1.05 yr from LDoS
     rounded to 1.0 and fell into Near-LDoS (the band ~18 days too wide). The band must use the UNROUNDED
     delta. (Catalyst 3650 confirmed LDoS = 2026-10-31, Cisco EOL13617.)"""
@@ -50,7 +50,7 @@ def test_near_ldos_band_compares_unrounded_delta():
             {"sw1": {"model": "WS-C3650-48P"}}, asof=asof)["per_device"][0]["band"]
     assert band("2025-10-13") != "Near-LDoS"     # ~1.05 yr out: was Near via rounding (1.0), now Past-EoS
     assert band("2026-06-01") == "Near-LDoS"      # genuinely within 1 yr still Near
-    assert band("2026-10-31") == "Near-LDoS"      # LDoS day: last supported day -> Near, not yet Past (strict >)
+    assert band("2026-10-31") == "Near-LDoS"      # recorded LDoS day -> not yet Past (strict >)
 
 
 # ---------------------------------------------------------------- LIFEC-03 ---

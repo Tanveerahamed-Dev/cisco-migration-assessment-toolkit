@@ -1,0 +1,462 @@
+.workspace {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4.5rem);
+}
+
+.askPanel,
+.brief,
+.gapTargets {
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--surface) 94%, transparent), color-mix(in srgb, var(--surface-soft) 80%, transparent));
+  overflow: hidden;
+}
+
+.askPanel > header,
+.gapTargets > header,
+.briefHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  align-items: end;
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.askPanel header p,
+.gapTargets header p,
+.briefHeader p {
+  margin: 0 0 .55rem;
+  color: var(--cyan);
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.askPanel h2,
+.gapTargets h2,
+.brief h2 {
+  margin: 0;
+  max-width: 25ch;
+  font-size: clamp(1.45rem, 3vw, 2.25rem);
+  letter-spacing: -.035em;
+}
+
+.askPanel > header > span {
+  color: var(--ink-soft);
+  font-size: .78rem;
+  text-align: right;
+}
+
+.searchForm {
+  display: grid;
+  gap: .55rem;
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+}
+
+.searchForm label {
+  color: var(--ink-soft);
+  font-size: .75rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.searchForm > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .65rem;
+}
+
+.searchForm input {
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: .8rem;
+  padding: .95rem 1rem;
+  background: var(--canvas);
+  color: var(--ink);
+  font: inherit;
+}
+
+.searchForm button,
+.templates a {
+  border: 1px solid var(--line-strong);
+  border-radius: .8rem;
+  padding: .8rem 1rem;
+  background: var(--ink);
+  color: var(--canvas);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem;
+  padding: 0 clamp(1.25rem, 3vw, 2.25rem) clamp(1.25rem, 3vw, 2.25rem);
+}
+
+.templates a {
+  padding: .55rem .75rem;
+  background: transparent;
+  color: var(--ink);
+  font-size: .76rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.templates a:hover,
+.templates a:focus-visible {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.emptyAnswer,
+.abstention {
+  display: block;
+  margin: 0 clamp(1.25rem, 3vw, 2.25rem) clamp(1.25rem, 3vw, 2.25rem);
+  border-left: 3px solid var(--ink-soft);
+  padding: 1rem 1.1rem;
+  background: color-mix(in srgb, var(--surface-soft) 74%, transparent);
+}
+
+.abstention {
+  border-color: var(--amber);
+}
+
+.emptyAnswer p,
+.abstention p {
+  max-width: 76ch;
+  margin: .45rem 0 0;
+  color: var(--ink-soft);
+}
+
+.abstention a {
+  display: inline-block;
+  margin-top: .75rem;
+  color: var(--cyan);
+  font-weight: 800;
+}
+
+.answer {
+  padding: 0 clamp(1.25rem, 3vw, 2.25rem) clamp(1.25rem, 3vw, 2.25rem);
+}
+
+.answer > header {
+  display: grid;
+  gap: .3rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.answer > header p,
+.answer > header span {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: .76rem;
+}
+
+.answer > ol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .8rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.answer li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--canvas) 68%, transparent);
+}
+
+.answer li > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+  align-items: center;
+}
+
+.answer li > div:first-child > span:first-child {
+  color: var(--cyan);
+  font-size: .68rem;
+  font-weight: 850;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.answer h3 {
+  margin: .8rem 0 .45rem;
+  font-size: 1rem;
+}
+
+.answer p,
+.answer small {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.answer small {
+  margin-top: .55rem;
+}
+
+.citation {
+  margin-top: auto;
+  padding-top: .9rem;
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .72rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.ownerRefs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin-top: .75rem;
+}
+
+.ownerRefs a,
+.ownerRefs code,
+.tagLinks a {
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: .3rem .5rem;
+  color: var(--ink-soft);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .65rem;
+  text-decoration: none;
+}
+
+.briefHeader > div:last-child {
+  display: flex;
+  gap: .55rem;
+  align-items: center;
+}
+
+.briefHeader code {
+  display: block;
+  margin-top: .65rem;
+  color: var(--ink-soft);
+}
+
+.briefGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.briefGrid > article {
+  min-width: 0;
+  padding: clamp(1.2rem, 3vw, 2rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.briefGrid > article:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+
+.briefGrid > article > span {
+  display: block;
+  margin-bottom: 1rem;
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .72rem;
+}
+
+.briefGrid h3 {
+  margin: 0 0 .75rem;
+  font-size: 1.08rem;
+}
+
+.briefGrid h4 {
+  margin: 1rem 0 .45rem;
+  color: var(--ink-soft);
+  font-size: .72rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.briefGrid p,
+.briefGrid li {
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.briefGrid li + li {
+  margin-top: .45rem;
+}
+
+.briefGrid a {
+  color: var(--cyan);
+}
+
+.wide {
+  grid-column: 1 / -1;
+  border-right: 0 !important;
+}
+
+.closureGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: .5rem;
+}
+
+.closureGrid div {
+  display: grid;
+  gap: .3rem;
+  border: 1px solid var(--line);
+  border-radius: .8rem;
+  padding: .75rem;
+}
+
+.closureGrid strong {
+  font-size: 1.45rem;
+}
+
+.closureGrid span {
+  color: var(--ink-soft);
+  font-size: .68rem;
+}
+
+.tagLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-top: 1rem;
+}
+
+.ownerGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+}
+
+.ownerGrid a {
+  display: grid;
+  gap: .3rem;
+  border: 1px solid var(--line);
+  border-radius: .85rem;
+  padding: .8rem;
+  text-decoration: none;
+}
+
+.ownerGrid strong {
+  color: var(--ink);
+}
+
+.ownerGrid span {
+  color: var(--ink-soft);
+  font-size: .78rem;
+}
+
+.unknown {
+  border-left: 2px solid var(--amber);
+  padding-left: .7rem;
+}
+
+.gapTargets > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .65rem;
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+}
+
+.gapTargets > div > a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: .35rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: .85rem;
+  padding: .85rem;
+  text-decoration: none;
+}
+
+.gapTargets > div > a:hover,
+.gapTargets > div > a:focus-visible {
+  border-color: var(--cyan);
+}
+
+.gapTargets span {
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .68rem;
+}
+
+.gapTargets strong {
+  color: var(--ink);
+  font-size: .82rem;
+}
+
+.gapTargets code {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: .65rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .answer > ol,
+  .briefGrid,
+  .ownerGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .briefGrid > article:nth-child(odd) {
+    border-right: 0;
+  }
+
+  .closureGrid,
+  .gapTargets > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .askPanel > header,
+  .gapTargets > header,
+  .briefHeader,
+  .searchForm > div {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .askPanel > header > span {
+    text-align: left;
+  }
+
+  .closureGrid,
+  .gapTargets > div {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace * {
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  .templates,
+  .searchForm,
+  .gapTargets {
+    display: none !important;
+  }
+
+  .brief,
+  .askPanel {
+    border-color: #777;
+    break-inside: avoid;
+  }
+}

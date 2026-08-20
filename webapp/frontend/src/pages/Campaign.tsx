@@ -151,8 +151,218 @@ export const VERDICT_COLOR: Record<string, string> = {
   IMPROVING: "var(--ok)", REGRESSING: "var(--crit)", MIXED: "var(--watch)", FLAT: "var(--text-dim)", INSUFFICIENT: "var(--text-faint)",
   // snapshot_delta vocabulary (compute_snapshot_delta) — the 'Compare two waves' panel reuses this map; without
   // these keys cmp.verdict (CLEAN/REVIEW/REGRESSED) fell through to a flat dim chip, never colored (audit-5 CA#5).
-  CLEAN: "var(--ok)", REVIEW: "var(--watch)", REGRESSED: "var(--crit)",
+  CLEAN: "var(--ok)", REVIEW: "var(--watch)", REGRESSED: "var(--crit)", INDETERMINATE: "var(--text-faint)",
 };
+
+type CurrentBaselineBlocker = {
+  device?: string;
+  wave?: string;
+  category?: string;
+  severity?: string;
+  check?: string;
+  evidence_state?: string;
+  expect?: string;
+  projection_custody?: string;
+  source_key?: string;
+};
+
+type CurrentBaselineGate = {
+  schema?: string;
+  verdict?: "BLOCKED" | "INDETERMINATE" | "CLEAR" | "NOT_ASSESSED" | string;
+  assessed?: boolean;
+  note?: string;
+  summary?: {
+    n_items?: number;
+    n_blockers?: number;
+    n_blockers_returned?: number;
+    blockers_capped?: boolean;
+    by_state?: Partial<Record<"degraded" | "review" | "not_verified", number>>;
+    by_wave?: Record<string, number>;
+  };
+  blockers?: CurrentBaselineBlocker[];
+  integrity?: { valid?: boolean; failures?: string[] };
+  limitations?: string[];
+};
+
+const CURRENT_BASELINE_COLOR: Record<string, string> = {
+  BLOCKED: "var(--crit)",
+  INDETERMINATE: "var(--watch)",
+  NOT_ASSESSED: "var(--text-faint)",
+  CLEAR: "var(--ok)",
+};
+
+function currentBaselineVerdict(value?: CurrentBaselineGate | null) {
+  return value && typeof value.verdict === "string" && value.verdict ? value.verdict : "NOT_ASSESSED";
+}
+
+function compareDeltaColor(verdict: string, current?: CurrentBaselineGate | null) {
+  // CLEAN is only a before→after claim. Without a producer-owned CLEAR current-state gate, painting
+  // it green lets an unchanged EXSTART/Idle baseline masquerade as cutover acceptance.
+  if (verdict === "CLEAN" && currentBaselineVerdict(current) !== "CLEAR") return "var(--text-faint)";
+  return VERDICT_COLOR[verdict] || "var(--text-dim)";
+}
+
+function CurrentBaselineGatePanel({ value }: { value?: CurrentBaselineGate | null }) {
+  const verdict = currentBaselineVerdict(value);
+  const color = CURRENT_BASELINE_COLOR[verdict] || "var(--text-dim)";
+  const summary = value?.summary || {};
+  const byState = summary.by_state || {};
+  const blockers = Array.isArray(value?.blockers) ? value!.blockers! : [];
+  const integrityFailures = Array.isArray(value?.integrity?.failures) ? value!.integrity!.failures! : [];
+  return (
+    <section aria-label="Current baseline gate" data-testid="compare-current-baseline"
+      style={{ border: `1px solid ${color}`, borderRadius: 9, marginBottom: 12, overflow: "hidden" }}>
+      <div className="spread" style={{ padding: "9px 11px", gap: 9, background: verdict === "BLOCKED" ? "var(--crit-soft)" : verdict === "INDETERMINATE" ? "var(--watch-soft)" : undefined }}>
+        <div>
+          <b>Current baseline gate</b>
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>Comparison snapshot · current state, not delta</div>
+        </div>
+        <span className="chip" data-testid="compare-current-baseline-verdict" style={{ color, borderColor: color }}>
+          <span className="dot" /> {verdict.replaceAll("_", " ")}
+        </span>
+      </div>
+      <div style={{ padding: "8px 11px" }}>
+        <div className="dim" data-testid="compare-current-baseline-note" style={{ fontSize: 11.5 }}>
+          {value?.note || "The comparison response did not include an assessable current-baseline gate. A clean delta is not acceptance."}
+        </div>
+        <div className="faint" style={{ fontSize: 10.5, marginTop: 4 }}>
+          {Number(summary.n_blockers) || 0} blocker(s) · {Number(byState.degraded) || 0} degraded · {Number(byState.review) || 0} review · {Number(byState.not_verified) || 0} not verified
+        </div>
+        {verdict === "CLEAR" && (
+          <div className="faint" data-testid="compare-current-baseline-clear-boundary" style={{ fontSize: 10.5, marginTop: 4 }}>
+            CLEAR is bounded to producer-declared blockers in observed validation scope; it is not cutover authorization.
+          </div>
+        )}
+        {verdict === "BLOCKED" && (
+          <div style={{ color: "var(--crit)", fontSize: 11.5, marginTop: 5 }}>
+            An unchanged blocker is still a blocker. The change result below cannot clear the current baseline.
+          </div>
+        )}
+        {value?.integrity?.valid === false && (
+          <div style={{ color: "var(--watch)", fontSize: 11.5, marginTop: 5 }}>
+            Validation-plan integrity failed{integrityFailures.length ? `: ${integrityFailures.join("; ")}` : "."}
+          </div>
+        )}
+      </div>
+      {blockers.map((row, index) => {
+        const state = String(row.evidence_state || "review").trim().toLowerCase();
+        const rowColor = state === "degraded" ? "var(--crit)" : "var(--watch)";
+        return (
+          <div key={`${row.wave || ""}|${row.device || ""}|${row.check || ""}|${row.source_key || index}`}
+            data-testid="compare-current-baseline-blocker"
+            style={{ borderTop: "1px solid var(--border-faint)", borderLeft: `3px solid ${rowColor}`, padding: "8px 10px" }}>
+            <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+              <span className="chip" style={{ color: rowColor, borderColor: rowColor }}>{state.replaceAll("_", " ").toUpperCase()}</span>
+              {row.device && <span className="chip mono">{row.device}</span>}
+              {row.wave && <span className="faint" style={{ fontSize: 10.5 }}>{row.wave}</span>}
+              <b style={{ fontSize: 11.5 }}>{row.check || "Current baseline blocker"}</b>
+            </div>
+            {row.expect && <div className="dim" style={{ fontSize: 10.5, marginTop: 4 }}>{row.expect}</div>}
+            <div className="faint" style={{ fontSize: 10, marginTop: 4 }}>
+              Evidence: <span className="mono">{state}</span>
+              {row.projection_custody && <> · custody: <span className="mono">{row.projection_custody}</span></>}
+              {row.source_key && <> · source: <span className="mono">{row.source_key}</span></>}
+            </div>
+          </div>
+        );
+      })}
+      {summary.blockers_capped && (
+        <div className="faint" style={{ fontSize: 10.5, padding: "7px 11px" }}>
+          {summary.n_blockers_returned ?? blockers.length} of {summary.n_blockers ?? "all"} blocker rows were returned; inspect the full Validation-plan deliverable.
+        </div>
+      )}
+    </section>
+  );
+}
+
+type ProtocolAdjacencyDelta = {
+  gate?: "PASS" | "REVIEW" | "REGRESSED" | "NOT_ASSESSED" | string;
+  assessed?: boolean;
+  projection_custody?: string;
+  summary?: Partial<Record<
+    "n_baseline_peers" | "n_scoped_cells" | "n_comparable_cells" | "n_preserved" |
+    "n_state_regressed" | "n_recovered" | "n_no_longer_observed" | "n_added" | "n_coverage_gaps",
+    number
+  >>;
+  note?: string;
+};
+
+const PROTOCOL_GATE_COLOR: Record<string, string> = {
+  PASS: "var(--ok)",
+  REVIEW: "var(--watch)",
+  REGRESSED: "var(--crit)",
+  NOT_ASSESSED: "var(--text-faint)",
+};
+
+function ProtocolAdjacencyGate({ value }: { value?: ProtocolAdjacencyDelta | null }) {
+  // Additive API shape: comparisons produced before protocol_adjacency_delta/1 simply omit this block.
+  if (!value || typeof value !== "object") return null;
+
+  const assessed = value.assessed === true;
+  const gate = typeof value.gate === "string" && value.gate ? value.gate : "NOT_ASSESSED";
+  const gateColor = PROTOCOL_GATE_COLOR[gate] || "var(--text-dim)";
+  const summary = value.summary && typeof value.summary === "object" ? value.summary : {};
+  const finiteCount = (key: keyof NonNullable<ProtocolAdjacencyDelta["summary"]>) => {
+    const raw = summary[key];
+    return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
+  };
+  const metrics = [
+    { key: "n_preserved", label: "Preserved", color: "var(--ok)", outcome: true },
+    { key: "n_state_regressed", label: "State regressed", color: "var(--crit)", outcome: true },
+    { key: "n_no_longer_observed", label: "No longer observed", color: "var(--watch)", outcome: true },
+    { key: "n_recovered", label: "Recovered", color: "var(--ok)", outcome: true },
+    { key: "n_added", label: "New peers", color: "var(--watch)", outcome: true },
+    { key: "n_coverage_gaps", label: "Coverage gaps", color: "var(--watch)", outcome: false },
+  ] as const;
+
+  return (
+    <section aria-label="Protocol adjacency change gate" data-testid="protocol-adjacency-gate"
+      style={{ border: "1px solid var(--border)", borderRadius: 9, padding: "10px 12px", marginBottom: 12 }}>
+      <div className="spread" style={{ gap: 8, marginBottom: 6 }}>
+        <b>Protocol change gate</b>
+        <span className="chip" data-testid="protocol-gate-verdict"
+          style={{ color: gateColor, borderColor: gateColor }}>
+          <span className="dot" /> {gate.replaceAll("_", " ")}
+        </span>
+      </div>
+      <div className="faint" style={{ fontSize: 11.5, marginBottom: 9 }}>
+        Baseline-observed OSPF, BGP, and EIGRP peers only — not an expected-peer completeness check.
+        <div data-testid="protocol-gate-scope" style={{ marginTop: 3 }}>
+          Scope: {finiteCount("n_baseline_peers") ?? "—"} baseline peer(s) · {finiteCount("n_comparable_cells") ?? "—"}
+          {" "}of {finiteCount("n_scoped_cells") ?? "—"} device-family cell(s) comparable
+        </div>
+        <div data-testid="protocol-gate-custody" style={{ marginTop: 3 }}>
+          Projection custody: <span className="mono">{value.projection_custody || "embedded_unverified"}</span>.
+          {" "}Snapshot hashes do not independently bind the embedded routing-neighbor projection.
+        </div>
+      </div>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6 }}>
+        {metrics.map((metric) => {
+          // A zero is meaningful only for a fully assessed outcome. Positive observations remain
+          // visible even when another cell has a coverage gap; unknown/zero outcomes stay neutral.
+          const observedCount = finiteCount(metric.key);
+          const count = !metric.outcome || assessed || (observedCount !== null && observedCount > 0)
+            ? observedCount
+            : null;
+          return (
+            <div key={metric.key} style={{ fontSize: 12.5 }}>
+              {metric.label}: {" "}
+              <b data-testid={`protocol-${metric.key.replace(/^n_/, "").replaceAll("_", "-")}`}
+                style={{ color: count === null ? "var(--text-faint)" : metric.color }}>
+                {count ?? "—"}
+              </b>
+            </div>
+          );
+        })}
+      </div>
+      {typeof value.note === "string" && value.note && (
+        <div className="dim" data-testid="protocol-gate-note" style={{ fontSize: 12, marginTop: 9 }}>
+          {value.note}
+        </div>
+      )}
+    </section>
+  );
+}
 
 function Trend({ id }: { id: number }) {
   const { data, error, loading } = useAsync(() => api.trend(id), [id]);
@@ -167,18 +377,33 @@ function Trend({ id }: { id: number }) {
     );
   }
   if (loading || !data) return null;
+  const baselineVerdict = currentBaselineVerdict(data.current_baseline);
+  const trendColor = data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
+    ? "var(--text-faint)"
+    : (VERDICT_COLOR[data.verdict] || "var(--text-dim)");
   if (data.verdict === "INSUFFICIENT") {
-    return <div className="panel"><h3>Campaign trajectory</h3><div className="dim" style={{ fontSize: 13 }}>{data.verdict_note}</div></div>;
+    return (
+      <div className="panel">
+        <h3>Campaign trajectory</h3>
+        <div className="dim" style={{ fontSize: 13, marginBottom: 12 }}>{data.verdict_note}</div>
+        <CurrentBaselineGatePanel value={data.current_baseline} />
+      </div>
+    );
   }
   return (
     <div className="panel">
       <div className="spread" style={{ marginBottom: 14 }}>
         <h3 style={{ margin: 0 }}>Campaign trajectory</h3>
-        <span className="chip" style={{ color: VERDICT_COLOR[data.verdict], borderColor: VERDICT_COLOR[data.verdict] }}>
+        <span className="chip" data-testid="trend-verdict" style={{ color: trendColor, borderColor: trendColor }}
+          title={data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
+            ? "Trend improved, but the final snapshot current-baseline gate is not CLEAR"
+            : undefined}>
           <span className="dot" /> {data.verdict}
         </span>
       </div>
       <div className="dim" style={{ fontSize: 13, marginBottom: 14 }}>{data.verdict_note}</div>
+      <CurrentBaselineGatePanel value={data.current_baseline} />
+      <ProtocolAdjacencyGate value={data.protocol_adjacencies} />
       <div className="grid cols-3">
         {data.trajectory.map((t: any) => (
           <div key={t.metric} style={{ border: "1px solid var(--border)", borderRadius: 9, padding: "10px 12px" }}>
@@ -404,9 +629,20 @@ export default function CampaignPage() {
               )}
               {cmp && (
                 <div style={{ marginTop: 14, fontSize: 13 }}>
+                  <CurrentBaselineGatePanel value={cmp.current_baseline} />
                   <div className="row-flex" style={{ marginBottom: 8 }}>
-                    <span className="chip" style={{ color: VERDICT_COLOR[cmp.verdict] || "var(--text-dim)" }}><span className="dot" /> {cmp.verdict}</span>
+                    <span className="faint" style={{ fontSize: 11 }}>Before→after change result:</span>
+                    <span className="chip" data-testid="compare-delta-verdict"
+                      style={{ color: compareDeltaColor(cmp.verdict, cmp.current_baseline) }}>
+                      <span className="dot" /> {cmp.verdict_display || cmp.verdict}
+                    </span>
                   </div>
+                  {typeof cmp.verdict_note === "string" && cmp.verdict_note && (
+                    <div className="dim" data-testid="compare-verdict-note" style={{ fontSize: 12, marginBottom: 10 }}>
+                      {cmp.verdict_note}
+                    </div>
+                  )}
+                  <ProtocolAdjacencyGate value={cmp.protocol_adjacencies} />
                   <div className="grid cols-2" style={{ gap: 8 }}>
                     {/* `?? "—"` (not `?? 0`) throughout: an absent count is unknown, not a measured
                         zero. n_opened_high used to land on `?? 0`, so a comparison with no findings

@@ -77,7 +77,30 @@ def test_excellence_front_is_coverage_honest_on_absent_blocks():
     txt = _all_text(doc)
     assert "At a Glance" in txt
     assert "[NOT OBSERVED]" in txt
-    assert "0 device(s) past last-date-of-support" not in txt
+    assert "0 device(s) past last-day-of-support" not in txt
+
+
+def test_excellence_front_unknown_lifecycle_names_both_authority_failure_paths():
+    doc = Document()
+    snap = {"lifecycle_risk": {"summary": {"n_devices": 2, "n_past_ldos": 0, "n_unknown": 2}}}
+    add_excellence_front(doc, snap)
+    txt = _all_text(doc)
+    assert "2 device(s) NOT ASSESSED" in txt
+    assert "no exact EoX row matched" in txt
+    assert "source/date authority was withheld" in txt
+
+
+def test_excellence_front_surfaces_near_and_past_eos_date_bands():
+    doc = Document()
+    snap = {"lifecycle_risk": {"summary": {
+        "n_devices": 9, "n_past_ldos": 0, "n_near": 4, "n_past_eos": 5, "n_unknown": 0}}}
+    add_excellence_front(doc, snap)
+    txt = _all_text(doc)
+    assert "0 device(s) past last-day-of-support" in txt
+    assert "4 within one year of LDoS" in txt
+    assert "5 past end-of-sale with LDoS still future" in txt
+    assert "date band only; entitlement not inferred" in txt
+    assert "no EoX bulletin matched their platform" not in txt
 
 
 def test_glossary_always_carries_the_coverage_honesty_convention():

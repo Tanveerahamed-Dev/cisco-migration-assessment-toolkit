@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from cisco_toolkit import brand_tokens
+from cisco_toolkit import brand_tokens, docmeta
 
 from . import cutover, deliverables, engine, execution, gates, graph, ingest, serve, summary
 from .storage import Store
@@ -665,7 +665,7 @@ def _send_file(path: str, media_type: str, filename_stem: str, suffix: str,
     Reading the bytes and unlinking before the response object exists removes the window entirely:
     there is no path through this function that returns while the file is still on disk. These are
     DOCX/PPTX deliverables (hundreds of KB) and every caller already holds a generation slot, so
-    buffering is bounded and cheap; the download stays byte-identical to the CLI's output.
+    buffering is bounded and cheap; it preserves the writer's bytes without implying a CLI twin.
     `headers` carries out-of-band notes about the file (e.g. X-Gate-Status) without touching its bytes.
     """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename_stem).strip("_") or "file"
@@ -896,8 +896,8 @@ def _have_docx() -> bool:
 def _meta_build_facts() -> tuple[tuple[dict, ...], str]:
     """The two PROCESS-STATIC, genuinely expensive parts of /api/meta, computed once.
 
-    `deliverables.catalogue()` runs ten `importlib.util.find_spec` probes (one per optional-lib
-    deliverable) and `serve._release_version()` re-opens and TOML-parses pyproject.toml — on EVERY
+    `deliverables.catalogue()` probes the two registry-declared optional renderer modules and
+    `serve._release_version()` re-opens and TOML-parses pyproject.toml — on EVERY
     request. Measured on this box with the demo snapshot loaded, that made /api/meta ~6x the cost of
     /api/health and comparable to a guarded snapshot-parsing route, which is why /api/meta was the
     most expensive route the old per-route guard did not cover. Neither answer can change without
@@ -1103,6 +1103,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             "section_labels": [{"key": k, "label": v} for k, v in summary.SECTION_LABELS],
             # copied out of the cache, so a caller that mutates the response cannot poison it
             "deliverables": [dict(d) for d in catalogue],
+            # Includes non-download pre-cutover members and the conditional PIR; unlike
+            # len(deliverables), these denominators describe the complete portable lifecycle.
+            "artifact_family": docmeta.artifact_family_metadata(),
             # ADR-0004 D1: the SPA renders the brand it is SERVED — the values live in ONE place
             # (cisco_toolkit/brand_tokens.py), so a rename never touches the frontend.
             "app": {
@@ -1685,19 +1688,20 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     @app.get("/api/executions/{execution_id}/report")
     def execution_report(execution_id: RowId, request: Request):
         """Post-Implementation Review / as-executed change record for this run, as .docx."""
+        pir_spec = docmeta.artifact_spec("pir")
         rec = store.get_execution(execution_id)
         if not rec:
             raise HTTPException(404, "Execution run not found")
         if not _have_docx():
             raise HTTPException(503, "python-docx is not installed on the server")
-        from .pir_docx import write_pir_docx
+        write_pir_docx = deliverables.resolve_writer(pir_spec)
 
         snap_meta = store.get_snapshot_meta(rec["snapshot_id"])
         snap_label = snap_meta["label"] if snap_meta else "snapshot"
         # Same heavy-generator treatment as /deliverable: bound concurrency, and take the slot BEFORE
         # creating the temp file so a shed (503) leaves nothing to clean up.
         with _generation_slot(request.app.state.generation_semaphore):
-            fd, path = tempfile.mkstemp(suffix=".docx", prefix="assesshub_pir_")
+            fd, path = tempfile.mkstemp(suffix="." + pir_spec.ext, prefix="assesshub_pir_")
             os.close(fd)
             try:
                 # Old rows may carry SUCCESSFUL from the former closeout-only authority rule.
@@ -1710,8 +1714,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     os.unlink(path)
                 raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
         return _send_file(
-            path, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            report_state.get("label", "run"), "_pir.docx")
+            path, pir_spec.media, report_state.get("label", "run"),
+            pir_spec.download_suffix)
 
     @app.delete("/api/executions/{execution_id}", status_code=204)
     def delete_execution(execution_id: RowId):
@@ -1760,7 +1764,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         gate_note = deliverables.gate_disclosure(kind)
         headers = {"X-Gate-Status": f"{gate_note['status']}:"
                                     f"{','.join(gate_note.get('missing') or ['-'])}"} if gate_note else None
-        return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}", headers=headers)
+        return _send_file(path, spec.media, meta["label"], spec.download_suffix,
+                          headers=headers)
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
     def delete_snapshot(snapshot_id: RowId):

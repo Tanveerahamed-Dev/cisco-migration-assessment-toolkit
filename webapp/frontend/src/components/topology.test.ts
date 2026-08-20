@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { layout, linkPath } from "./TopologyGraph";
+import { counterfactualFailure, layout, linkPath } from "./TopologyGraph";
 import { switchMesh, topoNodeLabel } from "./Topology3D";
 
 // The signature feature's PURE logic, tested without a GPU: the role-tiered lane positioning and the
@@ -15,8 +15,8 @@ describe("layout — role-tiered lane positioning (device-fidelity 2D)", () => {
       { id: "dist-1", band: "Poor", score: 44, role: "distribution", degree: 2, keystone: false },
     ],
     edges: [
-      { source: "core-1", target: "dist-1", is_bridge: false, pairs_cut: 0 },
-      { source: "dist-1", target: "acc-1", is_bridge: true, pairs_cut: 2 },
+      { source: "core-1", target: "dist-1", bridge_assessed: true, is_bridge: false, pairs_cut: 0 },
+      { source: "dist-1", target: "acc-1", bridge_assessed: true, is_bridge: true, pairs_cut: 2 },
     ],
   };
 
@@ -100,7 +100,7 @@ describe("layout — role-tiered lane positioning (device-fidelity 2D)", () => {
         { id: "core-1", band: "Good", score: 90, role: "core", degree: 1, keystone: false },
         { id: "core-2", band: "Good", score: 88, role: "core", degree: 1, keystone: false },
       ],
-      edges: [{ source: "core-1", target: "core-2", is_bridge: false, pairs_cut: 0 }],
+      edges: [{ source: "core-1", target: "core-2", bridge_assessed: true, is_bridge: false, pairs_cut: 0 }],
     });
     const l = links[0];
     expect(l.a.y).toBeCloseTo(l.source.y - 25);
@@ -108,6 +108,55 @@ describe("layout — role-tiered lane positioning (device-fidelity 2D)", () => {
     const path = linkPath(l);
     const ctrlY = Number(path.split("C")[1].trim().split(/[ ,]/)[1]);
     expect(ctrlY).toBeLessThan(l.a.y); // the cable lifts above the chassis row
+  });
+});
+
+describe("counterfactualFailure — resolved-topology failure impact", () => {
+  const node = (id: string, band = "Good") => ({
+    id, band, score: band ? 80 : null, role: id.startsWith("core") ? "core" : "access",
+    degree: 0, keystone: false,
+  });
+  const edge = (source: string, target: string) => ({
+    source, target, bridge_assessed: true, is_bridge: false, pairs_cut: 0,
+  });
+
+  it("uses the best-connected assessed anchor and names exactly what a failed transit node strands", () => {
+    const graph = {
+      nodes: [node("core"), node("dist"), node("acc"), node("edge-a"), node("edge-b")],
+      edges: [edge("core", "dist"), edge("dist", "acc"), edge("core", "edge-a"), edge("core", "edge-b")],
+    };
+    const out = counterfactualFailure(graph, "dist");
+    expect(out.anchor).toBe("core");
+    expect(out.baselineReachable).toBe(5);
+    expect(out.failedWasReachable).toBe(true);
+    expect(out.referenceFailed).toBe(false);
+    expect(out.stranded).toEqual(["acc"]);
+  });
+
+  it("does not turn deletion of the reference itself into a tautological catastrophe", () => {
+    const cycle = {
+      nodes: [node("a"), node("b"), node("c")],
+      edges: [edge("a", "b"), edge("b", "c"), edge("c", "a")],
+    };
+    expect(counterfactualFailure(cycle, "a")).toEqual({
+      anchor: "a", baselineReachable: 3, failedWasReachable: true,
+      referenceFailed: true, stranded: [],
+    });
+  });
+
+  it("does not invent a counterfactual for a device outside the anchor baseline or without an assessed anchor", () => {
+    const split = {
+      nodes: [node("core"), node("acc"), node("island")],
+      edges: [edge("core", "acc")],
+    };
+    expect(counterfactualFailure(split, "island")).toMatchObject({
+      anchor: "acc", failedWasReachable: false, referenceFailed: false, stranded: [],
+    });
+
+    const unknown = { nodes: [node("mystery-a", ""), node("mystery-b", "")], edges: [edge("mystery-a", "mystery-b")] };
+    expect(counterfactualFailure(unknown, "mystery-a")).toEqual({
+      anchor: null, baselineReachable: 0, failedWasReachable: false, referenceFailed: false, stranded: [],
+    });
   });
 });
 

@@ -11,11 +11,13 @@ the archives source-bound; the Git history rewritten marker-free on every branch
 shas translate via the commit-map preserved in `private-inputs/history-rewrite-20260802/` —
 ledger shas predating §13.11 refer to superseded history); the master reference deployed.
 
-**Carried forward — the only genuinely open items:**
+**Carried forward — the only genuinely open review-tail items:**
 - GitHub Support ticket `#4624412` — server-side purge of pre-rewrite objects and stale
   `refs/pull/*`. Until they act, superseded SHAs still resolve by direct URL on this private repo.
 - The master-reference site is deployed **private**; publishing it publicly is an open decision.
-- §13.9's questions — the EoL registry `evidence_method` claim is CLOSED (2026-08-03, handoff
+
+**Closed carried questions, retained for context:** §13.9's EoL registry `evidence_method` claim
+  is CLOSED (2026-08-03, handoff
   §13.15: reworded to offline-honest transcription provenance everywhere unpinned; the
   byte-pinned fixture's frozen sentence is superseded in interpretation and ratchet-guarded by
   `tests/test_eoldb_provenance.py` until the next evidence refresh), and the 3.14
@@ -25,20 +27,119 @@ ledger shas predating §13.11 refer to superseded history); the master reference
   the ≤3.13 legs guard the divergence exactly where it exists), and react-router v7 is CLOSED
   (2026-08-03, handoff §13.16: migrated to `react-router@7.18.2` — the future flags were
   already live in production, so the swap was the package rename; verified through unit,
-  build and real-browser E2E). **Every carried question is now closed.** React 19 / v8 is
-  future planned work, not a carry.
+  build and real-browser E2E). **Every carried question is now closed.** The subsequent frontend
+  platform migration is also complete: Node 24, React/React DOM 19.2.8, React Router 8.3.0,
+  Vite 8.2.1, and `@vitejs/plugin-react` 6.0.5. It removed the temporary RSC-only npm-audit
+  exception; this is current repository state, not a reopened item from the historical review.
+
+The 2026-08-07 lifecycle-authority closure is also complete. Repository installs, wheels, sdists,
+and Atlas bundles carry and verify the exact 13,261-byte `eol-bulletins.json` fixture; self-test and
+release smoke gates fail closed when it is absent or altered. Every lifecycle consumer now uses the
+canonical Past-LDoS / Near-LDoS / Past-EoS / Active / Unknown bands with entitlement-neutral date
+semantics, and future, unrecognized, or missing lifecycle rows remain Unknown rather than being
+  rendered as healthy. The golden snapshot, engine-owned sample fleet, and checked frontend distribution were
+  regenerated from that final source state.
+
+### Cross-agent synchronization receipt (2026-08-07)
+
+Codex audited local branches, reflogs, stashes, registered and abandoned Claude worktrees, preserved refs,
+and surviving dangling histories. No recoverable Claude product/design change is missing from local `main`;
+the remaining old artifacts are committed equivalents or obsolete conflict state. Local `main` is ahead of
+`origin/main`; publishing it is a separate explicit action, so inspect live Git rather than caching an ahead count.
+Root `AGENTS.md` now routes Codex into this shared doctrine and `docs/ssot.md`; Claude memory and hooks remain
+platform-specific aids, never the sole cross-agent owner.
+
+The audit also read the project-scoped Claude transcripts through their latest local event (2026-08-05) and
+the six newer, uncommitted Claude memory updates. Their durable host/release lessons are now represented in
+root `AGENTS.md` and `docs/quality/learnings.md`; the machine-local memory repository remains a cache, not a
+required source for a future Codex session. A fresh `git fetch` on 2026-08-07 proved local `main` was zero
+commits behind `origin/main` at that receipt; re-fetch rather than treating that observation as permanent.
+
+The tracked Claude Design inputs are locally reconciled and the 21-card bundle builds, validates, renders, and
+grades with no pending local card. The authenticated Claude Design inventory/re-sync is also complete; exact
+local/remote anchors, the preservation check for remote-only `templates/**`, and the upload receipt live in
+`.design-sync/NOTES.md`. One external handoff remains before claiming end-to-end Design synchronization:
+promotion of the six intentional card pixel changes from the GitHub `windows-2025` capture artifact.
+Workstation candidates are reviewed evidence only and must not replace the canonical hosted-runner baselines.
 
 A future whole-repo review should start fresh rather than reopening this one. Its most reusable
 output is the defect *shapes*, not its findings: absence rendered as health, a guard scoped to a
 hand-maintained list standing in for the class it means, and gates whose success path was never
 executed.
 
+### Atlas whole-repository master reference (candidate 2026-08-07)
+
+`master-reference/` now owns the private, read-only Atlas reference implementation: the exact-Git-tree
+compiler, line/symbol/entity projection, executable architecture and claim contracts, closed capability
+and gap catalogs, Source Explorer/Ask Atlas/labs, deterministic PDF and offline/release family, SBOM,
+preservation coverage, and the local read-only continuity validator. `docs/ssot.md` names each derivative
+and its live owner. The compiler manifest for the selected commit is the only valid census; do not cache
+its file, line, symbol, Graphify, dependency, or artifact counts in this doctrine.
+
+A structurally complete compiler run is deliberately not semantic approval. Behavioral depth, runtime
+and branch evidence, field validation, format-aware binary privacy review, independent Level-4 review,
+the owner Ed25519 ceremony/recovery materials, complete Python/toolchain preservation, and public
+publication authority remain explicit acceptance gates. The release manifest must remain `BLOCK` while
+any of those gates is absent. The self-contained HTML is an executive navigation view; complete safe
+source records live in lazy hosted modules and the offline compiler projection. Neither the reference nor
+its continuity CLI may collect client evidence, write devices or the Vault, call runtime external AI, or
+grant publication authority.
+
+The read-only `verify-claim-review` command is the first authenticated external-evidence boundary. It
+accepts an exact canonical review payload, detached signature, separately supplied trust policy, and
+separately supplied reviewer public key; it rejoins every row to the immutable compiler claim subjects.
+It does not write a family member or mutate compiler/release gates. No accepted review envelope is
+currently present, so the bounded reviewed count remains zero and global closure remains false.
+
+The additive `verify-pdf-review` boundary applies the same fail-closed custody model to one immutable
+generated-PDF family without consulting mutable compiler output or current Git state. Its PDF-specific
+schemas require exact manifest, attestation, PDF-gate, source and PDF bindings; a fixed Poppler render
+profile; and one ordered, digest-bound signed row for every page. The external reviewer policy must assert
+independence from both the PDF producer and release builder. Its stdout-only result is explicitly
+nonpromoting: family mutation, current/global gate closure, owner-manifest signature, accessibility,
+binary privacy and publication authority remain false. Prior conversational visual QA is not silently
+converted into signed evidence, and no accepted PDF-review envelope is currently present. The signed PNG
+hashes and render profile are reviewer assertions: v1 does not ingest PNG bytes or independently rerender
+the PDF, so it does not establish PDF-to-PNG provenance.
+
+The dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is locked to the
+patched 3.3.18 line through both the Master Reference and AssessHub npm overrides. Vinext 0.0.50's exact
+`image-size` edge is now scoped to the tracked `@atlas/bounded-image-size` package, whose source-bound
+PNG/SVG-only parser rejects the advisory-named HEIF, JXL and ICNS families and every other unsupported
+format. The source contract rejects static image imports, numbered metadata-route images and `next/image`
+entry points until they have a bounded owner. This removes the affected registry package from that Vinext
+edge, but it is not release closure: Next 16.2.12 independently embeds compiled parser code outside npm
+override resolution, including an image-size implementation for which mutation-effective watchdogs
+preserve the known ICNS/JXL zero-progress finding. The release gate therefore remains blocked pending removal or authoritative assessment of that
+vendored residual plus a fresh source-authenticated applicability/VEX review. A zero-result npm audit does
+not supersede this owner. Do not suppress the gate or downgrade the framework as a substitute for evidence.
+
+## Shared Git and host operating doctrine
+
+- This repository currently preserves PR work with merge commits. Do not assume squash semantics;
+  inspect `git log --merges origin/main` and preserve the established method unless the user explicitly
+  chooses another. When hosted required checks are structurally dead (`steps: 0`), an admin bypass still
+  requires exact-head scope review, the relevant local gate with recorded evidence, and explicit user
+  authority; then read the merged-main `main-selfhosted` verdict.
+- `main-selfhosted` runs on the same physical Windows development host as local verification. Before
+  starting a full local pytest run, check whether that workflow is active; concurrent suites can starve
+  an otherwise healthy job into a timeout. A long step with a null conclusion is cancellation/timeout
+  evidence, not a test assertion failure.
+- Commands handed to the user are normally pasted into Windows PowerShell 5.1 from an arbitrary
+  directory. Prefer performing authorized actions directly; otherwise provide one command at a time,
+  avoid `&&`, and establish the repository with an absolute `cd` or `git -C`.
+- On this host, the Microsoft Store `python` alias can satisfy a PATH probe but cannot import graphify.
+  Repair an existing stale Git hook with graphify hook uninstall then install (install alone is a no-op),
+  pin the real interpreter, and verify a positive rebuild by graph mtime/log rather than the absence of a
+  warning. Use a POSIX-form path in `graphify-out/.graphify_python`; the generated hook's allowlist rejects
+  native Windows backslashes.
+
 ## graphify
 
-This project has a knowledge graph at graphify-out/ (12,517 nodes / 22,228 edges as of 2026-08-03 — `graphify-out/GRAPH_REPORT.md` header is the authoritative count and this figure is only a cache of it, so re-read the header rather than trusting this line; after the 2026-07-03 de-pollution that also
+This project has a knowledge graph at graphify-out/ (12,881 nodes / 22,851 edges as of 2026-08-07 — this figure is only a dated cache; the machine-readable owner is `graphify-out/graph.json`, so read it rather than copying this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
-engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
+engine copy + ordinary graph-output dumps — see `.graphifyignore` and the installed-producer exceptions below). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
 (~434 nodes — NB: a DIFFERENT thing from the current extractor's ~2.9k `file_type: rationale` nodes, which
@@ -64,6 +165,16 @@ the real main-checkout graph is thousands of nodes and **function-granular** —
 extractor indexes functions, classes and docstrings, NOT module-level assignments: a constant such as
 `_RACE_RETRIES` is not a node, so `affected` on one returns nothing and that is a scope limit, not a stale graph.
 
+Installed Graphify 0.9.6 also has two separately reviewed corpus/coverage residuals that local ignore syntax cannot
+override. Its special saved-memory scan bypasses `.graphifyignore`/CLI excludes and can re-ingest
+`graphify-out/memory/*.md`; its hard-coded noise pruning skips every directory named `build`, including authored
+`master-reference/build/*.mjs` release owners. These are exact external BLOCK categories
+`graph_corpus_memory_ignore_override` and `graph_corpus_authored_build_dir_pruned`, bounded by
+`tests/test_graph_invariants.py`; do not treat a graph query as proof of absence across either corpus. A full forced
+rebuild can remove a deliberately deleted privacy-offending node and heal incremental edges, but it cannot close
+these two producer gaps. Reconcile the residual tests only when upstream makes explicit include/ignore policy
+authoritative over both special scans.
+
 Rules:
 - For codebase questions, run `python -m graphify query "<question>"` first. Use `python -m graphify path "<A>" "<B>"`
   for relationships and `python -m graphify explain "<concept>"` for a focused node + its neighbors. These return a
@@ -77,7 +188,16 @@ Rules:
   `benchmark` (the 5–15× token-reduction win).
 - Offline NAVIGATION (replaces the never-existent wiki): `python -m graphify tree` → graphify-out/GRAPH_TREE.html
   (D3 collapsible tree) and `python -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
-  broad architecture review; `god_nodes` is the fastest map of the core abstractions.
+  broad architecture review; `god_nodes` is the fastest map of the core abstractions. **The report is a
+  derivative, not an SSOT:** installed Graphifyy 0.9.6 can count structural-only communities as “shown”,
+  can emit colliding/overlong community hub targets that do not match its collision-safe exporter, and its normal
+  watch/update path does not refresh the membership-signature sidecar needed to bind saved labels to the current
+  communities. Before using
+  report community coverage or navigation as evidence, run
+  `python -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md`; the current
+  fixed report-residual BLOCK leaves the separately validated `graph.json` available for query/compiler use but
+  withholds those report claims. An input/graph-invalid receipt establishes no such validity. The verifier is deliberately
+  bound to the observed 0.9.6 file/stub predicate; reconcile it explicitly when the external producer changes.
 - EGRESS — do NOT use in this air-gapped repo (they break the no-egress doctrine): `graphify add <url>` (fetches
   URLs), `graphify label` (calls an LLM — forbidden even via a local backend: it would plant LLM-derived
   nodes, breaking the AST-only invariant above, which the local-Ollama carve-out does not license), and the
@@ -91,6 +211,14 @@ Rules:
   to `.graphifyignore` (the tool's own "use after refactors that delete code" case), back up graph.json, run
   `update . --force`, then verify the only nodes dropped are the excluded paths (precedent: 2026-07-03 cleanup
   removed ~1.9k scratch/side-engagement nodes; 2026-06-25 removed the `_ref/` copy).
+
+  **Known incremental-rebuild limitation (current producer residual, not a claim that the present graph is
+  truncated):** Graphify's incremental `changed_paths` rebuild can retain the full node census while evicting
+  cross-file edges for a re-extracted file. `built_at_commit` and node count therefore do not prove edge
+  completeness. Consumers must report missing declared edges, and a reference/release build must first run a
+  full `python -m graphify update .`, which heals this producer state. Executable evidence:
+  `cisco_toolkit/d10_eval_set.py` and
+  `tests/test_d10_eval_set.py::test_verify_multi_hop_edges_reports_on_an_edge_truncated_graph`.
 
 ## Single source of truth (SSOT)
 
@@ -137,12 +265,13 @@ Assess → *(approve)* → Design HLD/LLD → *(peer review)* → MOP + rollback
 
 ### Engine entrypoints (the source of truth — run it, don't reinvent it)
 - **Assess:** `cisco-assess --devices-file devices.json --template <tmpl>.xlsx --output <out>.xlsx` (entry `COLLECT_PARSE_V3_23_0:main`). Re-analyze offline: add `--no-collect --collection-dir <dir>`. **A bare `cisco-assess` SSHes to live gear — only run a live collection when explicitly asked.**
+- **Traffic Assurance (opt-in):** add `--traffic-intents <flows.json>` to a full assessment run (not `--compare`/`--trend`) to evaluate a finite catalog of exact IPv4 TCP/UDP five-tuples once across the scoped RIB, stateless interface ACLs, observed per-hop MTU, ECMP consistency, requested forward/return directions, and at most one synthetic node/site/link failure. The pipeline publishes the canonical `traffic_assurance_set/1` block and projects it into the workbook; after the one global redaction transform, every surface projects the transformed precomputed result and MCP performs exact lookup only. Positive routing/configuration claims require current-run marked custody, the `scoped_route_projection/1` receipt, exact-type content bindings, and no applicable modeled or categorical-unmodeled match from `parse.FORWARDING_GATE_SYNTAX_REGISTRY`; that registry is a bounded syntax denominator, not proof that every vendor forwarding feature is modeled. A JSON-loaded custody block is audit evidence only and cannot self-certify recomputation. This is synthetic control-plane analysis—not observed traffic, a stateful firewall/NAT engine, application proof, or field validation.
 - **Validate cutover:** `cisco-assess --compare OLD.snapshot.json NEW.snapshot.json --output Diff.xlsx`; campaign trend: `--trend snap1 snap2 …`.
-- **Universal architecture coverage** (both ingestion channels — see `docs/universal-architecture-coverage.md`): 46 coverage-honest architecture-class detectors across 27 classes (the in-code `_ARCH_COVERAGE_REGISTRY` is the authoritative count — probe-ids across class axes, reconciled by `tests/test_ssot_registry.py`) spanning SSH `show`-text (SD-Access/LISP, TrustSec/CTS, DMVPN, IPsec, BFD, IPv6, SP/MPLS, switch-native, firewall, + multi-vendor Arista/Juniper/FortiGate) **and** JSON controller/mgmt REST (Cisco ACI/APIC, Catalyst SD-WAN/vManage, ISE, FMC, + cloud). Controller fabrics: collect read-only via `python -m cisco_toolkit.rest_collect apic|vmanage --url https://… --user <ro> --password <pw> --out-dir <dir>` (GET-only, dedicated read-only RBAC account, opt-in, never auto-runs), then analyze with `--no-collect`. Coverage map is published as `snap['architecture_coverage']` (read by the explorer ✎Design + webapp); ACI migration move-groups in `design_blueprint.target_state.aci_move_groups`.
+- **Universal architecture coverage** (both ingestion channels — see `docs/universal-architecture-coverage.md`): 46 coverage-honest architecture-class detectors across 27 classes (the in-code `_ARCH_COVERAGE_REGISTRY` is the authoritative count — probe-ids across class axes, reconciled by `tests/test_ssot_registry.py`) spanning SSH `show`-text (SD-Access/LISP, TrustSec/CTS, DMVPN, IPsec, BFD, IPv6, SP/MPLS, switch-native, firewall, + multi-vendor Arista/Juniper/FortiGate) **and** JSON controller/mgmt REST (Cisco ACI/APIC, Catalyst SD-WAN/vManage, ISE, FMC, + cloud). Controller evidence: collect through the live `rest_collect.CONTROLLER_COLLECTORS` denominator (`apic|vmanage|ise|fmc`) via `python -m cisco_toolkit.rest_collect <controller> --url https://… --user <ro> --password-env CISCO_REST_PASS --out-dir <dir>` (opt-in, never auto-runs; dedicated read-only RBAC is the hard control; the only non-GET requests are authentication logins), then analyze with `--no-collect`. Coverage map is published as `snap['architecture_coverage']` (read by the explorer ✎Design + webapp); ACI migration move-groups in `design_blueprint.target_state.aci_move_groups`.
 - **Deliverable generators** (`cisco_toolkit/`): design, mop, crd, engagement, archreview, ops, runbook, deck, html (explorer/diff/campaign), excel (workbook). Toggle with `--no-html` (explorer), `--no-docx` (runbook), `--no-pptx` (deck), and `--no-design`/`--no-mop`/`--no-crd`/`--no-engagement`/`--no-opshandbook`/`--no-archreview`; the workbook is always produced (there is no `--no-runbook`/`--no-deck`/`--no-excel`).
-- **Atlas — the portable field app** (`portable/`, ADR-0004; P0–P3 shipped): the whole platform as a one-folder Windows bundle that runs from a USB stick with no Python on the host. `Atlas.exe` is the ONE door — it serves AssessHub *and* is the engine CLI via the `--run-engine <engine argv>` sentinel (there is no separate `cisco-assess.exe` on the stick). Build + smoke: `python portable/build_atlas.py`; lay out/update a stick: `portable/make_stick.ps1 -Dest E:\` (re-running IS the update: everything replaced except `data\`). Field commands: `Atlas.exe --selftest` (fails loud on the silent-degrade assets) and **`Atlas.exe --redact-folder <collection> --out <dir>` [`--redact-collection`] [`--reuse-out`]** — the share-safe deliverable set, synthesizing the template/devices.json the engine requires and *verifying* the result before reporting success. Verification is two-sided: the redaction actually RAN, and the document family is COMPLETE (every engine deliverable writer is fail-soft, so a short set otherwise exits 0 looking whole — `docmeta.py :: CLI_ARTIFACT_SUFFIX` owns what a complete CLI run produces; `cutover`/`nrfu` are AssessHub-rendered and are NOT part of it). Exit `0` = complete + verified, `3` = produced but short (safe, just not all of it), `1` = failed, do not send. An `--out` folder that already holds a deliverable set is REFUSED before the engine starts (`--reuse-out` is the explicit escape) — otherwise another job's documents sit under this run's filenames, and redaction keeps hostnames. The store hardens itself at boot (integrity check + rotating backups in `data\backups\`); read `portable/README-FIELD.txt` before changing any of it — it is the engineer's only on-site documentation and is ratchet-tested (`tests/test_readme_field.py`).
-- **Tests:** `python -m pytest -q` (~1,800 test functions across `tests/` + `webapp/tests` — both in the default gate; don't restate the count, run the suite). **graphify here:** `python -m graphify query|explain|path|"update ."` (not on PATH — use `python -m`). Bump the release version in `pyproject.toml` only at tag time; never bump the decoupled schema version `cisco_toolkit.__version__`.
+- **Atlas — the portable field app** (`portable/`, ADR-0004; P0–P3 shipped): the whole platform as a one-folder Windows bundle that runs from a USB stick with no Python on the host. `Atlas.exe` is the ONE door — it serves AssessHub *and* is the engine CLI via the `--run-engine <engine argv>` sentinel (there is no separate `cisco-assess.exe` on the stick). Build + smoke: `python portable/build_atlas.py`; lay out/update a stick: `portable/make_stick.ps1 -Dest E:\` (re-running IS the update: everything replaced except `data\`). Field commands: `Atlas.exe --selftest` (fails loud on the silent-degrade assets) and **`Atlas.exe --redact-folder <collection> --out <dir>` [`--redact-collection`] [`--reuse-out`]** — the share-safe deliverable set, synthesizing the template/devices.json the engine requires and *verifying* the result before reporting success. Verification is two-sided: the redaction actually RAN, and the document family is COMPLETE (every engine deliverable writer is fail-soft, so a short set otherwise exits 0 looking whole — `docmeta.py :: ARTIFACT_SPECS` owns the lifecycle and its derived `CLI_ARTIFACT_SUFFIX` view owns what a complete CLI run produces; `cutover`/`nrfu` are AssessHub-rendered and are NOT part of it, while conditional PIR is post-execution only). Exit `0` = complete + verified, `3` = produced but short (safe, just not all of it), `1` = failed, do not send. An `--out` folder that already holds a deliverable set is REFUSED before the engine starts (`--reuse-out` is the explicit escape) — otherwise another job's documents sit under this run's filenames, and redaction keeps hostnames. The store hardens itself at boot (integrity check + rotating backups in `data\backups\`); read `portable/README-FIELD.txt` before changing any of it — it is the engineer's only on-site documentation and is ratchet-tested (`tests/test_readme_field.py`).
+- **Tests:** `python -m pytest -q` (`tests/` + `webapp/tests` are both in the default gate; run collection rather than caching a count). **graphify here:** `python -m graphify query|explain|path|"update ."` (not on PATH — use `python -m`). Bump the release version in `pyproject.toml` only at tag time; never bump the decoupled schema version `cisco_toolkit.__version__`.
 
-> **Automation already wired in `.claude/`:** a `Stop` hook (`verify-green.sh`) runs `pytest` and blocks the turn until green after any `.py` change; a second `Stop` hook refreshes graphify after code edits; a `SessionStart` hook prints this engagement's state; a status line shows version/branch/model. All are fail-open (a timeout or error never wedges a turn) — disable via `/hooks` if needed.
+> **Automation already wired in `.claude/` for Claude Code:** a `Stop` hook (`verify-green.sh`) runs `pytest` after `.py` changes and blocks on an observed test failure or timeout; it allows the stop loudly when no working interpreter is available, while unreadable Git state remains a deliberate fail-open path. The graph refresh, session brief, recorder, and status helpers are maintenance/observability hooks and fail open. A second `Stop` hook refreshes graphify after code edits; a `SessionStart` hook prints this engagement's state; a status line shows version/branch/model. Codex does not execute these Claude hooks automatically — root `AGENTS.md` carries the shared bootstrap.
 
 > **Trust boundary — "read-only" is a trust model, not a sandbox.** The four analyst agents are constrained by their tool allowlist (no `Edit`/`Write` tools) + interactive permission prompts + their prompt mandate. But any agent holding `Bash` can run arbitrary python, and per Claude Code docs per-command Bash scoping can't be expressed in `tools:` while Bash deny-rules are bypassable — the OS `sandbox` is the only hard enforcement. So **keep the default permission mode (never `bypassPermissions`)** for these agents, so risky Bash (device writes, `git push`) still prompts you. The agents are designed to never attempt those; this is the backstop if one misreads intent.

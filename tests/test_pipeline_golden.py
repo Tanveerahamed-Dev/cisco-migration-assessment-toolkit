@@ -14,13 +14,15 @@ Harness guarantees (pinned by tests/test_golden_guard.py — Plan A / Move-0.1):
   (removed snapshot sections / sheets / header cells) unless the removal is
   made explicit with ALLOW_GOLDEN_SHRINK=1.
 
-Determinism: we run with --workers 1 (sequential) and strip the only volatile
-field (`generated_at`) before comparing.
+Determinism: we run with --workers 1 (sequential), give the synthetic collection
+a fixed collection timestamp (the lifecycle assessment boundary), and strip the
+remaining wall-clock field (`generated_at`) before comparing.
 """
 import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -30,6 +32,7 @@ import synthetic_fixtures as fx
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
 GOLDEN_DIR = os.path.join(ROOT, "tests", "golden")
+_GOLDEN_COLLECTION_STAMP = "20260807_000000"
 
 
 def _make_template(path):
@@ -42,8 +45,20 @@ def _make_template(path):
     wb.save(path)
 
 
+def test_synthetic_collection_bytes_are_platform_stable(tmp_path):
+    """Strict owner digests must not depend on the OS that writes the fixture."""
+    collection = Path(fx.write_collection(str(tmp_path / "collection")))
+    raw = (collection / "access1" / fx.cmd_filename("show running-config")).read_bytes()
+    assert b"\n" in raw
+    assert b"\r\n" not in raw
+
+
 def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
-    collection = fx.write_collection(str(tmp_path / "collection"))
+    # The collection-dir stamp is the pipeline's authoritative lifecycle `asof`. A plain temporary
+    # directory falls back to member mtimes, so lifecycle-derived punch-list/compound-risk rows drift
+    # as the test date crosses a retained LDoS. Pin the evidence date, not just the sections stripped
+    # below, because those sections have legitimate downstream consumers that remain in the golden.
+    collection = fx.write_collection(str(tmp_path / _GOLDEN_COLLECTION_STAMP))
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
     template = tmp_path / "template.xlsx"
@@ -79,10 +94,9 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     # executive_brief rolls up lifecycle (its EoL headline is date-relative) -> exclude too; pinned by
     # tests/test_executive_brief.py with synthetic summaries. (V3.23.120)
     snap.pop("executive_brief", None)
-    # device_dossiers embeds the EoL band per asset (eol_band / exposure labels / risk_band shift as
-    # dates pass) -> exclude like its lifecycle source; pinned by tests/test_device_dossiers.py with
-    # synthetic axes. Its PUNCH-LIST fold stays frozen: the CR basis text is deliberately band-agnostic
-    # ("past/near end-of-support"), so band transitions never reword a folded row. (V3.23.172)
+    # device_dossiers embeds the EoL band per asset (eol_band / exposure labels / risk_band), so exclude
+    # it like its lifecycle source; pinned by tests/test_device_dossiers.py with synthetic axes. Its
+    # downstream punch-list fold remains frozen because the synthetic evidence date above is fixed.
     snap.pop("device_dossiers", None)
     # design_blueprint folds the date-relative lifecycle/EoL bands (its EoL decision count shifts as dates
     # pass) -> exclude like its lifecycle source; the blueprint logic is pinned deterministically by
@@ -339,17 +353,29 @@ def test_import_inventory_reconcile(tmp_path):
 
 
 def test_default_run_optin_engines_absent_but_capture_integrity_present(golden_run):
-    """Opt-in engines (reconcile / what-if / path-intents / assert-pack) add nothing on a default run, so the
-    golden stays untouched; the always-on capture-integrity key + sheet ARE present."""
+    """Opt-in engines add no result on a default run; always-on evidence/sheet surfaces stay explicit."""
     snap, xlsx = golden_run
-    for key in ("external_reconcile", "whatif", "path_intents", "state_assertions"):
+    for key in (
+        "external_reconcile",
+        "whatif",
+        "path_intents",
+        "state_assertions",
+        "traffic_assurance",
+    ):
         assert key not in snap, f"{key} must be opt-in / absent by default"
     assert "capture_integrity" in snap            # always-on
+    custody = snap.get("traffic_evidence_custody")
+    assert isinstance(custody, dict)
+    assert custody.get("schema") == "traffic_evidence_custody/1"
     wb = load_workbook(xlsx, read_only=True)
     try:
         for sheet in ("SoT Reconcile", "Failure What-If", "Path Assertions"):
             assert sheet not in wb.sheetnames
         assert "Capture Integrity" in wb.sheetnames   # always-on
+        assert "Traffic Assurance" in wb.sheetnames   # explicit not-supplied projection
+        ws = wb["Traffic Assurance"]
+        columns = {cell.value: cell.column for cell in ws[1]}
+        assert ws.cell(2, columns["Projection State"]).value == "not_supplied"
     finally:
         wb.close()
 

@@ -423,6 +423,8 @@ def test_cable_map_endpoint(client):
 
 
 def test_cutover_plan(client):
+    from backend import cutover
+
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/cutover")
     assert r.status_code == 200, r.text
@@ -453,9 +455,11 @@ def test_cutover_plan(client):
         # every wave carries a PPDIOO run-of-show ending at the rollback gate
         phases = [step["phase"] for step in w["run_of_show"]]
         assert phases[0] == "Baseline capture" and phases[-1] == "Rollback gate"
-        # a NO-GO wave is gated by a failing readiness check or a Critical cross-layer hit
+        # a NO-GO wave is gated by readiness, cross-layer, or the shared current-baseline gate
         if w["gate"] == "NO-GO":
-            assert w["n_fail"] > 0 or w["critical_crosslayer"]
+            assert (w["n_fail"] > 0 or w["critical_crosslayer"]
+                    or w["current_baseline"]["n_blockers"] > 0
+                    or w["current_baseline"]["verdict"] == cutover.BASELINE_BLOCKED)
 
     assert client.get("/api/snapshots/999999/cutover").status_code == 404
 
@@ -489,6 +493,13 @@ def test_cutover_blind_devices_block_go_and_are_disclosed():
     confident make-before-break / window posture over them (a blind subsystem must not read like an assessed one)."""
     from backend import cutover
 
+    clear_validation = {
+        "device": "sw1", "platform": "ios", "wave": "G1", "category": "Routing",
+        "severity": "High", "check": "Observed adjacency stable", "command": "show ip ospf neighbor",
+        "expect": "Observed peer remains FULL", "why": "Detect adjacency regression",
+        "evidence_state": "assessed", "projection_custody": "embedded_unverified",
+        "source_key": "routing_neighbors.sw1",
+    }
     base = {
         "devices": {"sw1": {}, "sw2": {}},
         "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1", "sw2"],
@@ -496,6 +507,10 @@ def test_cutover_blind_devices_block_go_and_are_disclosed():
         "migration_readiness": [{"group": "G1", "switches": ["sw1", "sw2"], "readiness": "READY",
                                  "n_fail": 0, "n_warn": 0, "checks": []}],
         "move_groups": [{"switches": ["sw1", "sw2"], "endpoints": 10}],
+        "validation_plan": {
+            "items": [clear_validation], "by_wave": {"G1": [clear_validation]},
+            "summary": {"n_items": 1, "n_waves": 1, "by_category": {"Routing": 1}, "n_high": 1},
+        },
     }
     # sw2 was never collected -> banded 'Insufficient Data', data_quality 0.
     blind = dict(base, health_scores=[{"switch": "sw1", "band": "Good", "score": 80, "data_quality": 1.0},
@@ -539,9 +554,15 @@ def test_cutover_robust_to_malformed_snapshot():
 
 def test_deliverables(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
-    cat = client.get("/api/meta").json()["deliverables"]
+    meta = client.get("/api/meta").json()
+    cat = meta["deliverables"]
     assert {d["key"] for d in cat} == {"engagement", "crd", "runbook", "design", "archreview",
                                        "mop", "cutover", "nrfu", "opshandbook", "deck"}
+    from cisco_toolkit.docmeta import artifact_family_metadata
+    assert meta["artifact_family"] == artifact_family_metadata()
+    assert {d["key"] for d in cat if d["producer"] == "assesshub-snapshot"} == {"cutover", "nrfu"}
+    assert all(d["engine_cli_member"] is (d["producer"] == "engine-cli") for d in cat)
+    assert "pir" not in {d["key"] for d in cat}, "conditional PIR is not a snapshot download"
     for d in cat:
         r = client.get(f"/api/snapshots/{snap_id}/deliverable/{d['key']}")
         if d["available"]:
@@ -841,7 +862,10 @@ def test_design_blueprint_endpoint_and_requirements_overlay(client):
     for k in ("dimensions", "replacement_bom", "addressing_plan", "wave_plan", "segmentation_plan"):
         assert k in ts, k
     assert isinstance(ts["dimensions"], list)
-    assert {"n_replace", "n_refresh", "replace_now", "refresh_soon"} <= set(ts["replacement_bom"])
+    assert {
+        "n_replace", "n_refresh", "n_near", "n_past_eos", "n_undetermined", "n_not_assessed",
+        "replace_now", "refresh_soon", "undetermined",
+    } <= set(ts["replacement_bom"])
     assert ts["addressing_plan"].get("status") in ("candidate", "needs-requirement")
     assert {"waves", "n_waves", "wave_cap"} <= set(ts["wave_plan"])
     # segmentation_plan is the field the dashboards' "Target segmentation" block reads (SSOT, no client recompute)
@@ -1110,6 +1134,40 @@ def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
     assert rows0[j + 1] == "0"     # canonical 0 honoured, NOT len(devices)=3
 
 
+def test_nrfu_lifecycle_notes_map_all_bands_without_entitlement_inference(tmp_path):
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+
+    snap = {
+        "devices": {"ldos": {}, "eos": {}, "near": {}, "active": {}, "unknown": {}},
+        "executive_brief": {"scale": {"n_devices": 5}},
+        "lifecycle_risk": {"per_device": [
+            {"host": "ldos", "model": "OLD", "sw_version": "1", "band": "Past-LDoS"},
+            {"host": "eos", "model": "SALE", "sw_version": "2", "band": "Past-EoS"},
+            {"host": "near", "model": "NEAR", "sw_version": "3", "band": "Near-LDoS"},
+            {"host": "active", "model": "NEW", "sw_version": "4", "band": "Active"},
+            {"host": "unknown", "model": "?", "sw_version": "5", "band": "Unknown"},
+        ]},
+        "validation_plan": {"items": []},
+        "design_blueprint": {"decisions": [], "design_nrfu": {"items": []}},
+    }
+    out = str(tmp_path / "nrfu-lifecycle.docx")
+    write_nrfu_docx(out, snap, "Unit Test Fleet")
+    cells = [c.text for t in Document(out).tables for row in t.rows for c in row.cells]
+    assert any("Past last-day-of-support — replacement" in c for c in cells)
+    eos_note = next(c for c in cells if "Past end-of-sale with LDoS still future" in c)
+    assert "plan refresh" in eos_note
+    assert "does not establish support entitlement" in eos_note
+    assert "Past end-of-support — replacement" not in eos_note
+    assert any("Within one year of LDoS — schedule refresh" in c for c in cells)
+    assert any("Pre-EoS date band (schema: Active); support entitlement not assessed" in c for c in cells)
+    unknown = next(c for c in cells if "NOT ASSESSED" in c)
+    assert "either no exact EoX row matched" in unknown
+    assert "source/date authority was withheld or incomplete" in unknown
+
+
 def test_snapshot_meta_n_devices_reads_canonical_scale(client):
     """SSOT (python<->dashboard): the stored snapshot-meta n_devices (shown in the dashboard's snapshot
     list) must read the canonical executive_brief.scale.n_devices, not a server-side len(devices) recount.
@@ -1271,7 +1329,37 @@ def test_execution_run_lifecycle(client):
 def test_execution_outcome_vocabulary(client):
     """Outcome derivation follows the PIR vocabulary: a clean run is SUCCESSFUL, a rolled-back wave
     dominates, and an abort is ABORTED regardless of progress."""
-    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    import json
+
+    # Use an explicitly CLEAR current baseline. The demo snapshot intentionally carries a degraded
+    # OSPF baseline and therefore cannot exercise the clean-success branch anymore.
+    row = {
+        "device": "sw1", "platform": "ios", "wave": "G1", "category": "Routing",
+        "severity": "High", "check": "Observed adjacency stable", "command": "show ip ospf neighbor",
+        "expect": "Observed peer remains FULL", "why": "Detect adjacency regression",
+        "evidence_state": "assessed", "projection_custody": "embedded_unverified",
+        "source_key": "routing_neighbors.sw1",
+    }
+    snap = {
+        "devices": {"sw1": {"platform": "ios"}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1"],
+                             "hard_cutover": [], "hard_cutover_endpoints": 0}],
+        "migration_readiness": [{"group": "G1", "switches": ["sw1"], "readiness": "READY",
+                                  "n_fail": 0, "n_warn": 0, "checks": []}],
+        "move_groups": [{"group": "G1", "switches": ["sw1"], "endpoints": 1}],
+        "validation_plan": {
+            "items": [row], "by_wave": {"G1": [row]},
+            "summary": {"n_items": 1, "n_waves": 1, "by_category": {"Routing": 1}, "n_high": 1},
+        },
+    }
+    cid = client.post("/api/campaigns", json={"name": "clear execution"}).json()["id"]
+    upload = client.post(
+        f"/api/campaigns/{cid}/snapshots",
+        files={"file": ("clear.json", json.dumps(snap).encode(), "application/json")},
+        data={"label": "clear"},
+    )
+    assert upload.status_code == 201, upload.text
+    snap_id = upload.json()["id"]
 
     def run():
         return client.post(f"/api/snapshots/{snap_id}/executions", json={}).json()
@@ -1371,9 +1459,14 @@ def test_execution_pir_report(client):
                      json={"label": "Window 7", "operator": "tanveer"}).json()
     eid = ex["id"]
     g = ex["waves"][0]["group"]
+    passable_check = next(
+        index for index, check in enumerate(ex["waves"][0]["checks"])
+        if not check.get("baseline_blocker")
+    )
     client.post(f"/api/executions/{eid}/step", json={"wave": g, "index": 0, "status": "done",
                                                      "operator": "tanveer"})
-    client.post(f"/api/executions/{eid}/check", json={"wave": g, "index": 0, "result": "pass",
+    client.post(f"/api/executions/{eid}/check", json={"wave": g, "index": passable_check,
+                                                      "result": "pass",
                                                       "operator": "tanveer"})
     client.post(f"/api/executions/{eid}/event",
                 json={"kind": "deviation", "text": "uplink LED amber, re-seated SFP", "wave": g})
@@ -1385,7 +1478,10 @@ def test_execution_pir_report(client):
         pytest.skip("python-docx not installed on this runner")
     assert r.status_code == 200, r.text
     assert r.content[:2] == b"PK"
-    assert "pir" in r.headers.get("content-disposition", "")
+    from cisco_toolkit.docmeta import artifact_spec
+    pir = artifact_spec("pir")
+    assert pir.download_suffix in r.headers.get("content-disposition", "")
+    assert r.headers["content-type"].startswith(pir.media)
 
     import io
 

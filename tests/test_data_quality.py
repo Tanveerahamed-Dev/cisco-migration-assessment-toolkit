@@ -77,3 +77,4 @@ def test_loader_registers_ers_and_classic_ios_ospfv3(cp):
     without it OSPFv3 adjacency is blind on a classic-IOS router that rejects 'show ospfv3 neighbor'."""
     assert "ers/config/node" in cp.COMMANDS_NXOS
     assert "show ipv6 ospf neighbor" in cp.COMMANDS_IOS
+    assert "show ipv6 ospfv3 neighbors" in cp.COMMANDS_NXOS

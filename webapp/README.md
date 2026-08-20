@@ -42,16 +42,12 @@ stores the result as a first-class snapshot.
   rendered through the engine's own `html.write_html_explorer`.
 - **Fleet topology** — a native force-directed graph of the switch fabric (d3-force), nodes coloured by
   health band, single-points-of-failure highlighted, click-a-node to trace its blast radius.
-- **Deliverable downloads** — generate and download narrative outputs for any snapshot: the
-  Engagement Workflow & Plan of Record (DOCX), CRD (Customer Requirements Document, DOCX),
-  Runbook (DOCX), As-Built Design Document (DOCX), per-wave MOP (DOCX), and Executive Deck (PPTX) —
-  each produced by the engine's own writer (`engagement`/`crd`/`runbook`/`design`/`mop`/`deck`),
-  byte-identical to the CLI (the engagement plan additionally carries the campaign's recorded gate
-  sign-offs in its §4.3 "Gate record (as signed)") —
-  plus two web-layer syntheses the engine has no CLI writer for: the **Cutover Plan (run-of-show) DOCX**
-  (`cutover`) from the planner, and the **Network Ready-For-Use / Acceptance Test Plan DOCX** (`nrfu`) —
-  a Cisco-standard NRFU with document-control + sign-off front matter and three test phases (device /
-  logical / service) built from the snapshot's lifecycle, `validation_plan`, and service-map data.
+- **Artifact downloads** — the snapshot catalogue is derived from `docmeta.ARTIFACT_SPECS`, not a
+  web-local list. Engine-backed entries reuse their CLI writer; the engagement plan additionally
+  receives the campaign's recorded gate sign-offs, so sharing a writer is not a byte-equality claim.
+  The registry also declares the AssessHub-owned **Cutover Plan (run-of-show)** and **NRFU /
+  Acceptance Test Plan** syntheses. Conditional PIR is deliberately absent from the snapshot
+  catalogue: it is generated only from an execution run's report route.
 - **Gate board** — on the campaign page: per-wave T-minus sign-offs (commit T-28 → checkpoint T-14 →
   readiness T-7 → go/no-go T-1 → window T-0 → hypercare exit T+5). Click a cell to cycle
   pending → GO → NO-GO → SLIPPED → pending; decisions are campaign state and land in the engagement

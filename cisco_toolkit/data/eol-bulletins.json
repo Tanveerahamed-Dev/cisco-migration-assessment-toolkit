@@ -1,0 +1,436 @@
+{
+  "schema_version": 1,
+  "purpose": "Semantic primary-source fixture transcribed from the named official Cisco EoL bulletins: Table 1 milestone dates and the bounded Table 2 PID scopes used by the runtime",
+  "evidence_method": "Facts only; no bulletin prose is reproduced. Every claim is checked against its exact HTTPS Cisco source URL.",
+  "retrieved_at": "2026-07-30T13:48:46Z",
+  "reviewed_at": "2026-07-30",
+  "sources": [
+    {
+      "bulletin_id": "EOL11273",
+      "document_id": "c51-738116",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-4900-series-switches/eos-eol-notice-c51-738116.html",
+      "claims": [
+        {
+          "pattern": "WS-C4948E",
+          "match": "prefix",
+          "platform": "Catalyst 4948E",
+          "eos": "2017-10-31",
+          "ldos": "2022-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL8529",
+      "document_id": "c51-712223",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-4900-series-switches/eol_C51-712223.html",
+      "claims": [
+        {
+          "pattern": "WS-C4948",
+          "match": "exact",
+          "platform": "Catalyst 4948",
+          "eos": "2013-08-01",
+          "ldos": "2018-07-31"
+        },
+        {
+          "pattern": "WS-C4948-BDL",
+          "match": "exact",
+          "platform": "Catalyst 4948",
+          "eos": "2013-08-01",
+          "ldos": "2018-07-31"
+        },
+        {
+          "pattern": "WS-C4948-E",
+          "match": "exact",
+          "platform": "Catalyst 4948",
+          "eos": "2013-08-01",
+          "ldos": "2018-07-31"
+        },
+        {
+          "pattern": "WS-C4948-S",
+          "match": "exact",
+          "platform": "Catalyst 4948",
+          "eos": "2013-08-01",
+          "ldos": "2018-07-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL10530",
+      "document_id": "c51-736182",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-4900-series-switches/eos-eol-notice-c51-736182.html",
+      "claims": [
+        {
+          "pattern": "WS-C4900M",
+          "match": "prefix",
+          "platform": "Catalyst 4900M",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL13216",
+      "document_id": "c51-743098",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-4500-x-series-switches/eos-eol-notice-c51-743098.pdf",
+      "claims": [
+        {
+          "pattern": "WS-C4500X",
+          "match": "prefix",
+          "platform": "Catalyst 4500-X",
+          "eos": "2020-10-30",
+          "ldos": "2025-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL10623",
+      "document_id": "c51-736139",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3560-x-series-switches/eos-eol-notice-c51-736139.html",
+      "claims": [
+        {
+          "pattern": "WS-C3560X-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-X / 3750-X",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        },
+        {
+          "pattern": "WS-C3750X-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-X / 3750-X",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL13188",
+      "document_id": "c51-743072",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3850-series-switches/eos-eol-notice-c51-743072.pdf",
+      "claims": [
+        {
+          "pattern": "WS-C3850",
+          "match": "prefix",
+          "platform": "Catalyst 3850",
+          "eos": "2020-10-30",
+          "ldos": "2025-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL13617",
+      "document_id": "c51-744426",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3650-series-switches/eos-eol-notice-c51-744426-b.html",
+      "claims": [
+        {
+          "pattern": "WS-C3650",
+          "match": "prefix",
+          "platform": "Catalyst 3650",
+          "eos": "2021-10-31",
+          "ldos": "2026-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL10691",
+      "document_id": "c51-736180",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3560-c-series-switches/eos-eol-notice-c51-736180.html",
+      "claims": [
+        {
+          "pattern": "WS-C3560C-12PC-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-C",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        },
+        {
+          "pattern": "WS-C3560C-8PC-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-C",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        },
+        {
+          "pattern": "WS-C3560CG-8PC-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-C",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        },
+        {
+          "pattern": "WS-C3560CG-8TC-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-C",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        },
+        {
+          "pattern": "WS-C3560CPD-8PT-",
+          "match": "prefix",
+          "platform": "Catalyst 3560-C",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        },
+        {
+          "pattern": "WS-C2960CG-8TC-L",
+          "match": "exact",
+          "platform": "Catalyst 2960-C",
+          "eos": "2016-10-30",
+          "ldos": "2021-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL13189",
+      "document_id": "c51-743071",
+      "url": "https://www.cisco.com/c/en/us/products/switches/catalyst-2960-c-series-switches/eos-eol-notice-c51-743071.html",
+      "claims": [
+        {
+          "pattern": "WS-C2960C-",
+          "match": "prefix",
+          "platform": "Catalyst 2960-C",
+          "eos": "2020-10-30",
+          "ldos": "2025-10-31"
+        },
+        {
+          "pattern": "WS-C2960CPD-",
+          "match": "prefix",
+          "platform": "Catalyst 2960-C",
+          "eos": "2020-10-30",
+          "ldos": "2025-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL15072",
+      "document_id": null,
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3560-cx-series-switches/catalyst-3560-cx-serie-switche-eol.html",
+      "claims": [
+        {
+          "pattern": "WS-C3560CX-8TC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-8TCS++",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-8PC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-8PCS++",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-12TC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-12TCS++",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-12PC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-12PCS++",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-12PD-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "WS-C3560CX-12PDS++",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "NAL-C3560CX-12TC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "NAL-C3560CX-12PC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "NAL-C3560CX-12PD-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "NAL-C3560CX-8TC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        },
+        {
+          "pattern": "NAL-C3560CX-8PC-S",
+          "match": "exact",
+          "platform": "Catalyst 3560-CX (selected models)",
+          "eos": "2024-04-30",
+          "ldos": "2029-04-30"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL13603",
+      "document_id": "c51-744432",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-x-series-switches/eos-eol-notice-c51-744432.html",
+      "claims": [
+        {
+          "pattern": "WS-C2960X-",
+          "match": "prefix",
+          "platform": "Catalyst 2960-X",
+          "eos": "2022-10-31",
+          "ldos": "2027-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL9449",
+      "document_id": "c51-730121",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/eos-eol-notice-c51-730121.html",
+      "claims": [
+        {
+          "pattern": "WS-C2960-",
+          "match": "prefix",
+          "platform": "Catalyst 2960",
+          "eos": "2014-10-31",
+          "ldos": "2019-10-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL6926",
+      "document_id": "c51-574778",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-3750-series-switches/end_of_life_notice_c51-574778.html",
+      "claims": [
+        {
+          "pattern": "WS-C3560-24PS-",
+          "match": "prefix",
+          "platform": "Catalyst 3560 24/48-port 10/100",
+          "eos": "2010-07-05",
+          "ldos": "2015-07-31"
+        },
+        {
+          "pattern": "WS-C3560-24TS-",
+          "match": "prefix",
+          "platform": "Catalyst 3560 24/48-port 10/100",
+          "eos": "2010-07-05",
+          "ldos": "2015-07-31"
+        },
+        {
+          "pattern": "WS-C3560-48PS-",
+          "match": "prefix",
+          "platform": "Catalyst 3560 24/48-port 10/100",
+          "eos": "2010-07-05",
+          "ldos": "2015-07-31"
+        },
+        {
+          "pattern": "WS-C3560-48TS-",
+          "match": "prefix",
+          "platform": "Catalyst 3560 24/48-port 10/100",
+          "eos": "2010-07-05",
+          "ldos": "2015-07-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL10891",
+      "document_id": "c51-737195",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/nexus-6000-series-switches/eos-eol-notice-c51-737195.html",
+      "claims": [
+        {
+          "pattern": "N6K-C600",
+          "match": "prefix",
+          "platform": "Nexus 6000",
+          "eos": "2017-04-30",
+          "ldos": "2022-04-30"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL12308",
+      "document_id": "c51-740720",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/nexus-5000-series-switches/eos-eol-notice-c51-740720.html",
+      "claims": [
+        {
+          "pattern": "N5K-C55",
+          "match": "prefix",
+          "platform": "Nexus 5500",
+          "eos": "2019-05-05",
+          "ldos": "2024-05-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL13329",
+      "document_id": "c51-743427",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/nexus-3000-series-switches/eos-eol-notice-c51-743427.html",
+      "claims": [
+        {
+          "pattern": "N3K-C3048",
+          "match": "prefix",
+          "platform": "Nexus 3048",
+          "eos": "2020-08-03",
+          "ldos": "2025-08-31"
+        }
+      ]
+    },
+    {
+      "bulletin_id": "EOL11097",
+      "document_id": "c51-738099",
+      "url": "https://www.cisco.com/c/en/us/products/collateral/switches/nexus-3000-series-switches/eos-eol-notice-c51-738099.html",
+      "claims": [
+        {
+          "pattern": "N3K-C3064-X",
+          "match": "prefix",
+          "platform": "Nexus 3064-X",
+          "eos": "2017-04-28",
+          "ldos": "2022-04-30"
+        }
+      ]
+    }
+  ]
+}

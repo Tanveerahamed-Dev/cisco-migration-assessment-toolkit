@@ -1,0 +1,641 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/completeness-ledger.schema.json",
+  "title": "Atlas repository compilation completeness ledger",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "source_commit",
+    "head_tree_oid",
+    "index_digest",
+    "source_tree_digest",
+    "tracked_status_digest",
+    "tracked_worktree_dirty",
+    "hard_failure",
+    "fatal_errors",
+    "census",
+    "parsing",
+    "semantic_accounting",
+    "record_counts",
+    "graphify",
+    "architecture_conformance",
+    "consequential_claim_denominator",
+    "privacy",
+    "invariants",
+    "acceptance_gates"
+  ],
+  "properties": {
+    "id": {"$ref": "atlas-records.schema.json#/$defs/atlasId"},
+    "schema_version": {"const": "1.2.0"},
+    "source_commit": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "head_tree_oid": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "index_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "source_tree_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "tracked_status_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "tracked_worktree_dirty": {"type": ["boolean", "null"]},
+    "hard_failure": {"type": "boolean"},
+    "fatal_errors": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "census": {
+      "type": "object",
+      "required": ["tracked_files", "classified_files", "full_exposure_files", "metadata_only_files"],
+      "properties": {
+        "tracked_files": {"type": "integer", "minimum": 0},
+        "classified_files": {"type": "integer", "minimum": 0},
+        "full_exposure_files": {"type": "integer", "minimum": 0},
+        "metadata_only_files": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "parsing": {
+      "type": "object",
+      "required": [
+        "status_counts",
+        "parser_counts",
+        "expected_nonblank_lines",
+        "line_records",
+        "lines_with_explicit_unresolved_reasons"
+      ],
+      "properties": {
+        "status_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "parser_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "expected_nonblank_lines": {"type": "integer", "minimum": 0},
+        "line_records": {"type": "integer", "minimum": 0},
+        "lines_with_explicit_unresolved_reasons": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "semantic_accounting": {
+      "type": "object",
+      "required": [
+        "symbol_records",
+        "symbol_dossiers",
+        "safe_parsed_sources",
+        "structural_root_entities",
+        "structural_root_kind_counts",
+        "structurally_mapped_lines",
+        "line_explanation_depth_counts",
+        "symbol_explanation_depth_counts",
+        "critical_or_public_symbols",
+        "critical_level_four_reviews",
+        "gui_surface_records",
+        "gui_dossiers",
+        "gui_dossier_evidence_state_counts",
+        "gui_dossier_field_state_counts",
+        "runtime_trace_state",
+        "coverage_evidence_state",
+        "consequential_claim_denominator_state",
+        "typed_claim_records",
+        "bitemporal_event_ledger_state",
+        "bitemporal_event_records",
+        "release_lifecycle_transition_receipt_state"
+      ],
+      "properties": {
+        "symbol_records": {"type": "integer", "minimum": 0},
+        "symbol_dossiers": {"type": "integer", "minimum": 0},
+        "safe_parsed_sources": {"type": "integer", "minimum": 0},
+        "structural_root_entities": {"type": "integer", "minimum": 0},
+        "structural_root_kind_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "structurally_mapped_lines": {"type": "integer", "minimum": 0},
+        "line_explanation_depth_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "symbol_explanation_depth_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "critical_or_public_symbols": {"type": "integer", "minimum": 0},
+        "critical_level_four_reviews": {"type": "integer", "minimum": 0},
+        "gui_surface_records": {"type": "integer", "minimum": 0},
+        "gui_dossiers": {"type": "integer", "minimum": 0},
+        "gui_dossier_evidence_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "gui_dossier_field_state_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "runtime_trace_state": {"type": "string"},
+        "coverage_evidence_state": {"type": "string"},
+        "consequential_claim_denominator_state": {"enum": ["not_declared", "declared_incomplete"]},
+        "typed_claim_records": {"type": "integer", "minimum": 0},
+        "bitemporal_event_ledger_state": {"const": "not_populated"},
+        "bitemporal_event_records": {"const": 0},
+        "release_lifecycle_transition_receipt_state": {"const": "not_integrated"}
+      },
+      "additionalProperties": false
+    },
+    "record_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "graphify": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
+    "architecture_conformance": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
+    "consequential_claim_denominator": {"$ref": "#/$defs/consequentialClaimDenominator"},
+    "privacy": {
+      "type": "object",
+      "required": ["binary_payload_scan"],
+      "properties": {
+        "binary_payload_scan": {"$ref": "#/$defs/binaryReviewSummary"}
+      }
+    },
+    "invariants": {
+      "allOf": [
+        {"$ref": "#/$defs/gates"},
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_safe_parsed_source_has_one_structural_root"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_safe_line_structurally_mapped"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_gui_surface_has_standardized_evidence_honest_dossier"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "acceptance_gates": {
+      "allOf": [
+        {"$ref": "#/$defs/gates"},
+        {"minItems": 12, "maxItems": 12},
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "architecture_contract_declared_and_conformant"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "runtime_architecture_edges_observed_and_reconciled"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_symbol_has_dossier_fields"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_gui_surface_has_standardized_evidence_honest_dossier"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_safe_line_behaviorally_explained"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_critical_or_public_symbol_level_four_reviewed"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "exact_clean_commit_binding"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_binary_has_format_aware_privacy_review"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "runtime_trace_evidence_joined_to_source_records"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name", "passed", "expected", "actual"],
+            "properties": {
+              "name": {"const": "consequential_claim_denominator_closed"},
+              "passed": {"const": false},
+              "expected": {"const": true},
+              "actual": {"const": false}
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "bitemporal_event_ledger_populated_and_replayable"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "release_lifecycle_transitions_integrated_and_receipted"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "gitOid40": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "gitOid64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableDigest": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "nullableGitOid": {
+      "anyOf": [
+        {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        {"type": "null"}
+      ]
+    },
+    "consequentialClaimDenominator": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "denominator_kind",
+        "state",
+        "closed",
+        "source_commit",
+        "source_tree_digest",
+        "source_basis",
+        "contract_path",
+        "contract_git_blob_oid",
+        "contract_digest",
+        "classification_digest",
+        "source_universe_expected",
+        "source_universe_registered",
+        "source_universe_unclassified",
+        "source_receipts",
+        "source_receipts_digest",
+        "expected_candidates",
+        "discovered_candidates",
+        "classified_candidates",
+        "independently_reviewed_candidates",
+        "unresolved_candidates",
+        "candidate_set_digest",
+        "compiler_integrity_claims_expected",
+        "compiler_integrity_claims_classified",
+        "compiler_integrity_claims_consequential",
+        "error_codes"
+      ],
+      "properties": {
+        "schema_version": {"const": "bounded-curated-consequential-claims/2"},
+        "denominator_kind": {"const": "bounded_curated_content_claim_denominator"},
+        "state": {"enum": ["not_declared", "declared_incomplete"]},
+        "closed": {"const": false},
+        "source_commit": {"$ref": "#/$defs/nullableGitOid"},
+        "source_tree_digest": {"$ref": "#/$defs/nullableDigest"},
+        "source_basis": {"const": "selected_commit_raw_git_blobs"},
+        "contract_path": {"const": "master-reference/governance/consequential-claim-contract.json"},
+        "contract_git_blob_oid": {"$ref": "#/$defs/nullableGitOid"},
+        "contract_digest": {"$ref": "#/$defs/nullableDigest"},
+        "classification_digest": {"$ref": "#/$defs/nullableDigest"},
+        "source_universe_expected": {"const": 5},
+        "source_universe_registered": {"type": "integer", "minimum": 0, "maximum": 5},
+        "source_universe_unclassified": {"type": "integer", "minimum": 0, "maximum": 5},
+        "source_receipts": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "required": ["path", "git_blob_oid", "sha256", "bytes", "classification", "rule_set_digest", "candidate_count", "candidate_digest"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "git_blob_oid": {"$ref": "#/$defs/gitOid"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
+              "classification": {"const": "candidate_census"},
+              "rule_set_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "candidate_count": {"type": "integer", "minimum": 1, "maximum": 100000},
+              "candidate_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "source_receipts_digest": {"$ref": "#/$defs/nullableDigest"},
+        "expected_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "discovered_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "classified_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "independently_reviewed_candidates": {"const": 0},
+        "unresolved_candidates": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "candidate_set_digest": {"$ref": "#/$defs/nullableDigest"},
+        "compiler_integrity_claims_expected": {"const": 6},
+        "compiler_integrity_claims_classified": {"type": "integer", "minimum": 0, "maximum": 6},
+        "compiler_integrity_claims_consequential": {"const": 0},
+        "error_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "consequential_claim_contract_absent",
+              "consequential_claim_contract_invalid",
+              "consequential_claim_dirty_preview_not_eligible",
+              "consequential_claim_independent_review_pending",
+              "consequential_claim_rendered_sink_universe_incomplete",
+              "consequential_claim_source_universe_incomplete"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "not_declared"}}},
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "source_commit": {"type": "null"},
+                  "source_tree_digest": {"type": "null"}
+                },
+                "required": ["source_commit", "source_tree_digest"]
+              },
+              {
+                "properties": {
+                  "source_commit": {"$ref": "#/$defs/gitOid"},
+                  "source_tree_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                },
+                "required": ["source_commit", "source_tree_digest"]
+              }
+            ],
+            "properties": {
+              "closed": {"const": false},
+              "contract_git_blob_oid": {"type": "null"},
+              "contract_digest": {"type": "null"},
+              "classification_digest": {"type": "null"},
+              "source_universe_registered": {"const": 0},
+              "source_universe_unclassified": {"const": 5},
+              "source_receipts": {"const": []},
+              "source_receipts_digest": {"type": "null"},
+              "expected_candidates": {"const": 0},
+              "discovered_candidates": {"const": 0},
+              "classified_candidates": {"const": 0},
+              "independently_reviewed_candidates": {"const": 0},
+              "unresolved_candidates": {"const": 0},
+              "candidate_set_digest": {"type": "null"},
+              "compiler_integrity_claims_classified": {"const": 0},
+              "error_codes": {
+                "oneOf": [
+                  {"const": ["consequential_claim_contract_absent", "consequential_claim_source_universe_incomplete"]},
+                  {"const": ["consequential_claim_contract_invalid", "consequential_claim_source_universe_incomplete"]},
+                  {"const": ["consequential_claim_dirty_preview_not_eligible", "consequential_claim_source_universe_incomplete"]}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "declared_incomplete"}}},
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "source_commit": {"$ref": "#/$defs/gitOid40"},
+                  "contract_git_blob_oid": {"$ref": "#/$defs/gitOid40"},
+                  "source_receipts": {
+                    "items": {
+                      "properties": {
+                        "git_blob_oid": {"$ref": "#/$defs/gitOid40"}
+                      }
+                    }
+                  }
+                },
+                "required": ["source_commit", "contract_git_blob_oid", "source_receipts"]
+              },
+              {
+                "properties": {
+                  "source_commit": {"$ref": "#/$defs/gitOid64"},
+                  "contract_git_blob_oid": {"$ref": "#/$defs/gitOid64"},
+                  "source_receipts": {
+                    "items": {
+                      "properties": {
+                        "git_blob_oid": {"$ref": "#/$defs/gitOid64"}
+                      }
+                    }
+                  }
+                },
+                "required": ["source_commit", "contract_git_blob_oid", "source_receipts"]
+              }
+            ],
+            "properties": {
+              "source_commit": {"$ref": "#/$defs/gitOid"},
+              "source_tree_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "contract_git_blob_oid": {"$ref": "#/$defs/gitOid"},
+              "contract_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "classification_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "source_universe_registered": {"const": 5},
+              "source_universe_unclassified": {"const": 0},
+              "source_receipts": {
+                "minItems": 5,
+                "maxItems": 5,
+                "allOf": [
+                  {"contains": {"properties": {"path": {"const": "master-reference/content/atlas-core.json"}, "candidate_count": {"const": 155}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
+                  {"contains": {"properties": {"path": {"const": "master-reference/content/capability-catalog.json"}, "candidate_count": {"const": 422}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
+                  {"contains": {"properties": {"path": {"const": "master-reference/content/delivery-governance.json"}, "candidate_count": {"const": 969}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
+                  {"contains": {"properties": {"path": {"const": "master-reference/content/open-horizon-register.json"}, "candidate_count": {"const": 315}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1},
+                  {"contains": {"properties": {"path": {"const": "master-reference/content/output-contract.json"}, "candidate_count": {"const": 275}}, "required": ["path", "candidate_count"]}, "minContains": 1, "maxContains": 1}
+                ]
+              },
+              "source_receipts_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "expected_candidates": {"const": 2136},
+              "discovered_candidates": {"const": 2136},
+              "classified_candidates": {"const": 2136},
+              "independently_reviewed_candidates": {"const": 0},
+              "unresolved_candidates": {"const": 2136},
+              "candidate_set_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "compiler_integrity_claims_classified": {"const": 6},
+              "error_codes": {
+                "const": [
+                  "consequential_claim_independent_review_pending",
+                  "consequential_claim_rendered_sink_universe_incomplete"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "binaryReviewSummary": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_path",
+        "status",
+        "expected_files",
+        "receipt_records",
+        "identity_matched_files",
+        "automated_format_passed_files",
+        "automated_format_pending_files",
+        "claimed_independent_contextual_passed_files",
+        "independent_contextual_passed_files",
+        "accepted_files",
+        "format_counts",
+        "receipt_git_blob_oid",
+        "receipt_content_digest",
+        "receipt_set_digest",
+        "binary_set_digest",
+        "review_basis_commit",
+        "review_basis_is_ancestor",
+        "reviewer_custody",
+        "payload_bytes_embedded_in_projection",
+        "error_codes",
+        "inventory_only_files",
+        "format_aware_or_manual_review_receipt",
+        "claim"
+      ],
+      "properties": {
+        "schema_version": {"const": "tracked-binary-review/1"},
+        "receipt_path": {"const": "master-reference/governance/tracked-binary-review.json"},
+        "status": {"enum": ["absent", "dirty_preview_not_eligible", "invalid", "incomplete"]},
+        "expected_files": {"type": "integer", "minimum": 0},
+        "receipt_records": {"type": "integer", "minimum": 0},
+        "identity_matched_files": {"type": "integer", "minimum": 0},
+        "automated_format_passed_files": {"type": "integer", "minimum": 0},
+        "automated_format_pending_files": {"type": "integer", "minimum": 0},
+        "claimed_independent_contextual_passed_files": {"type": "integer", "minimum": 0},
+        "independent_contextual_passed_files": {"type": "integer", "minimum": 0},
+        "accepted_files": {"type": "integer", "minimum": 0},
+        "format_counts": {
+          "type": "object",
+          "required": ["png", "gzip_tsv", "unsupported"],
+          "properties": {
+            "png": {"type": "integer", "minimum": 0},
+            "gzip_tsv": {"type": "integer", "minimum": 0},
+            "unsupported": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "receipt_git_blob_oid": {"$ref": "#/$defs/nullableGitOid"},
+        "receipt_content_digest": {"$ref": "#/$defs/nullableDigest"},
+        "receipt_set_digest": {"$ref": "#/$defs/nullableDigest"},
+        "binary_set_digest": {"$ref": "#/$defs/nullableDigest"},
+        "review_basis_commit": {"$ref": "#/$defs/nullableGitOid"},
+        "review_basis_is_ancestor": {"type": ["boolean", "null"]},
+        "reviewer_custody": {"$ref": "#/$defs/pendingReviewerCustody"},
+        "payload_bytes_embedded_in_projection": {"const": false},
+        "error_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "binary_denominator_contains_unsupported_format",
+              "binary_format_invalid",
+              "binary_review_automated_format_pending_unsupported_png_ancillary",
+              "binary_review_denominator_empty",
+              "binary_review_dirty_preview_not_eligible",
+              "binary_review_receipt_absent",
+              "binary_review_receipt_binary_set_digest_mismatch",
+              "binary_review_receipt_format_evidence_mismatch",
+              "binary_review_receipt_identity_mismatch",
+              "binary_review_receipt_independent_verdict_not_passed",
+              "binary_review_receipt_malformed",
+              "binary_review_receipt_membership_mismatch",
+              "binary_review_receipt_review_basis_not_ancestor",
+              "binary_review_reviewer_authentication_pending"
+            ]
+          }
+        },
+        "inventory_only_files": {"type": "integer", "minimum": 0},
+        "format_aware_or_manual_review_receipt": {
+          "enum": ["absent", "dirty_preview_not_eligible", "invalid", "incomplete"]
+        },
+        "claim": {"type": "string", "minLength": 1, "maxLength": 1024}
+      },
+      "additionalProperties": false
+    },
+    "pendingReviewerCustody": {
+      "type": "object",
+      "required": [
+        "status",
+        "required_mechanism",
+        "trusted_public_key_configured",
+        "detached_signature_present",
+        "detached_signature_verified",
+        "authenticated_reviewer_kind",
+        "authenticated_files",
+        "receipt_claims_trusted"
+      ],
+      "properties": {
+        "status": {"const": "pending_trusted_external_attestation"},
+        "required_mechanism": {"const": "detached_signature_with_trusted_public_key"},
+        "trusted_public_key_configured": {"const": false},
+        "detached_signature_present": {"const": false},
+        "detached_signature_verified": {"const": false},
+        "authenticated_reviewer_kind": {"type": "null"},
+        "authenticated_files": {"const": 0},
+        "receipt_claims_trusted": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "sourceBoundCompilerReceipt": {
+      "type": "object",
+      "required": ["schema_version", "source_commit", "source_tree_digest"],
+      "properties": {
+        "schema_version": {"const": "1.2.0"},
+        "source_commit": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        "source_tree_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "gateValue": {"type": ["integer", "boolean", "null"]},
+    "gate": {
+      "type": "object",
+      "required": ["name", "passed", "expected", "actual"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "passed": {"type": "boolean"},
+        "expected": {"$ref": "#/$defs/gateValue"},
+        "actual": {"$ref": "#/$defs/gateValue"}
+      },
+      "additionalProperties": false
+    },
+    "gates": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/gate"}}
+  },
+  "additionalProperties": false
+}

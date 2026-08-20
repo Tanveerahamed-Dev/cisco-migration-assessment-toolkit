@@ -5,6 +5,7 @@ headline scenario: an ordered 3-step wave where a MIDDLE step strands a flow and
 flow — the narrative names the window; the input snapshot is proven unchanged after the run (deep-copy).
 """
 import copy
+import json
 
 from cisco_toolkit import cutover_sim
 
@@ -15,6 +16,8 @@ def _l3_snap():
     10.0.9.200 — a clean strand-then-restore across the wave."""
     return {"routes": {
         "A": [{"prefix": "10.0.1.0/24", "source": "connected", "out_intf": "Vlan1"},
+              {"prefix": "10.0.12.0/24", "source": "connected", "out_intf": "Gi0/0"},
+              {"prefix": "10.0.13.0/24", "source": "connected", "out_intf": "Gi0/1"},
               {"prefix": "10.0.9.0/24", "source": "static", "next_hop": "10.0.12.2", "out_intf": "Gi0/0"},
               {"prefix": "10.0.9.128/25", "source": "static", "next_hop": "", "out_intf": "Null0"},
               {"prefix": "10.0.5.0/24", "source": "static", "next_hop": "10.0.13.2", "out_intf": "Gi0/1"}],
@@ -22,6 +25,10 @@ def _l3_snap():
               {"prefix": "10.0.9.0/24", "source": "connected", "out_intf": "Gi0/2"}],
         "Y": [{"prefix": "10.0.13.0/24", "source": "connected", "out_intf": "Gi0/0"},
               {"prefix": "10.0.5.0/24", "source": "connected", "out_intf": "Gi0/2"}],
+    }, "interfaces": {
+        "A": {"Gi0/0": {"svi_ip": "10.0.12.1/24"}, "Gi0/1": {"svi_ip": "10.0.13.1/24"}},
+        "X": {"Gi0/0": {"svi_ip": "10.0.12.2/24"}},
+        "Y": {"Gi0/0": {"svi_ip": "10.0.13.2/24"}},
     }}
 
 
@@ -90,10 +97,13 @@ def test_noop_step_is_flagged_and_reachability_unchanged():
 
 def test_unknown_action_is_reported_noop_not_silent():
     snap = _l3_snap()
-    res = cutover_sim.simulate_cutover(snap, [{"action": "teleport_switch", "id": "A"}], pairs=_PAIRS)
+    secret_action = "PRIVATE_UNSUPPORTED_ACTION_SENTINEL"
+    res = cutover_sim.simulate_cutover(snap, [{"action": secret_action, "id": "A"}], pairs=_PAIRS)
     s = res["steps"][0]
     assert s["is_noop"] is True
-    assert s["action"] == "teleport_switch"                 # surfaced verbatim, never swallowed
+    assert s["action"] == "unsupported_action"
+    assert s["validation_errors"] == ["unsupported action"]
+    assert secret_action not in json.dumps(res)
     assert res["summary"]["n_noop_steps"] == 1
 
 
@@ -143,7 +153,14 @@ def test_fail_node_step_reports_stp_reroot_and_fhrp_takeover():
                for r in s["stp_reroots"])
     # FHRP: group 10 takes over to dist1
     assert any(r["group"] == "10" and r["new_active"] == "dist1" for r in s["fhrp_takeovers"])
-    assert "re-root" in s["narrative"] or "take over" in s["narrative"]
+    assert all(r["continuity_assessed"] is False for r in s["stp_reroots"] + s["fhrp_takeovers"])
+    assert "election candidate" in s["narrative"]
+    assert "continuity not assessed" in s["narrative"]
+    assert res["summary"]["total_stp_reroots"] == 0
+    assert res["summary"]["total_fhrp_takeovers"] == 0
+    assert res["summary"]["total_stp_election_candidates"] == 1
+    assert res["summary"]["total_fhrp_election_candidates"] == 1
+    assert res["summary"]["total_indeterminate"] >= 1
 
 
 def test_move_fhrp_active_flips_state_without_touching_routes():
@@ -159,8 +176,10 @@ def test_move_fhrp_active_flips_state_without_touching_routes():
     move = next(r for r in s["fhrp_takeovers"] if r["group"] == "10")
     assert move["old_active"] == "core1" and move["new_active"] == "dist1"
     assert move.get("reason", "").lower().startswith("fhrp forwarding role moved")
-    assert res["summary"]["total_fhrp_takeovers"] >= 1
-    assert "take over" in s["narrative"]
+    assert res["summary"]["total_fhrp_takeovers"] == 0
+    assert res["summary"]["total_fhrp_election_candidates"] >= 1
+    assert "election candidate" in s["narrative"]
+    assert "continuity not assessed" in s["narrative"]
     # the input snapshot's fhrp state is untouched (deep copy) — core1 is still Active in the ORIGINAL
     assert snap["fhrp_detail"]["core1"][0]["state"] == "Active"
 
@@ -178,6 +197,112 @@ def test_empty_wave_is_total():
     assert res["steps"] == []
     assert res["worst_step"] is None
     assert res["summary"]["n_steps"] == 0
+
+
+def test_public_step_boundary_rejects_excessive_snapshot_nesting_before_deepcopy():
+    nested: dict = {}
+    cursor = nested
+    for _index in range(1_200):
+        child: dict = {}
+        cursor["child"] = child
+        cursor = child
+    snap = {"routes": {}, "extra": nested}
+
+    after, receipt = cutover_sim.apply_cutover_step(
+        snap, {"action": "fail_node", "id": "R1"}
+    )
+
+    assert after == {}
+    assert receipt["valid"] is False
+    assert receipt["is_noop"] is True
+    assert "safe JSON mutation" in receipt["validation_errors"][0]
+    assert "child" in snap["extra"]
+
+
+def test_simulator_rejects_nonfinite_surrogate_and_deep_snapshots_with_strict_json_output():
+    nested: dict = {}
+    cursor = nested
+    for _index in range(1_200):
+        child: dict = {}
+        cursor["child"] = child
+        cursor = child
+
+    snapshots = [
+        {"routes": {}, "poison": float("nan")},
+        {"routes": {}, "poison": "\ud800"},
+        {"routes": {}, "extra": nested},
+    ]
+    for snap in snapshots:
+        result = cutover_sim.simulate_cutover(
+            snap, [{"action": "fail_node", "id": "R1"}], pairs=[]
+        )
+        assert result["valid"] is False
+        assert result["steps"] == []
+        assert result["summary"]["total_indeterminate"] == 1
+        json.dumps(result, allow_nan=False, ensure_ascii=False).encode("utf-8")
+
+
+def test_malformed_steps_are_total_and_never_echo_external_values():
+    secret = "PRIVATE_MALFORMED_STEP_SENTINEL"
+    result = cutover_sim.simulate_cutover(
+        _l3_snap(),
+        [None, secret, [secret], {"action": {"credential": secret}, "payload": {"secret": secret}}],
+        pairs=[],
+    )
+
+    assert [row["action"] for row in result["steps"]] == [
+        "invalid_step", "invalid_step", "invalid_step", "unsupported_action",
+    ]
+    assert all(row["valid"] is False and row["is_noop"] is True for row in result["steps"])
+    encoded = json.dumps(result, allow_nan=False, ensure_ascii=False)
+    assert secret not in encoded
+
+    malformed_wave = cutover_sim.simulate_cutover(_l3_snap(), {"action": secret}, pairs=[])
+    assert malformed_wave["valid"] is False
+    assert malformed_wave["validation_errors"] == ["steps must be an array"]
+    assert secret not in json.dumps(malformed_wave)
+
+    oversized_wave = cutover_sim.simulate_cutover(_l3_snap(), [{}] * 1_001, pairs=[])
+    assert oversized_wave["valid"] is False
+    assert oversized_wave["validation_errors"] == ["steps exceed the bounded cutover simulation limit"]
+    assert oversized_wave["steps"] == []
+
+
+def test_malformed_fhrp_group_leaf_is_fixed_indeterminate_evidence_without_echo():
+    secret = "PRIVATE_NESTED_FHRP_SENTINEL"
+    snap = _l2_snap()
+    snap["fhrp_detail"]["dist1"][0]["group"] = {"credential": secret}
+    before = copy.deepcopy(snap)
+
+    result = cutover_sim.simulate_cutover(
+        snap, [{"action": "fail_node", "id": "core1"}], pairs=[]
+    )
+    row = result["steps"][0]
+    encoded = json.dumps(result, allow_nan=False, ensure_ascii=False)
+
+    assert secret not in encoded
+    assert row["fhrp_takeovers"] == []
+    assert row["l2_continuity"]["verdict"] == "INDETERMINATE"
+    assert row["l2_continuity"]["reason"] == (
+        "L2 election evidence contains malformed fields; continuity was not assessed"
+    )
+    assert row["indeterminate"] >= 1
+    assert snap == before
+
+
+def test_nested_fhrp_group_step_parameter_is_rejected_without_stringification_or_echo():
+    secret = "PRIVATE_NESTED_FHRP_SENTINEL"
+    result = cutover_sim.simulate_cutover(
+        _l2_snap(),
+        [{"action": "move_fhrp_active", "ifname": "Vlan10",
+          "group": {"credential": secret}, "to_host": "dist1"}],
+        pairs=[],
+    )
+    row = result["steps"][0]
+    assert row["valid"] is False
+    assert row["params"]["group"] == ""
+    assert row["validation_errors"] == ["group is required"]
+    assert secret not in json.dumps(result)
 
 
 def test_fail_site_removes_by_substring_across_l2_and_l3():

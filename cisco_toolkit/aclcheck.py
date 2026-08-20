@@ -56,6 +56,7 @@ _PROTO_ALIASES = {
     "46": "rsvp", "47": "gre", "50": "esp", "51": "ahp", "58": "icmpv6", "88": "eigrp", "89": "ospf",
     "94": "nos", "103": "pim", "108": "pcp", "112": "vrrp", "115": "l2tp", "132": "sctp",
     "ah": "ahp", "ip-in-ip": "ipinip", "ipinip-in-ip": "ipinip",     # cross-platform keyword spellings
+    "ipv4": "ip",                                                         # IOS XR spelling for the IPv4 wildcard
 }
 
 
@@ -156,17 +157,23 @@ def _addr_prefixes(spec, ogs, host) -> Tuple[Optional[list], str]:
         return None, "unevaluable"
     if spec.get("group") is not None:
         return _group_prefixes(spec["group"], ogs, host, set())
-    if spec.get("rangeStart") and spec.get("rangeEnd"):
+    range_start, range_end = spec.get("rangeStart"), spec.get("rangeEnd")
+    if range_start is not None or range_end is not None:
+        # Parser-owned address leaves are strings.  ipaddress also accepts integers/bools, but allowing that
+        # coercion would silently reinterpret malformed uploaded JSON as a different address/range.
+        if not (isinstance(range_start, str) and isinstance(range_end, str)
+                and range_start.strip() and range_end.strip()):
+            return None, "unevaluable"
         try:
-            a = ipaddress.ip_address(spec["rangeStart"])
-            b = ipaddress.ip_address(spec["rangeEnd"])
+            a = ipaddress.ip_address(range_start)
+            b = ipaddress.ip_address(range_end)
             if a.version != 4 or b.version != 4:           # IPv6 is not modeled by this v4 box algebra -> abstain
                 return None, "unevaluable"
             return _collapse(list(ipaddress.summarize_address_range(a, b))), "ok"
         except (ValueError, TypeError):
             return None, "unevaluable"
     ip, wild = spec.get("ip"), spec.get("wild")
-    if ip is None or wild is None:
+    if not (isinstance(ip, str) and isinstance(wild, str) and ip.strip() and wild.strip()):
         return None, "unevaluable"
     try:
         ipa, wilda = ipaddress.ip_address(ip), ipaddress.ip_address(wild)
@@ -182,31 +189,39 @@ def _addr_prefixes(spec, ogs, host) -> Tuple[Optional[list], str]:
 
 
 def _group_prefixes(name, ogs, host, seen) -> Tuple[Optional[list], str]:
+    del host  # retained in the public helper signature for stable callers and diagnostics.
     tbl = _as_dict(ogs)
-    try:
-        og = tbl.get(name)
-    except TypeError:                       # an UNHASHABLE group name (a dict/list leaf) can never
-        return None, "undefined"            # name a real object-group -> undefined, not a crash
-    if og is None:
-        return None, "undefined"
-    if not isinstance(og, dict):            # a truthy non-dict group body (str/int/list) is not a
-        return None, "undefined"            # readable definition -> abstain exactly like an absent one
-    if name in seen:
-        return None, "cyclic"
-    seen = seen | {name}
     prefixes = []
-    for m in _as_list(og.get("members")):
-        if not isinstance(m, dict):
-            continue
-        if m.get("group") is not None:
-            sub, st = _group_prefixes(m["group"], ogs, host, seen)
-            if st != "ok":
-                return None, st
-            prefixes.extend(sub)
-        else:
-            pl, st = _addr_prefixes(m, ogs, host)
-            if st != "ok":
-                return None, st
+    stack = [(name, frozenset(seen))]
+    processed = 0
+    while stack:
+        group_name, ancestors = stack.pop()
+        processed += 1
+        if processed > 4_096 or len(ancestors) > 256:
+            return None, "resolution_limit"
+        try:
+            og = tbl.get(group_name)
+        except TypeError:                   # an UNHASHABLE group name can never name a real object-group
+            return None, "undefined"
+        if og is None or not isinstance(og, dict):
+            return None, "undefined"
+        if group_name in ancestors:
+            return None, "cyclic"
+        members = og.get("members")
+        # Only an explicit list is a readable denominator. A missing/scalar body is malformed evidence, not an
+        # empty group that can prove a rule independently unmatchable. One unreadable member taints the group.
+        if not isinstance(members, list):
+            return None, "unevaluable"
+        next_ancestors = ancestors | {group_name}
+        for member in reversed(members):
+            if not isinstance(member, dict):
+                return None, "unevaluable"
+            if member.get("group") is not None:
+                stack.append((member["group"], next_ancestors))
+                continue
+            pl, status = _addr_prefixes(member, ogs, None)
+            if status != "ok":
+                return None, status
             prefixes.extend(pl)
     return _collapse(prefixes), "ok"
 
@@ -349,8 +364,10 @@ def _rule_box(rule, ogs, host) -> Tuple[dict, str]:
     dst, st_d = _addr_prefixes(dst_spec, ogs, host)
     sport = _port_intervals(rule.get("sport"))
     dport = _port_intervals(rule.get("dport"))
+    proto_raw = rule.get("proto")
+    proto_valid = isinstance(proto_raw, str) and bool(proto_raw.strip())
     box = {
-        "proto": _proto_of(rule.get("proto")),
+        "proto": _proto_of(proto_raw) if proto_valid else PROTO_FULL,
         "src": src if src is not None else list(_FULL_NET),
         "dst": dst if dst is not None else list(_FULL_NET),
         "sport": sport if sport is not None else [(0, 65535)],
@@ -358,10 +375,14 @@ def _rule_box(rule, ogs, host) -> Tuple[dict, str]:
     }
     status = "ok"
     for st in (st_s, st_d):                                 # undefined/cyclic win over a plain unevaluable
-        if st in ("undefined", "cyclic"):
+        if st in ("undefined", "cyclic", "resolution_limit"):
             status = st
     if status == "ok":
-        if rule.get("time_range"):
+        if not proto_valid:
+            status = "unevaluable"
+        elif rule.get("unmodeled_qualifiers"):
+            status = "unevaluable"
+        elif rule.get("time_range"):
             status = "timerange"
         elif src is None or dst is None or sport is None or dport is None:
             status = "unevaluable"                          # a dimension THIS module could not resolve
@@ -395,6 +416,10 @@ def _uneval_detail(rule, ogs, host) -> str:
             bits.append("%s (unknown port name or malformed operator)" % key)
     if bits:
         return "cannot model " + "; ".join(bits)
+    if rule.get("unmodeled_qualifiers"):
+        return "cannot model ACL match qualifier(s): " + ", ".join(
+            str(item) for item in _as_list(rule.get("unmodeled_qualifiers"))
+        )
     if rule.get("unevaluable"):
         return "the parser flagged this line unevaluable — an address/port form it could not model"
     return "unparseable address/port"
@@ -568,7 +593,8 @@ def _witness(box, headers):
 
 
 def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "permit",
-                   object_groups: Optional[dict] = None, host: Optional[str] = None) -> Dict[str, Any]:
+                   object_groups: Optional[dict] = None, host: Optional[str] = None,
+                   connection_state: str = "new") -> Dict[str, Any]:
     """Is there a packet in `headers`' flow-space that the ACL resolves to `action`?
 
     Returns {result:'WITNESS', flow:{…}, matched_by} with a concrete 5-tuple, {result:'PROVEN_NONE',
@@ -598,16 +624,34 @@ def search_filters(rules: List[dict], headers: Dict[str, Any], action: str = "pe
             break
         box, st = _rule_box(r, ogs, host)
         r = _as_dict(r)                                     # a non-dict rule ELEMENT degrades to an
-        if r.get("established") or r.get("reflexive"):      # unevaluable line (see _rule_box), never a .get crash
-            continue                                        # never matches a forward flow
         overlaps = [o for o in (_box_inter(b, box) for b in q_remaining) if not _box_empty(o)]
         if not overlaps:
             continue
+        if r.get("established") or r.get("reflexive"):
+            if connection_state == "new":
+                continue                                    # return-only state does not match a new forward flow
+            if hits:
+                return {"result": "WITNESS", "flow": _witness(hits[0], headers),
+                        "matched_by": "explicit line"}
+            return {"result": "INDETERMINATE",
+                    "detail": "stateful established/reflexive line overlaps the exact query but connection "
+                              "state was not observed"}
         if st != "ok":
             if hits:                                       # a witness already matched an earlier first-match line -> sound
                 return {"result": "WITNESS", "flow": _witness(hits[0], headers), "matched_by": "explicit line"}
-            return {"result": "INDETERMINATE", "detail": "line %d (%s) is unevaluable and overlaps the query space" % (i, r.get("raw", ""))}
-        if (r.get("action") or "").lower() == action:
+            return {"result": "INDETERMINATE",
+                    "detail": "line %d is unevaluable and overlaps the query space" % i,
+                    "line_index": i, "reason": "unevaluable_overlap"}
+        raw_rule_action = r.get("action")
+        rule_action = raw_rule_action.lower() if isinstance(raw_rule_action, str) else ""
+        if rule_action not in {"permit", "deny"}:
+            if hits:
+                return {"result": "WITNESS", "flow": _witness(hits[0], headers),
+                        "matched_by": "explicit line"}
+            return {"result": "INDETERMINATE",
+                    "detail": "line %d has a missing or unknown action and overlaps the query space" % i,
+                    "line_index": i, "reason": "unknown_action"}
+        if rule_action == action:
             hits.extend(overlaps)
         new_q = []
         for b in q_remaining:

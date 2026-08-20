@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from cisco_toolkit.precert import _schema_signature, schema_compat_status
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,9 +62,12 @@ def test_total_on_malformed_input():
 
 
 # --------------------------------------------------------------------- CLI gate (monolith boundary)
-def _write(path, script_version, when):
+def _write(path, script_version, when, extra=None):
+    payload = {"script_version": script_version, "generated_at": when, "devices": {}}
+    if extra:
+        payload.update(extra)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"script_version": script_version, "generated_at": when, "devices": {}}, f)
+        json.dump(payload, f)
 
 
 def _compare(tmp_path, v_old, v_new, extra=()):
@@ -97,6 +102,43 @@ def test_cli_compare_matching_versions_proceeds_silently(tmp_path):
     assert "[schema]" not in (proc.stdout + proc.stderr), "no schema warning on the matching-version path"
 
 
+@pytest.mark.parametrize("traffic_side", ["before", "after"])
+def test_cli_compare_refuses_persisted_traffic_assurance_without_traffic_intents_flag(tmp_path, traffic_side):
+    old = tmp_path / "old.snapshot.json"
+    new = tmp_path / "new.snapshot.json"
+    traffic = {"traffic_assurance": {"schema": "traffic_assurance_set/1", "results": []}}
+    _write(old, "V3.23.0", "2026-01-01T00:00:00", traffic if traffic_side == "before" else None)
+    _write(new, "V3.23.0", "2026-02-01T00:00:00", traffic if traffic_side == "after" else None)
+    out = tmp_path / "diff.xlsx"
+
+    proc = subprocess.run(
+        [sys.executable, MONOLITH, "--compare", str(old), str(new), "--output", str(out)],
+        capture_output=True, text=True, timeout=300,
+    )
+
+    blob = (proc.stdout + proc.stderr).lower()
+    assert proc.returncode != 0, blob
+    assert "traffic_assurance" in blob and "does not evaluate or publish" in blob
+    assert not out.exists(), "a refused traffic-assurance comparison must not write a workbook"
+
+
+def test_cli_compare_allows_custody_only_snapshot(tmp_path):
+    old = tmp_path / "old.snapshot.json"
+    new = tmp_path / "new.snapshot.json"
+    custody = {"traffic_evidence_custody": {"schema": "traffic_evidence_custody/1"}}
+    _write(old, "V3.23.0", "2026-01-01T00:00:00", custody)
+    _write(new, "V3.23.0", "2026-02-01T00:00:00", custody)
+    out = tmp_path / "diff.xlsx"
+
+    proc = subprocess.run(
+        [sys.executable, MONOLITH, "--compare", str(old), str(new), "--output", str(out)],
+        capture_output=True, text=True, timeout=300,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert out.exists(), "custody is always present and must not disable the generic comparison"
+
+
 def test_cli_trend_refuses_on_schema_mismatch(tmp_path):
     a = os.path.join(str(tmp_path), "a.json")
     b = os.path.join(str(tmp_path), "b.json")
@@ -107,3 +149,22 @@ def test_cli_trend_refuses_on_schema_mismatch(tmp_path):
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "schema" in (proc.stdout + proc.stderr).lower()
+
+
+def test_cli_trend_refuses_when_any_loaded_snapshot_contains_traffic_assurance(tmp_path):
+    paths = [tmp_path / f"{name}.snapshot.json" for name in ("a", "b", "c")]
+    for index, path in enumerate(paths):
+        extra = ({"traffic_assurance": {"schema": "traffic_assurance_set/1", "results": []}}
+                 if index == 1 else None)
+        _write(path, "V3.23.0", f"2026-0{index + 1}-01T00:00:00", extra)
+    out = tmp_path / "trend.xlsx"
+
+    proc = subprocess.run(
+        [sys.executable, MONOLITH, "--trend", *(str(path) for path in paths), "--output", str(out)],
+        capture_output=True, text=True, timeout=300,
+    )
+
+    blob = (proc.stdout + proc.stderr).lower()
+    assert proc.returncode != 0, blob
+    assert "traffic_assurance" in blob and "does not evaluate or publish" in blob
+    assert not out.exists(), "a refused traffic-assurance trend must not write a workbook"

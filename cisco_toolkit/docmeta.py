@@ -14,10 +14,12 @@ inside the call, exactly like the writers themselves, and operate on an already-
 writers only call in after their own `from docx import …` has succeeded, so the fail-soft path is
 unchanged.
 """
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
 import zipfile
+from typing import Iterable
 from xml.etree import ElementTree
 
 from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (every cell text routes through it)
@@ -27,60 +29,256 @@ from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitiz
 # migrate as they are next touched).
 SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
-# The deliverable family, keyed for self-exclusion in the Related-Documents table.
-# Order is the recommended reading order of the set.
-FAMILY = (
-    ("engagement", "Engagement Workflow & Plan of Record (.docx)",
-     "Phase-gated engagement workflow: verdict, gate calendar, RAID log and the next-action queue"),
-    ("crd", "Customer Requirements Document (.docx)",
-     "Plan-phase requirements capture: REQ-IDs, owners, and traceability into design and acceptance"),
-    ("workbook", "Assessment workbook (.xlsx)",
-     "Full per-sheet evidence; every number in the narrative documents reconciles to it"),
-    ("explorer", "Blast-Radius Explorer (.html)",
-     "Interactive topology, health and what-if view of the same snapshot"),
-    ("runbook", "Assessment & Migration Runbook (.docx)",
-     "Narrative findings, risk register and remediation detail"),
-    ("design", "As-Built Network Design Document (.docx)",
-     "HLD + LLD design record recovered from the fleet evidence"),
-    ("archreview", "Architecture Review & Conformance Report (.docx)",
-     "Leading-practice conformance scorecard, availability analysis and the design-review verdicts"),
-    ("mop", "Per-Wave Method of Procedure (.docx)",
-     "Maintenance-window change procedure, validation and rollback per wave"),
-    ("cutover", "Cutover Plan / Run-of-Show (.docx)",
-     "Pilot-first wave sequence, go/no-go gates and window estimates"),
-    ("nrfu", "NRFU / Acceptance Test Plan (.docx)",
-     "Production-acceptance test cases with expected baselines"),
-    ("opshandbook", "Operations Handbook (.docx)",
-     "Day-2 monitoring baseline, drift control, software governance and escalation readiness"),
-    ("deck", "Executive Presentation Deck (.pptx)",
-     "Stakeholder summary of posture, risk and the migration plan"),
+_DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_PPTX_MEDIA = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+PRE_CUTOVER = "pre-cutover"
+POST_EXECUTION = "post-execution"
+ENGINE_PRODUCER = "engine-cli"
+ASSESSHUB_SNAPSHOT_PRODUCER = "assesshub-snapshot"
+ASSESSHUB_EXECUTION_PRODUCER = "assesshub-execution"
+SNAPSHOT_DOWNLOAD = "snapshot-download"
+SNAPSHOT_EXPLORER = "snapshot-explorer"
+EXECUTION_REPORT = "execution-report"
+
+
+@dataclass(frozen=True)
+class ArtifactSpec:
+    """One canonical artifact contract shared by the engine, AssessHub and portable build.
+
+    ``cli_suffix`` means the engine CLI writes the artifact and is the exact suffix used by the
+    completeness verifier. ``assesshub_surface`` is independent: Cutover/NRFU are snapshot
+    downloads but have no CLI suffix, while PIR is a conditional execution report and is neither a
+    pre-cutover family member nor a CLI artifact.
+    """
+
+    key: str
+    related_name: str
+    label: str
+    role: str
+    ext: str
+    media: str
+    producer: str
+    stage: str = PRE_CUTOVER
+    cli_suffix: str | None = None
+    assesshub_surface: str | None = None
+    assesshub_suffix: str | None = None
+    needs: str | None = None
+    dependency_module: str | None = None
+    writer_module: str | None = None
+    writer_name: str | None = None
+    conditional: bool = False
+
+    @property
+    def cli_produced(self) -> bool:
+        return self.cli_suffix is not None
+
+    @property
+    def assesshub_download(self) -> bool:
+        return self.assesshub_surface == SNAPSHOT_DOWNLOAD
+
+    @property
+    def web_only_pre_cutover(self) -> bool:
+        return self.stage == PRE_CUTOVER and not self.cli_produced and self.assesshub_download
+
+    @property
+    def download_suffix(self) -> str:
+        """The validated AssessHub filename suffix for a generating download/report surface."""
+        if self.assesshub_suffix is None:
+            raise ValueError(f"artifact {self.key!r} has no AssessHub download suffix")
+        return self.assesshub_suffix
+
+
+# The ONE artifact registry. Order is the recommended reading order of the pre-cutover set; the
+# conditional PIR follows it so whole-registry callers see the lifecycle in order.
+ARTIFACT_SPECS = (
+    ArtifactSpec(
+        "engagement", "Engagement Workflow & Plan of Record (.docx)",
+        "Engagement Workflow & Plan of Record",
+        "Phase-gated engagement workflow: verdict, gate calendar, RAID log and the next-action queue",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_engagement.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_engagement.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.engagement", writer_name="write_engagement_docx"),
+    ArtifactSpec(
+        "crd", "Customer Requirements Document (.docx)", "Customer Requirements Document (CRD)",
+        "Plan-phase requirements capture: REQ-IDs, owners, and traceability into design and acceptance",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_crd.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_crd.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.crd", writer_name="write_crd_docx"),
+    ArtifactSpec(
+        "workbook", "Assessment workbook (.xlsx)", "Assessment workbook",
+        "Full per-sheet evidence; every number in the narrative documents reconciles to it",
+        "xlsx", _XLSX_MEDIA, ENGINE_PRODUCER, cli_suffix=".xlsx"),
+    ArtifactSpec(
+        "explorer", "Blast-Radius Explorer (.html)", "Blast-Radius Explorer",
+        "Interactive topology, health and what-if view of the same snapshot",
+        "html", "text/html", ENGINE_PRODUCER, cli_suffix="_explorer.html",
+        assesshub_surface=SNAPSHOT_EXPLORER),
+    ArtifactSpec(
+        "runbook", "Assessment & Migration Runbook (.docx)", "Assessment & Migration Runbook",
+        "Narrative findings, risk register and remediation detail",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_runbook.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_runbook.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.runbook", writer_name="write_runbook_docx"),
+    ArtifactSpec(
+        "design", "As-Built Network Design Document (.docx)", "As-Built Network Design Document",
+        "HLD + LLD design record recovered from the fleet evidence",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_design.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_design.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.design", writer_name="write_design_doc_docx"),
+    ArtifactSpec(
+        "archreview", "Architecture Review & Conformance Report (.docx)",
+        "Architecture Review & Conformance Report",
+        "Leading-practice conformance scorecard, availability analysis and the design-review verdicts",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_archreview.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_archreview.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.archreview", writer_name="write_archreview_docx"),
+    ArtifactSpec(
+        "mop", "Per-Wave Method of Procedure (.docx)", "Per-Wave Method of Procedure",
+        "Maintenance-window change procedure, validation and rollback per wave",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_mop.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_mop.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.mop", writer_name="write_mop_docx"),
+    ArtifactSpec(
+        "cutover", "Cutover Plan / Run-of-Show (.docx)", "Cutover Plan (Run-of-Show)",
+        "Pilot-first wave sequence, go/no-go gates and window estimates",
+        "docx", _DOCX_MEDIA, ASSESSHUB_SNAPSHOT_PRODUCER,
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_cutover.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="webapp.backend.cutover_docx", writer_name="write_cutover_docx"),
+    ArtifactSpec(
+        "nrfu", "NRFU / Acceptance Test Plan (.docx)",
+        "Network Ready-For-Use (NRFU) Test Plan",
+        "Production-acceptance test cases with expected baselines",
+        "docx", _DOCX_MEDIA, ASSESSHUB_SNAPSHOT_PRODUCER,
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_nrfu.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="webapp.backend.nrfu_docx", writer_name="write_nrfu_docx"),
+    ArtifactSpec(
+        "opshandbook", "Operations Handbook (.docx)", "Operations Handbook",
+        "Day-2 monitoring baseline, drift control, software governance and escalation readiness",
+        "docx", _DOCX_MEDIA, ENGINE_PRODUCER, cli_suffix="_ops_handbook.docx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_opshandbook.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="cisco_toolkit.ops", writer_name="write_ops_handbook_docx"),
+    ArtifactSpec(
+        "deck", "Executive Presentation Deck (.pptx)", "Executive Presentation Deck",
+        "Stakeholder summary of posture, risk and the migration plan",
+        "pptx", _PPTX_MEDIA, ENGINE_PRODUCER, cli_suffix="_executive_deck.pptx",
+        assesshub_surface=SNAPSHOT_DOWNLOAD, assesshub_suffix="_deck.pptx",
+        needs="python-pptx", dependency_module="pptx",
+        writer_module="cisco_toolkit.deck", writer_name="write_executive_deck_pptx"),
+    ArtifactSpec(
+        "pir", "Post-Implementation Review (.docx)", "Post-Implementation Review (PIR)",
+        "Conditional as-executed record generated only after an AssessHub execution run exists",
+        "docx", _DOCX_MEDIA, ASSESSHUB_EXECUTION_PRODUCER, stage=POST_EXECUTION,
+        assesshub_surface=EXECUTION_REPORT, assesshub_suffix="_pir.docx",
+        needs="python-docx", dependency_module="docx",
+        writer_module="webapp.backend.pir_docx", writer_name="write_pir_docx", conditional=True),
 )
 
-# What a COMPLETE engine CLI run leaves on disk, keyed by FAMILY key: the filename suffix each
-# writer appends to the --output stem. FAMILY says what the set IS; this says what to look for.
-# It exists so a caller can diff PRODUCED-vs-EXPECTED instead of hardcoding a list that rots as
-# deliverables accrete (webapp.backend.ingest.run_redaction_folder -- every engine writer is
-# fail-soft, logging a warning and continuing, so a set missing two documents otherwise reports
-# success). `cutover` and `nrfu` are absent BY DESIGN: AssessHub's web layer renders those two
-# from a stored snapshot and the engine has no writer for them, so a CLI run is COMPLETE without
-# them. tests/test_docmeta_cli_artifacts.py ratchets both halves against the engine source, so a
-# renamed suffix or a newly added writer fails the suite instead of silently widening the blind
-# spot. (That filename is the map's own SSOT pointer — keep it correct if the test file moves.)
-CLI_ARTIFACT_SUFFIX = {
-    "workbook": ".xlsx",                    # the --output path itself; the engine always writes it
-    "explorer": "_explorer.html",
-    "runbook": "_runbook.docx",
-    "design": "_design.docx",
-    "mop": "_mop.docx",
-    "crd": "_crd.docx",
-    "engagement": "_engagement.docx",
-    "archreview": "_archreview.docx",
-    "opshandbook": "_ops_handbook.docx",
-    "deck": "_executive_deck.pptx",
-}
 
-#: Family kinds AssessHub renders in the web layer; no engine writer produces them.
-WEB_ONLY_KINDS = frozenset({"cutover", "nrfu"})
+def validate_artifact_registry(specs: Iterable[ArtifactSpec] = ARTIFACT_SPECS) -> None:
+    """Fail closed on an empty, duplicate, contradictory or producer-orphaned registry.
+
+    The explicit ``specs`` input lets tests prove each guard fails on a counterexample; validating
+    only the live constant would permit a vacuous empty registry to pass every ``all`` check.
+    """
+    rows = tuple(specs)
+    if not rows:
+        raise ValueError("artifact registry is empty")
+    keys = [spec.key for spec in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("artifact registry contains duplicate keys")
+    for spec in rows:
+        if not all((spec.key, spec.related_name, spec.label, spec.role, spec.ext, spec.media,
+                    spec.producer, spec.stage)):
+            raise ValueError(f"artifact {spec.key!r} has an empty required field")
+        if spec.stage not in (PRE_CUTOVER, POST_EXECUTION):
+            raise ValueError(f"artifact {spec.key!r} has an unknown lifecycle stage")
+        if spec.producer not in (ENGINE_PRODUCER, ASSESSHUB_SNAPSHOT_PRODUCER,
+                                 ASSESSHUB_EXECUTION_PRODUCER):
+            raise ValueError(f"artifact {spec.key!r} has an unknown producer")
+        if spec.assesshub_surface not in (None, SNAPSHOT_DOWNLOAD, SNAPSHOT_EXPLORER,
+                                          EXECUTION_REPORT):
+            raise ValueError(f"artifact {spec.key!r} has an unknown AssessHub surface")
+        if spec.stage == PRE_CUTOVER and not (spec.cli_produced or spec.assesshub_surface):
+            raise ValueError(f"pre-cutover artifact {spec.key!r} has no producing channel")
+        if spec.cli_suffix is not None:
+            if spec.producer != ENGINE_PRODUCER:
+                raise ValueError(f"artifact {spec.key!r} has a CLI suffix but is not engine-produced")
+            if not spec.cli_suffix.endswith(f".{spec.ext}"):
+                raise ValueError(f"artifact {spec.key!r} CLI suffix disagrees with its extension")
+        if spec.assesshub_surface in (SNAPSHOT_DOWNLOAD, EXECUTION_REPORT):
+            if not all((spec.assesshub_suffix, spec.needs, spec.dependency_module,
+                        spec.writer_module, spec.writer_name)):
+                raise ValueError(f"artifact {spec.key!r} has an orphaned AssessHub producer")
+            assesshub_suffix = spec.assesshub_suffix
+            if assesshub_suffix is None or not assesshub_suffix.endswith(f".{spec.ext}"):
+                raise ValueError(f"artifact {spec.key!r} AssessHub suffix disagrees with its extension")
+        elif spec.assesshub_suffix or spec.writer_module or spec.writer_name:
+            raise ValueError(f"artifact {spec.key!r} declares a writer outside a generating surface")
+        if bool(spec.needs) != bool(spec.dependency_module):
+            raise ValueError(f"artifact {spec.key!r} has an incomplete optional-dependency contract")
+        if spec.producer == ASSESSHUB_SNAPSHOT_PRODUCER and not spec.web_only_pre_cutover:
+            raise ValueError(f"AssessHub snapshot artifact {spec.key!r} is not a web-only pre-cutover output")
+        if spec.producer == ASSESSHUB_EXECUTION_PRODUCER and spec.stage != POST_EXECUTION:
+            raise ValueError(f"AssessHub execution artifact {spec.key!r} is not post-execution")
+        if spec.stage == POST_EXECUTION and (spec.assesshub_surface != EXECUTION_REPORT
+                                             or not spec.conditional or spec.cli_produced):
+            raise ValueError(f"post-execution artifact {spec.key!r} must be conditional and non-CLI")
+        if spec.conditional and spec.stage != POST_EXECUTION:
+            raise ValueError(f"pre-cutover artifact {spec.key!r} cannot be conditional")
+
+
+validate_artifact_registry()
+
+ARTIFACT_BY_KEY = {spec.key: spec for spec in ARTIFACT_SPECS}
+PRE_CUTOVER_SPECS = tuple(spec for spec in ARTIFACT_SPECS if spec.stage == PRE_CUTOVER)
+ASSESSHUB_DOWNLOAD_SPECS = tuple(spec for spec in ARTIFACT_SPECS if spec.assesshub_download)
+CONDITIONAL_ARTIFACT_SPECS = tuple(spec for spec in ARTIFACT_SPECS if spec.conditional)
+
+# Backward-compatible views. Existing writers and redaction tooling may keep importing these names,
+# but they no longer own membership or filenames: every value is derived from ARTIFACT_SPECS.
+FAMILY = tuple((spec.key, spec.related_name, spec.role) for spec in PRE_CUTOVER_SPECS)
+CLI_ARTIFACT_SUFFIX = {
+    spec.key: spec.cli_suffix for spec in PRE_CUTOVER_SPECS if spec.cli_suffix is not None
+}
+WEB_ONLY_KINDS = frozenset(spec.key for spec in PRE_CUTOVER_SPECS if spec.web_only_pre_cutover)
+
+
+def artifact_spec(key: str) -> ArtifactSpec:
+    """Return the canonical artifact contract for ``key`` (raises ``KeyError`` if unknown)."""
+    return ARTIFACT_BY_KEY[key]
+
+
+def artifact_family_metadata() -> dict:
+    """Portable/UI-safe family denominators, always derived from the canonical registry."""
+    return {
+        "pre_cutover": len(PRE_CUTOVER_SPECS),
+        "engine_cli": len(CLI_ARTIFACT_SUFFIX),
+        "assesshub_only_pre_cutover": len(WEB_ONLY_KINDS),
+        "conditional_post_execution": len(CONDITIONAL_ARTIFACT_SPECS),
+    }
+
+
+def artifact_dependency_modules() -> tuple[str, ...]:
+    """Optional import modules needed to render the full portable artifact lifecycle."""
+    return tuple(dict.fromkeys(spec.dependency_module for spec in ARTIFACT_SPECS
+                               if spec.dependency_module))
+
+
+def artifact_writer_modules() -> tuple[str, ...]:
+    """Dynamically dispatched producer modules the frozen portable build must retain."""
+    return tuple(dict.fromkeys(spec.writer_module for spec in ARTIFACT_SPECS if spec.writer_module))
+
 
 #: Appended to a WEB_ONLY_KINDS entry's role in the Related-Documents table. The table lists the
 #: whole FAMILY, so a CLI/Atlas delivery — whose complete set is CLI_ARTIFACT_SUFFIX, which excludes
@@ -471,7 +669,7 @@ def as_list(x) -> list:
 DEFAULT_GLOSSARY = (
     ("SVI", "Switched Virtual Interface — a VLAN's Layer-3 gateway on a switch."),
     ("FHRP", "First-Hop Redundancy Protocol (HSRP/VRRP/GLBP) — gateway redundancy across two devices."),
-    ("LDoS / EoS", "Last Date of Support / End of Sale — hardware lifecycle milestones. Past-LDoS is migration-critical."),
+    ("LDoS / EoS", "Last Day of Support / End of Sale — hardware lifecycle milestones. Past-LDoS is migration-critical."),
     ("Blast radius", "The set of devices/endpoints affected if a given node or link fails."),
     ("Keystone device", "A device whose failure strands a disproportionate share of the fleet."),
     ("Move group", "A set of devices migrated together within one maintenance window."),
@@ -507,13 +705,20 @@ def _glance_rows(snap):
          f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor"),
         # The unknown count rides WITH the headline, not in a footnote. `v()` maps only None to
         # [NOT OBSERVED], so a real 0 passed straight through and the first page of every
-        # deliverable led with "0 device(s) past last-date-of-support" for a fleet whose platforms
+        # deliverable led with "0 device(s) past last-day-of-support" for a fleet whose platforms
         # the offline EoX KB never matched. Zero findings and zero coverage are different facts.
         ("Biggest lifecycle exposure?",
-         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"
-         + (f" — plus {f['n_unknown']} device(s) NOT ASSESSED: no EoX bulletin matched their "
-            f"platform, so their support state is undetermined, not clear"
-            if f.get("n_unknown") else "")),
+         f"{v(f.get('n_past_ldos'))} device(s) past last-day-of-support (migration-critical)"
+         f" · {v(f.get('n_near'))} within one year of LDoS"
+         f" · {v(f.get('n_past_eos'))} past end-of-sale with LDoS still future "
+         "(date band only; entitlement not inferred)"
+         + (f" — plus {f['n_unknown']} device(s) NOT ASSESSED: no authoritative lifecycle band "
+            f"was assigned because either no exact EoX row matched or the matched row's source/date "
+            f"authority was withheld; their support state is undetermined, not clear"
+            if f.get("n_unknown") else
+            " — lifecycle coverage count [NOT OBSERVED]: the summary did not publish n_unknown, so "
+            "zero adverse findings cannot be read as complete assessment"
+            if f.get("n_unknown") is None else "")),
         ("Scale (VLANs / endpoints)?",
          f"{v(f.get('n_vlans'))} production VLANs · {v(f.get('n_endpoints'))} evidenced endpoints"),
     ]

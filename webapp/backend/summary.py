@@ -293,7 +293,8 @@ def snapshot_verification(snap: Dict[str, Any]) -> Dict[str, Any]:
 
 # The lifecycle bands the engine publishes as a DETERMINATION. `compute_lifecycle_risk`
 # (cisco_toolkit/analyze.py, _LIFECYCLE_BAND_RANK) emits exactly Past-LDoS / Near-LDoS / Past-EoS / Active
-# when it could decide, plus "Unknown" when no EoX record matched the platform.
+# when it could decide, plus "Unknown" when no exact EoX row matched or retained source/date authority
+# was insufficient to support a date band.
 #
 # review r8 F4 -- STRUCTURAL INVERSION. This used to be a regex over not-assessed SPELLINGS
 # (unknown|undetermined|insufficient data|n/a|...). That is this repo's most recurrent defect shape: a
@@ -356,7 +357,8 @@ def _lifecycle(lr: Dict[str, Any]) -> Dict[str, Any]:
 
     HISTORY (audit U1-1, CRITICAL false-health): this projected exactly three named rollups --
     past_eos / near_eos / past_ldos -- and DROPPED `n_unknown`, the count of devices whose platform
-    matched no EoX bulletin at all. An all-Unknown fleet therefore serialised to
+    had no exact EoX row or whose matched row lacked retained source/date authority. An all-Unknown
+    fleet therefore serialised to
     `{"past_eos":0,"near_eos":0,"past_ldos":0}`, BYTE-IDENTICAL to a fully-assessed all-Active fleet:
     the browser was structurally incapable of disclosing the gap because the gap never crossed the
     API boundary. The whole `by_band` census now crosses it, so a band the projection does not know

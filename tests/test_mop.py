@@ -120,6 +120,41 @@ def _row_values(doc, label, col=1):
     return out
 
 
+def _baseline_row(index, *, device="distA", wave="Group 1", state="assessed"):
+    return {
+        "device": device,
+        "platform": "ios",
+        "wave": wave,
+        "category": "Routing",
+        "severity": "High",
+        "check": f"current baseline row {index}",
+        "command": f"show baseline {index}",
+        "expect": f"baseline acceptance {index}",
+        "why": f"reason {index}",
+        "evidence_state": state,
+        "projection_custody": "embedded_unverified",
+        "source_key": f"baseline.rows[{index}]",
+    }
+
+
+def _valid_baseline_plan(rows):
+    by_wave = {}
+    by_category = {}
+    for row in rows:
+        by_wave.setdefault(row["wave"], []).append(dict(row))
+        by_category[row["category"]] = by_category.get(row["category"], 0) + 1
+    return {
+        "items": [dict(row) for row in rows],
+        "by_wave": by_wave,
+        "summary": {
+            "n_items": len(rows),
+            "n_waves": len(by_wave),
+            "by_category": by_category,
+            "n_high": sum(row["severity"] in {"Critical", "High"} for row in rows),
+        },
+    }
+
+
 def test_mop_has_one_section_per_wave(tmp_path):
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, _snap(), "Unit Test Fleet")
@@ -567,6 +602,103 @@ def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
                   if "Bottom Line Up Front" in t or "Bottom-Line-Up-Front" in t)
     co_i = next(i for i, t in enumerate(paras) if t == "1. Change Overview")
     assert bluf_i < co_i, (bluf_i, co_i)
+
+
+def test_mop_unscheduled_baseline_blockers_override_ready_bluf_and_are_uncapped(tmp_path):
+    """A scheduled READY row cannot hide a validated blocker outside the schedule."""
+    snap = _snap()
+    for row in snap["migration_readiness"]:
+        row.update(readiness="READY", n_fail=0, n_warn=0, checks=[])
+    blockers = [
+        _baseline_row(i, device=f"edge-unscheduled-{i}", wave="(unscheduled)", state="degraded")
+        for i in range(1, 53)
+    ]
+    snap["validation_plan"] = _valid_baseline_plan([
+        _baseline_row(0, state="assessed"), *blockers,
+    ])
+
+    out = str(tmp_path / "mop_unscheduled_baseline.docx")
+    write_mop_docx(out, snap, "Current baseline gate")
+    doc = Document(out)
+    text = _all_text(doc)
+
+    gate, = _row_values(doc, "Current baseline gate (all validation groups)")
+    assert "HOLD — current baseline BLOCKED" in gate
+    assert "52 blocker(s) are not bound to a scheduled wave" in gate
+    assert "Unscheduled current-baseline blockers" in text
+    assert "current baseline row 1" in text and "current baseline row 52" in text
+    assert "show baseline 52" in text
+    assert "embedded_unverified" in text and "baseline.rows[52]" in text
+    assert "overall readiness gate is READY" not in text
+
+
+@pytest.mark.parametrize(
+    "validation_plan, verdict",
+    [
+        ({}, "NOT_ASSESSED"),
+        ({"items": "hostile", "by_wave": {}, "summary": {}}, "INDETERMINATE"),
+    ],
+)
+def test_mop_nonclear_current_baseline_holds_every_window_without_echoing_rows(
+        tmp_path, validation_plan, verdict):
+    snap = _snap()
+    for row in snap["migration_readiness"]:
+        row.update(readiness="READY", n_fail=0, n_warn=0, checks=[])
+    snap["validation_plan"] = validation_plan
+    out = str(tmp_path / f"mop_{verdict.lower()}.docx")
+
+    write_mop_docx(out, snap, "Current baseline abstention")
+    doc = Document(out)
+    gate, = _row_values(doc, "Current baseline gate (all validation groups)")
+    assert gate.startswith(f"HOLD — current baseline {verdict}")
+    assert "does not authorize an all-clear" in gate
+    assert "overall readiness gate is READY" not in _all_text(doc)
+
+
+def test_mop_clear_current_baseline_keeps_per_wave_readiness_separate(tmp_path):
+    snap = _snap()
+    for row in snap["migration_readiness"]:
+        row.update(readiness="READY", n_fail=0, n_warn=0, checks=[])
+    snap["validation_plan"] = _valid_baseline_plan([
+        _baseline_row(1, device="distA", wave="Group 1", state="assessed"),
+        _baseline_row(2, device="acc1", wave="Group 2", state="assessed"),
+    ])
+    out = str(tmp_path / "mop_clear_baseline.docx")
+
+    write_mop_docx(out, snap, "Current baseline clear")
+    doc = Document(out)
+    gate, = _row_values(doc, "Current baseline gate (all validation groups)")
+    assert gate.startswith("CLEAR within the bounded validation-plan scope")
+    assert "not cutover authorization" in gate
+    go_no_go, = _row_values(doc, "Go / no-go gate")
+    assert go_no_go.startswith("READY — the current baseline is CLEAR")
+
+
+def test_mop_retains_fhrp_not_verified_compatibility_marker_as_a_blocker(tmp_path):
+    """Typed evidence_state is primary, but legacy marker-only FHRP rows still gate."""
+
+    snap = _snap()
+    for row in snap["migration_readiness"]:
+        row.update(readiness="READY", n_fail=0, n_warn=0, checks=[])
+    row = _baseline_row(73, device="distA", wave="Group 1", state="not_verified")
+    row.pop("evidence_state")
+    row.update(
+        category="FHRP",
+        check="VRRP Vlan73 group 73 configured-group baseline",
+        expect=(
+            "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER: re-collect subtype evidence."
+        ),
+    )
+    snap["validation_plan"] = _valid_baseline_plan([row])
+    out = str(tmp_path / "mop_fhrp_marker_compatibility.docx")
+
+    write_mop_docx(out, snap, "FHRP marker compatibility")
+    doc = Document(out)
+    text = _all_text(doc)
+    gate, = _row_values(doc, "Current baseline gate (all validation groups)")
+    assert gate.startswith("HOLD — current baseline INDETERMINATE")
+    assert "VRRP Vlan73 group 73 configured-group baseline" in text
+    assert "FHRP CONFIGURED GROUP NOT VERIFIED — BLOCKER" in text
 
 
 def test_bluf_blocker_count_matches_the_section_it_cross_references(tmp_path):

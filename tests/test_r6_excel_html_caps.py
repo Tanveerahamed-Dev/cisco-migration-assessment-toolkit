@@ -272,8 +272,8 @@ def test_summary_statement_discloses_further_affected_domains():
         "stp_roots": {h: {"10": {"is_root": True}} for h in hosts[1:]},         # D3
         "operational_drift": [{"severity": "Critical", "title": "drift"}],      # D6
         "security": {h: {"summary": {"grade": "weak"}} for h in hosts},         # D7
-        "lifecycle_risk": {"summary": {"n_past_eos": 2},
-                           "per_device": [{"host": hosts[0], "band": "Past-EoS"}]},   # D8
+        "lifecycle_risk": {"summary": {"n_past_ldos": 2},
+                           "per_device": [{"host": hosts[0], "band": "Past-LDoS"}]},  # D8
     }
     res = compute_architecture_review(snap)
     worst = [d["key"] for d in res["domains"] if d["verdict"] in ("critical", "deviation")]

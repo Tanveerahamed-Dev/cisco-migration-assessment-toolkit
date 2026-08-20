@@ -5,7 +5,7 @@ A horizontal bar list — name, track, count per row, scaled to the max value. T
 
 ```tsx
 <Bars
-  data={{ "No FHRP": 18, "Past EoS": 7, "Single-homed": 5, "AAA gap": 4 }}
+  data={{ "No FHRP": 18, "Past-LDoS": 7, "Single-homed": 5, "AAA gap": 4 }}
   colorFor={(k) => (k === "No FHRP" ? "var(--crit)" : "var(--risk)")}
 />
 ```

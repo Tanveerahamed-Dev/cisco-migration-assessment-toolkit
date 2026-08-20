@@ -9,6 +9,18 @@ from pptx import Presentation                                   # noqa: E402
 from cisco_toolkit.deck import write_executive_deck_pptx        # noqa: E402
 
 
+def test_deck_lifecycle_palette_ranks_near_ldos_above_past_eos():
+    import inspect
+
+    from cisco_toolkit import deck
+    from cisco_toolkit.deck import _HIGH, _LC_BAND_COLOR, _MED
+
+    assert _LC_BAND_COLOR["Near-LDoS"] == _HIGH
+    assert _LC_BAND_COLOR["Past-EoS"] == _MED
+    source = inspect.getsource(deck.write_executive_deck_pptx)
+    assert '["Past-LDoS", "Near-LDoS", "Past-EoS", "Active", "Unknown"]' in source
+
+
 def _rich_snap():
     return {
         "executive_brief": {
@@ -109,7 +121,8 @@ def test_deck_has_all_slides_and_key_content(tmp_path):
 def test_deck_lifecycle_past_end_of_support_is_ldos_not_eos(tmp_path):
     """A3 (SSOT/coverage-honesty): the 'past end-of-support' headline must read n_past_ldos ALONE
     (matching the canonical executive_brief lifecycle axis, compute_executive_brief's lc_pe), NOT
-    n_past_eos + n_past_ldos. Past-EoS is end-of-SALE (support window still open). Fixture: 152 LDoS +
+    n_past_eos + n_past_ldos. Past-EoS is end-of-SALE with LDoS still future and entitlement
+    unassessed. Fixture: 152 LDoS +
     40 EoS + 61 near of 303 → headline 152 and 70% past/nearing; the old conflation rendered 192 / 83%.
     This fixture has NO unknown-model devices (n_unknown=0), so the assessable denominator equals the
     fleet (303) and 70% is correct here; the assessable-vs-fleet distinction is exercised by the
@@ -146,6 +159,21 @@ def test_deck_lifecycle_pct_uses_assessable_denominator(tmp_path):
     assert "70%" not in txt             # the full-fleet 213/303 outlier must be gone
     assert "of 247 assessable" in txt   # denominator named on the slide (no ambiguity)
     assert "152" in txt                 # n_past_ldos count still surfaced unchanged
+
+
+def test_deck_lifecycle_legend_discloses_date_band_and_unknown_authority_gap(tmp_path):
+    """The deck must not present Active as support entitlement or Unknown as only a model miss."""
+    snap = _rich_snap()
+    snap["lifecycle_risk"] = {"summary": {
+        "n_devices": 2, "n_past_ldos": 0, "n_past_eos": 0, "n_near": 0, "n_active": 1,
+        "n_unknown": 1, "by_band": {"Active": 1, "Unknown": 1}}}
+    out = tmp_path / "deck_lifecycle_legend.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    assert "Pre-EoS date band (schema: Active): 1" in txt
+    assert "NOT ASSESSED (schema: Unknown): 1" in txt
+    assert "Support entitlement is not assessed" in txt
+    assert "no exact row or withheld retained source/date authority" in txt
 
 
 def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):

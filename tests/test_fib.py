@@ -6,7 +6,10 @@ to a COMPUTED L3 forwarding resolution over the already-parsed per-host routes (
 resolved lookup is 'computed from collected routes'; a dst with no matching route returns None ('no route
 observed' -- a lower bound, never a fabricated 'reachable').
 """
-from cisco_toolkit import fib
+import copy
+import json
+
+from cisco_toolkit import fib, parse
 
 
 def _routes():
@@ -24,6 +27,37 @@ def test_longest_prefix_match_wins():
     assert fib.fib_lookup(f, "10.1.5.5")["next_hop"] == "10.0.0.2"     # /16
     assert fib.fib_lookup(f, "8.8.8.8")["next_hop"] == "10.0.0.1"      # default route
     assert fib.fib_lookup(f, "8.8.8.8")["computed"] is True
+
+
+def test_parsed_marked_unmasked_more_specific_overrides_broader_null0():
+    """Parser recall has forwarding polarity: retaining the marked /24 prevents a covering /16 discard from
+    falsely winning, while an address outside the /24 still selects the observed Null0 summary."""
+    parsed = parse.parse_ip_routes("""
+S 10.2.0.0/16 is directly connected, Null0
+      10.2.0.0/24 is subnetted, 1 subnets
+C +   10.2.2.0 is directly connected, Vlan22
+""")
+    rows = [entry for group in parsed.values() for entry in group["entries"]]
+    table = fib.compute_fib(rows)
+
+    inside = fib.fib_lookup(table, "10.2.2.9")
+    assert inside["match"] == "10.2.2.0/24"
+    assert inside["source"] == "connected" and inside["out_intf"] == "Vlan22"
+
+    outside = fib.fib_lookup(table, "10.2.3.9")
+    assert outside["match"] == "10.2.0.0/16"
+    assert fib._is_discard(outside["out_intf"]) is True
+
+
+def test_rejected_noncontiguous_more_specific_cannot_override_broader_null0():
+    parsed = parse.parse_ip_routes("""
+S 10.2.0.0/16 is directly connected, Null0
+C 10.2.2.0 255.0.255.0 is directly connected, Vlan22
+""")
+    rows = [entry for group in parsed.values() for entry in group["entries"]]
+    selected = fib.fib_lookup(fib.compute_fib(rows), "10.2.2.9")
+    assert selected["match"] == "10.2.0.0/16"
+    assert fib._is_discard(selected["out_intf"]) is True
 
 
 def test_no_matching_route_is_coverage_honest_none():
@@ -44,6 +78,81 @@ def test_tie_on_same_prefix_prefers_lower_admin_distance():
         {"prefix": "172.16.0.0/16", "next_hop": "2.2.2.2", "source": "static"},
     ])
     assert fib.fib_lookup(f2, "172.16.5.5")["next_hop"] == "2.2.2.2"
+
+
+def test_observed_admin_distance_selects_ospf_over_ibgp_on_same_prefix():
+    parsed = parse.parse_ip_routes("""
+B 10.99.0.0/24 [200/0] via 192.0.2.2, Gi0/1
+O 10.99.0.0/24 [110/20] via 192.0.2.3, Gi0/2
+""")
+    rows = parsed["10.99.0.0/24"]["entries"]
+
+    selected = fib.fib_lookup(fib.compute_fib(rows), "10.99.0.9")
+
+    assert selected["source"] == "ospf"
+    assert selected["admin_distance"] == 110
+    assert selected["next_hop"] == "192.0.2.3"
+
+
+def test_source_admin_distance_is_only_a_fallback_when_observation_is_absent():
+    bare = [
+        {"prefix": "10.99.0.0/24", "source": "bgp", "next_hop": "192.0.2.2"},
+        {"prefix": "10.99.0.0/24", "source": "ospf", "next_hop": "192.0.2.3"},
+    ]
+    assert fib.fib_lookup(fib.compute_fib(bare), "10.99.0.9")["source"] == "bgp"
+
+    for observed in (200, 200.0, "200", "+200"):
+        routes = [
+            {**bare[0], "admin_distance": observed},
+            {**bare[1], "admin_distance": 110},
+        ]
+        assert fib.fib_lookup(fib.compute_fib(routes), "10.99.0.9")["source"] == "ospf"
+
+
+def test_malformed_observed_admin_distance_taints_selection_without_source_fallback():
+    malformed = (True, -1, 1.5, float("nan"), float("inf"), "1.5", "NaN", "bad", None, [], {})
+    for value in malformed:
+        routes = [
+            {"prefix": "10.99.0.0/24", "source": "bgp", "next_hop": "192.0.2.2",
+             "admin_distance": value},
+            {"prefix": "10.99.0.0/24", "source": "ospf", "next_hop": "192.0.2.3",
+             "admin_distance": 110},
+        ]
+        table = fib.compute_fib(routes)
+        assert len(table) == 1, value
+        selected = fib.fib_lookup(table, "10.99.0.9")
+        assert selected["computed"] is False, value
+        assert selected["selection_error"] == "malformed_admin_distance", value
+
+
+def test_malformed_observed_admin_distance_taints_a_covering_lookup():
+    table = fib.compute_fib([
+        {"prefix": "10.99.0.0/24", "source": "static", "out_intf": "Null0",
+         "admin_distance": 1},
+        {"prefix": "10.99.0.0/25", "source": "static", "next_hop": "192.0.2.2",
+         "out_intf": "Gi0/1", "admin_distance": {"credential": "PRIVATE_ROUTE_SENTINEL"}},
+    ])
+
+    selected = fib.fib_lookup(table, "10.99.0.9")
+
+    assert selected["computed"] is False
+    assert selected["match"] == "10.99.0.0/25"
+    assert selected["selection_error"] == "malformed_admin_distance"
+    encoded = json.dumps(selected, sort_keys=True)
+    assert "PRIVATE_ROUTE_SENTINEL" not in encoded and "credential" not in encoded
+
+
+def test_unknown_route_source_without_observed_distance_taints_selection():
+    table = fib.compute_fib([
+        {"prefix": "10.99.0.0/24", "source": "static", "next_hop": "192.0.2.2",
+         "out_intf": "Gi0/1"},
+        {"prefix": "10.99.0.0/24", "source": "unknown-new-code", "out_intf": "Null0"},
+    ])
+
+    selected = fib.fib_lookup(table, "10.99.0.9")
+
+    assert selected["computed"] is False
+    assert selected["selection_error"] == "unknown_route_source"
 
 
 def test_total_on_bad_input():
@@ -69,6 +178,9 @@ def _two_router_snap():
                {"prefix": "0.0.0.0/0", "next_hop": "10.0.12.2", "out_intf": "Gi0/1", "source": "static"}],
         "R2": [{"prefix": "10.0.12.0/24", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
                {"prefix": "10.2.2.0/24", "next_hop": "", "out_intf": "Vlan2", "source": "connected"}],
+    }, "interfaces": {
+        "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/24"}},
+        "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/24"}},
     }}
 
 
@@ -80,6 +192,24 @@ def test_trace_computes_path_across_hosts():
     assert [h["host"] for h in t["hops"]] == ["R1", "R2"]
     assert t["status"] == "computed:reached" and t["computed"] is True and t["reached"] is True
     assert t["hops"][0]["match"] == "0.0.0.0/0" and t["hops"][1]["source"] == "connected"
+
+
+def test_trace_enforces_the_public_max_hops_bound():
+    snap = _two_router_snap()
+
+    zero = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", max_hops=0)
+    one = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", max_hops=1)
+    two = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", max_hops=2)
+
+    assert zero["status"] == "lower_bound:max_hops" and zero["hops"] == []
+    assert one["status"] == "lower_bound:max_hops"
+    assert [hop["host"] for hop in one["hops"]] == ["R1"]
+    assert two["status"] == "computed:reached"
+    assert [hop["host"] for hop in two["hops"]] == ["R1", "R2"]
+    for invalid in (-1, True, 1.5, "2", None, [], {}):
+        result = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", max_hops=invalid)
+        assert result["status"] == "lower_bound:max_hops", invalid
+        assert result["computed"] is False and result["reached"] is False
 
 
 def test_trace_no_route_at_collected_host_is_computed_unreachable():
@@ -118,10 +248,60 @@ def test_trace_stops_when_next_hop_host_not_collected():
     """R1 routes to a next-hop whose owning router was never collected -> explicit lower bound, not 'reachable'."""
     snap = {"routes": {"R1": [
         {"prefix": "10.1.1.0/24", "next_hop": "", "source": "connected"},
+        {"prefix": "172.31.99.0/24", "next_hop": "", "source": "connected"},
         {"prefix": "0.0.0.0/0", "next_hop": "172.31.99.1", "source": "static"}]}}   # 172.31.99.1 behind nobody collected
     t = fib.trace_fib_path(snap, "10.1.1.5", "8.8.8.8")
     assert t["computed"] is False and t["status"] == "lower_bound:next_hop_not_collected"
     assert [h["host"] for h in t["hops"]] == ["R1"]                                 # got one computed hop, then honest stop
+
+
+def test_subnet_membership_is_not_exact_next_hop_ownership():
+    snap = {
+        "routes": {
+            "R1": [
+                {"prefix": "10.1.1.0/24", "source": "connected"},
+                {"prefix": "192.0.2.0/24", "source": "connected"},
+                {"prefix": "10.2.2.0/24", "source": "static", "next_hop": "192.0.2.254"},
+            ],
+            "R2": [
+                {"prefix": "192.0.2.0/24", "source": "connected"},
+                {"prefix": "10.2.2.0/24", "source": "connected"},
+            ],
+        },
+        "interfaces": {"R2": {"Gi0/1": {"svi_ip": "192.0.2.2/24"}}},
+    }
+    trace = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9", disclose=True)
+    assert trace["status"] == "lower_bound:next_hop_owner_not_observed"
+    assert trace["computed"] is False and trace["reached"] is False
+
+
+def test_recursive_next_hop_does_not_jump_over_transit_forwarding():
+    snap = {
+        "routes": {
+            "R1": [
+                {"prefix": "10.1.1.0/24", "source": "connected"},
+                {"prefix": "192.0.12.0/30", "source": "connected"},
+                {"prefix": "3.3.3.3/32", "source": "static", "next_hop": "192.0.12.2"},
+                {"prefix": "10.9.9.0/24", "source": "bgp", "next_hop": "3.3.3.3"},
+            ],
+            "R2": [
+                {"prefix": "192.0.12.0/30", "source": "connected"},
+                {"prefix": "10.9.9.0/24", "source": "static", "out_intf": "Null0"},
+            ],
+            "R3": [
+                {"prefix": "3.3.3.3/32", "source": "local"},
+                {"prefix": "10.9.9.0/24", "source": "connected"},
+            ],
+        },
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "192.0.12.1/30"}},
+            "R2": {"Gi0/1": {"svi_ip": "192.0.12.2/30"}},
+            "R3": {"Lo0": {"svi_ip": "3.3.3.3/32"}},
+        },
+    }
+    trace = fib.trace_fib_path(snap, "10.1.1.5", "10.9.9.9")
+    assert trace["status"] == "lower_bound:recursive_next_hop_not_modeled"
+    assert [hop["host"] for hop in trace["hops"]] == ["R1"]
 
 
 def test_trace_resolves_ipv6_link_local_next_hop_with_zone_id():
@@ -136,6 +316,9 @@ def test_trace_resolves_ipv6_link_local_next_hop_with_zone_id():
                {"prefix": "::/0", "next_hop": "fe80::2%Gi0/1", "out_intf": "Gi0/1", "source": "static"}],
         "R2": [{"prefix": "fe80::/64", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
                {"prefix": "2001:db8:2::/64", "next_hop": "", "source": "connected"}],
+    }, "interfaces": {
+        "R1": {"Gi0/1": {"svi_ip": "fe80::1/64"}},
+        "R2": {"Gi0/1": {"svi_ip": "fe80::2/64"}},
     }}
     t = fib.trace_fib_path(snap, "2001:db8:1::5", "2001:db8:2::9")
     assert [h["host"] for h in t["hops"]] == ["R1", "R2"]
@@ -198,7 +381,12 @@ def _ecmp_snap(bad_first):
                       {"prefix": "10.0.13.0/30", "source": "connected"},
                       {"prefix": "10.0.1.0/24", "source": "connected"}],
         "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.9.9.0/24", "source": "connected"}],
-        "R3": [{"prefix": "10.0.13.0/30", "source": "connected"}]}}
+        "R3": [{"prefix": "10.0.13.0/30", "source": "connected"}]},
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}, "Gi0/2": {"svi_ip": "10.0.13.1/30"}},
+            "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}},
+            "R3": {"Gi0/1": {"svi_ip": "10.0.13.3/30"}},
+        }}
 
 
 def test_ecmp_reaches_via_an_equal_cost_alternate_leg():
@@ -219,7 +407,8 @@ def test_ecmp_reachability_diff_is_order_independent():
 def test_eigrp_external_admin_distance():
     """[wave #3] 'D EX' (EIGRP external, true AD 170) must not fall through to 255 (a spurious tie with junk)."""
     assert fib._admin_distance("D EX") == 170 and fib._admin_distance("eigrp-external") == 170
-    f = fib.compute_fib([{"prefix": "10.5.5.0/24", "source": "frobnicate", "next_hop": "10.0.99.99"},
+    f = fib.compute_fib([{"prefix": "10.5.5.0/24", "source": "frobnicate", "next_hop": "10.0.99.99",
+                         "admin_distance": 255},
                          {"prefix": "10.5.5.0/24", "source": "D EX", "next_hop": "10.0.12.2"}])
     assert fib.fib_lookup(f, "10.5.5.5")["next_hop"] == "10.0.12.2"      # AD 170 beats unknown 255
 
@@ -256,7 +445,7 @@ def test_transit_mask_mismatch_is_ambiguous_not_a_fabricated_drop():
         "GW": [{"prefix": "10.255.1.0/24", "source": "connected"}, {"prefix": "9.9.9.9/32", "source": "connected"}],
         "DEADEND": [{"prefix": "10.255.1.0/30", "source": "connected"}]}}
     t = fib.trace_fib_path(snap, "10.0.0.5", "9.9.9.9")
-    assert t["computed"] is False and t["status"] == "lower_bound:ambiguous_next_hop"
+    assert t["computed"] is False and t["status"] == "lower_bound:next_hop_owner_not_observed"
 
 
 def test_ambiguous_source_ip_is_a_lower_bound_not_a_verdict():
@@ -305,7 +494,11 @@ def test_forwarding_loop_without_escape_is_a_lower_bound():
         "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
                {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.12.2"}],
         "R2": [{"prefix": "10.0.12.0/30", "source": "connected"},
-               {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.12.1"}]}}
+               {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.12.1"}]},
+            "interfaces": {
+                "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+                "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}},
+            }}
     t = fib.trace_fib_path(loop, "10.1.1.5", "8.8.8.8")
     assert t["status"] == "lower_bound:loop" and t["reached"] is False and t["computed"] is False
 
@@ -320,7 +513,12 @@ def test_ecmp_escape_leg_reaches_despite_a_looping_sibling_leg():
                {"prefix": "9.9.9.0/24", "source": "ospf", "next_hop": "10.0.13.3"}],
         "R2": [{"prefix": "10.0.12.0/30", "source": "connected"},
                {"prefix": "9.9.9.0/24", "source": "static", "next_hop": "10.0.12.1"}],   # loops back to R1
-        "R3": [{"prefix": "10.0.13.0/30", "source": "connected"}, {"prefix": "9.9.9.0/24", "source": "connected"}]}}
+        "R3": [{"prefix": "10.0.13.0/30", "source": "connected"}, {"prefix": "9.9.9.0/24", "source": "connected"}]},
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}, "Gi0/2": {"svi_ip": "10.0.13.1/30"}},
+            "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}},
+            "R3": {"Gi0/1": {"svi_ip": "10.0.13.3/30"}},
+        }}
     t = fib.trace_fib_path(esc, "10.1.1.5", "9.9.9.9")
     assert t["status"] == "computed:reached" and [h["host"] for h in t["hops"]] == ["R1", "R3"]
 
@@ -331,10 +529,13 @@ def test_reachability_delta_flags_a_cutover_regression():
     before = {"routes": {
         "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
                {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2"}],
-        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}}
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]},
+        "interfaces": {"R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+                       "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}}}}
     after = {"routes": {
         "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"}],
-        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}}
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]},
+        "interfaces": copy.deepcopy(before["interfaces"])}
     d = fib.reachability_delta(before, after)
     assert d["summary"].get("newly_blocked", 0) >= 1
     assert any(p["verdict"] == "newly_blocked" and p["src"] == "10.1.1.1" and p["dst"] == "10.2.2.1"
@@ -386,7 +587,10 @@ def test_reachability_delta_catches_an_upper_half_more_specific_drop():
             "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}
     after = {k: list(v) for k, v in base.items()}
     after["R2"] = after["R2"] + [{"prefix": "10.2.2.128/25", "source": "static", "next_hop": "", "out_intf": "Null0"}]
-    d = fib.reachability_delta({"routes": base}, {"routes": after})
+    interfaces = {"R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+                  "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}}}
+    d = fib.reachability_delta({"routes": base, "interfaces": interfaces},
+                               {"routes": after, "interfaces": interfaces})
     assert any(p["dst"] == "10.2.2.254" and p["verdict"] == "newly_blocked" for p in d["newly_blocked"])
 
 
@@ -441,7 +645,12 @@ def _ecmp_blackhole_snap(blackhole=True):
                {"prefix": "10.0.23.0/30", "source": "connected", "out_intf": "Gi0/2"},
                {"prefix": "10.9.9.0/24", "source": "connected", "out_intf": "Vlan99"}],
         "R3": [{"prefix": "10.0.13.0/30", "source": "connected", "out_intf": "Gi0/1"},
-               {"prefix": "10.0.23.0/30", "source": "connected", "out_intf": "Gi0/2"}, r3_tail]}}
+               {"prefix": "10.0.23.0/30", "source": "connected", "out_intf": "Gi0/2"}, r3_tail]},
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}, "Gi0/2": {"svi_ip": "10.0.13.1/30"}},
+            "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}, "Gi0/2": {"svi_ip": "10.0.23.2/30"}},
+            "R3": {"Gi0/1": {"svi_ip": "10.0.13.3/30"}, "Gi0/2": {"svi_ip": "10.0.23.1/30"}},
+        }}
 
 
 def test_ecmp_blackholing_leg_is_disclosed_not_swallowed_by_the_existential():
@@ -492,7 +701,9 @@ def _scoped_snap(with_route=True):
         r1 = r1 + [{"prefix": "10.8.8.0/24", "source": "ospf", "next_hop": "10.0.12.2", "out_intf": "Gi0/1"}]
     return {"routes": {"R1": r1,
                        "R2": [{"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
-                              {"prefix": "10.8.8.0/24", "source": "connected", "out_intf": "Vlan8"}]}}
+                              {"prefix": "10.8.8.0/24", "source": "connected", "out_intf": "Vlan8"}]},
+            "interfaces": {"R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+                           "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}}}}
 
 
 def _null0_snap():
@@ -545,3 +756,37 @@ def test_real_route_source_codes_map_correctly():
     # a host whose connected route carries the bare 'c' code is still indexed as a subnet owner
     snap = {"routes": {"X": [{"prefix": "10.9.9.0/24", "source": "c"}]}}
     assert fib._hosts_owning_ip(fib._connected_index(snap["routes"]), "10.9.9.5") == ["X"]
+
+
+def test_malformed_route_scalars_never_stringify_private_nested_values():
+    snap = {"routes": {"R1": [
+        {"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan10"},
+        {"prefix": "10.2.2.0/24", "source": "static", "next_hop": "",
+         "out_intf": {"credential": "TOP-SECRET"}},
+    ]}}
+    result = fib.trace_fib_path(snap, "10.1.1.10", "10.2.2.20", disclose=True)
+    encoded = json.dumps(result)
+    assert result["status"] == "lower_bound:malformed_route_evidence"
+    assert "TOP-SECRET" not in encoded and "credential" not in encoded
+    assert result["hops"][0]["invalid_route_fields"] == ["out_intf"]
+
+
+def test_public_fib_boundary_abstains_on_mixed_type_host_keys():
+    rows = [
+        {"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan10"},
+        {"prefix": "10.2.2.0/24", "source": "connected", "out_intf": "Vlan20"},
+    ]
+    result = fib.trace_fib_path(
+        {"routes": {1: copy.deepcopy(rows), "R2": copy.deepcopy(rows)}},
+        "10.1.1.10", "10.2.2.20", disclose=True,
+    )
+    assert result["status"] == "lower_bound:malformed_host_identity"
+    assert result["computed"] is False
+
+
+def test_public_bidirectional_trace_never_echoes_non_unicode_endpoints():
+    result = fib.trace_bidirectional({}, "\ud800", "x", disclose=True)
+    encoded = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    assert result["forward"]["status"] == "lower_bound:bad_address"
+    assert result["forward"]["src"] == ""
+    assert b"bad_address" in encoded

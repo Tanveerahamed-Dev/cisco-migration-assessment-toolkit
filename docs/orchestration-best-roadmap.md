@@ -11,11 +11,13 @@ Every item below obeys the three non-negotiables — **fully offline / no egress
 and anything that only works as a **cloud-LLM, device-write, or live-polling** mechanism was **cut, not adopted** (we take the
 *concept, output format, or data model*, re-implemented deterministically on the snapshot).
 
-> **Status — what is BUILT vs PROPOSED (read this first).** This whole roadmap is **PROPOSED design**: each item's `file:line`
-> is the **landing site** where it would go (verified to exist), NOT an existing feature. Nothing here is implemented yet — the
-> user asked for *the plan*. The companion already-shipped roadmap is [universal-best-roadmap.md](universal-best-roadmap.md)
-> (the Transit AI · SmartyMe · NotebookLM distillation, W1/W2/W3 — largely DONE). This document is its sequel for the
-> **automation/orchestration/AI-copilot** peer set.
+> **Status reconciliation (2026-08-07 — read this first).** This began as a
+> proposed design, but several rows were subsequently implemented and committed;
+> even the later “built, uncommitted” annotations are point-in-time history.
+> Preserve the design rationale, but treat current owner code/tests and Git as
+> authoritative for implementation status. An unlabelled or future-tense row is
+> not automatically pending work. The companion roadmap is
+> [universal-best-roadmap.md](universal-best-roadmap.md).
 
 ---
 

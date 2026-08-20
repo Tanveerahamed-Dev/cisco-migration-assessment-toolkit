@@ -1,0 +1,119 @@
+{
+  "schema_version": "rendered-sink-lineage-contract/1.0.0",
+  "id": "atlas.rendered-sink-lineage.open-horizon.v1",
+  "state": "declared_incomplete",
+  "closes_global_gate": false,
+  "global_denominator": {
+    "kind": "bounded_curated_content_claim_denominator",
+    "expected_candidates": 2136,
+    "in_scope_candidates": 315,
+    "out_of_scope_candidates": 1821,
+    "independently_reviewed": 0,
+    "unresolved": 2136,
+    "claim_contract_digest": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
+    "classification_digest": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
+    "source_receipts_digest": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
+    "candidate_set_digest": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"
+  },
+  "source_scope": {
+    "path": "master-reference/content/open-horizon-register.json",
+    "git_blob_oid": "ed375f35a60b7eb4cc5719223b5c349fd2bddba2",
+    "sha256": "428024fe0b19cc39a67d497e73f466dd1a3c7908c013a4bb0be11f4cd196116f",
+    "expected_records": 65,
+    "expected_candidates": 315,
+    "expected_safety_inputs": 53,
+    "candidate_digest": "0629c2857218a5b6a63a4e6979644ebbbd55753ddba248bde293478f142b35af",
+    "facet_id_set_digest": "8b6d9207b84600a28f30b85338ee28cb7ccf816b15f795938ba16dc6b9b68f63",
+    "candidate_rules": [
+      {"rule_id": "horizon.root", "record_kind": "horizon_register", "selector": "root", "identity": "root", "expected_records": 1, "candidate_fields": ["promise", "separation_contract"]},
+      {"rule_id": "horizon.intake", "record_kind": "horizon_intake", "selector": "intake_pipeline", "identity": "id", "expected_records": 8, "candidate_fields": ["action"]},
+      {"rule_id": "horizon.trigger", "record_kind": "horizon_trigger", "selector": "review_triggers", "identity": "id", "expected_records": 7, "candidate_fields": ["event"]},
+      {"rule_id": "horizon.cadence", "record_kind": "horizon_cadence", "selector": "cadence", "identity": "root", "expected_records": 1, "candidate_fields": ["scheduled", "event_driven", "staleness_rule", "independent_challenge"]},
+      {"rule_id": "horizon.metric", "record_kind": "horizon_metric", "selector": "metrics", "identity": "id", "expected_records": 9, "candidate_fields": ["definition", "target", "warning"]},
+      {"rule_id": "horizon.ui_view", "record_kind": "horizon_ui_view", "selector": "ui_views", "identity": "id", "expected_records": 5, "candidate_fields": ["shows"]},
+      {"rule_id": "horizon.watch_family", "record_kind": "watch_family", "selector": "watch_families", "identity": "id", "expected_records": 18, "candidate_fields": ["authority_scope", "review_cadence", "engine_ingestion"]},
+      {"rule_id": "horizon.signal", "record_kind": "horizon_signal", "selector": "signals", "identity": "id", "expected_records": 16, "candidate_fields": ["first_seen", "last_reviewed", "maturity", "disposition", "adoption_evidence", "business_relevance", "risk_opportunity", "current_coverage", "uncertainty", "rationale", "next_review_rule", "promotion_criteria", "privacy_trust_implications"]}
+    ],
+    "safety_rules": [
+      {"rule_id": "horizon.root", "selector": "root", "identity": "root", "expected_records": 1, "fields": [{"field": "content_role", "expected_value": "advisory"}, {"field": "support_claim", "expected_value": "none"}, {"field": "mutates_assessment_truth", "expected_value": false}]},
+      {"rule_id": "horizon.watch_family", "selector": "watch_families", "identity": "id", "expected_records": 18, "fields": [{"field": "content_role", "expected_value": "advisory"}]},
+      {"rule_id": "horizon.signal", "selector": "signals", "identity": "id", "expected_records": 16, "fields": [{"field": "content_role", "expected_value": "advisory"}, {"field": "support_claim", "expected_value": "none"}]}
+    ]
+  },
+  "sink_universe": {
+    "complete": false,
+    "declared_count": 2,
+    "known_omitted_classes": [
+      "other_curated_content_sources",
+      "other_web_routes_and_states",
+      "other_pdf_sections",
+      "fixed_template_claims",
+      "computed_and_joined_claims",
+      "responsive_print_locale_and_runtime_variants"
+    ]
+  },
+  "sinks": [
+    {
+      "sink_id": "pdf.open-horizon",
+      "kind": "output.pdf",
+      "locator": "master-reference.pdf#open-horizon",
+      "renderer_path": "master-reference/release/pdf_report.py",
+      "renderer_symbol": "_horizon",
+      "expected_rendered": 167,
+      "expected_omitted": 148,
+      "rendered_rules": [
+        {"rule_id": "horizon.root", "fields": [{"facet_path": "promise", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.root.@root.promise", "transform_id": "pdf.callout_plain_text/1"}], "expected_subjects": 1},
+        {"rule_id": "horizon.watch_family", "fields": [{"facet_path": "authority_scope", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.watch_family.{record_identity}.authority_scope", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "review_cadence", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.watch_family.{record_identity}.review_cadence", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "engine_ingestion", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.watch_family.{record_identity}.engine_ingestion", "transform_id": "pdf.labeled_plain_text/1"}], "expected_subjects": 54},
+        {"rule_id": "horizon.signal", "fields": [{"facet_path": "disposition", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.disposition", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "maturity", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.maturity", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "next_review_rule", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.next_review_rule", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "business_relevance", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.business_relevance", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "current_coverage", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.current_coverage", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "rationale", "disposition": "rendered_labeled", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.rationale", "transform_id": "pdf.labeled_plain_text/1"}, {"facet_path": "promotion_criteria", "disposition": "rendered_ordered_array", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.promotion_criteria", "transform_id": "pdf.ordered_numbered_list/1"}], "expected_subjects": 112}
+      ],
+      "omission_rules": [
+        {"rule_id": "horizon.root", "facet_paths": ["separation_contract"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.intake", "facet_paths": ["action"], "expected_subjects": 8, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.trigger", "facet_paths": ["event"], "expected_subjects": 7, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.cadence", "facet_paths": ["scheduled", "event_driven", "staleness_rule", "independent_challenge"], "expected_subjects": 4, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.metric", "facet_paths": ["definition", "target", "warning"], "expected_subjects": 27, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.ui_view", "facet_paths": ["shows"], "expected_subjects": 5, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.signal", "facet_paths": ["first_seen", "last_reviewed", "adoption_evidence", "risk_opportunity", "uncertainty", "privacy_trust_implications"], "expected_subjects": 96, "reason_code": "sink_v1_not_rendered"}
+      ],
+      "safety_mappings": [
+        {"rule_id": "horizon.root", "fields": [{"field": "content_role", "slot_template": "pdf.horizon.horizon.root.@root.boundary.content_role", "transform_id": "pdf.source_boundary_table/1"}, {"field": "support_claim", "slot_template": "pdf.horizon.horizon.root.@root.boundary.support_claim", "transform_id": "pdf.source_boundary_table/1"}, {"field": "mutates_assessment_truth", "slot_template": "pdf.horizon.horizon.root.@root.boundary.mutates_assessment_truth", "transform_id": "pdf.source_boundary_table/1"}], "expected_inputs": 3},
+        {"rule_id": "horizon.watch_family", "fields": [{"field": "content_role", "slot_template": "pdf.horizon.horizon.watch_family.{record_identity}.boundary.content_role", "transform_id": "pdf.source_boundary_table/1"}], "expected_inputs": 18},
+        {"rule_id": "horizon.signal", "fields": [{"field": "content_role", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.boundary.content_role", "transform_id": "pdf.source_boundary_table/1"}, {"field": "support_claim", "slot_template": "pdf.horizon.horizon.signal.{record_identity}.boundary.support_claim", "transform_id": "pdf.source_boundary_table/1"}], "expected_inputs": 32}
+      ]
+    },
+    {
+      "sink_id": "web.gaps.open-horizon",
+      "kind": "private_web_route",
+      "locator": "/gaps#horizon",
+      "renderer_path": "master-reference/app/gaps/page.tsx",
+      "renderer_symbol": "GapPage",
+      "expected_rendered": 167,
+      "expected_omitted": 148,
+      "rendered_rules": [
+        {"rule_id": "horizon.root", "fields": [{"facet_path": "promise", "disposition": "rendered_identity", "slot_template": "web.gaps.horizon.heading.promise", "transform_id": "identity-text"}], "expected_subjects": 1},
+        {"rule_id": "horizon.watch_family", "fields": [{"facet_path": "authority_scope", "disposition": "rendered_identity", "slot_template": "web.gaps.horizon.watch.{record_identity}.authority-scope", "transform_id": "identity-text"}, {"facet_path": "review_cadence", "disposition": "rendered_labeled", "slot_template": "web.gaps.horizon.watch.{record_identity}.review-cadence", "transform_id": "labeled-text"}, {"facet_path": "engine_ingestion", "disposition": "rendered_labeled", "slot_template": "web.gaps.horizon.watch.{record_identity}.engine-ingestion", "transform_id": "labeled-text"}], "expected_subjects": 54},
+        {"rule_id": "horizon.signal", "fields": [{"facet_path": "maturity", "disposition": "rendered_identity", "slot_template": "web.gaps.horizon.signal.{record_identity}.maturity", "transform_id": "identity-text"}, {"facet_path": "disposition", "disposition": "rendered_derived", "slot_template": "web.gaps.horizon.signal.{record_identity}.disposition", "transform_id": "state-mark-label"}, {"facet_path": "business_relevance", "disposition": "rendered_labeled", "slot_template": "web.gaps.horizon.signal.{record_identity}.business-relevance", "transform_id": "labeled-text"}, {"facet_path": "current_coverage", "disposition": "rendered_identity", "slot_template": "web.gaps.horizon.signal.{record_identity}.current-coverage", "transform_id": "identity-text"}, {"facet_path": "uncertainty", "disposition": "rendered_labeled", "slot_template": "web.gaps.horizon.signal.{record_identity}.uncertainty", "transform_id": "labeled-text"}, {"facet_path": "next_review_rule", "disposition": "rendered_labeled", "slot_template": "web.gaps.horizon.signal.{record_identity}.next-review-rule", "transform_id": "labeled-text"}, {"facet_path": "promotion_criteria", "disposition": "rendered_ordered_array", "slot_template": "web.gaps.horizon.signal.{record_identity}.promotion-criteria", "transform_id": "ordered-list-items"}], "expected_subjects": 112}
+      ],
+      "omission_rules": [
+        {"rule_id": "horizon.root", "facet_paths": ["separation_contract"], "expected_subjects": 1, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.intake", "facet_paths": ["action"], "expected_subjects": 8, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.trigger", "facet_paths": ["event"], "expected_subjects": 7, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.cadence", "facet_paths": ["scheduled", "event_driven", "staleness_rule", "independent_challenge"], "expected_subjects": 4, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.metric", "facet_paths": ["definition", "target", "warning"], "expected_subjects": 27, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.ui_view", "facet_paths": ["shows"], "expected_subjects": 5, "reason_code": "sink_v1_not_rendered"},
+        {"rule_id": "horizon.signal", "facet_paths": ["first_seen", "last_reviewed", "adoption_evidence", "risk_opportunity", "rationale", "privacy_trust_implications"], "expected_subjects": 96, "reason_code": "sink_v1_not_rendered"}
+      ],
+      "safety_mappings": [
+        {"rule_id": "horizon.root", "fields": [{"field": "content_role", "slot_template": "web.gaps.horizon.safety.content-role", "transform_id": "validated-uniform-boundary-summary"}, {"field": "support_claim", "slot_template": "web.gaps.horizon.safety.support-claim", "transform_id": "validated-uniform-boundary-summary"}, {"field": "mutates_assessment_truth", "slot_template": "web.gaps.horizon.safety.truth-mutation", "transform_id": "validated-uniform-boundary-summary"}], "expected_inputs": 3},
+        {"rule_id": "horizon.watch_family", "fields": [{"field": "content_role", "slot_template": "web.gaps.horizon.safety.content-role", "transform_id": "validated-uniform-boundary-summary"}], "expected_inputs": 18},
+        {"rule_id": "horizon.signal", "fields": [{"field": "content_role", "slot_template": "web.gaps.horizon.safety.content-role", "transform_id": "validated-uniform-boundary-summary"}, {"field": "support_claim", "slot_template": "web.gaps.horizon.safety.support-claim", "transform_id": "validated-uniform-boundary-summary"}], "expected_inputs": 32}
+      ]
+    }
+  ],
+  "limitations": [
+    "This is a source-to-sink lineage slice for one curated source and two declared sinks, not a global rendered-claim denominator.",
+    "Payloads are omitted but unsalted value fingerprints can be dictionary-recovered for low-entropy values and are not confidentiality.",
+    "A mapping PASS supplies no semantic acceptance, reviewer authentication, evidence efficacy, publication authority, or claim-evidence promotion.",
+    "The 1821 out-of-scope curated facets and all undeclared template, computed, joined, conditional, locale, responsive, print, and runtime sink variants remain unresolved."
+  ]
+}

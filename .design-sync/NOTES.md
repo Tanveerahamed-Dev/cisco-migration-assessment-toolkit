@@ -264,14 +264,20 @@
   component shipped `<Name>Props { [key: string]: unknown }` — a published API contract carrying zero
   information, for all 21 at once. `@types/react` being installed does NOT help; there is simply
   nothing to parse. Fixed 2026-08-04 by hand-writing all 21 bodies into `cfg.dtsPropsFor` from the
-  real inline source signatures. **Keep it in step with the source** — a prop added to a component and
-  not to `dtsPropsFor` is invisible to the design agent, and nothing warns (same failure shape as the
-  manual barrel). Two gotchas: use SINGLE quotes for string-literal unions (`tone?: 'ok' | 'watch'`)
+  real inline source signatures. **Keep it in step with the source** —
+  `tests/test_design_sync_no_client_data.py` now rejects a missing component contract, an empty body,
+  and the generic `[key: string]: unknown` placeholder. The compiler-backed
+  `webapp/frontend/src/designSyncProps.test.ts` then resolves all 21 components through the real
+  `ds.entry.ts` barrel and compares member names, optionality, and types bidirectionally against the
+  hand-written bodies; its mutation controls prove missing/extra, required/optional, readonly,
+  mistyped, and nested `any`/`unknown` props fail. Two gotchas: use SINGLE quotes for string-literal unions
+  (`tone?: 'ok' | 'watch'`)
   so the JSON needs no escaping, and never name a type the emitted `.d.ts` cannot resolve — it only
   does `import * as React from 'react'`, so `SnapshotVerification` had to be inlined structurally
-  (a happy side effect: the contract is now published in the type itself). Verify by COMPILING, not
-  reading: `ts.createProgram` over `ds-bundle/components/*/*/*.d.ts` with `strict: true` — 21/21 valid,
-  0 placeholders, 2026-08-04. Filling this also enriched all 21 `prompt.md` files (the props body
+  (a happy side effect: the contract is now published in the type itself). The committed guard
+  proves config ↔ source equivalence; after a re-sync, still verify the generator's OUTPUT by
+  compiling `ds-bundle/components/*/*/*.d.ts` with `strict: true` — 21/21 valid, 0 placeholders,
+  2026-08-04. Filling this also enriched all 21 `prompt.md` files (the props body
   feeds the synthesized doc), so expect `sourceHashes` to move 2 per component with `renderHashes`
   and `.jsx` untouched — types are not DOM, so no regrade is needed.
 - **DO NOT re-add `cfg.extraEntries` — the provider is re-exported from `ds.entry.ts` on purpose**
@@ -297,8 +303,10 @@
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
   rename won't break the build; the widgets just render '—'/empty in cards. When api.ts changes, re-check the
   payloads field-by-field.
-- **`ds.entry.ts` is a manual barrel** — a NEW component ships only if someone adds its export there + a
-  `componentSrcMap` entry + a `.design-sync/docs/<Name>.md`. Nothing detects the omission.
+- **`ds.entry.ts` is a manual barrel** — a NEW public component ships only if its name remains aligned
+  across the barrel, `componentSrcMap`, `dtsPropsFor`, authored docs, and previews. The static parity
+  tests in `tests/test_design_sync_no_client_data.py` now fail on an omission and scan exported source
+  components for names missing from that contract. `Topology3D` is the one documented internal exception.
 - **`.ds-sync/` is gitignored** — fresh clone setup: re-copy the skill scripts, then
   `npm i --prefix .ds-sync esbuild ts-morph @types/react typescript playwright@<version pinning the cached
   chromium>` (this machine: playwright **1.58.0** ↔ cache `chromium-1208`; verify with
@@ -355,8 +363,43 @@
   node_modules` naming the file:line — so **read the build log, don't re-run hoping**. Fix by matching what
   the app itself now imports (grep the same symbol in `src/`), and verify the symbols exist in the new
   package's `.d.ts` before editing.
-- **Detecting the "manual barrel" gap — a TESTED command, not a hope.** The standing risk above says nothing
-  detects a new component's omission; this does. Run it from the repo root before every re-sync:
+- **Detecting the "manual barrel" gap — now a committed test.** Run
+  `python -m pytest -q tests/test_design_sync_no_client_data.py` and
+  `npm --prefix webapp/frontend test -- --run src/designSyncProps.test.ts` before every re-sync.
+  The first reconciles the barrel, `componentSrcMap`, `dtsPropsFor`, docs, and previews; rejects empty
+  props placeholders; and scans source component exports while allowing only the documented internal
+  `Topology3D` exception. The second uses TypeScript's checker to prove every registered props body
+  still matches the component actually exported by the barrel, including readonly and nested unsafe types.
+  Run `npm --prefix webapp/frontend run test:visual` on Windows for the complementary pixel gate:
+  it compares all **21 component cards / 42 authored preview variants** against the reviewed
+  baseline set for a GitHub-hosted Windows Server 2025 x64/Chromium oracle at both the configured
+  primary review width (900px today) and 728px product-pane bound, freezes time, forces reduced motion,
+  blocks non-local requests and WebSockets, and tolerates zero changed pixels above a strict 0.02
+  Pixelmatch threshold. The sole measured renderer exception is local to the complete TopologyGraph
+  card: threshold 0.2 with a fixed 16-pixel cap (eight pixels were observed changing in its scaled SVG
+  across fresh Chromium processes). It is not an image-size ratio and cannot grow silently.
+  The locally reviewed seed set is not hosted-runner proof: the first hosted comparison/capture
+  must still replace or accept it before hosted reproducibility is claimed. A local
+  `npm --prefix webapp/frontend run test:visual:update` writes workstation candidates only under
+  ignored `test-results/visual-candidates/`; it cannot overwrite the canonical set. Canonical
+  replacements are accepted by repository policy only from the webapp-ci `workflow_dispatch` capture
+  option on `windows-2025`:
+  download its artifact, inspect every changed PNG, refresh the exact privacy pins, and commit the
+  reviewed files beside the source change. The promotable artifact is success-only: install,
+  capture, comparison, and recorded runner/browser provenance must all pass. CI never commits
+  screenshots automatically. The config's Actions/Windows/x64 environment check is misuse resistance,
+  not an unspoofable provenance boundary; the explicit workflow runner plus recorded image metadata
+  and human artifact review supply provenance. The hosted
+  job is the pixel oracle because the shipped `system-ui` stack is deliberately platform-native;
+  Ubuntu keeps behavior/WebGL E2E rather than comparing a different valid font rasterization. Generated
+  `ds-bundle/_screenshots/` is upload-review evidence only: it is ignored, can be stale, and is not
+  the durable visual ratchet.
+  The 42 tracked PNGs are also exact-hash/size/dimension contracts in
+  `.github/scripts/verify_repository_privacy.py`; after visual review, run
+  `python .github/scripts/refresh_visual_baseline_pins.py --write --reviewed` and review the
+  sentinel-bounded code-pin diff. Never add a path-prefix image exemption: any missing, extra,
+  changed, or unreviewed sibling PNG must continue to fail the repository privacy gate.
+  The control-tested probe below remains useful as a quick diagnostic:
   ```js
   // node this: PascalCase component exports under src/components that ds.entry.ts does NOT re-export
   const fs=require('fs'),path=require('path'),SRC='webapp/frontend/src/components';
@@ -416,3 +459,74 @@
   state. Run 2026-08-04: 5/5 PASS, 0 page errors — verified/partial/unverified badges and the
   warning's documented `null`. Harness kept at
   `.design-sync/.cache/` scratch only; re-create it from this recipe when a doc example changes.
+
+- ✅ **2026-08-07 CODEX LOCAL RECONCILIATION COMPLETE; LIVE CLAUDE DESIGN RE-SYNC STILL REQUIRES AN
+  AUTHENTICATED SESSION.** The tracked topology/lifecycle Design samples had drifted from the current product authority in two
+  material ways and is now repaired: topology edges carry both fleet-level `link_centrality_assessed` and
+  per-edge `bridge_assessed` authority, so the two claimed bridge links render as assessed SPOFs; lifecycle
+  fixtures now keep Past-LDoS (Critical / replace now), Near-LDoS (High / replace before deadline), Past-EoS
+  with future LDoS (Medium / owned refresh plan), and Unknown or missing authority (resolve before disposition)
+  separate. Support entitlement remains separate evidence and is never inferred from a date band. The sample
+  fleet's duplicated totals were also reconciled to 9 switches, 8 collected, 1 uncollected, and 2 Critical
+  findings. The blueprint separately and correctly carries 9 decisions / 7 recommended / 3 Critical, including
+  the independent not-collected coverage-honesty decision; its architecture-coverage grid remains an explicitly
+  representative nine-class visual subset, not a literal 27-class API response. `tests/test_design_sync_no_client_data.py`
+  now derives the topology-authority and collection-count invariants and ratchets the lifecycle/BOM/NRFU contract.
+
+  Fresh local driver receipt: `ok:true`, build/diff/validate/capture all exit 0, 21/21 previews render cleanly,
+  `pendingGrade:[]`, and `upload.components` = Bars, DemoDataProvider, DesignBlueprintPanel, TopologyGraph with
+  bundle + styling and no deletes. Full-resolution sheets for those four were read and graded good. Because
+  `sample-data.ts` can evade component source keys, CausalFlowPanel and CutoverPlanner were also force-captured
+  and visually checked; both were clean. The sole validator warning is the already accepted system-font
+  fallback for JetBrains Mono. Current local anchor: `styleSha=667aa3363a393efceb2a4c5b301f91418a466ee15654786d99ed2aa519099e45`,
+  `bundleSha12=608b31d8ee97`, `auxSha=15010bbe539f529c`.
+
+  The canonical visual comparison correctly reports intentional pixel drift on Bars, CausalFlowPanel,
+  CutoverPlanner, DemoDataProvider, DesignBlueprintPanel, and TopologyGraph; its manifest gate and all 15
+  unchanged cards pass. `test:visual:update` then rendered all 22 checks successfully into the ignored workstation
+  candidate directory. Both 900px and 728px candidates for all six changed cards were inspected and are clean.
+  No tracked baseline PNG was changed: repository policy requires the GitHub `windows-2025` capture artifact,
+  privacy-pin refresh, and human review before those six canonical pairs can be promoted.
+
+  Do **not** call the remote synchronized from the cached sidecar: `.design-sync/.cache/remote-sync.json` was
+  last written 2026-08-04 18:41 local time and records `styleSha=719392c869065ec210c3e652ede7405b0dc8aba5e1b1d8e9b9ae35790483b115`,
+  `bundleSha12=c209df1288c8`, `auxSha=15010bbe539f529c`. A fresh 2026-08-07 live-access audit found the Claude CLI
+  installed and logged into a Max account, but its strictly read-only DesignSync request was rejected before
+  inference with HTTP 403 (`organization has disabled Claude subscription access for Claude Code`); it exposes
+  no DesignSync MCP/plugin. The only connected browser redirected the pinned project to Claude login. Therefore
+  live `list_files`, anchor fetch, upload, and post-upload readback were not performed.
+
+  The last authenticated inventory recorded five remote-only Design artifacts that must be fetched for awareness
+  and preserved byte-for-byte: `templates/topology-panel/.thumbnail`, `TopologyPanel.dc.html`, `ds-base.js`,
+  `support.js`, and `templates/topology-restyle-notes.md`. In the next authenticated session: get the project and
+  full file inventory; fetch every `templates/**` file plus the live `_ds_sync.json`; rerun the driver and require
+  `ok:true`, `pendingGrade:[]`, `removed:[]`, and `deletePaths:[]`; re-fetch the anchor immediately before the
+  upload plan; write only the 113 sync-owned paths with the sentinel first, content next, sentinel re-armed, and
+  `_ds_sync.json` last; then re-list and re-fetch exact hashes before declaring synchronization. If the refreshed
+  diff contains any deletion, stop for review instead of executing or silently omitting it.
+
+- ✅ **2026-08-07 CODEX AUTHENTICATED LIVE RE-SYNC COMPLETE.** After the user signed in, the pinned project
+  `fae0df7f-7a5d-4bce-8744-5c73a3e189fe` resolved as the published, organization-default **Atlas Design System**
+  with all 21 components. The live pre-write anchor was fetched twice and remained byte-identical to the
+  2026-08-04 cache (`styleSha=719392c869065ec210c3e652ede7405b0dc8aba5e1b1d8e9b9ae35790483b115`,
+  `bundleSha12=c209df1288c8`, `auxSha=15010bbe539f529c`), proving the remote was stale and that no concurrent
+  sync had superseded the local plan. The live file tree also proved the only remote-owned additions remain the
+  five topology artifacts under `templates/**`; each was read for awareness and its pre/post served hash stayed
+  unchanged. The two server-owned data files were likewise untouched. No deletion was planned or performed.
+
+  An exact all-path comparison found only seven content files different from the fresh local bundle:
+  `_ds_bundle.js`, `_vendor/react.js`, `_preview/Bars.js`, `_preview/DemoDataProvider.js`, and the Bars,
+  DesignBlueprintPanel, and TopologyGraph `.prompt.md` files. Those seven text files were updated through the
+  authenticated raw editor with a local-hash readback after every save; the 4.2 MB bundle was additionally
+  polled until its served hash changed to the local value. `_ds_sync.json` was written alone and last. Final
+  verification covered all 113 upload-manifest paths: all 112 persistent sync-owned files match local exactly,
+  while `_ds_needs_recompile` correctly returns 404 after compilation. The live receipt now equals local at
+  `styleSha=667aa3363a393efceb2a4c5b301f91418a466ee15654786d99ed2aa519099e45`,
+  `bundleSha12=608b31d8ee97`, `auxSha=15010bbe539f529c` (receipt SHA-256
+  `a5b18c9e710ae912c3baadddfcc3f4a17161c81badf806ebf65cd158ac19bcea`). A fresh published preview then rendered
+  `9 switches · 8 collected · 1 not`, `2` Critical findings, and the assessed-SPOF topology wording. The ignored
+  `.design-sync/.cache/remote-sync.json` was refreshed only after that readback.
+
+  Remote Design synchronization is therefore complete. The separate canonical visual-baseline handoff remains:
+  promote the six intentional card pairs only from the GitHub `windows-2025` capture artifact after privacy-pin
+  refresh and human review; do not substitute the already-reviewed workstation candidates.

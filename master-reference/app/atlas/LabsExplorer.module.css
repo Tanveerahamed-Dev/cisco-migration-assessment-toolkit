@@ -1,0 +1,439 @@
+.workspace {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4.5rem);
+}
+
+.labContract,
+.labIndex,
+.walkthrough {
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--surface) 94%, transparent), color-mix(in srgb, var(--surface-soft) 80%, transparent));
+  overflow: hidden;
+}
+
+.labContract {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(18rem, .6fr);
+}
+
+.labContract > div,
+.labContract dl,
+.labIndex > header,
+.walkthrough > header {
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+}
+
+.labContract > div {
+  border-right: 1px solid var(--line);
+}
+
+.labContract p,
+.labIndex header p,
+.walkthrough header p,
+.stepLabel {
+  margin: 0 0 .55rem;
+  color: var(--cyan);
+  font-size: .7rem;
+  font-weight: 850;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.labContract h2,
+.labIndex h2,
+.walkthrough h2 {
+  margin: 0;
+  max-width: 28ch;
+  font-size: clamp(1.4rem, 3vw, 2.25rem);
+  letter-spacing: -.035em;
+}
+
+.labContract > div > span {
+  display: block;
+  max-width: 75ch;
+  margin-top: 1rem;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.labContract dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .55rem;
+  margin: 0;
+}
+
+.labContract dl div {
+  display: grid;
+  gap: .2rem;
+  align-content: center;
+  border: 1px solid var(--line);
+  border-radius: .8rem;
+  padding: .7rem;
+}
+
+.labContract dt {
+  color: var(--ink-soft);
+  font-size: .64rem;
+  text-transform: uppercase;
+}
+
+.labContract dd {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 850;
+}
+
+.labIndex > header,
+.walkthrough > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.labIndex > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .65rem;
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+}
+
+.labIndex a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: .55rem .7rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: .95rem;
+  padding: .9rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.labIndex a:hover,
+.labIndex a:focus-visible,
+.labIndex a[aria-current="page"] {
+  border-color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan-soft) 42%, transparent);
+}
+
+.labIndex a > span:first-child {
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .72rem;
+}
+
+.labIndex strong,
+.labIndex small {
+  grid-column: 1 / -1;
+}
+
+.labIndex small {
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+.walkthrough > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  align-items: end;
+}
+
+.walkthrough header code {
+  display: block;
+  margin-top: .6rem;
+  color: var(--ink-soft);
+}
+
+.supportSummary {
+  display: grid;
+  justify-items: end;
+  gap: .45rem;
+}
+
+.supportSummary > span {
+  color: var(--ink-soft);
+  font-size: .7rem;
+  text-transform: uppercase;
+}
+
+.supportSummary strong {
+  color: var(--green);
+  font-size: .72rem;
+}
+
+.transparencyGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+
+.transparencyGrid article {
+  padding: 1rem;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.transparencyGrid article:nth-child(3n) {
+  border-right: 0;
+}
+
+.transparencyGrid article > span,
+.ownerFooter > span {
+  color: var(--cyan);
+  font-size: .65rem;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.transparencyGrid p {
+  margin: .55rem 0 0;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.canProve {
+  border-left: 3px solid var(--green);
+}
+
+.cannotProve {
+  border-left: 3px solid var(--amber);
+}
+
+.stepper {
+  display: grid;
+  grid-template-columns: minmax(11rem, .28fr) minmax(0, .72fr);
+  min-height: 28rem;
+}
+
+.stepTabs {
+  display: grid;
+  align-content: start;
+  border-right: 1px solid var(--line);
+  padding: 1rem;
+}
+
+.stepTabs button {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: .7rem;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 1rem .5rem;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stepTabs button span {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .68rem;
+}
+
+.stepTabs button[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.stepTabs button[aria-selected="true"] span {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: var(--canvas);
+}
+
+.stepPanel {
+  padding: clamp(1.25rem, 4vw, 3rem);
+  outline-offset: -.35rem;
+}
+
+.progressLine {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: clamp(2rem, 6vw, 5rem);
+  color: var(--ink-soft);
+  font-size: .72rem;
+}
+
+.progressLine progress {
+  width: min(18rem, 60%);
+  accent-color: var(--cyan);
+}
+
+.stepPanel h3 {
+  margin: 0;
+  font-size: clamp(1.4rem, 3vw, 2.2rem);
+}
+
+.stepPanel > p:not(.stepLabel) {
+  max-width: 70ch;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.deterministicResult {
+  display: block;
+  max-width: 70ch;
+  margin-top: 2rem;
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--cyan);
+  border-radius: 0 .8rem .8rem 0;
+  padding: 1rem 1.1rem;
+  background: color-mix(in srgb, var(--cyan-soft) 35%, transparent);
+}
+
+.deterministicResult p {
+  margin: .45rem 0 0;
+  color: var(--ink-soft);
+}
+
+.stepActions {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+  margin-top: 2rem;
+}
+
+.stepActions button,
+.stepActions a {
+  border: 1px solid var(--line-strong);
+  border-radius: .75rem;
+  padding: .7rem .9rem;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.stepActions button:last-child,
+.stepActions a {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: var(--canvas);
+}
+
+.stepActions button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+}
+
+.ownerFooter {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1rem;
+  align-items: start;
+  padding: 1rem clamp(1.25rem, 3vw, 2.25rem);
+  border-top: 1px solid var(--line);
+}
+
+.ownerFooter > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.ownerFooter a {
+  display: inline-flex;
+  gap: .5rem;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: .35rem .55rem;
+  color: var(--ink-soft);
+  font-size: .68rem;
+  text-decoration: none;
+}
+
+.ownerFooter a:hover,
+.ownerFooter a:focus-visible {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+@media (max-width: 960px) {
+  .labContract,
+  .stepper {
+    grid-template-columns: 1fr;
+  }
+
+  .labContract > div,
+  .stepTabs {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .labIndex > div,
+  .transparencyGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .transparencyGrid article:nth-child(3n) {
+    border-right: 1px solid var(--line);
+  }
+
+  .transparencyGrid article:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .stepTabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .stepTabs button {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+}
+
+@media (max-width: 620px) {
+  .labContract dl,
+  .labIndex > div,
+  .transparencyGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .walkthrough > header,
+  .ownerFooter {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .supportSummary {
+    justify-items: start;
+  }
+
+  .transparencyGrid article {
+    border-right: 0 !important;
+  }
+
+  .stepTabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media print {
+  .labIndex,
+  .stepTabs,
+  .stepActions {
+    display: none !important;
+  }
+
+  .walkthrough,
+  .labContract {
+    border-color: #777;
+  }
+}

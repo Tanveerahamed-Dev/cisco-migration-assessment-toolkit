@@ -9,8 +9,58 @@ superset is the exact contract — a new golden-frozen axis that doesn't reach t
 fails here until the sample is regenerated."""
 import json
 import pathlib
+from copy import deepcopy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def test_sample_freshness_filter_ignores_only_derived_source_age_without_mutation():
+    from webapp.sample_data.build_sample import _strip_volatile
+
+    left = {
+        "data_authorities": {
+            "eol": {
+                "source_age_days": 7.5,
+                "source_retrieved_at": "2026-07-30T13:48:46Z",
+                "source_fresh": True,
+                "authoritative": True,
+            }
+        }
+    }
+    right = deepcopy(left)
+    right["data_authorities"]["eol"]["source_age_days"] = 7.6
+    before_left, before_right = deepcopy(left), deepcopy(right)
+
+    assert _strip_volatile(left) == _strip_volatile(right)
+    assert left == before_left
+    assert right == before_right
+    assert _strip_volatile(left)["data_authorities"]["eol"] == {
+        "source_retrieved_at": "2026-07-30T13:48:46Z",
+        "source_fresh": True,
+        "authoritative": True,
+    }
+
+
+def test_sample_freshness_keeps_lifecycle_and_design_sections_and_detects_wording_drift(tmp_path):
+    from webapp.sample_data.build_sample import _freshness_drift, _strip_volatile
+
+    fresh = {
+        "generated_at": "run-a",
+        "collected_at": "2026-08-07T00:00:00",
+        "lifecycle_risk": {"note": "authoritative lifecycle wording"},
+        "design_nrfu": {"items": [{"description": "CLI proves PID; entitlement is separate"}]},
+    }
+    committed = deepcopy(fresh)
+    committed["generated_at"] = "run-b"
+    path = tmp_path / "sample.json"
+    path.write_text(json.dumps(committed), encoding="utf-8")
+    assert _freshness_drift(fresh, str(path)) == []
+
+    committed["design_nrfu"]["items"][0]["description"] = "stale support claim"
+    path.write_text(json.dumps(committed), encoding="utf-8")
+    assert _freshness_drift(fresh, str(path)) == ["design_nrfu"]
+    filtered = _strip_volatile(fresh)
+    assert "lifecycle_risk" in filtered and "design_nrfu" in filtered and "collected_at" in filtered
 
 
 def test_sample_fleet_carries_every_golden_section():

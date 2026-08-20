@@ -63,9 +63,9 @@ a check.
 The verdict is **advisory** by default: ``main`` exits ``0`` on an unverified
 binding, printing ``WARNING:`` caveats, because the ordinary run against a
 downloaded archive has no repository to resolve and would otherwise be a
-permanent red.  Pass ``--require-source-binding`` to make it exit ``3`` instead;
-no workflow in this repository passes it today, so treat the field as disclosure
-unless a caller opted in.
+permanent red.  Pass ``--require-source-binding`` to make it exit ``3`` instead.
+Repository CI, release, and publication workflows opt into that fail-closed
+contract; ad-hoc callers that omit the flag must treat the field as disclosure.
 
 Every field of ``measurements`` is a count of work actually performed rather than
 a boolean that is true by construction, so ``--expected-json`` can detect a run
@@ -1190,9 +1190,11 @@ def _expected_runtime_inventory(root: Path) -> dict[str, str]:
 
     for relative in (
         "COLLECT_PARSE_V3_23_0.py",
+        "cisco_toolkit/data/eol-bulletins.json",
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
         "cisco_toolkit/blast_radius_explorer.html",
         "webapp/frontend/dist/index.html",
         "webapp/sample_data/sample_fleet.snapshot.json",

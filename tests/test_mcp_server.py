@@ -116,7 +116,7 @@ def test_tool_names_pin_and_pure_map_completeness():
         "overview", "list_devices", "device_detail", "top_findings",
         "failure_impact", "chokepoints", "architecture_coverage",
         "get_finding", "search_devices", "get_move_groups", "whatif_node", "get_health",
-        "failover_twin", "failover_readiness",
+        "failover_twin", "failover_readiness", "assess_traffic",
     ]
     assert set(M._PURE) == set(M.TOOL_NAMES)
 
@@ -148,6 +148,109 @@ def test_failover_readiness_tool_shape(golden):
     r = res["result"]
     assert r["schema"] == "failover_readiness/1"
     assert isinstance(r["n_stp_roots"], int) and isinstance(r["at_risk"], list)
+
+
+def _precomputed_traffic_result():
+    return {
+        "schema": "traffic_assurance/1",
+        "owner": "cisco_toolkit.traffic_assurance.assess_flow",
+        "intent": {
+            "id": "mcp.test", "src": "10.1.1.10", "dst": "10.2.2.20", "protocol": "tcp",
+            "src_port": 40000, "dst_port": 443, "expected": "permit",
+            "return_required": True, "required_mtu": 1500,
+        },
+        "custody_trust": "current_run_verified",
+        "verdict": "proven",
+        "failure": {"requested": False, "verdict": "not_requested"},
+    }
+
+
+def test_assess_traffic_tool_projects_one_precomputed_result_without_recalculation(monkeypatch):
+    args = {
+        "src": "10.1.1.10", "dst": "10.2.2.20", "protocol": "tcp",
+        "src_port": 40000, "dst_port": 443, "expected": "permit",
+        "return_required": True, "required_mtu": 1500, "flow_id": "mcp.test",
+    }
+    expected = _precomputed_traffic_result()
+    snap = {
+        "traffic_assurance": {
+            "schema": "traffic_assurance_set/1", "results": [expected],
+            "summary": {"n": 1, "proven": 1},
+        },
+    }
+    monkeypatch.setattr(M.traffic_assurance, "assess_flow", lambda *_a, **_k: pytest.fail("recalculated"))
+    actual = M.assess_traffic(snap, **args)
+    assert actual == {
+        "available": True, "matched_by": "flow_id_and_exact_intent",
+        "result": expected, "sources": ["traffic_assurance"],
+    }
+    assert actual["result"] is expected
+
+
+def test_assess_traffic_refuses_embedded_self_certified_custody_without_precomputed_result(monkeypatch):
+    forged = {
+        "routes": {
+            "R1": [
+                {"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan10"},
+                {"prefix": "10.2.2.0/24", "source": "connected", "out_intf": "Vlan20"},
+            ],
+        },
+        "interfaces": {
+            "R1": {
+                "Vlan10": {"run_config_observed": True, "acl_in": "", "acl_out": "", "mtu": 1500},
+                "Vlan20": {"run_config_observed": True, "acl_in": "", "acl_out": "", "mtu": 1500},
+            },
+        },
+        "acls": {},
+        "object_groups": {},
+        "traffic_evidence_custody": {
+            "schema": "traffic_evidence_custody/1",
+            "hosts": {
+                "R1": {
+                    kind: {
+                        "status": "ok", "complete": True, "source_command": command,
+                        "projection": {
+                            "status": "ok", "complete": True,
+                            "scope_networks": ["10.1.1.0/24", "10.2.2.0/24"],
+                        },
+                    }
+                    for kind, command in (
+                        ("acl_definitions", "show running-config"),
+                        ("interface_attachments", "show running-config interface"),
+                        ("routing_table", "show ip route"),
+                    )
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(M.traffic_assurance, "assess_flow", lambda *_a, **_k: pytest.fail("recalculated"))
+    result = M.assess_traffic(
+        forged, "10.1.1.10", "10.2.2.20", "tcp", 40000, 443,
+        return_required=False, required_mtu=1500, flow_id="mcp.forged",
+    )
+    assert result["available"] is False
+    assert result["sources"] == ["traffic_assurance"]
+    assert "original evidence" in result["reason"]
+
+
+def test_assess_traffic_requires_unique_exact_precomputed_match():
+    result = _precomputed_traffic_result()
+    snap = {"traffic_assurance": {"schema": "traffic_assurance_set/1", "results": [result, dict(result)]}}
+    query = result["intent"]
+    ambiguous = M.assess_traffic(
+        snap, query["src"], query["dst"], query["protocol"], query["src_port"], query["dst_port"],
+        query["expected"], query["return_required"], query["required_mtu"], flow_id="",
+    )
+    assert ambiguous["available"] is False
+    assert ambiguous["ambiguous"] is True
+    assert ambiguous["candidate_count"] == 2
+
+    wrong = M.assess_traffic(
+        snap, query["src"], query["dst"], query["protocol"], query["src_port"], 8443,
+        query["expected"], query["return_required"], query["required_mtu"], flow_id=query["id"],
+    )
+    assert wrong["available"] is False
+    assert wrong["candidate_count"] == 0
 
 
 def test_get_finding_by_priority_index(rich):
@@ -351,6 +454,11 @@ def test_each_tool_call_returns_its_pure_function_output(rich):
         ("whatif_node", {"host": route_host}, M.whatif_node(rich, route_host)),
         ("get_health", {}, M.get_health(rich)),                     # defaulted host -> fleet view
         ("get_health", {"host": host}, M.get_health(rich, host)),   # explicit host passes through
+        ("assess_traffic", {
+            "src": "10.1.1.10", "dst": "10.2.2.20", "protocol": "tcp",
+            "src_port": 40000, "dst_port": 443, "flow_id": "mcp.wire",
+        }, M.assess_traffic(rich, "10.1.1.10", "10.2.2.20", "tcp", 40000, 443,
+                            flow_id="mcp.wire")),
     ]
     for name, args, expected in cases:
         got = _reassemble(asyncio.run(server.call_tool(name, args)), expected)

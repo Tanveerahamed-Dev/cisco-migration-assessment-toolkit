@@ -51,6 +51,118 @@ describe("Snapshot cockpit", () => {
     expect(screen.getByText("Move-group readiness")).toBeInTheDocument();
   });
 
+  it("explains lifecycle NOT ASSESSED as no-match or provenance-withheld", async () => {
+    const m: any = meta(72);
+    m.summary.lifecycle = {
+      past_eos: 0,
+      past_ldos: 0,
+      unknown: 1,
+      n_devices: 1,
+      coverage_gap: true,
+    };
+    mockFetch(m);
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    const gap = screen.getByText(/1\/1 Unknown \/ EoL NOT ASSESSED/);
+    expect(gap).toHaveAttribute("title", expect.stringMatching(/no exact EoX bulletin row matched/i));
+    expect(gap).toHaveAttribute("title", expect.stringMatching(/retained source proof\/complete dates did not verify/i));
+    expect(gap.getAttribute("title")).not.toMatch(/^No EoX bulletin matched/);
+  });
+
+  it("renders a near-LDoS-only lifecycle risk instead of hiding it behind zero past-EoS", async () => {
+    const m: any = meta(72);
+    m.summary.lifecycle = {
+      past_eos: 0,
+      near_eos: 3,
+      past_ldos: 0,
+      unknown: 0,
+      n_devices: 3,
+      coverage_gap: false,
+    };
+    mockFetch(m);
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    expect(screen.getByText(/3 within 1yr of LDoS/)).toBeInTheDocument();
+  });
+
+  it("renders the full lifecycle census in canonical urgency order from by_band", async () => {
+    const m: any = meta(72);
+    m.summary.lifecycle = {
+      by_band: { "Past-LDoS": 1, "Near-LDoS": 2, "Past-EoS": 3, Active: 4, Unknown: 5 },
+      n_devices: 15,
+      coverage_gap: true,
+    };
+    mockFetch(m);
+    const { container } = renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    const hint = screen.getByText("Move-group readiness").closest(".kpi")!.querySelector(".hint")!;
+    const line = hint.textContent || "";
+    const labels = ["1 past-LDoS", "2 within 1yr of LDoS", "3 past-EoS (LDoS future)",
+      "4 Active (pre-EoS date position)", "5/15 Unknown / EoL NOT ASSESSED"];
+    labels.reduce((previous, label) => {
+      const position = line.indexOf(label);
+      expect(position).toBeGreaterThan(previous);
+      return position;
+    }, -1);
+
+    expect(container.querySelector('[data-lifecycle-band="Past-LDoS"]')).toHaveStyle({ color: "var(--crit)" });
+    expect(container.querySelector('[data-lifecycle-band="Near-LDoS"]')).toHaveStyle({ color: "var(--risk)" });
+    expect(container.querySelector('[data-lifecycle-band="Past-EoS"]')).toHaveStyle({ color: "var(--watch)" });
+    expect(container.querySelector('[data-lifecycle-band="Active"]')).toHaveAttribute(
+      "title", expect.stringMatching(/support entitlement was not assessed/i));
+    const unknown = container.querySelector('[data-lifecycle-band="Unknown"]');
+    expect(unknown).toHaveAttribute("title", expect.stringMatching(/no exact EoX bulletin row matched/i));
+    expect(unknown).toHaveAttribute("title", expect.stringMatching(/source proof\/complete dates did not verify/i));
+  });
+
+  it("renders future lifecycle bands after the canonical five and fails them closed", async () => {
+    const m: any = meta(72);
+    m.summary.lifecycle = {
+      by_band: { Active: 4, "Future-Band": 6, Unknown: 0, "Past-EoS": 3, "Past-LDoS": 1, "Near-LDoS": 2 },
+      unknown: 6,
+      n_devices: 16,
+      coverage_gap: true,
+    };
+    mockFetch(m);
+    const { container } = renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    const hint = screen.getByText("Move-group readiness").closest(".kpi")!.querySelector(".hint")!;
+    const line = hint.textContent || "";
+    expect(line.indexOf("0 Unknown / EoL NOT ASSESSED")).toBeGreaterThan(
+      line.indexOf("4 Active (pre-EoS date position)"),
+    );
+    expect(line.indexOf("6 NOT ASSESSED (unrecognized band: Future-Band)")).toBeGreaterThan(
+      line.indexOf("0 Unknown / EoL NOT ASSESSED"),
+    );
+    expect(line).not.toContain("6/16 Unknown / EoL NOT ASSESSED");
+    expect(container.querySelector('[data-lifecycle-band="Future-Band"]')).toHaveAttribute(
+      "title", expect.stringMatching(/treated as un-assessed rather than healthy/i),
+    );
+  });
+
+  it("preserves an owner-reported unknown remainder outside the published band census", async () => {
+    const m: any = meta(72);
+    m.summary.lifecycle = {
+      by_band: { Active: 8 },
+      unknown: 4,
+      n_devices: 12,
+      coverage_gap: true,
+    };
+    mockFetch(m);
+    const { container } = renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    expect(container.querySelector('[data-lifecycle-band="Unknown"]')?.textContent).toContain(
+      "0 Unknown / EoL NOT ASSESSED",
+    );
+    const remainder = container.querySelector('[data-lifecycle-band="Unknown-remainder"]');
+    expect(remainder?.textContent).toContain("4 NOT ASSESSED (reported outside band census)");
+    expect(remainder).toHaveAttribute("title", expect.stringMatching(/not represented by a named by_band bucket/i));
+    expect(screen.queryByText(/no lifecycle figure was published/i)).not.toBeInTheDocument();
+  });
+
   it("WEBAP-02 / FH#22: an un-assessed fleet (avg_health '') reads UNKNOWN, not a fake green 0", async () => {
     mockFetch(meta(""));
     renderSnap();
@@ -206,6 +318,25 @@ describe("Snapshot cockpit · coverage honesty", () => {
     await screen.findByRole("heading", { name: "Demo Fleet" });
     expect(await screen.findByText("meta 503 shed")).toBeInTheDocument();
     expect(screen.queryByText(/No deliverables are available from this server build/)).toBeNull();
+  });
+
+  it("labels AssessHub synthesis without claiming every download is identical to CLI output", async () => {
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(richMeta as any);
+    vi.spyOn(api, "section").mockRejectedValue(new Error("not relevant"));
+    vi.spyOn(api, "meta").mockResolvedValue({
+      deliverables: [
+        { key: "runbook", label: "Runbook", ext: "docx", available: true,
+          producer: "engine-cli", engine_cli_member: true, stage: "pre-cutover" },
+        { key: "cutover", label: "Cutover Plan", ext: "docx", available: true,
+          producer: "assesshub-snapshot", engine_cli_member: false, stage: "pre-cutover" },
+      ],
+    } as any);
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+
+    expect(await screen.findByText("ASSESSHUB")).toBeInTheDocument();
+    expect(screen.getByText(/Engine-backed artifacts reuse the CLI writer/)).toBeInTheDocument();
+    expect(screen.queryByText(/identical to the CLI output/i)).toBeNull();
   });
 
   // FE-12: summarize() seeds readiness as {READY:0, CAUTION:0, "NOT READY":0} and only ever

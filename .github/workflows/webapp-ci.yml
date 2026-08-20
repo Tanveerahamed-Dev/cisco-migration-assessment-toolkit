@@ -3,10 +3,20 @@ name: webapp-ci
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
+    paths: ["webapp/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py"]
+  # Required checks from a workflow skipped by a top-level path filter remain Pending forever.
+  # Start every PR, then skip individual jobs only after the fail-closed classifier below succeeds.
+  # `edited` is required because retargeting a PR changes its three-dot base
+  # without changing the head SHA; stale skipped-success conclusions are unsafe.
   pull_request:
-    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", ".github/workflows/webapp-ci.yml"]
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
+    inputs:
+      refresh_visual_baselines:
+        description: Capture reviewed-candidate pixels from the Windows 2025 oracle
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -18,11 +28,66 @@ concurrency:
 # Pull-request code is isolated on GitHub-hosted runners. Action revisions are immutable,
 # while the comments retain the human-readable upstream release that each commit represents.
 jobs:
+  scope:
+    name: Webapp CI change scope
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.classify.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pull requests use a three-dot base/head diff; both commits and their merge base must exist.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Classify paths that can affect webapp CI
+        id: classify
+        shell: bash
+        env:
+          WEBAPP_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          WEBAPP_CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            # Never let pull-request code classify itself as irrelevant. Execute
+            # the base commit's reviewed policy; on the one-time bootstrap where
+            # the base has no classifier yet, conservatively run every job.
+            git cat-file -e "${WEBAPP_CI_BASE_SHA}^{commit}"
+            git cat-file -e "${WEBAPP_CI_HEAD_SHA}^{commit}"
+            classifier="$RUNNER_TEMP/classify_webapp_ci_scope.py"
+            if git cat-file -e "${WEBAPP_CI_BASE_SHA}:.github/scripts/classify_webapp_ci_scope.py" 2>/dev/null; then
+              git show "${WEBAPP_CI_BASE_SHA}:.github/scripts/classify_webapp_ci_scope.py" > "$classifier"
+              python "$classifier"
+            else
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            python .github/scripts/classify_webapp_ci_scope.py
+          fi
+      - name: Validate the classifier contract
+        shell: bash
+        env:
+          RELEVANT: ${{ steps.classify.outputs.relevant }}
+        run: |
+          case "$RELEVANT" in
+            true|false) ;;
+            *) echo "scope classifier emitted neither true nor false" >&2; exit 1 ;;
+          esac
+
   backend:
+    needs: scope
+    if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}
     name: Backend e2e tests
     runs-on: ubuntu-latest
     steps:
+      - name: Fail closed when scope classification did not succeed
+        if: ${{ needs.scope.result != 'success' }}
+        run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -34,35 +99,157 @@ jobs:
         run: python -m pytest webapp/tests -q
 
   frontend:
+    needs: scope
+    if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}
     name: Frontend test + type-check + build
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: webapp/frontend
     steps:
+      - name: Fail closed when scope classification did not succeed
+        if: ${{ needs.scope.result != 'success' }}
+        run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm run verify:node
       - run: npm ci
       - run: npm test
       - run: npm run build
 
   e2e:
+    needs: scope
+    if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}
     name: Frontend E2E
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: webapp/frontend
     steps:
+      - name: Fail closed when scope classification did not succeed
+        if: ${{ needs.scope.result != 'success' }}
+        run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm run verify:node
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+  visual:
+    needs: scope
+    if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}
+    name: Design visual regression · Windows 2025 x64 Chromium
+    runs-on: windows-2025
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - name: Fail closed when scope classification did not succeed
+        if: ${{ needs.scope.result != 'success' }}
+        run: exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm run verify:node
+      - id: install
+        run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run test:visual:types
+      - name: Compare reviewed visual baselines
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.refresh_visual_baselines }}
+        run: npm run test:visual
+      - name: Capture candidate visual baselines for human review
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
+        env:
+          VISUAL_ORACLE_CAPTURE: "1"
+        run: npm run test:visual:update
+      - name: Validate the freshly captured baseline set
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
+        run: npm run test:visual
+      - name: Record visual-oracle versions
+        if: ${{ always() && !cancelled() && steps.install.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results/visual | Out-Null
+          $nodeVersion = node --version
+          $playwrightVersion = & .\node_modules\.bin\playwright.cmd --version
+          $chromiumVersion = node -e 'const {chromium}=require("playwright"); (async()=>{const b=await chromium.launch(); console.log(b.version()); await b.close()})().catch(e=>{console.error(e); process.exit(1)})'
+          $details = @(
+            "ImageOS=$env:ImageOS"
+            "ImageVersion=$env:ImageVersion"
+            "RunnerArch=$env:RUNNER_ARCH"
+            "Node=$nodeVersion"
+            "Playwright=$playwrightVersion"
+            "Chromium=$chromiumVersion"
+          )
+          $details | Set-Content -Encoding utf8 test-results/visual/oracle.txt
+          $details | ForEach-Object { "- $_" } | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+      - name: Upload candidate visual baselines
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: design-visual-baselines-windows-2025-x64
+          path: webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload visual diffs
+        if: ${{ failure() && (github.event_name != 'workflow_dispatch' || !inputs.refresh_visual_baselines) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: design-visual-diffs-windows-2025-x64
+          path: |
+            webapp/frontend/test-results/visual
+            webapp/frontend/playwright-report/visual
+          if-no-files-found: ignore
+          retention-days: 14
+
+  gate:
+    name: Webapp CI gate
+    needs: [scope, backend, frontend, e2e, visual]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the complete classified job set
+        shell: bash
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          RELEVANT: ${{ needs.scope.outputs.relevant }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          VISUAL_RESULT: ${{ needs.visual.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$SCOPE_RESULT" != "success" ]]; then
+            echo "scope classification did not succeed: $SCOPE_RESULT" >&2
+            exit 1
+          fi
+          case "$RELEVANT" in
+            true) expected="success" ;;
+            false) expected="skipped" ;;
+            *) echo "scope classifier emitted neither true nor false" >&2; exit 1 ;;
+          esac
+          for result in "$BACKEND_RESULT" "$FRONTEND_RESULT" "$E2E_RESULT" "$VISUAL_RESULT"; do
+            if [[ "$result" != "$expected" ]]; then
+              echo "classified webapp job concluded $result; expected $expected" >&2
+              exit 1
+            fi
+          done

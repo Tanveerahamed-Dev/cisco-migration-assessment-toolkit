@@ -1,0 +1,398 @@
+{
+  "schema_version": "2.0.0",
+  "edge_semantics": "caller_depends_on_provider",
+  "static_evidence_semantics": "resolved imports and import-bound calls are static candidates, never runtime truth",
+  "python_import_roots": ["", "master-reference"],
+  "typescript_aliases": {},
+  "internal_module_prefixes": ["cisco_toolkit", "webapp", "compiler", "governance", "release", "cli"],
+  "components": [
+    {
+      "id": "repo_source",
+      "layer": 0,
+      "trust_zone": "repository_authority",
+      "paths": ["AGENTS.md", "CHANGELOG.md", "CLAUDE.md", "README.md", "RELEASING.md", "SECURITY.md", "docs/"]
+    },
+    {
+      "id": "evidence_intake",
+      "layer": 1,
+      "trust_zone": "untrusted_boundary",
+      "paths": ["cisco_toolkit/external_import.py", "cisco_toolkit/path_assertions.py"]
+    },
+    {
+      "id": "custody_collection",
+      "layer": 2,
+      "trust_zone": "evidence",
+      "paths": [
+        "cisco_toolkit/capture_integrity.py",
+        "cisco_toolkit/input_custody.py",
+        "cisco_toolkit/rest_collect.py"
+      ]
+    },
+    {
+      "id": "evidence_access",
+      "layer": 2,
+      "trust_zone": "custodied_evidence_reader",
+      "paths": ["cisco_toolkit/cmdio.py"]
+    },
+    {
+      "id": "parse_model",
+      "layer": 3,
+      "trust_zone": "evidence",
+      "paths": [
+        "cisco_toolkit/__init__.py",
+        "cisco_toolkit/build.py",
+        "cisco_toolkit/clock.py",
+        "cisco_toolkit/context.py",
+        "cisco_toolkit/data/",
+        "cisco_toolkit/eoldb.py",
+        "cisco_toolkit/gen_oui_registry.py",
+        "cisco_toolkit/model.py",
+        "cisco_toolkit/ouidb.py",
+        "cisco_toolkit/parse.py",
+        "cisco_toolkit/portdb.py",
+        "cisco_toolkit/registry_integrity.py",
+        "cisco_toolkit/textutils.py"
+      ]
+    },
+    {
+      "id": "canonical_snapshot",
+      "layer": 4,
+      "trust_zone": "canonical_truth",
+      "paths": ["cisco_toolkit/ssot.py"]
+    },
+    {
+      "id": "analysis",
+      "layer": 5,
+      "trust_zone": "derived_truth",
+      "paths": [
+        "cisco_toolkit/aclcheck.py",
+        "cisco_toolkit/analyze.py",
+        "cisco_toolkit/assertions.py",
+        "cisco_toolkit/bgp_intent.py",
+        "cisco_toolkit/causal.py",
+        "cisco_toolkit/coverage_matrix.py",
+        "cisco_toolkit/cutover_sim.py",
+        "cisco_toolkit/d10_eval_set.py",
+        "cisco_toolkit/defect_panel.py",
+        "cisco_toolkit/detector_schema.py",
+        "cisco_toolkit/failover.py",
+        "cisco_toolkit/fault_corpus.py",
+        "cisco_toolkit/feature_compliance.py",
+        "cisco_toolkit/fib.py",
+        "cisco_toolkit/fhrp_intent.py",
+        "cisco_toolkit/fhrp_redundancy.py",
+        "cisco_toolkit/ipv6_routing.py",
+        "cisco_toolkit/memory_guard.py",
+        "cisco_toolkit/traffic_assurance.py",
+        "cisco_toolkit/upgrade_targets.py",
+        "cisco_toolkit/vtp_safety.py",
+        "cisco_toolkit/whatif.py"
+      ]
+    },
+    {
+      "id": "sanitized_knowledge",
+      "layer": 4,
+      "trust_zone": "advisory",
+      "paths": [
+        "cisco_toolkit/bridge_queue.py",
+        "cisco_toolkit/intel_feed.py",
+        "cisco_toolkit/learnings.py",
+        "cisco_toolkit/recall.py",
+        "reference-data/"
+      ]
+    },
+    {
+      "id": "brand_profile",
+      "layer": 4,
+      "trust_zone": "white_label_ssot",
+      "paths": ["cisco_toolkit/brand_tokens.py"]
+    },
+    {
+      "id": "design_intelligence",
+      "layer": 6,
+      "trust_zone": "advisory",
+      "paths": [
+        "cisco_toolkit/council.py",
+        "cisco_toolkit/design_advisor.py",
+        "cisco_toolkit/design_kb.py",
+        "cisco_toolkit/doctrine.py",
+        "cisco_toolkit/domain_packs.py",
+        "cisco_toolkit/evpn_migration.py",
+        "cisco_toolkit/protocol_kb.py",
+        "cisco_toolkit/retrieval_eval.py"
+      ]
+    },
+    {
+      "id": "governance",
+      "layer": 7,
+      "trust_zone": "human_gate",
+      "paths": [
+        "cisco_toolkit/attestation.py",
+        "cisco_toolkit/calibration.py",
+        "cisco_toolkit/engagement.py",
+        "cisco_toolkit/eval_harness.py",
+        "cisco_toolkit/gate_state.py",
+        "cisco_toolkit/holdout.py",
+        "cisco_toolkit/ops.py",
+        "cisco_toolkit/precert.py",
+        "cisco_toolkit/runbook.py",
+        "cisco_toolkit/scorecard.py",
+        "cisco_toolkit/self_healing.py",
+        "cisco_toolkit/unknown_evidence.py"
+      ]
+    },
+    {
+      "id": "deliverables",
+      "layer": 8,
+      "trust_zone": "presentation",
+      "paths": [
+        "cisco_toolkit/blast_radius_explorer.html",
+        "cisco_toolkit/archreview.py",
+        "cisco_toolkit/crd.py",
+        "cisco_toolkit/deck.py",
+        "cisco_toolkit/design.py",
+        "cisco_toolkit/docmeta.py",
+        "cisco_toolkit/excel.py",
+        "cisco_toolkit/html.py",
+        "cisco_toolkit/mop.py",
+        "cisco_toolkit/nrfu_export.py"
+      ]
+    },
+    {
+      "id": "assessment_mcp",
+      "layer": 8,
+      "trust_zone": "local_read_only_tool",
+      "paths": ["cisco_toolkit/mcp_server.py"]
+    },
+    {
+      "id": "assesshub_backend",
+      "layer": 8,
+      "trust_zone": "local_application",
+      "paths": ["webapp/__init__.py", "webapp/backend/", "webapp/dev.py", "webapp/sample_data/"]
+    },
+    {
+      "id": "assesshub_frontend",
+      "layer": 9,
+      "trust_zone": "presentation",
+      "paths": ["webapp/frontend/"]
+    },
+    {
+      "id": "atlas_portable",
+      "layer": 9,
+      "trust_zone": "local_application",
+      "paths": ["portable/"]
+    },
+    {
+      "id": "design_sync",
+      "layer": 9,
+      "trust_zone": "design_receipt",
+      "paths": [".design-sync/"]
+    },
+    {
+      "id": "research_lane",
+      "layer": 1,
+      "trust_zone": "connected_quarantine",
+      "paths": ["research_lane/", "embed_qbank.py", "ollama_judge.py", "ollama_recall.py", "ollama_retrieval_judge.py"]
+    },
+    {
+      "id": "release_distribution",
+      "layer": 10,
+      "trust_zone": "release",
+      "paths": [
+        ".github/",
+        "MANIFEST.in",
+        "cisco_toolkit/distribution_verify.py",
+        "cisco_toolkit/manifest.py",
+        "cisco_toolkit/selfcheck.py",
+        "pyproject.toml",
+        "requirements-dev.txt",
+        "requirements.sample.json",
+        "requirements.txt",
+        "setup.py",
+        "tools/"
+      ]
+    },
+    {
+      "id": "master_reference",
+      "layer": 10,
+      "trust_zone": "private_read_only",
+      "paths": ["master-reference/"]
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "agent_local_support",
+      "reason": "Tracked agent configuration and history are repository support, not a runtime component.",
+      "paths": [".claude/"]
+    },
+    {
+      "id": "verification_source",
+      "reason": "Test sources constrain components but are not deployed component ownership.",
+      "paths": ["tests/", "webapp/tests/"]
+    },
+    {
+      "id": "root_support",
+      "reason": "Repository metadata, historical utilities, examples, and local tool configuration are explicitly outside runtime architecture.",
+      "paths": [
+        ".gitattributes",
+        ".gitignore",
+        ".graphifyignore",
+        ".mcp.json",
+        "COLLECT_PARSE_V3_23_0.md",
+        "COLLECT_PARSE_V3_23_0.py",
+        "IMPROVEMENT_AND_GREENFIELD_PLANS.md",
+        "LICENSE",
+        "TECHNICAL_DOSSIER.md",
+        "conftest.py",
+        "devices.example.json",
+        "mypy.ini",
+        "pytest.ini",
+        "questionnaire.json",
+        "ruff.toml",
+        "webapp/.gitignore",
+        "webapp/README.md",
+        "webapp/requirements.txt"
+      ]
+    }
+  ],
+  "allowed_edges": [
+    ["evidence_intake", "custody_collection"],
+    ["evidence_intake", "parse_model"],
+    ["custody_collection", "evidence_intake"],
+    ["custody_collection", "parse_model"],
+    ["evidence_access", "custody_collection"],
+    ["parse_model", "custody_collection"],
+    ["parse_model", "evidence_access"],
+    ["parse_model", "sanitized_knowledge"],
+    ["canonical_snapshot", "parse_model"],
+    ["analysis", "custody_collection"],
+    ["analysis", "evidence_access"],
+    ["analysis", "parse_model"],
+    ["analysis", "canonical_snapshot"],
+    ["analysis", "sanitized_knowledge"],
+    ["sanitized_knowledge", "parse_model"],
+    ["sanitized_knowledge", "research_lane"],
+    ["design_intelligence", "parse_model"],
+    ["design_intelligence", "canonical_snapshot"],
+    ["design_intelligence", "analysis"],
+    ["design_intelligence", "sanitized_knowledge"],
+    ["governance", "parse_model"],
+    ["governance", "canonical_snapshot"],
+    ["governance", "analysis"],
+    ["governance", "brand_profile"],
+    ["governance", "design_intelligence"],
+    ["governance", "deliverables"],
+    ["governance", "evidence_access"],
+    ["governance", "evidence_intake"],
+    ["governance", "release_distribution"],
+    ["deliverables", "parse_model"],
+    ["deliverables", "canonical_snapshot"],
+    ["deliverables", "analysis"],
+    ["deliverables", "brand_profile"],
+    ["deliverables", "design_intelligence"],
+    ["deliverables", "governance"],
+    ["deliverables", "evidence_access"],
+    ["assessment_mcp", "parse_model"],
+    ["assessment_mcp", "canonical_snapshot"],
+    ["assessment_mcp", "analysis"],
+    ["assessment_mcp", "design_intelligence"],
+    ["assessment_mcp", "governance"],
+    ["assessment_mcp", "deliverables"],
+    ["assesshub_backend", "evidence_intake"],
+    ["assesshub_backend", "custody_collection"],
+    ["assesshub_backend", "parse_model"],
+    ["assesshub_backend", "canonical_snapshot"],
+    ["assesshub_backend", "analysis"],
+    ["assesshub_backend", "brand_profile"],
+    ["assesshub_backend", "design_intelligence"],
+    ["assesshub_backend", "governance"],
+    ["assesshub_backend", "deliverables"],
+    ["assesshub_frontend", "assesshub_backend"],
+    ["assesshub_frontend", "design_sync"],
+    ["atlas_portable", "assesshub_backend"],
+    ["atlas_portable", "brand_profile"],
+    ["atlas_portable", "deliverables"],
+    ["atlas_portable", "release_distribution"],
+    ["design_sync", "assesshub_frontend"],
+    ["release_distribution", "repo_source"],
+    ["release_distribution", "parse_model"],
+    ["release_distribution", "deliverables"],
+    ["release_distribution", "governance"],
+    ["release_distribution", "sanitized_knowledge"],
+    ["release_distribution", "atlas_portable"],
+    ["master_reference", "repo_source"],
+    ["master_reference", "release_distribution"],
+    ["canonical_snapshot", "analysis"],
+    ["research_lane", "parse_model"],
+    ["research_lane", "governance"],
+    ["research_lane", "sanitized_knowledge"],
+    ["research_lane", "design_intelligence"]
+  ],
+  "forbidden_edges": [
+    {"from": "master_reference", "to": "custody_collection", "reason": "Reference cannot collect or mutate operational evidence."},
+    {"from": "master_reference", "to": "evidence_intake", "reason": "Reference accepts no client or device evidence."},
+    {"from": "assesshub_frontend", "to": "analysis", "reason": "The client cannot rederive canonical or assessed facts."},
+    {"from": "deliverables", "to": "custody_collection", "reason": "A renderer cannot trigger collection."},
+    {"from": "sanitized_knowledge", "to": "canonical_snapshot", "reason": "Advisory knowledge cannot become observed truth."},
+    {"from": "research_lane", "to": "canonical_snapshot", "reason": "Connected research is quarantined from assessment truth."}
+  ],
+  "runtime_phases": [
+    {"id": "intake", "order": 1, "required": true},
+    {"id": "custody", "order": 2, "required": true},
+    {"id": "parse", "order": 3, "required": true},
+    {"id": "canonicalize", "order": 4, "required": true},
+    {"id": "analyze", "order": 5, "required": true},
+    {"id": "design", "order": 6, "required": false},
+    {"id": "govern", "order": 7, "required": true},
+    {"id": "render", "order": 8, "required": true},
+    {"id": "verify", "order": 9, "required": true},
+    {"id": "package", "order": 10, "required": true}
+  ],
+  "synthetic_runtime_traces": [
+    {
+      "id": "happy_path",
+      "events": [
+        {"phase": "intake", "status": "passed", "receipt_id": "synthetic:happy:intake"},
+        {"phase": "custody", "status": "passed", "receipt_id": "synthetic:happy:custody"},
+        {"phase": "parse", "status": "passed", "receipt_id": "synthetic:happy:parse"},
+        {"phase": "canonicalize", "status": "passed", "receipt_id": "synthetic:happy:canonicalize"},
+        {"phase": "analyze", "status": "passed", "receipt_id": "synthetic:happy:analyze"},
+        {"phase": "design", "status": "passed", "receipt_id": "synthetic:happy:design"},
+        {"phase": "govern", "status": "passed", "receipt_id": "synthetic:happy:govern"},
+        {"phase": "render", "status": "passed", "receipt_id": "synthetic:happy:render"},
+        {"phase": "verify", "status": "passed", "receipt_id": "synthetic:happy:verify"},
+        {"phase": "package", "status": "passed", "receipt_id": "synthetic:happy:package"}
+      ]
+    },
+    {
+      "id": "mandatory_failure_abstains_downstream",
+      "events": [
+        {"phase": "intake", "status": "passed", "receipt_id": "synthetic:failure:intake"},
+        {"phase": "custody", "status": "failed", "reason_id": "synthetic:failure:custody"},
+        {"phase": "parse", "status": "abstained", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "canonicalize", "status": "abstained", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "analyze", "status": "abstained", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "design", "status": "skipped", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "govern", "status": "abstained", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "render", "status": "abstained", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "verify", "status": "abstained", "reason_id": "synthetic:blocked:custody"},
+        {"phase": "package", "status": "abstained", "reason_id": "synthetic:blocked:custody"}
+      ]
+    },
+    {
+      "id": "optional_design_abstention_disclosed",
+      "events": [
+        {"phase": "intake", "status": "passed", "receipt_id": "synthetic:optional:intake"},
+        {"phase": "custody", "status": "passed", "receipt_id": "synthetic:optional:custody"},
+        {"phase": "parse", "status": "passed", "receipt_id": "synthetic:optional:parse"},
+        {"phase": "canonicalize", "status": "passed", "receipt_id": "synthetic:optional:canonicalize"},
+        {"phase": "analyze", "status": "passed", "receipt_id": "synthetic:optional:analyze"},
+        {"phase": "design", "status": "abstained", "reason_id": "synthetic:optional:not-observed"},
+        {"phase": "govern", "status": "passed", "receipt_id": "synthetic:optional:govern"},
+        {"phase": "render", "status": "passed", "receipt_id": "synthetic:optional:render"},
+        {"phase": "verify", "status": "passed", "receipt_id": "synthetic:optional:verify"},
+        {"phase": "package", "status": "passed", "receipt_id": "synthetic:optional:package"}
+      ]
+    }
+  ]
+}

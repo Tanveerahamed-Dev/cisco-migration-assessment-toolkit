@@ -36,16 +36,29 @@ def _seg_held():
 
 def _clean_routes():
     """Fully-routed symmetric pair: every sampled inter-subnet flow resolves computed:reached."""
-    return {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"},
-                   {"prefix": "10.0.12.0/30", "source": "connected"},
-                   {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2"}],
-            "R2": [{"prefix": "10.2.2.0/24", "source": "connected"},
-                   {"prefix": "10.0.12.0/30", "source": "connected"},
-                   {"prefix": "10.1.1.0/24", "source": "ospf", "next_hop": "10.0.12.1"}]}
+    return {"R1": [{"prefix": "10.1.1.0/24", "source": "connected", "out_intf": "Vlan10"},
+                   {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+                   {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2",
+                    "out_intf": "Gi0/1"}],
+            "R2": [{"prefix": "10.2.2.0/24", "source": "connected", "out_intf": "Vlan20"},
+                   {"prefix": "10.0.12.0/30", "source": "connected", "out_intf": "Gi0/1"},
+                   {"prefix": "10.1.1.0/24", "source": "ospf", "next_hop": "10.0.12.1",
+                    "out_intf": "Gi0/1"}]}
 
 
-def _snap(routes, segmentation=None, generated_at="2026-07-01T00:00:00"):
-    s = {"devices": {h: {} for h in routes}, "interfaces": {h: {} for h in routes},
+def _clean_interfaces():
+    """Positive interface-address evidence for both directly adjacent next hops."""
+    return {
+        "R1": {"Vlan10": {"svi_ip": "10.1.1.1/24"},
+               "Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+        "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"},
+               "Vlan20": {"svi_ip": "10.2.2.1/24"}},
+    }
+
+
+def _snap(routes, segmentation=None, generated_at="2026-07-01T00:00:00", interfaces=None):
+    s = {"devices": {h: {} for h in routes},
+         "interfaces": interfaces if interfaces is not None else {h: {} for h in routes},
          "routes": routes, "generated_at": generated_at, "script_version": "V3.23.0"}
     if segmentation is not None:
         s["segmentation"] = segmentation
@@ -53,8 +66,9 @@ def _snap(routes, segmentation=None, generated_at="2026-07-01T00:00:00"):
 
 
 def _pass_pair():
-    before = _snap(_clean_routes(), _seg_held())
-    after = _snap(_clean_routes(), _seg_held(), generated_at="2026-07-02T00:00:00")
+    before = _snap(_clean_routes(), _seg_held(), interfaces=_clean_interfaces())
+    after = _snap(_clean_routes(), _seg_held(), generated_at="2026-07-02T00:00:00",
+                  interfaces=_clean_interfaces())
     return before, after
 
 

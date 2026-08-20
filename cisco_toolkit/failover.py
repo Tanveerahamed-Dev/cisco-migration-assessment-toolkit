@@ -20,6 +20,7 @@ accepts ({type:'node'|'site', id}); the host-resolution is reused from whatif._m
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 from . import whatif
@@ -50,22 +51,30 @@ def _as_failure_list(failures: Any) -> List[dict]:
     return failures if isinstance(failures, list) else []
 
 
-def _int_or(v: Any, default: int) -> int:
-    """Fail-soft int coercion for an untrusted snapshot leaf (bridge_priority, FHRP priority).
+def _int_or(v: Any, default: Optional[int]) -> Optional[int]:
+    """Strict non-negative integer coercion for an untrusted election-priority leaf.
 
-    OverflowError is NOT optional here: `json.loads` accepts the bare JSON `Infinity`/`-Infinity` as
-    `float('inf')`, and `int(float('inf'))` raises OverflowError — which the plain
-    `(TypeError, ValueError)` pair MISSES, so one poisoned priority crashed the whole L2 failover
-    twin (reachable from the two read-only MCP failover tools and from every cutover_sim dry-run
-    step) instead of degrading that one field. Every sibling coercer in the repo (textutils._as_num,
-    ssot, mop, design_advisor, engagement, execution, pir_docx, cutover) lists it; this one did not.
-    NaN still coerces via ValueError. A rejected value returns `default` verbatim — for
-    bridge_priority that default is None, which the caller reads as 'not collected' and ABSTAINS on,
-    so a poisoned priority can never be laundered into a fabricated re-election winner."""
-    try:
-        return int(v)
-    except (TypeError, ValueError, OverflowError):
+    ``int`` silently truncates fractional floats and treats booleans as 0/1. Either would certify an
+    election against a different priority than the snapshot declared. Integral finite numbers and integer
+    strings are accepted; every malformed value returns ``default`` so callers abstain.
+    """
+    if isinstance(v, bool):
         return default
+    if isinstance(v, int):
+        return v if v >= 0 else default
+    if isinstance(v, float):
+        if not math.isfinite(v) or not v.is_integer():
+            return default
+        parsed = int(v)
+        return parsed if parsed >= 0 else default
+    if isinstance(v, str):
+        token = v.strip()
+        unsigned = token[1:] if token[:1] in ("+", "-") else token
+        if not unsigned.isdigit():
+            return default
+        parsed = int(token)
+        return parsed if parsed >= 0 else default
+    return default
 
 
 # ---------------------------------------------------------------------- STP failover ---
@@ -121,8 +130,17 @@ def compute_stp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[
     rows: List[Dict[str, Any]] = []
     for vlan, bridges in sorted(_vlan_bridges(snap).items(), key=lambda kv: _vlan_sort_key(kv[0])):
         old_root = _current_root(bridges)
-        if old_root is None or old_root not in failed:
-            continue                                    # this VLAN's root survives (or is unknown) — no re-root
+        if old_root is None:
+            if failed.intersection(bridges):
+                flagged = sorted(h for h, record in bridges.items() if record.get("is_root") is True)
+                reason = ("INDETERMINATE — multiple collected bridges claim to be the current root: "
+                          + ", ".join(flagged)) if flagged else (
+                              "INDETERMINATE — no collected bridge uniquely proves the current root"
+                          )
+                rows.append(_stp_indeterminate(vlan, None, False, reason))
+            continue
+        if old_root not in failed:
+            continue                                    # this VLAN's proven root survives
         survivors = {h: r for h, r in bridges.items() if h not in failed}
         is_mst = bool(bridges.get(old_root, {}).get("is_mst"))
         if len(bridges) < 2:
@@ -212,15 +230,12 @@ def _fhrp_groups(snap: Dict[str, Any]) -> Dict[str, List[dict]]:
 
 def _current_active(members: List[dict]) -> Optional[dict]:
     """The PROVABLE current forwarding member of a group: the one whose state reads 'Active'/'Master'
-    (case-insensitive). Returns None when no collected member is explicitly Active/Master — the real
-    forwarding member is then off-scan (e.g. only Standby members were collected), and guessing it by
-    highest priority would fabricate an incumbent that isn't serving the VIP. Coverage-honesty (Law 3):
-    the incumbent is named only when a collected member proves it, never inferred from priority."""
-    for m in members:
-        st = str(m.get("state", "")).strip().lower()
-        if st in ("active", "master"):
-            return m
-    return None
+    (case-insensitive). Returns None unless exactly one collected member claims that state. Zero claims may
+    mean the forwarder is off-scan; multiple claims are split-brain/ambiguous. In either case guessing from
+    priority would fabricate an incumbent that is not proved to serve the VIP."""
+    active = [m for m in members
+              if str(m.get("state", "")).strip().lower() in ("active", "master")]
+    return active[0] if len(active) == 1 else None
 
 
 def compute_fhrp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[Dict[str, Any]]:
@@ -244,12 +259,53 @@ def compute_fhrp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List
     rows: List[Dict[str, Any]] = []
     for _key, members in sorted(_fhrp_groups(snap).items()):
         active = _current_active(members)
-        if active is None or str(active.get("host")) not in failed:
-            continue                                    # this group's forwarding member survives — no takeover
+        if active is None:
+            member_hosts = {str(member.get("host")) for member in members}
+            if failed.intersection(member_hosts):
+                exemplar = members[0] if members else {}
+                flagged = sorted(str(member.get("host")) for member in members
+                                 if str(member.get("state", "")).strip().lower() in ("active", "master"))
+                reason = ("INDETERMINATE — multiple collected members claim Active/Master: "
+                          + ", ".join(flagged)) if flagged else (
+                              "INDETERMINATE — no collected member uniquely proves Active/Master"
+                          )
+                rows.append(_fhrp_row(
+                    str(exemplar.get("group", "")), str(exemplar.get("ifname", "")),
+                    exemplar.get("vip", ""), exemplar.get("version"), None, None, None,
+                    split_brain=len(flagged) > 1, indeterminate=True, reason=reason,
+                ))
+            continue
+        if str(active.get("host")) not in failed:
+            continue                                    # this group's proven forwarding member survives
         ifname = str(active.get("ifname", ""))
         group = str(active.get("group", ""))
         vip = active.get("vip", "")
         version = active.get("version")
+        member_hosts = [str(member.get("host")) for member in members]
+        if len(set(member_hosts)) != len(member_hosts):
+            rows.append(_fhrp_row(
+                group, ifname, vip, version, active.get("host"), None, None,
+                split_brain=False, indeterminate=True,
+                reason="INDETERMINATE — duplicate member records exist for one or more hosts",
+            ))
+            continue
+        active_vip = vip.strip() if isinstance(vip, str) else ""
+        active_version = _int_or(version, None)
+        incompatible = []
+        for member in members:
+            member_vip = member.get("vip")
+            member_version = _int_or(member.get("version"), None)
+            if not active_vip or not isinstance(member_vip, str) or member_vip.strip() != active_vip \
+                    or active_version is None or member_version != active_version:
+                incompatible.append(str(member.get("host")))
+        if incompatible:
+            rows.append(_fhrp_row(
+                group, ifname, active_vip, active_version, active.get("host"), None, None,
+                split_brain=False, indeterminate=True,
+                reason="INDETERMINATE — member VIP/version contract is missing or inconsistent: "
+                       + ", ".join(sorted(incompatible)),
+            ))
+            continue
         if len(members) < 2:
             rows.append(_fhrp_row(group, ifname, vip, version, active.get("host"), None, None,
                                   split_brain=False, indeterminate=True,
@@ -264,12 +320,45 @@ def compute_fhrp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List
                                   reason="VIP STRANDED — no surviving member observed for this group after the "
                                          "failure (no proven backup gateway)"))
             continue
-        new_active = max(survivors, key=lambda m: (_int_or(m.get("priority"), -1), str(m.get("host", ""))))
+        priced = [(member, _int_or(member.get("priority"), None)) for member in survivors]
+        if any(priority is None for _member, priority in priced):
+            missing = sorted(str(member.get("host")) for member, priority in priced if priority is None)
+            rows.append(_fhrp_row(
+                group, ifname, vip, version, active.get("host"), None, None,
+                split_brain=False, indeterminate=True,
+                reason="INDETERMINATE — surviving member(s) without a valid collected priority: "
+                       + ", ".join(missing),
+            ))
+            continue
+        ineligible = sorted(
+            str(member.get("host")) for member in survivors
+            if str(member.get("state", "")).strip().lower() not in ("standby", "backup")
+        )
+        if ineligible:
+            rows.append(_fhrp_row(
+                group, ifname, active_vip, active_version, active.get("host"), None, None,
+                split_brain=False, indeterminate=True,
+                reason="INDETERMINATE — surviving member state is not an eligible Standby/Backup: "
+                       + ", ".join(ineligible),
+            ))
+            continue
+        max_priority = max(priority for _member, priority in priced)
+        winners = [member for member, priority in priced if priority == max_priority]
+        if len(winners) != 1:
+            rows.append(_fhrp_row(
+                group, ifname, vip, version, active.get("host"), None, None,
+                split_brain=False, indeterminate=True,
+                reason="INDETERMINATE — equal-priority surviving candidates require an uncollected "
+                       "protocol tiebreak: "
+                       + ", ".join(sorted(str(member.get("host")) for member in winners)),
+            ))
+            continue
+        new_active = winners[0]
         no_reclaim = new_active.get("preempt") is False
         reason = ("split-brain risk — takeover member does not reclaim on a returning higher-priority "
                   "incumbent (dual-forwarding window)") if no_reclaim else ""
         rows.append(_fhrp_row(group, ifname, vip, version, active.get("host"), new_active.get("host"),
-                              _int_or(new_active.get("priority"), None), split_brain=bool(no_reclaim),
+                              max_priority, split_brain=bool(no_reclaim),
                               indeterminate=False, reason=reason))
     return rows
 

@@ -29,8 +29,16 @@ def _snap_uniform():
                    {"prefix": "10.2.2.0/24", "next_hop": "", "out_intf": "Vlan2", "source": "connected"}],
         },
         "interfaces": {
-            "R1": {"Gi0/1": {"port": "Gi0/1", "mtu": "9216"}, "Vlan1": {"port": "Vlan1", "mtu": "9216"}},
-            "R2": {"Gi0/1": {"port": "Gi0/1", "mtu": "9216"}, "Vlan2": {"port": "Vlan2", "mtu": "9216"}},
+            "R1": {
+                "Gi0/1": {"port": "Gi0/1", "mtu": "9216", "svi_ip": "10.0.12.1/24",
+                           "mtu_semantics": "effective_ipv4_mtu"},
+                "Vlan1": {"port": "Vlan1", "mtu": "9216", "mtu_semantics": "effective_ipv4_mtu"},
+            },
+            "R2": {
+                "Gi0/1": {"port": "Gi0/1", "mtu": "9216", "svi_ip": "10.0.12.2/24",
+                           "mtu_semantics": "effective_ipv4_mtu"},
+                "Vlan2": {"port": "Vlan2", "mtu": "9216", "mtu_semantics": "effective_ipv4_mtu"},
+            },
         },
     }
 
@@ -80,6 +88,69 @@ def test_mtu_indeterminate_never_assumes_1500_on_missing():
     # the observed hops are still surfaced (data not lost), but no fabricated 1500 appears
     assert t["mtu_min"] == 9216                          # min of what WAS observed (R1 side), never a fabricated 1500
     assert {"host": "R2", "out_intf": "Vlan2"} in t["mtu_unobserved_hops"]
+
+
+def test_mtu_blank_egress_interface_is_an_explicit_blind_hop():
+    snap = _snap_uniform()
+    snap["routes"]["R1"][-1]["out_intf"] = ""
+
+    t = fib.trace_fib_path(
+        snap, "10.1.1.5", "10.2.2.9", required_mtu=1400,
+    )
+
+    assert t["status"] == "computed:reached"
+    assert t["mtu_verdict"].startswith("INDETERMINATE")
+    assert {
+        "host": "R1", "out_intf": "", "reason": "egress_interface_not_observed",
+    } in t["mtu_unobserved_hops"]
+
+
+def test_unknown_nonblank_mtu_semantics_cannot_become_proof():
+    snap = _snap_uniform()
+    for ports in snap["interfaces"].values():
+        for record in ports.values():
+            record["mtu_semantics"] = "unknown_vendor_layer"
+
+    t = fib.trace_fib_path(
+        snap, "10.1.1.5", "10.2.2.9", required_mtu=1600,
+    )
+
+    assert t["status"] == "computed:reached"
+    assert t["mtu_min"] is None
+    assert t["mtu_verdict"].startswith("INDETERMINATE")
+    assert len(t["mtu_unobserved_hops"]) == len(t["hops"])
+
+
+def test_explicit_ipv4_mtu_semantics_reads_the_bound_ip_field_not_generic_copy():
+    snap = _snap_uniform()
+    snap["interfaces"]["R1"]["Gi0/1"].update({
+        "mtu": "9216", "link_mtu": "9216", "ip_mtu": "1500",
+        "mtu_semantics": "explicit_ipv4_mtu",
+    })
+
+    t = fib.trace_fib_path(
+        snap, "10.1.1.5", "10.2.2.9", required_mtu=1600,
+    )
+
+    assert t["mtu_min"] == 1500
+    assert t["mtu_verdict"].startswith("below_required")
+    assert any(row["host"] == "R1" and row["mtu"] == 1500 for row in t["jumbo_blackhole"])
+
+    # Older snapshots may carry the dedicated field without the newer provenance token. The dedicated layer
+    # remains authoritative, but a generic-only value with no layer provenance is not proof.
+    snap["interfaces"]["R1"]["Gi0/1"].pop("mtu_semantics")
+    legacy_explicit = fib.trace_fib_path(
+        snap, "10.1.1.5", "10.2.2.9", required_mtu=1600,
+    )
+    assert legacy_explicit["mtu_min"] == 1500
+    assert legacy_explicit["mtu_verdict"].startswith("below_required")
+
+    snap["interfaces"]["R1"]["Gi0/1"].pop("ip_mtu")
+    generic_only = fib.trace_fib_path(
+        snap, "10.1.1.5", "10.2.2.9", required_mtu=1600,
+    )
+    assert generic_only["mtu_verdict"].startswith("INDETERMINATE")
+    assert {"host": "R1", "out_intf": "Gi0/1"} in generic_only["mtu_unobserved_hops"]
 
 
 def test_required_mtu_flags_jumbo_blackhole_and_names_the_hop():
@@ -162,7 +233,9 @@ def test_mtu_reads_dataclass_interface_records_too():
     than a plain dict -- the MTU probe must read either."""
     from cisco_toolkit.model import InterfaceData
     snap = _snap_uniform()
-    snap["interfaces"]["R2"]["Vlan2"] = InterfaceData(port="Vlan2", mtu="1500")
+    snap["interfaces"]["R2"]["Vlan2"] = InterfaceData(
+        port="Vlan2", mtu="1500", mtu_semantics="effective_ipv4_mtu",
+    )
     t = fib.trace_fib_path(snap, "10.1.1.5", "10.2.2.9")
     assert t["mtu_min"] == 1500 and t["mtu_verdict"] == "bottleneck"
 
@@ -179,6 +252,10 @@ def _snap_symmetric():
                    {"prefix": "10.2.2.0/24", "next_hop": "", "out_intf": "Vlan2", "source": "connected"},
                    {"prefix": "10.1.1.0/24", "next_hop": "10.0.12.1", "out_intf": "Gi0/1", "source": "ospf"}],
         },
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/24"}},
+            "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/24"}},
+        },
     }
 
 
@@ -193,6 +270,10 @@ def _snap_asymmetric():
             # R2 is a proven L3 router (connected /30 transit) but has NO return route to 10.1.1.0/24 -> reverse drops.
             "R2": [{"prefix": "10.0.12.0/30", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
                    {"prefix": "10.2.2.0/24", "next_hop": "", "out_intf": "Vlan2", "source": "connected"}],
+        },
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+            "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}},
         },
     }
 
@@ -209,6 +290,10 @@ def _snap_indeterminate_reverse():
                    {"prefix": "10.2.2.0/24", "next_hop": "", "out_intf": "Vlan2", "source": "connected"},
                    # return route points at an uncollected next-hop -> reverse trail is a lower bound.
                    {"prefix": "10.1.1.0/24", "next_hop": "172.31.99.1", "out_intf": "Gi0/2", "source": "static"}],
+        },
+        "interfaces": {
+            "R1": {"Gi0/1": {"svi_ip": "10.0.12.1/30"}},
+            "R2": {"Gi0/1": {"svi_ip": "10.0.12.2/30"}},
         },
     }
 
@@ -282,8 +367,14 @@ def _ecmp_snap(mtu_a="9216", mtu_b="9216", acl_a_in="", acl_b_in=""):
                    {"prefix": "10.9.9.0/24", "next_hop": "", "out_intf": "Vlan99", "source": "connected"}],
         },
         "interfaces": {
-            "R1": {"Gi0/1": {"port": "Gi0/1", "mtu": mtu_a, "acl_in": acl_a_in},
-                   "Gi0/2": {"port": "Gi0/2", "mtu": mtu_b, "acl_in": acl_b_in}},
+            "R1": {
+                "Gi0/1": {"port": "Gi0/1", "mtu": mtu_a, "acl_in": acl_a_in,
+                           "svi_ip": "10.0.12.1/30", "mtu_semantics": "effective_ipv4_mtu"},
+                "Gi0/2": {"port": "Gi0/2", "mtu": mtu_b, "acl_in": acl_b_in,
+                           "svi_ip": "10.0.13.1/30", "mtu_semantics": "effective_ipv4_mtu"},
+            },
+            "R2": {"Gi0/1": {"port": "Gi0/1", "svi_ip": "10.0.12.2/30"}},
+            "R3": {"Gi0/1": {"port": "Gi0/1", "svi_ip": "10.0.13.3/30"}},
         },
     }
 

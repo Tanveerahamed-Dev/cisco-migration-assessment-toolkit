@@ -4,6 +4,8 @@ Uses small SYNTHETIC snapshots (never the golden fixture's exact values) so the 
 against a re-bless. Coverage-honest paths (single-bridge / single-member abstention, VIP stranded) are
 first-class assertions, not afterthoughts.
 """
+import pytest
+
 from cisco_toolkit import failover
 
 
@@ -87,9 +89,20 @@ def test_stp_offscan_root_is_not_fabricated():
                         "bridge_priority": 16384}},
     }}
     rows = failover.compute_stp_failover(snap, ["acc1"])
-    assert rows == []                                       # the incumbent is off-scan -> nothing re-roots
+    assert len(rows) == 1 and rows[0]["indeterminate"] is True
+    assert rows[0]["new_root"] is None and "uniquely" in rows[0]["reason"]
     rd = failover.compute_failover_readiness(snap)
     assert rd["n_stp_roots"] == 0                           # no collected bridge is provably a root
+
+
+def test_multiple_stp_root_claimants_are_explicitly_indeterminate():
+    snap = {"stp_roots": {
+        "a": {"10": {"is_root": True, "bridge_priority": 4096}},
+        "b": {"10": {"is_root": True, "bridge_priority": 8192}},
+    }}
+    rows = failover.compute_stp_failover(snap, ["a"])
+    assert len(rows) == 1 and rows[0]["indeterminate"] is True
+    assert "multiple" in rows[0]["reason"].lower()
 
 
 def test_stp_missing_survivor_priority_abstains():
@@ -232,7 +245,8 @@ def test_json_infinity_priority_degrades_instead_of_crashing():
     fh = _fhrp_snap()
     fh["fhrp_detail"]["core2"][0]["priority"] = json.loads("Infinity")
     g10 = next(r for r in failover.compute_fhrp_failover(fh, ["core1"]) if r["group"] == "10")
-    assert g10["new_active"] == "core2" and g10["new_active_priority"] is None   # unknown, not fabricated
+    assert g10["indeterminate"] is True
+    assert g10["new_active"] is None and g10["new_active_priority"] is None
 
     # and the orchestrator (the surface both MCP tools and cutover_sim call) survives end to end
     both = {"stp_roots": stp["stp_roots"], "fhrp_detail": fh["fhrp_detail"]}
@@ -269,9 +283,63 @@ def test_fhrp_offscan_active_is_not_fabricated():
                    "vip": "10.0.10.1", "version": 2}],
     }}
     rows = failover.compute_fhrp_failover(snap, ["core2"])
-    assert rows == []                                       # no member proves it is the active -> no takeover
+    assert len(rows) == 1 and rows[0]["indeterminate"] is True
+    assert rows[0]["new_active"] is None and "uniquely" in rows[0]["reason"]
     rd = failover.compute_failover_readiness(snap)
     assert rd["n_fhrp_actives"] == 0                        # no collected member is provably the forwarder
+
+
+def test_multiple_fhrp_actives_are_explicit_split_brain_and_indeterminate():
+    snap = {"fhrp_detail": {
+        "a": [{"ifname": "Vlan10", "group": "10", "state": "Active", "priority": 110,
+               "preempt": True, "vip": "10.0.10.1", "version": 2}],
+        "b": [{"ifname": "Vlan10", "group": "10", "state": "Active", "priority": 100,
+               "preempt": True, "vip": "10.0.10.1", "version": 2}],
+    }}
+    rows = failover.compute_fhrp_failover(snap, ["a"])
+    assert len(rows) == 1 and rows[0]["indeterminate"] is True
+    assert rows[0]["split_brain_risk"] is True
+    assert "multiple" in rows[0]["reason"].lower()
+
+
+@pytest.mark.parametrize("bad_priority", [True, False, 100.9, -1, "100.5", "not-a-priority"])
+def test_malformed_election_priorities_abstain(bad_priority):
+    stp = _stp_snap()
+    stp["stp_roots"]["dist1"]["10"]["bridge_priority"] = bad_priority
+    stp_row = next(r for r in failover.compute_stp_failover(stp, ["core1"]) if r["vlan"] == "10")
+    assert stp_row["indeterminate"] is True and stp_row["new_root"] is None
+
+    fhrp = _fhrp_snap()
+    fhrp["fhrp_detail"]["core2"][0]["priority"] = bad_priority
+    fhrp_row = next(r for r in failover.compute_fhrp_failover(fhrp, ["core1"]) if r["group"] == "10")
+    assert fhrp_row["indeterminate"] is True and fhrp_row["new_active"] is None
+
+
+def test_equal_priority_fhrp_survivors_require_protocol_tiebreak_evidence():
+    snap = _fhrp_snap()
+    snap["fhrp_detail"]["core3"] = [{
+        "ifname": "Vlan10", "group": "10", "state": "Standby", "priority": 100,
+        "preempt": True, "vip": "10.0.10.1", "version": 2,
+    }]
+    row = next(r for r in failover.compute_fhrp_failover(snap, ["core1"]) if r["group"] == "10")
+    assert row["indeterminate"] is True and row["new_active"] is None
+    assert "tiebreak" in row["reason"].lower()
+
+
+@pytest.mark.parametrize("mutation", ["down", "vip", "version", "duplicate"])
+def test_fhrp_takeover_requires_eligible_compatible_unique_members(mutation):
+    snap = _fhrp_snap()
+    survivor = snap["fhrp_detail"]["core2"][0]
+    if mutation == "down":
+        survivor["state"] = "Down"
+    elif mutation == "vip":
+        survivor["vip"] = "10.0.10.254"
+    elif mutation == "version":
+        survivor["version"] = 1
+    else:
+        snap["fhrp_detail"]["core2"].append(dict(survivor))
+    row = next(r for r in failover.compute_fhrp_failover(snap, ["core1"]) if r["group"] == "10")
+    assert row["indeterminate"] is True and row["new_active"] is None
 
 
 # ------------------------------------------------------------------ orchestrator ---

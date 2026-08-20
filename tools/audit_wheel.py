@@ -24,8 +24,11 @@ _REQUIRED_RUNTIME_MEMBERS = frozenset(
     {
         "COLLECT_PARSE_V3_23_0.py",
         "cisco_toolkit/blast_radius_explorer.html",
+        "cisco_toolkit/data/eol-bulletins.json",
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
+        "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/traffic-intents.example.json",
     }
 )
 _REQUIRED_SDIST_MEMBERS = _REQUIRED_RUNTIME_MEMBERS | {"pyproject.toml"}

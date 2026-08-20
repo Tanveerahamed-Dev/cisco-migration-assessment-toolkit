@@ -7,6 +7,7 @@ gated actually is; these tests fail the moment a gate un-wires.
 """
 import configparser
 import os
+import re
 import shutil
 import subprocess
 
@@ -111,8 +112,20 @@ def test_coverage_measures_the_entry_module():
         "the module-name/path --cov forms are broken on this stack — use source_pkgs"
 
 
-def test_distribution_confidentiality_audit_stays_in_ci_and_release():
-    """Both publishable artifacts must be inspected before installation or upload.
+def _workflow_named_steps(text):
+    """Return named workflow steps without depending on a YAML implementation.
+
+    GitHub workflow steps are six-space-indented. Keeping the original step body
+    lets these tests assert command properties rather than one preferred step name.
+    """
+    pattern = re.compile(
+        r"(?ms)^      - name: (?P<name>[^\n]+)\n(?P<body>.*?)(?=^      - (?:name|uses):|\Z)"
+    )
+    return [(match.group("name"), match.group("body")) for match in pattern.finditer(text)]
+
+
+def test_distribution_confidentiality_audit_stays_in_every_archive_workflow():
+    """Both publishable artifacts must be inspected before use or publication.
 
     A directory argument keeps the command portable under PowerShell, which does not expand the
     POSIX-style wildcard that previously passed the literal path ``dist/*.whl`` to Python.
@@ -130,28 +143,41 @@ def test_distribution_confidentiality_audit_stays_in_ci_and_release():
     property; it is pinning a paraphrase. What actually matters: the audit RUNS in both workflows,
     and it runs BEFORE anything installs or publishes those bytes.
     """
-    ci = _read(".github", "workflows", "ci.yml")
-    assert "python tools/audit_wheel.py dist" in ci, \
-        "the distribution content audit is no longer wired into CI"
-    assert "audit_wheel.py dist/*" not in ci, \
-        "a POSIX glob would be passed literally under PowerShell; pass the DIRECTORY"
-    assert "pip install dist/*.whl" not in ci, "same glob hazard on the install step"
-    # the audit must precede every step that installs the artifact
-    audit_at = ci.index("python tools/audit_wheel.py dist")
-    installs = [i for i in (ci.find("pip install --force-reinstall dist"),
-                            ci.find("Install the audited wheel"),
-                            ci.find("Install the wheel non-editably")) if i != -1]
-    assert installs, "CI no longer installs the built wheel at all -- the audit guards nothing"
-    assert audit_at < min(installs), \
-        "the wheel is installed before its contents are audited for client evidence"
+    workflows = {
+        "ci.yml": ("pip install --force-reinstall dist", "actions/upload-artifact"),
+        "release.yml": ("pip install --force-reinstall dist", "gh release create"),
+        "release-selfhosted.yml": ("-m pip install --quiet $wheel", "gh release create"),
+        "publish.yml": ("pypa/gh-action-pypi-publish",),
+    }
+    for filename, sinks in workflows.items():
+        content = _read(".github", "workflows", filename)
+        assert "tools/audit_wheel.py dist" in content, (
+            f"{filename} can use release archives without the member-list confidentiality audit"
+        )
+        assert "audit_wheel.py dist/*" not in content, (
+            f"{filename} passes a shell-dependent glob instead of the archive directory"
+        )
+        audit_at = content.index("tools/audit_wheel.py dist")
+        for sink in sinks:
+            assert sink in content, f"{filename} no longer contains expected archive sink {sink!r}"
+            assert audit_at < content.index(sink), (
+                f"{filename} uses or publishes archives before auditing their member list"
+            )
 
-    publish = _read(".github", "workflows", "publish.yml")
-    assert "python tools/audit_wheel.py dist" in publish, \
-        "artifacts can reach PyPI without a member-list confidentiality scan"
-    assert "audit_wheel.py dist/*" not in publish
-    assert publish.index("python tools/audit_wheel.py dist") < publish.index(
-        "pypa/gh-action-pypi-publish"
-    ), "the audit must run before the upload, not after"
+
+def test_distribution_source_binding_is_fail_closed_in_every_archive_workflow():
+    """A false source-binding verdict must make every artifact workflow nonzero."""
+    for filename in ("ci.yml", "release.yml", "release-selfhosted.yml", "publish.yml"):
+        content = _read(".github", "workflows", filename)
+        verify_steps = [
+            (name, body) for name, body in _workflow_named_steps(content)
+            if "cisco_toolkit.distribution_verify dist" in body
+        ]
+        assert verify_steps, f"{filename} no longer verifies its distribution archives"
+        for name, body in verify_steps:
+            assert "--require-source-binding" in body, (
+                f"{filename} step {name!r} lets an unbound archive exit successfully"
+            )
 
 
 def test_stop_hook_runs_the_default_suite():

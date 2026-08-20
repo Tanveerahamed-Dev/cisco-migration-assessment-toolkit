@@ -1,10 +1,12 @@
 """Docs-parity gate (Plan A / Tier-2 #10) — the product surface must describe the
 actual product.
 
-The class this pins: the README froze at "eight analysis modes / Cisco-only" while the
-explorer grew to thirteen modes and the engine went multi-vendor — adoption-facing text
-drifting from shipped reality. Counts and mode names are DERIVED from the explorer's
-MODES registry, so a future mode addition fails this test until the README catches up."""
+The class this pins: the README froze at "eight analysis modes / Cisco-only", then one
+later summary reached fourteen while the detailed section remained at eleven —
+adoption-facing text drifting from shipped reality. Counts and mode names are DERIVED
+from the explorer's MODES registry, so a future mode addition fails this test until every
+product-facing roster catches up."""
+import json
 import pathlib
 import re
 
@@ -18,6 +20,17 @@ def _registry_modes():
     keys = re.findall(r'\bkey:"([a-z0-9_]+)"', block)
     btns = re.findall(r'\bbtn:"([^"]+)"', block)
     return keys, btns
+
+
+def _readme_explorer_section():
+    match = re.search(
+        r"^\*\*Explorer — (?P<count>\d+) modes over one topology\.\*\*.*?"
+        r"(?=^The explorer is a single self-contained file)",
+        README,
+        re.M | re.S,
+    )
+    assert match, "README lost its detailed 'Explorer — N modes' section"
+    return int(match.group("count")), match.group(0)
 
 
 def test_readme_mode_count_matches_the_registry():
@@ -36,6 +49,22 @@ def test_readme_explorer_row_names_every_mode():
     assert rows, "README lost the explorer artifact-table row"
     assert any(all(b in row for b in btns) for row in rows), \
         f"no README explorer row names every mode; wanted all of {btns}"
+
+
+def test_readme_detailed_explorer_section_matches_the_registry():
+    """The narrative roster is a second product-facing contract, independent of the
+    compact artifact-table row. Pin its count, names, and order to the live registry so
+    a correct claim elsewhere cannot mask this section drifting."""
+    keys, btns = _registry_modes()
+    count, section = _readme_explorer_section()
+    listed = re.findall(r"^- \*\*([^*]+)\*\*", section, re.M)
+    assert count == len(keys), (
+        f"README detailed explorer count is {count}; registry carries {len(keys)} modes"
+    )
+    assert listed == btns, (
+        "README detailed explorer roster/order is stale: "
+        f"listed {listed}, registry carries {btns}"
+    )
 
 
 def test_readme_declares_the_multivendor_surface():
@@ -63,3 +92,23 @@ def test_product_files_exist():
         f"pyproject version {version} has no entry in CHANGELOG.md — the changelog is stale "
         f"against the shipped release (this is what the old hardcoded-version assertion could "
         f"never detect)")
+
+
+def test_traffic_assurance_is_operable_and_release_documented():
+    example_path = ROOT / "cisco_toolkit" / "data" / "traffic-intents.example.json"
+    catalog = json.loads(example_path.read_text(encoding="utf-8"))
+    assert isinstance(catalog.get("intents"), list) and catalog["intents"]
+    assert all(
+        {"id", "src", "dst", "protocol", "src_port", "dst_port", "expected"} <= set(row)
+        for row in catalog["intents"]
+    )
+    assert "--traffic-intents cisco_toolkit/data/traffic-intents.example.json" in README
+    assert "from importlib.resources import files" in README
+    assert "same-run capture/parser custody" in README
+    assert "unknown_evidence" in README
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    assert "Traffic Assurance" in unreleased and "Unknown Evidence" in unreleased
+    ledger = (ROOT / "COLLECT_PARSE_V3_23_0.md").read_text(encoding="utf-8")
+    assert "2026-08-10" in ledger and "traffic_assurance_set/1" in ledger

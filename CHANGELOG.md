@@ -7,18 +7,29 @@ per change, with verification evidence) lives in
 ## [Unreleased]
 
 ### Added
+- **Evidence-bound Traffic Assurance and governed Unknown Evidence.** Full assessment runs can
+  opt into `--traffic-intents` with a finite catalog of exact IPv4 TCP/UDP five-tuples. The
+  canonical snapshot/workbook result composes requested forward/return RIB projection, stateless
+  interface ACLs, observed MTU, ECMP consistency, and at most one synthetic failure, while
+  current-run custody, exact content/route bindings, and a bounded forwarding-gate syntax registry
+  prevent missing or unmodeled evidence from becoming a hard verdict. Delivery surfaces project
+  the one producer result after global redaction; loaded JSON cannot self-certify recomputation.
+  The new always-present `unknown_evidence` aggregate exposes parser/coverage blind spots as
+  bounded, identifier-free triage records. A safe operable catalog ships in both distributions as
+  `cisco_toolkit/data/traffic-intents.example.json`.
 - **`docs/prototypes/fabric/` — a coverage-honest topology engine prototype.** One
   self-contained WebGL2 file that re-solves the fabric *without* a selected device to show what
   its failure strands, instead of only what it can reach (one BFS, ~0.3 ms at 5,000 devices).
-  Its reason for existing is the gap it makes visible: `webapp/backend/graph.py` publishes
+  Its reason for existing was the gap it made visible: `webapp/backend/graph.py` publishes
   `bridge_assessed`, `link_centrality_assessed` and `offscan_peers` (graph.py:105,127,128) and
-  **no shipped frontend surface reads any of them** — so a picture can render "not measured"
-  identically to "measured redundant", which is exactly the failure guardrail 3 forbids.
-  Absence is therefore drawn *louder* than health and every count is stated as a bound. It runs
-  on a wholly fictional synthetic fleet, is deliberately **not** bound to
+  the shipped frontend previously read none of them — so a picture could render "not measured"
+  identically to "measured redundant", which is exactly the failure guardrail 3 forbids. The
+  shipped integration below now closes that gap. Absence is drawn *louder* than health and counts
+  are scoped to the resolved topology rather than advertised as fleet-wide bounds. The prototype
+  runs on a wholly fictional synthetic fleet and is deliberately **not** bound to
   `/api/snapshots/{id}/graph`, and is parked under `docs/` so it cannot be mistaken for a
-  product surface. Its own gate is `node docs/prototypes/fabric/verify.mjs` (14 checks).
-  Docs-only; no shipped bytes are affected.
+  product surface. Its own gate is `node docs/prototypes/fabric/verify.mjs` (18 checks). The
+  prototype itself remains docs-only; the separately listed shipped integration changes SPA bytes.
 - **`VerificationBadge` and `VerificationWarning` now reach the design system** (19 → 21
   components). Both ship in the app and are used by three pages, but the hand-maintained
   `webapp/frontend/ds.entry.ts` barrel never re-exported them, so the design agent could not
@@ -28,6 +39,15 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Webapp checks can now be required without deadlocking unrelated pull requests.**
+  Pull requests always start `webapp-ci`; a fail-closed, tested three-dot path classifier moves
+  relevance filtering to the four job conditions, where GitHub reports irrelevant jobs as skipped
+  successes. Pull requests execute the classifier from their trusted base commit (and run every job
+  during its one-time bootstrap), so proposed code cannot self-declare itself irrelevant. Missing
+  SHAs, checkout/diff failures, or invalid classifier output make all four jobs fail instead of
+  silently passing. One always-reported aggregate gate now proves the exact expected success/skip
+  result for all four jobs, leaving branch protection one stable context to require. Push filtering
+  remains unchanged.
 - **The release suite gate no longer leaves debris in the tagged checkout.** Running the suite
   mutates the working tree (pytest's cache, the editable install's `egg-info`, and an engine log
   a test writes into the CWD), which the release workflows' immutability proofs correctly
@@ -37,6 +57,74 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Graphify MCP startup now resolves a real interpreter instead of trusting the Windows Store
+  `python` alias.** The tracked MCP configuration launches a small cross-platform Node resolver that
+  prefers the repository's local Graphify interpreter pin, verifies `graphify.serve` is importable,
+  and falls back through platform-appropriate Python launchers. It never installs packages or uses
+  the network, and `GRAPHIFY_PYTHON` remains an explicit operator override.
+- **Installed distributions now retain authoritative lifecycle evidence.** Wheels and the frozen
+  Atlas bundle carry the exact 13,261-byte, SHA-pinned Cisco EoL semantic fixture; runtime verification
+  binds its schema, 44 PID/date claims, 17 exact bulletin URLs, and freshness to the inline lifecycle
+  table. Partial or tampered evidence fails closed. `assesshub --selftest` and every installed-wheel
+  CI/release smoke path now gate EoL authority, and Atlas also explicitly bundles the adjacent registry
+  manifest that its existing OUI/port loaders require.
+- **Lifecycle output no longer turns a date band into a support-entitlement claim.** The stable
+  machine value `Active` is rendered as a pre-EoS date position across the workbook, DOCX, explorer,
+  architecture review, SSOT descriptions, and AssessHub. Missing or non-authoritative source proof
+  withholds the band and dates as `NOT ASSESSED`; exact bulletin dates are never replaced by a generic
+  EoS-plus-five-years inference. AssessHub's target-state BoM also lists undetermined models for
+  evidence resolution instead of hiding an all-Unknown fleet or dropping unresolved rows from a mixed fleet.
+- **CSS and token changes now face a real design-system pixel gate.** A source-driven Playwright
+  harness renders all 21 tracked component cards and 42 authored preview variants through the real
+  barrel, synthetic provider, theme, and component CSS. Forty-two reviewed 900px and 728px baseline
+  images target a GitHub-hosted Windows Server 2025 x64/Chromium oracle, with zero changed-pixel
+  tolerance above a strict 0.02 threshold outside one fixed 16-pixel TopologyGraph-card
+  anti-aliasing budget. Config-driven
+  grid/column/single presentation, deterministic motion/time controls, offline-only
+  requests/WebSockets, narrow ErrorBoundary handling, explicit SVG-only 2D topology assertions, and
+  responsive overflow checks make visual drift fail pre-merge CI instead of relying on manual
+  screenshots or render hashes that cannot see pixel changes. Every synthetic PNG is individually
+  code-pinned by the repository privacy gate after complete PNG structure/CRC/decode validation; no
+  generic image or directory exception was introduced. Promotable capture artifacts are emitted only
+  after install, capture, comparison, and runner/browser provenance all succeed.
+- **The frontend platform migration removes the last npm-audit exception.** The earlier visual-gate
+  lock refresh moved the jsdom-only development dependency from 7.28.0 to 7.29.0 and removed its
+  transitive `undici` findings. The completed platform step now moves Node 20 to Node 24,
+  React/React DOM 18.3.1 to 19.2.8, React Router 7.18.2 to the advisory-fixed 8.3.0, Vite 6.4.3 to
+  8.2.1, and `@vitejs/plugin-react` 4.7.0 to 6.0.5. The temporary fail-closed exception for the
+  RSC-only `GHSA-qwww-vcr4-c8h2` finding and its exact Node 20.20.2/npm 10.8.2 report-producer pin
+  are deleted; CI again applies the ordinary high/critical npm audit with no frontend advisory
+  suppression.
+- **The standalone offline explorer now has a real-browser interaction gate.** Playwright serves the
+  canonical self-contained HTML only on ephemeral loopback, derives all 14 modes from its live
+  registry, activates each mode, and verifies the mode chrome, URL state, drawer, and 2D/3D render
+  surface. Page errors, console errors, registry/toolbar drift, and any external request fail the test.
+- **The shipped topology no longer renders unmeasured redundancy as healthy.** The graph API's
+  `bridge_assessed`, `link_centrality_assessed`, and `offscan_peers` evidence now reaches both the
+  2D and 3D fabric views: unassessed links are loud and explicit, peers outside the collected
+  snapshot are disclosed, and clicking a non-reference device re-solves the resolved topology
+  without it to name which baseline-reached devices lose their path to a deterministic reference
+  anchor. Selecting the anchor itself or a node outside its baseline fails closed instead of
+  publishing a tautological catastrophe or a false zero. Counts are deliberately scoped to the
+  resolved graph; missing alternate links can make real impact smaller, while uncollected downstream
+  devices can make it larger.
+- **Fabric's prototype copy no longer calls resolved-topology chokepoint counts fleet-wide upper
+  bounds.** A missing leaf/device can add an articulation point or bridge, so the old claim was
+  mathematically unsafe. The 18-check verifier now ratchets the corrected scope, both uncertainty
+  directions, and rendered fail-closed reference/outside-baseline states; it also tries every
+  installed Playwright candidate until one can actually launch its matching Chromium rather than
+  stopping at a stale package.
+- **Design-system component registration can no longer drift silently across hand-maintained
+  surfaces.** A static parity gate now reconciles the public barrel, `componentSrcMap`,
+  `dtsPropsFor`, authored docs, and previews; rejects empty or generic props contracts; and discovers
+  exported source components omitted from that set. `Topology3D` is recorded as the sole deliberate
+  internal exception, while `DemoDataProvider` remains a required public contract.
+- **Hand-written design-system props can no longer drift from their source signatures.** A
+  compiler-backed Vitest gate resolves all 21 components through the real barrel, compares member
+  names, optionality, readonly modifiers, and bidirectionally assignable types against `dtsPropsFor`,
+  and rejects unresolved or recursively unsafe contracts. In-memory mutations ratchet missing/extra,
+  optionality-changed, readonly, mistyped, and nested `any`/`unknown` failure paths without emitting
+  declaration artifacts.
 - **The design-system sync had been failing outright, not drifting.**
   `.design-sync/providers/demo.tsx` still imported `MemoryRouter` from `react-router-dom`, which
   the react-router 7 migration removed, so the converter died in its bundle step

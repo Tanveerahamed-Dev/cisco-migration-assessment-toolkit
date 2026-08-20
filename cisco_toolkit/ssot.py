@@ -47,14 +47,14 @@ CANONICAL_FACTS: Dict[str, tuple] = {
     "n_poor":             ("executive_brief.posture.n_poor",      "devices in the Poor health band"),
     "worst_band":         ("executive_brief.posture.worst_band",  "worst health band observed"),
     "n_past_ldos":        ("lifecycle_risk.summary.n_past_ldos",  "devices past last-day-of-support (the past-SUPPORT population)"),
-    "n_past_eos":         ("lifecycle_risk.summary.n_past_eos",   "devices past end-of-sale but NOT yet past LDoS (a different, smaller set)"),
     "n_near":             ("lifecycle_risk.summary.n_near",       "devices within 1yr of LDoS (Near-LDoS band)"),
-    "n_active":           ("lifecycle_risk.summary.n_active",     "devices in active support (Active band)"),
+    "n_past_eos":         ("lifecycle_risk.summary.n_past_eos",   "devices past end-of-sale but NOT yet past LDoS (a disjoint date-band population)"),
+    "n_active":           ("lifecycle_risk.summary.n_active",     "devices in the pre-EoS date-position band (public schema value: Active; not a support-entitlement claim)"),
     # The COVERAGE slot. Without it there was no canonical way to say "not determined", and every
     # consumer of n_past_ldos rendered a bare 0 for a fleet nothing had assessed — including the
     # "At a Glance" front matter of every deliverable. A band count that omits Unknown is not a
     # partition of the fleet, and the omission reads as health.
-    "n_unknown":          ("lifecycle_risk.summary.n_unknown",    "devices whose support state was NOT determined (no EoX bulletin matched the platform) — absence of a finding, never a clean result"),
+    "n_unknown":          ("lifecycle_risk.summary.n_unknown",    "devices whose support state was NOT determined (no exact EoX row matched or matched source/date authority was withheld) — absence of a finding, never a clean result"),
     "n_design_decisions": ("design_blueprint.summary.n_decisions","ranked target-state design decisions"),
 }
 

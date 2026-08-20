@@ -363,18 +363,45 @@ def test_ops_handbook_does_not_report_a_clean_lifecycle_for_an_UNASSESSED_fleet(
     assert "4" in row[1] and ("undetermined" in text or "unknown" in text), (
         f"the handbook reports a clean lifecycle for 4 unassessed devices: {row[1]!r}"
     )
+    assert "no exact eox row matched" in text
+    assert "source/date authority was withheld" in text
+    assert "offline kb matched their platform" not in text
 
 
 def test_ops_handbook_still_reports_clean_when_the_fleet_WAS_assessed():
     """Non-vacuity: a genuinely assessed, clean fleet must keep its clean statement."""
     row = _lifecycle_row(_ev_with_lifecycle(n_past_ldos=0, n_past_eos=0, n_unknown=0))
-    assert row is not None and "No past-LDoS / past-EoS platform flagged" in row[1], row
+    assert row is not None and "No Past-LDoS, Near-LDoS, or Past-EoS platform flagged" in row[1], row
+
+
+def test_ops_handbook_surfaces_near_ldos_as_its_own_issue():
+    row = _lifecycle_row(
+        _ev_with_lifecycle(n_past_ldos=0, n_near=2, n_past_eos=0, n_unknown=0)
+    )
+    assert row is not None and "2 device(s) are within one year of LDoS" in row[1], row
+    assert "recorded replacement window" in row[1]
+    assert "contract entitlement is not inferred" in row[1]
 
 
 def test_ops_handbook_leads_with_the_real_finding_over_the_coverage_caveat():
     """A real past-LDoS population must not be displaced by the undetermined branch."""
     row = _lifecycle_row(_ev_with_lifecycle(n_past_ldos=2, n_past_eos=0, n_unknown=3))
-    assert row is not None and "past last-date-of-support" in row[1] and "2" in row[1], row
+    assert row is not None and "past last-day-of-support" in row[1] and "2" in row[1], row
+
+
+def test_ops_handbook_mixed_bands_reserve_no_remediation_path_for_past_ldos():
+    from cisco_toolkit.ops import _known_issues
+
+    issues, _absent = _known_issues(
+        _ev_with_lifecycle(n_past_ldos=2, n_past_eos=3, n_unknown=0))
+    rows = [r for r in issues if r[0] == "Lifecycle Risk"]
+    assert len(rows) == 2
+    ldos = next(r for r in rows if "past last-day-of-support" in r[1])
+    eos = next(r for r in rows if "past end-of-sale" in r[1])
+    assert "no standard vendor bug/PSIRT remediation path" in ldos[1]
+    assert "no standard vendor bug/PSIRT remediation path" not in eos[1]
+    assert "LDoS still future" in eos[1]
+    assert "contract entitlement is not inferred" in eos[1]
 
 
 def test_ops_handbook_discloses_undetermined_lifecycle_alongside_a_real_finding():
@@ -390,7 +417,7 @@ def test_ops_handbook_discloses_undetermined_lifecycle_alongside_a_real_finding(
     issues, _absent = _known_issues(_ev_with_lifecycle(n_past_ldos=1, n_past_eos=0, n_unknown=20))
     rows = [i for i in issues if i[0] == "Lifecycle Risk"]
     assert len(rows) == 2, f"the coverage row was dropped behind the finding: {rows}"
-    assert any("past last-date-of-support" in r[1] for r in rows), rows
+    assert any("past last-day-of-support" in r[1] for r in rows), rows
     cov = [r for r in rows if "UNDETERMINED" in r[1]]
     assert cov and "20" in cov[0][1], rows
 

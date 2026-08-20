@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set
 
-from . import summary
+from . import engine, summary
 
 # Single source of truth for the severity vocabulary — reuse summary's rather than redeclaring it, so a
 # new/renamed band can't be ranked here (unknown -> 99 = sorted last) while the cockpit ranks it right.
@@ -110,6 +110,14 @@ _GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2}
 #: degrade to NEUTRAL on an unknown one by construction (`cutover_docx._GATE_INK.get(v, _NAVY)`, and
 #: the SPA's `gateColor` -> `var(--gate-NOTASSESSED, var(--text-faint))`), which is the right rendering.
 GATE_NOT_ASSESSED = "NOT ASSESSED"
+
+BASELINE_BLOCKED = "BLOCKED"
+BASELINE_INDETERMINATE = "INDETERMINATE"
+BASELINE_CLEAR = "CLEAR"
+BASELINE_NOT_ASSESSED = "NOT_ASSESSED"
+_BASELINE_VERDICTS = {
+    BASELINE_BLOCKED, BASELINE_INDETERMINATE, BASELINE_CLEAR, BASELINE_NOT_ASSESSED,
+}
 
 
 def _rows(snap: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
@@ -205,12 +213,17 @@ def _window_minutes(n_hard_switches: int, hard_endpoints: int) -> int:
     return mobilisation + per_switch_cut_verify + per_endpoint_settle + validation_rollback_buffer
 
 
-def _gate(n_fail: int, n_warn: int, n_crit_cl: int, n_high_remediation: int, n_blind: int = 0) -> str:
-    if n_fail > 0 or n_crit_cl > 0:
+def _gate(n_fail: int, n_warn: int, n_crit_cl: int, n_high_remediation: int, n_blind: int = 0,
+          baseline_verdict: str = BASELINE_NOT_ASSESSED, n_baseline_blockers: int = 0) -> str:
+    if (n_fail > 0 or n_crit_cl > 0 or n_baseline_blockers > 0
+            or baseline_verdict == BASELINE_BLOCKED):
         return GATE_NOGO
     # audit-5 #15: a device the collection never reached (band 'Insufficient Data') cannot be certified ready, so
     # a wave containing one is never a confident GO -- it is CONDITIONAL pending collection (coverage-honest).
-    if n_warn > 0 or n_high_remediation > 0 or n_blind > 0:
+    # CLEAR is the only current-baseline state that permits GO. Missing or malformed assessment
+    # evidence is not equivalent to a clean baseline.
+    if (n_warn > 0 or n_high_remediation > 0 or n_blind > 0
+            or baseline_verdict != BASELINE_CLEAR):
         return GATE_COND
     return GATE_GO
 
@@ -244,6 +257,108 @@ def _blockers(readiness: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "note": c.get("note", ""),
         "phase": c.get("phase", ""),
     } for c in flagged]
+
+
+def _validation_row(item: Dict[str, Any], wave: str) -> Dict[str, Any]:
+    """The validation fields the plan, document, and frozen execution record must retain."""
+    row = {
+        "device": item.get("device", ""),
+        "wave": item.get("wave", wave),
+        "category": item.get("category", ""),
+        "severity": item.get("severity", ""),
+        "check": item.get("check", ""),
+        "command": item.get("command", ""),
+        "expect": item.get("expect", ""),
+        "evidence_state": item.get("evidence_state", ""),
+        "projection_custody": item.get("projection_custody", ""),
+        "source_key": item.get("source_key", ""),
+        "why": item.get("why", ""),
+    }
+    # Classification remains engine-owned. This flag is frozen into the operational plan so the
+    # execution layer need not reverse-engineer authority from presentation prose later.
+    row["baseline_state"] = engine.classify_current_baseline_item(row)
+    row["baseline_blocker"] = row["baseline_state"] in {"degraded", "review", "not_verified"}
+    return row
+
+
+def _all_baseline_blockers(validation_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return every blocker occurrence from the gate-validated ``by_wave`` projection.
+
+    The engine gate intentionally may bound its diagnostic sample. AssessHub has the already-bounded
+    validation-plan rows themselves, so its operational document must not hide blocker 31 behind the
+    ordinary validation table's 30-row display limit. A valid gate has already proven that ``items``
+    and ``by_wave`` reconcile as multisets, so reading only ``by_wave`` avoids double-counting the
+    mirror while preserving genuine duplicate occurrences.
+    """
+    out: List[Dict[str, Any]] = []
+    by_wave = _as_dict(validation_plan.get("by_wave"))
+    for wave, items in by_wave.items():
+        for item in summary._as_list(items):
+            if isinstance(item, dict):
+                row = _validation_row(item, str(wave))
+                if row.get("baseline_blocker"):
+                    out.append(row)
+    return out
+
+
+def _current_baseline(validation_plan: Any) -> Dict[str, Any]:
+    """Normalize the shared gate's outer shape while preserving its evidence and counts verbatim."""
+    result = engine.compute_current_baseline_gate(validation_plan)
+    if not isinstance(result, dict):
+        return {
+            "schema": "current_baseline_gate/1",
+            "verdict": BASELINE_INDETERMINATE,
+            "assessed": False,
+            "note": "The engine returned no usable current-baseline gate.",
+            "summary": {"n_items": 0, "n_blockers": 0, "n_blockers_returned": 0,
+                        "blockers_capped": False, "by_state": {}, "by_wave": {}},
+            "blockers": [],
+        }
+    result = dict(result)
+    if result.get("verdict") not in _BASELINE_VERDICTS:
+        result["verdict"] = BASELINE_INDETERMINATE
+        result["note"] = "The current-baseline gate carried an unknown verdict."
+    return result
+
+
+def _baseline_blockers_for_wave(group: str, switches: Set[str],
+                                blockers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Bind exact-wave rows first and use device membership to recover stale/missing wave labels."""
+    out = []
+    for row in blockers:
+        wave = str(row.get("wave") or "")
+        device = str(row.get("device") or "")
+        if wave == group or (device and device in switches):
+            out.append(row)
+    return out
+
+
+def _wave_baseline_view(current: Dict[str, Any], blockers: List[Dict[str, Any]],
+                        validation: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Derive wave scope from the gate-validated rows, never from another wave's blocker."""
+    integrity_valid = _as_dict(current.get("integrity")).get("valid") is True
+    if blockers:
+        blocker_states = {str(row.get("baseline_state") or "") for row in blockers}
+        verdict = BASELINE_BLOCKED if "degraded" in blocker_states else BASELINE_INDETERMINATE
+        note = (f"Wave current baseline {verdict}: {len(blockers)} degraded/review/not-verified "
+                "validation row(s) require resolution, recollection, or explicit disposition.")
+    elif not integrity_valid:
+        verdict = BASELINE_INDETERMINATE
+        note = current.get("note", "")
+    elif validation:
+        verdict = BASELINE_CLEAR
+        note = f"Wave current baseline CLEAR across {len(validation)} gate-validated row(s)."
+    else:
+        verdict = BASELINE_NOT_ASSESSED
+        note = "Wave current baseline was not assessed: no gate-validated row was bound to this wave."
+    fleet_counts = _as_dict(current.get("summary"))
+    return {
+        "schema": current.get("schema", "current_baseline_gate/1"),
+        "verdict": verdict,
+        "n_blockers": len(blockers),
+        "fleet_n_blockers": _int(fleet_counts.get("n_blockers"), len(blockers)),
+        "note": note,
+    }
 
 
 def _wave_remediation(switches: Set[str], rem_by_device: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -285,13 +400,7 @@ def _wave_validation(group: str, val_by_wave: Dict[str, Any]) -> List[Dict[str, 
     # this iteration -> stored DoS on /cutover.
     for it in summary._as_list(val_by_wave.get(group)):
         if isinstance(it, dict):
-            out.append({
-                "category": it.get("category", ""),
-                "severity": it.get("severity", ""),
-                "check": it.get("check", ""),
-                "command": it.get("command", ""),
-                "expect": it.get("expect", ""),
-            })
+            out.append(_validation_row(it, group))
     # _hkey: an unhashable dict/list `severity` leaf makes _SEV_RANK.get() raise
     # `TypeError: unhashable type` -- an unhandled 500 on /cutover and /executions, and the
     # snapshot is STORED so it re-crashes on every later read (same class as summary._keystones).
@@ -300,19 +409,22 @@ def _wave_validation(group: str, val_by_wave: Dict[str, Any]) -> List[Dict[str, 
 
 
 def _run_of_show(*, mbb: List[str], hard: List[str], hard_ep: int, window: int,
-                 n_val: int, n_rem: int, blockers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                 n_val: int, n_rem: int, blockers: List[Dict[str, Any]],
+                 baseline_blockers: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """A PPDIOO-phased sequence of steps for this wave — the operational run-of-show."""
     n_baseline_gates = sum(1 for b in blockers if b.get("status") == "fail")
+    n_current_baseline = len(baseline_blockers or [])
     steps: List[Dict[str, Any]] = [{
         "phase": "Baseline capture",
         "action": f"Back up config + live state (running-config, routing/MAC/ARP tables) for all "
                   f"{len(mbb) + len(hard)} switch(es) for rollback, and record the known-good output for "
                   f"the {n_val} validation check(s) as the post-cut 'expect' baseline.",
     }]
-    if n_rem or n_baseline_gates:
+    if n_rem or n_baseline_gates or n_current_baseline:
         steps.append({
             "phase": "Remediation (gate)",
-            "action": (f"Clear the {n_baseline_gates} failing readiness check(s) and apply "
+            "action": (f"Clear the {n_baseline_gates} failing readiness check(s), resolve or explicitly "
+                       f"disposition the {n_current_baseline} current-baseline blocker(s), and apply "
                        f"{n_rem} pre-cutover fix(es) — redundant uplinks, FHRP, and config hygiene — "
                        "BEFORE scheduling the window. This wave does not pass the gate until they are resolved."),
         })
@@ -372,7 +484,20 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     # _as_dict at every level, not `... or {}`: a truthy non-dict remediation_plan/validation_plan (or a
     # non-dict by_device/by_wave) survives `or {}` and 500s the next `.get`/`.items()` -> stored DoS.
     rem_by_device = _as_dict(_as_dict(snap.get("remediation_plan")).get("by_device"))
-    val_by_wave = _as_dict(_as_dict(snap.get("validation_plan")).get("by_wave"))
+    raw_validation_plan = snap.get("validation_plan")
+    validation_plan = _as_dict(raw_validation_plan)
+    val_by_wave = _as_dict(validation_plan.get("by_wave"))
+    current_baseline = _current_baseline(raw_validation_plan)
+    # Never echo a row from a plan the shared receipt rejected. Invalid structures abstain; they do
+    # not get partially reinterpreted by this downstream surface.
+    baseline_integrity_valid = _as_dict(current_baseline.get("integrity")).get("valid") is True
+    if not baseline_integrity_valid:
+        # A rejected plan authorizes no operational row, even when a hostile row happens to sit in a
+        # list-shaped by_wave bucket. The verdict still reaches every wave as INDETERMINATE below.
+        val_by_wave = {}
+    all_baseline_blockers = (
+        _all_baseline_blockers(validation_plan) if baseline_integrity_valid else []
+    )
     keystones = _keystone_hosts(snap)
     blind_hosts = _blind_hosts(snap)
 
@@ -404,8 +529,11 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         remediation = _wave_remediation(switches, rem_by_device)
         n_high_rem = sum(1 for r in remediation if r.get("severity") in ("Critical", "High"))
         validation = _wave_validation(group, val_by_wave)
+        baseline_blockers = _baseline_blockers_for_wave(group, switches, all_baseline_blockers)
+        wave_baseline = _wave_baseline_view(current_baseline, baseline_blockers, validation)
         window = _window_minutes(len(hard), hard_ep)
-        gate = _gate(n_fail, n_warn, len(crit_cl), n_high_rem, len(wblind))
+        gate = _gate(n_fail, n_warn, len(crit_cl), n_high_rem, len(wblind),
+                     str(wave_baseline["verdict"]), len(baseline_blockers))
         strategy = "mixed" if (mbb and hard) else ("hard-cutover" if hard else "make-before-break")
 
         waves.append({
@@ -433,12 +561,14 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
             "n_blind": len(wblind),
             "blind_switches": wblind,
             "blockers": blockers,
+            "current_baseline": wave_baseline,
+            "baseline_blockers": baseline_blockers,
             "critical_crosslayer": crit_cl,
             "remediation": remediation,
             "validation": validation,
             "run_of_show": _run_of_show(mbb=sorted(mbb), hard=sorted(hard), hard_ep=hard_ep,
                                         window=window, n_val=len(validation), n_rem=len(remediation),
-                                        blockers=blockers),
+                                        blockers=blockers, baseline_blockers=baseline_blockers),
         })
 
     # Pilot-first sequencing: prove the method on the safest (GO) zero-outage waves first, leave the
@@ -461,12 +591,26 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     for w in waves:
         if _GATE_RANK[w["gate"]] > _GATE_RANK[fleet_gate]:
             fleet_gate = w["gate"]
+    # A valid blocker that cannot be bound to a scheduled wave is still a fleet acceptance blocker;
+    # it must not disappear merely because the schedule omitted/mislabelled its device.
+    fleet_baseline_counts = _as_dict(current_baseline.get("summary"))
+    if (waves and _int(fleet_baseline_counts.get("n_blockers")) > 0
+            and current_baseline.get("verdict") in {BASELINE_BLOCKED, BASELINE_INDETERMINATE}):
+        fleet_gate = GATE_NOGO
 
     total_hard_ep = sum(w["hard_cutover_endpoints"] for w in waves)
     total_window = sum(w["est_window_minutes"] for w in waves)
     n_mbb = sum(len(w["make_before_break"]) for w in waves)
     n_hard = sum(len(w["hard_cutover"]) for w in waves)
     n_not_assessed = sum(_int(w.get("n_blind")) for w in waves)
+    baseline_counts = fleet_baseline_counts
+    n_baseline_blockers = max(
+        len(all_baseline_blockers), _int(baseline_counts.get("n_blockers")))
+    bound_baseline_ids = {
+        id(blocker) for wave in waves for blocker in wave.get("baseline_blockers", [])
+    }
+    n_unbound_baseline_blockers = sum(
+        1 for blocker in all_baseline_blockers if id(blocker) not in bound_baseline_ids)
 
     # NB: named fleet_summary, not `summary` -- a local named `summary` would shadow the module-level
     # `summary` import for the WHOLE function body, turning the `summary._as_list(...)` guards above into an
@@ -483,10 +627,23 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         "est_window_minutes": total_window,
         "est_window_label": _fmt_minutes(total_window),
         "gates": {g: sum(1 for w in waves if w["gate"] == g) for g in (GATE_GO, GATE_COND, GATE_NOGO)},
-        "statement": _fleet_statement(fleet_gate, waves, n_mbb, n_hard, total_window),
+        "current_baseline": current_baseline,
+        "n_baseline_blockers": n_baseline_blockers,
+        "n_unbound_baseline_blockers": n_unbound_baseline_blockers,
+        "baseline_blockers_capped": bool(baseline_counts.get("blockers_capped")),
+        "statement": _fleet_statement(
+            fleet_gate, waves, n_mbb, n_hard, total_window, current_baseline,
+            n_baseline_blockers,
+        ),
         "methodology": _METHODOLOGY,
     }
-    return {"summary": fleet_summary, "waves": waves}
+    return {
+        "summary": fleet_summary,
+        "waves": waves,
+        # Full operational rows live outside summary/gate diagnostic caps so the document and execution
+        # record can retain every blocker already present in validation_plan.by_wave.
+        "baseline_blockers": all_baseline_blockers,
+    }
 
 
 # Grounded in standard network-migration / cutover practice (PPDIOO Implement + Operate). Surfaced in the
@@ -504,7 +661,8 @@ _METHODOLOGY: List[str] = [
 
 
 def _fleet_statement(verdict: str, waves: List[Dict[str, Any]], n_mbb: int, n_hard: int,
-                     total_window: int) -> str:
+                     total_window: int, current_baseline: Optional[Dict[str, Any]] = None,
+                     n_baseline_blockers: int = 0) -> str:
     n_nogo = sum(1 for w in waves if w["gate"] == GATE_NOGO)
     n_blind = sum(_int(w.get("n_blind")) for w in waves)
     parts = [f"Cutover posture: {verdict}."]
@@ -521,6 +679,13 @@ def _fleet_statement(verdict: str, waves: List[Dict[str, Any]], n_mbb: int, n_ha
                      f"BOUND, not a clean bill of health.")
     if n_nogo:
         parts.append(f"{n_nogo} of {len(waves)} wave(s) are NO-GO until their gating checks are cleared.")
+    baseline_verdict = (current_baseline or {}).get("verdict", BASELINE_NOT_ASSESSED)
+    if baseline_verdict == BASELINE_BLOCKED:
+        parts.append(f"Current baseline: BLOCKED by {n_baseline_blockers} validation row(s); matching a "
+                     "degraded start state is not post-cutover acceptance.")
+    elif baseline_verdict != BASELINE_CLEAR:
+        parts.append(f"Current baseline: {baseline_verdict}; only a CLEAR baseline permits GO, so fresh "
+                     "validation evidence is required before the window.")
     parts.append(f"{n_mbb} switch(es) migrate make-before-break (zero outage); "
                  f"{n_hard} need a maintenance window (~{_fmt_minutes(total_window)} total).")
     parts.append("Waves are ordered pilot-first: the safest zero-outage wave proves the method before "

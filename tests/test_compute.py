@@ -538,6 +538,11 @@ def test_protocol_health_fhrp_stuck_init_is_not_healthy(cp):
     init = {"R1": {"Vlan10": InterfaceData(port="Vlan10", hsrp_behavior="HSRP grp 1 Init VIP 10.0.10.1")}}
     f1 = [r for r in cp.compute_protocol_health(init, {"R1": {}}) if r["protocol"] == "FHRP"]
     assert f1 and f1[0]["severity"] == "Medium", f1
+    intel = cp.compute_protocol_intelligence(f1)
+    assert len(intel) == 1
+    assert intel[0]["state"] == "HSRP:INIT"
+    assert intel[0]["severity"] == "Medium"
+    assert "interface" in intel[0]["likely_cause"].lower()
     standby = {"R2": {"Vlan10": InterfaceData(port="Vlan10", hsrp_behavior="HSRP grp 1 Standby VIP 10.0.10.1")}}
     f2 = [r for r in cp.compute_protocol_health(standby, {"R2": {}}) if r["protocol"] == "FHRP"]
     assert f2 and f2[0]["severity"] == "Info", f2
@@ -560,8 +565,74 @@ def test_scope_routes_keeps_relevant_drops_noise():
     assert "0.0.0.0/0" in got           # default route is always relevant
     assert "10.0.0.0/16" in got         # supernet that covers an in-scope subnet
     assert "10.0.10.0/24" in got        # connected in-scope subnet (covers itself)
-    assert "10.0.10.2/32" not in got    # host (/32 local) noise dropped
+    assert "10.0.10.2/32" in got        # more-specific host route can win LPM inside the in-scope /24
     assert "192.168.99.0/24" not in got # out-of-scope prefix dropped
+
+    projection = scope_routes(route_db, inscope)
+    assert projection.projection_receipt["algorithm"] == "overlap_and_next_hop_closure_v1"
+    assert projection.projection_receipt["complete"] is True
+    assert projection.projection_receipt["scoped_row_count"] == len(projection)
+
+
+def test_scope_routes_keeps_more_specific_live_and_discard_routes_that_can_invert_lpm():
+    from cisco_toolkit.build import scope_routes
+
+    rows = scope_routes({
+        "10.2.2.0/24": {"entries": [
+            {"prefix": "10.2.2.0/24", "source": "static", "out_intf": "Null0"},
+        ]},
+        "10.2.2.0/25": {"entries": [
+            {"prefix": "10.2.2.0/25", "source": "static", "next_hop": "10.0.12.2",
+             "out_intf": "Gi0/1"},
+        ]},
+        "10.2.2.20/32": {"entries": [
+            {"prefix": "10.2.2.20/32", "source": "static", "out_intf": "Null0"},
+        ]},
+    }, {"10.2.2.0/24"})
+
+    assert [row["prefix"] for row in rows] == ["10.2.2.0/24", "10.2.2.0/25", "10.2.2.20/32"]
+
+
+def test_build_and_scope_routes_preserve_current_run_parse_completeness_receipt(monkeypatch):
+    from cisco_toolkit import build
+    from cisco_toolkit.parse import ParsedRouteTable
+
+    monkeypatch.setattr(build, "_load_cmd_output", lambda *_args: (
+        "C 10.1.1.0/24 is directly connected, Vlan10\n"
+        "S 10.2.2.0/24 [1/0] via 192.0.2.2, GigabitEthernet0/1\n"
+    ))
+    route_db = build.build_routes({})
+    assert isinstance(route_db, ParsedRouteTable)
+    assert route_db.parse_receipt["complete"] is True
+
+    projection = build.scope_routes(route_db, {"10.2.2.0/24"})
+    receipt = projection.projection_receipt
+    assert receipt["source_parse_receipt_verified"] is True
+    assert receipt["source_parse_receipt"]["schema"] == "route_parse_receipt/1"
+    assert receipt["source_parse_receipt"]["complete"] is True
+    assert receipt["source_parse_receipt"]["route_entry_count"] == 2
+
+
+def test_scope_routes_preserves_observed_admin_distance_and_absence():
+    from cisco_toolkit.build import scope_routes
+
+    rows = scope_routes({
+        "10.2.2.0/24": {"entries": [
+            {"prefix": "10.2.2.0/24", "source": "bgp", "next_hop": "10.0.13.3",
+             "out_intf": "Gi0/2", "admin_distance": 200},
+            {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2",
+             "out_intf": "Gi0/1", "admin_distance": 110},
+        ]},
+        "0.0.0.0/0": {"entries": [
+            {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.12.2",
+             "out_intf": "Gi0/1"},
+        ]},
+    }, {"10.2.2.0/24"})
+
+    observed = {row["source"]: row["admin_distance"] for row in rows if "admin_distance" in row}
+    assert observed == {"bgp": 200, "ospf": 110}
+    default = next(row for row in rows if row["prefix"] == "0.0.0.0/0")
+    assert "admin_distance" not in default
 
 
 def test_inscope_subnets_from_svis():
@@ -1028,7 +1099,11 @@ def test_exec_brief_eol_axis_distinguishes_blind_from_verified_clean():
     clean = {a["axis"]: a for a in compute_executive_brief(
         health_scores=[{"switch": f"ACC-{i:02d}", "band": "Good", "score": 85} for i in range(10)],
         lifecycle_risk=compute_lifecycle_risk({f"ACC-{i:02d}": {"model": "C9300-48P", "sw_version": "17.09.04"} for i in range(10)}))["axes"]}["Hardware lifecycle (EoL)"]
-    assert blind["severity"] == "Info" and "unknown model" in blind["headline"]
+    assert blind["severity"] == "Info" and "NOT ASSESSED" in blind["headline"]
+    assert "no authoritative lifecycle band" in blind["headline"]
+    assert "retained source chain verified" in blind["detail"]
+    assert "no EoS/LDoS date is derived from a generic support-window rule" in blind["detail"]
+    assert "end-of-sale + 5yr" not in blind["detail"]
     assert not (blind["headline"] == clean["headline"] and blind["severity"] == clean["severity"])
 
 

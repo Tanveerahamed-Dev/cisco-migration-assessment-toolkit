@@ -451,7 +451,7 @@ def test_design_renders_zone_aware_ip_plan(tmp_path):
     text = _all_text(Document(out))
     assert "Per-zone summarization" in text and "PCI" in text
     """V3.23.153: LLD §3.5 — version sprawl per model is flagged with the most widely deployed
-    image as the standardization candidate, and past-EoS hardware gets a replace-not-upgrade rec."""
+    image as the standardization candidate; Past-EoS gets refresh planning, not a lost-support claim."""
     snap = _snap()
     # second + third 2960X: two devices on 15.2(7)E, the original acc1 on 15.2 → MIXED, candidate 15.2(7)E
     for n in ("acc2", "acc3"):
@@ -465,7 +465,27 @@ def test_design_renders_zone_aware_ip_plan(tmp_path):
     text = _all_text(d)
     assert "MIXED — standardize on 15.2(7)E" in text          # majority image is the candidate
     assert "validate it against Cisco's published recommended release" in text
-    assert "replacement, not an image upgrade" in text and "WS-C2960X-48FPD-L" in text
+    assert "past-end-of-sale date band needs a planned refresh decision" in text
+    assert "does not prove lost support entitlement" in text and "WS-C2960X-48FPD-L" in text
+
+
+def test_design_software_plan_separates_past_ldos_replacement_from_past_eos_refresh(tmp_path):
+    snap = _snap()
+    snap["devices"] = {
+        "old": {"model": "WS-C4948E", "sw_version": "1"},
+        "sale": {"model": "WS-C2960X-48FPD-L", "sw_version": "2"},
+    }
+    snap["lifecycle_risk"]["per_device"] = [
+        {"host": "old", "model": "WS-C4948E", "band": "Past-LDoS"},
+        {"host": "sale", "model": "WS-C2960X-48FPD-L", "band": "Past-EoS"},
+    ]
+    out = str(tmp_path / "mixed-lifecycle.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "past last-day-of-support gets replacement" in text
+    assert "WS-C4948E" in text
+    assert "past-end-of-sale date band needs a planned refresh decision" in text
+    assert "date band alone does not prove lost support entitlement" in text
 
 
 def test_design_software_plan_consistent_fleet_message(tmp_path):
@@ -514,8 +534,9 @@ def test_design_vlan_inventory_is_canonical_single_source():
 
 
 def test_design_bom_labels_past_eos_as_refresh_not_replace(tmp_path):
-    """REVIEW #3: a still-supported Past-EoS device must appear under REFRESH (label names past-EoS), never
-    in a 'Replace (past-LDoS)' row -- the §5.1 BoM must not call supported gear past-LDoS/replace-now."""
+    """REVIEW #3: a Past-EoS device with LDoS still future and entitlement unassessed must appear
+    under REFRESH (label names past-EoS), never
+    in a 'Replace (past-LDoS)' row -- the §5.1 BoM must not call it past-LDoS/replace-now."""
     from cisco_toolkit.design_advisor import compute_design_blueprint
     snap = _snap()                                       # acc1 is Past-EoS WS-C2960X-48FPD-L; no Past-LDoS
     snap["design_blueprint"] = compute_design_blueprint(snap)   # §5.1 reads the canonical blueprint
@@ -524,6 +545,35 @@ def test_design_bom_labels_past_eos_as_refresh_not_replace(tmp_path):
     text = _all_text(Document(out))
     assert "Refresh (near-LDoS / past-EoS)" in text     # refresh label now names past-EoS
     assert "Replace (past-LDoS)" not in text            # no replace row (the fleet has 0 Past-LDoS)
+    assert "0 Near-LDoS asset(s)" in text
+    assert "1 Past-EoS asset(s) to place in refresh planning while LDoS is still future" in text
+    assert "approaching it to refresh" not in text
+
+
+def test_design_bom_renders_inventory_residue_with_no_lifecycle_rows(tmp_path):
+    """The HLD must retain both named devices and anonymous inventory residue when the axis emits no rows."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["devices"] = {
+        "a": {"hostname": "a", "model": "MODEL-A", "serial_number": "SER-A"},
+        "b": {"hostname": "b", "model": "MODEL-B", "serial_number": "SER-B"},
+    }
+    snap["collection_completeness"] = {
+        "summary": {"inventory": 4, "complete": 4, "partial": 0, "not_collected": 0}}
+    snap["lifecycle_risk"] = {"per_device": []}
+    snap["design_blueprint"] = compute_design_blueprint(snap)
+    bom = snap["design_blueprint"]["target_state"]["replacement_bom"]
+    assert bom["n_undetermined"] == 4 and bom["n_not_assessed"] == 4
+    assert ["(lifecycle row missing)", 2] in bom["undetermined"]
+
+    out = str(tmp_path / "no-lifecycle-rows.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "5.1 Replacement Bill of Materials" in text
+    assert "A further 4 asset(s) could NOT be banded" in text
+    assert "MODEL-A" in text and "MODEL-B" in text
+    assert "(lifecycle row missing)" in text
+    assert "UNDETERMINED — resolve before procurement" in text
 
 
 def test_design_53_renders_when_candidate_but_no_subnets(tmp_path):
@@ -1021,6 +1071,15 @@ _BOM_HEADING = "5.1 Replacement Bill of Materials"
 def _hld_text_for_bands(tmp_path, per_device):
     from cisco_toolkit.design_advisor import compute_design_blueprint
     snap = _snap()
+    # This helper models a fully enumerated lifecycle census. Keep the device owner census aligned with
+    # the synthetic host rows; missing-row behavior has its own explicit regression below.
+    snap["devices"] = {
+        row["host"]: {"hostname": row["host"], "model": row.get("model") or "Unknown"}
+        for row in per_device
+    }
+    snap["collection_completeness"] = {"summary": {
+        "inventory": len(per_device), "complete": len(per_device), "partial": 0, "not_collected": 0,
+    }}
     snap["lifecycle_risk"] = {"per_device": per_device}
     snap["design_blueprint"] = compute_design_blueprint(snap)
     out = str(tmp_path / "d.docx")
@@ -1032,8 +1091,8 @@ def test_hld_bom_section_appears_for_an_entirely_UNDETERMINED_fleet(tmp_path):
     """Absence-as-health at document level: §5.1 used to VANISH when nothing could be banded.
 
     `_replacement_bom` bucketed only `past-ldos` -> replace_now and the refresh bands -> refresh_soon.
-    `Unknown` -- a platform the offline EoX KB could not match -- fell through both, so a fleet of
-    unmatched platforms produced n_replace=0 and n_refresh=0, the §5.1 gate was false, and the whole
+    `Unknown` -- no exact EoX row OR a row whose source/date authority was withheld -- fell through
+    both, so an undetermined fleet produced n_replace=0 and n_refresh=0, the §5.1 gate was false, and the whole
     procurement section was OMITTED. The reader could not tell that from a fleet needing no
     procurement at all: an omitted section leaves nothing on the page to disagree with.
 
@@ -1048,6 +1107,9 @@ def test_hld_bom_section_appears_for_an_entirely_UNDETERMINED_fleet(tmp_path):
     assert "WS-C6509-E" in text and "WS-C3560-48PS" in text, "undetermined models not listed"
     assert "could NOT be banded" in text, "the reason for the gap is not disclosed"
     assert "UNDETERMINED — resolve before procurement" in text, "rows not labelled as undetermined"
+    assert "no exact EoX row matched" in text
+    assert "source/date authority was withheld" in text
+    assert "offline KB matched" not in text
 
 
 def test_hld_bom_section_stays_absent_for_a_fully_assessed_clean_fleet(tmp_path):
@@ -1066,8 +1128,45 @@ def test_hld_bom_keeps_real_replacements_leading_the_undetermined_rows(tmp_path)
         {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
         {"host": "b", "band": "Unknown", "model": "WS-C6509-E"}])
     assert _BOM_HEADING in text and "WS-C4948E" in text and "WS-C6509-E" in text
-    assert "1 asset(s) at end-of-support to replace" in text, "the real replacement was miscounted"
+    assert "1 Past-LDoS asset(s) to replace now" in text, "the real replacement was miscounted"
     assert "A further 1 asset(s) could NOT be banded" in text
+
+
+def test_design_software_plan_discloses_unknown_alongside_real_recommendation(tmp_path):
+    snap = _snap()
+    snap["devices"] = {
+        "old": {"model": "WS-C4948E", "sw_version": "1"},
+        "blind": {"model": "WS-C6509-E", "sw_version": "2"},
+    }
+    snap["lifecycle_risk"] = {"per_device": [
+        {"host": "old", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "blind", "band": "Unknown", "model": "WS-C6509-E"},
+    ]}
+    out = str(tmp_path / "mixed-known-unknown.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "past last-day-of-support gets replacement" in text
+    assert "NOT ASSESSED — 1 device(s) across 1 platform(s)" in text
+    assert "Either no exact EoX row matched" in text
+    assert "retained source/date authority was withheld or incomplete" in text
+
+
+def test_design_model_band_uses_canonical_near_ldos_precedence_over_past_eos(tmp_path):
+    snap = _snap()
+    snap["devices"] = {
+        "near": {"model": "SHARED", "sw_version": "1"},
+        "eos": {"model": "SHARED", "sw_version": "1"},
+    }
+    snap["lifecycle_risk"] = {"per_device": [
+        {"host": "near", "band": "Near-LDoS", "model": "SHARED"},
+        {"host": "eos", "band": "Past-EoS", "model": "SHARED"},
+    ]}
+    out = str(tmp_path / "band-order.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    doc = Document(out)
+    rows = [[c.text for c in row.cells] for table in doc.tables for row in table.rows]
+    model_rows = [r for r in rows if r and r[0] == "SHARED"]
+    assert model_rows and all("Near-LDoS" in r[-1] for r in model_rows)
 
 
 # =====================================================================================================

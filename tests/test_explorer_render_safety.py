@@ -33,6 +33,42 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXPLORER = ROOT / "cisco_toolkit" / "blast_radius_explorer.html"
 NODE = shutil.which("node")
 
+
+def test_demo_does_not_publish_lifecycle_bands_without_lifecycle_evidence():
+    """The automatic first-run demo must agree with its own LC-1 not-assessable verdict."""
+    html = EXPLORER.read_text(encoding="utf-8")
+    start = html.index("function demoSnapshot(){")
+    end = html.index("\nfunction distinctDeg", start)
+    demo = html[start:end]
+    assert "lifecycle_risk:" not in demo
+    bands = re.findall(r'eol_band:\s*"([^"]+)"', demo)
+    assert bands and set(bands) == {"Unknown"}, bands
+    assert 'id:"LC-1"' in demo
+    assert 'verdict:"not-assessable"' in demo
+    assert "Lifecycle analysis is absent from this snapshot." in demo
+
+
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_lifecycle_census_uses_canonical_order_and_future_bands_fail_closed(tmp_path):
+    out = _run("""
+      const counts={Unknown:5,"Past-EoS":3,"Future-Band":6,Active:4,"Past-LDoS":1,"Near-LDoS":2};
+      const entries=__EV("lifecycleBandEntries")(counts);
+      const census=__EV("abqCensus")(Object.fromEntries(entries),"device(s)",
+        __EV("lifecycleBandLabel"),k=>k==="Unknown"||k==="Future-Band");
+      console.log(JSON.stringify({
+        order:entries.map(([k])=>k),
+        future:__EV("lifecycleBandLabel")("Future-Band"),
+        gap:census&&census.gap,total:census&&census.total,text:census&&census.ev
+      }));
+    """, tmp_path)
+    assert out["order"] == [
+        "Past-LDoS", "Near-LDoS", "Past-EoS", "Active", "Unknown", "Future-Band"
+    ]
+    assert out["future"].startswith("NOT ASSESSED (unrecognized band:")
+    assert out["gap"] == 11 and out["total"] == 21
+    assert out["text"].index("Past-LDoS") < out["text"].index("Near-LDoS")
+    assert "coverage gap" in out["text"]
+
 # A DOM stub just rich enough for the explorer's load()/render path. Every element accepts any
 # attribute/handler and records innerHTML; nothing is asserted through the DOM — the assertions
 # read the STRINGS the render functions return, which is where the defects live.
@@ -417,6 +453,81 @@ def test_device_panel_is_not_suppressed_when_the_only_signal_is_an_unbanded_life
     assert "NOT ASSESSED" not in out["past_ldos"], "a real band was relabelled as a coverage gap"
 
 
+_LC_WORDING_DRIVER = """
+const EV=globalThis.__EV;
+const P=JSON.parse(require('fs').readFileSync(process.argv[2],'utf-8'));
+EV('load')(P.snap,'T',false);
+globalThis.__IT={id:'lc-01',domain:'Routing & Switching',question:P.q,go_no_go:false};
+const auto=EV('abqAuto')(globalThis.__IT);
+process.stdout.write(JSON.stringify({
+  cockpit:EV('cockpitCard')(),
+  profile:EV('abH_profile')(P.active).html,
+  migrate:EV('abH_migrate')(P.active).html,
+  unknown_profile:EV('abH_profile')(P.unknown).html,
+  fleet:EV('abH_fleet')().html,
+  eol:EV('abH_eol')().html,
+  auto:auto&&auto.ev||''
+}));
+"""
+
+
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_lifecycle_views_render_active_as_date_position_and_unknown_as_a_class(tmp_path):
+    active, unknown, past_ldos, past_eos = "active-sw", "unknown-sw", "ldos-sw", "eos-sw"
+    payload = {
+        "q": _LC_Q,
+        "active": active,
+        "unknown": unknown,
+        "snap": {
+            "schema": "collect_parse_snapshot/1",
+            "interfaces": {active: {}, unknown: {}, past_ldos: {}, past_eos: {}},
+            "devices": {active: {"model": "C9300-48P"}, unknown: {"model": "UNMATCHED-1"},
+                        past_ldos: {"model": "OLD-1"}, past_eos: {"model": "SALE-1"}},
+            "lifecycle_risk": {
+                "asof": "2026-08-07",
+                "summary": {
+                    "n_devices": 4,
+                    "n_active": 1,
+                    "n_unknown": 1,
+                    "n_past_ldos": 1,
+                    "n_near": 0,
+                    "n_past_eos": 1,
+                    "by_band": {"Active": 1, "Unknown": 1, "Past-LDoS": 1, "Past-EoS": 1},
+                    "by_platform": [
+                        {"platform": "Catalyst 9300", "count": 1, "band": "Active", "ldos": "2030-01-01"},
+                        {"platform": "UNMATCHED-1", "count": 1, "band": "Unknown", "ldos": ""},
+                    ],
+                },
+                "per_device": [
+                    {"host": active, "band": "Active", "eos": "2028-01-01", "ldos": "2030-01-01",
+                     "status": "Active (no end-of-life announced)"},
+                    {"host": unknown, "band": "Unknown", "status": "Unknown model"},
+                    {"host": past_ldos, "band": "Past-LDoS", "status": "past support"},
+                    {"host": past_eos, "band": "Past-EoS", "status": "past sale"},
+                ],
+            },
+        },
+    }
+    out = _run(_LC_WORDING_DRIVER, tmp_path, payload=payload)
+
+    for surface in ("cockpit", "profile", "migrate", "fleet", "eol", "auto"):
+        assert "Pre-EoS date band" in out[surface], (surface, out[surface])
+    for surface in ("cockpit", "fleet", "eol", "auto", "unknown_profile"):
+        assert "NOT ASSESSED" in out[surface] or "No authoritative lifecycle band" in out[surface], \
+            (surface, out[surface])
+    assert "support entitlement not assessed" in out["profile"]
+    assert "support entitlement not assessed" in out["migrate"]
+    assert "no exact EoX bulletin row matched" in out["unknown_profile"]
+    assert "retained source proof/complete dates did not verify" in out["unknown_profile"]
+    assert "Past end-of-support" in out["eol"] and past_ldos in out["eol"]
+    assert "Past end-of-sale (LDoS still future)" in out["eol"] and past_eos in out["eol"]
+    end_support = out["eol"].split("Past end-of-support", 1)[1].split("Past end-of-sale", 1)[0]
+    assert past_eos not in end_support
+    rendered = " ".join(out.values())
+    assert "Active (no end-of-life announced)" not in rendered
+    assert "Unknown model" not in rendered
+
+
 # --------------------------------------------------------------------------- 4. asset risk register
 # U1-2: compute_device_dossiers() correctly ABSTAINS on an axis it has no evidence for (state "na"), and
 # abstention is weighted ZERO in the exposure score. So an asset whose EoL / software / control-plane /
@@ -546,7 +657,7 @@ def test_interview_never_auto_answers_from_an_all_unassessed_census(tmp_path):
     clean = out["clean"]
     assert clean is not None and clean["gap"] == 0, clean
     assert "NOT ASSESSED" not in clean["ev"] and "coverage gap" not in clean["ev"], clean["ev"]
-    assert "Active: 10" in clean["ev"], clean["ev"]
+    assert "Pre-EoS date band: 10" in clean["ev"], clean["ev"]
 
 
 # --------------------------------------------------------------------------- 6. three-mirror coverage rule

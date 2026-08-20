@@ -181,9 +181,9 @@ def test_dhcpv6_guard_clause_reports_the_real_intersection_not_a_parallel_count(
 
 # ------------------------------------------------------------------ #50 Past-EoS counted two ways
 def test_past_eos_is_one_disposition_across_the_bom_and_the_narrative():
-    """#50 Past-EoS (past end-of-SALE, still supported) landed in _replacement_bom's `refresh_soon`
+    """#50 Past-EoS (after end-of-SALE but before recorded LDoS) landed in _replacement_bom's `refresh_soon`
     (procure a replacement) while sig['near'] matched only "near" and `retain = collected - eol` counted
-    the SAME device as a supportable asset to carry forward. Procurement ordered to one number and the
+    the SAME device as a carry-forward asset. Procurement ordered to one number and the
     migration plan assumed the other, in ONE blueprint. The three dispositions must PARTITION the
     lifecycle-assessed fleet."""
     snap = {"lifecycle_risk": {"per_device": [
@@ -199,7 +199,9 @@ def test_past_eos_is_one_disposition_across_the_bom_and_the_narrative():
     assert sig["near"] == 3 == bom["n_refresh"], "refresh class must match the BoM (Near-LDoS + Past-EoS)"
     dim = next(d for d in da.compute_target_state(snap)["dimensions"]
                if d["area"] == "Hardware lifecycle disposition")
-    assert "carry ~1 fully-supported asset(s) forward" in dim["target"], dim["target"]
+    assert "identify ~1 pre-EoS date-band asset(s) as carry-forward candidates" in dim["target"], dim["target"]
+    assert "support entitlement not assessed" in dim["target"], dim["target"]
+    assert "fully-supported" not in dim["target"]
     # the partition holds: replace + refresh + retain == the lifecycle-assessed fleet, no device twice
     assert sig["eol"] + sig["near"] + 1 == sig["lifecycle_assessed"] == 5
     assert "3 approaching-LDoS or past-EoS" in dim["current"], dim["current"]
@@ -231,9 +233,11 @@ def test_cost_axis_cannot_read_Comfortable_when_the_fleet_was_never_lifecycle_ba
     assert unknown["posture"] != "Comfortable", "an undetermined fleet was certified affordable"
     assert unknown["score"] <= 2, unknown
     assert "could NOT be lifecycle-banded" in unknown["evidence"], "the gap is not disclosed to the reader"
+    assert "no exact EoX match" in unknown["evidence"]
+    assert "source/date authority was withheld" in unknown["evidence"]
 
     # Non-vacuity: the clamp must be driven by the unknowns, not always-on. A genuinely assessed,
-    # fully supportable fleet must keep its top score -- otherwise the axis is uninformative in the
+    # fully pre-EoS-date-banded fleet must keep its top score -- otherwise the axis is uninformative in the
     # other direction and the guard proves nothing.
     healthy = _cost_axis(["Active"] * 3)
     assert healthy["posture"] == "Comfortable" and healthy["score"] == 4, healthy
@@ -280,7 +284,7 @@ def test_cost_axis_cannot_read_Comfortable_when_the_lifecycle_axis_produced_NOTH
         assert a["score"] <= 2, (label, a)
         assert "never assessed by the lifecycle axis" in a["evidence"], (label, a["evidence"])
 
-    # NON-VACUITY 1: a fleet that WAS assessed and is fully supported keeps the top score and gains
+    # NON-VACUITY 1: a fleet that WAS assessed into the pre-EoS date band keeps the top score and gains
     # no disclosure -- the clamp is not always-on.
     healthy = _cost_axis_snap({"collection_completeness": _FULL_CENSUS, "devices": _THREE_DEVICES,
                                "lifecycle_risk": {"per_device": [
@@ -309,12 +313,27 @@ def test_target_state_still_speaks_about_lifecycle_when_the_axis_produced_nothin
     assert "NOT lifecycle-assessed at all" in dim["current"], dim["current"]
     assert "never lifecycle-assessed" in dim["target"], dim["target"]
 
-    # NON-VACUITY: a fully-banded, fully-supported fleet must not acquire the never-assessed clause.
+    # NON-VACUITY: a fully-banded pre-EoS date-position fleet must not acquire the never-assessed
+    # clause; this fixture does not make a support-entitlement claim.
     ok = {"collection_completeness": _FULL_CENSUS, "devices": _THREE_DEVICES,
           "lifecycle_risk": {"per_device": [{"host": f"h{i}", "band": "Active"} for i in range(3)]}}
     dim_ok = next((d for d in da.compute_target_state(ok)["dimensions"]
                    if d["area"] == "Hardware lifecycle disposition"), None)
     assert dim_ok is None or "NOT lifecycle-assessed at all" not in dim_ok["current"], dim_ok
+
+
+def test_replacement_bom_includes_devices_that_received_no_lifecycle_row():
+    """No-row assets need a visible evidence-resolution quantity; they are not an empty/healthy BoM."""
+    snap = {
+        "collection_completeness": {"summary": {"inventory": 2, "complete": 2, "not_collected": 0}},
+        "devices": {"a": {"model": "MODEL-A"}, "b": {"model": "MODEL-B"}},
+        "lifecycle_risk": {"per_device": []},
+    }
+    bom = da._replacement_bom(snap)
+    assert bom["n_replace"] == 0 and bom["n_refresh"] == 0
+    assert bom["n_undetermined"] == 2 and bom["n_not_assessed"] == 2
+    assert bom["undetermined"] == [["MODEL-A", 1], ["MODEL-B", 1]]
+    assert "no lifecycle row" in bom["note"]
 
 
 # ---------------------------------------- r9 EXITS B/C: a CURATED on-air classification, said in its own voice

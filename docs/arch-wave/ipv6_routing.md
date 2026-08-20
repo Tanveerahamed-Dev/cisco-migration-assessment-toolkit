@@ -12,11 +12,12 @@ The second subtle trap I handled: 2WAY is NOT a fault. Two DROTHER routers on a 
 
 CAVEATS / integration notes for the main session: (1) Register `_d_ipv6_routing_adjacency` in `_DETECTORS` (design_advisor.py ~line 1722, alongside the MPLS detectors) and add a `design_kb` principle entry for pid `ipv6-routing-adjacency-down` (title/citation/recommended_action/alternatives/tradeoffs/domain) so `_decision`'s `by_id` lookup is populated — without it the decision still emits but title/driver fall back to the pid. (2) Wire `build_ipv6_routing` into COLLECT_PARSE_V3_23_0.py near line 1625 with an `all_ipv6_routing` accumulator and attach it to the snapshot as `snap['ipv6_routing']` (mirroring the `mpls`/`ipv6_fhs` blocks), and ensure it is stripped from the frozen golden snapshot like the other per-device service axes. (3) The BGP-IPv6 parser handles the common single-line form; IOS wraps a long IPv6 Neighbor onto its own line with the numeric/state column on the next line — if the real Meridian/customer capture shows the wrapped form, the parser needs a small two-line-join follow-up (noted, not built, to avoid ungrounded regex). (4) On NX-OS the equivalent neighbor command is `show ipv6 ospf neighbor` (already in the build's fallback list) — `show ospfv3 neighbor` is the IOS/IOS-XE form. All regex is grounded verbatim in parser_sample_input.
 sources: https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/ipv6/command/ipv6-cr-book/ipv6-s5.html (show ipv6 route summary — 'IPv6 Routing Table - N entries' + per-source breakdown; route-type codes C/L/S/B/R/O/OI/OE1...) | https://www.cisco.com/c/en/us/support/docs/ip/ip-version-6-ipv6/112100-ospfv3-config-guide.html (Use OSPFv3 Configuration Example — 'show ospfv3 neighbor' / OSPFv3 process header + Neighbor ID/Pri/State/Dead Time/Interface ID/Interface columns, FULL/DR, FULL/BDR, FULL/- rows) | https://www.cisco.com/c/en/us/support/docs/ip/open-shortest-path-first-ospf/13685-13.html (Understand OSPF Neighbor States — Down/Attempt/Init/2-Way/Exstart/Exchange/Loading/Full; 2-Way is the stable DROTHER<->DROTHER state, FULL is full adjacency) | https://www.cisco.com/c/en/us/support/docs/ip/open-shortest-path-first-ospf/13684-12.html (Troubleshoot OSPF stuck in Exstart/Exchange — MTU mismatch is the classic cause of a neighbor stuck below FULL) | https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/ipv6/command/ipv6-cr-book/ipv6-s1.html (show bgp ipv6 unicast summary — Neighbor/V/AS/MsgRcvd/MsgSent/TblVer/InQ/OutQ/Up/Down/State-PfxRcd; numeric PfxRcd = Established, state word e.g. Active/Idle = not Established) | https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/ip-routing/b-ip-routing/m_ip6-route-ospfv3-xe.html (IOS-XE 17.x OSPFv3 IPv6 routing config guide — confirms 'show ospfv3 neighbor' address-family output form)
+NX-OS sample provenance: https://www.cisco.com/en/US/docs/switches/datacenter/sw/4_2/nx-os/unicast/command/reference/l3_cmds_show.html (public `show ipv6 ospfv3 neighbors` output used verbatim by the parser fixture, including the sample router ID and link-local addresses)
 
 ## parser_sample_input
 ```
 --- show ipv6 route summary (IOS / IOS-XE) ---
-IPv6 Routing Table - default - 8 entries
+IPv6 Routing Table - default - 10 entries
 Route Source    Networks    Subnets     Overhead    Memory (bytes)
 connected       4           0           384         576
 local           4           0           384         576
@@ -226,7 +227,7 @@ def _d_ipv6_routing_adjacency(snap, sig):
 # routing-active GATE (census only -- never a firing signal). core1/core2 emit none of these -> {} (silent), so
 # EXACTLY ONE switch fires.
 "show ipv6 route summary": """\
-IPv6 Routing Table - default - 8 entries
+IPv6 Routing Table - default - 10 entries
 Route Source    Networks    Subnets     Overhead    Memory (bytes)
 connected       4           0           384         576
 local           4           0           384         576

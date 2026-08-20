@@ -1,5 +1,6 @@
 """Focused regressions for exact current-run custody and fail-closed pipeline inputs."""
 import hashlib
+from importlib.resources import as_file, files
 import json
 import logging
 import sys
@@ -9,8 +10,14 @@ import pytest
 from openpyxl import Workbook
 
 import COLLECT_PARSE_V3_23_0 as cp
-from cisco_toolkit import assertions, cmdio, gate_state, input_custody, manifest
-
+from cisco_toolkit import (
+    assertions,
+    cmdio,
+    gate_state,
+    input_custody,
+    manifest,
+    traffic_assurance,
+)
 
 def _args(**changes):
     base = {
@@ -19,6 +26,7 @@ def _args(**changes):
         "import_inventory": None,
         "scenario": None,
         "path_intents": None,
+        "traffic_intents": None,
         "assert_pack": None,
         "flow_src": None,
         "flow_dst": None,
@@ -191,6 +199,7 @@ def test_transient_raw_mutation_cannot_be_hidden_by_restoring_file_before_seal(
     [
         ("scenario", '{"scenarios": []}'),
         ("path_intents", '{"intents":[{"id":"x","src":"a"}]}'),
+        ("traffic_intents", '{"intents":[{"src":"192.0.2.1","dst":"198.51.100.1"}]}'),
         ("assert_pack", '{"assertions":[{"id":"x","subject":"health"}]}'),
         ("requirements", '{"unknown_only":"value"}'),
     ],
@@ -201,6 +210,22 @@ def test_supplied_invalid_optional_inputs_fail_closed(tmp_path, field, content):
     args = _args(**{field: str(path)})
     with pytest.raises(ValueError):
         cp._preflight_optional_inputs(args)
+
+
+@pytest.mark.parametrize("mode_args", [
+    ["--compare", "old.json", "new.json"],
+    ["--trend", "old.json", "new.json"],
+])
+def test_traffic_intents_refuse_modes_that_do_not_publish_them(monkeypatch, capsys, mode_args):
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess", *mode_args, "--traffic-intents", "must-not-be-read.json",
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        cp.main()
+
+    assert exc.value.code == 2
+    assert "do not evaluate or publish Traffic Assurance" in capsys.readouterr().err
 
 
 def test_assert_pack_preserves_and_validates_complete_object_grammar(tmp_path):
@@ -256,6 +281,52 @@ def test_optional_input_hash_and_parser_share_one_bound_byte_string(tmp_path):
     )
     with pytest.raises(ValueError, match="mutation detected"):
         cp._require_current_bindings(loaded["bindings"], "optional input")
+
+
+def test_traffic_intents_preflight_preserves_bound_rows_and_rejects_identity_ambiguity(tmp_path):
+    path = tmp_path / "traffic-intents.json"
+    catalog = {
+        "intents": [{
+            "id": "client-to-api", "src": "192.0.2.10", "dst": "198.51.100.20",
+            "protocol": "tcp", "src_port": 49152, "dst_port": 443,
+            "return_required": False,
+            "failure": {"action": "fail_node", "id": "edge-2"},
+        }]
+    }
+    path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    loaded = cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
+
+    assert loaded["traffic_intents"] == catalog["intents"]
+    assert loaded["records"][0]["role"] == "traffic_intents"
+    assert loaded["bindings"][0]["role"] == "traffic_intents"
+
+    for rows, error in (
+        ([{"id": "same"}, {"id": " same "}], "IDs must be unique"),
+        ([{"id": "x", "failure": "fail_node"}], "failure must be a JSON object"),
+    ):
+        path.write_text(json.dumps({"intents": rows}), encoding="utf-8")
+        with pytest.raises(ValueError, match=error):
+            cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
+
+
+def test_tracked_traffic_intents_example_is_bound_and_semantically_valid():
+    resource = files("cisco_toolkit").joinpath("data/traffic-intents.example.json")
+    with as_file(resource) as path:
+        loaded = cp._preflight_optional_inputs(_args(traffic_intents=str(path)))
+    result = traffic_assurance.assess_flows({}, loaded["traffic_intents"])
+
+    assert loaded["records"][0]["role"] == "traffic_intents"
+    assert loaded["bindings"][0]["role"] == "traffic_intents"
+    assert result["summary"]["n"] == len(loaded["traffic_intents"])
+    assert result["summary"]["invalid"] == 0
+    assert all(row["valid"] for row in result["results"])
+    assert all(row["supported"] for row in result["results"])
+    assert all(row["verdict"] == "indeterminate" for row in result["results"])
+    failure = result["results"][1]["failure"]
+    assert failure["requested"] is True
+    assert failure["action"] == "fail_node"
+    assert failure["mutation"]["valid"] is True
 
 
 def test_devices_are_parsed_from_the_same_bytes_recorded_for_custody(tmp_path):

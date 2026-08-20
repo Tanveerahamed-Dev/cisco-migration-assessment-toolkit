@@ -29,6 +29,9 @@ from .docx_style import GREY as _GREY
 from .docx_style import NAVY as _NAVY
 from .docx_style import add_table, ink, kv, new_document
 
+_AMBER = (0x9A, 0x67, 0x00)
+_RED = (0xCF, 0x22, 0x2E)
+
 # List coercion is `summary._as_list` (the web layer's single copy, as `cutover.py` uses it); the dict
 # twin lives here for the same reason it lives in `cutover.py` -- see `cisco_toolkit.docmeta.as_dict`
 # for the engine-side equivalent the writer family shares.
@@ -79,8 +82,11 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     # source the explorer/deck/HLD read), with len(devices) only as a pre-brief fallback (C9 fix —
     # the web-layer NRFU writer was the last surface recomputing fleet scale from the raw array).
     scale = _as_dict(_as_dict(snap_dict.get("executive_brief")).get("scale"))
-    val_items = [i for i in summary._as_list(_as_dict(snap_dict.get("validation_plan")).get("items"))
+    raw_validation_plan = snap_dict.get("validation_plan")
+    validation_plan = _as_dict(raw_validation_plan)
+    val_items = [i for i in summary._as_list(validation_plan.get("items"))
                  if isinstance(i, dict)]
+    current_baseline = engine.compute_current_baseline_gate(raw_validation_plan)
     services = [s for s in summary._as_list(_as_dict(snap_dict.get("service_map")).get("services"))
                 if isinstance(s, dict)]
     domains = [d for d in summary._as_list(_as_dict(snap_dict.get("application_intelligence")).get("domains"))
@@ -246,7 +252,20 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         model = d.get("model", "") or "—"
         ver = d.get("sw_version", "") or "—"
         band = d.get("band", "")
-        note = "Past end-of-support — replacement, not just verification" if "Past" in str(band) else (band or "")
+        if band == "Past-LDoS":
+            note = "Past last-day-of-support — replacement, not just verification"
+        elif band == "Past-EoS":
+            note = ("Past end-of-sale with LDoS still future — plan refresh; this date band does not "
+                    "establish support entitlement")
+        elif band == "Near-LDoS":
+            note = "Within one year of LDoS — schedule refresh before the recorded deadline"
+        elif band == "Active":
+            note = "Pre-EoS date band (schema: Active); support entitlement not assessed"
+        elif band == "Unknown":
+            note = ("NOT ASSESSED — either no exact EoX row matched or the matched row's retained "
+                    "source/date authority was withheld or incomplete")
+        else:
+            note = band or ""
         rows1.append([f"NRFU-I-{n:03d}", host,
                       "Device reachable; model & software match the as-built baseline",
                       "show version | i Model number|Version|System image",
@@ -259,16 +278,48 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
 
     # ---- 4. Phase II — logical config & connectivity ----
     doc.add_heading("4. Phase II — Logical configuration & connectivity", level=1)
-    doc.add_paragraph("These are the engine's own post-cutover validation checks. Run each and compare "
-                      "to the Expected baseline captured pre-cutover.")
+    doc.add_paragraph(
+        "These are the engine's own post-cutover validation checks. Compare the observed result with "
+        "the captured baseline and its evidence authority. A degraded, review, or not-verified "
+        "pre-cutover observation is an acceptance blocker; matching that observation is not a PASS."
+    )
+    gate_verdict = str(current_baseline.get("verdict") or "INDETERMINATE")
+    gate_summary = _as_dict(current_baseline.get("summary"))
+    n_gate_blockers = gate_summary.get("n_blockers")
+    n_gate_blockers = n_gate_blockers if isinstance(n_gate_blockers, int) else 0
+    if gate_verdict != "CLEAR":
+        banner = doc.add_paragraph()
+        banner_label = banner.add_run(f"CURRENT BASELINE {gate_verdict} — ")
+        banner_label.bold = True
+        banner_label.font.color.rgb = ink(_RED if gate_verdict == "BLOCKED" else _AMBER)
+        if n_gate_blockers:
+            banner.add_run(
+                f"{n_gate_blockers} blocker occurrence(s) require resolution, recollection, or "
+                "explicit disposition before acceptance. Matching a blocker observation is not acceptance."
+            )
+        else:
+            banner.add_run(
+                "the validation-plan receipt did not establish a reconciled all-clear. Recollect or "
+                "repair the evidence contract before acceptance."
+            )
     rows2: List[List[Any]] = []
     for n, it in enumerate(val_items, start=1):
-        rows2.append([f"NRFU-II-{n:03d}", it.get("device", ""), it.get("category", ""),
-                      it.get("severity", ""), it.get("check", ""), it.get("command", ""),
-                      it.get("expect", ""), ""])
+        evidence_state = it.get("evidence_state") or "not published"
+        custody = it.get("projection_custody") or "custody not published"
+        source = it.get("source_key") or "source not published"
+        rows2.append([
+            f"NRFU-II-{n:03d}", it.get("device", ""),
+            f"{it.get('category', '')}\n{it.get('severity', '')}",
+            it.get("check", ""), it.get("command", ""), it.get("expect", ""),
+            evidence_state, f"{custody}\n{source}", "",
+        ])
     if rows2:
-        table(["ID", "Device", "Category", "Sev", "Check", "Command", "Expected", "Result"], rows2,
-              widths=[0.7, 0.7, 0.8, 0.5, 1.3, 1.2, 1.6, 0.5])
+        table(
+            ["ID", "Device", "Category / sev", "Check", "Command",
+             "Observed baseline / acceptance", "Evidence state", "Custody / source", "Result"],
+            rows2,
+            widths=[0.55, 0.6, 0.75, 0.9, 0.9, 1.25, 0.7, 1.05, 0.45],
+        )
     else:
         doc.add_paragraph("No validation_plan in this snapshot.")
 

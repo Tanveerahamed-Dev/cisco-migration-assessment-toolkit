@@ -1,0 +1,10 @@
+.panel { display: grid; gap: .8rem; margin: 1rem 0; border: 1px solid var(--line); background: var(--surface); padding: 1rem; }
+.panel header p,.limit { color: var(--ink-faint); margin: 0; }
+.panel h3 { margin: .2rem 0 0; }
+.panel ol { display: grid; gap: .55rem; margin: 0; padding: 0; list-style: none; }
+.panel li { display: grid; grid-template-columns: 7rem minmax(12rem,1fr) 2fr; gap: .65rem; align-items: baseline; border-top: 1px solid var(--line); padding-top: .55rem; }
+.panel li > span { color: var(--cyan); font-size: .7rem; text-transform: uppercase; }
+.panel li p { color: var(--ink-soft); margin: 0; }
+.panel a { color: var(--cyan); grid-column: 2 / -1; overflow-wrap: anywhere; font: .72rem ui-monospace,monospace; }
+.limit { border-left: 3px solid var(--amber); padding-left: .7rem; }
+@media (max-width: 650px) { .panel li { grid-template-columns: 1fr; } .panel a { grid-column: auto; } }

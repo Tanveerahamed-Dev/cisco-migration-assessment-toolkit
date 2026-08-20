@@ -1,19 +1,87 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Miniflare } from "miniflare";
+import htmlParser from "next/dist/compiled/node-html-parser/index.js";
+
+import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
+import { buildCapabilityCatalogViewModel } from "../app/atlas/capabilityLineage.ts";
+import { buildCoreOutcomeViewModel } from "../app/atlas/coreOutcomeLineage.ts";
+import { buildHorizonGapsViewModel } from "../app/atlas/horizonLineage.ts";
 
 const root = new URL("../", import.meta.url);
+const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+const { default: worker } = await import(workerUrl.href);
+const { parse: parseHtml } = htmlParser;
+const HTML_PARSE_OPTIONS = {
+  comment: false,
+  blockTextElements: {
+    iframe: true,
+    noembed: true,
+    noframes: true,
+    noscript: true,
+    plaintext: true,
+    script: true,
+    style: true,
+    template: true,
+    textarea: true,
+    title: true,
+    xmp: true,
+  },
+};
+const INERT_TEXT_TAGS = new Set([
+  "iframe",
+  "noembed",
+  "noframes",
+  "plaintext",
+  "script",
+  "style",
+  "template",
+  "textarea",
+  "title",
+  "xmp",
+]);
+const CORE_OUTCOME_STYLESHEET = Object.freeze({
+  href: "/assets/index-B9KNmxWm.css",
+  sha256: "bc9b52cac7e84bc24340532b3dbb1fa964200f2bfe2675924774b5cf902e6925",
+  attributes: Object.freeze({
+    "data-precedence": "vite-rsc/importer-resources",
+    "data-rsc-css-href": "/assets/index-B9KNmxWm.css",
+    href: "/assets/index-B9KNmxWm.css",
+    rel: "stylesheet",
+  }),
+});
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
+function canonicalGzip(source) {
+  const encoded = gzipSync(source, { level: 9 });
+  Buffer.from(CANONICAL_GZIP_HEADER_BYTES).copy(encoded, 0);
+  return encoded;
+}
 
+function noncanonicalGzip(source) {
+  const encoded = canonicalGzip(source);
+  encoded[CANONICAL_GZIP_HEADER_BYTES.length - 1] = 0x00;
+  return encoded;
+}
+
+function byteStream(chunks) {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+}
+
+async function render(path = "/") {
   return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
+    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
     {
       ASSETS: {
         fetch: async () => new Response("Not found", { status: 404 }),
@@ -26,91 +94,1805 @@ async function render() {
   );
 }
 
-test("server-renders the complete master reference", async () => {
+function decodeHtmlText(value) {
+  return value.replaceAll(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (entity, code) => {
+    const lowered = code.toLowerCase();
+    if (lowered === "amp") return "&";
+    if (lowered === "lt") return "<";
+    if (lowered === "gt") return ">";
+    if (lowered === "quot") return '"';
+    if (lowered === "apos") return "'";
+    const point = lowered.startsWith("#x")
+      ? Number.parseInt(lowered.slice(2), 16)
+      : Number.parseInt(lowered.slice(1), 10);
+    return Number.isFinite(point) ? String.fromCodePoint(point) : entity;
+  });
+}
+
+function parsedHtml(html) {
+  return parseHtml(html, HTML_PARSE_OPTIONS);
+}
+
+async function assertCoreOutcomeStyleCustody(
+  html,
+  readStylesheet = async (href) => {
+    const clientRoot = new URL("../dist/client/", import.meta.url);
+    const target = new URL(`../dist/client${href}`, import.meta.url);
+    assert.ok(
+      target.href.startsWith(clientRoot.href),
+      "Core outcome stylesheet escaped dist/client",
+    );
+    return readFile(target);
+  },
+) {
+  const document = parsedHtml(html);
+  assert.equal(
+    document.querySelectorAll("style").length,
+    0,
+    "Core outcome style custody rejects embedded styles",
+  );
+  assert.equal(
+    document.querySelectorAll("[style]").length,
+    0,
+    "Core outcome style custody rejects inline styles",
+  );
+  const links = document.querySelectorAll("link").filter((link) =>
+    (link.getAttribute("rel") ?? "")
+      .split(/[\t\n\f\r ]+/)
+      .some((token) => token.toLowerCase() === "stylesheet"),
+  );
+  assert.equal(
+    links.length,
+    1,
+    "Core outcome style custody requires exactly one built stylesheet",
+  );
+  const attributes = Object.fromEntries(
+    Object.entries(links[0].attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  assert.deepEqual(
+    attributes,
+    CORE_OUTCOME_STYLESHEET.attributes,
+    "Core outcome built stylesheet attributes changed; a canonical build refresh is required",
+  );
+  const href = attributes.href;
+  assert.match(href, /^\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
+  assert.equal(href.includes("?"), false);
+  assert.equal(href.includes("#"), false);
+  assert.equal(
+    decodeURIComponent(href),
+    href,
+    "Core outcome stylesheet path must not contain encoded path or query syntax",
+  );
+  const stylesheet = await readStylesheet(href);
+  assert.ok(
+    stylesheet instanceof Uint8Array,
+    "Core outcome stylesheet loader returned non-byte content",
+  );
+  assert.equal(
+    createHash("sha256").update(stylesheet).digest("hex"),
+    CORE_OUTCOME_STYLESHEET.sha256,
+    "Core outcome built stylesheet bytes changed; a canonical build refresh is required",
+  );
+  const css = new TextDecoder("utf-8", { fatal: true }).decode(stylesheet);
+  assert.doesNotMatch(css, /@import\b/i, "Core outcome stylesheet custody rejects CSS imports");
+}
+
+function liveText(node) {
+  if (node.nodeType === 3) return node.rawText ?? "";
+  if (node.nodeType !== 1 || INERT_TEXT_TAGS.has(node.rawTagName?.toLowerCase())) return "";
+  return (node.childNodes ?? []).map((child) => liveText(child)).join(" ");
+}
+
+function lineageSlotText(html, attribute, label) {
+  const slots = new Map();
+  for (const element of parsedHtml(html).querySelectorAll(`[${attribute}]`)) {
+    const slotId = element.getAttribute(attribute);
+    if (!slotId) throw new Error(`empty physical ${label} slot`);
+    if (slots.has(slotId)) {
+      throw new Error(`duplicate physical ${label} slot ${slotId}`);
+    }
+    slots.set(slotId, decodeHtmlText(liveText(element)).replaceAll(/\s+/g, " ").trim());
+  }
+  return slots;
+}
+
+function horizonSlotText(html) {
+  return lineageSlotText(html, "data-horizon-slot", "Horizon");
+}
+
+function capabilitySlotText(html) {
+  return lineageSlotText(html, "data-capability-slot", "capability");
+}
+
+function coreOutcomeSlotText(html) {
+  return lineageSlotText(html, "data-core-outcome-slot", "Core outcome");
+}
+
+function normalizedVisibleText(html) {
+  return decodeHtmlText(liveText(parsedHtml(html))).replaceAll(/\s+/g, " ").trim();
+}
+
+function visibleTextOccurrences(html, expected) {
+  const text = normalizedVisibleText(html);
+  const target = expected.replaceAll(/\s+/g, " ").trim();
+  let count = 0;
+  let offset = 0;
+  while (target && (offset = text.indexOf(target, offset)) !== -1) {
+    count += 1;
+    offset += target.length;
+  }
+  return count;
+}
+
+function sectionById(html, id) {
+  const matches = parsedHtml(html).querySelectorAll(`section#${id}`);
+  assert.equal(matches.length, 1, `expected exactly one section#${id}`);
+  let node = matches[0];
+  const requiredAncestors = [
+    ["section", { class: "workspace-section" }],
+    ["main", { class: "atlas-content", id: "atlas-content" }],
+    ["div", { class: "atlas-frame" }],
+    ["div", { class: "atlas-shell" }],
+    ["body", {}],
+    ["html", { lang: "en" }],
+  ];
+  const actualAncestors = [];
+  while (node?.nodeType === 1) {
+    const attributes = node.attributes ?? {};
+    const style = attributes.style?.replaceAll(/\s+/g, "").toLowerCase() ?? "";
+    assert.equal(Object.hasOwn(attributes, "hidden"), false, `section#${id} has a hidden ancestor`);
+    assert.notEqual(attributes["aria-hidden"]?.toLowerCase(), "true", `section#${id} has an aria-hidden ancestor`);
+    assert.equal(/(?:^|;)display:none(?:;|$)/.test(style), false, `section#${id} has a display-none ancestor`);
+    assert.equal(/(?:^|;)visibility:hidden(?:;|$)/.test(style), false, `section#${id} has a visibility-hidden ancestor`);
+    assert.equal(
+      node.rawTagName?.toLowerCase() === "dialog" && !Object.hasOwn(attributes, "open"),
+      false,
+      `section#${id} is inside a closed dialog`,
+    );
+    assert.equal(
+      node.rawTagName?.toLowerCase() === "details" && !Object.hasOwn(attributes, "open"),
+      false,
+      `section#${id} is inside closed details`,
+    );
+    if (node !== matches[0] && node.rawTagName) actualAncestors.push(node);
+    node = node.parentNode;
+  }
+  assert.equal(actualAncestors.length, requiredAncestors.length, `section#${id} changed its ancestor depth`);
+  for (const [index, [tag, expectedAttributes]] of requiredAncestors.entries()) {
+    const ancestor = actualAncestors[index];
+    assert.equal(ancestor.rawTagName?.toLowerCase(), tag, `section#${id} changed ancestor ${index}`);
+    assert.deepEqual(
+      ancestor.attributes,
+      expectedAttributes,
+      `section#${id} changed ancestor ${index} attributes`,
+    );
+  }
+  return matches[0].toString();
+}
+
+function tagAttributes(tag) {
+  const opening = /^<([A-Za-z][A-Za-z0-9:-]*)\b([\s\S]*?)\/?\s*>$/.exec(tag);
+  assert.ok(opening, `invalid opening tag in Core outcome locator: ${tag}`);
+  const attributes = new Map();
+  const source = opening[2];
+  const attributePattern = /\s+([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*"([^"]*)"/g;
+  let cursor = 0;
+  for (let match = attributePattern.exec(source); match; match = attributePattern.exec(source)) {
+    assert.equal(
+      source.slice(cursor, match.index).trim(),
+      "",
+      `unsupported Core outcome attribute syntax on <${opening[1]}>`,
+    );
+    assert.equal(
+      attributes.has(match[1]),
+      false,
+      `duplicate Core outcome attribute ${match[1]}`,
+    );
+    attributes.set(match[1], decodeHtmlText(match[2]));
+    cursor = attributePattern.lastIndex;
+  }
+  assert.equal(
+    source.slice(cursor).trim(),
+    "",
+    `unsupported Core outcome attribute syntax on <${opening[1]}>`,
+  );
+  return { tag: opening[1].toLowerCase(), attributes };
+}
+
+function assertCoreOutcomeMarkup(html, core, observations) {
+  const expectedArticles = new Map(
+    core.outcomes.map((outcome) => [outcome.id, outcome]),
+  );
+  const expectedSlots = new Map(
+    observations.map((row) => [row.slot_id, row.record_identity]),
+  );
+  const seenArticles = new Set();
+  const seenSlots = new Set();
+  const stack = [];
+  for (const token of html.match(/<!--[\s\S]*?-->|<\/?[A-Za-z][^>]*>/g) ?? []) {
+    if (token.startsWith("<!--")) continue;
+    if (token.startsWith("</")) {
+      const closing = /^<\/([A-Za-z][A-Za-z0-9:-]*)\s*>$/.exec(token);
+      assert.ok(closing, `invalid closing tag in Core outcome locator: ${token}`);
+      assert.equal(stack.pop(), closing[1].toLowerCase(), "misnested Core outcome markup");
+      continue;
+    }
+    const parsed = tagAttributes(token);
+    const keys = [...parsed.attributes.keys()].sort();
+    if (parsed.tag === "section") {
+      assert.deepEqual(keys, ["aria-label", "id"]);
+      assert.equal(parsed.attributes.get("id"), "core-outcome-contracts");
+      assert.equal(parsed.attributes.get("aria-label"), "Outcome success signals");
+    } else if (parsed.tag === "div") {
+      assert.deepEqual(keys, ["class"]);
+      assert.match(parsed.attributes.get("class"), /^_cardGrid_[a-z0-9_]+$/i);
+    } else if (parsed.tag === "article") {
+      assert.deepEqual(keys, ["class", "id"]);
+      assert.match(parsed.attributes.get("class"), /^_card_[a-z0-9_]+$/i);
+      const id = parsed.attributes.get("id");
+      assert.ok(expectedArticles.has(id), `unexpected Core outcome article ${id}`);
+      assert.equal(seenArticles.has(id), false, `duplicate Core outcome article ${id}`);
+      seenArticles.add(id);
+    } else if (parsed.tag === "p") {
+      assert.deepEqual(keys, ["data-core-outcome-slot"]);
+      const slot = parsed.attributes.get("data-core-outcome-slot");
+      assert.ok(expectedSlots.has(slot), `unexpected Core outcome slot ${slot}`);
+      assert.equal(seenSlots.has(slot), false, `duplicate Core outcome slot ${slot}`);
+      seenSlots.add(slot);
+    } else {
+      assert.ok(["code", "h3"].includes(parsed.tag), `unexpected Core outcome tag ${parsed.tag}`);
+      assert.deepEqual(keys, []);
+    }
+    stack.push(parsed.tag);
+  }
+  assert.deepEqual(stack, []);
+  assert.deepEqual([...seenArticles], core.outcomes.map((outcome) => outcome.id));
+  assert.deepEqual([...seenSlots], observations.map((row) => row.slot_id));
+}
+
+function recordsForSelector(document, selector) {
+  let records = [document];
+  for (const token of selector) {
+    const isArray = token.endsWith("[]");
+    const field = isArray ? token.slice(0, -2) : token;
+    records = records.flatMap((record) =>
+      isArray ? record[field] : [record[field]],
+    );
+  }
+  return records;
+}
+
+function coreCandidateRows(core, sourceScope) {
+  return sourceScope.candidate_rules.flatMap((rule) =>
+    recordsForSelector(core, rule.selector).flatMap((record) =>
+      rule.candidate_fields.map((field) => ({
+        rule_id: rule.rule_id,
+        facet_path: field.facet_path,
+        value: record[field.facet_path],
+      })),
+    ),
+  );
+}
+
+async function sourceFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...(await sourceFiles(path)));
+    else files.push(path);
+  }
+  return files;
+}
+
+async function miniflareWithAssets(directory) {
+  const serverRoot = fileURLToPath(new URL("../dist/server/", import.meta.url));
+  const entry = join(serverRoot, "index.js");
+  const serverModules = (await sourceFiles(serverRoot))
+    .filter((path) => path.endsWith(".js"))
+    .sort();
+  return new Miniflare({
+    modulesRoot: serverRoot,
+    modules: [entry, ...serverModules.filter((path) => path !== entry)].map((path) => ({
+      type: "ESModule",
+      path,
+    })),
+    unsafeDevRegistry: false,
+    compatibilityDate: "2026-08-01",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: {
+      directory,
+      binding: "ASSETS",
+      routerConfig: {
+        invoke_user_worker_ahead_of_assets: false,
+        has_user_worker: true,
+      },
+    },
+  });
+}
+
+test("hardens every HTML response at the Worker boundary", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
+  assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(\)/);
+  assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'none'/);
+  assert.match(response.headers.get("content-security-policy") ?? "", /form-action 'self'/);
+  assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
 
-  const html = await response.text();
-  assert.match(html, /<title>Enhancements · Master Reference<\/title>/i);
-  assert.match(html, /From raw evidence/);
-  assert.match(html, /earned confidence/);
-  assert.match(html, /One evidence spine, eight guarded transitions/);
-  assert.match(html, /Every important choice carries its/);
-  assert.match(html, /Confidence is earned at the edges/);
-  assert.match(html, /PPDIOO, expressed as evidence gates/);
-  assert.match(html, /Where each contract lives/);
-  assert.match(html, /A green label must say what it proves/);
-  assert.match(html, /No analytics/);
-  assert.match(html, /role="tablist"/);
-  assert.match(html, /aria-live="polite"/);
-  assert.doesNotMatch(html, /Starter Project|SkeletonPreview|taking shape/i);
+  const projectionResponse = await worker.fetch(
+    new Request("http://localhost/atlas-projection/index.mjs"),
+    { ASSETS: { fetch: async () => new Response("missing", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(projectionResponse.status, 404);
+  assert.match(projectionResponse.headers.get("content-type") ?? "", /^text\/plain\b/i);
+  assert.match(projectionResponse.headers.get("cache-control") ?? "", /no-store/);
 });
 
-test("keeps the reference static, local, and dependency-light", async () => {
-  const [
-    page,
-    layout,
-    reference,
-    styles,
-    worker,
-    packageJson,
-    publicFiles,
-    socialCard,
-  ] =
-    await Promise.all([
-      readFile(new URL("app/page.tsx", root), "utf8"),
-      readFile(new URL("app/layout.tsx", root), "utf8"),
-      readFile(new URL("app/MasterReference.tsx", root), "utf8"),
-      readFile(new URL("app/globals.css", root), "utf8"),
-      readFile(new URL("worker/index.ts", root), "utf8"),
-      readFile(new URL("package.json", root), "utf8"),
-      readdir(new URL("public/", root)),
-      readFile(new URL("public/og.png", root)),
-    ]);
-
-  const packageData = JSON.parse(packageJson);
-  assert.deepEqual(Object.keys(packageData.dependencies).sort(), [
-    "next",
-    "react",
-    "react-dom",
-  ]);
-  assert.equal(packageData.private, true);
-  assert.match(page, /<MasterReference \/>/);
-  assert.match(layout, /Enhancements · Master Reference/);
-  assert.match(reference, /"use client"/);
-  assert.match(reference, /const decisions: Decision\[\]/);
-  assert.match(reference, /const trustBoundaries =/);
-  assert.match(styles, /prefers-reduced-motion/);
-  assert.doesNotMatch(reference, /\bfetch\s*\(|XMLHttpRequest|WebSocket|localStorage|sessionStorage|document\.cookie/);
-  assert.doesNotMatch(worker, /D1Database|handleImageOptimization/);
-  assert.doesNotMatch(
-    packageJson,
-    /drizzle|tailwind|react-loading-skeleton|analytics/i,
+test("renders normal routes when the local production adapter omits Worker bindings", async () => {
+  const response = await worker.fetch(
+    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    undefined,
+    { waitUntil() {}, passThroughOnException() {} },
   );
-  assert.deepEqual(publicFiles.sort(), ["favicon.svg", "og.png"]);
-  assert.equal(socialCard.subarray(1, 4).toString("ascii"), "PNG");
-  assert.equal(socialCard.readUInt32BE(16), 1730);
-  assert.equal(socialCard.readUInt32BE(20), 909);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(await response.text(), /Master Reference/);
+});
+
+test("fails closed for unavailable or invalid projection module assets", async (context) => {
+  const workerContext = { waitUntil() {}, passThroughOnException() {} };
+  const diagnostics = [];
+  context.mock.method(console, "error", (message) => diagnostics.push(String(message)));
+  const cases = [
+    {
+      name: "missing binding",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: undefined,
+      status: 503,
+      code: "binding_unavailable",
+    },
+    {
+      name: "unsupported method",
+      request: new Request("http://localhost/atlas-projection/identity.mjs", { method: "POST" }),
+      env: { ASSETS: { fetch: async () => new Response(null, { status: 204 }) } },
+      status: 405,
+      code: "method_not_allowed",
+    },
+    {
+      name: "missing member",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => new Response("missing", { status: 404 }) } },
+      status: 404,
+      code: "asset_not_found",
+    },
+    {
+      name: "upstream failure",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => new Response("failed", { status: 500 }) } },
+      status: 502,
+      code: "asset_status_invalid",
+    },
+    {
+      name: "empty success",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: { ASSETS: { fetch: async () => new Response(null, { status: 204 }) } },
+      status: 502,
+      code: "asset_status_invalid",
+    },
+    {
+      name: "bodyless 200",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(null, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-type": "text/javascript; charset=utf-8",
+            },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_body_missing",
+    },
+    {
+      name: "lookup exception",
+      request: new Request(
+        "http://localhost/atlas-projection/identity.mjs?diagnostic=private-query-value",
+      ),
+      env: { ASSETS: { fetch: async () => { throw new Error("asset binding failed"); } } },
+      status: 502,
+      code: "asset_lookup_exception",
+    },
+    {
+      name: "upstream HTML fallback",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("<html></html>", { headers: { "content-type": "text/html" } }),
+        },
+      },
+      status: 502,
+      code: "asset_metadata_invalid",
+    },
+    {
+      name: "misleading gzip MIME suffix",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("not gzip", {
+            headers: {
+              "content-encoding": "gzip",
+              "content-type": "application/gzip+json",
+            },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_metadata_invalid",
+    },
+    {
+      name: "unexpected upstream encoding",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("encoded", {
+            headers: { "content-encoding": "br", "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_metadata_invalid",
+    },
+    {
+      name: "multiple upstream encodings",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("encoded", {
+            headers: {
+              "content-encoding": "gzip, br",
+              "content-type": "application/gzip",
+            },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_metadata_invalid",
+    },
+    {
+      name: "gzip-encoded HTML fallback",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("encoded HTML", {
+            headers: { "content-encoding": "gzip", "content-type": "text/html" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_metadata_invalid",
+    },
+    {
+      name: "JavaScript MIME without gzip encoding",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("not gzip", {
+            headers: { "content-type": "text/javascript" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "encoded MIME with a noncanonical gzip header",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(noncanonicalGzip(Buffer.from("not canonical")), {
+            headers: { "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "encoded MIME with plaintext body",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response("not gzip", {
+            headers: { "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "short gzip representation",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(Uint8Array.from([0x1f, 0x8b, 0x08]), {
+            headers: { "content-type": "application/gzip" },
+          }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "projection body read failure",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => new Response(new ReadableStream({
+            pull() {
+              throw new Error("private stream failure");
+            },
+          }), { headers: { "content-type": "application/gzip" } }),
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+    {
+      name: "locked projection body",
+      request: new Request("http://localhost/atlas-projection/identity.mjs"),
+      env: {
+        ASSETS: {
+          fetch: async () => {
+            const upstream = new Response(canonicalGzip(Buffer.from("locked")), {
+              headers: { "content-type": "application/gzip" },
+            });
+            upstream.body.getReader();
+            return upstream;
+          },
+        },
+      },
+      status: 502,
+      code: "asset_representation_invalid",
+    },
+  ];
+
+  for (const fixture of cases) {
+    await context.test(fixture.name, async () => {
+      const response = await worker.fetch(fixture.request, fixture.env, workerContext);
+      assert.equal(response.status, fixture.status);
+      assert.match(response.headers.get("content-type") ?? "", /^text\/plain\b/i);
+      assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+      assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(response.headers.get("x-atlas-projection-error"), fixture.code);
+      if (fixture.status === 405) assert.equal(response.headers.get("allow"), "GET, HEAD");
+    });
+  }
+  const expectedDiagnostics = cases.filter((fixture) => fixture.status === 502);
+  assert.equal(diagnostics.length, expectedDiagnostics.length);
+  for (const fixture of expectedDiagnostics) {
+    assert.ok(
+      diagnostics.some((message) =>
+        message.startsWith("atlas_projection_rejected ") &&
+        message.includes(`"code":"${fixture.code}"`)),
+      `missing safe diagnostic for ${fixture.name}`,
+    );
+  }
+  const joinedDiagnostics = diagnostics.join("\n");
+  for (const forbidden of [
+    "asset binding failed",
+    "private-query-value",
+    "http://localhost",
+    "application/gzip+json",
+    "gzip, br",
+    "encoded HTML",
+    "not gzip",
+    "private stream failure",
+    "ReadableStream is locked",
+  ]) {
+    assert.ok(!joinedDiagnostics.includes(forbidden), `diagnostic leaked ${forbidden}`);
+  }
+});
+
+test("serves every virtual projection module from its exact gzip asset", async () => {
+  const source = Buffer.from("export const exact = 'source-bound';\n", "utf8");
+  const encoded = canonicalGzip(source);
+  let requestedPath = "";
+  const response = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          requestedPath = new URL(request.url).pathname;
+          return new Response(encoded, {
+            headers: {
+              "content-length": String(encoded.byteLength),
+              "content-type": "application/gzip",
+            },
+          });
+        },
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(requestedPath, "/atlas-projection/identity.mjs.gz");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), "gzip");
+  assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.equal(response.headers.get("vary"), "Accept-Encoding");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
+});
+
+test("accepts Sites-inferred JavaScript MIME only for canonical gzip bytes", async () => {
+  const source = Buffer.from("export const exact = 'sites-inferred-source-bound';\n", "utf8");
+  const encoded = canonicalGzip(source);
+  const response = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async () => new Response(
+          byteStream([...encoded].map((value) => Uint8Array.of(value))),
+          {
+            headers: {
+              "content-length": String(encoded.byteLength),
+              "content-type": "text/javascript; charset=utf-8",
+            },
+          },
+        ),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), "gzip");
+  assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.equal(response.headers.get("vary"), "Accept-Encoding");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  const replayed = Buffer.from(await response.arrayBuffer());
+  assert.deepEqual(replayed, encoded);
+  assert.deepEqual(gunzipSync(replayed), source);
+});
+
+test("sanitizes stream failures and cancellation after canonical-prefix acceptance", async () => {
+  let deliveredPrefix = false;
+  const failingResponse = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async () => new Response(new ReadableStream({
+          pull(controller) {
+            if (!deliveredPrefix) {
+              deliveredPrefix = true;
+              controller.enqueue(Uint8Array.from(CANONICAL_GZIP_HEADER_BYTES));
+              return;
+            }
+            throw new Error("private downstream failure");
+          },
+        }), { headers: { "content-type": "application/gzip" } }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(failingResponse.status, 200);
+  await assert.rejects(
+    failingResponse.arrayBuffer(),
+    (error) => {
+      assert.equal(error.message, "Atlas projection stream failed");
+      assert.ok(!String(error).includes("private downstream failure"));
+      return true;
+    },
+  );
+
+  let upstreamCancelReason = "not-called";
+  let deliveredCancellationPrefix = false;
+  const cancellableResponse = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs"),
+    {
+      ASSETS: {
+        fetch: async () => new Response(new ReadableStream({
+          pull(controller) {
+            if (!deliveredCancellationPrefix) {
+              deliveredCancellationPrefix = true;
+              controller.enqueue(Uint8Array.from(CANONICAL_GZIP_HEADER_BYTES));
+            }
+          },
+          cancel(reason) {
+            upstreamCancelReason = reason;
+            throw new Error("private cancellation failure");
+          },
+        }), { headers: { "content-type": "application/gzip" } }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(cancellableResponse.status, 200);
+  await cancellableResponse.body.cancel("private downstream reason");
+  assert.equal(upstreamCancelReason, undefined);
+});
+
+test("accepts Sites metadata for already gzip-encoded projection assets", async () => {
+  const source = Buffer.from("export const exact = 'sites-source-bound';\n", "utf8");
+  const encoded = gzipSync(source, { level: 9 });
+  for (const contentType of [
+    "application/gzip",
+    "application/x-gzip",
+    "application/octet-stream",
+    "text/javascript; charset=utf-8",
+    "application/javascript",
+  ]) {
+    const response = await worker.fetch(
+      new Request("http://localhost/atlas-projection/identity.mjs"),
+      {
+        ASSETS: {
+          fetch: async () => new Response(encoded, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": String(encoded.byteLength),
+              "content-type": contentType,
+            },
+          }),
+        },
+      },
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-encoding"), "gzip");
+    assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(response.headers.get("vary"), "Accept-Encoding");
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    assert.deepEqual(gunzipSync(Buffer.from(await response.arrayBuffer())), source);
+  }
+});
+
+test("preserves fail-closed HEAD semantics for projection modules", async (context) => {
+  const diagnostics = [];
+  context.mock.method(console, "error", (message) => diagnostics.push(String(message)));
+  let upstreamMethod = "";
+  const success = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          upstreamMethod = request.method;
+          return new Response(null, {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": "47",
+              "content-type": "text/javascript; charset=utf-8",
+            },
+          });
+        },
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(upstreamMethod, "HEAD");
+  assert.equal(success.status, 200);
+  assert.equal(success.headers.get("content-encoding"), "gzip");
+  assert.match(success.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+  assert.equal(success.headers.get("vary"), "Accept-Encoding");
+  assert.match(success.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal(success.headers.get("x-content-type-options"), "nosniff");
+  assert.equal((await success.arrayBuffer()).byteLength, 0);
+
+  const encodedMimeWithoutEncoding = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    {
+      ASSETS: {
+        fetch: async () => new Response(null, {
+          headers: {
+            "content-length": "47",
+            "content-type": "application/gzip",
+          },
+        }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(encodedMimeWithoutEncoding.status, 200);
+  assert.equal(encodedMimeWithoutEncoding.headers.get("content-encoding"), "gzip");
+  assert.equal((await encodedMimeWithoutEncoding.arrayBuffer()).byteLength, 0);
+
+  const ambiguousJavaScript = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    {
+      ASSETS: {
+        fetch: async () => new Response(null, {
+          headers: {
+            "content-length": "47",
+            "content-type": "text/javascript; charset=utf-8",
+          },
+        }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(ambiguousJavaScript.status, 502);
   assert.equal(
-    createHash("sha256").update(socialCard).digest("hex"),
-    "ea17869f8f9f1a933e6d14ffed48d51fad2908c293d5eb439f4d61218b1cc208",
+    ambiguousJavaScript.headers.get("x-atlas-projection-error"),
+    "asset_metadata_invalid",
+  );
+  assert.equal((await ambiguousJavaScript.arrayBuffer()).byteLength, 0);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /"code":"asset_metadata_invalid"/);
+  assert.match(diagnostics[0], /"contentEncoding":"missing"/);
+  assert.match(diagnostics[0], /"contentType":"javascript"/);
+
+  const unavailable = await worker.fetch(
+    new Request("http://localhost/atlas-projection/identity.mjs", { method: "HEAD" }),
+    undefined,
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(unavailable.status, 503);
+  assert.equal((await unavailable.arrayBuffer()).byteLength, 0);
+  assert.match(unavailable.headers.get("cache-control") ?? "", /no-store/);
+});
+
+test("serves projection gzip as browser-decodable JavaScript through Workerd", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "atlas-worker-compression-"));
+  let miniflare;
+  try {
+    const projection = join(scratch, "atlas-projection");
+    await mkdir(projection, { recursive: true });
+    const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
+    const encoded = canonicalGzip(source);
+    await writeFile(join(projection, "identity.mjs.gz"), encoded);
+    const deployableHeaders = await readFile(new URL("../dist/client/_headers", import.meta.url));
+    const trackedHeaders = await readFile(new URL("../public/_headers", import.meta.url));
+    assert.equal(
+      trackedHeaders.toString("utf8"),
+      [
+        "# Cache content-hashed application assets immutably.",
+        "/assets/*",
+        "  Cache-Control: public, max-age=31536000, immutable",
+        "",
+        "# Preserve the exact precompressed projection representation through ASSETS.",
+        "/atlas-projection/*.mjs.gz",
+        "  ! Content-Encoding",
+        "  Cache-Control: private, no-cache, no-store, must-revalidate",
+        "  Content-Type: application/gzip",
+        "  Cross-Origin-Resource-Policy: same-origin",
+        "  X-Content-Type-Options: nosniff",
+        "",
+      ].join("\n"),
+    );
+    assert.deepEqual(deployableHeaders, trackedHeaders);
+    await writeFile(join(scratch, "_headers"), deployableHeaders);
+
+    miniflare = await miniflareWithAssets(scratch);
+
+    const physical = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs.gz",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(physical.status, 200);
+    assert.match(physical.headers.get("content-type") ?? "", /^application\/gzip\b/i);
+    assert.equal(physical.headers.get("content-encoding"), null);
+    assert.equal(physical.headers.get("mf-content-encoding"), null);
+    assert.match(physical.headers.get("cache-control") ?? "", /no-store/);
+    assert.equal(physical.headers.get("cross-origin-resource-policy"), "same-origin");
+    assert.equal(physical.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(Buffer.from(await physical.arrayBuffer()), encoded);
+
+    const response = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(
+      response.headers.get("content-encoding") ?? response.headers.get("mf-content-encoding"),
+      "gzip",
+    );
+    assert.equal(response.headers.get("vary"), "Accept-Encoding");
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    const decoded = Buffer.from(await response.arrayBuffer());
+    assert.deepEqual(decoded, source);
+    const loaded = await import(`data:text/javascript;base64,${decoded.toString("base64")}`);
+    assert.equal(loaded.identity.status, "complete");
+    assert.equal(loaded.identity.releaseClass, "exact_commit");
+  } finally {
+    if (miniflare) await miniflare.dispose();
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("serves the exact live Sites-inferred metadata tuple through Workerd", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "atlas-worker-sites-metadata-"));
+  let miniflare;
+  try {
+    const projection = join(scratch, "atlas-projection");
+    await mkdir(projection, { recursive: true });
+    const source = await readFile(new URL("../public/atlas-projection/identity.mjs", import.meta.url));
+    const encoded = canonicalGzip(source);
+    await writeFile(join(projection, "identity.mjs.gz"), encoded);
+    await writeFile(
+      join(scratch, "_headers"),
+      [
+        "/atlas-projection/*.mjs.gz",
+        "  ! Content-Encoding",
+        "  Cache-Control: private, no-cache, no-store, must-revalidate",
+        "  Content-Type: text/javascript; charset=utf-8",
+        "  Cross-Origin-Resource-Policy: same-origin",
+        "  X-Content-Type-Options: nosniff",
+        "",
+      ].join("\n"),
+    );
+    miniflare = await miniflareWithAssets(scratch);
+
+    const physical = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs.gz",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(physical.status, 200);
+    assert.match(physical.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(physical.headers.get("content-encoding"), null);
+    assert.equal(physical.headers.get("mf-content-encoding"), "gzip");
+    assert.deepEqual(Buffer.from(await physical.arrayBuffer()), encoded);
+
+    const response = await miniflare.dispatchFetch(
+      "http://localhost/atlas-projection/identity.mjs",
+      { headers: { "Accept-Encoding": "gzip" } },
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/javascript\b/i);
+    assert.equal(
+      response.headers.get("content-encoding") ?? response.headers.get("mf-content-encoding"),
+      "gzip",
+    );
+    assert.equal(response.headers.get("vary"), "Accept-Encoding");
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    const decoded = Buffer.from(await response.arrayBuffer());
+    assert.deepEqual(decoded, source);
+    const loaded = await import(`data:text/javascript;base64,${decoded.toString("base64")}`);
+    assert.equal(loaded.identity.status, "complete");
+    assert.equal(loaded.identity.releaseClass, "exact_commit");
+  } finally {
+    if (miniflare) await miniflare.dispose();
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("keeps the complete compressed projection inside the Sites expanded limit", async () => {
+  const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+  const projectionDirectory = fileURLToPath(
+    new URL("../dist/client/atlas-projection/", import.meta.url),
+  );
+  const [distPaths, projectionPaths, receiptBytes, projectionManifestBytes] = await Promise.all([
+    sourceFiles(distDirectory),
+    sourceFiles(projectionDirectory),
+    readFile(join(projectionDirectory, "compression-manifest.json.gz")),
+    readFile(join(projectionDirectory, "projection-manifest.json.gz")),
+  ]);
+  const receiptText = gunzipSync(receiptBytes).toString("utf8");
+  const projectionManifestText = gunzipSync(projectionManifestBytes).toString("utf8");
+  const receipt = JSON.parse(receiptText);
+  const projectionManifest = JSON.parse(projectionManifestText);
+  const compressed = projectionPaths.filter((path) => path.endsWith(".mjs.gz"));
+  const originals = projectionPaths.filter((path) => path.endsWith(".mjs"));
+  const sizes = await Promise.all(distPaths.map(async (path) => (await stat(path)).size));
+  const expandedBytes = sizes.reduce((total, size) => total + size, 0);
+
+  assert.equal(originals.length, 0, "deployable dist retained uncompressed projection modules");
+  assert.deepEqual(
+    [...receiptBytes.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+    CANONICAL_GZIP_HEADER_BYTES,
+  );
+  assert.deepEqual(
+    [...projectionManifestBytes.subarray(0, CANONICAL_GZIP_HEADER_BYTES.length)],
+    CANONICAL_GZIP_HEADER_BYTES,
+  );
+  assert.equal(receiptText.endsWith("\n"), true);
+  assert.equal(projectionManifestText.endsWith("\n"), true);
+  assert.equal(compressed.length, receipt.moduleCount);
+  assert.equal(receipt.modules.length, receipt.moduleCount);
+  assert.equal(receipt.sourceCommit, projectionManifest.sourceCommit);
+  assert.equal(receipt.sourceTreeDigest, projectionManifest.sourceTreeDigest);
+  assert.equal(receipt.projectionManifest.path, "projection-manifest.json");
+  assert.equal(receipt.projectionManifest.representationPath, "projection-manifest.json.gz");
+  assert.equal(receipt.projectionManifest.contentEncoding, "gzip");
+  assert.equal(receipt.projectionManifest.bytes, Buffer.byteLength(projectionManifestText));
+  assert.equal(
+    receipt.projectionManifest.sha256,
+    createHash("sha256").update(projectionManifestText).digest("hex"),
+  );
+  assert.equal(receipt.projectionManifest.representationBytes, projectionManifestBytes.byteLength);
+  assert.equal(
+    receipt.projectionManifest.representationSha256,
+    createHash("sha256").update(projectionManifestBytes).digest("hex"),
+  );
+  assert.ok(!projectionPaths.includes(join(projectionDirectory, "projection-manifest.json")));
+  assert.ok(!projectionPaths.includes(join(projectionDirectory, "compression-manifest.json")));
+  assert.ok(distPaths.includes(join(distDirectory, "deployment-manifest.json.gz")));
+  assert.ok(!distPaths.includes(join(distDirectory, "deployment-manifest.json")));
+  assert.ok(receipt.originalBytes > receipt.compressedBytes);
+  assert.ok(
+    expandedBytes <= 248 * 1024 * 1024,
+    `Sites expanded payload is ${(expandedBytes / 1024 / 1024).toFixed(1)} MiB`,
   );
 });
 
-test("documents rationale, tradeoffs, enforcement, and evidence for decisions", async () => {
-  const source = await readFile(
-    new URL("app/MasterReference.tsx", root),
-    "utf8",
+test("server-renders every owner workspace with its proof boundary", async () => {
+  const expectations = new Map([
+    ["/", ["See the whole system", "Nine outcomes hold the project together", "Coverage debt has different meanings"]],
+    ["/product", ["What Atlas is, what it protects", "Operating surfaces and deployment boundary", "White-label and product gap ledger"]],
+    ["/system", ["Living system map", "Eight traffic lenses keep different proofs separate", "Declared dependency directions"]],
+    ["/trace", ["Traverse the declared chain", "Trace builder", "Ordered source-bound thread"]],
+    ["/trace?stage=not-real", ["Trace abstained: unknown stage", "No substitute relationship was inferred", "Ordered source-bound thread"]],
+    ["/graph", ["Complete static graph", "Keep every safe node and edge", "Loading bounded graph overview"]],
+    ["/capabilities", ["Every declared capability has a state", "capability records", "Current bounded scope"]],
+    ["/protocols", ["Protocol depth, family by family", "Eight runtime families × eight lifecycle stages", "Source coverage, not a field-behavior claim"]],
+    ["/gaps", ["Choose with the uncertainty visible", "Owner decision queue", "Open Horizon Register"]],
+    ["/labs", ["Learn the boundary without crossing it", "Fourteen deterministic labs", "Never mutates truth"]],
+    ["/knowledge", ["Knowledge may advise Atlas", "Source-of-truth and code-graph owners", "Vault and private-evidence boundary"]],
+    ["/progress", ["Current state comes from owners", "P0 and P1 gap queue", "Semantic change delta unavailable"]],
+    ["/ask?q=stateful+traffic", ["Answers must show their records", "Deterministic answer", "cited records"]],
+    ["/ask?target=gap.flow-stateful", ["Deterministic enhancement compiler", "Do nothing", "Rollback and kill criteria"]],
+    ["/exports", ["One manifest. Every output reconciled", "Canonical artifact dossiers", "Publication is deliberately separate"]],
+    ["/source", ["Find any tracked path", "Opening the source-bound projection", "File text remains in per-file lazy modules"]],
+  ]);
+
+  for (const [path, phrases] of expectations) {
+    const response = await render(path);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    assert.match(html, /<main\b[^>]*id="atlas-content"/i, path);
+    assert.match(html, /No analytics/i, path);
+    for (const phrase of phrases) assert.ok(html.includes(phrase), `${path} is missing: ${phrase}`);
+    assert.doesNotMatch(html, /Starter Project|SkeletonPreview|taking shape/i, path);
+  }
+});
+
+test("Core outcome locator guards reject hidden attributes and tag-independent duplicates", () => {
+  const scope = "OMITTED-CORE-SCOPE-SENTINEL";
+  const core = {
+    outcomes: [{ id: "outcome.synthetic", title: "Synthetic", success_signal: "Visible" }],
+  };
+  const observations = [{
+    record_identity: "outcome.synthetic",
+    slot_id: "web.product.core.outcome.outcome.synthetic.success_signal",
+  }];
+  const clean = [
+    '<section id="core-outcome-contracts" aria-label="Outcome success signals">',
+    '<div class="_cardGrid_fixture_1">',
+    '<article class="_card_fixture_1" id="outcome.synthetic">',
+    '<code>outcome.synthetic</code><h3>Synthetic</h3>',
+    '<p data-core-outcome-slot="web.product.core.outcome.outcome.synthetic.success_signal">Visible</p>',
+    "</article></div></section>",
+  ].join("");
+  assert.doesNotThrow(() => assertCoreOutcomeMarkup(clean, core, observations));
+  for (const attribute of ["aria-label", "title", "data-omitted"]) {
+    const hostile = clean.replace(
+      /(<section\b[^>]*\bid="core-outcome-contracts"[^>]*)>/i,
+      `$1 ${attribute}="${scope}">`,
+    );
+    assert.equal(normalizedVisibleText(hostile), normalizedVisibleText(clean));
+    assert.throws(
+      () => assertCoreOutcomeMarkup(hostile, core, observations),
+      `the markup guard accepted omitted Core scope through ${attribute}`,
+    );
+  }
+  assert.equal(
+    visibleTextOccurrences("<p>Visible</p><span>Visible</span>", "Visible"),
+    2,
+  );
+  assert.equal(
+    visibleTextOccurrences(
+      '<p>Visible</p><script type="application/json">{"serialized":"Visible"}</script>',
+      "Visible",
+    ),
+    1,
+    "hydration serialization must not count as rendered text",
+  );
+  assert.equal(
+    visibleTextOccurrences("<noscript>Visible</noscript>", "Visible"),
+    1,
+    "the scripting-disabled fallback remains potentially visible",
+  );
+  const inertLocator = clean;
+  for (const hostile of [
+    `<script type="application/json">${inertLocator}</script>`,
+    `<script>${inertLocator}`,
+    `<!-- ${inertLocator} -->`,
+    `<template>${inertLocator}</template>`,
+    `<textarea>${inertLocator}</textarea>`,
+    `<title>${inertLocator}</title>`,
+    `<xmp>${inertLocator}</xmp>`,
+    `<iframe>${inertLocator}</iframe>`,
+  ]) {
+    assert.throws(
+      () => sectionById(hostile, "core-outcome-contracts"),
+      "the locator parser accepted a Core outcome section from an inert HTML context",
+    );
+    assert.equal(
+      coreOutcomeSlotText(hostile).size,
+      0,
+      "the slot parser accepted a Core outcome slot from an inert HTML context",
+    );
+  }
+  const canonicalDocument = (ancestorAttribute) =>
+    `<html lang="en"><body><div class="atlas-shell"><div class="atlas-frame"><main class="atlas-content" id="atlas-content"><section class="workspace-section"${ancestorAttribute}>${clean}</section></main></div></div></body></html>`;
+  for (const hostile of [
+    canonicalDocument(" hidden"),
+    canonicalDocument(' aria-hidden="true"'),
+    canonicalDocument(' style="display:none!important"'),
+    canonicalDocument(' style="visibility:hidden!important"'),
+    canonicalDocument(" popover"),
+    `<html lang="en"><body><div class="atlas-shell"><div class="atlas-frame"><dialog><main class="atlas-content" id="atlas-content"><section class="workspace-section">${clean}</section></main></dialog></div></div></body></html>`,
+    `<html lang="en"><body><div class="atlas-shell"><div class="atlas-frame"><details><main class="atlas-content" id="atlas-content"><section class="workspace-section">${clean}</section></main></details></div></div></body></html>`,
+  ]) {
+    assert.throws(
+      () => sectionById(hostile, "core-outcome-contracts"),
+      "the locator parser accepted a Core outcome section hidden by an ancestor",
+    );
+  }
+});
+
+test("Core outcome computed-visibility proof retains exact built stylesheet custody", async () => {
+  const stylesheetLink = [
+    '<link rel="stylesheet"',
+    ` href="${CORE_OUTCOME_STYLESHEET.href}"`,
+    ` data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}"`,
+    ' data-precedence="vite-rsc/importer-resources"/>',
+  ].join("");
+  const clean = [
+    "<html><head>",
+    stylesheetLink,
+    "</head><body>",
+    '<section id="core-outcome-contracts" aria-label="Outcome success signals">',
+    '<p data-core-outcome-slot="web.product.core.outcome.outcome.synthetic.success_signal">',
+    "Visible",
+    "</p></section></body></html>",
+  ].join("");
+  await assert.doesNotReject(() => assertCoreOutcomeStyleCustody(clean));
+  await assert.doesNotReject(() =>
+    assertCoreOutcomeStyleCustody(
+      clean.replace(
+        stylesheetLink,
+        `<link data-precedence="vite-rsc/importer-resources" data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}" href="${CORE_OUTCOME_STYLESHEET.href}" rel="stylesheet"/>`,
+      ),
+    ),
   );
 
-  const decisionIds = [...source.matchAll(/\n    id: "([^"]+)",/g)].map(
-    (match) => match[1],
+  const hostileMarkup = [
+    clean.replace(
+      "</head>",
+      '<style>#core-outcome-contracts{display:none!important}</style></head>',
+    ),
+    clean.replace(
+      '<section id="core-outcome-contracts"',
+      '<section style="opacity:0!important" id="core-outcome-contracts"',
+    ),
+    clean.replace(
+      "Visible",
+      '<span style="transform:scale(0)!important">Visible</span>',
+    ),
+    clean.replace(
+      "</head>",
+      '<link rel="stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
+    ),
+    clean.replace(
+      "</head>",
+      '<link rel="STYLESHEET" href="https://hostile.invalid/hide-core.css"></head>',
+    ),
+    clean.replace(
+      "</head>",
+      '<link rel="preload stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
+    ),
+    clean.replaceAll(
+      CORE_OUTCOME_STYLESHEET.href,
+      `${CORE_OUTCOME_STYLESHEET.href}?hide=1`,
+    ),
+    clean.replaceAll(
+      CORE_OUTCOME_STYLESHEET.href,
+      `${CORE_OUTCOME_STYLESHEET.href}#hide`,
+    ),
+    clean.replaceAll(
+      CORE_OUTCOME_STYLESHEET.href,
+      "/assets/%2e%2e/hostile.css",
+    ),
+  ];
+  for (const hostile of hostileMarkup) {
+    await assert.rejects(
+      () => assertCoreOutcomeStyleCustody(hostile),
+      "Core outcome style custody accepted an unproven styling path",
+    );
+  }
+
+  const stylesheet = await readFile(
+    new URL(`../dist/client${CORE_OUTCOME_STYLESHEET.href}`, import.meta.url),
   );
-  assert.ok(decisionIds.length >= 15);
-  assert.equal(new Set(decisionIds).size, decisionIds.length);
-  assert.ok((source.match(/\n    reason:/g) ?? []).length >= 15);
-  assert.ok((source.match(/\n    tradeoff:/g) ?? []).length >= 15);
-  assert.ok((source.match(/\n    enforcement:/g) ?? []).length >= 15);
-  assert.ok((source.match(/\n    evidence:/g) ?? []).length >= 15);
+  await assert.rejects(
+    () =>
+      assertCoreOutcomeStyleCustody(clean, async () =>
+        Buffer.concat([
+          stylesheet,
+          Buffer.from("\n#core-outcome-contracts{display:none!important}\n"),
+        ])),
+    /canonical build refresh is required/,
+    "Core outcome style custody accepted mutated stylesheet bytes",
+  );
+});
+
+test("server-renders the exact nine Core outcome success-signal slots in source order", async () => {
+  const [coreText, governanceText, pageSource, contractText] = await Promise.all([
+    readFile(new URL("content/atlas-core.json", root), "utf8"),
+    readFile(new URL("content/delivery-governance.json", root), "utf8"),
+    readFile(new URL("app/product/page.tsx", root), "utf8"),
+    readFile(
+      new URL("governance/rendered-sink-lineage-core-contract.json", root),
+      "utf8",
+    ),
+  ]);
+  const core = JSON.parse(coreText);
+  const governance = JSON.parse(governanceText);
+  const contract = JSON.parse(contractText);
+  const view = buildCoreOutcomeViewModel(core, {
+    gap_ids: governance.gaps.map((gap) => gap.id),
+  });
+  const webSink = contract.sinks.find(
+    (sink) => sink.sink_id === "web.product.core-outcomes",
+  );
+  assert.ok(webSink);
+  assert.equal(webSink.locator, "/product#core-outcome-contracts");
+  const candidateRows = coreCandidateRows(core, contract.source_scope);
+  const renderedFacets = new Set(
+    webSink.rendered_rules.flatMap((rule) =>
+      rule.fields.map((field) => `${rule.rule_id}\u0000${field.facet_path}`),
+    ),
+  );
+  const omittedRows = candidateRows.filter(
+    (row) => !renderedFacets.has(`${row.rule_id}\u0000${row.facet_path}`),
+  );
+  assert.equal(candidateRows.length, contract.source_scope.expected_candidates);
+  assert.equal(omittedRows.length, webSink.expected_omitted);
+
+  const response = await render("/product");
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("link"),
+    null,
+    "Core outcome style custody rejects unbound HTTP Link stylesheet relations",
+  );
+  const html = await response.text();
+  await assertCoreOutcomeStyleCustody(html);
+  const outcomeSection = sectionById(html, "core-outcome-contracts");
+  assertCoreOutcomeMarkup(outcomeSection, core, view.rendered_observations);
+  const slotText = coreOutcomeSlotText(outcomeSection);
+  assert.equal(slotText.size, 9, "/product emitted an unexpected or duplicate Core outcome slot");
+  assert.equal(
+    coreOutcomeSlotText(html).size,
+    slotText.size,
+    "/product emitted a Core outcome slot outside the declared nested locator",
+  );
+  const duplicateCounterexample = core.outcomes[0].success_signal;
+  assert.equal(
+    visibleTextOccurrences(
+      `<section><p>${duplicateCounterexample}</p><span>${duplicateCounterexample}</span></section>`,
+      duplicateCounterexample,
+    ),
+    2,
+    "the occurrence guard must detect a duplicate rendered through another element type",
+  );
+  assert.equal(
+    visibleTextOccurrences(`<section>${core.scope}</section>`, core.scope),
+    1,
+    "the omission guard must detect the omitted Core root scope inside the locator",
+  );
+  for (const attribute of ["aria-label", "title", "data-omitted"]) {
+    assert.throws(
+      () =>
+        assertCoreOutcomeMarkup(
+          outcomeSection.replace(
+            /(<section\b[^>]*\bid="core-outcome-contracts"[^>]*)>/i,
+            `$1 ${attribute}="${core.scope}">`,
+          ),
+          core,
+          view.rendered_observations,
+        ),
+      `the markup guard accepted omitted Core scope through ${attribute}`,
+    );
+  }
+  assert.equal(
+    visibleTextOccurrences(outcomeSection, core.scope),
+    0,
+    "the omitted Core root scope entered the declared nested locator",
+  );
+  const expectedLocatorText = core.outcomes
+    .flatMap((outcome) => [outcome.id, outcome.title, outcome.success_signal])
+    .join(" ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  assert.equal(
+    normalizedVisibleText(outcomeSection),
+    expectedLocatorText,
+    "the declared nested locator rendered text beyond outcome identity context and the nine success signals",
+  );
+  for (const omitted of omittedRows) {
+    const values = Array.isArray(omitted.value)
+      ? omitted.value
+      : typeof omitted.value === "object" && omitted.value !== null
+        ? Object.values(omitted.value).flat()
+        : [omitted.value];
+    for (const value of values) {
+      const visibleValue = String(value);
+      assert.equal(
+        visibleTextOccurrences(outcomeSection, visibleValue),
+        visibleTextOccurrences(expectedLocatorText, visibleValue),
+        `${omitted.rule_id}/${omitted.facet_path} entered the declared nested locator`,
+      );
+    }
+  }
+
+  for (const observation of view.rendered_observations) {
+    const visible = slotText.get(observation.slot_id);
+    assert.ok(
+      visible !== undefined,
+      `/product omitted the declared Core outcome slot ${observation.slot_id}`,
+    );
+    assert.equal(
+      visible,
+      observation.observed_value,
+      `/product slot ${observation.slot_id} does not exactly bind its source value`,
+    );
+  }
+  assert.deepEqual(
+    [...slotText.keys()],
+    view.rendered_observations.map((row) => row.slot_id),
+    "/product changed Core outcome or candidate-field order",
+  );
+
+  for (const outcome of core.outcomes) {
+    assert.equal(
+      pageSource.includes(outcome.success_signal),
+      false,
+      "a fixed page fallback duplicated a source-owned Core outcome value",
+    );
+    assert.equal(
+      visibleTextOccurrences(outcomeSection, outcome.success_signal),
+      1,
+      `${outcome.id} changed its occurrence count within the declared nested locator`,
+    );
+  }
+  assert.equal(
+    visibleTextOccurrences(html, core.outcomes.at(-1).success_signal),
+    2,
+    "the known page-wide business-value occurrence count changed",
+  );
+  const businessValueSlot =
+    "web.product.core.outcome.outcome.business-value.success_signal";
+  assert.equal(
+    [...slotText.keys()].filter((slotId) => slotId === businessValueSlot).length,
+    1,
+    "the known business-value duplicate entered the declared nested locator",
+  );
+});
+
+test("server-renders the source-derived Horizon safety boundary and deterministic sink slots", async () => {
+  const [horizonText, pageSource] = await Promise.all([
+    readFile(new URL("content/open-horizon-register.json", root), "utf8"),
+    readFile(new URL("app/gaps/page.tsx", root), "utf8"),
+  ]);
+  const horizon = JSON.parse(horizonText);
+  const view = buildHorizonGapsViewModel(horizon);
+  const response = await render("/gaps");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const slotText = horizonSlotText(html);
+
+  assert.ok(html.includes("Advisory content only"));
+  assert.ok(html.includes("No support claim"));
+  assert.ok(html.includes("No assessment-truth mutation"));
+  assert.match(html, /Source role:\s*(?:<!-- -->\s*)?<strong[^>]+>advisory<\/strong>/);
+  assert.match(html, /Source support claim:\s*(?:<!-- -->\s*)?<strong[^>]+>none<\/strong>/);
+  assert.match(html, /Mutates assessment truth:\s*(?:<!-- -->\s*)?<strong[^>]+>false<\/strong>/);
+
+  for (const observation of [
+    ...view.rendered_observations,
+    ...view.safety_observations,
+  ]) {
+    const visible = slotText.get(observation.slot_id);
+    assert.ok(visible !== undefined, `/gaps omitted the declared sink slot ${observation.slot_id}`);
+    const expectedValues = Array.isArray(observation.observed_value)
+      ? observation.observed_value
+      : [
+          observation.transform_id === "state-mark-label"
+            ? String(observation.observed_value).replaceAll("_", " ")
+            : String(observation.observed_value),
+        ];
+    let previous = -1;
+    for (const expectedValue of expectedValues) {
+      const position = visible.indexOf(String(expectedValue));
+      assert.ok(
+        position > previous,
+        `/gaps slot ${observation.slot_id} does not visibly bind its source value in order`,
+      );
+      previous = position;
+    }
+  }
+  assert.equal(slotText.size, 170, "/gaps emitted an unexpected or duplicate physical Horizon slot");
+
+  const unknown = horizon.signals.find((signal) => signal.id === "horizon.unknown");
+  assert.ok(unknown);
+  assert.ok(html.includes(`id="${unknown.id}"`));
+  for (const sourceSentinel of [
+    unknown.current_coverage,
+    unknown.business_relevance,
+    unknown.uncertainty,
+    unknown.next_review_rule,
+  ]) {
+    assert.ok(html.includes(sourceSentinel), `/gaps omitted source sentinel: ${sourceSentinel}`);
+    assert.equal(
+      pageSource.includes(sourceSentinel),
+      false,
+      "a fixed page fallback duplicated a source-owned Horizon value",
+    );
+  }
+
+  let previousCriterion = -1;
+  for (const criterion of unknown.promotion_criteria) {
+    const position = html.indexOf(criterion);
+    assert.ok(position > previousCriterion, "promotion criteria lost their source order");
+    previousCriterion = position;
+  }
+
+  const multiSourceWatch = horizon.watch_families.find((watch) => watch.additional_urls?.length);
+  assert.ok(multiSourceWatch);
+  for (const url of [multiSourceWatch.source_url, ...multiSourceWatch.additional_urls]) {
+    assert.ok(html.includes(url), `/gaps omitted watch-family URL ${url}`);
+  }
+  assert.ok(html.includes(multiSourceWatch.authority_scope));
+  assert.equal(pageSource.includes(multiSourceWatch.authority_scope), false);
+});
+
+test("exposes every dedicated owner workspace in shell navigation", async () => {
+  const response = await render();
+  const html = await response.text();
+  for (const href of ["/product", "/trace", "/protocols", "/knowledge", "/progress"]) {
+    assert.match(html, new RegExp(`href="${href}"`), `navigation is missing ${href}`);
+  }
+});
+
+test("renders the complete protocol stage matrix and coverage-honest family dossiers", async () => {
+  const model = JSON.parse(
+    await readFile(new URL("app/atlas/protocol-depth.json", root), "utf8"),
+  );
+  const response = await render("/protocols");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.equal((html.match(/data-protocol-cell="[^"]+"/g) ?? []).length, 64);
+  assert.ok(html.includes('data-selected-protocol="protocol.stp"'));
+  assert.ok(html.includes('action="/protocols#protocol-family-detail"'));
+  assert.ok(html.includes("data-runtime-assessability-contract"));
+  assert.ok(html.includes("Runtime assessability contract"));
+  assert.ok(html.includes("analysis-unavailable states"));
+  assert.ok(html.includes("data-runtime-etherchannel-baseline-contract"));
+  assert.ok(html.includes("Single-snapshot EtherChannel baseline contract"));
+  assert.ok(html.includes("matching a degraded baseline is not acceptance"));
+  assert.ok(html.includes("no complete configured-bundle or partner denominator is inferred"));
+  assert.ok(html.includes("data-runtime-routing-baseline-contract"));
+  assert.ok(html.includes("Single-snapshot routing baseline contract"));
+  assert.ok(html.includes("well-formed, nonempty observed projection"));
+  assert.ok(html.includes("no expected-peer denominator is inferred"));
+  assert.ok(html.includes("projection custody remains embedded_unverified"));
+  assert.ok(html.includes("data-runtime-adjacency-change-contract"));
+  assert.ok(html.includes("Before/after adjacency change contract"));
+  assert.ok(html.includes("data-runtime-current-baseline-gate-contract"));
+  assert.ok(html.includes("Current-baseline cutover gate"));
+  assert.match(html, /degraded baseline is BLOCKED even when it is unchanged/);
+  assert.match(html, /CLEAR means\s+only that no blocker was emitted/);
+  assert.ok(html.includes("embedded projection custody remains explicitly unverified"));
+  for (const family of model.families) assert.ok(html.includes(family.label));
+  for (const stage of model.stages) assert.ok(html.includes(stage.label));
+  assert.ok(html.includes("No emitted family row means"));
+  const visible = normalizedVisibleText(html);
+  assert.ok(visible.includes("30 adjacent or"));
+  assert.match(visible, /current\s*:\s*0/);
+  assert.match(visible, /partial\s*:\s*21/);
+  assert.match(visible, /missing\s*:\s*17/);
+  assert.ok(visible.includes("IOS / NX-OS"));
+  assert.ok(visible.includes("show spanning-tree detail"));
+
+  const ospfResponse = await render("/protocols?family=protocol.ospf");
+  assert.equal(ospfResponse.status, 200);
+  const ospfHtml = await ospfResponse.text();
+  assert.ok(ospfHtml.includes('data-selected-protocol="protocol.ospf"'));
+  assert.ok(ospfHtml.includes("summarize_routing_baseline"));
+  assert.ok(ospfHtml.includes("tests/test_routing_cutover_truth.py"));
+  assert.ok(ospfHtml.includes("tests/test_routing_nrfu_truth.py"));
+  assert.ok(ospfHtml.includes("PRE-CUTOVER DEGRADED — BLOCKER"));
+  assert.ok(ospfHtml.includes("projection custody remains embedded_unverified"));
+
+  const etherchannelResponse = await render("/protocols?family=protocol.etherchannel");
+  assert.equal(etherchannelResponse.status, 200);
+  const etherchannelHtml = await etherchannelResponse.text();
+  assert.ok(etherchannelHtml.includes('data-selected-protocol="protocol.etherchannel"'));
+  assert.ok(etherchannelHtml.includes("compute_etherchannel_projection"));
+  assert.ok(etherchannelHtml.includes("summarize_etherchannel_baseline"));
+  assert.ok(etherchannelHtml.includes("tests/test_etherchannel_cutover_truth.py"));
+  assert.ok(etherchannelHtml.includes("PRE-CUTOVER DEGRADED — BLOCKER"));
+  assert.ok(etherchannelHtml.includes("review and not-verified evidence abstain"));
+  assert.ok(etherchannelHtml.includes("projection custody remains embedded_unverified"));
+
+  const fhrpResponse = await render("/protocols?family=protocol.fhrp");
+  assert.equal(fhrpResponse.status, 200);
+  const fhrpHtml = await fhrpResponse.text();
+  assert.ok(fhrpHtml.includes('data-selected-protocol="protocol.fhrp"'));
+  assert.ok(fhrpHtml.includes("HSRP:INIT"));
+  assert.ok(fhrpHtml.includes("HSRP:LEARN"));
+  assert.ok(fhrpHtml.includes("VRRP/GLBP same-spelled roles disclose NOT ASSESSED cause"));
+  assert.ok(fhrpHtml.includes("tests/test_protocol_kb.py"));
+
+  const invalidResponse = await render("/protocols?family=protocol.not-real");
+  assert.equal(invalidResponse.status, 200);
+  const invalidHtml = await invalidResponse.text();
+  assert.ok(invalidHtml.includes("Protocol selection not recognized"));
+  assert.ok(invalidHtml.includes("No substitute family was inferred"));
+  assert.doesNotMatch(invalidHtml, /data-selected-protocol=/);
+
+  for (const path of [
+    "/protocols?family=",
+    "/protocols?family=protocol.bgp&family=protocol.ospf",
+  ]) {
+    const malformedResponse = await render(path);
+    assert.equal(malformedResponse.status, 200);
+    const malformedHtml = await malformedResponse.text();
+    assert.ok(malformedHtml.includes("must contain exactly one non-empty protocol ID"));
+    assert.ok(malformedHtml.includes("No substitute family was inferred"));
+    assert.doesNotMatch(malformedHtml, /data-selected-protocol=/);
+  }
+
+  const capabilityResponse = await render(
+    "/capabilities?domain=domain.protocols&q=cap.protocol.fhrp",
+  );
+  assert.equal(capabilityResponse.status, 200);
+  assert.ok((await capabilityResponse.text()).includes('id="cap.protocol.fhrp"'));
+
+  const labResponse = await render("/labs?lab=lab.03-protocol-intelligence&step=4");
+  assert.equal(labResponse.status, 200);
+  assert.ok((await labResponse.text()).includes('href="/protocols"'));
+});
+
+test("renders the exact canonical output denominator as artifact dossiers", async () => {
+  const outputContract = JSON.parse(
+    await readFile(new URL("content/output-contract.json", root), "utf8"),
+  );
+  const response = await render("/exports");
+  const html = await response.text();
+  assert.equal(outputContract.members.length, 21);
+  for (const item of outputContract.members) {
+    assert.ok(html.includes(`id="${item.id}"`), `/exports is missing dossier ${item.id}`);
+    assert.ok(html.includes(item.dossier.decision_supported), `/exports omitted decision for ${item.id}`);
+  }
+});
+
+test("server-renders every capability domain deep link with its own records", async () => {
+  const catalog = JSON.parse(
+    await readFile(new URL("content/capability-catalog.json", root), "utf8"),
+  );
+  for (const domain of catalog.domains) {
+    const response = await render(`/capabilities?domain=${encodeURIComponent(domain.id)}`);
+    assert.equal(response.status, 200, domain.id);
+    const html = await response.text();
+    assert.ok(html.includes(domain.entries[0].title), `${domain.id} did not render its first record`);
+    assert.doesNotMatch(html, />0<\/strong> of \d+ capability records/, domain.id);
+  }
+});
+
+test("server-renders every source-derived default capability sink slot exactly once", async () => {
+  const [catalogText, coreText, governanceText, explorerSource, pageSource] = await Promise.all([
+    readFile(new URL("content/capability-catalog.json", root), "utf8"),
+    readFile(new URL("content/atlas-core.json", root), "utf8"),
+    readFile(new URL("content/delivery-governance.json", root), "utf8"),
+    readFile(new URL("app/atlas/CapabilityExplorer.tsx", root), "utf8"),
+    readFile(new URL("app/capabilities/page.tsx", root), "utf8"),
+  ]);
+  const catalog = JSON.parse(catalogText);
+  const core = JSON.parse(coreText);
+  const governance = JSON.parse(governanceText);
+  const view = buildCapabilityCatalogViewModel(catalog, {
+    domain_ids: core.domain_registry.map((domain) => domain.id),
+    owner_ids: core.owners.map((owner) => owner.id),
+    gap_ids: governance.gaps.map((gap) => gap.id),
+    traffic_plane_ids: core.traffic_model.planes.map((plane) => plane.id),
+  });
+  const response = await render("/capabilities");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const slotText = capabilitySlotText(html);
+
+  for (const observation of [
+    ...view.rendered_observations,
+    ...view.safety_observations,
+  ]) {
+    const visible = slotText.get(observation.slot_id);
+    assert.ok(
+      visible !== undefined,
+      `/capabilities omitted the declared sink slot ${observation.slot_id}`,
+    );
+    const expected = observation.transform_id === "state-mark-label"
+      ? String(observation.observed_value).replaceAll("_", " ")
+      : String(observation.observed_value);
+    assert.equal(
+      visible,
+      expected,
+      `/capabilities slot ${observation.slot_id} does not visibly bind its source value`,
+    );
+  }
+  assert.equal(
+    slotText.size,
+    429,
+    "/capabilities emitted an unexpected or duplicate physical capability slot",
+  );
+
+  const entrySlots = view.catalog.domains.flatMap((domain) =>
+    domain.entries.flatMap((entry) => [
+      `web.capabilities.capability.entry.${entry.id}.state`,
+      `web.capabilities.capability.entry.${entry.id}.current_scope`,
+    ]),
+  );
+  const physicalEntrySlots = [...slotText.keys()].filter(
+    (slotId) =>
+      slotId.endsWith(".state") || slotId.endsWith(".current_scope"),
+  );
+  assert.deepEqual(
+    physicalEntrySlots,
+    entrySlots,
+    "/capabilities changed the source entry or candidate-field order",
+  );
+
+  const training = catalog.domains
+    .flatMap((domain) => domain.entries)
+    .find((entry) => entry.id === "cap.engine.training-curriculum");
+  assert.ok(training);
+  assert.ok(html.includes("Source role:"));
+  assert.ok(html.includes("Mutates assessment truth:"));
+  for (const sourceSentinel of [
+    catalog.denominator_rule,
+    catalog.entry_contract.current,
+    catalog.entry_contract.partial,
+    catalog.entry_contract.incomplete,
+    catalog.entry_contract.catalog_presence,
+    training.current_scope,
+  ]) {
+    assert.ok(html.includes(sourceSentinel), `/capabilities omitted: ${sourceSentinel}`);
+    assert.equal(
+      explorerSource.includes(sourceSentinel) || pageSource.includes(sourceSentinel),
+      false,
+      "a fixed page fallback duplicated a source-owned capability value",
+    );
+  }
+
+  for (const [variant, trainingVisible] of [
+    ["/capabilities?domain=domain.outcomes", false],
+    ["/capabilities?state=partial", true],
+    ["/capabilities?q=BGP", false],
+    ["/capabilities?domain=all", true],
+    ["/capabilities?state=all", true],
+    ["/capabilities?q=", true],
+    ["/capabilities?domain=all&state=all&q=", true],
+    ["/capabilities?unused=1", true],
+  ]) {
+    const filteredResponse = await render(variant);
+    assert.equal(filteredResponse.status, 200, variant);
+    const filteredHtml = await filteredResponse.text();
+    const filteredSlots = capabilitySlotText(filteredHtml);
+    assert.equal(
+      filteredSlots.size,
+      0,
+      `${variant} was silently included in the default-route sink universe`,
+    );
+    assert.ok(filteredHtml.includes(catalog.entry_contract.catalog_presence));
+    assert.equal(filteredHtml.includes("Mutates assessment truth:"), trainingVisible);
+  }
+});
+
+test("keeps the landing payload within the declared performance envelope", async () => {
+  const response = await render();
+  const html = await response.text();
+  assert.ok(gzipSync(html).byteLength <= 35 * 1024, "landing HTML exceeds 35 KiB gzip");
+  assert.doesNotMatch(html, /sourceLoaders|atlas-projection\/source\//);
+
+  const assetPaths = [...html.matchAll(/(?:src|href)="([^"?#]+\.(?:js|css))(?:[?#][^"]*)?"/g)]
+    .map((match) => match[1])
+    .filter((path) => path.startsWith("/assets/"));
+  const unique = [...new Set(assetPaths)];
+  let scripts = 0;
+  let styles = 0;
+  for (const path of unique) {
+    const bytes = await readFile(new URL(`../dist/client${path}`, import.meta.url));
+    if (path.endsWith(".js")) scripts += gzipSync(bytes).byteLength;
+    if (path.endsWith(".css")) styles += gzipSync(bytes).byteLength;
+  }
+  const identitySource = await readFile(new URL("app/atlas/BuildIdentity.tsx", root), "utf8");
+  assert.match(identitySource, /loadProjectionIdentity\(\)/);
+  assert.doesNotMatch(identitySource, /\bloadProjection\(\)/);
+  const identityModule = await readFile(
+    new URL("public/atlas-projection/identity.mjs", root),
+  );
+  assert.ok(identityModule.byteLength <= 8 * 1024, "identity module exceeds 8 KiB raw");
+  scripts += gzipSync(identityModule).byteLength;
+  assert.ok(scripts <= 120 * 1024, `true immediate JS is ${scripts} bytes gzip`);
+  assert.ok(styles <= 20 * 1024, `initial CSS is ${styles} bytes gzip`);
+});
+
+test("keeps runtime local, read-only, private, and dependency-light", async () => {
+  const appDirectory = fileURLToPath(new URL("../app/", import.meta.url));
+  const appPaths = await sourceFiles(appDirectory);
+  const appSource = (
+    await Promise.all(
+      appPaths
+        .filter((path) => /\.(?:ts|tsx|css)$/.test(path))
+        .map((path) => readFile(path, "utf8")),
+    )
+  ).join("\n");
+  const [layout, workerSource, packageText, publicEntries, socialCard] = await Promise.all([
+    readFile(new URL("app/layout.tsx", root), "utf8"),
+    readFile(new URL("worker/index.ts", root), "utf8"),
+    readFile(new URL("package.json", root), "utf8"),
+    readdir(new URL("public/", root), { withFileTypes: true }),
+    readFile(new URL("public/atlas-social-card.png", root)),
+  ]);
+  const packageData = JSON.parse(packageText);
+
+  assert.deepEqual(Object.keys(packageData.dependencies).sort(), ["next", "react", "react-dom"]);
+  assert.equal(packageData.private, true);
+  assert.match(layout, /index:\s*false/);
+  assert.match(layout, /follow:\s*false/);
+  assert.match(appSource, /prefers-reduced-motion/);
+  assert.match(appSource, /prefers-color-scheme:\s*light/);
+  assert.doesNotMatch(
+    appSource,
+    /\bfetch\s*\(|XMLHttpRequest|WebSocket|localStorage|sessionStorage|document\.cookie/,
+  );
+  assert.doesNotMatch(workerSource, /D1Database|handleImageOptimization/);
+  assert.doesNotMatch(packageText, /drizzle|tailwind|react-loading-skeleton|analytics/i);
+
+  const names = publicEntries.map((entry) => entry.name).sort();
+  assert.ok(names.includes("favicon.svg"));
+  assert.ok(names.includes("og.png"));
+  assert.ok(names.includes("atlas-social-card.png"));
+  assert.ok(
+    names.every((name) =>
+      ["_headers", "atlas-projection", "atlas-social-card.png", "favicon.svg", "og.png"].includes(name)),
+  );
+  assert.equal(socialCard.subarray(1, 4).toString("ascii"), "PNG");
+  const width = socialCard.readUInt32BE(16);
+  const height = socialCard.readUInt32BE(20);
+  assert.ok(width >= 1200 && height >= 630, `social card too small: ${width}x${height}`);
+  assert.ok(width / height >= 1.85 && width / height <= 1.95, `unexpected social-card ratio: ${width}x${height}`);
+});
+
+test("renders deterministic catalogs and never promotes advisory content", async () => {
+  const [catalogText, governanceText, horizonText] = await Promise.all([
+    readFile(new URL("content/capability-catalog.json", root), "utf8"),
+    readFile(new URL("content/delivery-governance.json", root), "utf8"),
+    readFile(new URL("content/open-horizon-register.json", root), "utf8"),
+  ]);
+  const catalog = JSON.parse(catalogText);
+  const governance = JSON.parse(governanceText);
+  const horizon = JSON.parse(horizonText);
+  const capabilities = catalog.domains.flatMap((domain) => domain.entries);
+
+  assert.equal(capabilities.length, 211);
+  assert.equal(governance.gaps.length, 41);
+  assert.equal(governance.decision_queue.length, 10);
+  assert.equal(governance.labs.length, 14);
+  assert.equal(horizon.signals.length, 16);
+  assert.ok(horizon.signals.every((signal) => signal.content_role === "advisory"));
+  assert.ok(horizon.signals.every((signal) => signal.support_claim === "none"));
 });

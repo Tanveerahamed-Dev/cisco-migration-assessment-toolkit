@@ -111,6 +111,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist \
             --source-commit "${{ steps.source.outputs.commit }}" \
             --source-tree "${{ steps.source.outputs.tree }}" \
+            --require-source-binding \
             --expected-json "${RUNNER_TEMP}/release-proof/dist-verification.json"
       - name: Final immutable-tagged-source proof before publication
         run: >-
@@ -123,6 +124,7 @@ jobs:
           python -m cisco_toolkit.distribution_verify dist
           --source-commit "${{ steps.source.outputs.commit }}"
           --source-tree "${{ steps.source.outputs.tree }}"
+          --require-source-binding
           --expected-json "${RUNNER_TEMP}/release-proof/dist-verification.json"
       - name: Publish exact assets with trusted publishing and attestations
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

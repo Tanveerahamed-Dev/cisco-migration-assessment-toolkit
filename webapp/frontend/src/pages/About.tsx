@@ -10,11 +10,14 @@ export default function AboutPage() {
   if (error) return <div className="container"><ErrorBox msg={error} /></div>;
   const meta = data!;
   const app = meta.app;
+  const artifactSummary = meta.artifact_family
+    ? `${meta.artifact_family.pre_cutover} pre-cutover + ${meta.artifact_family.conditional_post_execution} conditional post-execution`
+    : `${meta.deliverables.length} snapshot downloads`;
 
   const facts: Array<[string, string]> = [
     ["Release", app.release],
     ["Engine schema", meta.engine_schema],
-    ["Deliverable family", `${meta.deliverables.length} documents`],
+    ["Artifact lifecycle", artifactSummary],
   ];
 
   return (
@@ -25,8 +28,8 @@ export default function AboutPage() {
         <h3>{app.title}</h3>
         <div className="dim" style={{ fontSize: 13, marginBottom: 14 }}>
           The one door to the Cisco migration-assessment engine: campaigns, risk cockpit, cutover
-          planner, war room and the full deliverable family, served from a single origin. The CLI
-          engine stays the single source of truth — this surface renders what it produces.
+          planner, war room and the full artifact lifecycle, served from a single origin. The
+          canonical registry distinguishes engine outputs, AssessHub synthesis and conditional PIR.
         </div>
         <div className="grid" style={{ gap: 8 }}>
           {facts.map(([k, v]) => (
@@ -43,7 +46,7 @@ export default function AboutPage() {
         <div className="dim" style={{ fontSize: 13 }}>
           Before an engagement, run <span className="mono">assesshub --selftest</span> (or{" "}
           <span className="mono">python -m webapp.backend.serve --selftest</span>). It fails loud on
-          the assets that otherwise degrade silently: the explorer template, the OUI/port knowledge
+          the assets that otherwise degrade silently: the explorer template, the OUI/port/EoL knowledge
           packs, the DOCX/PPTX generators, the built frontend, the engine entry point and the data
           directory. Collection stays explicit and read-only — this app never writes to a device.
         </div>

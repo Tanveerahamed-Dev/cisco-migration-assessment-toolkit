@@ -51,6 +51,11 @@ class AnalysisContext:
     all_vpc: Dict[str, Any] = field(default_factory=dict)
     physical_health: List[Any] = field(default_factory=list)
     protocol_health: List[Any] = field(default_factory=list)
+    protocol_assessability: Dict[str, Any] = field(default_factory=dict)
+    vtp_safety_baseline: Dict[str, Any] = field(default_factory=dict)
+    vtp_safety_subject_scope: List[Any] = field(default_factory=list)
+    ipv6_routing_adjacency_baseline: Dict[str, Any] = field(default_factory=dict)
+    ipv6_routing_subject_scope: Dict[str, Any] = field(default_factory=dict)
     move_groups: List[Any] = field(default_factory=list)
     #   punch-list-only feeds:
     cross_layer: List[Any] = field(default_factory=list)

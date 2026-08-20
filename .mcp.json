@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "graphify": {
-      "command": "python",
-      "args": ["-m", "graphify.serve"]
+      "command": "node",
+      "args": ["tools/graphify_mcp_launcher.mjs"]
     }
   }
 }

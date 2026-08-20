@@ -149,7 +149,7 @@ def test_build_detail_svi_and_uplink_lists_disclose_their_cut(tmp_path):
 # --------------------------------------------------------------------------------------------------
 # design.py §3.5 — the software / replacement recommendations
 # --------------------------------------------------------------------------------------------------
-def test_software_recommendations_disclose_the_models_they_dropped(tmp_path):
+def test_lifecycle_recommendations_disclose_the_models_they_dropped(tmp_path):
     snap = _golden()
     snap["devices"] = {}
     per_device = []
@@ -165,7 +165,7 @@ def test_software_recommendations_disclose_the_models_they_dropped(tmp_path):
     mixed = _find(blocks, "further model(s) running MIXED images")
     assert mixed, "3 of 11 mixed-image models got no standardization recommendation, undisclosed"
     assert "…and 3 further" in mixed[0] and "(11 in total)" in mixed[0], mixed[0]
-    eol = _find(blocks, "Hardware past end-of-support gets replacement")
+    eol = _find(blocks, "Hardware in the past-end-of-sale date band needs a planned refresh decision")
     assert eol and "(+2 more)" in eol[0] and "10 model(s) in total" in eol[0], eol[0] if eol else "missing"
 
 
@@ -188,13 +188,18 @@ def test_recommended_decision_detail_discloses_the_decisions_it_did_not_detail(t
 
 
 def test_punchlist_fallback_discloses_on_the_real_golden_snapshot(tmp_path):
-    """UNMODIFIED real producer artifact: 37 punch-list items, no design blueprint — so §4 IS the
+    """UNMODIFIED real producer artifact: 41 punch-list items, no design blueprint — so §4 IS the
     punch-list table, and the 12-row cap is hit by the golden fleet itself."""
     snap = _golden()
-    assert not snap.get("design_blueprint") and len(snap["punchlist"]) == 37   # pin the preconditions
+    punchlist = snap["punchlist"]
+    assert not snap.get("design_blueprint") and len(punchlist) == 41   # pin the preconditions
+    assert {item["title"] for item in punchlist if item["category"] == "IPv6 Routing"} == {
+        "BGPv6 2001:db8:0:9::9 state Active degraded before cutover",
+        "OSPFv3 10.0.0.9 state EXSTART/- degraded before cutover",
+    }
     disc = _find(_render(write_design_doc_docx, snap, tmp_path, "fallback"), "further punch-list item(s)")
-    assert disc, "§4 rendered 12 of 37 punch-list items as the whole target-state section, undisclosed"
-    assert "…and 25 further" in disc[0] and "(37 in total)" in disc[0], disc[0]
+    assert disc, "§4 rendered 12 of 41 punch-list items as the whole target-state section, undisclosed"
+    assert f"…and {len(punchlist) - 12} further" in disc[0] and "(41 in total)" in disc[0], disc[0]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -218,10 +223,12 @@ def test_endpoint_class_table_discloses_the_classes_it_dropped(tmp_path):
 # --------------------------------------------------------------------------------------------------
 def test_crd_known_issues_disclose_the_punchlist_on_the_real_golden_snapshot(tmp_path):
     snap = _golden()
+    punchlist = snap["punchlist"]
+    assert len(punchlist) == 41
     disc = _find(_render(write_crd_docx, snap, tmp_path, "crd"), "further punch-list item(s)")
-    assert disc, ("the CRD's function is 'take a position on' these issues; 8 of 37 rendered with no "
+    assert disc, ("the CRD's function is 'take a position on' these issues; 8 of 41 rendered with no "
                   "total anywhere in §2 reads as the complete known-issue set")
-    assert "…and 29 further" in disc[0] and "(37 in total)" in disc[0], disc[0]
+    assert f"…and {len(punchlist) - 8} further" in disc[0] and "(41 in total)" in disc[0], disc[0]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -237,14 +244,18 @@ def test_engagement_gating_headlines_disclose_the_axes_they_dropped(tmp_path):
 
 
 def test_engagement_risk_log_reconciles_with_the_section_1_conditions(tmp_path):
-    """UNMODIFIED real producer artifact: golden carries 3 Critical + 16 High punch-list findings.
+    """UNMODIFIED real producer artifact: golden carries 3 Critical + 18 High punch-list findings.
     §1 states both counts as verdict conditions, so a §5.1 RAID log that seeds 8 rows and says
     nothing is the same document contradicting itself."""
-    blocks = _render(write_engagement_docx, _golden(), tmp_path, "raid")
-    assert _find(blocks, "3 Critical punch-list item(s)") and _find(blocks, "16 High punch-list item(s)")
+    snap = _golden()
+    critical_high = [item for item in snap["punchlist"] if item["severity"] in {"Critical", "High"}]
+    assert sum(item["severity"] == "Critical" for item in critical_high) == 3
+    assert sum(item["severity"] == "High" for item in critical_high) == 18
+    blocks = _render(write_engagement_docx, snap, tmp_path, "raid")
+    assert _find(blocks, "3 Critical punch-list item(s)") and _find(blocks, "18 High punch-list item(s)")
     disc = _find(blocks, "further Critical/High punch-list finding(s)")
-    assert disc, "§5.1 seeded 8 risks against §1's 3 Critical + 16 High, with no marker"
-    assert "…and 11 further" in disc[0] and "(19 in total" in disc[0], disc[0]     # 8 seeded + 11 == 19
+    assert disc, "§5.1 seeded 8 risks against §1's 3 Critical + 18 High, with no marker"
+    assert f"…and {len(critical_high) - 8} further" in disc[0] and "(21 in total" in disc[0], disc[0]
 
 
 def test_engagement_issue_log_discloses_blind_spots_beyond_the_cap(tmp_path):

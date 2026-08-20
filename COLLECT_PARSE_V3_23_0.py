@@ -279,7 +279,7 @@ Optional:
   --collection-dir DIR  --workers N  --debug-arp
 """
 
-import hashlib, io, os, sys, json, re, logging, warnings, argparse, time  # io: immutable input-byte bindings
+import hashlib, io, ipaddress, os, sys, json, re, logging, warnings, argparse, time  # io: immutable input-byte bindings
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -324,7 +324,8 @@ from cisco_toolkit.analyze import (
     # (step 24) were dropped earlier for the same reason.
     compute_data_quality, compute_health_scores,
     compute_score_sensitivity, compute_calibration_report, compute_migration_readiness,
-    compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
+    compute_protocol_health, compute_protocol_assessability,   # sparse health + exact runtime denominator
+    compute_etherchannel_projection, summarize_etherchannel_baseline,
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
     stp_root_findings, compute_migration_punchlist, compute_framework_coverage,   # NEW-V3.23.62/.63 + W2-3 (framework-mapping matrix)
     compute_hostname_mismatches, reconcile_cdp_neighbor_names,   # NEW-V3.23.68 + audit-5 #1 (split-node reconcile)
@@ -356,6 +357,24 @@ from cisco_toolkit.analyze import (
 )
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 from cisco_toolkit.attestation import compute_attestation   # roadmap D3: zero-egress attestation — trust claims RE-DERIVED at build time (falsifiable, never a badge)
+from cisco_toolkit.bgp_intent import (compute_bgp_configured_peer_baseline,
+                                      embedded_bgp_configured_peer_baseline)
+from cisco_toolkit.fhrp_intent import (compute_fhrp_configured_group_baseline,
+                                       embedded_fhrp_configured_group_baseline)
+from cisco_toolkit.fhrp_redundancy import (
+    compute_fhrp_redundancy_domain_baseline,
+    embedded_fhrp_redundancy_domain_baseline,
+)
+from cisco_toolkit.vtp_safety import (
+    compute_vtp_safety_baseline,
+    compute_vtp_safety_subject_scope,
+    embedded_vtp_safety_baseline,
+)
+from cisco_toolkit.ipv6_routing import (
+    compute_ipv6_routing_adjacency_baseline,
+    compute_ipv6_routing_subject_scope,
+    embedded_ipv6_routing_adjacency_baseline,
+)
 from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase NRFU certification pack (READ-ONLY commands + expected values pre-filled from the snapshot)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -373,6 +392,11 @@ from cisco_toolkit.excel import (
     write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
     write_capacity_sheet, compute_capacity, write_topology_diagram,                 # step 22 (compute_capacity: V3.23.87 capacity embedded in snapshot)
     write_cross_layer_sheet, write_protocol_health_sheet,   # _SEV_FILL dropped step 25 (last writers moved)
+    write_vtp_safety_sheet,                                 # bounded local VTP mode/domain/revision exposure
+    write_ipv6_routing_adjacency_sheet,                      # bounded observed OSPFv3/BGPv6 adjacency receipt
+    write_bgp_configured_peer_sheet,                         # bounded configured default/global IPv4 BGP denominator
+    write_fhrp_configured_group_sheet,                       # bounded configured default/global IPv4 FHRP group denominator
+    write_fhrp_redundancy_domain_sheet,                      # exact cross-switch FHRP domain/candidate owner
     write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
     write_nat_sheet,   # NAT inventory V3.23.50
     write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
@@ -411,6 +435,7 @@ from cisco_toolkit.excel import (
     write_attestation_sheet,                                   # roadmap D3 (re-derived zero-egress attestation panel)
     write_whatif_sheet,                                        # roadmap G4 (single-snapshot failure-injection)
     write_path_intents_sheet,                                  # roadmap G3 (named segmentation/path intents)
+    write_traffic_assurance_sheet,                             # bounded five-tuple path/policy/failure assurance
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
@@ -435,6 +460,10 @@ from cisco_toolkit.external_import import (normalize_rows, read_inventory_csv,
 # the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
 from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
                                              load_capture_meta, CAPTURE_META_FILENAME)
+from cisco_toolkit.traffic_assurance import (
+    TRAFFIC_ASSURANCE_OWNER, TRAFFIC_ASSURANCE_SET_SCHEMA,
+    TRAFFIC_EVIDENCE_CUSTODY_SCHEMA, assess_flows, build_traffic_evidence_custody,
+)
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
 from cisco_toolkit.precert import compute_precert, schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
@@ -470,6 +499,7 @@ from cisco_toolkit.build import (
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_explorer, write_diff_workbook,
+                                compute_snapshot_delta, compute_cutover_gate,
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
@@ -478,6 +508,8 @@ from cisco_toolkit.docmeta import (artifact_candidate_paths, artifact_kind,
                                    validate_artifact)
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.detector_schema import compute_detector_schema   # J1 (per-detector descriptors; not-observed != healthy)
+from cisco_toolkit.unknown_evidence import (                        # governed, aggregate-only parser/coverage unknown queue
+    compute_unknown_evidence, unavailable_unknown_evidence)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -543,6 +575,7 @@ COMMANDS_NXOS = [
     "show mpls l2transport vc",          # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
     "show bfd neighbors",                # BFD fast-failover (both platforms) -> build_bfd / _d_bfd_session_health
     "show ipv6 route summary",           # IPv6 routing-active gate (both platforms) -> build_ipv6_routing
+    "show ipv6 ospfv3 neighbors",        # NX-OS OSPFv3 adjacency table (canonical plural form)
     "show bgp ipv6 unicast summary",     # IPv6 BGP peers (both platforms) -> build_ipv6_routing / _d_ipv6_routing_adjacency
     "moquery -c faultInst",              # Cisco ACI (APIC JSON export) -> build_aci / _d_aci_critical_faults
     "moquery -c fabricNode",             # Cisco ACI fabric inventory (APIC JSON) -> build_aci / _d_aci_node_not_active
@@ -601,6 +634,8 @@ COMMANDS_NXOS = [
     "show ip dhcp snooping binding",  # NEW-V15 (security posture)
     "show ip ospf neighbor",     # NEW-V15 (routing adjacencies)
     "show ip eigrp neighbors",   # NEW-V15 (routing adjacencies)
+    "show bgp ipv4 unicast summary",  # scoped default-VRF IPv4-unicast BGP peers (NX-OS)
+    "show bgp ip unicast summary",    # scoped syntax variant on older NX-OS trains
     "show bgp summary",          # NEW-V15 (routing adjacencies - NX-OS)
     "show ip bgp summary",       # NEW-V15 (routing adjacencies)
     "show bgp ipv4 unicast",     # NEW-V3.23.97 (BGP RIB / received prefixes - NX-OS)
@@ -2374,6 +2409,32 @@ def _preflight_optional_inputs(args) -> dict:
             raise ValueError("--path-intents IDs must be unique")
         loaded["path_intents"] = rows
 
+    traffic_intents_path = getattr(args, "traffic_intents", None)
+    if traffic_intents_path:
+        rows = _catalog(_json("traffic_intents", traffic_intents_path),
+                        ("intents", "flows"), "--traffic-intents")
+        ids = []
+        for i, row in enumerate(rows):
+            flow_id = row.get("id")
+            if not isinstance(flow_id, str) or not flow_id.strip():
+                raise ValueError(
+                    f"--traffic-intents entry {i} requires an explicit non-empty string id")
+            try:
+                flow_id.encode("utf-8")
+                if isinstance(row.get("title"), str):
+                    row["title"].encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"--traffic-intents entry {i} id/title must contain only Unicode scalar values") from exc
+            if "failure" in row and row.get("failure") is not None and not isinstance(
+                    row.get("failure"), dict):
+                raise ValueError(
+                    f"--traffic-intents entry {i} failure must be a JSON object when declared")
+            ids.append(flow_id.strip())
+        if len(set(ids)) != len(ids):
+            raise ValueError("--traffic-intents IDs must be unique")
+        loaded["traffic_intents"] = rows
+
     if args.assert_pack:
         raw = _json("assert_pack", args.assert_pack)
         if isinstance(raw, list):
@@ -2603,6 +2664,9 @@ def main():
                          "Findings Delta + Pre-Change Certificate) plus a <output>.precert.json "
                          "Pre-Change Validation Certificate (roadmap C1; --path-intents is honored); "
                          "skips collection and the template.")
+    ap.add_argument("--fail-on-compare-gate", action="store_true",
+                    help="With --compare, exit 2 after writing the workbook and certificate unless the "
+                         "combined CUTOVER GATE verdict is PASS. Opt-in; requires --compare.")
     ap.add_argument("--no-html",         action="store_true",
                     help="NEW-V3.17: skip Blast-Radius Explorer (HTML) generation "
                          "(default: HTML is always written beside the workbook).")
@@ -2691,6 +2755,10 @@ def main():
                     help="roadmap G3: a JSON catalog of named path/segmentation intents (a list of {id, src, dst, expect: "
                          "REACHES|ISOLATED}) evaluated over the computed FIB -> a 'Path Assertions' sheet + snapshot key. "
                          "With --compare, the catalog is re-validated across the pair into the Pre-Change Certificate. Opt-in.")
+    ap.add_argument("--traffic-intents", default=None, metavar="FILE",
+                    help="an exact, finite JSON catalog of named IPv4 TCP/UDP five-tuples for offline path, "
+                         "stateless-policy, MTU, ECMP and optional synthetic-failure assurance -> one canonical "
+                         "snapshot block and 'Traffic Assurance' sheet. Read-only; unsupported evidence abstains.")
     ap.add_argument("--assert-pack",     default=None, metavar="FILE",
                     help="roadmap A1/H2: a JSON state-assertion check-pack ({assertions:[...]}) evaluated over the "
                          "snapshot -> a 'state_assertions' snapshot key. Opt-in; coverage-honest ([NOT OBSERVED] abstention).")
@@ -2723,6 +2791,15 @@ def main():
                          "nothing is deleted. Idempotent. Rewritten captures will no longer match "
                          "archive hashes recorded at collection time (deliberate). Default off.")
     args = ap.parse_args()
+
+    if args.fail_on_compare_gate and not args.compare:
+        ap.error("--fail-on-compare-gate requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+
+    if args.traffic_intents and (args.compare or args.trend):
+        ap.error(
+            "--traffic-intents is supported only for a full offline assessment run; "
+            "--compare/--trend do not evaluate or publish Traffic Assurance"
+        )
 
     # This run's gate ledger starts empty. Matters for hosts that call main() twice in one process --
     # in-repo that is tests/test_pipeline_inprocess.py and tests/test_pipeline_failopen.py (the webapp
@@ -2759,6 +2836,14 @@ def main():
             ap.error(f"--compare: snapshot file not found: {e.filename}")
         except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
+        if any(isinstance(snap, dict) and "traffic_assurance" in snap
+               for snap in (old_snap, new_snap)):
+            ap.error(
+                "--compare: an input snapshot contains traffic_assurance, but --compare does not "
+                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
+                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
+                "full offline assessments"
+            )
         # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
         # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
         _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
@@ -2793,14 +2878,41 @@ def main():
         cert = compute_precert(
             old_snap, new_snap, path_intents=_intents,
             source_hashes=_source_binding, schema_status=_sc_binding)
-        write_diff_workbook(
+        cutover_gate = write_diff_workbook(
             old_snap, new_snap, diff_out, precert=cert,
             source_binding=_source_binding, schema_status=_sc_binding)
+        # Compatibility for embedders that temporarily wrap/monkeypatch the writer with the historic
+        # no-return contract.  The shipped writer always returns this exact canonical receipt after save.
+        if not isinstance(cutover_gate, dict):
+            cutover_gate = compute_cutover_gate(
+                compute_snapshot_delta(
+                    old_snap, new_snap, source_binding=_source_binding,
+                    schema_status=_sc_binding),
+                cert,
+            )
         precert_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".precert.json"
         write_json_file(precert_path, cert)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
         logger.info(f"[OK] Pre-Change Validation Certificate: {precert_path}  (verdict: {cert.get('verdict')})")
-        return
+        gate_verdict = str(cutover_gate.get("verdict") or "INDETERMINATE")
+        gate_line = f"[CUTOVER GATE: {gate_verdict}] {cutover_gate.get('operator_note') or cutover_gate.get('note')}"
+        if gate_verdict in ("REGRESSED", "FAIL"):
+            logger.error(gate_line)
+        elif gate_verdict in ("INDETERMINATE", "REVIEW", "CONDITIONAL"):
+            logger.warning(gate_line)
+        else:
+            logger.info(gate_line)
+        logger.info(
+            "[CERTIFICATE SCOPE] Pre-Change Certificate: %s. It covers bounded FIB/path-intent "
+            "checks only and cannot override the overall cutover gate.",
+            cutover_gate.get("certificate_verdict", "INDETERMINATE"),
+        )
+        if args.fail_on_compare_gate and gate_verdict != "PASS":
+            logger.error(
+                "[COMPARE GATE ENFORCED] Artifacts were written; exiting 2 because the combined "
+                "cutover gate is %s, not PASS.", gate_verdict)
+            return 2
+        return 0
 
     # NEW-V3.23.145: trend mode - migration-campaign trajectory across a SERIES of snapshots, no SSH/template.
     if args.trend:
@@ -2818,6 +2930,13 @@ def main():
             ap.error(f"--trend: snapshot file not found: {e.filename}")
         except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--trend: could not parse snapshot JSON ({e})")
+        if any(isinstance(snap, dict) and "traffic_assurance" in snap for snap in snaps):
+            ap.error(
+                "--trend: an input snapshot contains traffic_assurance, but --trend does not "
+                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
+                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
+                "full offline assessments"
+            )
         # P3-E2: same schema/script_version gate for the campaign series (an engine upgrade mid-campaign
         # would otherwise trend across incompatible schemas silently).
         _sc_status, _sc_msg = schema_compat_status(snaps, labels=list(args.trend))
@@ -3157,6 +3276,20 @@ def main():
     all_ptp: Dict[str, dict] = {}                                   # {host: ptp clock health}
     all_acl_hits: Dict[str, int] = {}                              # {"port:proto": total matches}
     _inscope = inscope_subnets(all_interfaces)
+    # Traffic Assurance endpoints extend the exact projection denominator. A /32 or /128 anchor retains every
+    # covering and more-specific route for that endpoint; scope_routes then closes recursive next-hop ownership.
+    # Invalid/unsupported endpoint tokens remain for assess_flow's own fail-closed validation and add no scope.
+    for _flow in (_validated_inputs.get("traffic_intents") or []):
+        if not isinstance(_flow, dict):
+            continue
+        for _field in ("src", "dst"):
+            try:
+                _endpoint = ipaddress.ip_address(str(_flow.get(_field) or "").strip())
+            except ValueError:
+                continue
+            _inscope.add(str(ipaddress.ip_network(
+                f"{_endpoint}/{_endpoint.max_prefixlen}", strict=False
+            )))
     for hostname, platform, cmd_to_file in all_devices_meta:
         rdb = build_routes(cmd_to_file)
         if rdb:
@@ -3322,17 +3455,111 @@ def main():
                              dep_map, _default=[])
     _run_phase("Cross-Layer Analysis sheet", write_cross_layer_sheet, wb, cross_layer)
 
+    # Capture integrity is a decision input, not merely a late presentation sheet.  Compute it once,
+    # including the live-collection prompt metadata, before Protocol/Readiness so configured BGP intent
+    # cannot be authorized from a truncated/error capture.  Its workbook sheet intentionally remains in
+    # the established later slot below.
+    _ci_meta: Dict[str, Dict[str, str]] = {}
+    for _h, _c2f in (all_cmd_to_files or {}).items():
+        for _p in (_c2f or {}).values():
+            _m = load_capture_meta(os.path.dirname(_p))
+            if _m:
+                _ci_meta[_h] = _m
+            break                                   # one device dir per host — first path suffices
+    capture_integrity = _run_phase("Capture integrity", compute_capture_integrity_from_paths,
+                                   all_cmd_to_files, _ci_meta, _default={})
+
     # Phase 27: Protocol Health - NEW-V3.22 (re-parses collected protocol output)
     logger.info("\n[Phase 27] Writing Protocol Health sheet ...")
+    _inventory_hosts = [d.get("hostname", "") for d in devices]
+    # Preserve EtherChannel group/member tokens before the generic interface projection can collapse
+    # them into association-only ``port_channel`` values.  Health, Validation and NRFU all consume
+    # this one producer-owned view; associations alone never authorize an operational `(P)` claim.
+    etherchannel_projection = _run_phase(
+        "EtherChannel projection", compute_etherchannel_projection,
+        all_interfaces, all_cmd_to_files, _default={})
     protocol_health = _run_phase("Protocol Health", compute_protocol_health,
-                                 all_interfaces, all_cmd_to_files, _default=[])
-    _run_phase("Protocol Health sheet", write_protocol_health_sheet, wb, protocol_health)
+                                 all_interfaces, all_cmd_to_files, _default=[],
+                                 etherchannel_projection=etherchannel_projection)
+    _protocol_health_available = bool(
+        _PHASE_TIMINGS
+        and _PHASE_TIMINGS[-1].get("phase") == "Protocol Health"
+        and _PHASE_TIMINGS[-1].get("ok") is True
+    )
+    _run_phase("Protocol Health sheet", write_protocol_health_sheet, wb, protocol_health,
+               unavailable=not _protocol_health_available)
+    protocol_assessability = _run_phase(
+        "Protocol assessability", compute_protocol_assessability,
+        _inventory_hosts, all_interfaces, all_cmd_to_files, protocol_health,
+        _default={}, analysis_available=_protocol_health_available)
+    _etherchannel_devices = {
+        str(device.get("hostname") or "").strip(): device
+        for device in devices if isinstance(device, dict) and str(device.get("hostname") or "").strip()
+    }
+    vtp_safety_subject_scope = _run_phase(
+        "VTP safety subject scope", compute_vtp_safety_subject_scope,
+        all_cmd_to_files, _default={}, devices=_etherchannel_devices)
+    vtp_safety_baseline = _run_phase(
+        "VTP safety baseline", compute_vtp_safety_baseline,
+        all_cmd_to_files, capture_integrity, _default={}, devices=_etherchannel_devices)
+    embedded_vtp_safety_baseline_receipt = _run_phase(
+        "Embed VTP safety baseline", embedded_vtp_safety_baseline,
+        vtp_safety_baseline, _default={})
+    _run_phase("VTP Safety sheet", write_vtp_safety_sheet, wb,
+               embedded_vtp_safety_baseline_receipt)
+    ipv6_routing_subject_scope = _run_phase(
+        "IPv6 routing subject scope", compute_ipv6_routing_subject_scope,
+        all_cmd_to_files, _default={}, devices=_etherchannel_devices)
+    ipv6_routing_adjacency_baseline = _run_phase(
+        "IPv6 routing adjacency baseline", compute_ipv6_routing_adjacency_baseline,
+        all_cmd_to_files, capture_integrity, _default={}, devices=_etherchannel_devices)
+    embedded_ipv6_routing_adjacency_baseline_receipt = _run_phase(
+        "Embed IPv6 routing adjacency baseline",
+        embedded_ipv6_routing_adjacency_baseline,
+        ipv6_routing_adjacency_baseline, _default={})
+    _run_phase("IPv6 Routing sheet", write_ipv6_routing_adjacency_sheet, wb,
+               embedded_ipv6_routing_adjacency_baseline_receipt)
+    bgp_configured_peer_baseline = _run_phase(
+        "BGP configured-peer baseline", compute_bgp_configured_peer_baseline,
+        all_cmd_to_files, capture_integrity, _default={}, devices=_etherchannel_devices)
+    embedded_bgp_baseline = _run_phase(
+        "Embed BGP configured-peer baseline", embedded_bgp_configured_peer_baseline,
+        bgp_configured_peer_baseline, _default={})
+    _run_phase("BGP Peer Intent sheet", write_bgp_configured_peer_sheet, wb,
+               embedded_bgp_baseline)
+    fhrp_configured_group_baseline = _run_phase(
+        "FHRP configured-group baseline", compute_fhrp_configured_group_baseline,
+        all_cmd_to_files, capture_integrity, _default={}, devices=_etherchannel_devices)
+    embedded_fhrp_baseline = _run_phase(
+        "Embed FHRP configured-group baseline", embedded_fhrp_configured_group_baseline,
+        fhrp_configured_group_baseline, _default={})
+    fhrp_redundancy_domain_baseline = _run_phase(
+        "FHRP redundancy-domain baseline", compute_fhrp_redundancy_domain_baseline,
+        all_interfaces, fhrp_configured_group_baseline, _default={})
+    embedded_fhrp_redundancy_domain_baseline_receipt = _run_phase(
+        "Embed FHRP redundancy-domain baseline", embedded_fhrp_redundancy_domain_baseline,
+        fhrp_redundancy_domain_baseline, _default={})
+    _run_phase("FHRP Group Intent sheet", write_fhrp_configured_group_sheet, wb,
+               embedded_fhrp_baseline)
+    _run_phase("FHRP Domains sheet", write_fhrp_redundancy_domain_sheet, wb,
+               embedded_fhrp_redundancy_domain_baseline_receipt)
+    etherchannel_baseline = _run_phase(
+        "EtherChannel baseline", summarize_etherchannel_baseline,
+        etherchannel_projection, protocol_assessability,
+        _default={}, devices=_etherchannel_devices)
     # Phase 27b: Protocol Intelligence (NEW-V3.23.100). Join the protocol_health rows against the
     # offline protocol-state doctrine -> meaning + likely cause + remediation. Derived from
     # protocol_health (no re-parse); compute once -> sheet + snapshot (one source of truth).
     protocol_intelligence = _run_phase("Protocol intelligence", compute_protocol_intelligence,
                                        protocol_health, _default=[])
-    _run_phase("Protocol Intelligence sheet", write_protocol_intelligence_sheet, wb, protocol_intelligence)
+    _protocol_intelligence_available = bool(
+        _protocol_health_available
+        and _PHASE_TIMINGS
+        and _PHASE_TIMINGS[-1].get("phase") == "Protocol intelligence"
+        and _PHASE_TIMINGS[-1].get("ok") is True
+    )
+    _run_phase("Protocol Intelligence sheet", write_protocol_intelligence_sheet, wb,
+               protocol_intelligence, unavailable=not _protocol_intelligence_available)
     # Phase 27c: Service Map (NEW-V3.23.101). Resolve ACL L4 port references + fleet multicast activity to
     # named services via the offline port registry (portdb). ACL refs are design intent (Inferred), not
     # active traffic. Compute once -> sheet + snapshot (one source of truth).
@@ -3357,14 +3584,14 @@ def main():
     # Phase 27d: Collection completeness (NEW-V3.23.109). The pre-assessment blind-spot report -- which
     # INVENTORY (devices.json) devices were not / only partially collected, so the gaps are explicit
     # rather than buried in band counts. Compute once -> sheet + snapshot (one source of truth).
-    _inventory_hosts = [d.get("hostname", "") for d in devices]
     collection_completeness = _run_phase("Collection completeness", compute_collection_completeness,
                                          _inventory_hosts, all_cmd_to_files, _default={})
     # parse_yield_report() here and at snapshot assembly return IDENTICAL content: all parsing
     # is complete before either runs, and the sheet writers call no _safe_parse (excel.py only
     # loads raw text for its 3 re-parse sheets), so the ledger is quiescent between the two.
     _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb,
-               collection_completeness, parse_yield_report())
+               collection_completeness, parse_yield_report(),
+               protocol_assessability=protocol_assessability)
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
@@ -3381,7 +3608,16 @@ def main():
     migration_readiness = _run_phase(
         "Migration Readiness", compute_migration_readiness,
         all_interfaces, move_groups, health_scores, physical_health, l3_forwarding,
-        cross_layer, protocol_health, dep_map, _default=[])
+        cross_layer, protocol_health, dep_map, _default=[],
+        protocol_assessability=protocol_assessability,
+        stp_roots=all_stp_roots,
+        bgp_configured_peer_baseline=bgp_configured_peer_baseline,
+        fhrp_configured_group_baseline=fhrp_configured_group_baseline,
+        fhrp_redundancy_domain_baseline=fhrp_redundancy_domain_baseline,
+        vtp_safety_baseline=vtp_safety_baseline,
+        vtp_safety_subject_scope=vtp_safety_subject_scope,
+        ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
+        ipv6_routing_subject_scope=ipv6_routing_subject_scope)
     _run_phase("Migration Readiness sheet", write_migration_readiness_sheet, wb, migration_readiness)
     _run_phase("Wave Sequencing sheet", write_wave_sequencing_sheet, wb, all_interfaces, move_groups)   # NEW-V3.23.89 (make-before-break vs hard cutover; needs move_groups computed just above)
     # Phase 29b: Endpoint Dependencies (NEW-V3.23.96). Needs both endpoint_identity (Phase 15b) and
@@ -3430,7 +3666,8 @@ def main():
     # V3.23.64 folds in the cross-switch L2 checks (addressing / FHRP / trunk-native / link duplex-speed).
     _stp_findings = stp_root_findings(all_stp_roots, all_interfaces)
     _l2 = {"addressing": compute_addressing_conflicts(all_interfaces),
-           "fhrp": compute_fhrp_consistency(all_interfaces),
+           "fhrp": compute_fhrp_consistency(
+               all_interfaces, fhrp_redundancy_domain_baseline),
            "trunk_native": compute_trunk_native_mismatches(all_interfaces),
            "link_phy": compute_duplex_speed_mismatches(all_interfaces)}
     _hostname_mismatches = compute_hostname_mismatches(all_device_physical)   # NEW-V3.23.68
@@ -3489,18 +3726,22 @@ def main():
         syslog_intelligence=syslog_intelligence, qos_audit=qos_audit, golden_drift=golden_drift,
         all_security=all_security, all_config_hygiene=all_config_hygiene,
         all_stp_roots=all_stp_roots, all_vpc=all_vpc, physical_health=physical_health,
-        protocol_health=protocol_health, move_groups=move_groups)
+        protocol_health=protocol_health, protocol_assessability=protocol_assessability,
+        vtp_safety_baseline=vtp_safety_baseline,
+        vtp_safety_subject_scope=vtp_safety_subject_scope,
+        ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
+        ipv6_routing_subject_scope=ipv6_routing_subject_scope,
+        move_groups=move_groups)
     device_dossiers = _run_phase("Device risk register", _device_dossiers, _actx, _default={})
     # EDA-style physical cable map (SSOT for the explorer + webapp cable-map views): a node/port/cable
     # graph, role-tiered lanes, LAG bundled, op-status DERIVED from interface state (coverage-honest --
     # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green).
     cable_map = _run_phase("Cable map", compute_cable_map, all_interfaces, health_scores, _default={})
     _run_phase("Cabling Schedule sheet", write_cabling_schedule_sheet, wb, cable_map)   # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
-    # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
-    # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
-    # (The V3.23.172 compound patterns MAY reference the EoL band, but only when stacked with a second
-    # independent risk axis -- the synthetic golden fleet's models are outside the EoL KB, so the frozen
-    # golden punch-list stays date-free.)
+    # NEW-V3.23.117: lifecycle risk stays its OWN axis (sheet / cockpit / runbook §4.1). V3.23.172
+    # compound patterns may also fold a lifecycle band into the punch-list when it stacks with another
+    # risk axis. The golden harness therefore pins the synthetic collection timestamp: lifecycle and
+    # every legitimate downstream fold are deterministic as-of the evidence date, not the test date.
     _actx.device_dossiers = device_dossiers          # feed the just-computed dossiers into the punch-list
     _actx.cross_layer = cross_layer
     _actx.l3_forwarding = l3_forwarding
@@ -3525,12 +3766,24 @@ def main():
 
     # Phase 30d-quater: Cutover VALIDATION plan - NEW-V3.23.143 (assess->ACT->verify). From the current-state
     # topology, generate the per-wave checks an engineer runs after each cutover to PROVE it worked -- gateway
-    # up, FHRP healthy, endpoints reach their gateway, routing adjacencies re-established, STP root unchanged,
-    # port-channels bundled - each with the expected good result captured from the pre-cutover state. Pure
-    # synthesis of already-collected data; compute once -> sheet + snapshot (one source of truth).
+    # up, FHRP state, endpoints reach their gateway, receipt-gated observed routing adjacencies, STP root
+    # unchanged, and port-channels bundled.  Routing baselines retain the observed peer states and abstain when
+    # the exact current-run protocol receipt cannot authorize them; a degraded baseline is never rewritten as a
+    # healthy acceptance target. Pure synthesis of already-collected data; compute once -> sheet + snapshot.
     validation_plan = _run_phase("Validation plan", compute_validation_plan,
                                  all_interfaces, move_groups, all_routing_neighbors, all_stp_roots,
-                                 _dev_platform, protocol_health=protocol_health, _default={})   # NRFU #18: bundle baseline reflects real (D)/down members, not a blanket all-(P)
+                                 _dev_platform, protocol_health=protocol_health,
+                                 protocol_assessability=protocol_assessability,
+                                 etherchannel_baseline=etherchannel_baseline,
+                                 etherchannel_projection=etherchannel_projection,
+                                 bgp_configured_peer_baseline=bgp_configured_peer_baseline,
+        fhrp_configured_group_baseline=fhrp_configured_group_baseline,
+        fhrp_redundancy_domain_baseline=fhrp_redundancy_domain_baseline,
+        vtp_safety_baseline=vtp_safety_baseline,
+        vtp_safety_subject_scope=vtp_safety_subject_scope,
+        ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
+        ipv6_routing_subject_scope=ipv6_routing_subject_scope,
+        _default={})   # bundle/routing baselines preserve observed state and receipt scope
     _run_phase("Cutover Validation sheet", write_validation_plan_sheet, wb, validation_plan)
 
     # Phase 30d-quinquies: Golden-config DRIFT - NEW-V3.23.146. Per-device running-config drift vs a baseline:
@@ -3551,22 +3804,20 @@ def main():
         logger.info(f"[Phase 30g] SoT reconcile: {len(_declared)} declared vs "
                     f"{external_reconcile['summary'].get('n_observed', 0)} observed -> "
                     f"{external_reconcile['summary'].get('n_rows', 0)} drift row(s) from {args.import_inventory}")
-    # roadmap K1, WIDENED in Plan A / Tier-2 #6: capture-integrity now inspects EVERY collected capture
-    # (all ~160 commands/device via all_cmd_to_files), not just run-config — streamed one body at a time
-    # so the fleet's raw output is never held in memory at once. The per-device _capture_meta.json
-    # sidecar (live-collect) adds `unverified_prompt` for timing-fallback captures; absent meta (every
-    # older collection) makes no prompt claim. Together with snap['parse_yield'] this separates
-    # "collection problem" (zero-yield + non-ok capture) from "parser format gap" (zero-yield + clean).
-    _ci_meta: Dict[str, Dict[str, str]] = {}
-    for _h, _c2f in (all_cmd_to_files or {}).items():
-        for _p in (_c2f or {}).values():
-            _m = load_capture_meta(os.path.dirname(_p))
-            if _m:
-                _ci_meta[_h] = _m
-            break                                   # one device dir per host — first path suffices
-    capture_integrity = _run_phase("Capture integrity", compute_capture_integrity_from_paths,
-                                   all_cmd_to_files, _ci_meta, _default={})
+    # Presentation remains in the historic slot; the decision input itself was computed once before
+    # Protocol/Readiness above.
     _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
+    # Compact positive custody for the route/config evidence Traffic Assurance consumes. The owner combines
+    # actual command presence, capture integrity and parser-yield telemetry; raw paths/bodies never enter it.
+    parse_yield = parse_yield_report()
+    traffic_evidence_custody = _run_phase(
+        "Traffic evidence custody", build_traffic_evidence_custody,
+        all_cmd_to_files, capture_integrity, parse_yield, all_routes,
+        {"interfaces": all_interfaces, "acls": all_acls,
+         "object_groups": all_object_groups, "nat": all_nat},
+        _default={"schema": TRAFFIC_EVIDENCE_CUSTODY_SCHEMA, "hosts": {},
+                  "summary": {"n_hosts": 0, "n_cells": 0, "n_complete": 0, "n_unproven": 0}},
+    )
     # roadmap G4: opt-in failure-injection what-if (--scenario FILE). Golden-safe (off by default).
     whatif_result = None
     if args.scenario:
@@ -3685,7 +3936,8 @@ def main():
                            "snapshot": os.path.splitext(os.path.basename(str(out_xlsx or "")))[0]})
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
-    _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
+    _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces,
+               fhrp_redundancy_domain_baseline)
     _run_phase("Trunk Native-VLAN sheet", write_trunk_native_sheet, wb, all_interfaces)
     _run_phase("Link Duplex-Speed sheet", write_link_phy_sheet, wb, all_interfaces)
 
@@ -3727,10 +3979,23 @@ def main():
     # cisco_toolkit.nrfu_export.write_nrfu_pack (a --nrfu-pack CLI flag is deferred).
     nrfu_commands = _run_phase(
         "NRFU commands", compute_nrfu_commands,
-        {**snapshot_state(all_interfaces, all_device_physical),
-         "move_groups": move_groups, "stp_roots": all_stp_roots,
-         "routing_neighbors": all_routing_neighbors, "fhrp_detail": all_fhrp_detail,
-         "application_intelligence": application_intelligence},
+         {**snapshot_state(all_interfaces, all_device_physical),
+          "move_groups": move_groups, "stp_roots": all_stp_roots,
+           "routing_neighbors": all_routing_neighbors, "fhrp_detail": all_fhrp_detail,
+           "protocol_health": protocol_health,
+           "protocol_assessability": protocol_assessability,
+           # In-process authorization retains the producer's non-serializable current-run marker.
+           # The snapshot publication below deliberately receives only the embedded audit projection.
+           "bgp_configured_peer_baseline": bgp_configured_peer_baseline,
+           "fhrp_configured_group_baseline": fhrp_configured_group_baseline,
+           "fhrp_redundancy_domain_baseline": fhrp_redundancy_domain_baseline,
+           "vtp_safety_baseline": vtp_safety_baseline,
+           "vtp_safety_subject_scope": vtp_safety_subject_scope,
+           "ipv6_routing_adjacency_baseline": ipv6_routing_adjacency_baseline,
+           "ipv6_routing_subject_scope": ipv6_routing_subject_scope,
+           "etherchannel_projection": etherchannel_projection,
+           "etherchannel_baseline": etherchannel_baseline,
+          "application_intelligence": application_intelligence},
         _default={})
     _run_phase("NRFU Commands sheet", write_nrfu_commands_sheet, wb, nrfu_commands)
 
@@ -3747,6 +4012,14 @@ def main():
     snap_dict["l3_forwarding"] = l3_forwarding                       # NEW-V3.20
     snap_dict["cross_layer"] = cross_layer                           # NEW-V3.21
     snap_dict["protocol_health"] = protocol_health                   # NEW-V3.22
+    snap_dict["protocol_assessability"] = protocol_assessability     # Exact current-run device x seven-family evidence denominator
+    snap_dict["bgp_configured_peer_baseline"] = embedded_bgp_baseline  # normalized embedded audit projection; process-local source marker/raw config never serialized
+    snap_dict["fhrp_configured_group_baseline"] = embedded_fhrp_baseline  # normalized embedded audit projection; current-run source marker never serialized
+    snap_dict["fhrp_redundancy_domain_baseline"] = embedded_fhrp_redundancy_domain_baseline_receipt  # exact cross-switch FHRP domain/candidate audit projection; current-run custody erased
+    snap_dict["vtp_safety_baseline"] = embedded_vtp_safety_baseline_receipt  # bounded local VTP mode/domain/revision audit projection; current-run custody erased
+    snap_dict["ipv6_routing_adjacency_baseline"] = embedded_ipv6_routing_adjacency_baseline_receipt  # bounded observed OSPFv3/BGPv6 audit projection; current-run custody erased
+    snap_dict["etherchannel_projection"] = etherchannel_projection   # Exact local group/member summary tokens + association-only subjects
+    snap_dict["etherchannel_baseline"] = etherchannel_baseline       # Receipt-gated observed bundle baseline for Validation/NRFU
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
     snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
@@ -3810,7 +4083,8 @@ def main():
         snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
     snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
     snap_dict["attestation"] = attestation                          # roadmap D3 (re-derived trust claims; 'Trust & Sovereignty' sheet twin — computed at the workbook stage above)
-    snap_dict["parse_yield"] = parse_yield_report()                 # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
+    snap_dict["parse_yield"] = parse_yield                          # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
+    snap_dict["traffic_evidence_custody"] = traffic_evidence_custody  # affirmative route/config custody; no raw paths/bodies
     if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
         snap_dict["whatif"] = whatif_result                         # failure-injection what-if results
     if path_intents is not None:                                    # roadmap G3 (opt-in: only when --path-intents supplied)
@@ -3836,7 +4110,7 @@ def main():
     # compute_* fns are already imported at module level (V3.23.64, also used to build the punch-list
     # above), so no local re-import is needed — and adding one would shadow that earlier use.
     snap_dict["addressing_conflicts"] = compute_addressing_conflicts(all_interfaces)
-    snap_dict["fhrp"] = compute_fhrp_consistency(all_interfaces)
+    snap_dict["fhrp"] = _l2["fhrp"]
     snap_dict["trunk_native"] = compute_trunk_native_mismatches(all_interfaces)
     snap_dict["link_phy"] = compute_duplex_speed_mismatches(all_interfaces)
     snap_dict["move_groups"] = move_groups                           # NEW-V3.23.86 (Migration Waves mode: the move-group / shared-VLAN-domain structure the readiness verdicts attach to; already computed above for migration_readiness)
@@ -3947,10 +4221,32 @@ def main():
     snap_dict["architecture_review"] = architecture_review
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
+    # One producer boundary for the bounded five-tuple assurance product.  The engine evaluates the
+    # exact, custody-bound snapshot once; snapshot/Excel/Explorer consumers project this returned object
+    # and must never rerun FIB, ACL, ECMP, MTU or failure logic independently.
+    if args.traffic_intents:
+        snap_dict["traffic_assurance"] = _run_phase(
+            "Traffic assurance", assess_flows, snap_dict,
+            _validated_inputs["traffic_intents"],
+            _default={
+                "schema": TRAFFIC_ASSURANCE_SET_SCHEMA,
+                "owner": TRAFFIC_ASSURANCE_OWNER,
+                "state": "error",
+                "results": [],
+                "summary": {
+                    "n": 0, "proven": 0, "refuted": 0,
+                    "not_observed": 0, "indeterminate": 0, "invalid": 0,
+                },
+            },
+        )
     if args.redact:                                                  # NEW-V3.23.41
         snap_dict = redact_snapshot(snap_dict)
         _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
         logger.info("  [redact] snapshot IPs / MACs / serials pseudonymized (--redact)")
+    _run_phase(
+        "Traffic Assurance sheet", write_traffic_assurance_sheet, wb,
+        snap_dict.get("traffic_assurance"),
+    )
     # NEW: the canonical CCDE-grounded target-state DESIGN BLUEPRINT (the senior-network-design-engineer
     # layer). Computed LAST, from the fully-assembled (and, under --redact, already-redacted) snap_dict, so
     # the design DOCX / explorer / webapp all read ONE blueprint instead of re-deriving design intent. It
@@ -3980,6 +4276,17 @@ def main():
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
         _record_phase_failure("Design blueprint", f"{type(e).__name__}: {e}")
+    # Governed unknown-evidence queue: aggregate only the parser/coverage/architecture diagnostics
+    # already published above. The owner discards raw device names, paths, command payloads and unknown
+    # tokens; events remain candidate classifications / needs-triage, never support verdicts. Keep this
+    # in its own fail-soft boundary so a design-coverage failure still yields an honest partial queue,
+    # and an aggregate failure still publishes the canonical unavailable shape rather than disappearing.
+    try:
+        snap_dict["unknown_evidence"] = compute_unknown_evidence(snap_dict)
+    except Exception as e:
+        logger.warning(f"  unknown-evidence aggregation failed (non-fatal): {e}")
+        snap_dict["unknown_evidence"] = unavailable_unknown_evidence()
+        _record_phase_failure("Unknown evidence", f"{type(e).__name__}: {e}")
     # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
     # fixtures, never on a real customer snapshot. Reconcile the published canonical facts against
     # their raw-evidence derivation NOW, on the fully-assembled snap_dict, and ONLY on drift disclose
@@ -4622,7 +4929,12 @@ def _punchlist(ctx: "AnalysisContext") -> list:
         ptp_readiness=ctx.ptp_readiness, media_risks=ctx.media_risks,
         syslog_intelligence=ctx.syslog_intelligence, qos_audit=ctx.qos_audit,
         software_risk=ctx.software_risk, platform_health=ctx.platform_health,
-        device_dossiers=ctx.device_dossiers)
+        device_dossiers=ctx.device_dossiers,
+        protocol_assessability=ctx.protocol_assessability,
+        vtp_safety_baseline=ctx.vtp_safety_baseline,
+        vtp_safety_subject_scope=ctx.vtp_safety_subject_scope,
+        ipv6_routing_adjacency_baseline=ctx.ipv6_routing_adjacency_baseline,
+        ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope)
 
 
 def _executive_brief(ctx: "AnalysisContext") -> dict:
@@ -4643,6 +4955,6 @@ if __name__ == "__main__":
     # console script (which wraps main() in sys.exit) and Atlas's --run-engine dispatch (int(rc or
     # 0)) both honoured it. The repo's own e2e exit-code assertion runs through THIS door
     # (tests/test_pipeline_golden.py), so it was blind to any code main() returned. No behaviour
-    # change today beyond that: main() returns 0 on every path unless --fail-on-gate-refusal is
-    # passed and a gate refused.
+    # main() returns 0 on normal paths; the explicit --fail-on-gate-refusal and
+    # --fail-on-compare-gate enforcement modes can return 2 after their artifacts are handled.
     sys.exit(main())

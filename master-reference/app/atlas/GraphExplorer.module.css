@@ -1,0 +1,37 @@
+.workspace { display: grid; gap: 1rem; }
+.state { min-height: 12rem; display: grid; place-content: center; justify-items: start; gap: .5rem; border: 1px solid var(--line); background: var(--surface); padding: 1.25rem; }
+.state span { color: var(--ink-soft); }
+.state button { border: 1px solid var(--line-strong); background: var(--surface-soft); padding: .6rem .8rem; }
+.proof { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .7rem; }
+.proof div { border: 1px solid var(--line); background: var(--surface); padding: 1rem; min-width: 0; }
+.proof strong { display: block; color: var(--cyan); font: 700 clamp(1.25rem,3vw,2rem)/1 ui-monospace,monospace; overflow-wrap: anywhere; }
+.proof span { color: var(--ink-faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
+.controls { display: grid; grid-template-columns: 2fr 1fr; gap: .7rem; }
+.controls label { display: grid; gap: .3rem; color: var(--ink-soft); font-size: .75rem; font-weight: 700; text-transform: uppercase; }
+.controls input,.controls select { min-height: 2.75rem; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); padding: .55rem .7rem; }
+.disclosure { margin: 0; color: var(--ink-soft); }
+.graphLayout { display: grid; grid-template-columns: minmax(0,2fr) minmax(15rem,1fr); gap: 1rem; align-items: stretch; }
+.graph { width: 100%; min-height: 31rem; border: 1px solid var(--line); background: radial-gradient(circle at center,var(--surface-soft),var(--canvas)); }
+.graph line { stroke: var(--line-strong); stroke-width: .8; opacity: .55; }
+.graph line[data-mode="inferred"] { stroke-dasharray: 4 4; stroke: var(--amber); }
+.graph circle { fill: var(--cyan); stroke: var(--canvas); stroke-width: 2; }
+.graph circle[data-origin="ast"] { fill: var(--green); }
+.communities { border: 1px solid var(--line); background: var(--surface); padding: 1rem; }
+.communities h2 { margin: 0 0 .8rem; font-size: 1rem; }
+.communities button { width: 100%; display: grid; grid-template-columns: minmax(7rem,1fr) 2fr auto; gap: .5rem; align-items: center; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--ink-soft); padding: .55rem 0; text-align: left; }
+.communities button > i { height: .3rem; background: var(--canvas-raised); }
+.communities button > i > i { display: block; height: 100%; background: var(--cyan); }
+.communities strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.tableWrap { overflow: auto; border: 1px solid var(--line); }
+.tableWrap table { width: 100%; min-width: 58rem; border-collapse: collapse; }
+.tableWrap th,.tableWrap td { border-bottom: 1px solid var(--line); padding: .7rem; text-align: left; vertical-align: top; }
+.tableWrap thead { background: var(--canvas-raised); }
+.tableWrap tbody th { max-width: 20rem; overflow-wrap: anywhere; }
+.tableWrap code { display: block; color: var(--ink-faint); font-size: .68rem; }
+.tableWrap a { color: var(--cyan); overflow-wrap: anywhere; }
+.pager { position: sticky; left: 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-width: min(58rem,100%); padding: .65rem .8rem; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--ink-soft); }
+.pager button { min-height: 2.4rem; border: 1px solid var(--line-strong); background: var(--surface-soft); color: var(--ink); padding: .4rem .75rem; }
+.pager button:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 850px) { .proof { grid-template-columns: repeat(2,minmax(0,1fr)); } .graphLayout { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .proof,.controls { grid-template-columns: 1fr; } .graph { min-height: 22rem; } }
+@media print { .graphLayout { grid-template-columns: 1fr; } .graph { background: #fff; } .graph line { stroke: #777; } }

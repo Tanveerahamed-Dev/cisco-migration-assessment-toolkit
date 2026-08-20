@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import struct
 import subprocess
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,71 @@ def _privacy_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _visual_pin_helper():
+    path = ROOT / ".github" / "scripts" / "refresh_visual_baseline_pins.py"
+    spec = importlib.util.spec_from_file_location("_visual_baseline_pins", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _visual_pin_repo(tmp_path: Path, names=("Alpha", "Beta")) -> Path:
+    config = tmp_path / ".design-sync" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps({"componentSrcMap": {name: f"src/{name}.tsx" for name in names}}),
+        encoding="utf-8",
+    )
+    verifier = tmp_path / ".github" / "scripts" / "verify_repository_privacy.py"
+    verifier.parent.mkdir(parents=True, exist_ok=True)
+    verifier.write_text(
+        "# prefix stays byte-for-byte\n"
+        "# BEGIN GENERATED SYNTHETIC VISUAL BASELINE PINS\n"
+        "_SYNTHETIC_VISUAL_BASELINES = {}\n"
+        "# END GENERATED SYNTHETIC VISUAL BASELINE PINS\n"
+        "# suffix stays byte-for-byte\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _visual_png(width: int, height: int = 700, marker: bytes = b"") -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(payload, zlib.crc32(kind)) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
+
+    colour = hashlib.sha256(marker or b"visual-pin-fixture").digest()[:3]
+    scanlines = (b"\x00" + colour * width) * height
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(scanlines, level=1))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _write_visual_pin_set(root: Path, names=("Alpha", "Beta")) -> Path:
+    baseline_dir = (
+        root
+        / "webapp"
+        / "frontend"
+        / "visual-e2e"
+        / "__screenshots__"
+        / "windows-2025-x64"
+    )
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (baseline_dir / f"{name}.png").write_bytes(
+            _visual_png(900, marker=name.encode("ascii"))
+        )
+        (baseline_dir / f"{name}-728.png").write_bytes(
+            _visual_png(728, marker=(name + "-728").encode("ascii"))
+        )
+    return baseline_dir
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -309,9 +376,17 @@ def test_guard_rejects_unapproved_binary_and_manifest_tampering(tmp_path):
     )
 
 
-def test_guard_allows_only_the_exact_manifest_bound_social_asset(tmp_path):
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "master-reference/public/atlas-social-card.png",
+        "master-reference/public/og.png",
+    ],
+)
+def test_guard_allows_only_the_exact_manifest_bound_social_assets(
+    tmp_path, relative
+):
     module = _privacy_module()
-    relative = "master-reference/public/og.png"
     payload = (ROOT / relative).read_bytes()
 
     module._validate_project_binary_asset(relative, payload)
@@ -321,18 +396,233 @@ def test_guard_allows_only_the_exact_manifest_bound_social_asset(tmp_path):
     root = _repo(tmp_path)
     impostor = root / relative
     impostor.parent.mkdir(parents=True, exist_ok=True)
-    impostor.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + (13).to_bytes(4, "big")
-        + b"IHDR"
-        + (1730).to_bytes(4, "big")
-        + (909).to_bytes(4, "big")
-    )
+    impostor.write_bytes(payload[:-1])
     violations = module.inspect_tracked_tree(root, include_index=False)
     assert any(
         relative in item and "exact manifest integrity" in item
         for item in violations
     )
+
+
+def test_guard_allows_only_exact_code_pinned_synthetic_visual_baselines(tmp_path):
+    module = _privacy_module()
+    helper = _visual_pin_helper()
+    contracts = module._SYNTHETIC_VISUAL_BASELINES
+    expected_paths = set(helper.expected_relative_paths(ROOT))
+
+    assert len(contracts) == 42
+    assert set(contracts) == expected_paths
+    for relative in contracts:
+        module._validate_project_binary_asset(
+            relative,
+            (ROOT / relative).read_bytes(),
+        )
+
+    # A reviewed payload is allowed only at its exact code-pinned path. Corrupting those bytes or
+    # adding an otherwise-valid PNG beside it must fail; this is not a directory-wide image carveout.
+    root = _repo(tmp_path)
+    relative = sorted(contracts)[0]
+    payload = (ROOT / relative).read_bytes()
+    baseline = root / relative
+    baseline.parent.mkdir(parents=True, exist_ok=True)
+    baseline.write_bytes(payload)
+    assert module.inspect_tracked_tree(root, include_index=False) == []
+
+    baseline.write_bytes(payload[:-1])
+    violations = module.inspect_tracked_tree(root, include_index=False)
+    assert any(
+        relative in item and "exact manifest integrity" in item
+        for item in violations
+    )
+
+    baseline.write_bytes(payload)
+    impostor = baseline.with_name("UnreviewedSyntheticCard.png")
+    impostor.write_bytes(payload)
+    violations = module.inspect_tracked_tree(root, include_index=False)
+    assert any(
+        "UnreviewedSyntheticCard.png" in item and "not allowlisted" in item
+        for item in violations
+    )
+
+
+def test_visual_pin_helper_contracts_two_viewports_for_every_component():
+    helper = _visual_pin_helper()
+    names = helper.configured_components(ROOT)
+    paths = helper.expected_relative_paths(ROOT)
+
+    assert len(names) == 21
+    assert len(paths) == 42
+    assert paths == tuple(sorted(paths))
+    expected_dir = (
+        "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/"
+    )
+    assert set(paths) == {
+        expected_dir + filename
+        for name in names
+        for filename in (f"{name}.png", f"{name}-728.png")
+    }
+
+
+def test_visual_pin_helper_refresh_is_deterministic_review_gated_and_surgical(
+    tmp_path, capsys
+):
+    helper = _visual_pin_helper()
+    root = _visual_pin_repo(tmp_path)
+    _write_visual_pin_set(root)
+
+    contracts = helper.build_pin_contracts(root)
+    rendered = helper.render_pin_block(contracts)
+    assert rendered == helper.render_pin_block(helper.build_pin_contracts(root))
+    assert list(contracts) == sorted(contracts)
+    assert len(contracts) == 4
+    assert {contract["width"] for contract in contracts.values()} == {728, 900}
+
+    verifier = root / ".github" / "scripts" / "verify_repository_privacy.py"
+    original = verifier.read_text(encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        helper.main(["--root", str(root), "--write"])
+    assert exc.value.code == 2
+    assert verifier.read_text(encoding="utf-8") == original
+
+    assert helper.main(
+        ["--root", str(root), "--write", "--reviewed"]
+    ) == 0
+    refreshed = verifier.read_text(encoding="utf-8")
+    assert refreshed.startswith("# prefix stays byte-for-byte\n")
+    assert refreshed.endswith("# suffix stays byte-for-byte\n")
+    assert rendered in refreshed
+    assert helper.main(["--root", str(root)]) == 0
+
+    # A byte-only pixel payload change leaves width/height intact but must stale the SHA pin.
+    primary = (
+        root
+        / "webapp"
+        / "frontend"
+        / "visual-e2e"
+        / "__screenshots__"
+        / "windows-2025-x64"
+        / "Alpha.png"
+    )
+    primary.write_bytes(_visual_png(900, marker=b"changed-pixels"))
+    assert helper.main(["--root", str(root)]) == 1
+    assert "pins are stale" in capsys.readouterr().out
+
+
+def test_visual_pin_helper_refuses_partial_extra_and_malformed_sets(tmp_path):
+    helper = _visual_pin_helper()
+    root = _visual_pin_repo(tmp_path)
+    baseline_dir = _write_visual_pin_set(root)
+
+    missing = baseline_dir / "Alpha-728.png"
+    payload = missing.read_bytes()
+    missing.unlink()
+    with pytest.raises(helper.PinRefreshError, match="missing:"):
+        helper.build_pin_contracts(root)
+    missing.write_bytes(payload)
+
+    extra = baseline_dir / "Unreviewed.png"
+    extra.write_bytes(_visual_png(900))
+    with pytest.raises(helper.PinRefreshError, match="extra:"):
+        helper.build_pin_contracts(root)
+    extra.unlink()
+
+    malformed = baseline_dir / "Beta.png"
+    malformed.write_bytes(b"not a PNG")
+    with pytest.raises(helper.PinRefreshError, match="structurally valid PNG"):
+        helper.build_pin_contracts(root)
+
+    valid = _visual_png(900, marker=b"Beta")
+    malformed.write_bytes(valid[:24])
+    with pytest.raises(helper.PinRefreshError, match="structurally valid PNG"):
+        helper.build_pin_contracts(root)
+
+    bad_crc = bytearray(valid)
+    bad_crc[29] ^= 1
+    malformed.write_bytes(bad_crc)
+    with pytest.raises(helper.PinRefreshError, match="chunk CRC"):
+        helper.build_pin_contracts(root)
+
+    malformed.write_bytes(valid[:-12])
+    with pytest.raises(helper.PinRefreshError, match="incomplete chunk stream"):
+        helper.build_pin_contracts(root)
+
+    malformed.unlink()
+    malformed.mkdir()
+    with pytest.raises(helper.PinRefreshError, match="regular non-link"):
+        helper.build_pin_contracts(root)
+
+
+def test_visual_pin_helper_honours_configured_primary_viewport(tmp_path):
+    helper = _visual_pin_helper()
+    root = _visual_pin_repo(tmp_path, names=("Alpha",))
+    config_path = root / ".design-sync" / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["overrides"] = {"Alpha": {"viewport": "1100x720"}}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    baseline_dir = _write_visual_pin_set(root, names=("Alpha",))
+    (baseline_dir / "Alpha.png").write_bytes(_visual_png(1100))
+
+    contracts = helper.build_pin_contracts(root)
+
+    assert contracts[next(path for path in contracts if path.endswith("/Alpha.png"))][
+        "width"
+    ] == 1100
+    assert contracts[next(path for path in contracts if path.endswith("/Alpha-728.png"))][
+        "width"
+    ] == 728
+
+
+def test_visual_pin_helper_rejects_reparse_and_identity_changes(
+    tmp_path, monkeypatch
+):
+    helper = _visual_pin_helper()
+    root = _visual_pin_repo(tmp_path, names=("Alpha",))
+    baseline_dir = _write_visual_pin_set(root, names=("Alpha",))
+    candidate = baseline_dir / "Alpha.png"
+    real_lstat = Path.lstat
+
+    def copied(info, **changes):
+        values = {
+            "st_dev": info.st_dev,
+            "st_ino": info.st_ino,
+            "st_mode": info.st_mode,
+            "st_size": info.st_size,
+            "st_mtime_ns": info.st_mtime_ns,
+            "st_file_attributes": getattr(info, "st_file_attributes", 0),
+        }
+        values.update(changes)
+        return SimpleNamespace(**values)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Path,
+            "lstat",
+            lambda path: (
+                copied(
+                    real_lstat(path),
+                    st_file_attributes=helper._REPARSE_POINT,
+                )
+                if path == baseline_dir
+                else real_lstat(path)
+            ),
+        )
+        with pytest.raises(helper.PinRefreshError, match="ordinary directories"):
+            helper.build_pin_contracts(root)
+
+    calls = 0
+
+    def changed_after_open(path):
+        nonlocal calls
+        info = real_lstat(path)
+        if path != candidate:
+            return info
+        calls += 1
+        return copied(info, st_ino=info.st_ino + (calls > 1))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", changed_after_open)
+        with pytest.raises(helper.PinRefreshError, match="identity changed"):
+            helper._read_regular_bounded(candidate, helper._MAX_PNG_BYTES)
 
 
 def test_guard_requires_exact_manifest_bound_official_public_sources(tmp_path):

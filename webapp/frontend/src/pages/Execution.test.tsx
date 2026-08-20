@@ -190,6 +190,130 @@ describe("ExecutionPage", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("freezes a start-snapshot blocker in view and disables the impossible plain PASS", async () => {
+    const blocker = {
+      device: "DIST-1", wave: "Core-fabric", category: "Routing", severity: "High",
+      check: "OSPF neighbor remains EXSTART", command: "show ip ospf neighbor",
+      expect: "PRE-CUTOVER DEGRADED — BLOCKER: EXSTART remains present; matching it is NOT ACCEPTANCE.",
+      why: "The adjacency is degraded before cutover.", evidence_state: "degraded",
+      projection_custody: "source_bound_embedded_unverified",
+      source_key: "routing_neighbors.DIST-1.ospf", baseline_state: "degraded", baseline_blocker: true,
+    };
+    const current = {
+      schema: "current_baseline_gate/1", verdict: "BLOCKED", assessed: true,
+      note: "The start snapshot has one definite degraded baseline row.", n_blockers: 1,
+      summary: { n_items: 1, n_blockers: 1, n_blockers_returned: 1, blockers_capped: false, by_state: { degraded: 1 } },
+      blockers: [blocker], integrity: { valid: true, failures: [] },
+    };
+    const st = execState();
+    st.plan_summary = { current_baseline: current, n_baseline_blockers: 1 } as ExecutionState["plan_summary"];
+    st.waves[0].gate = "NO-GO";
+    st.waves[0].current_baseline = current;
+    st.waves[0].baseline_blockers = [blocker];
+    st.waves[0].checks = [{ ...blocker, result: "pending", observed: "", at: null, by: "" }];
+    st.progress.checks = { pending: 1, pass: 0, fail: 0, na: 0 };
+    const checkCall = vi.spyOn(api, "execCheck");
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    const runGate = await screen.findByTestId("execution-baseline-verdict-run");
+    expect(runGate).toHaveTextContent("BLOCKED");
+    expect(runGate.style.color).toBe("var(--crit)");
+    expect(screen.getByTestId("execution-baseline-blocker")).toBeInTheDocument();
+    expect(screen.getByText(/source_bound_embedded_unverified/)).toBeInTheDocument();
+    expect(screen.getByText(/routing_neighbors\.DIST-1\.ospf/)).toBeInTheDocument();
+    const pass = screen.getByRole("button", { name: "PASS BLOCKED" });
+    expect(pass).toBeDisabled();
+    expect(pass).toHaveAttribute("title", expect.stringContaining("start-snapshot blocker"));
+    fireEvent.click(pass);
+    expect(checkCall).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Finish run · partial/i })).toHaveAttribute(
+      "title", expect.stringContaining("PARTIALLY IMPLEMENTED"),
+    );
+  });
+
+  it("shows every frozen unbound review as a run-level receipt outside wave checks", async () => {
+    const unbound = Array.from({ length: 12 }, (_, i) => ({
+      device: `edge-unbound-${i + 1}`,
+      wave: "",
+      category: "FHRP",
+      severity: "High",
+      check: `Exact FHRP domain member-intent review ${i + 1}`,
+      command: "show standby brief",
+      expect: "REVIEW — this SVI is an evidenced gateway in the same exact observed domain while another host has positive FHRP participation; explicit gateway/member intent is not evidenced.",
+      why: "Verify intended redundancy membership simultaneously or explicitly disposition the independent gateway.",
+      evidence_state: "review",
+      baseline_state: "review",
+      baseline_blocker: true,
+      projection_custody: "current_run_source_bound",
+      source_key: `fhrp_redundancy_domain/default/10/10.0.10.0-24/${i + 1}`,
+    }));
+    const bound = {
+      ...unbound[0],
+      device: "edge-bound",
+      wave: "Core-fabric",
+      check: "Bound exact-domain review",
+      source_key: "fhrp_redundancy_domain/default/10/10.0.10.0-24/bound",
+    };
+    const st = execState();
+    st.plan_summary = {
+      current_baseline: {
+        schema: "current_baseline_gate/1",
+        verdict: "INDETERMINATE",
+        note: "Unresolved exact-domain member intent remains frozen at run start.",
+        summary: {
+          n_items: 13,
+          n_blockers: 13,
+          n_blockers_returned: 2,
+          blockers_capped: true,
+          by_state: { degraded: 0, review: 13, not_verified: 0 },
+        },
+        blockers: [bound, unbound[0]],
+      },
+      n_baseline_blockers: 13,
+      n_unbound_baseline_blockers: unbound.length,
+      baseline_blockers_capped: true,
+    } as ExecutionState["plan_summary"];
+    st.baseline_blockers = [bound, ...unbound];
+    st.unbound_baseline_blockers = unbound;
+    st.waves[0].baseline_blockers = [bound];
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    expect(await screen.findByTestId("execution-unbound-baseline-receipt")).toHaveTextContent("12 UNBOUND");
+    expect(screen.getAllByTestId("execution-unbound-baseline-blocker")).toHaveLength(12);
+    expect(screen.getByText("edge-unbound-12")).toBeInTheDocument();
+    expect(screen.getAllByText(/explicit gateway\/member intent is not evidenced/)).toHaveLength(12);
+    expect(screen.getByText(/without asserting a definite fault/i)).toBeInTheDocument();
+    expect(screen.getByText(/fhrp_redundancy_domain\/default\/10\/10\.0\.10\.0-24\/12/)).toBeInTheDocument();
+    expect(screen.getByText(/receipt retains all 12 unbound operational row/i)).toBeInTheDocument();
+  });
+
+  it("keeps ordinary checks passable when the frozen baseline is CLEAR", async () => {
+    const st = execState();
+    st.plan_summary = {
+      current_baseline: { schema: "current_baseline_gate/1", verdict: "CLEAR", note: "Observed scope clear." },
+      n_baseline_blockers: 0,
+    } as ExecutionState["plan_summary"];
+    st.waves[0].current_baseline = { schema: "current_baseline_gate/1", verdict: "CLEAR", note: "Observed scope clear." };
+    st.waves[0].baseline_blockers = [];
+    st.waves[0].checks = [{
+      category: "Reachability", severity: "High", check: "Ping service", command: "ping 10.0.0.1",
+      expect: "Replies received", evidence_state: "assessed", baseline_state: "clear", baseline_blocker: false,
+      result: "pending", observed: "", at: null, by: "",
+    }];
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    const pass = await screen.findByRole("button", { name: "PASS" });
+    expect(pass).toBeEnabled();
+    expect(screen.getByTestId("execution-baseline-verdict-run")).toHaveTextContent("CLEAR");
+    expect(screen.getAllByText(/not authorization by itself/i)).toHaveLength(2);
+  });
+
   // Live log empty state: with zero events the log used to render nothing at all — an honest
   // placeholder replaces that silent blank (companion test below confirms it steps aside once
   // entries exist).
@@ -326,5 +450,26 @@ describe("ExecutionPage · finish-confirm matches the backend outcome derivation
     const msg = confirm.mock.calls[0][0] as string;
     expect(msg).toMatch(/becomes read-only/);
     expect(msg).not.toMatch(/PARTIALLY IMPLEMENTED/);
+  });
+
+  it("warns that an all-COMPLETE run with a frozen BLOCKED baseline derives partial", async () => {
+    const st = closedAs("COMPLETE");
+    st.plan_summary = {
+      current_baseline: {
+        schema: "current_baseline_gate/1", verdict: "BLOCKED",
+        note: "A degraded start-snapshot row remains.",
+      },
+      n_baseline_blockers: 1,
+    } as ExecutionState["plan_summary"];
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderExec();
+    fireEvent.click(await screen.findByRole("button", { name: /Finish run · partial/i }));
+
+    const msg = confirm.mock.calls[0][0] as string;
+    expect(msg).toContain("start-snapshot current-baseline gate is BLOCKED");
+    expect(msg).toContain("PARTIALLY IMPLEMENTED");
+    expect(msg).toContain("re-collect a CLEAR snapshot");
   });
 });

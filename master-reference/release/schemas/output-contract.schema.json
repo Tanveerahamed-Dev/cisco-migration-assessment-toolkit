@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/output-contract/1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "catalog_version", "purpose", "members", "external_signature_member", "disclosure"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "id": {"type": "string", "minLength": 1},
+    "catalog_version": {"type": "string", "minLength": 1},
+    "purpose": {"type": "string", "minLength": 1},
+    "external_signature_member": {"const": "release-manifest.sig.json"},
+    "disclosure": {"type": "string", "minLength": 1},
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "manifest_member", "emission", "ui_surface", "gate", "dossier"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "manifest_member": {"type": ["string", "null"]},
+          "emission": {"enum": ["always", "when_pdf", "external"]},
+          "ui_surface": {"type": "boolean"},
+          "gate": {"type": "string", "minLength": 1},
+          "dossier": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "audience",
+              "decision_supported",
+              "inputs",
+              "owner_refs",
+              "producing_writer",
+              "gate_behavior",
+              "redaction",
+              "cross_artifact_ids",
+              "validation",
+              "distribution_inclusion",
+              "safe_sample_status",
+              "human_owned_evidence",
+              "limitations"
+            ],
+            "properties": {
+              "audience": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "decision_supported": {"type": "string", "minLength": 1},
+              "inputs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "owner_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+              "producing_writer": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["state", "path", "symbol"],
+                "properties": {
+                  "state": {"enum": ["current", "conditional", "external", "unknown"]},
+                  "path": {"type": ["string", "null"]},
+                  "symbol": {"type": ["string", "null"]}
+                }
+              },
+              "gate_behavior": {"type": "string", "minLength": 1},
+              "redaction": {"type": "string", "minLength": 1},
+              "cross_artifact_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^output\\."}, "uniqueItems": true},
+              "validation": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "distribution_inclusion": {"type": "string", "minLength": 1},
+              "safe_sample_status": {"enum": ["generated-preview", "synthetic-template", "not-provided"]},
+              "human_owned_evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

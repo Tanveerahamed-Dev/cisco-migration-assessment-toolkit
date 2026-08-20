@@ -1,7 +1,15 @@
 """NEW-V3.23.143: cutover validation / test-plan generator. Pins the per-category checks (gateway / FHRP /
 reachability / routing / STP / port-channel), the platform-specific command dialect, the wave assignment,
 and empty-input tolerance. Each item carries the EXPECTED good result captured from the pre-cutover state."""
-from cisco_toolkit.analyze import compute_validation_plan
+import copy
+
+from cisco_toolkit.analyze import (
+    compute_etherchannel_projection,
+    compute_protocol_assessability,
+    compute_protocol_health,
+    compute_validation_plan,
+    summarize_etherchannel_baseline,
+)
 from cisco_toolkit.model import InterfaceData
 
 
@@ -74,7 +82,8 @@ def test_routing_stp_and_portchannel_checks():
     rt = _items(out, category="Routing", device="distA")
     assert rt and rt[0]["command"] == "show ip ospf neighbor" and "10.0.0.2" in rt[0]["expect"]
     st = _items(out, category="STP", device="distA")
-    assert st and "VLAN 10" in st[0]["check"] and "root" in st[0]["expect"].lower()
+    root = next(it for it in st if "VLAN 10" in it["check"])
+    assert "root" in root["expect"].lower()
     pc = _items(out, category="Link", device="acc1")
     assert pc and pc[0]["command"] == "show etherchannel summary" and "Po1" in pc[0]["expect"]
 
@@ -90,11 +99,13 @@ def test_waves_and_summary():
     assert out["banner"]
 
 
-def test_portchannel_check_discloses_a_pre_existing_down_member():
-    """[audit-5 NRFU #18] The port-channel NRFU baseline must not assert 'all members in (P)/bundled' when a
-    member is ALREADY down/suspended pre-cutover -- that bakes a degraded bundle into the accepted good state, so
-    the post-cutover ATP would certify a broken uplink as healthy. When protocol_health (the EtherChannel SSOT)
-    reports a non-Info bundle for the host, the expect string discloses the bad member(s) and the check is High."""
+def test_portchannel_health_without_the_structured_baseline_abstains():
+    """Sparse health text and interface associations cannot authorize exact member state.
+
+    A legacy direct caller that omits ``etherchannel_baseline/1`` must recollect instead of
+    reconstructing an operational all-(P) baseline, regardless of whether the sparse health row is
+    degraded, healthy, or absent.
+    """
     mg, rn, stp, devs = _ctx()
     ph = [{"switch": "acc1", "protocol": "EtherChannel", "severity": "High",
            "summary": "1 bundle(s), 2 member(s); 1 not bundled", "detail": "Gi1/0/25(D)"}]
@@ -102,52 +113,73 @@ def test_portchannel_check_discloses_a_pre_existing_down_member():
     pc = _items(out, category="Link", device="acc1")
     assert pc, "port-channel check still present"
     expect = pc[0]["expect"]
-    assert "Gi1/0/25(D)" in expect or "not bundled" in expect.lower()   # discloses the degraded baseline
-    assert "all members in (P)" not in expect                           # NOT the false-healthy assertion
-    assert pc[0]["severity"] == "High"                                  # a degraded baseline is High, not a clean Medium
-    # control: with no protocol_health (or a healthy bundle) the optimistic all-(P) assertion is unchanged.
+    assert pc[0]["evidence_state"] == "not_verified"
+    assert expect.startswith("ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:")
+    assert "all members in (P)" not in expect
+    assert pc[0]["severity"] == "High"
+    # Neither no health nor an Info row can upgrade association-only evidence.
     out2 = compute_validation_plan(_fabric(), mg, rn, stp, devs)
     pc2 = _items(out2, category="Link", device="acc1")
-    assert "all members in (P)" in pc2[0]["expect"] and pc2[0]["severity"] == "Medium"
+    assert pc2[0]["evidence_state"] == "not_verified"
+    assert "all members in (P)" not in pc2[0]["expect"]
     healthy = [{"switch": "acc1", "protocol": "EtherChannel", "severity": "Info", "summary": "1 bundle(s), 2 member(s)", "detail": ""}]
     out3 = compute_validation_plan(_fabric(), mg, rn, stp, devs, protocol_health=healthy)
     pc3 = _items(out3, category="Link", device="acc1")
-    assert "all members in (P)" in pc3[0]["expect"] and pc3[0]["severity"] == "Medium"
+    assert pc3[0]["evidence_state"] == "not_verified"
+    assert "all members in (P)" not in pc3[0]["expect"]
 
 
 def test_portchannel_state_never_captured_is_not_certified_all_bundled():
-    """The THIRD arm of the same three-way branch, and the one that was never reached.
+    """Association-only evidence is a subject, never an operational baseline.
 
-    NON-VACUITY (mutation-proved, 2026-07-28). `compute_validation_plan` has three port-channel
-    exits: degraded (ec_bad), NOT-OBSERVED (`_ph_supplied and host not in ec_seen`), and the
-    optimistic all-(P) else. The test above drives arms 1 and 3 — twice — but its two control
-    arms are precisely the configurations where the not-observed guard DECLINES TO FIRE: `out2`
-    passes no protocol_health at all (`_ph_supplied` False) and `out3` passes a healthy record
-    FOR acc1 (so acc1 is in `ec_seen`). Replacing the guard with `elif False:` left the whole
-    file green, and no test in tests/ or webapp/tests/ so much as named the branch.
-
-    That branch is the LIVE one in the field: COLLECT_PARSE_V3_23_0.py always passes
-    `protocol_health=protocol_health`, so `_ph_supplied` is permanently True in production and
-    the untested arm is the one a real run takes whenever `show etherchannel summary` was not
-    captured for a device that has port-channel members. Falling through to "show all members in
-    (P)/bundled state" is exactly the false-health this check exists to prevent: a member already
-    suspended before the change gets certified as a healthy re-bundle.
-
-    Precondition here: protocol_health IS supplied (as production always supplies it) but carries
-    NO EtherChannel row for acc1 — the shape a partial collection produces."""
+    Production publishes ``etherchannel_baseline/1``. This legacy direct-call shape intentionally
+    omits it while retaining a configured/interface bundle association, so Validation must produce
+    the same not-verified blocker rather than recovering the retired all-(P) fallback.
+    """
     mg, rn, stp, devs = _ctx()
     other = [{"switch": "distA", "protocol": "HSRP", "severity": "Info", "summary": "ok", "detail": ""}]
     out = compute_validation_plan(_fabric(), mg, rn, stp, devs, protocol_health=other)
     pc = _items(out, category="Link", device="acc1")
     assert pc, "the port-channel check vanished instead of abstaining"
     expect, check = pc[0]["expect"], pc[0]["check"]
-    assert "NOT OBSERVED" in check, (
-        f"an uncaptured bundle state must SAY it was never observed; got check={check!r}")
+    assert "not verified" in check.lower(), (
+        f"an uncaptured bundle state must SAY it is not verified; got check={check!r}")
     assert "all members in (P)" not in expect, (
         "an uncaptured bundle state was certified as the accepted all-(P) good state — a member "
         f"already suspended pre-cutover would pass the post-cutover ATP. expect={expect!r}")
-    assert "never captured" in expect and "do NOT" in expect
+    assert expect.startswith("ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:")
     assert pc[0]["severity"] == "High", "a missing pre-cutover baseline is not a Medium nicety"
+
+
+def test_forged_healthy_etherchannel_baseline_is_rejected_against_its_sources(tmp_path):
+    ifaces = {"sw1": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", port_channel="Po1")}}
+    capture = tmp_path / "show_etherchannel_summary.txt"
+    capture.write_text(
+        "Group Port-channel Protocol Ports\n1 Po1(SD) LACP Gi1/0/1(D)\n", encoding="utf-8"
+    )
+    commands = {"sw1": {"show etherchannel summary": str(capture)}}
+    projection = compute_etherchannel_projection(ifaces, commands)
+    health = compute_protocol_health(ifaces, commands, projection)
+    receipt = compute_protocol_assessability(["sw1"], ifaces, commands, health)
+    baseline = summarize_etherchannel_baseline(projection, receipt)
+    forged = copy.deepcopy(baseline)
+    forged["rows"][0]["status"] = "assessed"
+    forged["rows"][0]["acceptance"] = "All members forwarding"
+
+    out = compute_validation_plan(
+        ifaces, devices={"sw1": {"platform": "ios"}},
+        protocol_assessability=receipt,
+        etherchannel_projection=projection,
+        etherchannel_baseline=forged,
+    )
+    link = _items(out, category="Link", device="sw1")
+    assert len(link) == 1
+    assert link[0]["evidence_state"] == "degraded"
+    assert link[0]["check"] == "Port-channel degraded group/member baseline"
+    assert link[0]["expect"].startswith("PRE-CUTOVER DEGRADED — BLOCKER:")
+    assert "Po1 group 1(SD)" in link[0]["expect"]
+    assert "Gi1/0/1(D)" in link[0]["expect"]
+    assert "All members forwarding" not in link[0]["expect"]
 
 
 def test_empty_inputs_are_tolerated():

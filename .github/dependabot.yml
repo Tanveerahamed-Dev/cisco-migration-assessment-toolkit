@@ -20,9 +20,10 @@ updates:
       frontend:
         patterns: ["*"]
     # Majors are deliberate migrations here, not routine bumps: PR #513 grouped React 18->19,
-    # react-router 6->7 (explicitly deferred during the 2026-07 repo review), TypeScript 5->7,
-    # Vite 6->8 and jsdom 29->30 into one lockfile-only PR with no code changes, which cannot
-    # work. Run frontend majors as planned migrations, one major at a time, with code changes.
+    # react-router 6->7, TypeScript 5->7, Vite 6->8, and jsdom 29->30 into one lockfile-only PR
+    # with no code changes, which cannot work. The completed 2026-08 platform migration established
+    # React 19.2.8, React Router 8.3.0, Vite 8.2.1, and plugin-react 6.0.5 as the new baseline.
+    # Keep future frontend majors as planned, independently verified migrations.
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]

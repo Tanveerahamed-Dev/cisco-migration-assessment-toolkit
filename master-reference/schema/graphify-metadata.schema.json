@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/graphify-metadata.schema.json",
+  "title": "Atlas privacy-filtered Graphify projection metadata",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_commit",
+    "source_tree_digest",
+    "available",
+    "status",
+    "stale",
+    "unresolved_reasons"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.2.0"},
+    "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "available": {"type": "boolean"},
+    "status": {"enum": ["absent", "current", "stale"]},
+    "stale": {"type": ["boolean", "null"]},
+    "source": {"const": "graphify-out/graph.json"},
+    "source_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "source_digest": {"$ref": "#/$defs/digest"},
+    "report_available": {"type": "boolean"},
+    "built_at_commit": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "total_nodes": {"$ref": "#/$defs/count"},
+    "total_edges": {"$ref": "#/$defs/count"},
+    "total_hyperedges": {"$ref": "#/$defs/count"},
+    "projected_nodes": {"$ref": "#/$defs/count"},
+    "projected_edges": {"$ref": "#/$defs/count"},
+    "excluded_nodes": {"$ref": "#/$defs/count"},
+    "excluded_edges": {"$ref": "#/$defs/count"},
+    "excluded_node_dispositions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/excludedNodeDisposition"}
+    },
+    "excluded_edge_dispositions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/excludedEdgeDisposition"}
+    },
+    "unresolved_reasons": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "optional_graphify_projection_not_present",
+          "graphify_is_optional_secondary_projection",
+          "graphify_hyperedges_not_projected",
+          "graphify_has_no_hyperedges",
+          "graphify_incremental_rebuild_may_evict_cross_file_edges_until_full_rebuild",
+          "graphify_raw_identifiers_are_withheld_and_exclusion_dispositions_use_source_index_only",
+          "graphify_producer_labels_are_replaced_by_repository_relative_coordinate_labels_and_descriptors_use_controlled_vocabularies",
+          "graphify_built_at_commit_missing_or_malformed_and_withheld",
+          "tracked_worktree_changes_are_newer_than_commit_bound_graph"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "all_edge_modes": {"$ref": "#/$defs/edgeModeCounts"},
+    "projected_edge_modes": {"$ref": "#/$defs/edgeModeCounts"},
+    "node_origins": {"$ref": "#/$defs/nodeOriginCounts"},
+    "excluded_nodes_unsafe_source": {"$ref": "#/$defs/count"},
+    "excluded_nodes_untracked_or_private": {"$ref": "#/$defs/count"},
+    "node_disposition_counts": {"$ref": "#/$defs/nodeDispositionCounts"},
+    "identifier_projection_policy": {
+      "const": "raw_identifiers_withheld_repository_relative_retained_source_index_excluded"
+    },
+    "node_identifier_disposition_counts": {"$ref": "#/$defs/nodeIdentifierCounts"},
+    "excluded_edge_endpoint_dispositions": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^source_(retained|excluded_unsafe_source|excluded_untracked_or_private|missing_node)__target_(retained|excluded_unsafe_source|excluded_untracked_or_private|missing_node)$"
+      },
+      "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+    },
+    "total_communities": {"$ref": "#/$defs/count"},
+    "projected_communities": {"$ref": "#/$defs/count"},
+    "excluded_communities": {"$ref": "#/$defs/count"},
+    "all_community_ids": {"$ref": "#/$defs/communityIds"},
+    "projected_community_ids": {"$ref": "#/$defs/communityIds"},
+    "excluded_community_ids": {"$ref": "#/$defs/communityIds"},
+    "partial_community_ids": {"$ref": "#/$defs/communityIds"},
+    "community_status_counts": {"$ref": "#/$defs/communityStatusCounts"},
+    "community_dispositions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/communityDisposition"}
+    },
+    "projection_policy": {"const": "tracked_full_exposure_files_only"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["available"],
+        "properties": {"available": {"const": false}}
+      },
+      "then": {
+        "required": [
+          "schema_version",
+          "source_commit",
+          "source_tree_digest",
+          "available",
+          "status",
+          "source",
+          "report_available",
+          "stale",
+          "unresolved_reasons"
+        ],
+        "maxProperties": 9,
+        "properties": {
+          "status": {"const": "absent"},
+          "report_available": {"type": "boolean"},
+          "stale": {"type": "null"},
+          "unresolved_reasons": {"const": ["optional_graphify_projection_not_present"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["available"],
+        "properties": {"available": {"const": true}}
+      },
+      "then": {
+        "required": [
+          "schema_version",
+          "available",
+          "status",
+          "source",
+          "source_bytes",
+          "source_digest",
+          "report_available",
+          "built_at_commit",
+          "source_commit",
+          "source_tree_digest",
+          "stale",
+          "total_nodes",
+          "total_edges",
+          "total_hyperedges",
+          "projected_nodes",
+          "projected_edges",
+          "excluded_nodes",
+          "excluded_edges",
+          "excluded_node_dispositions",
+          "excluded_edge_dispositions",
+          "excluded_edge_endpoint_dispositions",
+          "all_edge_modes",
+          "projected_edge_modes",
+          "node_origins",
+          "excluded_nodes_unsafe_source",
+          "excluded_nodes_untracked_or_private",
+          "node_disposition_counts",
+          "identifier_projection_policy",
+          "node_identifier_disposition_counts",
+          "total_communities",
+          "projected_communities",
+          "excluded_communities",
+          "all_community_ids",
+          "projected_community_ids",
+          "excluded_community_ids",
+          "partial_community_ids",
+          "community_status_counts",
+          "community_dispositions",
+          "projection_policy",
+          "unresolved_reasons"
+        ],
+        "properties": {
+          "status": {"enum": ["current", "stale"]},
+          "stale": {"type": "boolean"},
+          "source_digest": {"$ref": "#/$defs/digest"},
+          "total_nodes": {"type": "integer", "minimum": 0},
+          "total_edges": {"type": "integer", "minimum": 0},
+          "projected_nodes": {"type": "integer", "minimum": 0},
+          "projected_edges": {"type": "integer", "minimum": 0},
+          "node_disposition_counts": {
+            "type": "object",
+            "required": [
+              "retained",
+              "excluded_unsafe_source",
+              "excluded_untracked_or_private"
+            ],
+            "properties": {
+              "retained": {"type": "integer", "minimum": 0},
+              "excluded_unsafe_source": {"type": "integer", "minimum": 0},
+              "excluded_untracked_or_private": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          "identifier_projection_policy": {
+            "const": "raw_identifiers_withheld_repository_relative_retained_source_index_excluded"
+          },
+          "node_identifier_disposition_counts": {
+            "type": "object",
+            "required": [
+              "total",
+              "projected_repository_relative",
+              "excluded_opaque",
+              "raw_published"
+            ],
+            "properties": {
+              "total": {"type": "integer", "minimum": 0},
+              "projected_repository_relative": {"type": "integer", "minimum": 0},
+              "excluded_opaque": {"type": "integer", "minimum": 0},
+              "raw_published": {"const": 0}
+            },
+            "additionalProperties": false
+          },
+          "excluded_edge_endpoint_dispositions": {
+            "type": "object",
+            "additionalProperties": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["available", "status"],
+        "properties": {
+          "available": {"const": true},
+          "status": {"const": "current"}
+        }
+      },
+      "then": {"properties": {"stale": {"const": false}}}
+    },
+    {
+      "if": {
+        "required": ["available", "status"],
+        "properties": {
+          "available": {"const": true},
+          "status": {"const": "stale"}
+        }
+      },
+      "then": {"properties": {"stale": {"const": true}}}
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "atlasId": {
+      "type": "string",
+      "pattern": "^urn:atlas:[a-z-]+:[0-9a-f]{24}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "edgeModeCounts": {
+      "type": "object",
+      "properties": {
+        "extracted": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "inferred": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "ambiguous": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "undisclosed": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "additionalProperties": false
+    },
+    "nodeOriginCounts": {
+      "type": "object",
+      "properties": {
+        "ast": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "curated": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "undisclosed": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "additionalProperties": false
+    },
+    "nodeDispositionCounts": {
+      "type": "object",
+      "required": ["retained", "excluded_unsafe_source", "excluded_untracked_or_private"],
+      "properties": {
+        "retained": {"$ref": "#/$defs/count"},
+        "excluded_unsafe_source": {"$ref": "#/$defs/count"},
+        "excluded_untracked_or_private": {"$ref": "#/$defs/count"}
+      },
+      "additionalProperties": false
+    },
+    "nodeIdentifierCounts": {
+      "type": "object",
+      "required": ["total", "projected_repository_relative", "excluded_opaque", "raw_published"],
+      "properties": {
+        "total": {"$ref": "#/$defs/count"},
+        "projected_repository_relative": {"$ref": "#/$defs/count"},
+        "excluded_opaque": {"$ref": "#/$defs/count"},
+        "raw_published": {"const": 0}
+      },
+      "additionalProperties": false
+    },
+    "communityIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/count"}
+    },
+    "communityStatusCounts": {
+      "type": "object",
+      "required": ["projected_complete", "projected_partial", "excluded"],
+      "properties": {
+        "projected_complete": {"$ref": "#/$defs/count"},
+        "projected_partial": {"$ref": "#/$defs/count"},
+        "excluded": {"$ref": "#/$defs/count"}
+      },
+      "additionalProperties": false
+    },
+    "communityDisposition": {
+      "type": "object",
+      "required": ["community", "status", "total_nodes", "retained_nodes", "excluded_nodes"],
+      "properties": {
+        "community": {"$ref": "#/$defs/count"},
+        "status": {"enum": ["projected_complete", "projected_partial", "excluded"]},
+        "total_nodes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "retained_nodes": {"$ref": "#/$defs/count"},
+        "excluded_nodes": {"$ref": "#/$defs/count"}
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["state", "record_id", "anonymous_slot"],
+      "properties": {
+        "state": {
+          "enum": [
+            "retained",
+            "excluded_unsafe_source",
+            "excluded_untracked_or_private",
+            "missing_node"
+          ]
+        },
+        "record_id": {
+          "oneOf": [
+            {"$ref": "#/$defs/atlasId"},
+            {"type": "null"}
+          ]
+        },
+        "anonymous_slot": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["state"],
+            "properties": {"state": {"const": "missing_node"}}
+          },
+          "then": {
+            "properties": {
+              "record_id": {"type": "null"},
+              "anonymous_slot": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "record_id": {"$ref": "#/$defs/atlasId"},
+              "anonymous_slot": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "excludedNodeDisposition": {
+      "type": "object",
+      "required": [
+        "id",
+        "disposition",
+        "raw_index",
+        "reason"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "disposition": {"const": "excluded"},
+        "raw_index": {"type": "integer", "minimum": 0},
+        "reason": {
+          "enum": [
+            "excluded_unsafe_source",
+            "excluded_untracked_or_private"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "excludedEdgeDisposition": {
+      "type": "object",
+      "required": [
+        "id",
+        "disposition",
+        "raw_index",
+        "reason",
+        "source_endpoint",
+        "target_endpoint"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "disposition": {"const": "excluded"},
+        "raw_index": {"type": "integer", "minimum": 0},
+        "reason": {"const": "endpoint_not_projected"},
+        "source_endpoint": {"$ref": "#/$defs/endpoint"},
+        "target_endpoint": {"$ref": "#/$defs/endpoint"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

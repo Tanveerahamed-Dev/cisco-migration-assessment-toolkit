@@ -435,13 +435,21 @@ def test_crd_constraints_surface_eol_forced_replacements_from_evidence(tmp_path)
     the migration cannot carry forward), read from lifecycle_risk — gated on observed state, distinct from
     the register-supplied constraints."""
     snap = _snap()
-    snap["lifecycle_risk"] = {"summary": {"n_devices": 2, "n_past_ldos": 3, "n_past_eos": 4}}
+    snap["lifecycle_risk"] = {"summary": {
+        "n_devices": 12, "n_past_ldos": 3, "n_past_eos": 4, "n_near": 5,
+    }}
     out = str(tmp_path / "c.docx")
     write_crd_docx(out, snap, "Unit Test Fleet")
     text = _all_text(Document(out))
     assert "EVIDENCE (lifecycle risk)" in text
     assert "3 device(s) are past last-day-of-support" in text                # the observed LDoS count
     assert "forced replacements" in text
+    assert "4 device(s) are past end-of-sale" in text
+    assert "recorded window before LDoS" in text
+    assert "date band does not establish support entitlement" in text
+    assert "5 device(s) are within one year of LDoS" in text
+    assert "schedule replacement before the recorded deadline" in text
+    assert "vendor-support horizon" not in text
 
 
 def test_crd_has_out_of_scope_boundary_section(tmp_path):
@@ -783,7 +791,8 @@ def test_crd_discloses_an_unbanded_fleet_in_BOTH_the_evidence_row_and_the_constr
     """Two exits carried the same false-clean reading; fixing one would have left the other.
 
     §2's evidence table printed `n_past_ldos` bare, so a fleet nothing could be banded on showed a
-    plain "0" — identical to a fleet verified fully supported. Separately, §4's constraints register
+    plain "0" — identical to a fully lifecycle-banded fleet with no adverse date band. Separately,
+    §4's constraints register
     emitted a hardware-lifecycle constraint only when `n_past_ldos > 0` or `n_past_eos > 0`; both read
     0 on an unbanded fleet, so NO constraint was recorded and the workshop wrote requirements as
     though refresh were a settled non-issue.
@@ -793,8 +802,15 @@ def test_crd_discloses_an_unbanded_fleet_in_BOTH_the_evidence_row_and_the_constr
     cells = _crd_cells(["TOTALLY-MADE-UP", "C9300-48T"], tmp_path)
     ldos_row = [c for c in cells if c.startswith("0 (+ 2 device(s) NOT ASSESSED")]
     assert ldos_row, f"§2 printed a bare LDoS count on an unbanded fleet: {cells!r}"
+    assert "either no exact EoX row matched" in ldos_row[0]
+    assert "source/date authority was withheld" in ldos_row[0]
+    assert "no EoX bulletin matched them" not in ldos_row[0]
     assert any("could NOT be lifecycle-banded" in c for c in cells), \
         "§4 recorded no hardware-lifecycle constraint for a fleet whose lifecycle is undetermined"
+    constraint = next(c for c in cells if "could NOT be lifecycle-banded" in c)
+    assert "either no exact EoX row matched" in constraint
+    assert "retained source/date authority was withheld or incomplete" in constraint
+    assert "support entitlement are UNDETERMINED" in constraint
     assert any("COVERAGE GAP (lifecycle risk)" in c for c in cells), \
         "the constraint is not labelled as a coverage gap"
 

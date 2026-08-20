@@ -107,9 +107,10 @@ def _finding(host: str, command: str, r: Dict[str, Any]) -> dict:
             "evidence": r["evidence"], "citation": "%s::%s" % (host, command)}
 
 
-def _package(findings: List[dict]) -> Dict[str, Any]:
-    """Shared result shape for both feed APIs: severity-sorted findings + summary."""
+def _package(findings: List[dict], inspections: Optional[List[dict]] = None) -> Dict[str, Any]:
+    """Shared result shape: severity-sorted findings plus a positive per-command inspection denominator."""
     findings.sort(key=lambda f: (_STATUS_ORDER.get(f["status"], 9), f["host"], f["command"]))
+    inspections = sorted(inspections or [], key=lambda row: (row["host"], row["command"]))
     summary = {
         "n_findings": len(findings),
         "n_incomplete": sum(1 for f in findings if f["status"] == "incomplete"),
@@ -118,8 +119,11 @@ def _package(findings: List[dict]) -> Dict[str, Any]:
         "n_unverified_prompt": sum(1 for f in findings if f["status"] == "unverified_prompt"),
         "n_unreadable": sum(1 for f in findings if f["status"] == "unreadable"),
         "n_hosts_affected": len({f["host"] for f in findings}),
+        "n_inspections": len(inspections),
+        "n_ok": sum(1 for row in inspections if row["status"] == "ok"),
+        "n_not_observed": sum(1 for row in inspections if row["status"] == "not_observed"),
     }
-    return {"findings": findings, "summary": summary}
+    return {"findings": findings, "inspections": inspections, "summary": summary}
 
 
 def load_capture_meta(dev_dir: str) -> Dict[str, str]:
@@ -141,12 +145,14 @@ def compute_capture_integrity(host_cmd_bodies: Dict[str, Dict[str, str]]) -> Dic
     citation; the summary counts each status class and the number of distinct affected hosts.
     """
     findings: List[dict] = []
+    inspections: List[dict] = []
     for host, cmds in (host_cmd_bodies or {}).items():
         for command, body in (cmds or {}).items():
             r = inspect_capture(command, body)
+            inspections.append({"host": host, "command": command, "status": r["status"]})
             if r["status"] != "ok":
                 findings.append(_finding(host, command, r))
-    return _package(findings)
+    return _package(findings, inspections)
 
 
 def compute_capture_integrity_from_paths(
@@ -156,8 +162,9 @@ def compute_capture_integrity_from_paths(
     {host: {command: FILE_PATH}} (all_cmd_to_files), streamed ONE body at a time so the
     whole fleet's raw output (hundreds of MB) is never held in memory at once.
 
-    A file that is ABSENT is SKIPPED (not-collected is Collection Completeness's domain —
-    no verdict is fabricated about a body never seen). A file that EXISTS but cannot be
+    A file that is ABSENT receives an explicit ``not_observed`` inspection receipt (not a content finding),
+    so downstream positive-custody consumers cannot mistake a stale mapping for an inspected body. A file that
+    EXISTS but cannot be
     READ is a finding (`unreadable`), NOT a skip: completeness tiers by file PRESENCE (see
     this module's opening docstring), so a locked / partially-written / permission-denied
     capture — or a directory where a file was expected — used to score `complete` on that
@@ -168,6 +175,7 @@ def compute_capture_integrity_from_paths(
     prompt was never confirmed; a visibly-broken body keeps its stronger primary
     status. No meta -> no prompt claim (coverage-honest for older collections)."""
     findings: List[dict] = []
+    inspections: List[dict] = []
     meta_all = host_cmd_meta or {}
     for host, cmd_paths in (host_cmd_paths or {}).items():
         host_meta = meta_all.get(host) or {}
@@ -181,7 +189,8 @@ def compute_capture_integrity_from_paths(
                 except Exception:            # a non-path-like value can't be a collected capture
                     present = False
                 if not present:
-                    continue                 # never collected -> completeness's domain
+                    inspections.append({"host": host, "command": command, "status": "not_observed"})
+                    continue                 # no content finding about a body that was never read
                 # Present but unreadable: completeness already counted the file, so silence here
                 # would leave the capture certified by neither guard. Declare the blind spot.
                 findings.append(_finding(host, command, {
@@ -192,11 +201,14 @@ def compute_capture_integrity_from_paths(
                               "see it" % type(exc).__name__,
                     "evidence": str(exc)[:120],
                 }))
+                inspections.append({"host": host, "command": command, "status": "unreadable"})
                 continue
             r = inspect_capture(command, body)
+            status = r["status"]
             if r["status"] != "ok":
                 findings.append(_finding(host, command, r))
             elif host_meta.get(command) == "timing_fallback":
+                status = "unverified_prompt"
                 findings.append(_finding(host, command, {
                     "status": "unverified_prompt",
                     "reason": "captured via the send_command_timing fallback — the device "
@@ -204,4 +216,5 @@ def compute_capture_integrity_from_paths(
                               "be silently truncated; treat as unproven-complete",
                     "evidence": "collection sidecar: timing_fallback",
                 }))
-    return _package(findings)
+            inspections.append({"host": host, "command": command, "status": status})
+    return _package(findings, inspections)

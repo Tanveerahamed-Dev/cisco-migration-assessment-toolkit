@@ -117,6 +117,25 @@ def test_cyclic_group_reference():
     assert f[0]["reason"] == "CYCLICAL_REFERENCE"
 
 
+def test_deep_acyclic_object_group_chain_hits_a_deterministic_resolution_limit():
+    groups = {
+        f"G{index}": {"kind": "network", "members": [{"group": f"G{index + 1}"}]}
+        for index in range(1_200)
+    }
+    groups["G1200"] = {"kind": "network", "members": [host("10.1.1.10")]}
+    rules = [rule("permit", "tcp", {"group": "G0"}, ANY, dport=port("eq", 443))]
+
+    result = aclcheck.search_filters(
+        rules,
+        {"src": "10.1.1.10", "dst": "10.2.2.20", "proto": "tcp", "sport": 40000, "dport": 443},
+        action="permit",
+        object_groups=groups,
+    )
+
+    assert result["result"] == "INDETERMINATE"
+    assert "unevaluable" in result["detail"]
+
+
 # 8. search_filters: a concrete witness packet, or a proof none exists -------------------------------
 def test_search_filters_witness_or_proof():
     rules = [
@@ -248,6 +267,34 @@ def test_unreadable_address_token_still_abstains():
     assert f[0]["reason"] == "INDETERMINATE"
     assert "could not read" in f[0]["detail"] or "unevaluable" in f[0]["detail"]   # names the real cause
     assert f[1]["reason"] == "INDETERMINATE"          # cannot prove it dead behind an unknown line
+
+
+def test_match_qualifiers_and_unparsed_ordered_lines_are_never_silently_discarded():
+    from cisco_toolkit import parse
+
+    cases = (
+        "ip access-list extended Q\n permit tcp any any eq 443 dscp ef\n deny ip any any\n",
+        "ip access-list extended Q\n deny tcp any any eq 443 precedence critical\n permit ip any any\n",
+        "ip access-list extended Q\n evaluate REFLECTED\n deny ip any any\n",
+        "object-group service WEB_SVC\n tcp eq 443\n"
+        "ip access-list extended Q\n permit tcp any any object-group WEB_SVC\n deny ip any any\n",
+        "ip access-list standard Q\n permit host 10.1.1.10 time-range BUSINESS\n deny any\n",
+    )
+    for config in cases:
+        rules = parse.parse_acls(config)["Q"]
+        answer = aclcheck.search_filters(
+            rules,
+            {"src": "10.1.1.10", "dst": "10.2.2.20", "proto": "tcp",
+             "sport": 40000, "dport": 443},
+            action="permit",
+            object_groups=parse.parse_object_groups(config),
+        )
+        assert answer["result"] == "INDETERMINATE", (config, rules, answer)
+
+    parsed = parse.parse_acls(cases[0])["Q"][0]
+    assert parsed["unmodeled_qualifiers"] == ["dscp"]
+    placeholder = parse.parse_acls(cases[2])["Q"][0]
+    assert placeholder["unmodeled_qualifiers"] == ["unparsed_acl_child"]
 
 
 def test_object_group_reference_missing_from_the_snapshot_is_a_bad_reference():

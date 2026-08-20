@@ -1,0 +1,2171 @@
+{
+  "schema_version": "tracked-binary-review/1",
+  "receipt_kind": "tracked_repository_binary_privacy_review",
+  "review_basis_commit": "77027472d348670e2f198100e53cf451bfbccbb1",
+  "binary_set_digest": "5969b46395269a67c6e4a353c5fefd02cfed56d1cc8f4777d47f8643046216a7",
+  "records": [
+    {
+      "path": "cisco_toolkit/data/oui_registry.tsv.gz",
+      "git_blob_oid": "2419d2cc38d59904a463d2e5c14a1b469ada7a8a",
+      "raw_sha256": "2120d5ca8a07cd320d480c6b5bcb5cd810c877cb70a5c949e2d635891e48a51a",
+      "raw_bytes": 563919,
+      "media_type": "text/tab-separated-values",
+      "format": "gzip_tsv",
+      "automated_format_evidence": {
+        "kind": "gzip_tsv",
+        "validator": "atlas_gzip_tsv_strict/1",
+        "format_valid": true,
+        "member_count": 1,
+        "header_flags": 0,
+        "header_mtime": 0,
+        "header_xfl": 2,
+        "header_os": 10,
+        "trailer_crc32": "8e38a58c",
+        "trailer_isize": 1815956,
+        "uncompressed_bytes": 1815956,
+        "uncompressed_sha256": "5bae084489f21916c573d7159907ab9c4543b0f6bd786a7a40c7abe2655cca19",
+        "tsv_header_mode": "declared_schema_no_physical_header",
+        "tsv_header": [
+          "prefix_hex",
+          "prefix_bits",
+          "vendor"
+        ],
+        "column_count": 3,
+        "row_count": 53486,
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "decoded_tsv_rows_and_context",
+        "evidence_references": [
+          "decoded-tsv-sha256:5bae084489f21916c573d7159907ab9c4543b0f6bd786a7a40c7abe2655cca19",
+          "privacy-scan:forbidden-local-generic-identities",
+          "registry-validation:retained-source-and-runtime-loader"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "cisco_toolkit/data/port_registry.tsv.gz",
+      "git_blob_oid": "fecefb35a29dfa18265d983afe039492c8bd2a2c",
+      "raw_sha256": "3fcfa1c38e5cb7b7acf6a740f75214a3c8bfa000cb7df422593682045dea8519",
+      "raw_bytes": 145622,
+      "media_type": "text/tab-separated-values",
+      "format": "gzip_tsv",
+      "automated_format_evidence": {
+        "kind": "gzip_tsv",
+        "validator": "atlas_gzip_tsv_strict/1",
+        "format_valid": true,
+        "member_count": 1,
+        "header_flags": 0,
+        "header_mtime": 0,
+        "header_xfl": 2,
+        "header_os": 10,
+        "trailer_crc32": "edd5d61d",
+        "trailer_isize": 772832,
+        "uncompressed_bytes": 772832,
+        "uncompressed_sha256": "b45b87bcdf9a63363163fd8c1d002bea03a0ca1e557bea01c9c88bceeb1f9c68",
+        "tsv_header_mode": "declared_schema_no_physical_header",
+        "tsv_header": [
+          "key",
+          "protocol",
+          "service",
+          "alias_records_json",
+          "category",
+          "broadcast",
+          "note",
+          "assignment_source",
+          "semantics_source",
+          "overlay_service",
+          "overlay_note",
+          "overlay_status"
+        ],
+        "column_count": 12,
+        "row_count": 12373,
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "decoded_tsv_rows_and_context",
+        "evidence_references": [
+          "decoded-tsv-sha256:b45b87bcdf9a63363163fd8c1d002bea03a0ca1e557bea01c9c88bceeb1f9c68",
+          "privacy-scan:forbidden-local-generic-identities",
+          "registry-validation:retained-source-and-runtime-loader"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "master-reference/public/atlas-social-card.png",
+      "git_blob_oid": "42bb6da1263aa99a20d6f60747044d0be51cdb97",
+      "raw_sha256": "5dc834a42e0f75c83f894a290a85b5524e255339789dc6255286443180745055",
+      "raw_bytes": 1741155,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 1731,
+        "height": 909,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 29,
+        "idat_chunk_count": 27,
+        "idat_compressed_bytes": 1740786,
+        "decoded_scanline_bytes": 4721346,
+        "decoded_scanline_sha256": "dfbb30d5dbdc46e6c25b1faf00e7da19d4b7cd457dd67e046a41d2612c92efff",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:b13ca10435afbfec3ebba0921423fd912d39c8bb61aad06c452a7a935063cd1d",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "master-reference/public/og.png",
+      "git_blob_oid": "b7ad3c4c1b8f305b68a7ef9ed0cdd3b71095f975",
+      "raw_sha256": "27bbfe929681a2acbbb74627fb02c22d548abffef773be3c04ca21453062651a",
+      "raw_bytes": 2313495,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 1730,
+        "height": 909,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 38,
+        "idat_chunk_count": 36,
+        "idat_compressed_bytes": 2313018,
+        "decoded_scanline_bytes": 4718619,
+        "decoded_scanline_sha256": "28bb87feff1ba618e96796376d7e9e14f72d948491b35b6461dac9d43d1a95b4",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:115b909dd6645467577a2c57c58cb3531714aafdf1035bc086570d39f0c29809",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/ArchReviewPanel-728.png",
+      "git_blob_oid": "096557739e16e66f8f12d8ce5ed9e54ce5ad0c75",
+      "raw_sha256": "1d58216b730a2387a491610583891002b4c12fcb0637702cd3d880dd810f4c09",
+      "raw_bytes": 56781,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 17,
+        "idat_chunk_count": 15,
+        "idat_compressed_bytes": 56556,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "e5c37ead3246cd02cefe7262276e4128a959accbe4ae25a785bc8e17200e10d0",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:0667743308f8f53457370a7c1e30b2fece012e6b52c3b0962c977f5dd58115d4",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/ArchReviewPanel.png",
+      "git_blob_oid": "5c488869a99b3f45c85f6c4f54e1d32cf9a17b6a",
+      "raw_sha256": "b3b94ce5865b073ddd456b5853e3b460e2231f34fcc784dcaf48d9e3eda0a45b",
+      "raw_bytes": 56766,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 17,
+        "idat_chunk_count": 15,
+        "idat_compressed_bytes": 56541,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "7dbf0958b95875178dd9f26f37d781eaa3e2cf23856b50679c47e9c1a645193e",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:a4fcaa47f568c4f548c43ccf53b4b6b407f2ec5e6b85b5d2943c67f4e4ce7528",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Bars-728.png",
+      "git_blob_oid": "99ba96b8a950a844161dcd9299f2b44961ee086d",
+      "raw_sha256": "cd75900ff2f834a01cfe9ca2f2b0eb0174ab8f1ef347b2f31b9ae605a016a21b",
+      "raw_bytes": 26328,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 10,
+        "idat_chunk_count": 8,
+        "idat_compressed_bytes": 26187,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "11aa9462775cb05af4e30523da8aa075b274c5543524cabb0da0b80235ec3ffe",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:b978a9b778b0cf4c4a6cf0d0503556b26e20179685a7ee9b97fe8e0397ecff6b",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Bars.png",
+      "git_blob_oid": "536129a0ce82164c718154ce63189d01186cccb0",
+      "raw_sha256": "6aeb120f845109a5bd82c4f7ba4d79dbc9038ea406bcf9a5ac51ff37cfe4423a",
+      "raw_bytes": 26896,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 10,
+        "idat_chunk_count": 8,
+        "idat_compressed_bytes": 26755,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "3bcd3d5128972ed55ad9999e90396cc20f5bc5d8772e547d58e5a2b801d72a41",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:a4f1f2a34bad996b38a4e802fa350b3d4247fac0fb2883f38ff1297d94fc1b6a",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CableMap-728.png",
+      "git_blob_oid": "099e258b0fc635abac9fda0d2b9376ede86a74e1",
+      "raw_sha256": "35ebefaf8adb67819508e63c06a8f7d2a6e7fc0ad30ac6d801a64ecf3d34513d",
+      "raw_bytes": 65743,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 732,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 19,
+        "idat_chunk_count": 17,
+        "idat_compressed_bytes": 65494,
+        "decoded_scanline_bytes": 1599420,
+        "decoded_scanline_sha256": "184f1bf43f215627afc46f89563073fa808095fb0235cc5d5f3ee2a10b8effbe",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:138bd60f73001dd64a7bcacb82acfaae5a0adaffcc633db4d9f07d2da6465e0c",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CableMap.png",
+      "git_blob_oid": "bcc5b7fcbe950dcdbaece54522fb383142e72509",
+      "raw_sha256": "0ecf88f77e0b20d94bbef9ea20b897e9ff226f019b3e75fd5af8037ba4eb443b",
+      "raw_bytes": 71784,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 802,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 21,
+        "idat_chunk_count": 19,
+        "idat_compressed_bytes": 71511,
+        "decoded_scanline_bytes": 2166202,
+        "decoded_scanline_sha256": "46cdab4902ac9b5d67595d8bc5402f3df36db95cef5878ccc7bfcbbb2b9f81a8",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:3d9bb93c0e49b27141204cd1787609af73015cf1a853ddf682aaffe7bd583164",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CausalFlowPanel-728.png",
+      "git_blob_oid": "d8afeabbf7a333b3e4d6aa816f0aaa2000d5bd34",
+      "raw_sha256": "e5158e63c9d34b5ac5b0ed8a1d091b664fe7ac616e0497717203f7f29525d725",
+      "raw_bytes": 137065,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 1367,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 37,
+        "idat_chunk_count": 35,
+        "idat_compressed_bytes": 136600,
+        "decoded_scanline_bytes": 2986895,
+        "decoded_scanline_sha256": "20a2c5cde4853bb65061976858b652cad26609f8371ab3d9e1fee316aeb4a6b8",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:933e7c1d7b59a4c36316f8fd0d6835c8b257d2de0d5299322d7937105fda258f",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CausalFlowPanel.png",
+      "git_blob_oid": "278b5ad3b6dec6c36efc94f79d29796ec31c9394",
+      "raw_sha256": "f060788d3f1ec6421c868b7072a94aeb047116e4503377ae726b14fc6a09c22f",
+      "raw_bytes": 151852,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 1449,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 40,
+        "idat_chunk_count": 38,
+        "idat_compressed_bytes": 151351,
+        "decoded_scanline_bytes": 3913749,
+        "decoded_scanline_sha256": "daea51f7f9a39c9f7425ec9f97d08e1bd30c2108d0f4c701659873054f54af73",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:2d96d4d30dfd56dcdc1f8c028aef5b193647f7034eae10929f4b2d391e97d18f",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CountUp-728.png",
+      "git_blob_oid": "242c739e5bd4a148a98d70391f9c7d41c3dda30e",
+      "raw_sha256": "773d3d22efc273c99299667ca01ea34f39a20803edb18d799c7481b5b3f2eb4a",
+      "raw_bytes": 19637,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 8,
+        "idat_chunk_count": 6,
+        "idat_compressed_bytes": 19520,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "ac4fe7383485bee7ccb1b10454c152e18cbedb18e7be70b37eaee657ed8fff08",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:ff991bea9a9adeb00767d2abd34f6390c1566a506750162c0e27b5fb7fe4bbd8",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CountUp.png",
+      "git_blob_oid": "dab474388e556e0ca7fd22f013b931873e8a7f1a",
+      "raw_sha256": "84cf87bd468cf6e21706a7d6f02951dc13b346a7f59ecd88abdc594920a515ef",
+      "raw_bytes": 19997,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 8,
+        "idat_chunk_count": 6,
+        "idat_compressed_bytes": 19880,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "9657f1b86968906ae9823388ac08ace2bdb55d5cf7548f52f83c317cd7265687",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:3966f84b497587dc5e0c69aac7163e9ee17aee96547ff8320d44131584d22d32",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner-728.png",
+      "git_blob_oid": "9b985406f798d15bda58bb4dfea87ba881decea0",
+      "raw_sha256": "81702125d19049822f61edd91902da6fdcd792d63de260c1db0b56dfab11d033",
+      "raw_bytes": 153831,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 1794,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 41,
+        "idat_chunk_count": 39,
+        "idat_compressed_bytes": 153318,
+        "decoded_scanline_bytes": 3919890,
+        "decoded_scanline_sha256": "6706ba9e86d37791cf358ef64639f4f5c0e3b53ea187e30488001a78b057538c",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:2038623faf24238b85adad54c698ee641f497520e1a211e29a0825dfe9e59574",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner.png",
+      "git_blob_oid": "c2a9009a736939ba101484cd9a8df40a2568bda1",
+      "raw_sha256": "d15d4667a6a3f4d4279fa09a309af4300627b17d8daefd6e940e983e6c75634f",
+      "raw_bytes": 151867,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 1558,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 40,
+        "idat_chunk_count": 38,
+        "idat_compressed_bytes": 151366,
+        "decoded_scanline_bytes": 4208158,
+        "decoded_scanline_sha256": "d1fce33f7d76db35d7b7a6a453f60a92dd6ede3494df77667c93ccada1a908d4",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:a681e4c3a1eb5fff3540caa883a252d38f35f5c3c42171b4eeafde35c1f93a79",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DemoDataProvider-728.png",
+      "git_blob_oid": "e5a4464b31857b3c6da407affc3b0f26fd04e7bf",
+      "raw_sha256": "b3be75cacb6eeab7ede92b67667ebb0b28f4c518c9a4a372882d39964c81cb11",
+      "raw_bytes": 63109,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 904,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 19,
+        "idat_chunk_count": 17,
+        "idat_compressed_bytes": 62860,
+        "decoded_scanline_bytes": 1975240,
+        "decoded_scanline_sha256": "b19ce9e505b9ceaa9225138479bdd53e697288652e83ccd584e2de5e36008f61",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:4a553208687c2761d3dc32480ad5eb7314c4338c9366f7ee66feec979bafb3a8",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DemoDataProvider.png",
+      "git_blob_oid": "425f6f8585051ff5b1dda8dc404c0489ce2a8bb9",
+      "raw_sha256": "7a7fd660f5d3936a21ac6054401a7585ca6b4ac69e2ff0a01aed03d676141880",
+      "raw_bytes": 68047,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 760,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 20,
+        "idat_chunk_count": 18,
+        "idat_compressed_bytes": 67786,
+        "decoded_scanline_bytes": 2052760,
+        "decoded_scanline_sha256": "94aecc1e65e1f225b6f52e529de06f21a04b703daf9f4e79f3e755bddb7b807c",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:78e81695e0892383b3d82c550ec76596a198ddd1366a10cf76ab0aaa70c2e82e",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DesignBlueprintPanel-728.png",
+      "git_blob_oid": "1cba4f8ea06f4bd32a9e42922192c6263eca6f0c",
+      "raw_sha256": "abb0116ae2dce31090e4c017be7ec9f0d0dce828e50d271a8cc9f70f4d0c7c3c",
+      "raw_bytes": 535923,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 5036,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 134,
+        "idat_chunk_count": 132,
+        "idat_compressed_bytes": 534294,
+        "decoded_scanline_bytes": 11003660,
+        "decoded_scanline_sha256": "85be3b30edac870010e41335ddcc7d66c36a30e28c41334a04c7570a1c8c5255",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:3a4a000b59dad348ca0f7c1aab4d0629a0c4d9a1a5069cc70ff2bef7c569b5d2",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DesignBlueprintPanel.png",
+      "git_blob_oid": "33b4f770f2847921bf6630872782778ca00b3790",
+      "raw_sha256": "a05d48289ab4fbead25206988c798730ec4af0b4777b72004278626507556010",
+      "raw_bytes": 530162,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 4672,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 133,
+        "idat_chunk_count": 131,
+        "idat_compressed_bytes": 528545,
+        "decoded_scanline_bytes": 12619072,
+        "decoded_scanline_sha256": "ee6ef972725b8b2bdf4f80a975e9567fd6c606b0d6780a6ef72f7900f5688c34",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:6bc6848b2ca0d4d66f0cd80b70303943ccc742339206f6c62716bd85cb826582",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/ErrorBoundary-728.png",
+      "git_blob_oid": "665841a000520d485cce1f08a53d144493f45a41",
+      "raw_sha256": "b4458769d5bd665743873bd6eaeca111351d0973911bc3377a2f9776ad300981",
+      "raw_bytes": 26440,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 10,
+        "idat_chunk_count": 8,
+        "idat_compressed_bytes": 26299,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "44dd5e49164b934454ae5616a2a0ed83375cee339937a19bea62c749cc77b9eb",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:f333b12fcff20fafb78b8f1dce1ee0ce43492fefcca00e9487eff99a54454f22",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/ErrorBoundary.png",
+      "git_blob_oid": "eeb4244660d20125129cc7e4ef6eab9c13445b1b",
+      "raw_sha256": "32b0d28b6bc0a2f49c9a396bffa5d556e5361a08f3ad53522d4a870835e2884b",
+      "raw_bytes": 25276,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 10,
+        "idat_chunk_count": 8,
+        "idat_compressed_bytes": 25135,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "c90c06088f7c4efd31d8ef91dea4603db202a6a776e69aa9fcc282c4b7d01e03",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:d712978d4939cb1ed6457b474c1ff7eb6d773991d3cb9d8318717c6eb957a0cc",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/ErrorBox-728.png",
+      "git_blob_oid": "79878466e30bc60ac2bfa8e3ec27fb1b22429e3c",
+      "raw_sha256": "1791bc6b8849168168837b0fb6d1aa2854d4316eff80ce2dd20fdc41cb64d1a1",
+      "raw_bytes": 21926,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 9,
+        "idat_chunk_count": 7,
+        "idat_compressed_bytes": 21797,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "c3bf05c4272934208dee7d8553c4f8a05c8cbbec8a533ab988e93832d8d24fb9",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:5798edab25af023adb13ef2f557e173cffedb78c025ce4bc7c9e90fd5027cf36",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/ErrorBox.png",
+      "git_blob_oid": "d85c0008b4c496a4e58eaa8686dd66540c298ece",
+      "raw_sha256": "25cc16636cf3765089df14fc317310bd5f2cb33748a9bc2c3fb1dc822b27463e",
+      "raw_bytes": 21573,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 9,
+        "idat_chunk_count": 7,
+        "idat_compressed_bytes": 21444,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "9033cf7eb534103397a4c723d408aa2bd0b87758c0f66742e8298631b56a2d4f",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:721be51857632c0e160d162d8bd15564970f4a0316f777d39a76015fce7b9941",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Gauge-728.png",
+      "git_blob_oid": "9233bf56364e9b9ffa1bb716dd0cb3671d08613d",
+      "raw_sha256": "c308b5e543944ee6898265fd277b22e6b78d1fc389d9975eb8bb50f87cafb2da",
+      "raw_bytes": 42313,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 14,
+        "idat_chunk_count": 12,
+        "idat_compressed_bytes": 42124,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "fc341f490bf5fb0f2391bac979c036075e09f9f6d2b43d6913b605e2b13ab447",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:4b07a34af937d6c3c964ec7a1d6b4113442383dea9746b45321702d970fd26fe",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Gauge.png",
+      "git_blob_oid": "9cdb5ec43f6b302d845dd36c68d296d308719287",
+      "raw_sha256": "da6a62279c5f63770a4985e58795c40b77cebcba1d900b67161eeb2afd657a65",
+      "raw_bytes": 42655,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 14,
+        "idat_chunk_count": 12,
+        "idat_compressed_bytes": 42466,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "c1999b1817d7b6befd7fa7d97fbd64d139b673aacf7bc1e6018dea8686d5087d",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:c5f0e44717cba70f64530fbb5beb4997b945ee761ed687cabb36e32cab525c92",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Kpi-728.png",
+      "git_blob_oid": "27f2e8931d62d02cab37248f691203445646323c",
+      "raw_sha256": "853354cec5356a166e80505a1ff7470625baf2d0cf10244302e3016bd8685615",
+      "raw_bytes": 59584,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 1450,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 18,
+        "idat_chunk_count": 16,
+        "idat_compressed_bytes": 59347,
+        "decoded_scanline_bytes": 3168250,
+        "decoded_scanline_sha256": "bf1d30626681783a98993698194dc8acb5d4065b9cc0b82941dc688c694b8d1e",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:96f31b0b3dd6da97ea6ee84c97339c2ce9be33d32e350e5c4821ad296e27709b",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Kpi.png",
+      "git_blob_oid": "2326809d1c4b03dfa4c900511a78ee1e1841e108",
+      "raw_sha256": "2457f7b596486670218f8e71dbcd56edb47b075d9b8a1ee0f76b65ca7a3007c1",
+      "raw_bytes": 41270,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 14,
+        "idat_chunk_count": 12,
+        "idat_compressed_bytes": 41081,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "0a898439f48b728cc8aa3be321b1d468b43656de3b6f87da3f79ee1e32bb0981",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:3f55c0df5d2c4f809119d0a12e5751bde11c54911fef76e4712506cd7cfa1b03",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Loading-728.png",
+      "git_blob_oid": "37aa97160ea50d8a335786e5427a3a21ae1cf741",
+      "raw_sha256": "09757ecab39558054ffbd33cc1f37bea971e23702bbc0e74415c9ceb9779a571",
+      "raw_bytes": 10760,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 6,
+        "idat_chunk_count": 4,
+        "idat_compressed_bytes": 10667,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "36d2c6c5a088875095704daf6a1aeb4229bef4189d56afab4bee93e2d6d08030",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:808836d4c23c9fbe503e0cea65044d2a30f4c8dd17102d4c93a803a7b541f0fd",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Loading.png",
+      "git_blob_oid": "2b2cc173093288ad1ed8a7f0f42c22bc61d97a39",
+      "raw_sha256": "a0c5900b9e6a4fb7c05b6c8e69ed8bab11d4d819be61c128267fbe00d2b8b822",
+      "raw_bytes": 11110,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 6,
+        "idat_chunk_count": 4,
+        "idat_compressed_bytes": 11017,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "2d38b93713bdcdc187f6189801143e7712e178728dce9ffc2420eee148d29d21",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:646001d00a9ccb018967033f9c1a2c694648636b6c4d6343a07d59e0a80bdfd6",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SegBar-728.png",
+      "git_blob_oid": "5da326322bdb12f97c83fd0ce5107afaefcd8849",
+      "raw_sha256": "69a1e579729e1b539580a2cc66e984ea6c8f202ceb82e3de615bd03c84fdb5e0",
+      "raw_bytes": 22873,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 9,
+        "idat_chunk_count": 7,
+        "idat_compressed_bytes": 22744,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "978dadb24fd291c84633372552c8fbee9bbc2a85b73cc7ab683c3a3fa81a62af",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:c13a23aa768947b74402e7567920a9024bdb7f926028ce68680ad26807cd5099",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SegBar.png",
+      "git_blob_oid": "22399859a8fcb27ad47aee320edbe9109b66a91d",
+      "raw_sha256": "4c1372f610c9d95c029ddffcade2070b17fb0665f7f81d0a3bf5656858930d48",
+      "raw_bytes": 23917,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 9,
+        "idat_chunk_count": 7,
+        "idat_compressed_bytes": 23788,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "9f00f806ba3244153f5926c84e7f27fcf5e6b9ea1cc8764842298c3b86b200a5",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:6a3b2613eaefd522f379fb70b4d036371ed4b1e2dff6f215d0cb36e518e9ed4e",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SevChip-728.png",
+      "git_blob_oid": "9ee4100fe93a940ceb48ee3ca735b819b7df8f2a",
+      "raw_sha256": "50465d7dce750ff909da2678feb1d3b24450d587e7d6ffae8eadcb05b7d48301",
+      "raw_bytes": 35779,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 12,
+        "idat_chunk_count": 10,
+        "idat_compressed_bytes": 35614,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "0266fcf8fa520818152f535fe634476283b8d6d1de3486f97eccba5d0bd25e8b",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:194f41a5d2f78d8fe1b35ec586278fe3e67600bc1c3756774539f8b91db79c2f",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SevChip.png",
+      "git_blob_oid": "86ca71e58aafe47d6ef0e002c07cc4168819e029",
+      "raw_sha256": "7b5931d70714ab74e06e02dedb265546196672d5915ced82ec77e576836633bf",
+      "raw_bytes": 35752,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 12,
+        "idat_chunk_count": 10,
+        "idat_compressed_bytes": 35587,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "fddab086e50e4a5a2bcf694afbafb5685dcc51d634b4892f9c70783a36799071",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:a7aa7655c7f04dea56aca2805d535a652052f98c1a9f5b76df11cdc22be29fd8",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SkelLines-728.png",
+      "git_blob_oid": "213f420ece74629771749828ec4a184b7bb9a909",
+      "raw_sha256": "0d03c73e235f131f33bed824801652dfb286b130330ba6a1d4c52ee138a9e6ac",
+      "raw_bytes": 11163,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 6,
+        "idat_chunk_count": 4,
+        "idat_compressed_bytes": 11070,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "6e09d1f9121306c8116f72c9e9915df6c1b9dff368b965532f0169c0cfb796c1",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:69c045b146646e2b25dae0b2b1da6dd9c7f159c590651345d83f174c087e5b3d",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SkelLines.png",
+      "git_blob_oid": "ed4b1137a59f55fe32dd749f70485430e7ce5fed",
+      "raw_sha256": "40292a9c7db5223943a9884d5cc12aaf289bae4a4bff4aa10e36f102d3717741",
+      "raw_bytes": 11524,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 6,
+        "idat_chunk_count": 4,
+        "idat_compressed_bytes": 11431,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "8ecd9bc2734ae0fd26f94abf85d2f1b8e55a4909cc46f23b8c8338332b842ddc",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:fafb37f89bea3924dddb40d6d2375ded33892ba8c64b5d0487b70b527a1b0944",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SkelTable-728.png",
+      "git_blob_oid": "fa1396888be76d14f7a8721765795cc61383024a",
+      "raw_sha256": "0f92dc764b2603d0bdc533eaacf974e751022042c7f948f65adc01c3668e69c7",
+      "raw_bytes": 12267,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 6,
+        "idat_chunk_count": 4,
+        "idat_compressed_bytes": 12174,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "d92be2429bbd04f8a79678aa1a7cc3925a5a3dbd288544df68c4482cf97fb1fd",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:a1bd1cdde2716bf5cc9fe6bdad2de3302fe3055182045bd8ee4c277f7600796d",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/SkelTable.png",
+      "git_blob_oid": "8f35b3f490c291196f26722403da4d48fba213a2",
+      "raw_sha256": "d3c1a10f0bd9ae55102189719d3102c44fe551840b27e822a4681ac66d22a8d0",
+      "raw_bytes": 12552,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 7,
+        "idat_chunk_count": 5,
+        "idat_compressed_bytes": 12447,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "9d07f4312d7ebc2356a57133fc434f943dc5ce14028e66a309de0dde8366d76f",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:9d91327f21e1322c75bc208cd55a5e8525d1fef412556b084a9b66699ab217f7",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Skeleton-728.png",
+      "git_blob_oid": "c5bde6d24bac10bc5e5458087866d69ddce331de",
+      "raw_sha256": "72660e22c96db690ea882a4950238b3dc2b25b1d5140678caa2066bd60392947",
+      "raw_bytes": 7230,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 5,
+        "idat_chunk_count": 3,
+        "idat_compressed_bytes": 7149,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "8dc1a2bb8a74acdf201acbb616a57d80d8ea813bd0f300d5c6385a97cabf1f49",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:d00424ec5c9e05388bffd7494822f687c5416cdfbabf75df2dd1644042d1bc4f",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/Skeleton.png",
+      "git_blob_oid": "8f1a8bef433fb9df4dc4aeb94d1fe0e20112dbdb",
+      "raw_sha256": "cfa539eba74003d6ea0a313b133475a65d7512f0ec1224dfe3217e2b5515e7c8",
+      "raw_bytes": 7563,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 5,
+        "idat_chunk_count": 3,
+        "idat_compressed_bytes": 7482,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "be03f142300a56b88050886b4247f6234d150ae5d10c4a9eac6dd259f67e3094",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:c71150842180c24313b9a0555d46bc99f02474027dba35271e7b0ce4c04b0d98",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/TopologyGraph-728.png",
+      "git_blob_oid": "5c8eef64d530cbb4e4be58b18dfd07c0cd4914a1",
+      "raw_sha256": "57d4ca2b84d8f5da5f6a97f917fd58c7c8c90cc45d7ec5535698b632e8e24d74",
+      "raw_bytes": 50843,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 16,
+        "idat_chunk_count": 14,
+        "idat_compressed_bytes": 50630,
+        "decoded_scanline_bytes": 1529500,
+        "decoded_scanline_sha256": "a5440b2c729ac18465f89296e927f7084348878170321a150a313b4d1ca1cc04",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:104939a84b2f11e45729d3a149ccd5567103c8106312184e868c40cf6e2e21ce",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/TopologyGraph.png",
+      "git_blob_oid": "a8a5e061fe83a79d0106e5f58c4de044ff112964",
+      "raw_sha256": "e786230404c7cd619a560a2fef56861953364d6b12a93eff1aba58847a7b9471",
+      "raw_bytes": 58653,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 700,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 18,
+        "idat_chunk_count": 16,
+        "idat_compressed_bytes": 58416,
+        "decoded_scanline_bytes": 1890700,
+        "decoded_scanline_sha256": "9b035419c8e022d2b41557201ebf29ec336375b6955045076f23000dcec65549",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:9bf01c14e8d8974380263aa96996a0072e1fa6465aed644f4c78fad0508794fb",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/VerificationBadge-728.png",
+      "git_blob_oid": "c67615ee3489ca025065eb891fba7de224d2c447",
+      "raw_sha256": "2ea72b8f90a2f1fe1985d490d082edfc9e01aeb3fa52e36c3062bdce330dd2ba",
+      "raw_bytes": 57399,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 950,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 17,
+        "idat_chunk_count": 15,
+        "idat_compressed_bytes": 57174,
+        "decoded_scanline_bytes": 2075750,
+        "decoded_scanline_sha256": "918bf0e5e315020216bb0428e4f2697001dd4cc59b916a59855ae5db471dfc79",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:5d37b2a905e30a4ef668117ba1275c8b45ba8396994ff8bf6761ff896bbda0aa",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/VerificationBadge.png",
+      "git_blob_oid": "93f258952a25ddf569aded0e6c5a617248abe4a8",
+      "raw_sha256": "1d7d7333a56eb46d0850f5b2b010a2e886d056c55a4ba39f39bd2712358dd7e5",
+      "raw_bytes": 57976,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 950,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 18,
+        "idat_chunk_count": 16,
+        "idat_compressed_bytes": 57739,
+        "decoded_scanline_bytes": 2565950,
+        "decoded_scanline_sha256": "0724000ac55779de56381c1254187826ac2dbf46e365abb780657998db879c02",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:3cfac10a50ce4639feda3ad64c3826aa2b09fcd1b70d5c40f0b0afb60ecacc3b",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/VerificationWarning-728.png",
+      "git_blob_oid": "e91541bff3f7dc658b6527cd6cd1ccff129245c2",
+      "raw_sha256": "6630cd08f65eb9575fe9e1c41adb7248b43c353361cd73ad85dd5eb4639a9d4f",
+      "raw_bytes": 324505,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 728,
+        "height": 1328,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 82,
+        "idat_chunk_count": 80,
+        "idat_compressed_bytes": 323500,
+        "decoded_scanline_bytes": 2901680,
+        "decoded_scanline_sha256": "5fb423985cc8fe4ead9feb9a68eafd6915eedc718edea43440cc011449c7fa7e",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:0b199b43c3590934b5557d2594f6d7f9592419aba164398e76589284baf6c0fa",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    },
+    {
+      "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/VerificationWarning.png",
+      "git_blob_oid": "9acd3a2adc08492dbb47a035ba0ee170c530b116",
+      "raw_sha256": "798093a0bd0f2be18a0258b61ad7a4cf2bae73782a23c4134356b8ebac97bc26",
+      "raw_bytes": 317511,
+      "media_type": "image/png",
+      "format": "png",
+      "automated_format_evidence": {
+        "kind": "png",
+        "validator": "atlas_png_strict/1",
+        "format_valid": true,
+        "crc_valid": true,
+        "chunk_order_valid": true,
+        "idat_framing_valid": true,
+        "trailing_bytes": 0,
+        "width": 900,
+        "height": 1203,
+        "bit_depth": 8,
+        "color_type": 2,
+        "interlace_method": 0,
+        "chunk_count": 81,
+        "idat_chunk_count": 79,
+        "idat_compressed_bytes": 316518,
+        "decoded_scanline_bytes": 3249303,
+        "decoded_scanline_sha256": "094d600b08e73747bb56ffa96aca446ca6b88b4425c4cb338cee964604090f8e",
+        "risky_metadata_chunk_counts": {
+          "eXIf": 0,
+          "iCCP": 0,
+          "iTXt": 0,
+          "tEXt": 0,
+          "zTXt": 0
+        },
+        "forbidden_content_findings": 0
+      },
+      "independent_review": {
+        "reviewer_kind": "independent_agent",
+        "reviewer_role": "binary_privacy_verifier",
+        "independent_from_proposer": true,
+        "review_scope": "rendered_pixels_and_context",
+        "evidence_references": [
+          "decoded-rgba-sha256:405d4285c83f2319843b5554ec1094bffef5f7cf02bb53bf806e5f8c860fc6f1",
+          "privacy-scan:forbidden-local-generic-identities",
+          "visual-review:exact-rendered-pixels"
+        ],
+        "verdict": "pass"
+      }
+    }
+  ]
+}

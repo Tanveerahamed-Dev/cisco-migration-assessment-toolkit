@@ -33,21 +33,43 @@ import { dirname, join, extname } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..", "..");
 
-function findPlaywright() {
-  for (const base of [join(REPO, ".ds-sync"), join(REPO, "webapp", "frontend"), REPO]) {
+function findPlaywrightCandidates() {
+  const candidates = [];
+  for (const base of [join(REPO, "webapp", "frontend"), join(REPO, ".ds-sync"), REPO]) {
     const p = join(base, "node_modules", "playwright", "index.mjs");
-    if (existsSync(p)) return pathToFileURL(p).href;
+    if (existsSync(p)) candidates.push({ base, url:pathToFileURL(p).href });
   }
-  return null;
+  return candidates;
 }
-const pwUrl = findPlaywright();
-if (!pwUrl) {
+const pwCandidates = findPlaywrightCandidates();
+if (!pwCandidates.length) {
   console.error(
     "playwright not found. Install one with a chromium, e.g.:\n" +
     "  npm i --prefix .ds-sync playwright && node .ds-sync/node_modules/playwright/cli.js install chromium");
   process.exit(2);
 }
-const { chromium } = await import(pwUrl);
+
+/* Different local Playwright packages may expect different Chromium revisions.
+   Importing a package is not proof that its browser exists, so try every candidate
+   until one actually launches instead of letting a stale .ds-sync install mask the
+   project-local package. */
+const launchErrors = [];
+let browser = null;
+for (const candidate of pwCandidates) {
+  try {
+    const { chromium } = await import(candidate.url);
+    browser = await chromium.launch({
+      args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
+    });
+    break;
+  } catch (error) {
+    launchErrors.push(`${candidate.base}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+if (!browser) {
+  console.error("No installed Playwright candidate could launch Chromium:\n" + launchErrors.join("\n\n"));
+  process.exit(2);
+}
 
 /* Serve this directory on an ephemeral port — no fixed port to collide with. */
 const MIME = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript", ".js": "text/javascript" };
@@ -62,9 +84,6 @@ const server = createServer(async (req, res) => {
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const URL_ = `http://127.0.0.1:${server.address().port}/fabric.html`;
 
-const browser = await chromium.launch({
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
-});
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const pageErrors = [];
 page.on("pageerror", e => pageErrors.push(String(e)));
@@ -74,6 +93,22 @@ await page.waitForFunction(() => !!window.__fabric, null, { timeout: 30000 });
 
 const checks = [];
 const check = (name, pass, detail) => { checks.push({ name, pass, detail }); };
+
+/* Copy is a correctness surface too: an exact count in the solved graph is neither
+   an upper nor a lower bound on a partially collected real network. Keep both the
+   README explanation and the inspector copy explicit about scope and uncertainty. */
+const readmeCopy = (await readFile(join(HERE, "README.md"), "utf8")).toLowerCase();
+const htmlCopy = (await readFile(join(HERE, "fabric.html"), "utf8")).toLowerCase();
+const scoped = text => text.includes("resolved topology") &&
+                       text.includes("may be smaller") && text.includes("or larger") &&
+                       text.includes("deterministic reference anchor") &&
+                       text.includes("[reference anchor]") && text.includes("[outside baseline]");
+const unsafe = text => text.includes("stated as an upper bound") ||
+                       text.includes("strands &le;") || text.includes("every count is stated as a bound");
+check("coverage copy scopes counts and both directions of uncertainty",
+      scoped(readmeCopy) && scoped(htmlCopy) && !unsafe(readmeCopy) && !unsafe(htmlCopy),
+      JSON.stringify({ readmeScoped:scoped(readmeCopy), htmlScoped:scoped(htmlCopy),
+                       readmeUnsafe:unsafe(readmeCopy), htmlUnsafe:unsafe(htmlCopy) }));
 
 const env = await page.evaluate(() => window.__fabric.stats());
 check("WebGL2 context available", env.glReady, JSON.stringify(env));
@@ -115,20 +150,62 @@ if (env.glReady) {
   check("bundling: intra-lane edges stay straight",
         oracle.intra === 0 || oracle.intraOk === oracle.intra, `${oracle.intraOk}/${oracle.intra}`);
 
-  /* 2. A device strands others IFF it is an articulation point. Two independently
-        written algorithms (iterative Tarjan lowlink vs re-solved BFS) must agree. */
+  /* 2. For every ASSESSABLE device, stranding others is equivalent to being an
+        articulation point. The reference anchor and nodes outside its baseline are
+        deliberately excluded: neither has a counterfactual count in this model. */
   const cross = await page.evaluate(() => {
     const fb = window.__fabric; fb.set(700, 84);
-    let arts = 0, str = 0, viol = 0;
+    let arts = 0, str = 0, viol = 0, skipped = 0;
     for (let i = 0; i < 700; i++) {
-      const s = fb.strandOf(i).count, a = fb.isArt(i);
+      const r = fb.strandOf(i), a = fb.isArt(i);
+      if (r.status !== "assessed") { skipped++; continue; }
+      const s = r.count;
       if (a) arts++;
       if (s > 0) { str++; if (!a) viol++; }
     }
-    return { arts, str, viol };
+    return { arts, str, viol, skipped };
   });
   check("counterfactual agrees with articulation points",
-        cross.viol === 0 && cross.arts === cross.str, `arts=${cross.arts} stranders=${cross.str} violations=${cross.viol}`);
+        cross.viol === 0 && cross.arts === cross.str,
+        `assessedArts=${cross.arts} stranders=${cross.str} skipped=${cross.skipped} violations=${cross.viol}`);
+
+  /* Rendered semantics, not source substrings. The actual fleet anchor, an anchor
+        on a cycle (so "all nodes stranded" would be visibly absurd), and a node in
+        a disconnected component must each land in their explicit #insp branch. */
+  const realAnchor = await page.evaluate(() => {
+    const fb = window.__fabric; fb.set(700, 84);
+    const anchor = fb.anchor(); fb.select(anchor);
+    const box = document.querySelector("#insp");
+    return { anchor, result:fb.strandOf(anchor), text:box.innerText,
+             hero:box.querySelector(".hero")?.textContent || null,
+             named:box.querySelector("code")?.textContent || null };
+  });
+  check("rendered inspector marks the real reference anchor unassessable",
+        realAnchor.result.status === "reference-anchor" && realAnchor.result.count === null &&
+        realAnchor.text.includes("[REFERENCE ANCHOR]") && realAnchor.text.includes("UNASSESSABLE") &&
+        realAnchor.named === realAnchor.hero && !realAnchor.text.includes("strands (resolved)"),
+        JSON.stringify(realAnchor));
+
+  const cycleAnchor = await page.evaluate(() => window.__fabric.verifyFailureFixture({
+    ids:["CYCLE-ANCHOR", "CYCLE-B", "CYCLE-C"],
+    edges:[[0,1], [1,2], [2,0]], selected:0,
+  }));
+  check("rendered inspector does not strand a cycle tautologically when its anchor is selected",
+        cycleAnchor.anchor === cycleAnchor.selected && !cycleAnchor.anchorIsArt &&
+        cycleAnchor.status === "reference-anchor" && cycleAnchor.count === null &&
+        cycleAnchor.text.includes("[REFERENCE ANCHOR]") && cycleAnchor.text.includes("unassessable") &&
+        !cycleAnchor.text.includes("strands (resolved)"), JSON.stringify(cycleAnchor));
+
+  const outside = await page.evaluate(() => window.__fabric.verifyFailureFixture({
+    ids:["BASE-ANCHOR", "BASE-B", "BASE-C", "ISLAND-A", "ISLAND-B"],
+    edges:[[0,1], [1,2], [2,0], [3,4]], selected:3,
+  }));
+  check("rendered inspector marks a disconnected selection outside baseline, not zero",
+        outside.anchor !== outside.selected && !outside.selectedInBaseline &&
+        outside.status === "outside-baseline" && outside.count === null &&
+        outside.text.includes("[OUTSIDE BASELINE]") && outside.text.includes("unassessable") &&
+        outside.text.includes("cannot be reported as a zero-impact result") &&
+        !outside.text.includes("strands no others"), JSON.stringify(outside));
 
   /* 3. Picking must never miss a device that is inside the requested radius. */
   const pick = await page.evaluate(() => {

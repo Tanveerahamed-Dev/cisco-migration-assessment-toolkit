@@ -9,8 +9,8 @@ exists to catch, and the dynamic imports PyInstaller's static analysis cannot se
   dispatch closed.
 * ``webapp.backend.app`` — imported lazily inside ``serve.main`` (the engine child never pays
   for fastapi), so the server half of the app is invisible to static analysis.
-* ``docx`` / ``pptx`` — imported inside the deliverable generators (optional-dependency design);
-  ADR-0004 D2 ships the full 12-document family, so in the bundle they are REQUIRED.
+* artifact renderer modules — imported inside the registry-declared generators; ADR-0004 D2 ships
+  the 12-member pre-cutover family plus conditional PIR, so those dependencies are REQUIRED.
 * uvicorn's loop/protocol/lifespan modules — resolved by name at runtime ("auto" selection).
 
 The dist lands at ``_MEIPASS/webapp_dist`` — the exact directory ``serve._resolve_dist`` probes in
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from cisco_toolkit.brand_tokens import APP_NAME
+from cisco_toolkit.docmeta import artifact_dependency_modules, artifact_writer_modules
 
 #: Destination of the built SPA inside the bundle — MUST match serve._resolve_dist's frozen probe.
 DIST_DEST = "webapp_dist"
@@ -44,9 +45,14 @@ def bundle_datas(root: Path) -> List[Tuple[str, str]]:
     """(source, bundle-dest-dir) pairs for every non-code asset the frozen app needs."""
     root = Path(root)
     return [
-        # The two gzipped knowledge packs (silent-degrade class: lookups go empty without them).
+        # The two gzipped knowledge packs and their required adjacent manifest
+        # (silent-degrade class: lookups go empty without them).
         (str(root / "cisco_toolkit" / "data" / "oui_registry.tsv.gz"), "cisco_toolkit/data"),
         (str(root / "cisco_toolkit" / "data" / "port_registry.tsv.gz"), "cisco_toolkit/data"),
+        (str(root / "cisco_toolkit" / "data" / "registry_manifest.json"), "cisco_toolkit/data"),
+        # Compact, code-pinned Cisco EoL evidence.  Unlike the large registry source
+        # inventories, this 13 KiB semantic fixture is required for runtime authority.
+        (str(root / "cisco_toolkit" / "data" / "eol-bulletins.json"), "cisco_toolkit/data"),
         # The single-file explorer template every explorer render patches.
         (str(root / "cisco_toolkit" / "blast_radius_explorer.html"), "cisco_toolkit"),
         # The built SPA — the "one door" UI.
@@ -83,9 +89,9 @@ def hidden_imports() -> List[str]:
         # command whose module PyInstaller only sees inside a function body. README-FIELD teaches
         # that command; a ModuleNotFoundError at a client site is the failure this line prevents.
         "cisco_toolkit.manifest",
-        # D2: the full document family ships — these are lazy optional-deps in the generators
-        "docx",
-        "pptx",
+        # D2: derive lazy renderer imports from the registry that owns the artifact lifecycle.
+        *artifact_dependency_modules(),
+        *artifact_writer_modules(),
         # fastapi's multipart form handling resolves this at runtime
         "multipart",
         # uvicorn "auto" selection — resolved by name at runtime

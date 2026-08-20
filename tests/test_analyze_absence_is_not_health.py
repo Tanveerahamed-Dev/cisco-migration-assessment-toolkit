@@ -250,9 +250,11 @@ def test_etherchannel_advisory_covers_minlinks_failed_and_combined_flags():
     by = {r["state"]: r for r in rows}
     assert set(by) == {"M", "f", "s", "D"}
     assert by["M"]["severity"] == "High" and by["f"]["severity"] == "High"
-    # the KB carries no entry for M/f, so the CAUSE must be marked not-derived, never invented
-    assert "NOT ASSESSED" in by["M"]["likely_cause"]
-    assert "NOT assessed" in by["M"]["confidence"]
+    # M/f now have bounded doctrine rather than falling through to generic NOT ASSESSED copy.
+    assert "minimum-links" in by["M"]["meaning"]
+    assert "eligible member" in by["M"]["likely_cause"]
+    assert "aggregator" in by["f"]["meaning"]
+    assert "NOT ASSESSED" not in by["M"]["likely_cause"]
     # the flag alphabet is ONE source of truth shared with the severity rater
     assert "M" in analyze._EC_BAD_FLAGS and "f" in analyze._EC_BAD_FLAGS
 
@@ -345,15 +347,17 @@ def test_validation_plan_will_not_bake_an_unobserved_bundle_as_the_baseline():
     link = {it["device"]: it for it in compute_validation_plan(
         ifaces, mg, {}, {}, devs, protocol_health=ph)["items"] if it["category"] == "Link"}
     assert "all members in (P)" not in link["acc1"]["expect"]
-    assert "NOT OBSERVED" in link["acc1"]["check"]
-    assert "never captured" in link["acc1"]["expect"]
+    assert "not verified" in link["acc1"]["check"].lower()
+    assert link["acc1"]["expect"].startswith("ETHERCHANNEL BASELINE NOT VERIFIED — BLOCKER:")
     assert link["acc1"]["severity"] == "High"
-    # ...and the switch whose bundle WAS observed keeps its ordinary baseline (no cry-wolf)
-    assert "all members in (P)" in link["distA"]["expect"] and link["distA"]["severity"] == "Medium"
-    # ...and a caller that supplies no protocol_health at all has nothing to join on -> unchanged
+    # A sparse Info row alone is still not the structured group/member evidence owner.
+    assert link["distA"]["evidence_state"] == "not_verified"
+    assert "all members in (P)" not in link["distA"]["expect"]
+    # A legacy caller with no health/receipt owner also abstains; backward compatibility is fail-closed.
     legacy = {it["device"]: it for it in compute_validation_plan(
         ifaces, mg, {}, {}, devs)["items"] if it["category"] == "Link"}
-    assert all("all members in (P)" in it["expect"] for it in legacy.values())
+    assert all(it["evidence_state"] == "not_verified" for it in legacy.values())
+    assert all("all members in (P)" not in it["expect"] for it in legacy.values())
 
 
 # --------------------------------------------------------------------------- #AN-4

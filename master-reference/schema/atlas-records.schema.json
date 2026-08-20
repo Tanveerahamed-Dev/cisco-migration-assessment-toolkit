@@ -1,0 +1,789 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/schema/atlas-records.schema.json",
+  "title": "Atlas repository intelligence records",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_type",
+    "source_commit",
+    "source_tree_digest",
+    "chunk_index",
+    "chunk_count",
+    "record_count",
+    "records_digest",
+    "records"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.2.0"},
+    "record_type": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "source_tree_digest": {"$ref": "#/$defs/digest"},
+    "chunk_index": {"type": "integer", "minimum": 0},
+    "chunk_count": {"type": "integer", "minimum": 1},
+    "record_count": {"type": "integer", "minimum": 1},
+    "records_digest": {"$ref": "#/$defs/digest", "description": "SHA-256 of canonical ordered record-ID array; the compiler manifest receipt binds complete chunk bytes."},
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/baseRecord"}
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"record_type": {"const": "files"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/fileRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "lines"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/lineRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "source_text"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/sourceTextRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "symbols"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/symbolRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "structural_entities"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/structuralEntityRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "routes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/guiSurfaceRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "components"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/guiSurfaceRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "consequential_claim_facets"}}}, "then": {
+      "properties": {"records": {"items": {"$ref": "#/$defs/consequentialClaimFacetRecord"}}},
+      "oneOf": [
+        {
+          "properties": {
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "records": {"items": {"properties": {"source_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}}}
+          }
+        },
+        {
+          "properties": {
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "records": {"items": {"properties": {"source_blob_oid": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}}
+          }
+        }
+      ]
+    }},
+    {"if": {"properties": {"record_type": {"const": "graph_nodes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphNodeRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgeRecord"}}}}},
+    {"if": {"properties": {"record_type": {"const": "files"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/filesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "lines"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/linesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "source_text"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/sourceTextRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "symbols"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/symbolsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "structural_entities"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/structuralEntitiesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "imports"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/importsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "calls"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/callsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "markdown"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/markdownRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "structured"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/structuredRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "documents"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/documentsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "routes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/routesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "components"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/componentsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "tests"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/testsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "workflows"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/workflowsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "datasets"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/datasetsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "binaries"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/binariesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "manifests"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/manifestsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "configs"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/configsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "dependencies"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/dependenciesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_nodes"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphNodesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "graph_edges"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/graphEdgesRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "claims"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/claimsRecordKeyFence"}}}}},
+    {"if": {"properties": {"record_type": {"const": "consequential_claim_facets"}}}, "then": {"properties": {"records": {"items": {"$ref": "#/$defs/consequentialClaimFacetsRecordKeyFence"}}}}}
+  ],
+  "$defs": {
+    "atlasId": {
+      "type": "string",
+      "pattern": "^urn:atlas:[a-z-]+:[0-9a-f]{24}$"
+    },
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "filesRecordKeyFence": {"propertyNames": {"enum": ["classification_errors", "content_digest", "content_source", "documentation_status", "documentation_status_reasons", "entity_type", "git_blob_oid", "git_mode", "git_stage", "id", "language", "line_count", "media_type", "nonblank_line_count", "parse_status", "parser", "parser_mode", "parser_version", "path", "privacy_exposure", "privacy_reasons", "roles", "size_bytes", "unresolved_reasons"]}},
+    "linesRecordKeyFence": {"propertyNames": {"enum": ["GUI_or_artifact_consumers", "behavior_group", "callers_and_dependencies", "claims_influenced", "containing_symbol", "current_or_historical", "depth", "entity_type", "explanation_depth", "file_id", "id", "inputs_and_outputs", "language", "line", "line_digest", "line_number", "owner", "path", "runtime_trace_state", "security_and_privacy_effect", "semantic_entity", "source_commit", "structural_mapping_basis", "syntax_depth", "syntax_kind", "test_coverage_state", "tests_covering_it", "text_bytes", "text_digest", "text_preview", "unresolved_reasons"]}},
+    "sourceTextRecordKeyFence": {"propertyNames": {"enum": ["byte_count", "content_digest", "encoding", "entity_type", "file_id", "git_blob_oid", "id", "line_count", "lines", "path", "source_basis"]}},
+    "symbolsRecordKeyFence": {"propertyNames": {"enum": ["abstention_behavior", "callees", "caller_resolution", "callers", "claims_produced_or_consumed", "constant_basis", "constant_candidate", "criticality", "data_dependencies", "declaration_kind", "decorators", "depth", "digest", "documentation", "downstream_surfaces", "entity_type", "explanation_depth", "exported", "external_effects", "extraction_disposition", "failure_and_exception_behavior", "file_id", "framework_candidate", "history", "id", "kind", "known_impact_if_changed", "language", "limitations", "name", "parameters", "parameters_and_types", "path", "path_and_range", "performance_characteristics", "purpose", "purpose_basis", "qualified_name", "range", "responsibility", "return_annotation", "return_or_output", "review_state", "runtime_trace_evidence", "runtime_trace_state", "security_boundary", "stable_urn", "state_read", "state_written", "target", "test_linkage", "tests", "unresolved_reasons"]}},
+    "structuralEntitiesRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "explanation_depth", "extraction_disposition", "file_id", "generation_provenance", "git_blob_oid", "id", "kind", "language", "line_count", "name", "nonblank_line_count", "parser", "parser_mode", "parser_owned", "parser_version", "path", "range", "range_state", "roles", "root_scope", "source_basis", "uncertainty", "unresolved_reasons"]}},
+    "importsRecordKeyFence": {"propertyNames": {"enum": ["alias", "containing_symbol", "entity_type", "file_id", "id", "kind", "module", "names", "path", "range", "unresolved_reasons"]}},
+    "callsRecordKeyFence": {"propertyNames": {"enum": ["callee", "containing_symbol", "entity_type", "extraction_disposition", "file_id", "id", "path", "range", "resolved", "statement_digest", "tests", "unresolved_reasons"]}},
+    "markdownRecordKeyFence": {"propertyNames": {"enum": ["authority_classification", "containing_heading", "documentation_status", "entity_type", "file_id", "heading", "id", "kind", "level", "line", "path", "target", "text"]}},
+    "structuredRecordKeyFence": {"propertyNames": {"enum": ["cell_count", "data_row_count", "depth", "entity_type", "extraction_disposition", "file_id", "id", "key", "name", "path", "pointer", "range", "row_accounting_state", "row_count_including_header", "row_index", "unresolved_reasons", "value_digest", "value_preview", "value_type"]}},
+    "documentsRecordKeyFence": {"propertyNames": {"enum": ["entity_type", "file_id", "id", "line_count", "path", "status", "status_reasons", "title"]}},
+    "routesRecordKeyFence": {"propertyNames": {"enum": ["attribute_names", "entity_type", "file_id", "framework", "gui_dossier", "handler", "id", "kind", "method", "name", "path", "range", "route", "unresolved_reasons"]}},
+    "componentsRecordKeyFence": {"propertyNames": {"enum": ["attribute_names", "attributes_digest", "component_role", "detection", "entity_type", "exported", "extraction_disposition", "file_id", "framework", "gui_dossier", "handler", "id", "kind", "method", "name", "path", "range", "route", "self_closing", "tag_name", "unresolved_reasons"]}},
+    "testsRecordKeyFence": {"propertyNames": {"enum": ["assertion_count", "assertion_group_id", "assertions", "entity_type", "extraction_disposition", "file_id", "framework", "id", "name", "path", "range", "unresolved_reasons"]}},
+    "workflowsRecordKeyFence": {"propertyNames": {"enum": ["access", "action", "artifact_ids", "artifacts", "declared_path", "direction", "entity_type", "extraction_disposition", "file_id", "id", "job", "job_ids", "jobs", "name", "parser_mode", "path", "permission_ids", "permissions", "range", "run_declared", "scope", "source_digest", "step_id", "step_ids", "step_index", "steps", "triggers", "unresolved_reasons", "uses"]}},
+    "datasetsRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "file_id", "format", "id", "path", "size_bytes", "structured_record_count"]}},
+    "binariesRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "file_id", "git_blob_oid", "id", "inspection_mode", "media_type", "path", "privacy_exposure", "size_bytes", "unresolved_reasons"]}},
+    "manifestsRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "dependency_count", "entity_type", "file_id", "id", "kind", "language", "path"]}},
+    "configsRecordKeyFence": {"propertyNames": {"enum": ["content_digest", "entity_type", "file_id", "id", "language", "path", "roles"]}},
+    "dependenciesRecordKeyFence": {"propertyNames": {"enum": ["constraint", "ecosystem", "entity_type", "file_id", "id", "name", "path", "resolved_version", "scope"]}},
+    "graphNodesRecordKeyFence": {"propertyNames": {"enum": ["community", "coordinate_occurrence", "entity_type", "extraction_mode", "file_id", "file_type", "graphify_id", "id", "kind", "label", "language", "origin", "source_file", "source_location", "unresolved_reasons"]}},
+    "graphEdgesRecordKeyFence": {"propertyNames": {"enum": ["confidence", "coordinate_occurrence", "entity_type", "extraction_mode", "id", "relation", "source", "source_file", "source_location", "target", "unresolved_reasons"]}},
+    "claimsRecordKeyFence": {"propertyNames": {"enum": ["basis", "confidence", "conflicts_with", "current_view", "denominator", "derived_from", "effective_time", "entity_type", "evidence_class", "evidence_ids", "extraction_mode", "freshness", "id", "lineage", "origin", "owner", "predicate", "recorded_time", "revocation_reason", "revoked_by", "satisfies_evidence_requirement", "scope", "source_commit", "status", "subject", "temporal_basis", "transformation", "unit", "unresolved_reasons", "value", "verdict"]}},
+    "consequentialClaimFacetsRecordKeyFence": {"propertyNames": {"enum": ["classification", "claim_kind", "entity_type", "evidence_state", "facet_id", "facet_path", "grounding_digest", "id", "record_identity", "record_kind", "review_state", "rule_id", "source_blob_oid", "source_path", "source_pointer", "value_digest"]}},
+    "range": {
+      "type": "object",
+      "required": ["start_line", "start_column", "end_line", "end_column"],
+      "properties": {
+        "start_line": {"type": ["integer", "null"], "minimum": 1},
+        "start_column": {"type": ["integer", "null"], "minimum": 0},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "end_column": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "guiCitation": {
+      "type": "object",
+      "required": ["record_id", "path", "start_line", "end_line", "line_state", "evidence_role"],
+      "properties": {
+        "record_id": {"$ref": "#/$defs/atlasId"},
+        "path": {"$ref": "#/$defs/repositoryPath"},
+        "start_line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "line_state": {"enum": ["source_range", "source_line_not_resolved", "not_applicable_binary"]},
+        "evidence_role": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "guiDossierField": {
+      "type": "object",
+      "required": ["state", "value", "citations", "unresolved_reasons", "gap_ids"],
+      "properties": {
+        "state": {"enum": ["explicitly_linked", "structural_only", "not_evidenced"]},
+        "value": true,
+        "citations": {"type": "array", "items": {"$ref": "#/$defs/guiCitation"}, "maxItems": 24},
+        "unresolved_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "gap_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^gap\\.[a-z0-9-]+$"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "guiDossier": {
+      "type": "object",
+      "required": [
+        "id", "surface_id", "surface_kind", "source_commit", "source_citation", "evidence_state",
+        "derivation", "field_count", "persona_journey", "data_snapshot_sources", "props_contract",
+        "state_model", "loading_empty_error_unknown_stale_states", "user_actions", "accessibility",
+        "responsive_behavior", "design_tokens", "white_label_inputs", "design_sync_receipt",
+        "visual_baseline", "tests", "downstream_consumers", "known_gaps", "unresolved_reasons", "gap_ids"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "surface_id": {"$ref": "#/$defs/atlasId"},
+        "surface_kind": {"enum": ["route", "component"]},
+        "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        "source_citation": {"$ref": "#/$defs/guiCitation"},
+        "evidence_state": {"enum": ["explicitly_linked", "structural_only", "not_evidenced"]},
+        "derivation": {"const": "compiler_structural_evidence_only"},
+        "field_count": {"const": 15},
+        "persona_journey": {"$ref": "#/$defs/guiDossierField"},
+        "data_snapshot_sources": {"$ref": "#/$defs/guiDossierField"},
+        "props_contract": {"$ref": "#/$defs/guiDossierField"},
+        "state_model": {"$ref": "#/$defs/guiDossierField"},
+        "loading_empty_error_unknown_stale_states": {"$ref": "#/$defs/guiDossierField"},
+        "user_actions": {"$ref": "#/$defs/guiDossierField"},
+        "accessibility": {"$ref": "#/$defs/guiDossierField"},
+        "responsive_behavior": {"$ref": "#/$defs/guiDossierField"},
+        "design_tokens": {"$ref": "#/$defs/guiDossierField"},
+        "white_label_inputs": {"$ref": "#/$defs/guiDossierField"},
+        "design_sync_receipt": {"$ref": "#/$defs/guiDossierField"},
+        "visual_baseline": {"$ref": "#/$defs/guiDossierField"},
+        "tests": {"$ref": "#/$defs/guiDossierField"},
+        "downstream_consumers": {"$ref": "#/$defs/guiDossierField"},
+        "known_gaps": {"$ref": "#/$defs/guiDossierField"},
+        "unresolved_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "gap_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^gap\\.[a-z0-9-]+$"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "guiSurfaceRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": ["file_id", "path", "range", "gui_dossier", "unresolved_reasons"],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "range": {"$ref": "#/$defs/range"},
+            "gui_dossier": {"$ref": "#/$defs/guiDossier"},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+          }
+        }
+      ]
+    },
+    "baseRecord": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"}
+      }
+    },
+    "fileRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "git_mode",
+            "git_blob_oid",
+            "content_source",
+            "language",
+            "roles",
+            "privacy_exposure",
+            "parse_status",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "git_mode": {"type": "string", "pattern": "^[0-7]{6}$"},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "git_stage": {"const": 0},
+            "content_source": {
+              "enum": ["selected_commit_git_blob", "dirty_preview_worktree", "metadata_only_git_object"]
+            },
+            "language": {"type": "string", "minLength": 1},
+            "roles": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+            "privacy_exposure": {"enum": ["full", "metadata_only"]},
+            "privacy_reasons": {"type": "array", "items": {"type": "string"}},
+            "classification_errors": {"type": "array", "items": {"type": "string"}},
+            "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+            "content_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+            "parse_status": {
+              "enum": ["pending", "parsed", "binary_inventory", "metadata_only", "classification_error", "parser_error"]
+            },
+            "parser": {"type": ["string", "null"]},
+            "parser_mode": {"type": ["string", "null"]},
+            "parser_version": {"type": ["string", "null"]},
+            "line_count": {"type": ["integer", "null"], "minimum": 0},
+            "nonblank_line_count": {"type": "integer", "minimum": 0},
+            "documentation_status": {"type": ["string", "null"]},
+            "documentation_status_reasons": {"type": "array", "items": {"type": "string"}},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      ]
+    },
+    "lineRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "file_id",
+            "path",
+            "line",
+            "language",
+            "syntax_kind",
+            "depth",
+            "text_digest",
+            "line_digest",
+            "text_bytes",
+            "source_commit",
+            "line_number",
+            "semantic_entity",
+            "owner",
+            "structural_mapping_basis",
+            "behavior_group",
+            "inputs_and_outputs",
+            "claims_influenced",
+            "callers_and_dependencies",
+            "tests_covering_it",
+            "runtime_trace_state",
+            "GUI_or_artifact_consumers",
+            "security_and_privacy_effect",
+            "current_or_historical",
+            "explanation_depth",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "line": {"type": "integer", "minimum": 1},
+            "language": {"type": "string"},
+            "syntax_kind": {"type": "string", "minLength": 1},
+            "containing_symbol": {"type": ["string", "null"]},
+            "depth": {"type": "integer", "minimum": 0},
+            "text_digest": {"$ref": "#/$defs/digest"},
+            "text_bytes": {"type": "integer", "minimum": 1},
+            "text_preview": {"type": "string", "maxLength": 240},
+            "line_digest": {"$ref": "#/$defs/digest"},
+            "source_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "line_number": {"type": "integer", "minimum": 1},
+            "syntax_depth": {"type": "integer", "minimum": 0},
+            "semantic_entity": {"$ref": "#/$defs/atlasId"},
+            "owner": {"$ref": "#/$defs/atlasId"},
+            "structural_mapping_basis": {
+              "enum": ["symbol_range", "parser_context", "parser_structural_root"]
+            },
+            "behavior_group": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+            "inputs_and_outputs": {"type": "object"},
+            "claims_influenced": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "callers_and_dependencies": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "tests_covering_it": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "test_coverage_state": {"type": "string"},
+            "runtime_trace_state": {"type": "string"},
+            "GUI_or_artifact_consumers": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "security_and_privacy_effect": {"type": "object"},
+            "current_or_historical": {"type": "string"},
+            "explanation_depth": {"type": "integer", "minimum": 0, "maximum": 4},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+          }
+        }
+      ]
+    },
+    "structuralEntityRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "file_id",
+            "path",
+            "name",
+            "kind",
+            "entity_type",
+            "root_scope",
+            "range",
+            "range_state",
+            "line_count",
+            "nonblank_line_count",
+            "parser",
+            "parser_mode",
+            "parser_version",
+            "parser_owned",
+            "language",
+            "roles",
+            "source_basis",
+            "git_blob_oid",
+            "content_digest",
+            "generation_provenance",
+            "extraction_disposition",
+            "explanation_depth",
+            "uncertainty",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "name": {"type": "string", "minLength": 1},
+            "kind": {
+              "enum": [
+                "python_module",
+                "typescript_source_file",
+                "stylesheet_document",
+                "template_document",
+                "configuration_document",
+                "structured_document",
+                "documentation_document",
+                "workflow_document",
+                "plain_text_document",
+                "source_document"
+              ]
+            },
+            "entity_type": {"type": "string", "pattern": "^structural_root_[a-z0-9_]+$"},
+            "root_scope": {"const": "parsed_source"},
+            "range": {"$ref": "#/$defs/range"},
+            "range_state": {"enum": ["exact_source_lines", "empty_source"]},
+            "line_count": {"type": "integer", "minimum": 0},
+            "nonblank_line_count": {"type": "integer", "minimum": 0},
+            "parser": {"type": "string", "minLength": 1},
+            "parser_mode": {"type": "string", "minLength": 1},
+            "parser_version": {"type": ["string", "null"]},
+            "parser_owned": {"const": true},
+            "language": {"type": "string", "minLength": 1},
+            "roles": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+            "source_basis": {"enum": ["selected_commit_git_blob", "dirty_preview_worktree"]},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "content_digest": {"$ref": "#/$defs/digest"},
+            "generation_provenance": {
+              "type": "object",
+              "required": ["state", "basis", "generator_record_ids"],
+              "properties": {
+                "state": {"enum": ["declared_generated", "not_declared"]},
+                "basis": {"type": "string", "minLength": 1},
+                "generator_record_ids": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+              },
+              "additionalProperties": false
+            },
+            "extraction_disposition": {"const": "parser_structural_root"},
+            "explanation_depth": {"const": 1},
+            "uncertainty": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+            "unresolved_reasons": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+          }
+        }
+      ]
+    },
+    "sourceTextRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "file_id",
+            "path",
+            "encoding",
+            "source_basis",
+            "git_blob_oid",
+            "byte_count",
+            "content_digest",
+            "line_count",
+            "lines"
+          ],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "encoding": {"const": "utf-8"},
+            "source_basis": {"enum": ["selected_commit_git_blob", "dirty_preview_worktree"]},
+            "git_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "byte_count": {"type": "integer", "minimum": 0},
+            "content_digest": {"$ref": "#/$defs/digest"},
+            "line_count": {"type": "integer", "minimum": 0},
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["number", "text", "terminator", "text_digest", "line_digest"],
+                "properties": {
+                  "number": {"type": "integer", "minimum": 1},
+                  "text": {"type": "string"},
+                  "terminator": {"enum": ["", "\n", "\r", "\r\n"]},
+                  "text_digest": {"$ref": "#/$defs/digest"},
+                  "line_digest": {"$ref": "#/$defs/digest"}
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "symbolRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "file_id", "path", "name", "qualified_name", "kind", "language", "range", "exported", "digest",
+            "stable_urn", "path_and_range", "purpose", "responsibility", "parameters_and_types", "return_or_output",
+            "state_read", "state_written", "external_effects", "failure_and_exception_behavior", "abstention_behavior",
+            "callers", "callees", "data_dependencies", "claims_produced_or_consumed", "tests", "runtime_trace_evidence",
+            "performance_characteristics", "security_boundary", "downstream_surfaces", "limitations",
+            "known_impact_if_changed", "history", "criticality", "explanation_depth", "review_state"
+          ],
+          "properties": {
+            "file_id": {"$ref": "#/$defs/atlasId"},
+            "path": {"$ref": "#/$defs/repositoryPath"},
+            "name": {"type": "string"},
+            "qualified_name": {"type": "string"},
+            "kind": {"type": "string"},
+            "language": {"type": "string"},
+            "range": {"$ref": "#/$defs/range"},
+            "exported": {"type": "boolean"},
+            "digest": {"$ref": "#/$defs/digest"}
+            ,"stable_urn": {"$ref": "#/$defs/atlasId"}
+            ,"path_and_range": {"type": "object"}
+            ,"purpose": {"type": "string"}
+            ,"responsibility": {"type": "string"}
+            ,"parameters_and_types": {"type": "array"}
+            ,"return_or_output": true
+            ,"state_read": {"type": "array"}
+            ,"state_written": {"type": "array"}
+            ,"external_effects": {"type": "array"}
+            ,"failure_and_exception_behavior": {"type": "string"}
+            ,"abstention_behavior": {"type": "string"}
+            ,"callers": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"callees": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"data_dependencies": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"claims_produced_or_consumed": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"tests": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"runtime_trace_evidence": {"type": "array"}
+            ,"performance_characteristics": {"type": "string"}
+            ,"security_boundary": {"type": "string"}
+            ,"downstream_surfaces": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"limitations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+            ,"known_impact_if_changed": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true}
+            ,"history": {"type": "array"}
+            ,"criticality": {"enum": ["internal", "review_required"]}
+            ,"explanation_depth": {"type": "integer", "minimum": 0, "maximum": 4}
+            ,"review_state": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "consequentialClaimFacetRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "entity_type",
+            "evidence_state",
+            "facet_id",
+            "source_path",
+            "source_blob_oid",
+            "source_pointer",
+            "rule_id",
+            "record_kind",
+            "record_identity",
+            "facet_path",
+            "classification",
+            "claim_kind",
+            "review_state",
+            "grounding_digest",
+            "value_digest"
+          ],
+          "properties": {
+            "id": {"$ref": "#/$defs/atlasId"},
+            "entity_type": {"const": "consequential_claim_facet"},
+            "evidence_state": {"const": "payload_omitted_value_fingerprint_index_only"},
+            "facet_id": {"type": "string", "pattern": "^urn:atlas:claim-facet:[0-9a-f]{64}$"},
+            "source_path": {"$ref": "#/$defs/repositoryPath"},
+            "source_blob_oid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "source_pointer": {"type": "string", "pattern": "^/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*$"},
+            "rule_id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            "record_kind": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+            "record_identity": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+            "facet_path": {"type": "string", "pattern": "^(?=.*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]+$"},
+            "classification": {"const": "consequential_claim_candidate"},
+            "claim_kind": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            "review_state": {"const": "pending_independent_review"},
+            "grounding_digest": {"$ref": "#/$defs/digest"},
+            "value_digest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ]
+    },
+    "claimRecord": {
+      "allOf": [
+        {"$ref": "#/$defs/baseRecord"},
+        {
+          "type": "object",
+          "required": [
+            "subject",
+            "predicate",
+            "value",
+            "unit",
+            "basis",
+            "scope",
+            "effective_time",
+            "recorded_time",
+            "owner",
+            "evidence_ids",
+            "evidence_class",
+            "transformation",
+            "denominator",
+            "verdict",
+            "freshness",
+            "lineage",
+            "derived_from",
+            "origin",
+            "extraction_mode",
+            "confidence",
+            "status",
+            "revoked_by",
+            "revocation_reason",
+            "conflicts_with",
+            "current_view",
+            "satisfies_evidence_requirement",
+            "source_commit",
+            "unresolved_reasons"
+          ],
+          "properties": {
+            "subject": {"$ref": "#/$defs/atlasId"},
+            "predicate": {"type": "string", "minLength": 1},
+            "value": true,
+            "unit": {"type": ["string", "null"]},
+            "basis": {"type": "string", "minLength": 1},
+            "scope": {
+              "type": "object",
+              "minProperties": 1,
+              "properties": {
+                "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+                "source_tree_digest": {"$ref": "#/$defs/digest"}
+              }
+            },
+            "effective_time": {
+              "oneOf": [
+                {"type": "string", "format": "date-time"},
+                {"const": "unknown"}
+              ]
+            },
+            "recorded_time": {
+              "oneOf": [
+                {"type": "string", "format": "date-time"},
+                {"const": "unknown"}
+              ]
+            },
+            "temporal_basis": {"type": "string", "minLength": 1},
+            "owner": {"$ref": "#/$defs/atlasId"},
+            "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "evidence_class": {"enum": ["observed", "derived", "inferred", "advisory", "decided"]},
+            "transformation": {
+              "type": "object",
+              "required": ["id", "version"],
+              "properties": {
+                "id": {"$ref": "#/$defs/atlasId"},
+                "version": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            },
+            "denominator": {
+              "type": "object",
+              "required": ["value", "unit", "basis", "status"],
+              "properties": {
+                "value": {"type": ["number", "null"], "minimum": 0},
+                "unit": {"type": "string", "minLength": 1},
+                "basis": {"type": "string", "minLength": 1},
+                "status": {"enum": ["known", "unknown", "not_applicable"]}
+              },
+              "additionalProperties": false
+            },
+            "verdict": {"enum": ["proven", "refuted", "not_observed", "indeterminate", "conflicting"]},
+            "freshness": {"enum": ["current", "stale", "unknown", "revoked"]},
+            "lineage": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "derived_from": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "origin": {"type": "string", "minLength": 1},
+            "extraction_mode": {"enum": ["verified", "extracted", "inferred", "structural", "undisclosed"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "status": {"enum": ["candidate", "current", "historical", "superseded", "revoked"]},
+            "revoked_by": {
+              "oneOf": [
+                {"$ref": "#/$defs/atlasId"},
+                {"type": "null"}
+              ]
+            },
+            "revocation_reason": {"type": ["string", "null"]},
+            "conflicts_with": {"type": "array", "items": {"$ref": "#/$defs/atlasId"}, "uniqueItems": true},
+            "current_view": {"type": "boolean"},
+            "satisfies_evidence_requirement": {"type": "boolean"},
+            "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+            "unresolved_reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+          }
+        }
+      ]
+    },
+    "graphNodeRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "graphify_id",
+        "coordinate_occurrence",
+        "file_id",
+        "source_file",
+        "source_location",
+        "label",
+        "file_type",
+        "language",
+        "kind",
+        "community",
+        "origin",
+        "extraction_mode",
+        "entity_type",
+        "unresolved_reasons"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "graphify_id": {"$ref": "#/$defs/digest"},
+        "coordinate_occurrence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "file_id": {"$ref": "#/$defs/atlasId"},
+        "source_file": {"$ref": "#/$defs/repositoryPath"},
+        "source_location": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^(?:L?[1-9]\\d*(?::[1-9]\\d*)?(?:-L?[1-9]\\d*(?::[1-9]\\d*)?)?)?$"
+        },
+        "label": {"type": "string", "minLength": 1},
+        "file_type": {"enum": ["", "code", "document", "rationale"]},
+        "language": {
+          "enum": [
+            "", "bash", "c", "cpp", "csharp", "css", "go", "html", "java",
+            "javascript", "json", "jsx", "markdown", "php", "python", "ruby",
+            "rust", "shell", "sql", "text", "tsx", "typescript", "yaml"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "", "bash_entrypoint", "bash_function", "class", "code", "file",
+            "function", "method", "module", "symbol"
+          ]
+        },
+        "community": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "origin": {"enum": ["ast", "curated", "undisclosed"]},
+        "extraction_mode": {"enum": ["extracted", "curated", "undisclosed"]},
+        "entity_type": {"type": "string", "pattern": "^graph_node(?:_[a-z0-9_]+)?$"},
+        "unresolved_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "graphify_node_label_derived_from_repository_relative_coordinate",
+              "graphify_node_origin_is_curated_or_undisclosed_not_ast_extraction",
+              "graphify_node_community_outside_js_safe_nonnegative_integer_domain",
+              "graphify_node_nonvocabulary_descriptor_withheld",
+              "graphify_node_source_location_outside_bounded_coordinate_domain"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "graphEdgeRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "target",
+        "relation",
+        "coordinate_occurrence",
+        "source_file",
+        "source_location",
+        "extraction_mode",
+        "confidence",
+        "entity_type",
+        "unresolved_reasons"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/atlasId"},
+        "source": {"$ref": "#/$defs/atlasId"},
+        "target": {"$ref": "#/$defs/atlasId"},
+        "relation": {
+          "enum": [
+            "calls", "contains", "defines", "imports", "imports_from", "indirect_call",
+            "inherits", "method", "rationale_for", "related_to", "re_exports", "references", "uses"
+          ]
+        },
+        "coordinate_occurrence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "source_file": {
+          "oneOf": [
+            {"$ref": "#/$defs/repositoryPath"},
+            {"type": "null"}
+          ]
+        },
+        "source_location": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^(?:L?[1-9]\\d*(?::[1-9]\\d*)?(?:-L?[1-9]\\d*(?::[1-9]\\d*)?)?)?$"
+        },
+        "extraction_mode": {"enum": ["extracted", "inferred", "ambiguous", "undisclosed"]},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "entity_type": {"const": "graph_edge"},
+        "unresolved_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "graphify_confidence_mode_undisclosed_or_ambiguous",
+              "graphify_relation_not_in_controlled_vocabulary_shape",
+              "graphify_edge_source_location_outside_bounded_coordinate_domain"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

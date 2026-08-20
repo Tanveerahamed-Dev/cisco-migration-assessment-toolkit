@@ -164,7 +164,7 @@ def test_release_and_publish_workflows_do_not_swallow_a_failure():
         assert "|| true" not in body, "%s swallows a step failure with `|| true`" % wf_name
 
 
-def test_webapp_ci_path_filter_covers_the_root_conftest():
+def test_webapp_ci_scope_covers_the_root_conftest():
     """The backend job is ``python -m pytest webapp/tests``, and pytest's confcutdir is the
     rootdir — so the ROOT conftest.py loads for that command. Proven 2026-07-28 with
     ``pytest webapp/tests --collect-only --trace-config``, which reports:
@@ -173,20 +173,20 @@ def test_webapp_ci_path_filter_covers_the_root_conftest():
         PLUGIN registered: <module 'conftest' from '...\\Enhancements\\webapp\\tests\\conftest.py'>
 
     It installs an autouse fixture on every backend test and mutates sys.path, so breaking it
-    reds the backend job — while matching no other entry in the filter. And because none of
-    webapp-ci's jobs is a required branch-protection context, the skipped run is
-    indistinguishable from a green one at the merge button.
+    must engage both the post-merge push filter and the PR classifier. The PR workflow itself is
+    unconditional so these job contexts remain safe to make required.
     """
     assert os.path.isfile(os.path.join(ROOT, "conftest.py")), \
         "precondition: this repo has a root conftest.py"
     wf = _read(".github", "workflows", "webapp-ci.yml")
     lists = [ln for ln in wf.splitlines() if ln.strip().startswith("paths:")]
-    assert len(lists) == 2, "expected a push and a pull_request path filter, got %d" % len(lists)
-    for raw in lists:
-        entries = json.loads(raw.split("paths:", 1)[1].strip())
-        assert "conftest.py" in entries, (
-            "the root conftest.py is a registered plugin for the backend job but does not trigger "
-            "webapp-ci: %s" % entries)
+    assert len(lists) == 1, "only the push event may retain a path filter: %s" % lists
+    entries = json.loads(lists[0].split("paths:", 1)[1].strip())
+    assert "conftest.py" in entries, (
+        "the root conftest.py is a registered plugin for the backend job but does not trigger "
+        "post-merge webapp-ci: %s" % entries)
+    classifier = _read(".github", "scripts", "classify_webapp_ci_scope.py")
+    assert '"conftest.py"' in classifier, "the PR scope classifier omits root conftest.py"
 
 
 # --------------------------------------------------- read-only agents vs their own instructions

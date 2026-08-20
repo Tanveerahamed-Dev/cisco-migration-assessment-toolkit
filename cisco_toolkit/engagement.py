@@ -177,22 +177,22 @@ def _verdict(f: dict) -> tuple:
     if _as_int(f["lc"].get("n_past_ldos")):
         conds.append(f"{f['lc']['n_past_ldos']} device(s) are past last-day-of-support (LDoS) — no "
                      "TAC escalation path during the windows; stage spares or replace first.")
-    if _as_int(f["lc"].get("n_past_eos")):
-        conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-sale (EoS), support window "
-                     "closing — plan a refresh before they reach last-day-of-support.")
-    # Independent of the two above, NOT chained to them: an all-Unknown fleet counts zero past-LDoS
-    # and zero past-EoS, so this verdict returned PROCEED with an EMPTY condition list and §-summary
-    # printed "No conditions attached — the evidence shows no gating findings; schedule the pilot
-    # wave." over a fleet whose hardware support state was never determined. Near-LDoS was unread
-    # here too, so a fleet months from end-of-support also cleared silently.
     if _as_int(f["lc"].get("n_near")):
         conds.append(f"{f['lc']['n_near']} device(s) reach last-day-of-support within the planning "
                      "horizon — schedule their replacement inside this programme, not after it.")
+    if _as_int(f["lc"].get("n_past_eos")):
+        conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-sale (EoS) with a finite "
+                     "recorded refresh window before LDoS — plan the refresh now; this date band "
+                     "does not establish support entitlement.")
+    # Independent of the three above, NOT chained to them: an all-Unknown fleet counts zero across
+    # every adverse date band, so the verdict would otherwise return PROCEED with an empty condition
+    # list over a fleet whose hardware lifecycle position was never determined.
     if _as_int(f["lc"].get("n_unknown")):
-        conds.append(f"{f['lc']['n_unknown']} device(s) could NOT be lifecycle-banded — no EoX "
-                     "bulletin in the offline knowledge base matched their platform. Their support "
-                     "state is UNDETERMINED, not clear: resolve it against Cisco's published EoX "
-                     "data before the go/no-go gate, or the gate is taken on unmeasured risk.")
+        conds.append(f"{f['lc']['n_unknown']} device(s) could NOT be lifecycle-banded — either no exact "
+                     "EoX row matched or the matched row's retained source/date authority was incomplete. "
+                     "Their lifecycle position and support entitlement are UNDETERMINED, not clear: "
+                     "resolve them against Cisco's published EoX and entitlement records before the "
+                     "go/no-go gate, or the gate is taken on unmeasured risk.")
     if f.get("integrity_failures") or n_crit or f["notready"]:
         return "HOLD", conds
     if conds:
@@ -583,9 +583,19 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                       "punch-list: " + (i.get("category") or "—"),
                       "Remediate before the owning wave's T-14 checkpoint"))
     if _as_int(f["lc"].get("n_past_ldos")):
-        risks.append(("High", f"{f['lc']['n_past_ldos']} device(s) past last-day-of-support (LDoS) "
+        risks.append(("Critical", f"{f['lc']['n_past_ldos']} device(s) past last-day-of-support (LDoS) "
                               "in the migration path", "lifecycle risk",
                       "Stage spares / replace before their wave; no TAC path otherwise"))
+    if _as_int(f["lc"].get("n_near")):
+        risks.append(("High", f"{f['lc']['n_near']} device(s) are within one year of recorded LDoS",
+                      "lifecycle risk",
+                      "Replace before the recorded deadline; verify serial-numbered support "
+                      "entitlement separately because the date band does not establish it"))
+    if _as_int(f["lc"].get("n_past_eos")):
+        risks.append(("Medium", f"{f['lc']['n_past_eos']} device(s) are past end-of-sale with LDoS "
+                                "still future", "lifecycle risk",
+                      "Plan refresh before recorded LDoS; verify serial-numbered support entitlement "
+                      "separately because the date band does not establish it"))
     hard_total = sum(_as_int(w.get("hard_cutover_endpoints")) for w in f["ws_by"].values())
     if hard_total:
         risks.append(("Medium", f"{hard_total} endpoint(s) take a hard outage during cutover "

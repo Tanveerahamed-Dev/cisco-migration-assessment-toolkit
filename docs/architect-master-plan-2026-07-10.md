@@ -1,5 +1,12 @@
 # Architect Master Plan — 2026-07-10 @ e3b2bd5
 
+> **Implementation-status reconciliation (2026-08-07):** this remains the
+> decision and dependency record, but its phase task lists are a historical
+> implementation plan, not the current work queue. In particular, P3-E1/E2/E3,
+> P3-E4, and P3-W1/W2 subsequently shipped. Resolve present work from live owner
+> code/tests, current Git state, and `CLAUDE.md`; never resume an unchecked row
+> merely because it is written in future tense below.
+
 > Stage B artifact of `/architect-plan` (v5). Upstream gate input: docs/architect-understanding-2026-07-10.md
 > (Stage A dimensions A–G+R, PLUS the Dimension H report appended to that same artifact after the
 > engine-scope answer — H was dispatched at Stage B start per the command) + the P0 interview
@@ -61,12 +68,12 @@ rather than pretending code can hold them alone.
   the repo's own named recurring bug class); --compare/--trend silently diffs mismatched schema
   versions; deck/excel provenance genuinely open; frontend untested. Must change: P3-E1..E5.
 
-## 3. Prior-plan disposition (13 plan docs + 3 ADRs — this plan becomes the active work-plan index)
+## 3. Prior-plan disposition (13 plan docs + 3 ADRs — historical plan index)
 
 | Doc | Disposition | Where / boundary |
 |---|---|---|
 | MASTER_PLAN_2026-07-05 | **ABSORBED** | trust/calibration frontier superseded as-built; its §2 secure&tidy, §4.1–4.4, §5 platform/vault land as P3 backlog feed (P3-M*) |
-| deliverable-excellence-plan | **STILL-AUTHORITATIVE** for the Excellence laws (sole owner, ssot.md:36) | its P2/P3 status table is STALE (most targets landed per Dim H) → P3-E4 refreshes it; law ownership unchanged |
+| deliverable-excellence-plan | **STILL-AUTHORITATIVE** for the Excellence laws (sole owner, ssot.md:36) | implementation status reconciled 2026-08-07 (P0–P2 and visible P3 provenance shipped); law ownership unchanged |
 | autonomous-brain-plan-v4-final | **STILL-AUTHORITATIVE** as the decision ledger (D1–D13) | roadmap phases ABSORBED (built); decisions bind this plan (D6 packs≠agents, D11 floor, D12 tier) |
 | autonomous-brain-v3-validation | **ABSORBED** (evidence base; external figures stay treat-as-reported) | — |
 | agent-brain-selfmem-upgrade | **ABSORBED** | its genuine delta (SelfMem write-vocab, deferred SQLite index per ADR-0003) → P3-B1; its "per-dimension ECE" label corrected (calibration-gap) |
