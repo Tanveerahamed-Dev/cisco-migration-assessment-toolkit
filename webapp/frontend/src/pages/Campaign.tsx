@@ -735,11 +735,12 @@ export default function CampaignPage() {
                 </summary>
                 <div className="faint" style={{ fontSize: 10.5, margin: "6px 0" }}>
                   Supply <span className="mono">expected_changes</span> with family, transition,
-                  optional subjects, and reason. Evidence loss or incompatibility can never be authorized.
+                  optional subjects, and reason. A VTP reset additionally requires exact subjects and
+                  <span className="mono"> intent_kind: revision_reset</span>. Evidence loss or incompatibility can never be authorized.
                 </div>
                 <textarea aria-label="Expected family changes JSON" value={changeIntentText}
                   onChange={(event) => setChangeIntentText(event.target.value)} rows={5}
-                  placeholder={'{"expected_changes":[{"family":"vtp_safety","transitions":["intent_changed"],"subjects":["dist-1"],"reason":"planned revision reset"}],"note":"CAB-1234"}'}
+                  placeholder={'{"expected_changes":[{"family":"vtp_safety","transitions":["intent_changed"],"subjects":["dist-1"],"intent_kind":"revision_reset","reason":"planned revision reset"}],"note":"CAB-1234"}'}
                   style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 11 }} />
               </details>
               <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}>Compare</button>

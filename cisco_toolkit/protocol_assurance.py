@@ -355,32 +355,56 @@ def protocol_support_profiles() -> List[dict]:
         (
             "stp_topology",
             "stp_topology_delta/1",
-            "not_verified",
-            ["stp_roots projection", "interfaces STP state projection"],
-            {"protocol": "STP", "claim": "observed root and forwarding/blocked path evidence"},
+            "local_safety_preservation",
             [
-                "Current parsed evidence does not preserve complete per-instance roles or topology-change counters; those leaves are explicitly not verified.",
+                "stp_topology_baseline/1", "stp_topology_observation/1",
+                "stp_roots projection",
+            ],
+            {
+                "protocol": "STP",
+                "claim": "observed PVST/MST root, role/state, path, and counter preservation",
+            },
+            [
+                "Configured topology intent, timers, loop freedom, convergence, simultaneous multi-device state, and service survival remain outside this bounded owner.",
+                "Legacy snapshots without the typed observation/baseline remain explicitly not verified and are never backfilled.",
             ],
         ),
         (
             "etherchannel",
             "etherchannel_delta/1",
-            "observed_state_preservation",
-            ["etherchannel_baseline/1", "etherchannel_projection/1"],
-            {"protocol": "EtherChannel", "subject_basis": "single_chassis_local_group"},
+            "intent_reconciled_survival",
+            [
+                "etherchannel_baseline/1", "etherchannel_projection/1",
+                "etherchannel_operational_evidence/1",
+            ],
+            {
+                "protocol": "EtherChannel",
+                "platforms": ["IOS", "IOS-XE", "NX-OS"],
+                "subject_basis": "single_chassis_local_group",
+                "claim": "configured/runtime identity, bounded local capacity and member-loss eligibility",
+            },
             [
                 "This is distinct from multichassis LAG and does not infer a peer pair or dual-homed attachment.",
-                "Configured members, remote partner identity, min-links, hashing, counters, and failure rehearsal remain bounded by available evidence.",
+                "LACP partner identity is asserted only when explicitly captured per local member; unsupported vendor parity is never inferred.",
+                "The local count/min-links/bandwidth rehearsal does not prove convergence, hashing distribution, traffic continuity, or service-path survival.",
             ],
         ),
         (
             "vtp_safety",
             "vtp_safety_delta/1",
             "local_safety_preservation",
-            ["vtp_safety_baseline/1"],
-            {"protocol": "VTP", "claim": "bounded local configuration/database safety"},
+            ["vtp_safety_baseline/1", "vtp_extended_evidence/1"],
+            {
+                "protocol": "VTP",
+                "platforms": ["IOS", "IOS-XE", "NX-OS"],
+                "collection_modes": ["live", "offline_import"],
+                "commands": ["show vtp status", "show vlan brief", "show running-config"],
+                "claim": "source-bound local and reconciled same-database safety",
+            },
             [
-                "Revision or domain movement defaults to review; propagation and reset execution are not inferred.",
+                "Mode/domain/version/revision, VLAN database digest, pruning, and authentication-presence movement defaults to review.",
+                "Authentication secrets and device-reported authentication digests are never retained.",
+                "Revision reset requires exact-subject intent_kind=revision_reset in cutover_change_intent/1; a counter decrease alone never asserts reset intent or execution.",
             ],
         ),
         (
@@ -461,21 +485,50 @@ def normalize_change_intent(raw: Any, *, binding: Mapping[str, Any]) -> dict:
     obj = _dict(raw)
     if supplied and not isinstance(raw, dict):
         failures.append("change intent must be an object")
+    elif supplied:
+        allowed = {"expected_changes", "note"}
+        for key in obj:
+            if key not in allowed:
+                failures.append(f"change intent has unsupported field {key!r}")
+        if "note" in obj and not isinstance(obj["note"], str):
+            failures.append("change intent note must be a string")
     rows = obj.get("expected_changes", []) if supplied else []
     if not isinstance(rows, list):
         failures.append("expected_changes must be a list")
         rows = []
+    supported_families = {
+        profile["family"] for profile in protocol_support_profiles()
+    }
     expected: List[dict] = []
     for index, item in enumerate(rows):
         if not isinstance(item, dict):
             failures.append(f"expected_changes[{index}] must be an object")
             continue
+        allowed = {"family", "transitions", "subjects", "reason", "intent_kind"}
+        for key in item:
+            if key not in allowed:
+                failures.append(
+                    f"expected_changes[{index}] has unsupported field {key!r}"
+                )
         family = _text(item.get("family"))
         transitions = item.get("transitions", [])
         subjects = item.get("subjects", [])
         reason = _text(item.get("reason"))
+        intent_kind = _text(item.get("intent_kind"))
         if not family:
             failures.append(f"expected_changes[{index}].family is required")
+        elif family not in supported_families:
+            failures.append(
+                f"expected_changes[{index}].family is not in the executable support roster"
+            )
+        if "reason" in item and not isinstance(item["reason"], str):
+            failures.append(f"expected_changes[{index}].reason must be a string")
+        if "intent_kind" in item and not isinstance(item["intent_kind"], str):
+            failures.append(f"expected_changes[{index}].intent_kind must be a string")
+        elif intent_kind not in {"", "revision_reset"}:
+            failures.append(
+                f"expected_changes[{index}].intent_kind is unsupported"
+            )
         if not isinstance(transitions, list) or not transitions:
             failures.append(f"expected_changes[{index}].transitions must be a non-empty list")
             transitions = []
@@ -495,18 +548,38 @@ def normalize_change_intent(raw: Any, *, binding: Mapping[str, Any]) -> dict:
         if not isinstance(subjects, list):
             failures.append(f"expected_changes[{index}].subjects must be a list")
             subjects = []
+        elif any(not isinstance(value, str) or not value.strip() for value in subjects):
+            failures.append(
+                f"expected_changes[{index}].subjects must contain only non-empty strings"
+            )
         canonical_subjects = sorted(
             {_text(value) for value in subjects if _text(value)},
             key=lambda value: (value.casefold(), value),
         )
+        if intent_kind == "revision_reset":
+            if family != "vtp_safety":
+                failures.append(
+                    f"expected_changes[{index}].intent_kind revision_reset is VTP-only"
+                )
+            if not canonical_subjects:
+                failures.append(
+                    f"expected_changes[{index}].intent_kind revision_reset requires exact subjects"
+                )
+            if any(token not in {"intent_changed", "recovered"}
+                   for token in canonical_transitions):
+                failures.append(
+                    f"expected_changes[{index}].intent_kind revision_reset supports only reviewable VTP reset transitions"
+                )
         expected.append({
             "family": family,
             "transitions": canonical_transitions,
             "subjects": canonical_subjects,
             "reason": reason,
+            "intent_kind": intent_kind,
         })
     expected.sort(key=lambda row: (
-        row["family"].casefold(), row["family"], tuple(row["transitions"]), tuple(row["subjects"])
+        row["family"].casefold(), row["family"], row["intent_kind"],
+        tuple(row["transitions"]), tuple(row["subjects"])
     ))
     bound = {
         "engagement_id": binding.get("engagement_id"),
@@ -525,6 +598,151 @@ def normalize_change_intent(raw: Any, *, binding: Mapping[str, Any]) -> dict:
         "expected_changes": expected,
         "expected_changes_sha256": canonical_sha256(expected),
         "failures": list(dict.fromkeys(failures)),
+    }
+
+
+def validate_change_intent(value: Any) -> dict:
+    """Validate the complete closed ``cutover_change_intent/1`` wire contract.
+
+    Invalid operator intent is itself a valid explanatory receipt when its failures reconcile.
+    Only a structurally complete receipt whose semantic ``valid`` flag is true may participate in
+    an admitted comparison; callers cannot substitute a truncated mapping carrying only that flag.
+    """
+    failures: List[str] = []
+
+    def fail(reason: str) -> None:
+        if reason not in failures:
+            failures.append(reason)
+
+    try:
+        if not isinstance(value, dict):
+            fail("change intent receipt is missing or has an unusable root shape")
+            raise ValueError("invalid change intent root")
+        expected_keys = {
+            "schema", "status", "valid", "note", "binding", "expected_changes",
+            "expected_changes_sha256", "failures",
+        }
+        if set(value) != expected_keys:
+            fail("change intent receipt fields do not match cutover_change_intent/1")
+        if value.get("schema") != CHANGE_INTENT_SCHEMA:
+            fail("change intent schema is missing or unsupported")
+
+        receipt_failures = value.get("failures")
+        if (not isinstance(receipt_failures, list)
+                or any(not isinstance(item, str) or not item.strip()
+                       for item in receipt_failures)
+                or len(set(receipt_failures)) != len(receipt_failures)):
+            fail("change intent failures are missing or malformed")
+            receipt_failures = []
+        valid = value.get("valid")
+        status = value.get("status")
+        if type(valid) is not bool or valid is not (not receipt_failures):
+            fail("change intent validity does not reconcile to its failures")
+        if status not in {"invalid", "reconciled", "not_supplied"}:
+            fail("change intent status is missing or unsupported")
+        elif (receipt_failures and status != "invalid") or (
+                not receipt_failures and status == "invalid"):
+            fail("change intent status does not reconcile to its failures")
+        if not isinstance(value.get("note"), str):
+            fail("change intent note is missing or malformed")
+
+        binding = value.get("binding")
+        binding_keys = {
+            "engagement_id", "campaign_id", "before_snapshot_id", "after_snapshot_id",
+            "before_sha256", "after_sha256",
+        }
+        if not isinstance(binding, dict) or set(binding) != binding_keys:
+            fail("change intent comparison binding is missing or malformed")
+            binding = {}
+        if not _text(binding.get("engagement_id")):
+            fail("change intent engagement identity is missing or malformed")
+        for field in ("campaign_id", "before_snapshot_id", "after_snapshot_id"):
+            if type(binding.get(field)) is not int:
+                fail(f"change intent {field.replace('_', ' ')} is missing or malformed")
+        if binding.get("before_snapshot_id") == binding.get("after_snapshot_id"):
+            fail("change intent before and after snapshot identities must be distinct")
+        for field in ("before_sha256", "after_sha256"):
+            if not _is_sha256(binding.get(field)):
+                fail(f"change intent {field.replace('_', ' ')} is missing or malformed")
+
+        rows = value.get("expected_changes")
+        if not isinstance(rows, list):
+            fail("change intent expected changes are missing or malformed")
+            rows = []
+        supported_families = {
+            profile["family"] for profile in protocol_support_profiles()
+        }
+        canonical_rows: List[dict] = []
+        for index, row in enumerate(rows):
+            row_keys = {"family", "transitions", "subjects", "reason", "intent_kind"}
+            if not isinstance(row, dict) or set(row) != row_keys:
+                fail(f"change intent expected_changes[{index}] is missing or malformed")
+                continue
+            family = row.get("family")
+            transitions = row.get("transitions")
+            subjects = row.get("subjects")
+            reason = row.get("reason")
+            intent_kind = row.get("intent_kind")
+            if not isinstance(family, str):
+                fail(f"change intent expected_changes[{index}].family is malformed")
+            if (not isinstance(transitions, list)
+                    or any(not isinstance(item, str) for item in transitions)
+                    or len(set(transitions)) != len(transitions)):
+                fail(f"change intent expected_changes[{index}].transitions are malformed")
+                transitions = []
+            if (not isinstance(subjects, list)
+                    or any(not isinstance(item, str) for item in subjects)):
+                fail(f"change intent expected_changes[{index}].subjects are malformed")
+                subjects = []
+            if not isinstance(reason, str):
+                fail(f"change intent expected_changes[{index}].reason is malformed")
+            if not isinstance(intent_kind, str):
+                fail(f"change intent expected_changes[{index}].intent_kind is malformed")
+            canonical_rows.append(row)
+            if valid is True:
+                if not family or family not in supported_families:
+                    fail(f"change intent expected_changes[{index}].family is unsupported")
+                if (not transitions
+                        or any(token not in CHANGE_VOCABULARY for token in transitions)
+                        or any(token in {"coverage_lost", "not_comparable"}
+                               for token in transitions)):
+                    fail(f"change intent expected_changes[{index}].transitions are unsupported")
+                canonical_subjects = sorted(
+                    set(subjects), key=lambda item: (item.casefold(), item))
+                if (subjects != canonical_subjects
+                        or any(not item.strip() for item in subjects)):
+                    fail(f"change intent expected_changes[{index}].subjects are not canonical")
+                if intent_kind not in {"", "revision_reset"}:
+                    fail(f"change intent expected_changes[{index}].intent_kind is unsupported")
+                elif intent_kind == "revision_reset" and (
+                        family != "vtp_safety"
+                        or not subjects
+                        or any(token not in {"intent_changed", "recovered"}
+                               for token in transitions)):
+                    fail(
+                        f"change intent expected_changes[{index}].revision_reset intent is malformed"
+                    )
+        ordered_rows = sorted(canonical_rows, key=lambda row: (
+            str(row.get("family", "")).casefold(), str(row.get("family", "")),
+            str(row.get("intent_kind", "")),
+            tuple(row.get("transitions", [])) if isinstance(row.get("transitions"), list) else (),
+            tuple(row.get("subjects", [])) if isinstance(row.get("subjects"), list) else (),
+        ))
+        if canonical_rows != ordered_rows:
+            fail("change intent expected changes are not in canonical order")
+        if value.get("expected_changes_sha256") != canonical_sha256(rows):
+            fail("change intent expected-change digest does not reconcile to its rows")
+        if status == "not_supplied" and rows:
+            fail("not-supplied change intent contains expected-change rows")
+    except (TypeError, ValueError, KeyError, AttributeError, RecursionError, MemoryError):
+        if not failures:
+            fail("change intent validation failed")
+
+    return {
+        "present": value is not None,
+        "valid": not failures,
+        "reason": "ok" if not failures else failures[0],
+        "failures": failures,
     }
 
 
@@ -595,11 +813,18 @@ def comparison_admission(
         elif subjects["n_subjects"] == 0:
             gaps.append(f"{side} snapshot has no bound device subjects")
 
-    if change_intent.get("valid") is not True:
+    intent = change_intent if isinstance(change_intent, dict) else {}
+    intent_validation = validate_change_intent(change_intent)
+    if intent_validation.get("valid") is not True:
         failures.extend(
-            f"change intent: {item}" for item in _list(change_intent.get("failures"))
+            f"change intent contract: {item}"
+            for item in _list(intent_validation.get("failures"))
         )
-    intent_binding = _dict(change_intent.get("binding"))
+    if intent.get("valid") is not True:
+        failures.extend(
+            f"change intent: {item}" for item in _list(intent.get("failures"))
+        )
+    intent_binding = _dict(intent.get("binding"))
     expected_intent_binding = {
         "engagement_id": before_binding.get("engagement_id"),
         "campaign_id": before_binding.get("campaign_id"),
@@ -886,11 +1111,16 @@ def _stp_positive_or_malformed(snapshot: Mapping[str, Any]) -> bool:
     root_topology = "stp_roots" in snapshot and (
         not isinstance(roots, dict) or bool(roots)
     )
-    topology_attempted = root_topology or interface_topology
+    legacy_topology_attempted = root_topology or interface_topology
+    typed_topology_attempted = (
+        "stp_topology_baseline" in snapshot
+        or "stp_topology_observations" in snapshot
+    )
+    topology_attempted = legacy_topology_attempted or typed_topology_attempted
     consistency_attempted = (
         "stp_consistency_baseline" in snapshot
         or health_attempted
-        or topology_attempted
+        or legacy_topology_attempted
         or _assessability_declares(snapshot, "STP", positive_subject_only=True)
     )
     if not consistency_attempted and not topology_attempted:
@@ -919,8 +1149,16 @@ def _etherchannel_positive_or_malformed(snapshot: Mapping[str, Any]) -> bool:
 
     baseline = snapshot.get("etherchannel_baseline")
     projection = snapshot.get("etherchannel_projection")
-    attempted = baseline is not None or projection is not None or _assessability_declares(
-        snapshot, "EtherChannel", positive_subject_only=True
+    legacy_view = protocol_deltas._legacy_etherchannel_view(snapshot)
+    if ("etherchannel_operational_evidence" not in snapshot
+            and legacy_view.get("valid") is True
+            and not legacy_view.get("rows")):
+        return False
+    attempted = (
+        "etherchannel_operational_evidence" in snapshot
+        or baseline is not None or projection is not None or _assessability_declares(
+            snapshot, "EtherChannel", positive_subject_only=True
+        )
     )
     if not attempted:
         return False
@@ -1052,7 +1290,7 @@ def compute_native_protocol_deltas(
         (protocol_deltas.compute_etherchannel_delta,
          (), None, _etherchannel_positive_or_malformed),
         (protocol_deltas.compute_vtp_safety_delta,
-         ("vtp_safety_baseline",), "VTP", None),
+         ("vtp_safety_baseline", "vtp_extended_evidence"), "VTP", None),
         (protocol_deltas.compute_fhrp_configured_group_delta,
          ("fhrp_configured_group_baseline",), "FHRP", None),
         (protocol_deltas.compute_fhrp_redundancy_domain_delta,
@@ -1127,7 +1365,8 @@ def compute_native_protocol_deltas(
     return results
 
 
-def _expected(intent: Mapping[str, Any], family: str, transition: str, subject: str) -> bool:
+def _expected(intent: Mapping[str, Any], family: str, transition: str, subject: str,
+              *, required_intent_kind: str = "") -> bool:
     if transition in {"coverage_lost", "not_comparable"}:
         return False
     for row in _list(intent.get("expected_changes")):
@@ -1135,8 +1374,13 @@ def _expected(intent: Mapping[str, Any], family: str, transition: str, subject: 
             continue
         if transition not in _list(row.get("transitions")):
             continue
+        declared_intent_kind = row.get("intent_kind") or ""
+        if required_intent_kind and declared_intent_kind != required_intent_kind:
+            continue
+        if not required_intent_kind and declared_intent_kind:
+            continue
         subjects = _list(row.get("subjects"))
-        if not subjects or subject in subjects:
+        if subject in subjects or (not required_intent_kind and not subjects):
             return True
     return False
 
@@ -1491,6 +1735,7 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
         "local_leg",
         "reconciled_attachment",
     }
+    multichassis_states = {"healthy", "degraded", "not_verified", "absent"}
     for row_index, raw in enumerate(raw_rows):
         if not isinstance(raw, dict):
             failures.append(f"native changes[{row_index}] is malformed")
@@ -1509,7 +1754,74 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
                 f"native changes[{row_index}] is missing a closed multichassis record type"
             )
             continue
-        expected = _expected(change_intent, family, transition, subject)
+        if is_multichassis:
+            before_state = raw.get("before_state")
+            after_state = raw.get("after_state")
+            if (not isinstance(before_state, str)
+                    or not isinstance(after_state, str)
+                    or before_state not in multichassis_states
+                    or after_state not in multichassis_states):
+                failures.append(
+                    f"native changes[{row_index}] has an unsupported multichassis health state"
+                )
+            elif after_state == "degraded" and producer_effect != "block":
+                failures.append(
+                    f"native changes[{row_index}] weakens a current multichassis fault"
+                )
+        change_kind = raw.get("change_kind")
+        required_intent_kind = ""
+        if schema == "vtp_safety_delta/1":
+            before_state = raw.get("before_state")
+            after_state = raw.get("after_state")
+            revision_decreased = bool(
+                isinstance(before_state, Mapping) and isinstance(after_state, Mapping)
+                and before_state.get("revision_present") is True
+                and after_state.get("revision_present") is True
+                and type(before_state.get("revision")) is int
+                and type(after_state.get("revision")) is int
+                and after_state["revision"] < before_state["revision"]
+            )
+            reset_invariant_fields = (
+                "mode", "mode_present", "domain", "domain_present", "version",
+                "version_present", "revision_present", "database_identity",
+                "vlan_database_digest", "vlan_count", "pruning_state",
+                "authentication_configured",
+            )
+            pure_revision_decrease = bool(
+                revision_decreased
+                and all(before_state.get(field) == after_state.get(field)
+                        for field in reset_invariant_fields)
+            )
+            if change_kind not in {
+                    None, "configuration_movement", "revision_decrease_observed"}:
+                failures.append(
+                    f"native changes[{row_index}] has an unsupported VTP change kind"
+                )
+            elif pure_revision_decrease and change_kind != "revision_decrease_observed":
+                failures.append(
+                    f"native changes[{row_index}] fails to label a pure observed VTP revision decrease"
+                )
+            elif not pure_revision_decrease and change_kind == "revision_decrease_observed":
+                failures.append(
+                    f"native changes[{row_index}] falsely labels a pure VTP revision decrease"
+                )
+            if (isinstance(after_state, Mapping)
+                    and after_state.get("status") == "unsafe"
+                    and producer_effect != "block"):
+                failures.append(
+                    f"native changes[{row_index}] weakens current unsafe VTP evidence"
+                )
+            if pure_revision_decrease:
+                required_intent_kind = "revision_reset"
+        expected = (
+            False
+            if schema == "vtp_safety_delta/1" and revision_decreased
+            and not pure_revision_decrease
+            else _expected(
+                change_intent, family, transition, subject,
+                required_intent_kind=required_intent_kind,
+            )
+        )
         normalized = {
             "family": family,
             "subject": subject,
@@ -1522,6 +1834,8 @@ def _native_family(delta: Any, change_intent: Mapping[str, Any],
         }
         if is_multichassis:
             normalized["subject_kind"] = record_type
+        if schema == "vtp_safety_delta/1" and change_kind is not None:
+            normalized["change_kind"] = change_kind
         rows.append(normalized)
         observed_counts[transition] += 1
         observed_effects[producer_effect] += 1

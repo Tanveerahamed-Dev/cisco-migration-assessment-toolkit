@@ -236,6 +236,60 @@ def test_snapshot_matches_golden(golden_run):
         assert snap[key] == golden[key], f"snapshot section '{key}' changed vs golden"
 
 
+def test_stp_topology_owner_and_schema_census_ship_fail_closed(golden_run):
+    """The real pipeline publishes typed STP rows without inventing missing counters."""
+    from cisco_toolkit.stp_topology import validate_stp_topology_baseline
+
+    snap, _xlsx = golden_run
+    observations = snap["stp_topology_observations"]
+    baseline = snap["stp_topology_baseline"]
+
+    assert set(observations) == set(snap["devices"])
+    assert all(
+        row["schema"] == "stp_topology_observation/1"
+        and row["state_capture_state"] == "usable"
+        and row["detail_capture_state"] == "missing"
+        and row["roles"]
+        and {role["namespace"] for role in row["roles"]} == {"pvst_vlan"}
+        and "topology_counter_missing" in row["finding_codes"]
+        for row in observations.values()
+    )
+    assert validate_stp_topology_baseline(
+        baseline,
+        observations=observations,
+        legacy_roots=snap["stp_roots"],
+        devices=snap["devices"],
+    )["valid"] is True
+    assert baseline["verdict"] == "INDETERMINATE"
+    assert all(row["topology_change_count"] is None for row in baseline["rows"])
+    assert all(cell["status"] == "not_verified" for cell in baseline["coverage"])
+
+    census = {row["key"]: row for row in snap["schema_census"]["sections"]}
+    assert census["stp_topology_observations"]["state"] == "published"
+    assert census["stp_topology_baseline"]["state"] == "published"
+
+
+def test_etherchannel_operational_owner_ships_source_bound_and_fail_closed(golden_run):
+    """The pipeline publishes typed depth without upgrading incomplete legacy fixtures."""
+    from cisco_toolkit.etherchannel import validate_etherchannel_operational_evidence
+
+    snap, _xlsx = golden_run
+    evidence = snap["etherchannel_operational_evidence"]
+    view = validate_etherchannel_operational_evidence(evidence)
+
+    assert view["valid"] is True
+    assert evidence["projection_custody"] == "embedded_unverified"
+    assert evidence["verdict"] == "INDETERMINATE"
+    assert {row["switch"] for row in evidence["rows"]} == {"core1", "core2"}
+    assert all(row["status"] in {"review", "not_verified"} for row in evidence["rows"])
+    assert all(
+        row["member_failure_rehearsal"]["service_path_survival"] == "not_verified"
+        for row in evidence["rows"]
+    )
+    census = {row["key"]: row for row in snap["schema_census"]["sections"]}
+    assert census["etherchannel_operational_evidence"]["state"] == "published"
+
+
 def test_multichassis_raw_producer_blocks_ship_fail_closed(golden_run):
     """The real offline pipeline publishes both audit input and its canonical stored baseline.
 

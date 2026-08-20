@@ -6,8 +6,10 @@ import {
   readyColor,
   sevColor,
   LifecycleSummary,
+  PROTOCOL_SUBJECT_DETAIL_FIELDS,
   ProtocolAssuranceSection,
   ProtocolSingleSnapshotFamily,
+  ProtocolSingleSnapshotSubject,
   SnapshotMeta,
   Summary,
 } from "../api";
@@ -351,6 +353,30 @@ function evidenceLabel(value: string): string {
   return value.replaceAll("_", " ").toUpperCase();
 }
 
+function SubjectEvidenceDetail({ subject, detail }:
+  { subject: string; detail: ProtocolSingleSnapshotSubject["detail"] }) {
+  const rows = PROTOCOL_SUBJECT_DETAIL_FIELDS
+    .filter((field) => Object.prototype.hasOwnProperty.call(detail, field))
+    .map((field) => [field, detail[field]] as const)
+    .filter(([, value]) => value !== null && value !== "" && value !== undefined);
+  if (!rows.length) return <span className="faint">No typed detail</span>;
+  return (
+    <details aria-label={`${subject} typed protocol evidence`}>
+      <summary style={{ cursor: "pointer", whiteSpace: "nowrap" }}>
+        {rows.length} typed field{rows.length === 1 ? "" : "s"}
+      </summary>
+      <dl style={{ margin: "8px 0 0", minWidth: 260, maxWidth: 520 }}>
+        {rows.map(([field, value]) => (
+          <div key={field} style={{ display: "grid", gridTemplateColumns: "minmax(120px, 0.7fr) minmax(140px, 1.3fr)", gap: 8, marginTop: 4 }}>
+            <dt className="faint">{field.replaceAll("_", " ")}</dt>
+            <dd className="mono" style={{ margin: 0, overflowWrap: "anywhere" }}>{cell(value)}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
 function FamilySubjects({ family }: { family: ProtocolSingleSnapshotFamily }) {
   const subjects = family.subjects;
   if (!subjects.rows.length) {
@@ -364,7 +390,7 @@ function FamilySubjects({ family }: { family: ProtocolSingleSnapshotFamily }) {
     <div style={{ marginTop: 10 }}>
       <div style={{ overflow: "auto" }}>
         <table className="tbl" aria-label={`${family.family} protocol subjects`}>
-          <thead><tr><th>Subject</th><th>Kind</th><th>Producer evidence state</th><th>Source contract</th></tr></thead>
+          <thead><tr><th>Subject</th><th>Kind</th><th>Producer evidence state</th><th>Source contract</th><th>Typed evidence</th></tr></thead>
           <tbody>
             {subjects.rows.map((row) => (
               <tr key={`${row.kind}|${row.subject}`}>
@@ -372,6 +398,7 @@ function FamilySubjects({ family }: { family: ProtocolSingleSnapshotFamily }) {
                 <td>{evidenceLabel(row.kind)}</td>
                 <td>{evidenceLabel(row.evidence_state)}</td>
                 <td className="mono">{row.source_contract}</td>
+                <td><SubjectEvidenceDetail subject={row.subject} detail={row.detail || {}} /></td>
               </tr>
             ))}
           </tbody>

@@ -16,19 +16,23 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 from cisco_toolkit.analyze import (
     summarize_routing_baseline,
     summarize_stp_consistency_baseline,
-    validate_etherchannel_baseline,
 )
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
 from cisco_toolkit.fhrp_redundancy import validate_fhrp_redundancy_domain_baseline
 from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
 from cisco_toolkit.multichassis_lag import validate_multichassis_lag_snapshot_evidence
-from cisco_toolkit.protocol_deltas import reconcile_native_owner_subject_roster
+from cisco_toolkit.protocol_deltas import (
+    _etherchannel_view as validated_etherchannel_view,
+    reconcile_native_owner_subject_roster,
+)
 from cisco_toolkit.protocol_assurance import (
     bound_snapshot_source,
     canonical_sha256,
     protocol_support_profiles,
 )
+from cisco_toolkit.stp_topology import validate_stp_topology_baseline
+from cisco_toolkit.vtp_extended import validate_vtp_extended_evidence
 from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
 
 
@@ -63,8 +67,32 @@ _DETAIL_FIELDS = (
     "record_type",
     "attachment_id",
     "pair_id",
+    "namespace",
+    "instance",
     "role",
+    "state",
+    "root_address",
+    "is_root",
+    "topology_change_count",
     "operational_state",
+    "mode",
+    "domain",
+    "version",
+    "revision",
+    "database_identity",
+    "vlan_database_digest",
+    "vlan_count",
+    "pruning_state",
+    "authentication_configured",
+    "configured_members",
+    "runtime_members",
+    "partner",
+    "min_links",
+    "capacity",
+    "hashing",
+    "counter_evidence",
+    "member_failure_rehearsal",
+    "finding_codes",
 )
 
 
@@ -422,6 +450,118 @@ def _stp_consistency_view(snapshot: Mapping[str, Any]) -> dict:
 
 
 def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
+    if "stp_topology_baseline" in snapshot or "stp_topology_observations" in snapshot:
+        family, contract = "stp_topology", "stp_topology_baseline/1"
+        baseline_value = snapshot.get("stp_topology_baseline")
+        try:
+            if "devices" not in snapshot or "stp_roots" not in snapshot \
+                    or not isinstance(snapshot.get("stp_roots"), dict):
+                validated = {
+                    "present": baseline_value is not None,
+                    "valid": False,
+                    "reason": (
+                        "STP topology requires co-published legacy roots and an explicit "
+                        "snapshot device denominator"
+                    ),
+                    "baseline": {},
+                    "rows": [],
+                    "coverage": [],
+                }
+            else:
+                validated = validate_stp_topology_baseline(
+                    baseline_value,
+                    observations=snapshot.get("stp_topology_observations"),
+                    legacy_roots=snapshot.get("stp_roots"),
+                )
+            # Validate the co-published producer projection against its own explicit
+            # observation denominator first.  The shared roster join below then binds
+            # that denominator to snapshot.devices and preserves the precise identity-
+            # mismatch reason (instead of flattening it into a generic digest failure).
+        except (Exception, MemoryError):
+            validated = {
+                "present": baseline_value is not None,
+                "valid": False,
+                "reason": "STP topology validation failed",
+                "baseline": {},
+                "rows": [],
+                "coverage": [],
+            }
+        baseline = _mapping(validated.get("baseline"))
+        coverage = baseline.get("coverage")
+        rows = validated.get("rows")
+        validated = reconcile_native_owner_subject_roster(
+            validated,
+            snapshot,
+            family=family,
+            coverage_hosts=[
+                cell.get("switch") if isinstance(cell, Mapping) else None
+                for cell in coverage
+            ] if isinstance(coverage, list) else None,
+            subject_hosts=[
+                row.get("switch") if isinstance(row, Mapping) else None
+                for row in rows
+            ] if isinstance(rows, list) else None,
+        )
+        if validated.get("valid") is not True:
+            baseline, rows = {}, []
+        else:
+            baseline = _mapping(validated.get("baseline"))
+            rows = _rows(validated.get("rows"))
+        subjects: List[dict] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            host = _text(row.get("switch"))
+            namespace = _text(row.get("namespace"))
+            instance = _text(row.get("instance"))
+            identity = "|".join((host, namespace, instance))
+            status = row.get("status")
+            subjects.append(_subject(
+                family,
+                f"root|{identity}",
+                status,
+                contract,
+                kind="root",
+                row=row,
+            ))
+            for port in _rows(row.get("port_roles")):
+                if not isinstance(port, dict) or not _text(port.get("interface")):
+                    continue
+                subjects.append(_subject(
+                    family,
+                    f"path|{identity}|{_text(port.get('interface'))}",
+                    status,
+                    contract,
+                    kind="path",
+                    row={
+                        **port,
+                        "switch": host,
+                        "namespace": namespace,
+                        "instance": instance,
+                    },
+                ))
+            subjects.append(_subject(
+                family,
+                f"counter|{identity}",
+                status,
+                contract,
+                kind="counter",
+                row={
+                    "switch": host,
+                    "namespace": namespace,
+                    "instance": instance,
+                    "topology_change_count": row.get("topology_change_count"),
+                },
+            ))
+        subjects.sort(key=lambda item: (item["subject"].casefold(), item["subject"]))
+        return _view(
+            valid=validated.get("valid") is True,
+            present=validated.get("present") is True,
+            reason=_text(validated.get("reason")),
+            baseline=baseline,
+            subjects=subjects,
+        )
+
     family, contract = "stp_topology", "stp_roots + interfaces projections"
     roots = snapshot.get("stp_roots")
     interfaces = snapshot.get("interfaces")
@@ -520,67 +660,34 @@ def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
 
 
 def _etherchannel_view(snapshot: Mapping[str, Any]) -> dict:
-    family, contract = "etherchannel", "etherchannel_baseline/1"
-    value = snapshot.get("etherchannel_baseline")
+    family, contract = "etherchannel", "etherchannel_operational_evidence/1"
+    present = any(key in snapshot for key in (
+        "etherchannel_baseline", "etherchannel_projection",
+        "etherchannel_operational_evidence",
+    ))
     try:
-        validated = validate_etherchannel_baseline(
-            value,
-            projection=snapshot.get("etherchannel_projection"),
-            protocol_assessability=snapshot.get("protocol_assessability"),
-            devices=snapshot.get("devices"),
-        )
+        validated = validated_etherchannel_view(snapshot)
     except (Exception, MemoryError):
-        validated = {"present": value is not None, "valid": False, "reason": "EtherChannel validation failed"}
-    source_projection = snapshot.get("etherchannel_projection")
-    projection_rows = _mapping(source_projection).get("rows")
-    receipt_rows = _mapping(snapshot.get("protocol_assessability")).get("rows")
-    subject_hosts = [
-        row.get("switch") if isinstance(row, Mapping) else None
-        for row in _rows(validated.get("rows"))
-    ]
-    validated = reconcile_native_owner_subject_roster(
-        validated,
-        snapshot,
-        family="etherchannel projection",
-        coverage_hosts=[
-            row.get("switch") if isinstance(row, Mapping) else None
-            for row in projection_rows
-        ] if isinstance(projection_rows, list) else None,
-        subject_hosts=subject_hosts,
-    )
-    validated = reconcile_native_owner_subject_roster(
-        validated,
-        snapshot,
-        family="etherchannel receipt",
-        coverage_hosts=[
-            row.get("switch") if isinstance(row, Mapping) else None
-            for row in receipt_rows
-        ] if isinstance(receipt_rows, list) else None,
-        subject_hosts=subject_hosts,
-    )
+        validated = {
+            "present": present, "valid": False,
+            "reason": "EtherChannel validation failed", "baseline": {}, "rows": [],
+        }
     subjects: List[dict] = []
-    for host_row in _rows(validated.get("rows")):
-        if not isinstance(host_row, dict):
+    for row in _rows(validated.get("rows")):
+        if not isinstance(row, dict):
             continue
-        host = _text(host_row.get("switch"))
-        for group in _rows(host_row.get("groups")):
-            if not isinstance(group, dict):
-                continue
-            name = _text(group.get("group"))
-            if host and name:
-                subjects.append(_subject(
-                    family,
-                    f"{host}|{name}",
-                    group.get("status") or host_row.get("status"),
-                    contract,
-                    kind="local_group",
-                    row={**group, "switch": host},
-                ))
-    baseline = value if validated.get("valid") is True and isinstance(value, dict) else {}
+        host, group = _text(row.get("switch")), _text(row.get("group"))
+        if host and group:
+            subjects.append(_subject(
+                family, f"{host}|{group}", row.get("status"), contract,
+                kind="single_chassis_local_group", row=row,
+            ))
+    baseline = _mapping(validated.get("baseline")) \
+        if validated.get("valid") is True else {}
     subjects.sort(key=lambda item: (item["subject"].casefold(), item["subject"]))
     return _view(
         valid=validated.get("valid") is True,
-        present=validated.get("present") is True,
+        present=present,
         reason=_text(validated.get("reason")),
         baseline=baseline,
         subjects=subjects,
@@ -736,6 +843,102 @@ def _fhrp_domain_view(snapshot: Mapping[str, Any]) -> dict:
     )
 
 
+def _vtp_view(snapshot: Mapping[str, Any]) -> dict:
+    """Expose the additive VTP evidence only when protected v1 still reconciles."""
+    family = "vtp_safety"
+    contract = "vtp_safety_baseline/1 + vtp_extended_evidence/1"
+    extended_value = snapshot.get("vtp_extended_evidence")
+    legacy_value = snapshot.get("vtp_safety_baseline")
+    try:
+        extended = dict(validate_vtp_extended_evidence(extended_value))
+        legacy = dict(validate_vtp_safety_baseline(legacy_value))
+    except (Exception, MemoryError):
+        extended = {"present": extended_value is not None, "valid": False,
+                    "reason": "extended VTP evidence validation failed"}
+        legacy = {"present": legacy_value is not None, "valid": False,
+                  "reason": "protected v1 VTP validation failed"}
+
+    for label, view in (("extended", extended), ("protected v1", legacy)):
+        baseline = _mapping(view.get("baseline"))
+        rows = view.get("rows")
+        coverage = baseline.get("coverage")
+        reconciled = reconcile_native_owner_subject_roster(
+            view,
+            snapshot,
+            family=f"{family} {label}",
+            coverage_hosts=[
+                cell.get("switch") if isinstance(cell, Mapping) else None
+                for cell in coverage
+            ] if isinstance(coverage, list) else None,
+            subject_hosts=[
+                row.get("switch") if isinstance(row, Mapping) else None
+                for row in rows
+            ] if isinstance(rows, list) else None,
+        )
+        if label == "extended":
+            extended = reconciled
+        else:
+            legacy = reconciled
+
+    valid = extended.get("valid") is True and legacy.get("valid") is True
+    reason = _text(extended.get("reason")) if extended.get("valid") is not True else _text(
+        legacy.get("reason")) if legacy.get("valid") is not True else ""
+    extended_rows = _rows(extended.get("rows")) if valid else []
+    if valid:
+        legacy_index = legacy.get("index") if isinstance(legacy.get("index"), dict) else {}
+        legacy_coverage = {
+            cell.get("switch"): cell
+            for cell in _rows(_mapping(legacy.get("baseline")).get("coverage"))
+            if isinstance(cell, dict) and _text(cell.get("switch"))
+        }
+        core_fields = (
+            "mode", "mode_present", "domain", "domain_present", "version",
+            "version_present", "revision", "revision_present",
+        )
+        for row in extended_rows:
+            host = _text(row.get("switch")) if isinstance(row, dict) else ""
+            protected = legacy_index.get(host)
+            cell = legacy_coverage.get(host)
+            explicit_disabled = bool(
+                protected is None and isinstance(cell, dict)
+                and cell.get("explicit_no_subject") is True
+                and cell.get("parser_status") == "explicit_no_subject"
+                and isinstance(row, dict) and row.get("mode") == "off"
+            )
+            co_owned_abstention = bool(
+                protected is None and isinstance(cell, dict)
+                and cell.get("subject") is False
+                and isinstance(row, dict) and row.get("status") == "not_verified"
+            )
+            if not explicit_disabled and not co_owned_abstention and (
+                    not isinstance(protected, dict)
+                    or any(row.get(field) != protected.get(field) for field in core_fields)):
+                valid = False
+                reason = "additive VTP evidence contradicts protected v1 core leaves"
+                extended_rows = []
+                break
+        extended_hosts = {
+            _text(row.get("switch")) for row in extended_rows if isinstance(row, dict)
+        }
+        if valid and set(legacy_index) - extended_hosts:
+            valid = False
+            reason = "additive and protected v1 VTP subject identities do not reconcile"
+            extended_rows = []
+
+    baseline = _mapping(extended.get("baseline")) if valid else {}
+    subjects = _row_subjects(
+        family, extended_rows, contract, lambda row: _text(row.get("switch")),
+        kind="local_vtp_vlan_database",
+    )
+    return _view(
+        valid=valid,
+        present=extended_value is not None or legacy_value is not None,
+        reason=reason,
+        baseline=baseline,
+        subjects=subjects,
+    )
+
+
 def _family_view(snapshot: Mapping[str, Any], family: str) -> dict:
     if family == "ipv4_routing_adjacency":
         return _routing_view(snapshot)
@@ -766,14 +969,7 @@ def _family_view(snapshot: Mapping[str, Any], family: str) -> dict:
     if family == "etherchannel":
         return _etherchannel_view(snapshot)
     if family == "vtp_safety":
-        return _validated_baseline_view(
-            snapshot,
-            family=family,
-            key="vtp_safety_baseline",
-            contract="vtp_safety_baseline/1",
-            validate=validate_vtp_safety_baseline,
-            identity=lambda row: _text(row.get("switch")),
-        )
+        return _vtp_view(snapshot)
     if family == "fhrp_configured_group":
         return _validated_baseline_view(
             snapshot,

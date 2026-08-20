@@ -49,7 +49,7 @@ def _nxos_role(local_mac: str, peer_mac: str) -> bytes:
     return f"""vPC Role status
 ----------------------------------------------------
 vPC role                        : primary
-Dual Active Detection Status    : Disabled
+Dual Active Detection Status    : 0
 vPC system-mac                  : 00:00:5e:00:01:01
 vPC local system-mac            : {local_mac}
 vPC local role-priority         : 32667
@@ -76,12 +76,22 @@ Eth1/31     32768,{partner_mac}0x11f           24965       SA
 
 def _nxos_commands(
         local_mac: str, peer_mac: str, *, include_role: bool = True,
-        include_lacp: bool = True, **vpc_kwargs) -> dict[str, bytes]:
+        include_lacp: bool = True, include_orphan_ports: bool = True,
+        include_running_config: bool = True, **vpc_kwargs) -> dict[str, bytes]:
     commands = {"show vpc": _nxos_vpc(**vpc_kwargs)}
     if include_role:
         commands["show vpc role"] = _nxos_role(local_mac, peer_mac)
     if include_lacp:
         commands["show lacp neighbor"] = _nxos_lacp()
+    if include_orphan_ports:
+        commands["show vpc orphan-ports"] = (
+            b"VLAN           Orphan Ports\n"
+            b"-------        -------------------------\n"
+        )
+    if include_running_config:
+        commands["show running-config"] = (
+            b"hostname leaf\ninterface Eth1/1\n description test\nend\n"
+        )
     return commands
 
 
@@ -156,7 +166,7 @@ def test_real_shaped_parsers_project_only_explicit_identity_leaves() -> None:
     assert role == {
         "local_system_mac": "00:00:00:00:00:0a",
         "peer_system_mac": "00:00:00:00:00:0b",
-        "dual_active_status": "Disabled",
+        "dual_active_status": "0",
     }
     assert parse_nxos_lacp_neighbors(_nxos_lacp().decode()) == [{
         "port_channel": "Po20",
@@ -377,7 +387,10 @@ def test_bound_path_mutation_is_not_parsed_and_remains_in_the_custody_ledger(
 
 
 def test_declared_collection_manifests_do_not_infer_eos_live_support() -> None:
-    assert {"show vpc", "show vpc role", "show lacp neighbor"} <= set(
+    assert {
+        "show vpc", "show vpc role", "show lacp neighbor",
+        "show vpc orphan-ports", "show running-config",
+    } <= set(
         pipeline.COMMANDS_NXOS)
     assert {"show mlag", "show mlag interfaces detail", "show lacp peer"} <= set(
         pipeline.COMMANDS_ARISTA)

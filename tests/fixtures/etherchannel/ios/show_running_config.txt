@@ -1,0 +1,16 @@
+hostname ios-access-1
+port-channel load-balance src-dst-ip
+!
+interface GigabitEthernet1/0/1
+ description first uplink member
+ channel-group 10 mode active
+!
+interface GigabitEthernet1/0/2
+ description second uplink member
+ channel-group 10 mode passive
+!
+interface Port-channel10
+ description upstream bundle
+ port-channel min-links 1
+!
+end

@@ -188,6 +188,50 @@ describe("CutoverPlanner (render)", () => {
     expect(screen.getByTestId("current-baseline-clear-boundary")).toHaveTextContent(/not cutover authorization/i);
   });
 
+  it("uses producer-owned blocker flags and keeps legacy marker fallback neutral", async () => {
+    const declaredBlocker = {
+      device: "DIST-TYPED", wave: "Access-Pilot", category: "Routing", severity: "High",
+      check: "Typed baseline blocker", command: "show ip ospf neighbor",
+      expect: "Typed producer classification.", evidence_state: "degraded", baseline_state: "degraded",
+      baseline_blocker: true, projection_custody: "current_run_source_bound",
+      source_key: "typed/blocker",
+    };
+    const producerNonBlocker = {
+      category: "Routing", severity: "Medium", check: "Producer-declared ordinary validation",
+      command: "show ip route", expect: "PRE-CUTOVER DEGRADED — BLOCKER: stale display text",
+      evidence_state: "degraded", baseline_state: "degraded", baseline_blocker: false,
+    };
+    const legacyCandidate = {
+      category: "Routing", severity: "Medium", check: "Legacy untyped baseline marker",
+      command: "show ip ospf neighbor", expect: "PRE-CUTOVER REVIEW — BLOCKER: legacy marker",
+      evidence_state: "review", baseline_state: "review",
+    };
+    const mixedVersionPlan = {
+      ...cutover,
+      waves: [{
+        ...cutover.waves[0],
+        validation: [declaredBlocker, producerNonBlocker, legacyCandidate],
+      }],
+    };
+    vi.spyOn(api, "cutover").mockResolvedValue(mixedVersionPlan as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+
+    expect(await screen.findByTestId("current-baseline-verdict")).toHaveTextContent("NOT ASSESSED");
+    expect(screen.getAllByTestId("baseline-blocker")).toHaveLength(1);
+    expect(screen.getByTestId("baseline-blocker")).toHaveTextContent("Typed baseline blocker");
+    expect(screen.getAllByTestId("legacy-baseline-candidate")).toHaveLength(1);
+    expect(screen.getByTestId("legacy-baseline-candidate")).toHaveTextContent("DISPLAY ONLY");
+    expect(screen.getByTestId("legacy-baseline-disclosure")).toHaveTextContent(
+      /do not alter the server-owned gate, counts, or cutover decision/i,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Run-of-show/ }));
+    expect(screen.getByText(/Post-cutover validation \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText("Producer-declared ordinary validation")).toBeInTheDocument();
+  });
+
   it("renders every fleet-level unbound review before the no-waves return", async () => {
     const reviews = Array.from({ length: 12 }, (_, i) => ({
       device: `edge-unbound-${i + 1}`,

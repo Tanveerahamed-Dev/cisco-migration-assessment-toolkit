@@ -6,9 +6,10 @@ This module is a composer, not a path or protocol simulator.  It reuses:
 * the native EtherChannel and multichassis self-deltas for validated current state; and
 * stored ``traffic_assurance_set/1`` results for any requested bounded service failure.
 
-The result deliberately remains ``not_verified`` assurance.  Candidate elections and count-only
-surviving members/legs do not prove forwarding, convergence, hashing, min-links, bandwidth, or an
-operator rehearsal.  The sole cutover verdict owner remains ``cutover_gate/1``.
+The result deliberately remains ``not_verified`` assurance. Candidate elections plus typed local
+count, min-links, and worst-case bandwidth projections do not prove forwarding, convergence,
+hashing distribution, service-path survival, or an operator rehearsal. The sole cutover verdict
+owner remains ``cutover_gate/1``.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from collections import Counter
 from typing import Any, List, Mapping
 
 from . import cutover_sim, failover, traffic_assurance
+from .etherchannel import validate_etherchannel_operational_evidence
 from .multichassis_lag import (
     compute_multichassis_lag_delta,
     validate_multichassis_lag_snapshot_evidence,
@@ -25,8 +27,10 @@ from .protocol_assurance import bound_snapshot_source
 from .protocol_deltas import (
     compute_etherchannel_delta,
     compute_stp_consistency_delta,
+    compute_stp_topology_delta,
 )
 from .traffic_assurance import TRAFFIC_ASSURANCE_OWNER, TRAFFIC_ASSURANCE_SET_SCHEMA
+from .textutils import normalize_mac
 
 
 L2_FAILURE_REHEARSAL_SCHEMA = "l2_failure_rehearsal/1"
@@ -191,7 +195,7 @@ def _valid_failover_readiness(value: Any) -> bool:
 
 
 def _stp_scenarios(snapshot: Mapping[str, Any], source: Mapping[str, Any]) -> List[dict]:
-    owner = "failover_readiness/1 + stp_consistency_delta/1"
+    owner = "failover_readiness/1 + stp_consistency_delta/1 + stp_topology_delta/1"
     if source.get("source_bound") is not True:
         return [_gap(
             "stp", owner,
@@ -230,6 +234,46 @@ def _stp_scenarios(snapshot: Mapping[str, Any], source: Mapping[str, Any]) -> Li
         and _text(row.get("subject"))
     )
     try:
+        topology = compute_stp_topology_delta(
+            snapshot,
+            snapshot,
+            comparison_source_binding=binding,
+        )
+    except (Exception, MemoryError):
+        return [_gap(
+            "stp", owner,
+            "The typed STP topology owner could not reconcile root, role/path, and counter evidence.",
+        )]
+    topology_changes = [
+        row for row in _list(topology.get("changes")) if isinstance(row, dict)
+    ]
+    topology_fault_subjects = sorted(
+        _text(row.get("subject")) for row in topology_changes
+        if row.get("decision_effect") == "block" and _text(row.get("subject"))
+    )
+    topology_gap_subjects = sorted(
+        _text(row.get("subject")) for row in topology_changes
+        if row.get("transition") in {"coverage_lost", "not_comparable"}
+        and _text(row.get("subject"))
+    )
+    topology_role_rows = [
+        row for row in topology_changes if _text(row.get("subject")).startswith("path|")
+    ]
+    topology_counter_rows = [
+        row for row in topology_changes if _text(row.get("subject")).startswith("counter|")
+    ]
+    topology_root_rows = [
+        row for row in topology_changes if _text(row.get("subject")).startswith("root|")
+    ]
+    forwarding_paths = sum(
+        _text(_dict(row.get("after_state")).get("state")) == "forwarding"
+        for row in topology_role_rows
+    )
+    blocked_paths = sum(
+        _text(_dict(row.get("after_state")).get("state")) == "blocked"
+        for row in topology_role_rows
+    )
+    try:
         readiness = failover.compute_failover_readiness(dict(snapshot))
     except (Exception, MemoryError):
         return [_gap(
@@ -246,9 +290,11 @@ def _stp_scenarios(snapshot: Mapping[str, Any], source: Mapping[str, Any]) -> Li
     n_backup = readiness["n_stp_roots_with_backup"]
     n_default = readiness["n_stp_default_election"]
     n_indeterminate = readiness["n_stp_indeterminate"]
-    if current_fault_subjects:
+    all_current_faults = sorted(set(current_fault_subjects + topology_fault_subjects))
+    all_coverage_gaps = sorted(set(consistency_gap_subjects + topology_gap_subjects))
+    if all_current_faults:
         disposition = "current_fault"
-    elif consistency_gap_subjects or not n_roots or n_indeterminate:
+    elif all_coverage_gaps or not n_roots or n_indeterminate:
         disposition = "not_verified"
     elif n_default:
         disposition = "projected_risk"
@@ -261,22 +307,30 @@ def _stp_scenarios(snapshot: Mapping[str, Any], source: Mapping[str, Any]) -> Li
         failure_scenario="single_proven_root_host_loss",
         disposition=disposition,
         source_owner=owner,
-        current_fault=bool(current_fault_subjects),
+        current_fault=bool(all_current_faults),
         evidence={
             "n_root_subjects": n_roots,
             "n_candidate_backups": n_backup,
             "n_default_elections": n_default,
             "n_indeterminate": n_indeterminate,
-            "n_current_faults": len(current_fault_subjects),
-            "current_fault_subjects": current_fault_subjects,
+            "n_current_faults": len(all_current_faults),
+            "current_fault_subjects": all_current_faults,
             "n_consistency_not_verified": len(consistency_gap_subjects),
             "consistency_not_verified_subjects": consistency_gap_subjects,
+            "n_topology_root_subjects": len(topology_root_rows),
+            "n_topology_role_subjects": len(topology_role_rows),
+            "n_forwarding_paths": forwarding_paths,
+            "n_blocked_paths": blocked_paths,
+            "n_topology_counter_subjects": len(topology_counter_rows),
+            "n_topology_not_verified": len(topology_gap_subjects),
+            "topology_not_verified_subjects": topology_gap_subjects,
             "n_source_records": stp_records,
         },
         note=(
             "The existing failover twin projects only a root-election candidate after one observed root "
-            "host fails. Port-role transitions, loop freedom, convergence time, and service continuity "
-            "remain not verified."
+            "host fails. Typed role/state and topology-change-counter coverage describes the current "
+            "local precondition only; post-failure roles, loop freedom, convergence time, and service "
+            "continuity remain not verified."
         ),
     )]
 
@@ -314,8 +368,12 @@ def _etherchannel_scenarios(
         subject = _text(row.get("subject"))
         transition = _text(row.get("transition"))
         state = _dict(row.get("after_state"))
-        units = _count(state.get("forwarding_capacity_units"))
-        if not subject or units is None or transition not in {
+        capacity = _dict(state.get("capacity"))
+        rehearsal = _dict(state.get("member_failure_rehearsal"))
+        units = _count(capacity.get("forwarding_member_count"))
+        rehearsal_status = _text(rehearsal.get("status"))
+        if not subject or units is None or rehearsal_status not in {
+                "pass", "fail", "not_verified"} or transition not in {
                 "unchanged_healthy", "unchanged_degraded"}:
             scenarios.append(_scenario(
                 family="etherchannel",
@@ -327,16 +385,23 @@ def _etherchannel_scenarios(
                 evidence={"transition": transition or "not_comparable"},
                 note=(
                     "The EtherChannel owner did not provide one comparable local group with a bounded "
-                    "forwarding-member count; member-failure capacity is not verified."
+                    "forwarding-member/min-links rehearsal; member-failure capacity is not verified."
                 ),
             ))
             continue
 
-        current_fault = transition == "unchanged_degraded"
+        finding_codes = {
+            _text(code) for code in _list(state.get("finding_codes")) if _text(code)
+        }
+        current_fault = bool(
+            transition == "unchanged_degraded"
+            and finding_codes - {"single_member_failure_unsafe"}
+        )
         disposition = (
             "current_fault" if current_fault else
-            "simulation_only" if units >= 2 else
-            "projected_risk"
+            "projected_risk" if rehearsal_status == "fail" else
+            "simulation_only" if rehearsal_status == "pass" else
+            "not_verified"
         )
         scenarios.append(_scenario(
             family="etherchannel",
@@ -348,15 +413,28 @@ def _etherchannel_scenarios(
             evidence={
                 "protocol": _text(state.get("protocol")),
                 "group_id": _text(state.get("group_id")),
-                "observed_forwarding_capacity_units": units,
-                "remaining_observed_units_after_loss": max(0, units - 1),
+                "observed_forwarding_member_count": units,
+                "remaining_forwarding_members_after_loss": _count(
+                    rehearsal.get("after_forwarding_members")),
                 "configured_member_count": len(_list(state.get("configured_members"))),
                 "runtime_member_count": len(_list(state.get("runtime_members"))),
+                "configured_min_links": rehearsal.get("min_links"),
+                "count_survives": rehearsal.get("count_survives"),
+                "observed_forwarding_bandwidth_mbps": capacity.get(
+                    "forwarding_bandwidth_mbps"),
+                "remaining_worst_case_bandwidth_mbps": rehearsal.get(
+                    "after_worst_case_bandwidth_mbps"),
+                "partner_status": _text(_dict(state.get("partner")).get("status")),
+                "counter_status": _text(
+                    _dict(state.get("counter_evidence")).get("status")),
+                "counter_fault_total": _count(
+                    _dict(state.get("counter_evidence")).get("fault_total")),
+                "service_path_survival": rehearsal.get("service_path_survival"),
             },
             note=(
-                "This is count-only local member arithmetic from the validated EtherChannel owner. "
-                "min-links, partner identity, hashing, counters, bandwidth, convergence, and service-path "
-                "survival remain not verified."
+                "This is local count/min-links and worst-case remaining-bandwidth evidence from the "
+                "typed EtherChannel owner. Convergence, hashing distribution, remote forwarding, traffic "
+                "continuity, and service-path survival remain not verified."
             ),
         ))
     return scenarios or [_gap(
@@ -438,6 +516,18 @@ def _multichassis_scenarios(
         for row in _list(baseline_value.get("reconciled_attachments"))
         if isinstance(row, dict) and _text(row.get("subject_id"))
     }
+    local_leg_index = {
+        _text(row.get("subject_id")): row
+        for row in _list(baseline_value.get("local_legs"))
+        if isinstance(row, dict) and _text(row.get("subject_id"))
+    }
+    etherchannel_view = validate_etherchannel_operational_evidence(
+        snapshot.get("etherchannel_operational_evidence"))
+    etherchannel_index = (
+        etherchannel_view.get("index")
+        if etherchannel_view.get("valid") is True
+        and isinstance(etherchannel_view.get("index"), dict) else {}
+    )
     attachment_changes = [
         row for row in changes
         if isinstance(row, dict) and row.get("record_type") == "reconciled_attachment"
@@ -471,17 +561,136 @@ def _multichassis_scenarios(
                 "clean before/after transition cannot make the current fault acceptable."
             ),
         ))
+    for observation in _list(baseline_value.get("local_observations")):
+        if not isinstance(observation, dict) or _text(observation.get("platform")) != "nxos":
+            continue
+        switch = _text(observation.get("switch"))
+        orphan = observation.get("orphan_evidence")
+        if not isinstance(orphan, dict) or orphan.get("status") != "assessed":
+            scenarios.append(_scenario(
+                family="multichassis_lag",
+                subject=f"multichassis_lag|orphan|{switch or 'unknown'}|coverage",
+                failure_scenario="single_peer_or_local_device_loss",
+                disposition="not_verified",
+                source_owner=owner,
+                current_fault=False,
+                evidence={
+                    "switch": switch,
+                    "orphan_evidence_status": _text(_dict(orphan).get("status")),
+                    "service_path_survival": "not_verified",
+                },
+                note=(
+                    "NX-OS orphan-port table/config evidence is missing or incomplete; orphan behavior "
+                    "during peer, peer-link, or local-device loss is not verified."
+                ),
+            ))
+            continue
+        for orphan_port in _list(orphan.get("ports")):
+            if not isinstance(orphan_port, dict):
+                continue
+            interface = _text(orphan_port.get("interface"))
+            suspended = orphan_port.get("suspend_on_peer_link_loss")
+            scenarios.append(_scenario(
+                family="multichassis_lag",
+                subject=f"multichassis_lag|orphan|{switch}|{interface}",
+                failure_scenario="single_peer_or_local_device_loss",
+                disposition="projected_risk",
+                source_owner=owner,
+                current_fault=False,
+                evidence={
+                    "switch": switch,
+                    "interface": interface,
+                    "vlans": list(orphan_port.get("vlans", [])),
+                    "suspend_on_peer_link_loss": suspended,
+                    "peer_link_loss_behavior": (
+                        "configured_suspend" if suspended is True else
+                        "configured_no_suspend" if suspended is False else "not_verified"
+                    ),
+                    "service_path_survival": "not_verified",
+                },
+                note=(
+                    "This explicitly observed orphan port is a projected local risk under peer or local-device "
+                    "loss. Peer-link loss is configured to suspend the port; traffic continuity and service-path "
+                    "survival remain not verified."
+                    if suspended is True else
+                    "This explicitly observed orphan port is a projected local risk under peer or local-device "
+                    "loss. Peer-link behavior is disclosed from configuration only; traffic continuity and "
+                    "service-path survival remain not verified."
+                ),
+            ))
     for row in attachment_changes:
         subject = _text(row.get("subject_id"))
         attachment = _dict(attachment_index.get(subject))
         legs = _list(attachment.get("leg_subject_ids"))
         transition = _text(row.get("transition"))
+        leg_rows = [_dict(local_leg_index.get(leg_id)) for leg_id in legs]
+        local_capacity = []
+        join_valid = bool(etherchannel_index) and len(leg_rows) == 2
+        for leg in leg_rows:
+            switch, port_channel = _text(leg.get("switch")), _text(
+                leg.get("local_port_channel"))
+            ether_row = _dict(etherchannel_index.get((switch, port_channel)))
+            partner = _dict(ether_row.get("partner"))
+            rehearsal = _dict(ether_row.get("member_failure_rehearsal"))
+            capacity = _dict(ether_row.get("capacity"))
+            finding_codes = sorted({
+                _text(finding.get("code"))
+                for finding in _list(ether_row.get("findings"))
+                if isinstance(finding, dict) and _text(finding.get("code"))
+            })
+            current_fault_codes = [
+                code for code in finding_codes
+                if code != "single_member_failure_unsafe"
+            ]
+            partner_matches = bool(
+                partner.get("status") == "assessed"
+                and normalize_mac(_text(partner.get("system_id")))
+                == normalize_mac(_text(leg.get("lacp_partner_system_id")))
+                and _text(partner.get("aggregation_id"))
+                == _text(leg.get("lacp_partner_aggregation_id"))
+            )
+            leg_valid = bool(
+                switch and port_channel and ether_row
+                and _text(ether_row.get("status")) in {"assessed", "degraded"}
+                and rehearsal.get("status") in {"pass", "fail"}
+                and partner_matches
+            )
+            join_valid = join_valid and leg_valid
+            local_capacity.append({
+                "switch": switch,
+                "port_channel": port_channel,
+                "join_status": "reconciled" if leg_valid else "not_verified",
+                "etherchannel_status": _text(ether_row.get("status")),
+                "forwarding_member_count": capacity.get("forwarding_member_count"),
+                "forwarding_bandwidth_mbps": capacity.get("forwarding_bandwidth_mbps"),
+                "min_links": rehearsal.get("min_links"),
+                "remaining_members_after_loss": rehearsal.get("after_forwarding_members"),
+                "remaining_worst_case_bandwidth_mbps": rehearsal.get(
+                    "after_worst_case_bandwidth_mbps"),
+                "member_loss_status": rehearsal.get("status"),
+                "current_fault_codes": current_fault_codes,
+                "service_path_survival": "not_verified",
+            })
+        local_capacity.sort(key=lambda item: (
+            item["switch"].casefold(), item["switch"], item["port_channel"]))
         if not subject or len(legs) != 2 or transition not in {
                 "unchanged_healthy", "unchanged_degraded"}:
             disposition, current_fault = "not_verified", False
+        elif not join_valid:
+            disposition, current_fault = "not_verified", False
         else:
-            current_fault = transition == "unchanged_degraded"
-            disposition = "current_fault" if current_fault else "simulation_only"
+            typed_current_fault = any(
+                item["etherchannel_status"] == "degraded"
+                and bool(item["current_fault_codes"])
+                for item in local_capacity
+            )
+            current_fault = transition == "unchanged_degraded" or typed_current_fault
+            disposition = (
+                "current_fault" if current_fault else
+                "projected_risk" if any(
+                    item["member_loss_status"] == "fail" for item in local_capacity) else
+                "simulation_only"
+            )
         scenarios.append(_scenario(
             family="multichassis_lag",
             subject=subject or "multichassis_lag|attachment",
@@ -498,11 +707,16 @@ def _multichassis_scenarios(
                     _text(attachment.get("lacp_partner_system_id"))
                     and _text(attachment.get("lacp_partner_aggregation_id"))
                 ),
+                "etherchannel_local_leg_join": local_capacity,
+                "etherchannel_local_leg_join_status": (
+                    "reconciled" if join_valid else "not_verified"),
+                "service_path_survival": "not_verified",
             },
             note=(
-                "The typed owner proves only a reciprocal peer pair and two matching local attachment "
-                "legs. The remaining-leg count does not prove min-links, bandwidth, hashing, orphan or "
-                "dual-active behavior, convergence, or service-path survival."
+                "The typed multichassis owner proves the reciprocal pair/attachment identity; each local "
+                "leg is separately joined to typed EtherChannel count, min-links, bandwidth, and member-loss "
+                "evidence. Neither owner proves convergence, hashing distribution, remote forwarding, traffic "
+                "continuity, orphan behavior, or service-path survival."
             ),
         ))
     return scenarios or [_gap(

@@ -370,10 +370,18 @@ from cisco_toolkit.vtp_safety import (
     compute_vtp_safety_subject_scope,
     embedded_vtp_safety_baseline,
 )
+from cisco_toolkit.vtp_extended import (
+    compute_vtp_extended_evidence,
+    embedded_vtp_extended_evidence,
+)
 from cisco_toolkit.ipv6_routing import (
     compute_ipv6_routing_adjacency_baseline,
     compute_ipv6_routing_subject_scope,
     embedded_ipv6_routing_adjacency_baseline,
+)
+from cisco_toolkit.etherchannel import (
+    compute_etherchannel_operational_evidence,
+    embedded_etherchannel_operational_evidence,
 )
 from cisco_toolkit.comparison import compare_bound_pair
 from cisco_toolkit.protocol_assurance import (
@@ -382,6 +390,7 @@ from cisco_toolkit.protocol_assurance import (
     reject_duplicate_json_keys,
 )
 from cisco_toolkit.multichassis_lag import compute_multichassis_lag_domain_baseline
+from cisco_toolkit.stp_topology import compute_stp_topology_baseline
 from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase NRFU certification pack (READ-ONLY commands + expected values pre-filled from the snapshot)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -485,7 +494,7 @@ from cisco_toolkit.build import (
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_multichassis_lag_typed_observation, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_stp_topology_observation, build_vpc, build_multichassis_lag_typed_observation, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
     build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
     build_aci,   # Cisco ACI (APIC JSON-ingestion channel)
     build_sdwan,   # Cisco Catalyst SD-WAN (vManage JSON-ingestion channel)
@@ -575,6 +584,7 @@ COMMANDS_NXOS = [
     "show vpc",                          # NEW-V3.23.125 (vPC / MLAG peer confirmation for the flow simulator)
     "show vpc role",                     # explicit local/peer device system-MAC identity for typed vPC custody
     "show lacp neighbor",                # explicit downstream LACP partner system + operational key
+    "show vpc orphan-ports",             # explicit NX-OS orphan-port/VLAN failure exposure
     "show nve peers",                    # VXLAN-EVPN VTEP peer state -> build_overlay / _d_nve_peer_health
     "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
     "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
@@ -612,6 +622,7 @@ COMMANDS_NXOS = [
     "show port-security interface",      # access-edge port-security DETAIL (Secure-shutdown) -> build_port_security_detail / _d_port_security_errdisable
     "show storm-control",                # storm-control action audit (toothless 'None') -> build_storm_control / _d_storm_control_action
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
+    "show spanning-tree detail",         # typed per-instance topology-change counters
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
     "show cdp neighbors detail",
@@ -667,6 +678,7 @@ COMMANDS_IOS = [
     "show interfaces trunk",
     "show interfaces transceiver",
     "show etherchannel summary",
+    "show lacp neighbor",                # explicit single-chassis LACP partner system + operational key
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
@@ -1701,6 +1713,7 @@ def _parse_offline_comparison_context(data: bytes) -> dict:
         value = json.loads(
             data.decode("utf-8"),
             parse_constant=reject_constant,
+            object_pairs_hook=reject_duplicate_json_keys,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"invalid JSON ({exc})") from exc
@@ -2751,6 +2764,11 @@ _PER_DEVICE_AXES: List[_AxisSpec] = [
                         f"{v.get('summary', {}).get('unused', 0)} unused structure(s)", None, False),
     _AxisSpec("stp_roots", build_stp_roots, "STP",
               lambda v: f"root bridge info for {len(v)} VLAN(s)", None, False),
+    _AxisSpec("stp_topology_observations", build_stp_topology_observation, "STP-TOPOLOGY",
+              lambda v: f"{len(v.get('roots', []))} typed instance(s), "
+                        f"{len(v.get('roles', []))} role(s), "
+                        f"{len(v.get('topology_changes', []))} counter(s)",
+              None, True),
     _AxisSpec("vpc", build_vpc, "vPC",
               lambda v: f"domain {v.get('domain_id')} role {v.get('role') or '?'}, "
                         f"{len(v.get('vpcs', []))} vPC(s)", None, False),
@@ -3616,6 +3634,7 @@ def main():
     all_security = _axis_stores["security"]
     all_config_hygiene = _axis_stores["config_hygiene"]
     all_stp_roots = _axis_stores["stp_roots"]
+    all_stp_topology_observations = _axis_stores["stp_topology_observations"]
     all_vpc = _axis_stores["vpc"]
     all_fhrp_detail = _axis_stores["fhrp_detail"]
     all_overlay = _axis_stores["overlay"]
@@ -3892,6 +3911,17 @@ def main():
         str(device.get("hostname") or "").strip(): device
         for device in devices if isinstance(device, dict) and str(device.get("hostname") or "").strip()
     }
+    etherchannel_operational_evidence = _run_phase(
+        "EtherChannel operational evidence", compute_etherchannel_operational_evidence,
+        all_cmd_to_files, capture_integrity, etherchannel_projection,
+        _default={}, devices=_etherchannel_devices)
+    embedded_etherchannel_operational_evidence_receipt = _run_phase(
+        "Embed EtherChannel operational evidence",
+        embedded_etherchannel_operational_evidence,
+        etherchannel_operational_evidence, _default={})
+    stp_topology_baseline = _run_phase(
+        "STP topology baseline", compute_stp_topology_baseline,
+        all_stp_topology_observations, _default={}, devices=_etherchannel_devices)
     vtp_safety_subject_scope = _run_phase(
         "VTP safety subject scope", compute_vtp_safety_subject_scope,
         all_cmd_to_files, _default={}, devices=_etherchannel_devices)
@@ -3901,6 +3931,12 @@ def main():
     embedded_vtp_safety_baseline_receipt = _run_phase(
         "Embed VTP safety baseline", embedded_vtp_safety_baseline,
         vtp_safety_baseline, _default={})
+    vtp_extended_evidence = _run_phase(
+        "VTP extended evidence", compute_vtp_extended_evidence,
+        all_cmd_to_files, capture_integrity, _default={}, devices=_etherchannel_devices)
+    embedded_vtp_extended_evidence_receipt = _run_phase(
+        "Embed VTP extended evidence", embedded_vtp_extended_evidence,
+        vtp_extended_evidence, _default={})
     _run_phase("VTP Safety sheet", write_vtp_safety_sheet, wb,
                embedded_vtp_safety_baseline_receipt)
     ipv6_routing_subject_scope = _run_phase(
@@ -4391,6 +4427,7 @@ def main():
            "ipv6_routing_subject_scope": ipv6_routing_subject_scope,
            "etherchannel_projection": etherchannel_projection,
            "etherchannel_baseline": etherchannel_baseline,
+           "etherchannel_operational_evidence": etherchannel_operational_evidence,
           "application_intelligence": application_intelligence},
         _default={})
     _run_phase("NRFU Commands sheet", write_nrfu_commands_sheet, wb, nrfu_commands)
@@ -4413,9 +4450,11 @@ def main():
     snap_dict["fhrp_configured_group_baseline"] = embedded_fhrp_baseline  # normalized embedded audit projection; current-run source marker never serialized
     snap_dict["fhrp_redundancy_domain_baseline"] = embedded_fhrp_redundancy_domain_baseline_receipt  # exact cross-switch FHRP domain/candidate audit projection; current-run custody erased
     snap_dict["vtp_safety_baseline"] = embedded_vtp_safety_baseline_receipt  # bounded local VTP mode/domain/revision audit projection; current-run custody erased
+    snap_dict["vtp_extended_evidence"] = embedded_vtp_extended_evidence_receipt  # exact three-command VTP/VLAN digest/pruning/auth-presence evidence; secrets and current-run custody erased
     snap_dict["ipv6_routing_adjacency_baseline"] = embedded_ipv6_routing_adjacency_baseline_receipt  # bounded observed OSPFv3/BGPv6 audit projection; current-run custody erased
     snap_dict["etherchannel_projection"] = etherchannel_projection   # Exact local group/member summary tokens + association-only subjects
     snap_dict["etherchannel_baseline"] = etherchannel_baseline       # Receipt-gated observed bundle baseline for Validation/NRFU
+    snap_dict["etherchannel_operational_evidence"] = embedded_etherchannel_operational_evidence_receipt  # strict additive configured/runtime/capacity/failure audit projection; current-run custody erased
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
     snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
@@ -4438,6 +4477,8 @@ def main():
     snap_dict["framework_coverage"] = framework_cov                 # W2-3 (CIS/NIST/PCI/STIG mapping; computed once at the workbook stage above)
     snap_dict["detector_schema"] = detector_schema                   # J1 (per-detector descriptors; not-observed != healthy as a schema property; computed once at the workbook stage above)
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
+    snap_dict["stp_topology_observations"] = all_stp_topology_observations  # additive exact PVST/MST root + role/state + counter projection
+    snap_dict["stp_topology_baseline"] = stp_topology_baseline       # strict embedded stp_topology_baseline/1 receipt
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
     # Catalog/parser presence is not runtime evidence.  Publish this family only when at least one

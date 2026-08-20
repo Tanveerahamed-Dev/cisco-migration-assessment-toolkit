@@ -93,13 +93,25 @@ BEGIN
     SELECT RAISE(ABORT, 'execution comparison source snapshots are immutable');
 END;
 CREATE TRIGGER IF NOT EXISTS execution_comparison_sources_no_rebind
-BEFORE UPDATE OF id, campaign_id, label, script_version, snapshot_json ON snapshots
+BEFORE UPDATE OF id, campaign_id, label, uploaded_at, script_version, snapshot_json ON snapshots
 WHEN EXISTS (
     SELECT 1 FROM execution_comparisons ec
     WHERE ec.before_snapshot_id = OLD.id OR ec.after_snapshot_id = OLD.id
 )
 BEGIN
     SELECT RAISE(ABORT, 'execution comparison source snapshot bindings are immutable');
+END;
+-- Companion trigger upgrades stores which already created the earlier no_rebind definition.
+-- CREATE TRIGGER IF NOT EXISTS cannot replace that definition in place, and uploaded_at is part
+-- of the chronology admission used by an immutable execution comparison receipt.
+CREATE TRIGGER IF NOT EXISTS execution_comparison_source_chronology_no_rebind
+BEFORE UPDATE OF uploaded_at ON snapshots
+WHEN EXISTS (
+    SELECT 1 FROM execution_comparisons ec
+    WHERE ec.before_snapshot_id = OLD.id OR ec.after_snapshot_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'execution comparison source snapshot chronology is immutable');
 END;
 CREATE TRIGGER IF NOT EXISTS execution_comparison_sources_no_replace
 BEFORE INSERT ON snapshots

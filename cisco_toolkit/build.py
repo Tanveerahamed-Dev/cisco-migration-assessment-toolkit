@@ -11,7 +11,9 @@ import re
 from hashlib import sha256
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, _safe_parse
+from cisco_toolkit.cmdio import (
+    TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, _safe_parse, cmd_capture_state,
+)
 from cisco_toolkit import input_custody
 from cisco_toolkit.multichassis_lag import produce_multichassis_lag_typed_observation
 from cisco_toolkit.model import DevicePhysical, InterfaceData
@@ -27,7 +29,8 @@ from cisco_toolkit.parse import (
     parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
-    parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
+    parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary,
+    parse_nve_vni, parse_copp_drops,
     parse_bgp_vpnv4_summary, parse_mpls_ldp_neighbors, parse_mpls_l2vpn_vc,   # SP/MPLS: L3VPN VPNv4 / LDP underlay / L2VPN pseudowire
     parse_lisp_sessions, parse_cts_environment_data, parse_dmvpn_peers, parse_crypto_sessions, parse_bfd_neighbors, parse_ipv6_interface_addrs, parse_ipv6_route_summary, parse_ospfv3_neighbors, parse_bgp_ipv6_summary,   # universal arch coverage: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
     parse_aci_faults, parse_aci_fabric_nodes, parse_aci_health, parse_aci_vrfs,   # Cisco ACI (APIC JSON-ingestion channel)
@@ -58,6 +61,7 @@ from cisco_toolkit.parse import (
     parse_igmp_groups, parse_igmp_snooping_querier, parse_ptp_clock, parse_acl_hitcounts,  # NEW-V3.23.102
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, is_live_trunk_status, normalize_ifname
+from cisco_toolkit.stp_topology import produce_stp_topology_observation
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +171,23 @@ def build_stp_roots(cmd_to_file: Dict[str, str]) -> dict:
     return _safe_parse(parse_spanning_tree_root, _load_cmd_output(cmd_to_file, "show spanning-tree")) or {}
 
 
+def build_stp_topology_observation(cmd_to_file: Dict[str, str]) -> dict:
+    """Namespace-aware STP roles and topology-change counters from current-run captures.
+
+    The legacy interface/root projections remain byte-compatible.  This additive observation keeps
+    the role and PVST/MST namespace those projections historically discarded, and keeps detail
+    capture coverage distinct so missing counters never become an observed zero.
+    """
+    state_output = _load_cmd_output(cmd_to_file, "show spanning-tree")
+    detail_output = _load_cmd_output(cmd_to_file, "show spanning-tree detail")
+    return produce_stp_topology_observation(
+        state_output,
+        detail_output,
+        state_capture_state=cmd_capture_state(cmd_to_file, "show spanning-tree"),
+        detail_capture_state=cmd_capture_state(cmd_to_file, "show spanning-tree detail"),
+    )
+
+
 def build_vpc(cmd_to_file: Dict[str, str]) -> dict:
     """vPC / MLAG status parsed from this device's already-collected 'show vpc' (NX-OS) ->
     {domain_id, role, peer_status, keepalive_status, vpcs:[...]}; {} when the device runs no vPC.
@@ -202,7 +223,10 @@ def build_multichassis_lag_typed_observation(
                 continue
         return evidence
 
-    nxos_commands = ("show vpc", "show vpc role", "show lacp neighbor")
+    nxos_commands = (
+        "show vpc", "show vpc role", "show lacp neighbor",
+        "show vpc orphan-ports", "show running-config",
+    )
     if "show vpc" in cmd_to_file:
         observation = produce_multichassis_lag_typed_observation(
             hostname,

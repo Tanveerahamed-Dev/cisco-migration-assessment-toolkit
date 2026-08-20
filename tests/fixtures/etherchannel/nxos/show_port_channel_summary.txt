@@ -1,0 +1,7 @@
+Flags:  D - Down        P - Up in port-channel (members)
+        I - Individual  s - Suspended
+--------------------------------------------------------------------------------
+Group Port-       Type     Protocol  Member Ports
+      Channel
+--------------------------------------------------------------------------------
+20    Po20(SU)     Eth      LACP      Eth1/1(P) Eth1/2(P)

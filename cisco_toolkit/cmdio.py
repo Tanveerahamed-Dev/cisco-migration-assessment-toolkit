@@ -112,7 +112,8 @@ PARSER_CONTRACTS = {
                             "parse_config_hygiene", "parse_redistribution", "parse_run_config_interfaces"),
     "show running-config | section ^interface": ("parse_run_config_interfaces",),
     # spanning-tree / redundancy
-    "show spanning-tree": ("parse_spanning_tree_root",),
+    "show spanning-tree": ("parse_spanning_tree_root", "parse_spanning_tree_role_rows"),
+    "show spanning-tree detail": ("parse_spanning_tree_topology_changes",),
     "show spanning-tree blockedports": ("parse_spanning_tree_blockedports",),
     "show spanning-tree inconsistentports": ("parse_spanning_tree_blockedports",),
     "show vpc": ("parse_vpc",),
@@ -248,7 +249,8 @@ _LIST_PARSERS = (
     "parse_lisp_sessions", "parse_mpls_l2vpn_vc", "parse_mpls_ldp_neighbors", "parse_mroute_entries",
     "parse_nve_peers", "parse_nve_vni", "parse_nxos_lacp_neighbors", "parse_ospfv3_neighbors", "parse_pim_neighbors",
     "parse_policymap_drops", "parse_redistribution", "parse_sdwan_control_connections", "parse_sdwan_devices",
-    "parse_sdwan_omp_counters", "parse_storm_control", "parse_syslog_events",
+    "parse_sdwan_omp_counters", "parse_spanning_tree_role_rows",
+    "parse_spanning_tree_topology_changes", "parse_storm_control", "parse_syslog_events",
 )
 PARSER_RETURN_SHAPE = {
     **{n: "dict" for n in _DICT_PARSERS},

@@ -19,6 +19,10 @@ from backend.protocol_portfolio import (  # noqa: E402
     build_protocol_single_snapshot_bundle,
 )
 from cisco_toolkit.protocol_assurance import canonical_sha256  # noqa: E402
+from tests.test_etherchannel_operational_evidence import (  # noqa: E402
+    _copy_paths as _copy_etherchannel_paths,
+    _snapshot_from_paths as _etherchannel_snapshot,
+)
 from tests.test_multichassis_snapshot_reconciliation import _persisted_pair  # noqa: E402
 
 
@@ -155,6 +159,97 @@ def test_missing_and_malformed_family_evidence_remain_neutral_not_verified(clien
     assert all(row["evidence_status"] != "observed" for row in receipt["families"])
     assert receipt["summary"]["by_evidence_status"]["not_verified"] >= 1
     assert all(profile["implementation_state"] == "implemented" for profile in receipt["support_profiles"])
+
+
+def test_etherchannel_portfolio_projects_typed_decision_depth_without_recomputation(
+        client, tmp_path):
+    snapshot = _etherchannel_snapshot(
+        _copy_etherchannel_paths(tmp_path, "ios", "sw1", {}),
+        "ios",
+        "sw1",
+    )
+    snapshot_id, _ = _upload(client, snapshot)
+
+    receipt = client.get(
+        f"/api/snapshots/{snapshot_id}/section/protocol_assurance"
+    ).json()["data"]["receipt"]
+    family = next(
+        row for row in receipt["families"] if row["family"] == "etherchannel"
+    )
+
+    assert family["evidence_status"] == "observed"
+    assert family["subject_total"] == 1
+    subject = family["subjects"]["rows"][0]
+    assert subject["subject"] == "sw1|Po10"
+    assert subject["kind"] == "single_chassis_local_group"
+    assert subject["source_contract"] == "etherchannel_operational_evidence/1"
+    detail = subject["detail"]
+    assert [row["mode"] for row in detail["configured_members"]] == [
+        "active", "passive",
+    ]
+    assert detail["partner"]["system_id"] == "0011.2233.4455"
+    assert detail["partner"]["aggregation_id"] == "2"
+    assert detail["min_links"]["value"] == 1
+    assert detail["capacity"]["forwarding_member_count"] == 2
+    assert detail["capacity"]["forwarding_bandwidth_mbps"] == 2000
+    assert detail["hashing"]["algorithm"] == "src-dst-ip"
+    assert detail["counter_evidence"]["fault_total"] == 0
+    assert detail["member_failure_rehearsal"]["status"] == "pass"
+    assert detail["member_failure_rehearsal"][
+        "service_path_survival"] == "not_verified"
+
+
+def test_vtp_extended_subject_is_source_bound_capped_and_complete_in_export(
+        client, tmp_path):
+    from cisco_toolkit.vtp_extended import embedded_vtp_extended_evidence
+    from cisco_toolkit.vtp_safety import embedded_vtp_safety_baseline
+    from tests.test_vtp_extended_evidence import _sources, _spec
+
+    protected, extended, _paths, _integrity = _sources(
+        tmp_path / "vtp-portfolio", {"sw1": _spec(password="portfolio-secret")})
+    snapshot_id, _ = _upload(client, _minimal(
+        vtp_safety_baseline=embedded_vtp_safety_baseline(protected),
+        vtp_extended_evidence=embedded_vtp_extended_evidence(extended),
+    ))
+    receipt = client.get(
+        f"/api/snapshots/{snapshot_id}/section/protocol_assurance"
+    ).json()["data"]["receipt"]
+    vtp = next(row for row in receipt["families"] if row["family"] == "vtp_safety")
+
+    assert vtp["evidence_contracts"] == [
+        "vtp_safety_baseline/1", "vtp_extended_evidence/1",
+    ]
+    assert vtp["evidence_status"] == "observed"
+    assert vtp["subjects"]["total"] == vtp["subjects"]["rendered"] == 1
+    subject = vtp["subjects"]["rows"][0]
+    assert subject["kind"] == "local_vtp_vlan_database"
+    assert subject["source_contract"] == (
+        "vtp_safety_baseline/1 + vtp_extended_evidence/1")
+    assert subject["detail"] == {
+        "switch": "sw1",
+        "mode": "server",
+        "domain": "CAMPUS",
+        "version": "2",
+        "revision": 7,
+        "database_identity": "domain=CAMPUS;version=2",
+        "vlan_database_digest": subject["detail"]["vlan_database_digest"],
+        "vlan_count": 3,
+        "pruning_state": "not_configured",
+        "authentication_configured": True,
+    }
+    assert subject["detail"]["vlan_database_digest"].startswith("sha256:")
+    assert "portfolio-secret" not in json.dumps(receipt)
+
+    bound, binding = client.app.state.store.get_bound_snapshot(snapshot_id)
+    bundle = build_protocol_single_snapshot_bundle(bound, binding, subject_cap=0)
+    capped = next(
+        row for row in bundle["receipt"]["families"] if row["family"] == "vtp_safety")
+    complete = next(
+        row for row in bundle["complete_export"]["families"]
+        if row["family"] == "vtp_safety")
+    assert capped["subjects"] == {"total": 1, "rendered": 0, "omitted": 1, "rows": []}
+    assert complete["subject_total"] == 1 and len(complete["subjects"]) == 1
+    assert complete["subjects"][0]["detail"] == subject["detail"]
 
 
 @pytest.mark.parametrize(

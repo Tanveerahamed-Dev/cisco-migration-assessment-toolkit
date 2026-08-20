@@ -367,6 +367,116 @@ def test_change_intent_cannot_expected_away_coverage_loss():
     assert any("cannot authorize" in item for item in intent["failures"])
 
 
+def test_change_intent_rejects_unknown_or_malformed_fields_and_never_admits():
+    before = _bound_snapshot({"script_version": "V3.23.0", "devices": {"leaf-1": {}}})
+    after = _bound_snapshot({"script_version": "V3.23.0", "devices": {"leaf-1": {}}})
+    before_binding = _binding(snapshot=before)
+    after_binding = _binding(2, snapshot=after)
+    intent_binding = {
+        "engagement_id": before_binding["engagement_id"],
+        "campaign_id": before_binding["campaign_id"],
+        "before_snapshot_id": before_binding["snapshot_id"],
+        "after_snapshot_id": after_binding["snapshot_id"],
+        "before_sha256": before_binding["sha256"],
+        "after_sha256": after_binding["sha256"],
+    }
+    malformed = (
+        {"expected_change": []},
+        {
+            "expected_changes": [{
+                "family": "ipv4_routing_adjacency",
+                "transitions": ["appeared"],
+                "subjects": [],
+                "reasno": "misspelled reason",
+            }],
+        },
+        {
+            "expected_changes": [{
+                "family": "not_an_executable_family",
+                "transitions": ["appeared"],
+                "subjects": [],
+            }],
+        },
+        {
+            "expected_changes": [{
+                "family": "ipv4_routing_adjacency",
+                "transitions": ["appeared"],
+                "subjects": [7],
+            }],
+        },
+    )
+    clean_delta = {
+        "verdict": "CLEAN",
+        "verdict_display": "NO DELTA REGRESSION OBSERVED",
+        "verdict_note": "clean",
+        "protocol_adjacencies": {
+            "gate": "PASS",
+            "summary": {
+                "n_state_regressed": 0,
+                "n_coverage_gaps": 0,
+                "n_baseline_peers": 1,
+            },
+        },
+    }
+    certificate = {"verdict": "PASS", "verdict_note": "clean"}
+
+    for raw in malformed:
+        intent = pa.normalize_change_intent(raw, binding=intent_binding)
+        assert intent["status"] == "invalid", raw
+        assert intent["valid"] is False, raw
+        assert intent["failures"], raw
+        admission = pa.comparison_admission(
+            before,
+            after,
+            before_binding=before_binding,
+            after_binding=after_binding,
+            schema_status={"status": "ok"},
+            change_intent=intent,
+            owner_versions=_owner_versions(before_binding, after_binding),
+            support_profiles=pa.protocol_support_profiles(),
+        )
+        assert admission["status"] == "not_comparable", raw
+        assert admission["decision_eligible"] is False, raw
+        assert compute_cutover_gate(
+            clean_delta,
+            certificate,
+            comparison_admission=admission,
+        )["verdict"] == "INDETERMINATE", raw
+
+    canonical = pa.normalize_change_intent(None, binding=intent_binding)
+    assert pa.validate_change_intent(canonical)["valid"] is True
+    wrong_schema = deepcopy(canonical)
+    wrong_schema["schema"] = "cutover_change_intent/999"
+    missing_digest = deepcopy(canonical)
+    missing_digest.pop("expected_changes_sha256")
+    for malformed_receipt in (
+        {"valid": True, "binding": intent_binding, "expected_changes": []},
+        wrong_schema,
+        missing_digest,
+    ):
+        admission = pa.comparison_admission(
+            before,
+            after,
+            before_binding=before_binding,
+            after_binding=after_binding,
+            schema_status={"status": "ok"},
+            change_intent=malformed_receipt,
+            owner_versions=_owner_versions(before_binding, after_binding),
+            support_profiles=pa.protocol_support_profiles(),
+        )
+        assert admission["status"] == "not_comparable", malformed_receipt
+        assert admission["decision_eligible"] is False, malformed_receipt
+        assert any(
+            item.startswith("change intent contract:")
+            for item in admission["failures"]
+        ), malformed_receipt
+        assert compute_cutover_gate(
+            clean_delta,
+            certificate,
+            comparison_admission=admission,
+        )["verdict"] == "INDETERMINATE", malformed_receipt
+
+
 def test_family_change_set_is_reference_only_and_classifies_expected_changes():
     intent = pa.normalize_change_intent({
         "expected_changes": [{
@@ -1005,8 +1115,8 @@ def test_canonical_gate_consumes_complete_family_effects_without_changing_legacy
                 "subject": "pair:leaf-a|leaf-b",
                 "transition": transition,
                 "decision_effect": effect,
-                "before_state": {"health": "degraded"},
-                "after_state": {"health": "degraded"},
+                "before_state": "degraded",
+                "after_state": "degraded",
                 "note": "Native multichassis subject transition.",
             }],
         }

@@ -5,9 +5,18 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+from pathlib import Path
 
 from cisco_toolkit import traffic_assurance
-from cisco_toolkit.analyze import summarize_etherchannel_baseline
+from cisco_toolkit.analyze import (
+    compute_etherchannel_projection,
+    summarize_etherchannel_baseline,
+)
+from cisco_toolkit.capture_integrity import compute_capture_integrity_from_paths
+from cisco_toolkit.etherchannel import (
+    compute_etherchannel_operational_evidence,
+    embedded_etherchannel_operational_evidence,
+)
 from cisco_toolkit.l2_rehearsal import (
     L2_FAILURE_REHEARSAL_SCHEMA,
     compute_l2_failure_rehearsal,
@@ -17,8 +26,12 @@ from cisco_toolkit.protocol_assurance import (
     bind_snapshot_json_bytes,
     cutover_operator_evidence,
 )
-from tests.test_etherchannel_cutover_truth import _project, _receipt
-from tests.test_multichassis_lag import _nxos_pair
+from tests.test_etherchannel_cutover_truth import _receipt
+from tests.test_etherchannel_operational_evidence import (
+    _bind as _bind_source_paths,
+    _copy_paths as _copy_etherchannel_paths,
+)
+from tests.test_multichassis_lag import _nxos_observation, _nxos_pair
 from tests.test_stp_consistency_truth import _stp_run
 from tests.test_traffic_assurance import _intent, _symmetric_snapshot
 
@@ -52,25 +65,104 @@ def _assert_no_decision_owner(value) -> None:
 
 
 def _ether_snapshot(tmp_path, body: str, *, host: str = "dist1") -> dict:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    projection, _interfaces, _commands = _project(tmp_path, host, body)
+    desired_row = body.strip().splitlines()[-1].replace("1 Po1", "10 Po10", 1)
+    paths = _copy_etherchannel_paths(
+        tmp_path, "ios", host,
+        {"show etherchannel summary": (
+            "10     Po10(SU)        LACP       Gi1/0/1(P) Gi1/0/2(P)",
+            desired_row,
+        )},
+    )
+    if "Gi1/0/2" not in desired_row:
+        second_member = (
+            "interface GigabitEthernet1/0/2\n"
+            " description second uplink member\n"
+            " channel-group 10 mode passive\n"
+            "!\n"
+        )
+        for command in (
+                "show running-config", "show running-config | section ^interface"):
+            path = Path(paths[host][command])
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(second_member, ""),
+                encoding="utf-8",
+            )
+    _bind_source_paths(paths)
+    devices = {host: {"platform": "ios"}}
+    projection = compute_etherchannel_projection(devices, paths)
     receipt = _receipt({host: {"EtherChannel": "assessed"}})
-    baseline = summarize_etherchannel_baseline(projection, receipt)
+    baseline = summarize_etherchannel_baseline(
+        projection, receipt, devices=devices)
+    operational = compute_etherchannel_operational_evidence(
+        paths,
+        compute_capture_integrity_from_paths(paths),
+        projection,
+        devices=devices,
+    )
     return {
-        "devices": {host: {}},
+        "devices": devices,
         "etherchannel_projection": projection,
         "protocol_assessability": receipt,
         "etherchannel_baseline": baseline,
+        "etherchannel_operational_evidence":
+            embedded_etherchannel_operational_evidence(operational),
     }
 
 
-def _multichassis_snapshot(*, degraded: bool = False, partner: bool = True) -> dict:
-    raw = _nxos_pair(second_status="down" if degraded else "up")
+def _multichassis_snapshot(
+        tmp_path, *, degraded: bool = False, partner: bool = True,
+        orphan: bool = False) -> dict:
+    if orphan:
+        orphan_output = (
+            "Switch# show vpc orphan-ports\n"
+            "Note:\n"
+            "--------::Going through port database. Please be patient.::--------\n\n"
+            "VLAN           Orphan Ports\n"
+            "-------        -------------------------\n"
+            "10             Eth1/45\n"
+        )
+        raw = {"observations": [
+            _nxos_observation(
+                "leaf-a", "leaf-b", source_digit="a",
+                orphan_output=orphan_output,
+                orphan_suspend_ports=("Eth1/45",),
+            ),
+            _nxos_observation("leaf-b", "leaf-a", source_digit="b"),
+        ]}
+    else:
+        raw = _nxos_pair(second_status="down" if degraded else "up")
     if not partner:
         raw["observations"][1]["legs"][0]["lacp_partner_system_id"] = ""
     baseline = compute_multichassis_lag_domain_baseline(raw)
+    paths = {}
+    for host in ("leaf-a", "leaf-b"):
+        paths.update(_copy_etherchannel_paths(
+            tmp_path / host, "nxos", host, {}))
+    _bind_source_paths(paths)
+    devices = {
+        "leaf-a": {"platform": "nxos"},
+        "leaf-b": {"platform": "nxos"},
+    }
+    projection = compute_etherchannel_projection(devices, paths)
+    receipt = _receipt({
+        "leaf-a": {"EtherChannel": "assessed"},
+        "leaf-b": {"EtherChannel": "assessed"},
+    })
+    legacy = summarize_etherchannel_baseline(
+        projection, receipt, devices=devices)
+    operational = compute_etherchannel_operational_evidence(
+        paths,
+        compute_capture_integrity_from_paths(paths),
+        projection,
+        devices=devices,
+    )
     return {
-        "devices": {"leaf-a": {}, "leaf-b": {}},
+        "devices": devices,
+        "etherchannel_projection": projection,
+        "protocol_assessability": receipt,
+        "etherchannel_baseline": legacy,
+        "etherchannel_operational_evidence":
+            embedded_etherchannel_operational_evidence(operational),
         "multichassis_lag_typed_observations": {
             "observations": [dict(row) for row in raw["observations"]],
         },
@@ -198,11 +290,15 @@ def test_projection_reuses_existing_owners_and_never_owns_a_decision(tmp_path):
     assert result["assurance_level"] == "not_verified"
     ether = _family(result, "etherchannel")[0]
     assert ether["disposition"] == "simulation_only"
-    assert ether["evidence"]["observed_forwarding_capacity_units"] == 2
-    assert ether["evidence"]["remaining_observed_units_after_loss"] == 1
+    assert ether["evidence"]["observed_forwarding_member_count"] == 2
+    assert ether["evidence"]["remaining_forwarding_members_after_loss"] == 1
+    assert ether["evidence"]["configured_min_links"] == 1
+    assert ether["evidence"]["service_path_survival"] == "not_verified"
     assert "min-links" in ether["note"] and "service-path survival" in ether["note"]
     stp = _family(result, "stp")[0]
-    assert stp["source_owner"] == "failover_readiness/1 + stp_consistency_delta/1"
+    assert stp["source_owner"] == (
+        "failover_readiness/1 + stp_consistency_delta/1 + stp_topology_delta/1"
+    )
     assert stp["evidence"]["n_root_subjects"] == 1
     assert stp["evidence"]["n_candidate_backups"] == 1
     assert "convergence" in stp["note"] and stp["assurance_level"] == "not_verified"
@@ -230,8 +326,8 @@ def test_current_stp_and_etherchannel_faults_remain_explicit(tmp_path):
             }},
         },
     })
-    # Rebuild the EtherChannel owner against the final receipt. The STP helper's receipt deliberately
-    # does not claim an EtherChannel cell, so the owner must not be relabelled as healthy by stale input.
+    # Rebuild the protected EtherChannel owner against the final receipt. The additive typed owner
+    # remains present, but a missing protected-v1 denominator must fail closed rather than be backfilled.
     snapshot["etherchannel_baseline"] = summarize_etherchannel_baseline(
         snapshot["etherchannel_projection"], receipt, devices=snapshot["devices"],
     )
@@ -242,8 +338,7 @@ def test_current_stp_and_etherchannel_faults_remain_explicit(tmp_path):
     assert stp["current_fault"] is True
     assert stp["evidence"]["n_current_faults"] == 1
     assert "sw1" in stp["evidence"]["current_fault_subjects"]
-    # The existing EtherChannel owner retains its local degraded group even though the replacement
-    # receipt changes its coverage context; it cannot become a favorable rehearsal result.
+    # The missing protected-v1 receipt cannot be reinterpreted through the additive owner.
     ether = _family(result, "etherchannel")[0]
     assert ether["disposition"] == "current_fault"
     assert result["summary"]["n_current_faults"] >= 2
@@ -260,8 +355,8 @@ def test_current_etherchannel_fault_is_not_laundered_by_single_member_arithmetic
     row = _family(result, "etherchannel")[0]
     assert row["disposition"] == "current_fault"
     assert row["current_fault"] is True
-    assert row["evidence"]["observed_forwarding_capacity_units"] == 1
-    assert row["evidence"]["remaining_observed_units_after_loss"] == 0
+    assert row["evidence"]["observed_forwarding_member_count"] == 1
+    assert row["evidence"]["remaining_forwarding_members_after_loss"] == 0
     assert cutover_operator_evidence(snapshot)["rehearsal"]["status"] == "current_fault"
 
 
@@ -276,43 +371,53 @@ def test_single_healthy_etherchannel_member_is_projected_risk_not_survival(tmp_p
     row = _family(result, "etherchannel")[0]
     assert row["current_fault"] is False
     assert row["disposition"] == "projected_risk"
-    assert row["evidence"]["observed_forwarding_capacity_units"] == 1
-    assert row["evidence"]["remaining_observed_units_after_loss"] == 0
+    assert row["evidence"]["observed_forwarding_member_count"] == 1
+    assert row["evidence"]["remaining_forwarding_members_after_loss"] == 0
     assert row["assurance_level"] == "not_verified"
     assert result["status"] == "projected_risk"
     assert result["summary"]["n_projected_risks"] == 1
     assert cutover_operator_evidence(snapshot)["rehearsal"]["status"] == "projected_risk"
 
 
-def test_multichassis_rehearsal_requires_typed_attachment_identity_and_retains_faults():
-    healthy = compute_l2_failure_rehearsal(_bind(_multichassis_snapshot()))
+def test_multichassis_rehearsal_requires_typed_attachment_identity_and_retains_faults(
+        tmp_path):
+    healthy = compute_l2_failure_rehearsal(_bind(_multichassis_snapshot(tmp_path / "healthy")))
     row = _family(healthy, "multichassis_lag")[0]
     assert row["disposition"] == "simulation_only"
-    assert row["evidence"] == {
-        "transition": "unchanged_healthy",
-        "reconciled_local_leg_count": 2,
-        "remaining_observed_legs_after_loss": 1,
-        "reciprocal_peer_evidenced": True,
-        "matching_lacp_partner_evidenced": True,
-    }
-    assert "does not prove" in row["note"]
+    assert row["evidence"]["transition"] == "unchanged_healthy"
+    assert row["evidence"]["reconciled_local_leg_count"] == 2
+    assert row["evidence"]["remaining_observed_legs_after_loss"] == 1
+    assert row["evidence"]["reciprocal_peer_evidenced"] is True
+    assert row["evidence"]["matching_lacp_partner_evidenced"] is True
+    assert row["evidence"]["etherchannel_local_leg_join_status"] == "reconciled"
+    assert len(row["evidence"]["etherchannel_local_leg_join"]) == 2
+    assert all(
+        leg["member_loss_status"] == "pass"
+        and leg["min_links"] == 1
+        and leg["forwarding_member_count"] == 2
+        and leg["service_path_survival"] == "not_verified"
+        for leg in row["evidence"]["etherchannel_local_leg_join"]
+    )
+    assert row["evidence"]["service_path_survival"] == "not_verified"
+    assert "Neither owner proves" in row["note"]
 
-    degraded = compute_l2_failure_rehearsal(_bind(_multichassis_snapshot(degraded=True)))
+    degraded = compute_l2_failure_rehearsal(_bind(
+        _multichassis_snapshot(tmp_path / "degraded", degraded=True)))
     fault = _family(degraded, "multichassis_lag")[0]
     assert fault["disposition"] == "current_fault"
     assert fault["current_fault"] is True
 
     missing_partner = compute_l2_failure_rehearsal(_bind(
-        _multichassis_snapshot(partner=False)))
+        _multichassis_snapshot(tmp_path / "missing-partner", partner=False)))
     gap = _family(missing_partner, "multichassis_lag")[0]
     assert gap["disposition"] == "not_verified"
     assert "reciprocal peers" in gap["note"] and "LACP" in gap["note"]
 
 
-def test_multichassis_baseline_must_reconcile_to_complete_copublished_observations():
-    missing = _multichassis_snapshot()
+def test_multichassis_baseline_must_reconcile_to_complete_copublished_observations(tmp_path):
+    missing = _multichassis_snapshot(tmp_path / "missing")
     missing.pop("multichassis_lag_typed_observations")
-    one_sided = _multichassis_snapshot()
+    one_sided = _multichassis_snapshot(tmp_path / "one-sided")
     one_sided["multichassis_lag_typed_observations"]["observations"].pop()
 
     for label, snapshot in (("missing", missing), ("one-sided", one_sided)):
@@ -322,6 +427,22 @@ def test_multichassis_baseline_must_reconcile_to_complete_copublished_observatio
         assert row["disposition"] == "not_verified", label
         assert row["evidence"] == {}, label
         assert "co-published typed observation" in row["note"], label
+
+
+def test_explicit_nxos_orphan_is_projected_risk_without_service_survival(tmp_path):
+    result = compute_l2_failure_rehearsal(_bind(
+        _multichassis_snapshot(tmp_path, orphan=True)))
+    row = next(
+        scenario for scenario in _family(result, "multichassis_lag")
+        if scenario["subject"] == "multichassis_lag|orphan|leaf-a|Eth1/45"
+    )
+
+    assert row["disposition"] == "projected_risk"
+    assert row["failure_scenario"] == "single_peer_or_local_device_loss"
+    assert row["evidence"]["vlans"] == [10]
+    assert row["evidence"]["suspend_on_peer_link_loss"] is True
+    assert row["evidence"]["peer_link_loss_behavior"] == "configured_suspend"
+    assert row["evidence"]["service_path_survival"] == "not_verified"
 
 
 def test_detached_or_mutated_snapshot_cannot_authorize_failure_projection(tmp_path):

@@ -1,0 +1,8 @@
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+10     Po10(SU)        LACP       Gi1/0/1(P) Gi1/0/2(P)

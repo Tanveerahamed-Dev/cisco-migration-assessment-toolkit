@@ -104,7 +104,8 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "BGP configured-peer baseline") < phase_names.index("Migration Readiness")
     assert phase_names.index("Protocol assessability") < phase_names.index(
         "VTP safety subject scope") < phase_names.index(
-        "VTP safety baseline") < phase_names.index("Migration Readiness")
+        "VTP safety baseline") < phase_names.index(
+        "VTP extended evidence") < phase_names.index("Migration Readiness")
     assert phase_names.index("Protocol assessability") < phase_names.index(
         "IPv6 routing subject scope") < phase_names.index(
         "IPv6 routing adjacency baseline") < phase_names.index("Migration Readiness")
@@ -135,6 +136,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
                 "parse_yield", "unknown_evidence", "protocol_assessability",
                 "bgp_configured_peer_baseline", "fhrp_configured_group_baseline",
                 "fhrp_redundancy_domain_baseline", "vtp_safety_baseline",
+                "vtp_extended_evidence",
                 "ipv6_routing_adjacency_baseline"):
         # parser detail, governed aggregate, and the protocol coverage denominator ship together
         assert key in snap, f"snapshot missing computed key {key!r}"
@@ -158,6 +160,16 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert validate_vtp_safety_baseline(vtp_baseline)["valid"] is True
     assert validate_vtp_safety_baseline(
         vtp_baseline, require_current_run=True)["valid"] is False
+    from cisco_toolkit.vtp_extended import validate_vtp_extended_evidence
+    vtp_extended = snap["vtp_extended_evidence"]
+    assert vtp_extended["schema"] == "vtp_extended_evidence/1"
+    assert vtp_extended["projection_custody"] == "embedded_unverified"
+    assert validate_vtp_extended_evidence(vtp_extended)["valid"] is True
+    assert validate_vtp_extended_evidence(
+        vtp_extended, require_current_run=True)["valid"] is False
+    assert vtp_extended["summary"]["n_not_verified"] == len(snap["devices"])
+    assert all(row["status"] == "not_verified" for row in vtp_extended["rows"])
+    assert "vtp password " not in json.dumps(vtp_extended).casefold()
     assert [row for row in snap["validation_plan"]["items"]
             if row.get("category") == "VTP"] == []
     assert snap["nrfu_commands"]["summary"]["n_vtp_safety_cases"] == 0

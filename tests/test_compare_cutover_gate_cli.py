@@ -150,6 +150,96 @@ def _comparison_context(tmp_path, name="comparison-context"):
 
 
 @pytest.mark.parametrize(
+    "context_text",
+    [
+        (
+            '{"schema":"offline_comparison_context/1",'
+            '"engagement_id":"ENG-FIRST","engagement_id":"ENG-LAST",'
+            '"campaign_id":41,"before_snapshot_id":1001,"after_snapshot_id":1002}'
+        ),
+        (
+            '{"schema":"offline_comparison_context/1","engagement_id":"ENG-CLI-TEST",'
+            '"campaign_id":41,"before_snapshot_id":1001,"after_snapshot_id":1002,'
+            '"change_intent":{"expected_changes":[],"note":"first","note":"last"}}'
+        ),
+    ],
+)
+def test_compare_cli_refuses_duplicate_top_level_or_nested_context_members(
+        tmp_path, context_text):
+    before_path = tmp_path / "duplicate-context-before.snapshot.json"
+    after_path = tmp_path / "duplicate-context-after.snapshot.json"
+    context_path = tmp_path / "duplicate-context.json"
+    output = tmp_path / "duplicate-context.xlsx"
+    before_path.write_text(
+        json.dumps(_snapshot("FULL/DR", "2026-08-15T00:00:00")), encoding="utf-8")
+    after_path.write_text(
+        json.dumps(_snapshot("FULL/DR", "2026-08-15T00:05:00")), encoding="utf-8")
+    context_path.write_text(context_text, encoding="utf-8")
+
+    process = subprocess.run(
+        [sys.executable, SCRIPT, "--compare", str(before_path), str(after_path),
+         "--comparison-context", str(context_path), "--output", str(output)],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=300,
+    )
+    terminal = process.stdout + process.stderr
+
+    assert process.returncode == 2, terminal
+    assert "duplicate JSON object key" in terminal
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "change_intent",
+    [
+        {"expected_change": []},
+        {
+            "expected_changes": [{
+                "family": "ipv4_routing_adjacency",
+                "transitions": ["appeared"],
+                "subjects": [],
+                "reasno": "misspelled reason",
+            }],
+        },
+    ],
+)
+def test_compare_cli_unknown_change_intent_fields_cannot_authorize_pass(
+        tmp_path, change_intent):
+    before_path = tmp_path / "unknown-intent-before.snapshot.json"
+    after_path = tmp_path / "unknown-intent-after.snapshot.json"
+    context_path = tmp_path / "unknown-intent-context.json"
+    output = tmp_path / "unknown-intent.xlsx"
+    before_path.write_text(
+        json.dumps(_snapshot("FULL/DR", "2026-08-15T00:00:00")), encoding="utf-8")
+    after_path.write_text(
+        json.dumps(_snapshot("FULL/DR", "2026-08-15T00:05:00")), encoding="utf-8")
+    context_path.write_text(json.dumps({
+        "schema": "offline_comparison_context/1",
+        "engagement_id": "ENG-CLI-TEST",
+        "campaign_id": 41,
+        "before_snapshot_id": 1001,
+        "after_snapshot_id": 1002,
+        "change_intent": change_intent,
+    }), encoding="utf-8")
+
+    process = subprocess.run(
+        [sys.executable, SCRIPT, "--compare", str(before_path), str(after_path),
+         "--comparison-context", str(context_path), "--output", str(output),
+         "--fail-on-compare-gate"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=300,
+    )
+    terminal = process.stdout + process.stderr
+
+    assert process.returncode == 2, terminal
+    assert output.exists()
+    comparison = json.loads(
+        (tmp_path / "unknown-intent.comparison.json").read_text(encoding="utf-8")
+    )
+    assert comparison["change_intent"]["status"] == "invalid"
+    assert comparison["comparison_admission"]["status"] == "not_comparable"
+    assert comparison["cutover_gate"]["verdict"] == "INDETERMINATE"
+
+
+@pytest.mark.parametrize(
     ("delta_verdict", "certificate_verdict", "expected"),
     [
         ("REGRESSED", "FAIL", "REGRESSED"),

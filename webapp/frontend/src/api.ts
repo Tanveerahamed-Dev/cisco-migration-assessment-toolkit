@@ -232,13 +232,58 @@ export interface ProtocolSupportProfile {
 
 export type ProtocolEvidenceStatus = "observed" | "partial" | "not_applicable" | "not_verified";
 
+/**
+ * Closed, secret-free subject-detail projection published by protocol_single_snapshot_receipt/1.
+ * Presentation code may render only these producer fields; unknown runtime keys are not evidence.
+ */
+export const PROTOCOL_SUBJECT_DETAIL_FIELDS = [
+  "switch",
+  "protocol",
+  "interface",
+  "peer",
+  "group",
+  "domain_key",
+  "record_type",
+  "attachment_id",
+  "pair_id",
+  "namespace",
+  "instance",
+  "role",
+  "state",
+  "root_address",
+  "is_root",
+  "topology_change_count",
+  "operational_state",
+  "mode",
+  "domain",
+  "version",
+  "revision",
+  "database_identity",
+  "vlan_database_digest",
+  "vlan_count",
+  "pruning_state",
+  "authentication_configured",
+  "configured_members",
+  "runtime_members",
+  "partner",
+  "min_links",
+  "capacity",
+  "hashing",
+  "counter_evidence",
+  "member_failure_rehearsal",
+  "finding_codes",
+] as const;
+
+export type ProtocolSubjectDetailField = typeof PROTOCOL_SUBJECT_DETAIL_FIELDS[number];
+export type ProtocolSubjectDetail = Partial<Record<ProtocolSubjectDetailField, unknown>>;
+
 export interface ProtocolSingleSnapshotSubject {
   family: string;
   subject: string;
   kind: string;
   evidence_state: string;
   source_contract: string;
-  detail: Record<string, unknown>;
+  detail: ProtocolSubjectDetail;
 }
 
 export interface ProtocolSingleSnapshotFamily {
@@ -316,6 +361,8 @@ export interface ExpectedProtocolFamilyChange {
   transitions: ProtocolChangeTransition[];
   subjects: string[];
   reason: string;
+  /** Explicit specialized intent; revision reset is never inferred from counter movement. */
+  intent_kind?: "" | "revision_reset";
 }
 
 export interface CutoverChangeIntent {
@@ -343,6 +390,7 @@ export interface CutoverChangeIntentInput {
     transitions: ProtocolChangeTransition[];
     subjects?: string[];
     reason?: string;
+    intent_kind?: "revision_reset";
   }>;
   note?: string;
 }
@@ -376,6 +424,8 @@ export interface ProtocolFamilyChange {
   /** Producer-reconciled intent classification. UI code displays this value; it does not infer it. */
   expected: boolean;
   decision_effect: "block" | "review" | "none" | "not_verified";
+  /** Producer-owned observation classification; it is not operator intent. */
+  change_kind?: "configuration_movement" | "revision_decrease_observed" | string;
   /** Family-native owners publish typed state objects; the IPv4 v1 adapter still publishes strings. */
   before_state: unknown;
   after_state: unknown;

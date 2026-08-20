@@ -156,8 +156,9 @@ def test_real_golden_baselines_preserve_faults_and_missing_capture_honestly():
     assert fhrp_domains["summary"]["by_transition"]["not_comparable"] == 1
     assert fhrp_domains["summary"]["by_decision_effect"]["not_verified"] == 1
 
-    assert _bound_delta(compute_etherchannel_delta, snap, snap)["summary"]["by_transition"][
-        "unchanged_healthy"] == 2
+    etherchannel = _bound_delta(compute_etherchannel_delta, snap, snap)
+    assert etherchannel["summary"]["by_transition"]["coverage_lost"] == 2
+    assert etherchannel["summary"]["by_decision_effect"]["not_verified"] == 2
     fhrp_groups = _bound_delta(compute_fhrp_configured_group_delta, snap, snap)
     assert fhrp_groups["summary"]["by_transition"]["not_comparable"] == 1
     assert fhrp_groups["summary"]["by_decision_effect"]["not_verified"] == 1
@@ -359,22 +360,19 @@ def test_configured_bgp_disappearance_blocks_but_capture_loss_abstains(tmp_path)
     assert _only(lost, "coverage_lost")["decision_effect"] == "not_verified"
 
 
-def test_vtp_movement_defaults_review_and_matching_high_revision_still_blocks(tmp_path):
+def test_vtp_legacy_only_movement_and_high_revision_fail_closed(tmp_path):
     low, *_ = vtp_owner(tmp_path / "low", vtp_status(revision=4))
     moved, *_ = vtp_owner(tmp_path / "moved", vtp_status(revision=5))
     movement = compute_vtp_safety_delta(
         {"vtp_safety_baseline": low}, {"vtp_safety_baseline": moved})
-    row = _only(movement, "intent_changed")
-    assert row["decision_effect"] == "review"
-    assert row["before_state"]["revision"] == 4
-    assert row["after_state"]["revision"] == 5
+    row = _only(movement, "not_comparable")
+    assert row["decision_effect"] == "not_verified"
 
     high, *_ = vtp_owner(tmp_path / "high", vtp_status(revision=100))
     unchanged = compute_vtp_safety_delta(
         {"vtp_safety_baseline": high}, {"vtp_safety_baseline": high})
-    row = _only(unchanged, "unchanged_degraded")
-    assert row["decision_effect"] == "block"
-    assert "not acceptance" in row["note"].lower()
+    row = _only(unchanged, "not_comparable")
+    assert row["decision_effect"] == "not_verified"
 
 
 def test_stp_consistency_and_topology_regressions_are_distinct(tmp_path):
@@ -642,7 +640,10 @@ def test_bound_two_device_snapshot_rejects_empty_estate_owner_grafts(tmp_path):
         assert result["assessed"] is False
         assert result["summary"]["by_transition"]["not_comparable"] == 1
         assert result["summary"]["by_transition"]["unchanged_healthy"] == 0
-        assert "snapshot device" in result["changes"][0]["note"]
+        if family == "vtp_safety":
+            assert "malformed, missing, semantically incompatible" in result["changes"][0]["note"]
+        else:
+            assert "snapshot device" in result["changes"][0]["note"]
 
     comparison = compare_bound_pair(
         before,
@@ -679,7 +680,6 @@ def test_honest_captured_empty_owner_rosters_remain_not_applicable(tmp_path):
     cases = (
         (compute_bgp_configured_peer_delta, "edge1", "bgp_configured_peer_baseline", bgp),
         (compute_ipv6_routing_adjacency_delta, "sw1", "ipv6_routing_adjacency_baseline", ipv6),
-        (compute_vtp_safety_delta, "edge1", "vtp_safety_baseline", vtp),
     )
     for computer, host, key, baseline in cases:
         snapshot = {
@@ -692,9 +692,19 @@ def test_honest_captured_empty_owner_rosters_remain_not_applicable(tmp_path):
         assert result["changes"] == []
         assert result["summary"]["n_subjects"] == 0
 
+    legacy_snapshot = {
+        "script_version": "V3.23.0",
+        "devices": {"edge1": {"platform": "ios"}},
+        "vtp_safety_baseline": vtp,
+    }
+    legacy_vtp = _bound_delta(
+        compute_vtp_safety_delta, legacy_snapshot, deepcopy(legacy_snapshot))
+    assert legacy_vtp["applicability"] == "applicable"
+    assert legacy_vtp["summary"]["by_transition"]["not_comparable"] == 1
+
 
 @pytest.mark.parametrize(
-    ("computer", "baseline_key", "owner_factory"),
+    ("computer", "baseline_key", "owner_factory", "reason_suffix"),
     (
         (
             compute_bgp_configured_peer_delta,
@@ -704,6 +714,7 @@ def test_honest_captured_empty_owner_rosters_remain_not_applicable(tmp_path):
                 config="version 17.9\nhostname edge1\nend\n",
                 runtime=EMPTY_IOS_SUMMARY,
             )[0],
+            "does not exactly reconcile to snapshot devices",
         ),
         (
             compute_ipv6_routing_adjacency_delta,
@@ -712,16 +723,18 @@ def test_honest_captured_empty_owner_rosters_remain_not_applicable(tmp_path):
                 root,
                 {"show ipv6 route summary": ipv6_route_capture(ospf=0, bgp=0)},
             )[1],
+            "does not exactly reconcile to snapshot devices",
         ),
         (
             compute_vtp_safety_delta,
             "vtp_safety_baseline",
             lambda root: vtp_owner(root, "VTP is disabled.\n")[0],
+            "extended_vtp_root_missing_or_malformed",
         ),
     ),
 )
 def test_structurally_valid_rowless_receipt_for_another_host_is_not_comparable(
-        tmp_path, computer, baseline_key, owner_factory):
+        tmp_path, computer, baseline_key, owner_factory, reason_suffix):
     source = tmp_path / computer.__name__
     source.mkdir()
     baseline = owner_factory(source)
@@ -736,8 +749,7 @@ def test_structurally_valid_rowless_receipt_for_another_host_is_not_comparable(
     assert result["assessed"] is False
     assert result["summary"]["by_transition"]["not_comparable"] == 1
     assert result["summary"]["by_transition"]["unchanged_healthy"] == 0
-    assert result["source_receipts"]["before"]["reason"].endswith(
-        "does not exactly reconcile to snapshot devices")
+    assert result["source_receipts"]["before"]["reason"].endswith(reason_suffix)
 
 
 def test_after_roster_mutation_is_not_comparable_but_missing_after_owner_is_coverage_lost(
@@ -943,7 +955,7 @@ def test_native_composer_never_hides_malformed_empty_owner_attempts(mutation):
     )
 
 
-def test_etherchannel_compares_local_capacity_without_inventing_partner_or_hash(tmp_path):
+def test_legacy_etherchannel_capacity_is_not_reinterpreted_as_typed_depth(tmp_path):
     before = _ether_snapshot(
         tmp_path / "before",
         "Group Port-channel Protocol Ports\n"
@@ -956,13 +968,12 @@ def test_etherchannel_compares_local_capacity_without_inventing_partner_or_hash(
 
     result = _bound_delta(compute_etherchannel_delta, before, after)
 
-    row = _only(result, "regressed")
-    assert row["decision_effect"] == "block"
-    assert row["before_state"]["forwarding_capacity_units"] == 2
-    assert row["after_state"]["forwarding_capacity_units"] == 1
+    row = _only(result, "not_comparable")
+    assert row["decision_effect"] == "not_verified"
+    assert result["assessed"] is False
     rendered = json.dumps(result).lower()
-    assert "partner identity" in rendered and "not inferred" in rendered
-    assert "min-links" in rendered and "hashing" in rendered
+    assert "etherchannel_operational_evidence/1" in rendered
+    assert "missing" in rendered or "malformed" in rendered
 
 
 def test_fhrp_local_role_movement_is_review_not_regression(tmp_path):

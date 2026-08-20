@@ -545,4 +545,56 @@ describe("Snapshot cockpit · Protocol Assurance portfolio", () => {
     expect(family.className).not.toMatch(/\bok\b/);
     expect(family.textContent).not.toMatch(/\bPASS\b|\bCLEAR\b/);
   });
+
+  it("expands typed VTP subject evidence without rendering uncontracted secret fields", async () => {
+    mockAssurance(assuranceReceipt({
+      family: "vtp_safety",
+      owner_schema: "vtp_extended_evidence/1",
+      assurance_level: "local_safety_preservation",
+      evidence_contracts: ["vtp_extended_evidence/1"],
+      evidence_status: "observed",
+      status_reason: "Typed VTP evidence is source-bound.",
+      source_custody: "current_run_source_bound",
+      subject_total: 1,
+      subjects: {
+        total: 1,
+        rendered: 1,
+        omitted: 0,
+        rows: [{
+          family: "vtp_safety",
+          subject: "dist1",
+          kind: "device",
+          evidence_state: "safe",
+          source_contract: "vtp_extended_evidence/1",
+          detail: {
+            switch: "dist1",
+            mode: "server",
+            domain: "CAMPUS",
+            version: "2",
+            revision: 9,
+            vlan_count: 42,
+            pruning_state: "configured",
+            authentication_configured: true,
+            password: "must-never-render",
+          },
+        }],
+      },
+    }));
+    renderSnap();
+
+    await screen.findByRole("heading", { name: "Protocol Assurance portfolio" });
+    const family = screen.getByText("vtp_safety").closest("details")!;
+    fireEvent.click(family.querySelector("summary")!);
+    const subjectDetail = family.querySelector("tbody details") as HTMLDetailsElement;
+    expect(subjectDetail).not.toBeNull();
+    expect(subjectDetail.open).toBe(false);
+    fireEvent.click(subjectDetail.querySelector("summary")!);
+    expect(subjectDetail.open).toBe(true);
+    expect(screen.getByText("mode").nextElementSibling).toHaveTextContent("server");
+    expect(screen.getByText("domain").nextElementSibling).toHaveTextContent("CAMPUS");
+    expect(screen.getByText("revision").nextElementSibling).toHaveTextContent("9");
+    expect(screen.getByText("authentication configured").nextElementSibling).toHaveTextContent("true");
+    expect(family).not.toHaveTextContent("must-never-render");
+    expect(family).not.toHaveTextContent(/password/i);
+  });
 });

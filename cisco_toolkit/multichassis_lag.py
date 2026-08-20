@@ -14,7 +14,8 @@ observation.  Its serialized audit shape is::
             "schema": "multichassis_lag_typed_source_receipt/1",
             "capture_status": "ok", "projection_custody": "current_run_source_bound",
             "source_sha256": "sha256:<64 hex>", "owner_version": "fixture-v1",
-            "commands": ["show vpc", "show lacp neighbor"],
+            "commands": ["show vpc", "show vpc role", "show lacp neighbor",
+                         "show vpc orphan-ports", "show running-config"],
         },
         "legs": [{
             "attachment_id": "20", "local_port_channel": "Po20", "status": "up",
@@ -37,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -79,7 +81,10 @@ _MAX_LEGS_PER_OBSERVATION = 4096
 _MAX_TEXT = 256
 _MAX_COMMAND_BYTES = 16 * 1024 * 1024
 
-_NXOS_COMMANDS = ("show vpc", "show vpc role", "show lacp neighbor")
+_NXOS_COMMANDS = (
+    "show vpc", "show vpc role", "show lacp neighbor",
+    "show vpc orphan-ports", "show running-config",
+)
 _EOS_COMMANDS = ("show mlag", "show mlag interfaces detail", "show lacp peer")
 
 _NXOS_REQUIRED_STATES = {
@@ -99,6 +104,7 @@ _LEG_REQUIRED_STATES = {
     "status": ({"up"}, {"down", "down*"}),
     "consistency": ({"success"}, {"failed"}),
 }
+_NXOS_DUAL_ACTIVE_STATES = ({"0"}, {"1"})
 
 _TRANSITION_DECISION_EFFECT = {
     "unchanged_healthy": "none",
@@ -130,7 +136,9 @@ _LIMITATIONS = [
     "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
     "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
     "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
-    "Capacity, hashing, orphan behavior, dual-active exclusion, counters, and failure rehearsal remain outside this bounded owner.",
+    "NX-OS dual-active detection is interpreted only for the documented numeric 0 (clear) and 1 (detected/member ports shut) states; every other value abstains.",
+    "NX-OS orphan-port inventory and configured peer-link-loss suspension are observed; endpoint continuity is not inferred from that local evidence.",
+    "Capacity, hashing, counters, convergence, and service-path failure survival remain outside this bounded owner.",
 ]
 
 
@@ -368,12 +376,184 @@ def _partner_by_port_channel(rows: Any) -> Dict[str, Tuple[str, str]]:
     return result
 
 
+def _orphan_interface(value: Any) -> str:
+    text = _text(value)
+    channel = _port_channel(text)
+    if channel:
+        return channel
+    match = re.fullmatch(
+        r"(?:eth|ethernet)\s*(\d+(?:/\d+){1,2})", text, re.IGNORECASE)
+    return f"Eth{match.group(1)}" if match else ""
+
+
+def _nxos_orphan_port_rows(output: str) -> tuple[bool, List[dict]]:
+    """Parse the documented VLAN/orphan-port table without inferring intent."""
+    if not isinstance(output, str) or not output.strip() or len(output) > _MAX_COMMAND_BYTES:
+        return False, []
+    candidates: List[Tuple[Any, Any]] = []
+    def reject_duplicate_pairs(pairs: List[Tuple[str, Any]]) -> dict:
+        result: dict = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object key {key!r}")
+            result[key] = item
+        return result
+
+    try:
+        payload = json.loads(output, object_pairs_hook=reject_duplicate_pairs)
+    except (ValueError, TypeError, RecursionError):
+        payload = None
+    if isinstance(payload, (dict, list)):
+        tables: List[Any] = []
+        pending = [(payload, 0)]
+        visited = 0
+        while pending and visited < 16_384:
+            node, depth = pending.pop()
+            visited += 1
+            if depth > 16:
+                continue
+            if isinstance(node, dict):
+                if "TABLE_orphan_ports" in node:
+                    tables.append(node.get("TABLE_orphan_ports"))
+                pending.extend(
+                    (item, depth + 1) for item in node.values()
+                    if isinstance(item, (dict, list))
+                )
+            elif isinstance(node, list):
+                pending.extend(
+                    (item, depth + 1) for item in node[:16_384]
+                    if isinstance(item, (dict, list))
+                )
+        if len(tables) != 1 or not isinstance(tables[0], dict) \
+                or "ROW_orphan_ports" not in tables[0]:
+            return False, []
+        raw_rows = tables[0].get("ROW_orphan_ports")
+        rows = [raw_rows] if isinstance(raw_rows, dict) else raw_rows
+        if not isinstance(rows, list) or len(rows) > 65_536:
+            return False, []
+        for row in rows:
+            if not isinstance(row, dict) or "vpc-vlan" not in row \
+                    or "vpc-orphan-ports" not in row:
+                return False, []
+            candidates.append((row.get("vpc-vlan"), row.get("vpc-orphan-ports")))
+    else:
+        lines = output.splitlines()
+        header_indexes = [
+            index for index, line in enumerate(lines)
+            if re.search(r"\bVLAN\b.*\bOrphan\s+Ports\b", line, re.IGNORECASE)
+        ]
+        meaningful = [line.strip() for line in lines if line.strip()]
+        explicit_empty = len(meaningful) == 1 and bool(re.fullmatch(
+            r"(?:No vPC orphan ports|No orphan ports)[.!]?",
+            meaningful[0],
+            re.IGNORECASE,
+        ))
+        if explicit_empty:
+            return True, []
+        if len(header_indexes) != 1:
+            return False, []
+        separator_index = next((
+            index for index in range(header_indexes[0] + 1, len(lines))
+            if lines[index].strip()
+        ), -1)
+        if separator_index < 0 or not re.fullmatch(
+                r"\s*-{3,}\s+-{3,}\s*", lines[separator_index]):
+            return False, []
+        # Once the VLAN/orphan-port table is framed, every nonblank body row belongs to
+        # the evidence denominator.  A truncated row (for example, just a VLAN) or a row
+        # with a renamed VLAN/port leaf must invalidate the capture instead of disappearing
+        # into an apparently assessed empty table.
+        for line in lines[separator_index + 1:]:
+            if not line.strip():
+                continue
+            match = re.fullmatch(r"\s*(\d{1,4})\s+(.+?)\s*", line)
+            if not match:
+                return False, []
+            candidates.append((match.group(1), match.group(2)))
+
+    by_port: Dict[str, set[int]] = defaultdict(set)
+    for vlan_value, ports_value in candidates[:65_536]:
+        try:
+            vlan = int(str(vlan_value).strip())
+        except (TypeError, ValueError):
+            return False, []
+        if not 1 <= vlan <= 4094 or not isinstance(ports_value, str):
+            return False, []
+        ports = [item.strip() for item in ports_value.split(",")]
+        if not ports or len(ports) > 4096:
+            return False, []
+        for raw_port in ports:
+            port = _orphan_interface(raw_port)
+            if not port:
+                return False, []
+            by_port[port].add(vlan)
+    rows = [
+        {"interface": port, "vlans": sorted(vlans)}
+        for port, vlans in sorted(by_port.items(), key=lambda item: (item[0].casefold(), item[0]))
+    ]
+    return True, rows
+
+
+def _nxos_orphan_suspend_ports(output: str) -> tuple[bool, set[str]]:
+    """Return interfaces explicitly configured for vPC orphan-port suspension."""
+    if not isinstance(output, str) or not output.strip() or len(output) > _MAX_COMMAND_BYTES:
+        return False, set()
+    current = ""
+    interfaces_seen = 0
+    end_seen = False
+    suspended: set[str] = set()
+    for line in output.splitlines()[:200_000]:
+        match = re.match(r"^interface\s+(\S+)\s*$", line.strip(), re.IGNORECASE)
+        if match:
+            current = _orphan_interface(match.group(1))
+            if current:
+                interfaces_seen += 1
+            continue
+        if current and line.strip().casefold() == "vpc orphan-port suspend":
+            suspended.add(current)
+        if line.strip().casefold() == "end":
+            end_seen = True
+        if line and not line[0].isspace() and not match:
+            current = ""
+    return interfaces_seen > 0 and end_seen, suspended
+
+
+def _nxos_declared_leg_count(output: str) -> Optional[int]:
+    if not isinstance(output, str) or len(output) > _MAX_COMMAND_BYTES:
+        return None
+    matches = re.findall(
+        r"(?im)^\s*Number\s+of\s+vPCs\s+configured\s*:\s*(\d+)\s*$",
+        output,
+    )
+    if len(matches) != 1:
+        return None
+    count = int(matches[0])
+    return count if 0 <= count <= _MAX_LEGS_PER_OBSERVATION else None
+
+
+def _nxos_orphan_evidence(decoded: Mapping[str, str]) -> dict:
+    ports_valid, rows = _nxos_orphan_port_rows(
+        decoded.get("show vpc orphan-ports", ""))
+    config_valid, suspended = _nxos_orphan_suspend_ports(
+        decoded.get("show running-config", ""))
+    return {
+        "status": "assessed" if ports_valid and config_valid else "not_verified",
+        "ports": [{
+            **row,
+            "suspend_on_peer_link_loss": (
+                row["interface"] in suspended if config_valid else None),
+        } for row in rows] if ports_valid else [],
+        "orphan_table_observed": ports_valid,
+        "suspend_config_observed": config_valid,
+    }
+
+
 def _mint_raw_observation(payload: dict, commands: Mapping[str, bytes],
                           expected_commands: Tuple[str, ...]) -> dict:
     source_digest = _exact_command_digest(commands)
     payload["source"] = {
         "schema": MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA,
-        "capture_status": "ok" if set(commands) == set(expected_commands) else "incomplete",
+        "capture_status": "ok" if set(expected_commands).issubset(commands) else "incomplete",
         # This value is serialized for audit only. _source_receipt grants authority exclusively
         # from the private process-local marker and projection digest below.
         "projection_custody": "current_run_source_bound",
@@ -440,6 +620,10 @@ def produce_multichassis_lag_typed_observation(
             "collection_mode": mode,
             "local_identity": role.get("local_system_mac", ""),
             "peer_identity": role.get("peer_system_mac", ""),
+            # This is a source-bound operational leaf from ``show vpc role``.  It is
+            # retained for before/after comparison without interpreting an open-ended
+            # platform string as proof that dual-active behavior is excluded.
+            "dual_active_status": role.get("dual_active_status", ""),
             "domain_id": domain.get("domain_id"),
             "domain_state": {
                 "peer_status": domain.get("peer_status", ""),
@@ -447,6 +631,9 @@ def produce_multichassis_lag_typed_observation(
                 "consistency": domain.get("consistency", ""),
                 "peer_link_status": peer_link.get("status", ""),
             },
+            "orphan_evidence": _nxos_orphan_evidence(decoded),
+            "declared_leg_count": _nxos_declared_leg_count(
+                decoded.get("show vpc", "")),
             "legs": legs,
         }
         return _mint_raw_observation(payload, commands, expected)
@@ -595,6 +782,58 @@ def _source_receipt(value: Any, observation: Any = None) -> dict:
     }
 
 
+def _source_receipt_shape_valid(value: Any) -> bool:
+    source = value if isinstance(value, dict) else {}
+    commands = source.get("commands")
+    failures = source.get("failures")
+    return bool(
+        set(source) == {
+            "schema", "valid", "source_bound", "capture_status", "projection_custody",
+            "source_sha256", "owner_version", "commands", "failures",
+        }
+        and source.get("schema") == MULTICHASSIS_LAG_SOURCE_RECEIPT_SCHEMA
+        and type(source.get("valid")) is bool
+        and type(source.get("source_bound")) is bool
+        and source.get("capture_status") in _CAPTURE_STATES
+        and source.get("projection_custody") in _CUSTODIES
+        and _sha256(source.get("source_sha256"))
+        and _text(source.get("owner_version")) == source.get("owner_version")
+        and isinstance(commands, list)
+        and 0 < len(commands) <= 32
+        and commands == sorted(set(commands), key=lambda item: (item.casefold(), item))
+        and all(_text(command) == command for command in commands)
+        and isinstance(failures, list)
+        and failures == list(dict.fromkeys(failures))
+        and all(_text(failure) == failure for failure in failures)
+        and source["valid"] is (not failures)
+        and (not source["source_bound"] or source["valid"])
+        and source["projection_custody"] == (
+            "current_run_source_bound"
+            if source["source_bound"] else "embedded_unverified"
+        )
+    )
+
+
+def _source_receipt_authorizes_healthy(record: Mapping[str, Any]) -> bool:
+    source = record.get("source_receipt")
+    platform = record.get("platform")
+    expected = _NXOS_COMMANDS if platform == "nxos" else (
+        _EOS_COMMANDS if platform == "eos" else ()
+    )
+    return bool(
+        _source_receipt_shape_valid(source)
+        and source["valid"] is True
+        and source["source_bound"] is True
+        and source["capture_status"] == "ok"
+        and source["projection_custody"] == "current_run_source_bound"
+        and source["owner_version"] == f"raw-producer-{MULTICHASSIS_LAG_OWNER_VERSION}"
+        and source["commands"] == sorted(
+            expected, key=lambda item: (item.casefold(), item)
+        )
+        and source["failures"] == []
+    )
+
+
 def _classify_required(record: dict, field: str, value: str,
                        good: set, bad: set, label: str) -> None:
     if value in good:
@@ -605,6 +844,51 @@ def _classify_required(record: dict, field: str, value: str,
         _add(record, "not_verified", f"{field}_missing", f"Required {label} was not observed.")
     else:
         _add(record, "not_verified", f"{field}_unknown", f"Observed {label} is outside the closed state vocabulary.")
+
+
+def _normalize_orphan_evidence(value: Any) -> dict:
+    raw = _mapping(value)
+    default = {
+        "status": "not_verified",
+        "ports": [],
+        "orphan_table_observed": False,
+        "suspend_config_observed": False,
+    }
+    if set(raw) != set(default) or raw.get("status") not in {
+            "assessed", "not_verified"} or type(raw.get("orphan_table_observed")) is not bool \
+            or type(raw.get("suspend_config_observed")) is not bool \
+            or not isinstance(raw.get("ports"), list) or len(raw["ports"]) > 65_536:
+        return default
+    rows = []
+    seen = set()
+    for item in raw["ports"]:
+        if not isinstance(item, dict) or set(item) != {
+                "interface", "vlans", "suspend_on_peer_link_loss"}:
+            return default
+        interface = _orphan_interface(item.get("interface"))
+        vlans = item.get("vlans")
+        suspended = item.get("suspend_on_peer_link_loss")
+        if not interface or interface in seen or not isinstance(vlans, list) \
+                or vlans != sorted(set(vlans)) or not all(
+                    type(vlan) is int and 1 <= vlan <= 4094 for vlan in vlans) \
+                or (suspended is not None and type(suspended) is not bool):
+            return default
+        seen.add(interface)
+        rows.append({
+            "interface": interface,
+            "vlans": list(vlans),
+            "suspend_on_peer_link_loss": suspended,
+        })
+    if rows != sorted(rows, key=lambda item: (item["interface"].casefold(), item["interface"])):
+        return default
+    expected_status = (
+        "assessed" if raw["orphan_table_observed"] and raw["suspend_config_observed"]
+        and all(type(row["suspend_on_peer_link_loss"]) is bool for row in rows)
+        else "not_verified"
+    )
+    if raw["status"] != expected_status or rows and not raw["orphan_table_observed"]:
+        return default
+    return {**default, **raw, "ports": rows}
 
 
 def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
@@ -619,6 +903,17 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
     local_identity = _system_id(raw.get("local_identity"))
     peer_identity = _system_id(raw.get("peer_identity"))
     identity_bound = _authorized_raw_identity(raw)
+    dual_active_status = _token(raw.get("dual_active_status")) if platform == "nxos" else ""
+    orphan_evidence = (
+        _normalize_orphan_evidence(raw.get("orphan_evidence"))
+        if platform == "nxos" else {}
+    )
+    declared_leg_count = (
+        raw.get("declared_leg_count")
+        if platform == "nxos" and type(raw.get("declared_leg_count")) is int
+        and 0 <= raw["declared_leg_count"] <= _MAX_LEGS_PER_OBSERVATION
+        else None
+    )
     domain_id = _domain_id(raw.get("domain_id"))
     source = _source_receipt(raw.get("source"), raw)
     state_raw = _mapping(raw.get("domain_state"))
@@ -636,6 +931,9 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
         "collection_mode": collection_mode,
         "local_identity": local_identity,
         "peer_identity": peer_identity,
+        "dual_active_status": dual_active_status,
+        "orphan_evidence": orphan_evidence,
+        "declared_leg_count": declared_leg_count,
         "domain_id": domain_id,
         "domain_state": domain_state,
         "reciprocal_pair_id": "",
@@ -644,6 +942,11 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
         "source_receipt": source,
         "findings": [],
         "_index": index,
+        "_dual_active_status_present": platform == "nxos" and "dual_active_status" in raw,
+        "_orphan_evidence_present": platform == "nxos" and "orphan_evidence" in raw,
+        "_declared_leg_count_present": (
+            platform == "nxos" and "declared_leg_count" in raw
+        ),
         "_legs_raw": legs_raw if isinstance(legs_raw, list) else [],
         "_eligible": True,
         "_scope_findings": [],
@@ -695,6 +998,30 @@ def _normalize_observation(raw: Any, index: int) -> Optional[dict]:
     for field, (good, bad) in state_rules.items():
         _classify_required(record, field, domain_state[field], good, bad,
                            f"{platform or 'unsupported'} {field.replace('_', ' ')}")
+    if platform == "nxos":
+        _classify_required(
+            record,
+            "dual_active_status",
+            dual_active_status,
+            *_NXOS_DUAL_ACTIVE_STATES,
+            "NX-OS dual-active detection status",
+        )
+        if orphan_evidence.get("status") != "assessed":
+            _add(
+                record,
+                "not_verified",
+                "orphan_evidence_not_verified",
+                "The NX-OS orphan-port table and full configuration were not both verified.",
+            )
+        if declared_leg_count is None or declared_leg_count != record["leg_count"]:
+            issue = (
+                "The declared configured-vPC count is missing or does not match the parsed "
+                "local-leg row count."
+            )
+            _add(record, "not_verified", "configured_vpc_count_mismatch", issue)
+            record["_scope_findings"].append(_finding(
+                "not_verified", "configured_vpc_count_mismatch", issue,
+            ))
     _refresh(record, "local_safety_preservation")
     return record
 
@@ -758,11 +1085,21 @@ def _prepare(value: Any) -> Tuple[List[dict], List[dict]]:
 
 
 def _public_observation(row: dict) -> dict:
-    return {key: copy.deepcopy(row[key]) for key in (
+    result = {key: copy.deepcopy(row[key]) for key in (
         "record_type", "subject_id", "switch", "vendor", "platform", "collection_mode",
         "local_identity", "peer_identity", "domain_id", "domain_state", "reciprocal_pair_id", "leg_count",
         "health_state", "assurance_level", "source_custody", "source_receipt", "findings",
     )}
+    # Keep the v1 baseline backward-compatible with stored observations that predate this
+    # additive leaf.  New NX-OS raw-byte projections disclose it even when the parser saw
+    # an empty value, while legacy/EOS observations retain their prior serialized shape.
+    if row.get("_dual_active_status_present"):
+        result["dual_active_status"] = row["dual_active_status"]
+    if row.get("_orphan_evidence_present"):
+        result["orphan_evidence"] = copy.deepcopy(row["orphan_evidence"])
+    if row.get("_declared_leg_count_present"):
+        result["declared_leg_count"] = row["declared_leg_count"]
+    return result
 
 
 def _scope_from_prepared(prepared: List[dict], findings: List[dict]) -> dict:
@@ -1173,6 +1510,16 @@ def _valid_finding(value: Any) -> bool:
 
 
 def _record_common(record: Any, record_type: str) -> bool:
+    findings = record.get("findings") if isinstance(record, dict) else None
+    expected_health = _health(findings) if isinstance(findings, list) else ""
+    owner_assurance = (
+        "intent_reconciled_survival"
+        if record_type in {"reciprocal_peer_pair", "reconciled_attachment"}
+        else "local_safety_preservation"
+    )
+    expected_assurance = (
+        "not_verified" if expected_health == "not_verified" else owner_assurance
+    )
     return (
         isinstance(record, dict)
         and record.get("record_type") == record_type
@@ -1180,10 +1527,10 @@ def _record_common(record: Any, record_type: str) -> bool:
         and record.get("health_state") in _HEALTH_STATES
         and record.get("assurance_level") in ASSURANCE_LEVELS
         and record.get("source_custody") in _CUSTODIES
-        and isinstance(record.get("findings"), list)
-        and all(_valid_finding(item) for item in record["findings"])
-        and not (record["health_state"] == "not_verified"
-                 and record["assurance_level"] != "not_verified")
+        and isinstance(findings, list)
+        and all(_valid_finding(item) for item in findings)
+        and record.get("health_state") == expected_health
+        and record.get("assurance_level") == expected_assurance
     )
 
 
@@ -1192,7 +1539,110 @@ def _domain_states_healthy(record: Mapping[str, Any]) -> bool:
         _EOS_REQUIRED_STATES if record.get("platform") == "eos" else {}
     )
     state = _mapping(record.get("domain_state"))
-    return bool(rules) and set(state) == set(rules) and all(state.get(field) in good for field, (good, _) in rules.items())
+    states_healthy = bool(rules) and set(state) == set(rules) and all(
+        state.get(field) in good for field, (good, _) in rules.items())
+    if record.get("platform") == "nxos":
+        return states_healthy and _token(record.get("dual_active_status")) in (
+            _NXOS_DUAL_ACTIVE_STATES[0]
+        ) and _mapping(record.get("orphan_evidence")).get("status") == "assessed"
+    return states_healthy
+
+
+def _subject_scope_valid(value: Any, local_index: Mapping[str, dict],
+                         findings: List[dict]) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "schema", "owner_version", "family", "owns_score", "owns_verdict",
+            "support_profile", "rows", "findings", "summary", "limitations"}:
+        return False
+    if value.get("schema") != MULTICHASSIS_LAG_SUBJECT_SCOPE_SCHEMA \
+            or value.get("owner_version") != MULTICHASSIS_LAG_OWNER_VERSION \
+            or value.get("family") != _FAMILY \
+            or value.get("owns_score") is not False \
+            or value.get("owns_verdict") is not False \
+            or value.get("support_profile") != multichassis_lag_support_profile() \
+            or value.get("limitations") != _LIMITATIONS \
+            or value.get("findings") != findings:
+        return False
+    rows = value.get("rows")
+    if not isinstance(rows, list) or len(rows) != len(local_index):
+        return False
+    scope_keys = {
+        "subject_id", "switch", "vendor", "platform", "collection_mode",
+        "local_identity_present", "peer_identity_present", "domain_id_present",
+        "local_leg_candidate_count", "status", "assurance_level", "source_custody",
+        "source_receipt", "findings",
+    }
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != scope_keys:
+            return False
+        local = local_index.get(row.get("subject_id"))
+        if local is None or row["subject_id"] in seen:
+            return False
+        seen.add(row["subject_id"])
+        row_findings = row.get("findings")
+        if not isinstance(row_findings, list) \
+                or not all(_valid_finding(item) for item in row_findings) \
+                or row.get("status") not in {"in_scope", "not_verified"} \
+                or (row["status"] == "not_verified") is not bool(row_findings) \
+                or row.get("assurance_level") != "not_verified" \
+                or row.get("switch") != local.get("switch") \
+                or row.get("vendor") != local.get("vendor") \
+                or row.get("platform") != local.get("platform") \
+                or row.get("collection_mode") != local.get("collection_mode") \
+                or row.get("local_identity_present") is not bool(local.get("local_identity")) \
+                or row.get("peer_identity_present") is not bool(local.get("peer_identity")) \
+                or row.get("domain_id_present") is not bool(local.get("domain_id")) \
+                or row.get("local_leg_candidate_count") != local.get("leg_count") \
+                or row.get("source_custody") != local.get("source_custody") \
+                or row.get("source_receipt") != local.get("source_receipt"):
+            return False
+        if local.get("health_state") == "healthy" and (
+                row["status"] != "in_scope" or row_findings):
+            return False
+    if rows != sorted(rows, key=lambda row: (row["switch"].casefold(), row["switch"])):
+        return False
+    summary = value.get("summary")
+    if not isinstance(summary, dict) or set(summary) != {
+            "n_local_subjects", "n_in_scope", "n_not_verified", "scope_sha256"}:
+        return False
+    digest = summary.get("scope_sha256")
+    if summary != {
+            "n_local_subjects": len(rows),
+            "n_in_scope": sum(row["status"] == "in_scope" for row in rows),
+            "n_not_verified": sum(row["status"] == "not_verified" for row in rows),
+            "scope_sha256": digest,
+    } or not _sha256(digest):
+        return False
+    expected_digest = canonical_sha256({
+        **value,
+        "summary": {**summary, "scope_sha256": ""},
+    })
+    return digest == expected_digest
+
+
+def _subject_scope_input_projection(value: Any) -> dict:
+    scope = value if isinstance(value, dict) else {}
+    rows = scope.get("rows") if isinstance(scope.get("rows"), list) else []
+    return {
+        "rows": [{
+            "subject_id": row.get("subject_id"),
+            "switch": row.get("switch"),
+            "vendor": row.get("vendor"),
+            "platform": row.get("platform"),
+            "collection_mode": row.get("collection_mode"),
+            "local_identity_present": row.get("local_identity_present"),
+            "peer_identity_present": row.get("peer_identity_present"),
+            "domain_id_present": row.get("domain_id_present"),
+            "local_leg_candidate_count": row.get("local_leg_candidate_count"),
+            "source_receipt": {
+                field: copy.deepcopy(_mapping(row.get("source_receipt")).get(field))
+                for field in (
+                    "schema", "capture_status", "source_sha256", "owner_version", "commands",
+                )
+            },
+        } for row in rows if isinstance(row, dict)],
+    }
 
 
 def _structural_validation(value: Any) -> Tuple[bool, str]:
@@ -1232,13 +1682,10 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
         if local_identity and local_identity in local_by_identity:
             return False, "baseline_local_identity_duplicate"
         source = record.get("source_receipt")
-        if not isinstance(source, dict) or set(source) != {
-            "schema", "valid", "source_bound", "capture_status", "projection_custody",
-            "source_sha256", "owner_version", "commands", "failures",
-        }:
+        if not _source_receipt_shape_valid(source):
             return False, "baseline_source_receipt_invalid"
         if record["health_state"] == "healthy" and (
-                not source.get("source_bound")
+                not _source_receipt_authorizes_healthy(record)
                 or not _support(record.get("platform"), record.get("vendor"), record.get("collection_mode"))
                 or not _domain_states_healthy(record)
                 or not local_identity
@@ -1246,6 +1693,30 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
                 or not _domain_id(record.get("domain_id"))
                 or not _text(record.get("reciprocal_pair_id"))):
             return False, "baseline_local_false_health"
+        if "declared_leg_count" in record and (
+                record.get("platform") != "nxos"
+                or type(record.get("declared_leg_count")) is not int
+                or not 0 <= record["declared_leg_count"] <= _MAX_LEGS_PER_OBSERVATION):
+            return False, "baseline_declared_leg_count_invalid"
+        if record["health_state"] == "healthy" and record.get("platform") == "nxos" \
+                and record.get("declared_leg_count") != record.get("leg_count"):
+            return False, "baseline_declared_leg_count_mismatch"
+        if "dual_active_status" in record and (
+                record.get("platform") != "nxos"
+                or not isinstance(record.get("dual_active_status"), str)
+                or record.get("dual_active_status") != _token(record.get("dual_active_status"))):
+            return False, "baseline_dual_active_status_invalid"
+        if "orphan_evidence" in record:
+            orphan = record.get("orphan_evidence")
+            commands = set(source.get("commands", []))
+            if record.get("platform") != "nxos" \
+                    or not isinstance(orphan, dict) \
+                    or _normalize_orphan_evidence(orphan) != orphan \
+                    or (orphan.get("orphan_table_observed") is True
+                        and "show vpc orphan-ports" not in commands) \
+                    or (orphan.get("suspend_config_observed") is True
+                        and "show running-config" not in commands):
+                return False, "baseline_orphan_evidence_invalid"
         local_index[record["subject_id"]] = record
         local_by_switch[switch.casefold()] = record
         if local_identity:
@@ -1296,6 +1767,14 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
         for switch in switch_keys:
             if local_by_switch[switch].get("reciprocal_pair_id") != expected_id:
                 return False, "baseline_pair_member_invalid"
+        expected_pair_custody = (
+            "current_run_source_bound"
+            if all(member.get("source_custody") == "current_run_source_bound"
+                   for member in members)
+            else "embedded_unverified"
+        )
+        if record.get("source_custody") != expected_pair_custody:
+            return False, "baseline_pair_custody_invalid"
         if record["health_state"] == "healthy":
             domains = {member["domain_id"].casefold() for member in members}
             if any(member["health_state"] != "healthy" for member in members) \
@@ -1316,6 +1795,9 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
             return False, "baseline_local_leg_identity_invalid"
         if record["subject_id"] in leg_index:
             return False, "baseline_local_leg_duplicate"
+        local_record = local_by_switch[switch.casefold()]
+        if record.get("source_custody") != local_record.get("source_custody"):
+            return False, "baseline_local_leg_custody_invalid"
         if record["health_state"] == "healthy" and (
                 record.get("pair_id") not in pair_index
                 or record.get("status") != "up"
@@ -1354,7 +1836,15 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
         expected_state = "degraded" if "degraded" in component_states else (
             "not_verified" if "not_verified" in component_states else "healthy"
         )
-        if record["health_state"] != expected_state or subject in attachment_index:
+        expected_custody = (
+            "current_run_source_bound"
+            if pair.get("source_custody") == "current_run_source_bound"
+            and all(leg.get("source_custody") == "current_run_source_bound" for leg in legs)
+            else "embedded_unverified"
+        )
+        if record["health_state"] != expected_state \
+                or record.get("source_custody") != expected_custody \
+                or subject in attachment_index:
             return False, "baseline_attachment_state_invalid"
         attachment_index[subject] = record
 
@@ -1372,8 +1862,7 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
         return False, "baseline_summary_mismatch"
     if summary["baseline_sha256"] != _baseline_digest(value):
         return False, "baseline_digest_mismatch"
-    if not isinstance(value.get("subject_scope"), dict) \
-            or value["subject_scope"].get("schema") != MULTICHASSIS_LAG_SUBJECT_SCOPE_SCHEMA:
+    if not _subject_scope_valid(value.get("subject_scope"), local_index, findings):
         return False, "baseline_subject_scope_invalid"
     return True, "ok"
 
@@ -1433,6 +1922,9 @@ def _snapshot_input_projection(value: Mapping[str, Any]) -> dict:
             "collection_mode": row.get("collection_mode"),
             "local_identity": row.get("local_identity"),
             "peer_identity": row.get("peer_identity"),
+            "dual_active_status": _token(row.get("dual_active_status")),
+            "orphan_evidence": copy.deepcopy(row.get("orphan_evidence")),
+            "declared_leg_count": row.get("declared_leg_count"),
             "domain_id": row.get("domain_id"),
             "domain_state": copy.deepcopy(row.get("domain_state")),
             "leg_count": row.get("leg_count"),
@@ -1542,6 +2034,14 @@ def validate_multichassis_lag_snapshot_evidence(
             "baseline": {},
             "local_subjects": [],
         }
+    if _subject_scope_input_projection(stored.get("subject_scope")) != \
+            _subject_scope_input_projection(normalized.get("subject_scope")):
+        return {
+            "valid": False,
+            "reason": "typed_subject_scope_does_not_reconcile",
+            "baseline": {},
+            "local_subjects": [],
+        }
 
     local_subjects = sorted(
         (_text(row.get("switch")) for row in stored_local),
@@ -1617,10 +2117,14 @@ def _transition(before: Optional[dict], after: Optional[dict], *,
     after_state = after.get("health_state")
     if after_state == "not_verified":
         return "not_comparable" if before_state == "not_verified" else "coverage_lost"
+    # A definite current fault always owns the transition before any intent comparison.
+    # In particular, changed attachment fields must not relabel a persistent degraded
+    # subject as review-only, and newly established degraded evidence must not look like
+    # a recovery from previously unverified evidence.
+    if after_state == "degraded":
+        return "unchanged_degraded" if before_state == "degraded" else "regressed"
     if before_state == "not_verified":
         return "recovered"
-    if before_state == "healthy" and after_state == "degraded":
-        return "regressed"
     if before_state == "degraded" and after_state == "healthy":
         return "recovered"
     if _changed_fields(before, after):
@@ -1716,19 +2220,26 @@ def compute_multichassis_lag_delta(
             assurance = (after_record or before_record or {}).get("assurance_level", "not_verified")
             if transition in {"coverage_lost", "not_comparable"}:
                 assurance = "not_verified"
+            current_state = (
+                after_record.get("health_state") if after_record else
+                (after_candidate_state or "absent")
+            )
             changes.append({
                 "family": _FAMILY,
                 "record_type": record_type,
                 "subject": subject,
                 "subject_id": subject,
                 "transition": transition,
-                "decision_effect": _TRANSITION_DECISION_EFFECT[transition],
+                # Transition vocabulary still describes identity/change semantics, but
+                # the producer's safety effect is state-aware: no expected-change intent
+                # may clear a definite fault that exists in the after evidence.
+                "decision_effect": (
+                    "block" if current_state == "degraded"
+                    else _TRANSITION_DECISION_EFFECT[transition]
+                ),
                 "assurance_level": assurance,
                 "before_state": before_record.get("health_state") if before_record else "absent",
-                "after_state": (
-                    after_record.get("health_state") if after_record else
-                    (after_candidate_state or "absent")
-                ),
+                "after_state": current_state,
                 "note": _TRANSITION_NOTES[transition],
                 "changed_fields": (
                     _changed_fields(before_record, after_record)

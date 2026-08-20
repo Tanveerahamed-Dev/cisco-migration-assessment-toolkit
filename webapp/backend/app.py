@@ -19,7 +19,7 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO, Dict, List
+from typing import Annotated, Any, BinaryIO, Dict, List, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi import Path as PathParam
@@ -27,7 +27,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from cisco_toolkit import brand_tokens, docmeta
 from cisco_toolkit.protocol_assurance import (
@@ -121,7 +121,10 @@ _SQLITE_INT_MIN = -(2 ** 63)
 _SQLITE_INT_MAX = 2 ** 63 - 1
 RowId = Annotated[int, PathParam(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)]
 #: The same bound for an id carried in a request BODY (Pydantic model field).
-BodyRowId = Field(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)
+BodyRowId = Annotated[
+    int,
+    Field(strict=True, ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX),
+]
 BoundedToken = Annotated[str, Field(max_length=_LEN_TOKEN)]
 BoundedName = Annotated[str, Field(max_length=_LEN_NAME)]
 
@@ -133,25 +136,34 @@ class CampaignIn(BaseModel):
 
 
 class ExpectedFamilyChangeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     family: str = Field(min_length=1, max_length=_LEN_NAME)
     transitions: List[BoundedToken] = Field(min_length=1, max_length=9)
     subjects: List[BoundedName] = Field(default_factory=list, max_length=200)
     reason: str = Field(default="", max_length=_LEN_NOTE)
+    intent_kind: Literal["", "revision_reset"] = ""
 
 
 class ChangeIntentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     expected_changes: List[ExpectedFamilyChangeIn] = Field(default_factory=list, max_length=200)
     note: str = Field(default="", max_length=_LEN_NOTE)
 
 
 class CompareIn(BaseModel):
-    old_id: int = BodyRowId
-    new_id: int = BodyRowId
+    model_config = ConfigDict(extra="forbid")
+
+    old_id: BodyRowId
+    new_id: BodyRowId
     change_intent: ChangeIntentIn | None = None
 
 
 class ExecutionCompareIn(BaseModel):
-    after_snapshot_id: int = BodyRowId
+    model_config = ConfigDict(extra="forbid")
+
+    after_snapshot_id: BodyRowId
     change_intent: ChangeIntentIn | None = None
 
 
@@ -301,6 +313,29 @@ class _RequestBodyLimitMiddleware:
                 if not message.get("more_body", False):
                     break
             await run_in_threadpool(spool.seek, 0)
+
+            # FastAPI/Pydantic normally receives an already-decoded mapping, which means duplicate
+            # JSON member names have been silently collapsed before any route model can reject
+            # them.  Comparison intent and snapshot identities are decision inputs, so the exact
+            # bounded wire body must have one unambiguous interpretation.  Validate ordinary JSON
+            # bodies here, while their original bytes still exist, then rewind for Starlette.  The
+            # multipart snapshot-upload path retains its dedicated strict snapshot parser.
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if received and content_type == "application/json":
+                raw_body = await run_in_threadpool(spool.read)
+                try:
+                    json.loads(
+                        raw_body,
+                        parse_constant=ingest.reject_nonfinite,
+                        object_pairs_hook=_reject_duplicate_json_keys,
+                    )
+                except (UnicodeDecodeError, ValueError) as exc:
+                    await JSONResponse(
+                        {"detail": f"Invalid JSON request body: {exc}"},
+                        status_code=400,
+                    )(scope, receive, send)
+                    return
+                await run_in_threadpool(spool.seek, 0)
 
             # Take the shared heavy-work slot ONLY NOW — the body is fully received and spooled, so
             # the slot covers the handler's actual work rather than the network read.

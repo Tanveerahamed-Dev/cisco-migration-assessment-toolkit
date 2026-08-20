@@ -25,6 +25,7 @@ from .analyze import (
 from .bgp_intent import validate_bgp_configured_peer_baseline
 from .fhrp_intent import validate_fhrp_configured_group_baseline
 from .fhrp_redundancy import validate_fhrp_redundancy_domain_baseline
+from .etherchannel import validate_etherchannel_operational_evidence
 from .ipv6_routing import validate_ipv6_routing_adjacency_baseline
 from .protocol_assurance import (
     ASSURANCE_LEVELS,
@@ -32,6 +33,8 @@ from .protocol_assurance import (
     bound_snapshot_source,
     canonical_sha256,
 )
+from .stp_topology import validate_stp_topology_baseline
+from .vtp_extended import validate_vtp_extended_evidence
 from .vtp_safety import validate_vtp_safety_baseline
 
 
@@ -729,8 +732,20 @@ def compute_ipv6_routing_adjacency_delta(
         after_view.get("baseline", {}), ("switch", "protocol"))
 
     def appeared(name: str, row: Mapping[str, Any]) -> dict:
-        return _change(name, "appeared", "review", {}, _state(row, ("status", "state")),
-                       "A runtime adjacency not observed in the baseline is now present; no expected-peer intent was inferred.")
+        status = _text(row.get("status"))
+        state = _state(row, ("status", "state"))
+        if status in _UNAVAILABLE_STATUSES:
+            return _change(
+                name, "coverage_lost", "not_verified", {}, state,
+                "The newly observed IPv6 adjacency lacks verified current-state evidence.",
+            )
+        return _change(
+            name, "appeared", "block" if status in _DEGRADED_STATUSES else "review",
+            {}, state,
+            "A newly observed IPv6 adjacency is already degraded; expected intent cannot clear a current fault."
+            if status in _DEGRADED_STATUSES else
+            "A runtime adjacency not observed in the baseline is now present; no expected-peer intent was inferred.",
+        )
 
     def disappeared(name: str, row: Mapping[str, Any]) -> dict:
         cell = after_coverage.get((_text(row.get("switch")), _text(row.get("protocol"))))
@@ -801,9 +816,23 @@ def compute_bgp_configured_peer_delta(
     after_coverage = _coverage_index(after_view.get("baseline", {}), ("switch",))
 
     def appeared(name: str, row: Mapping[str, Any]) -> dict:
-        return _change(name, "appeared", "review", {},
-                       _state(row, ("status", "activation", "configured_remote_as", "runtime_state")),
-                       "A new literal configured peer requires expected-change reconciliation.")
+        status = _text(row.get("status"))
+        state = _state(
+            row, ("status", "activation", "configured_remote_as", "runtime_state"))
+        if status in _UNAVAILABLE_STATUSES:
+            return _change(
+                name, "coverage_lost", "not_verified", {}, state,
+                "The new configured BGP peer lacks verified configuration/runtime evidence.",
+            )
+        if status in _DEGRADED_STATUSES and _text(row.get("activation")) == "active":
+            return _change(
+                name, "appeared", "block", {}, state,
+                "A new configured-active BGP peer is already degraded; expected intent cannot clear a current fault.",
+            )
+        return _change(
+            name, "appeared", "review", {}, state,
+            "A new literal configured peer requires expected-change reconciliation.",
+        )
 
     def disappeared(name: str, row: Mapping[str, Any]) -> dict:
         active = _text(row.get("activation")) == "active"
@@ -1024,7 +1053,7 @@ def _stp_path_instances(raw: str) -> tuple[tuple[str, ...], frozenset[int]] | No
     return tuple(canonical_ranges), frozenset(instances)
 
 
-def _topology_view(snapshot: Any) -> dict:
+def _legacy_topology_view(snapshot: Any) -> dict:
     present = isinstance(snapshot, dict) and (
         "stp_roots" in snapshot or "interfaces" in snapshot)
     if not isinstance(snapshot, dict):
@@ -1140,9 +1169,274 @@ def _topology_view(snapshot: Any) -> dict:
     )
 
 
+def _typed_topology_view(snapshot: Any) -> dict:
+    root = _snapshot(snapshot)
+    baseline_value = root.get("stp_topology_baseline")
+    observations = root.get("stp_topology_observations")
+    present = "stp_topology_baseline" in root or "stp_topology_observations" in root
+    required_keys = {
+        "stp_topology_baseline", "stp_topology_observations", "stp_roots", "devices",
+    }
+    if not required_keys <= set(root) or not isinstance(root.get("devices"), (dict, list)) \
+            or not isinstance(root.get("stp_roots"), dict):
+        return {
+            "present": present,
+            "valid": False,
+            "reason": (
+                "Typed STP topology baseline, observations, legacy roots, and explicit device "
+                "denominator must be co-published"
+            ),
+            "source_bound": False,
+            "comparison_reconcilable": False,
+            "owner_source_authority": False,
+            "baseline": {},
+            "rows": [],
+            "index": {},
+            "roots": {},
+            "paths": {},
+            "gaps": ["typed_owner_receipt"],
+            "typed": True,
+        }
+    view = validate_stp_topology_baseline(
+        baseline_value,
+        observations=observations,
+        legacy_roots=root.get("stp_roots"),
+        devices=root.get("devices"),
+    )
+    view = _reconcilable(view, owner_source_authority=False)
+    if view.get("valid") is True:
+        coverage = view.get("coverage")
+        rows = view.get("rows")
+        view = reconcile_native_owner_subject_roster(
+            view,
+            snapshot,
+            family="stp_topology",
+            coverage_hosts=[
+                cell.get("switch") if isinstance(cell, Mapping) else None
+                for cell in coverage
+            ] if isinstance(coverage, list) else None,
+            subject_hosts=[
+                row.get("switch") if isinstance(row, Mapping) else None
+                for row in rows
+            ] if isinstance(rows, list) else None,
+        )
+    rows = view.get("rows") if view.get("valid") is True else []
+    row_list = rows if isinstance(rows, list) else []
+    view["roots"] = {
+        (row["switch"], row["namespace"], row["instance"]): row
+        for row in row_list if isinstance(row, Mapping)
+    }
+    view["paths"] = {
+        (row["switch"], row["namespace"], row["instance"], port["interface"]): port
+        for row in row_list if isinstance(row, Mapping)
+        for port in row.get("port_roles", []) if isinstance(port, Mapping)
+    }
+    view["gaps"] = [
+        _text(cell.get("switch"))
+        for cell in view.get("coverage", []) if isinstance(cell, Mapping)
+        and _text(cell.get("status")) == "not_verified"
+    ]
+    view["typed"] = True
+    return view
+
+
+def _topology_view(snapshot: Any) -> dict:
+    root = _snapshot(snapshot)
+    if "stp_topology_baseline" in root or "stp_topology_observations" in root:
+        return _typed_topology_view(snapshot)
+    view = _legacy_topology_view(snapshot)
+    view["typed"] = False
+    return view
+
+
+def _typed_stp_coverage_index(view: Mapping[str, Any]) -> Dict[str, dict]:
+    baseline = view.get("baseline")
+    cells = baseline.get("coverage") if isinstance(baseline, Mapping) else None
+    return {
+        _text(cell.get("switch")): cell
+        for cell in cells if isinstance(cell, Mapping) and _text(cell.get("switch"))
+    } if isinstance(cells, list) else {}
+
+
+def _typed_stp_port_index(row: Mapping[str, Any]) -> Dict[str, dict]:
+    roles = row.get("port_roles")
+    return {
+        _text(port.get("interface")): dict(port)
+        for port in roles if isinstance(port, Mapping) and _text(port.get("interface"))
+    } if isinstance(roles, list) else {}
+
+
+def _typed_stp_topology_changes(
+        before_view: Mapping[str, Any], after_view: Mapping[str, Any]) -> List[dict]:
+    invalid = _invalid_owner_changes("stp_topology", before_view, after_view)
+    if invalid:
+        return invalid
+    before_index = before_view.get("index")
+    after_index = after_view.get("index")
+    if not isinstance(before_index, dict) or not isinstance(after_index, dict):
+        return [_change(
+            "stp_topology|owner_index", "not_comparable", "not_verified", {}, {},
+            "The validated STP topology baseline did not expose its canonical instance index.",
+        )]
+    before_coverage = _typed_stp_coverage_index(before_view)
+    after_coverage = _typed_stp_coverage_index(after_view)
+    changes: List[dict] = []
+
+    def cell_comparable(cell: Mapping[str, Any] | None) -> bool:
+        return isinstance(cell, Mapping) and _text(cell.get("status")) in {
+            "assessed", "degraded",
+        }
+
+    for host in sorted(set(before_coverage) | set(after_coverage), key=str.casefold):
+        old_cell, new_cell = before_coverage.get(host), after_coverage.get(host)
+        old_status = _text((old_cell or {}).get("status"))
+        new_status = _text((new_cell or {}).get("status"))
+        if old_status == new_status == "not_applicable":
+            continue
+        if not cell_comparable(old_cell) or not cell_comparable(new_cell):
+            changes.append(_change(
+                f"stp_topology|coverage|{host}",
+                "coverage_lost",
+                "not_verified",
+                _state(old_cell, (
+                    "status", "state_capture_state", "detail_capture_state",
+                    "state_instance_count", "role_parsed_count", "counter_parsed_count",
+                    "finding_codes",
+                )),
+                _state(new_cell, (
+                    "status", "state_capture_state", "detail_capture_state",
+                    "state_instance_count", "role_parsed_count", "counter_parsed_count",
+                    "finding_codes",
+                )),
+                "Required paired STP state/detail coverage is unavailable on at least one side; "
+                "missing roles or counters are not interpreted as healthy absence.",
+            ))
+
+    for key in sorted(set(before_index) | set(after_index)):
+        old = before_index.get(key)
+        new = after_index.get(key)
+        host, namespace, instance = key
+        identity = "|".join((host, namespace, instance))
+        old_cell, new_cell = before_coverage.get(host), after_coverage.get(host)
+        if not isinstance(old, Mapping):
+            if not cell_comparable(new_cell):
+                continue
+            degraded = _text(new.get("status")) == "degraded"
+            changes.append(_change(
+                f"instance|{identity}", "appeared", "block" if degraded else "review", {},
+                _state(new, ("status", "root_address", "is_root", "finding_codes")),
+                "A newly observed STP instance is currently degraded; appearance cannot neutralize the fault."
+                if degraded else
+                "A new fully identified PVST/MST instance appeared and requires topology-intent reconciliation.",
+            ))
+            continue
+        if not isinstance(new, Mapping):
+            transition, effect, note = (
+                ("disappeared", "review",
+                 "A previously evidenced PVST/MST instance disappeared from complete after coverage; reconcile planned topology intent.")
+                if cell_comparable(new_cell) else
+                ("coverage_lost", "not_verified",
+                 "The after capture is incomplete, so disappearance of the STP instance is not asserted.")
+            )
+            changes.append(_change(
+                f"instance|{identity}", transition, effect,
+                _state(old, ("status", "root_address", "is_root", "finding_codes")), {}, note,
+            ))
+            continue
+
+        changes.append(_status_transition(
+            f"health|{identity}",
+            old,
+            new,
+            state_fields=("finding_codes", "forwarding_paths", "blocked_paths"),
+            semantic_equal=True,
+            change_note="The bounded STP instance health changed.",
+        ))
+
+        old_root = _state(old, (
+            "root_address", "root_priority", "bridge_priority", "is_root",
+        ))
+        new_root = _state(new, (
+            "root_address", "root_priority", "bridge_priority", "is_root",
+        ))
+        changes.append(_change(
+            f"root|{identity}",
+            "unchanged_healthy" if old_root == new_root else "intent_changed",
+            "none" if old_root == new_root else "review",
+            old_root,
+            new_root,
+            "The observed per-instance root identity and placement are unchanged."
+            if old_root == new_root else
+            "Observed root identity/placement changed; planned root movement may be expected but must be reconciled.",
+        ))
+
+        old_ports, new_ports = _typed_stp_port_index(old), _typed_stp_port_index(new)
+        for interface in sorted(set(old_ports) | set(new_ports), key=str.casefold):
+            old_port, new_port = old_ports.get(interface), new_ports.get(interface)
+            subject = f"path|{identity}|{interface}"
+            if old_port is None:
+                changes.append(_change(
+                    subject, "appeared", "review", {}, new_port,
+                    "A new per-instance STP port role/path appeared; reconcile the planned topology movement.",
+                ))
+                continue
+            if new_port is None:
+                changes.append(_change(
+                    subject, "disappeared", "review", old_port, {},
+                    "A per-instance STP port role/path disappeared under complete after coverage; reconcile intent.",
+                ))
+                continue
+            if old_port == new_port:
+                transition, effect = "unchanged_healthy", "none"
+                note = "The observed per-instance STP port role and state are unchanged."
+            elif old_port.get("state") == "forwarding" and new_port.get("state") == "blocked":
+                transition, effect = "regressed", "block"
+                note = "A previously forwarding per-instance STP path is now blocked."
+            elif new_port.get("state") in {"learning", "listening"}:
+                transition, effect = "regressed", "block"
+                note = "The after STP path is in a transitional state and is not stable forwarding evidence."
+            elif old_port.get("role") != new_port.get("role"):
+                transition, effect = "intent_changed", "review"
+                note = "The per-instance STP role moved; planned role movement must be reconciled."
+            elif old_port.get("state") == "blocked" and new_port.get("state") == "forwarding":
+                transition, effect = "recovered", "none"
+                note = "A previously blocked per-instance STP path is now forwarding without a role change."
+            else:
+                transition, effect = "intent_changed", "review"
+                note = "The per-instance STP state moved and requires topology-intent reconciliation."
+            changes.append(_change(subject, transition, effect, old_port, new_port, note))
+
+        old_count, new_count = old.get("topology_change_count"), new.get("topology_change_count")
+        before_counter = {
+            "count": old_count,
+            "last_change": old.get("topology_change_last_change"),
+        }
+        after_counter = {
+            "count": new_count,
+            "last_change": new.get("topology_change_last_change"),
+        }
+        if type(old_count) is not int or type(new_count) is not int:
+            transition, effect = "coverage_lost", "not_verified"
+            note = "A required per-instance topology-change counter is missing or malformed."
+        elif new_count > old_count:
+            transition, effect = "regressed", "block"
+            note = "The per-instance topology-change counter increased after the change."
+        elif new_count < old_count:
+            transition, effect = "intent_changed", "review"
+            note = "The topology-change counter decreased (reset, reload, or wrap); reconcile the evidence timeline."
+        else:
+            transition, effect = "unchanged_healthy", "none"
+            note = "The per-instance topology-change counter did not increase."
+        changes.append(_change(
+            f"counter|{identity}", transition, effect,
+            before_counter, after_counter, note,
+        ))
+    return changes
+
+
 def compute_stp_topology_delta(
         before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
-    """Compare evidenced roots/path sets and abstain on absent roles/change counters."""
+    """Compare typed STP topology evidence, retaining a fail-closed legacy fallback."""
     before_view, after_view = _pair_views(
         _topology_view(before),
         _topology_view(after),
@@ -1150,6 +1444,43 @@ def compute_stp_topology_delta(
         after,
         comparison_source_binding,
     )
+    before_typed = before_view.get("typed") is True
+    after_typed = after_view.get("typed") is True
+    if before_typed != after_typed:
+        return _result(
+            schema=STP_TOPOLOGY_DELTA_SCHEMA,
+            family="stp_topology",
+            assurance_level="not_verified",
+            before_view=before_view,
+            after_view=after_view,
+            changes=[_change(
+                "stp_topology|owner_semantics",
+                "not_comparable",
+                "not_verified",
+                {"owner": "stp_topology_baseline/1" if before_typed else "legacy_projection"},
+                {"owner": "stp_topology_baseline/1" if after_typed else "legacy_projection"},
+                "Typed and legacy STP topology projections have incompatible subject semantics; "
+                "legacy evidence is not backfilled or reinterpreted.",
+            )],
+            limitations=(
+                "Legacy snapshots remain fail-closed and are never reinterpreted as typed role/counter evidence.",
+                "Recollect both sides with stp_topology_baseline/1 for a comparable typed decision.",
+            ),
+        )
+    if before_typed and after_typed:
+        return _result(
+            schema=STP_TOPOLOGY_DELTA_SCHEMA,
+            family="stp_topology",
+            assurance_level="local_safety_preservation",
+            before_view=before_view,
+            after_view=after_view,
+            changes=_typed_stp_topology_changes(before_view, after_view),
+            limitations=(
+                "Scope is observed local PVST VLAN or MST instance root, role/state, and topology-change-counter preservation.",
+                "Root/role movement defaults to review; it is accepted only through explicit expected-change reconciliation by the canonical gate.",
+                "Loop freedom, timers, convergence, simultaneous multi-device state, and service survival are not proved.",
+            ),
+        )
     changes = _invalid_owner_changes("stp_topology", before_view, after_view)
     if not changes:
         for key in sorted(set(before_view["roots"]) | set(after_view["roots"])):
@@ -1225,7 +1556,7 @@ def compute_stp_topology_delta(
     )
 
 
-def _etherchannel_view(snapshot: Any) -> dict:
+def _legacy_etherchannel_view(snapshot: Any) -> dict:
     root = _snapshot(snapshot)
     value = root.get("etherchannel_baseline")
     view = _reconcilable(
@@ -1284,47 +1615,125 @@ def _etherchannel_view(snapshot: Any) -> dict:
     return view
 
 
-def _etherchannel_groups(view: Mapping[str, Any]) -> Dict[Tuple[str, str], dict]:
-    groups: Dict[Tuple[str, str], dict] = {}
-    for host_row in view.get("rows", []):
-        if not isinstance(host_row, dict):
+def _etherchannel_view(snapshot: Any) -> dict:
+    """Join the protected v1 owners to the additive typed decision-depth owner."""
+    root = _snapshot(snapshot)
+    legacy = _legacy_etherchannel_view(snapshot)
+    typed = _reconcilable(
+        _reconcile_baseline_coverage_roster(
+            validate_etherchannel_operational_evidence(
+                root.get("etherchannel_operational_evidence")),
+            snapshot,
+            family="etherchannel operational evidence",
+        ),
+        owner_source_authority=False,
+    )
+    if legacy.get("valid") is not True:
+        return legacy
+    if typed.get("valid") is not True:
+        return _reconcilable(_invalidate_owner_evidence(
+            typed,
+            "The additive etherchannel_operational_evidence/1 owner is missing, malformed, "
+            "or does not reconcile to the snapshot device roster.",
+        ), owner_source_authority=False)
+
+    typed_index = typed.get("index") if isinstance(typed.get("index"), dict) else {}
+    # Every runtime group asserted by the protected v1 projection must reconcile exactly to
+    # the typed owner's protocol and member states.  Typed configured-only groups are allowed:
+    # that is decision depth the summary owner intentionally could not represent.
+    for host_row in legacy.get("rows", []):
+        if not isinstance(host_row, Mapping):
             continue
         host = _text(host_row.get("switch"))
-        associations: Dict[str, List[str]] = {}
-        for item in host_row.get("associations", []):
-            if isinstance(item, dict):
-                associations.setdefault(_text(item.get("group")), []).append(_text(item.get("interface")))
-        for group in host_row.get("groups", []):
-            if not isinstance(group, dict):
+        for legacy_group in host_row.get("groups", []):
+            if not isinstance(legacy_group, Mapping):
                 continue
-            name = _text(group.get("group"))
-            if not host or not name or (host, name) in groups:
-                continue
-            members = {
-                _text(item.get("interface")): _text(item.get("state"))
-                for item in group.get("members", []) if isinstance(item, dict) and _text(item.get("interface"))
+            group = _text(legacy_group.get("group"))
+            typed_row = typed_index.get((host, group))
+            if not isinstance(typed_row, Mapping):
+                return _reconcilable(_invalidate_owner_evidence(
+                    typed,
+                    "Typed EtherChannel evidence omits a runtime group asserted by the protected "
+                    "etherchannel_projection/1 owner.",
+                ), owner_source_authority=False)
+            legacy_members = {
+                _text(member.get("interface")): _text(member.get("state"))
+                for member in legacy_group.get("members", [])
+                if isinstance(member, Mapping) and _text(member.get("interface"))
             }
-            forwarding = sorted(
-                member for member, state in members.items()
-                if state in {"forwarding_observed", "delay_lacp_up"}
-            )
-            groups[(host, name)] = {
-                "status": _text(group.get("status")) or _text(host_row.get("status")),
-                "protocol": _text(group.get("protocol")),
-                "group_id": _text(group.get("group_id")),
-                "operational_state": _text(group.get("operational_state")),
-                "configured_members": sorted(set(associations.get(name, []))),
-                "runtime_members": sorted(members),
-                "member_states": members,
-                "forwarding_members": forwarding,
-                "forwarding_capacity_units": len(forwarding),
+            typed_members = {
+                _text(member.get("interface")): _text(member.get("state"))
+                for member in typed_row.get("runtime_members", [])
+                if isinstance(member, Mapping) and _text(member.get("interface"))
             }
+            legacy_protocol = _text(legacy_group.get("protocol")).casefold()
+            if legacy_members != typed_members or (
+                    legacy_protocol and legacy_protocol != "unknown"
+                    and legacy_protocol != _text(typed_row.get("protocol")).casefold()):
+                return _reconcilable(_invalidate_owner_evidence(
+                    typed,
+                    "Typed EtherChannel runtime state does not exactly reconcile to the protected "
+                    "etherchannel_projection/1 owner.",
+                ), owner_source_authority=False)
+            if (_text(legacy_group.get("status")) == "degraded"
+                    and _text(typed_row.get("status")) != "degraded"):
+                return _reconcilable(_invalidate_owner_evidence(
+                    typed,
+                    "Typed EtherChannel evidence attempted to clear degradation owned by the "
+                    "protected etherchannel_projection/1 owner.",
+                ), owner_source_authority=False)
+
+    typed["projection_sha256"] = canonical_sha256({
+        "etherchannel_baseline": root.get("etherchannel_baseline"),
+        "etherchannel_projection": root.get("etherchannel_projection"),
+        "protocol_assessability": root.get("protocol_assessability"),
+        "etherchannel_operational_evidence": root.get(
+            "etherchannel_operational_evidence"),
+        "devices": root.get("devices"),
+    })
+    typed["legacy_baseline"] = legacy.get("baseline")
+    return typed
+
+
+def _etherchannel_groups(view: Mapping[str, Any]) -> Dict[Tuple[str, str], dict]:
+    groups: Dict[Tuple[str, str], dict] = {}
+    for row in view.get("rows", []):
+        if not isinstance(row, Mapping):
+            continue
+        host, name = _text(row.get("switch")), _text(row.get("group"))
+        if not host or not name or (host, name) in groups:
+            continue
+        runtime = row.get("runtime_members") if isinstance(
+            row.get("runtime_members"), list) else []
+        forwarding = sorted(
+            _text(member.get("interface")) for member in runtime
+            if isinstance(member, Mapping) and member.get("forwarding") is True
+        )
+        findings = row.get("findings") if isinstance(row.get("findings"), list) else []
+        groups[(host, name)] = {
+            "status": _text(row.get("status")),
+            "protocol": _text(row.get("protocol")),
+            "group_id": _text(row.get("group_id")),
+            "configured_members": deepcopy(row.get("configured_members")),
+            "runtime_members": deepcopy(runtime),
+            "forwarding_members": forwarding,
+            "partner": deepcopy(row.get("partner")),
+            "min_links": deepcopy(row.get("min_links")),
+            "capacity": deepcopy(row.get("capacity")),
+            "hashing": deepcopy(row.get("hashing")),
+            "counter_evidence": deepcopy(row.get("counter_evidence")),
+            "member_failure_rehearsal": deepcopy(row.get("member_failure_rehearsal")),
+            "finding_codes": sorted(
+                _text(finding.get("code")) for finding in findings
+                if isinstance(finding, Mapping) and _text(finding.get("code"))
+            ),
+        }
     return groups
 
 
 def compute_etherchannel_delta(
         before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
-    """Compare validated local group/member state and count-based capacity only."""
+    """Compare strict configured/runtime, capacity, counter, and local-failure evidence."""
     before_view, after_view = _pair_views(
         _etherchannel_view(before),
         _etherchannel_view(after),
@@ -1335,15 +1744,41 @@ def compute_etherchannel_delta(
     changes = _invalid_owner_changes("etherchannel", before_view, after_view)
     if not changes:
         old_groups, new_groups = _etherchannel_groups(before_view), _etherchannel_groups(after_view)
+        after_coverage = _coverage_index(after_view.get("baseline", {}), ("switch",))
         for key in sorted(set(old_groups) | set(new_groups)):
             subject = "|".join(key)
             old, new = old_groups.get(key), new_groups.get(key)
             if old is None:
-                changes.append(_change(subject, "appeared", "review", {}, new,
-                                       "A new local EtherChannel group appeared and requires configured-intent reconciliation."))
+                status = _text(new.get("status"))
+                if status == "degraded":
+                    changes.append(_change(
+                        subject, "appeared", "block", {}, new,
+                        "A new local EtherChannel group appeared already degraded; expected intent "
+                        "cannot clear a current min-links, counter, partner, member, or rehearsal fault.",
+                    ))
+                elif status in _UNAVAILABLE_STATUSES:
+                    changes.append(_change(
+                        subject, "coverage_lost", "not_verified", {}, new,
+                        "A new configured/runtime group lacks complete typed operational evidence.",
+                    ))
+                else:
+                    changes.append(_change(
+                        subject, "appeared", "review", {}, new,
+                        "A new healthy local EtherChannel group requires configured-intent reconciliation.",
+                    ))
             elif new is None:
-                changes.append(_change(subject, "coverage_lost", "not_verified", old, {},
-                                       "The after local group/member receipt is no longer assessed; group disappearance is not asserted."))
+                coverage_cell = after_coverage.get((key[0],))
+                if isinstance(coverage_cell, Mapping) and coverage_cell.get("status") in {
+                        "assessed", "not_applicable"}:
+                    changes.append(_change(
+                        subject, "disappeared", "review", old, {},
+                        "A validated configured/runtime group disappeared and requires expected-change reconciliation.",
+                    ))
+                else:
+                    changes.append(_change(
+                        subject, "coverage_lost", "not_verified", old, {},
+                        "The after typed owner cannot verify group absence.",
+                    ))
             elif old["status"] in _UNAVAILABLE_STATUSES or new["status"] in _UNAVAILABLE_STATUSES:
                 changes.append(_change(subject, "coverage_lost", "not_verified", old, new,
                                        "Local group/member evidence is review or not verified on at least one side."))
@@ -1356,12 +1791,20 @@ def compute_etherchannel_delta(
             elif old["status"] == "degraded" and new["status"] != "degraded":
                 changes.append(_change(subject, "recovered", "none", old, new,
                                        "The previously degraded local group/member state recovered."))
-            elif new["forwarding_capacity_units"] < old["forwarding_capacity_units"]:
+            elif (new["capacity"]["forwarding_member_count"]
+                  < old["capacity"]["forwarding_member_count"]):
                 changes.append(_change(subject, "regressed", "block", old, new,
-                                       "Observed forwarding-member capacity units decreased."))
-            elif new["forwarding_capacity_units"] > old["forwarding_capacity_units"]:
+                                       "Observed forwarding-member count decreased."))
+            elif (type(new["capacity"].get("forwarding_bandwidth_mbps")) is int
+                  and type(old["capacity"].get("forwarding_bandwidth_mbps")) is int
+                  and new["capacity"]["forwarding_bandwidth_mbps"]
+                  < old["capacity"]["forwarding_bandwidth_mbps"]):
+                changes.append(_change(subject, "regressed", "block", old, new,
+                                       "Observed forwarding bandwidth decreased."))
+            elif (new["capacity"]["forwarding_member_count"]
+                  > old["capacity"]["forwarding_member_count"]):
                 changes.append(_change(subject, "recovered", "none", old, new,
-                                       "Observed forwarding-member capacity units increased."))
+                                       "Observed forwarding-member count increased."))
             elif old != new:
                 changes.append(_change(subject, "intent_changed", "review", old, new,
                                        "Protocol, configured association, runtime member, or member-state detail changed."))
@@ -1371,33 +1814,89 @@ def compute_etherchannel_delta(
     return _result(
         schema=ETHERCHANNEL_DELTA_SCHEMA,
         family="etherchannel",
-        assurance_level="observed_state_preservation",
+        assurance_level="intent_reconciled_survival",
         before_view=before_view,
         after_view=after_view,
         changes=changes,
         limitations=(
-            "Only validated local configured associations, runtime members, flags, protocol, and count-based forwarding capacity are compared.",
-            "LACP/PAgP partner identity, min-links, hashing behavior, counters, failure rehearsal, and multi-chassis state are not inferred.",
+            "Configured member modes, runtime members, explicit LACP partner identity, min-links, count/bandwidth capacity, hashing, bounded counters, and local member-loss eligibility are compared for declared IOS/NX-OS variants.",
+            "The local member-loss rehearsal does not prove convergence, hashing distribution, remote forwarding, traffic continuity, or service-path survival.",
+            "Single-chassis EtherChannel remains distinct from multichassis LAG pair and attachment identity.",
         ),
     )
 
 
+def _vtp_evidence_view(snapshot: Any) -> dict:
+    """Require the additive owner and reconcile its protected-v1 core projection."""
+    extended = _reconcile_baseline_coverage_roster(
+        validate_vtp_extended_evidence(_owner_value(snapshot, "vtp_extended_evidence")),
+        snapshot,
+        family="vtp_safety extended evidence",
+    )
+    legacy = _reconcile_baseline_coverage_roster(
+        validate_vtp_safety_baseline(_owner_value(snapshot, "vtp_safety_baseline")),
+        snapshot,
+        family="vtp_safety protected v1 evidence",
+    )
+    if extended.get("valid") is not True:
+        return _reconcilable(extended)
+    if legacy.get("valid") is not True:
+        return _reconcilable(_invalidate_owner_evidence(
+            extended,
+            "The protected vtp_safety_baseline/1 co-owner is missing, malformed, or does not "
+            "reconcile to the snapshot device roster.",
+        ))
+
+    legacy_index = legacy.get("index") if isinstance(legacy.get("index"), dict) else {}
+    extended_index = extended.get("index") if isinstance(extended.get("index"), dict) else {}
+    legacy_coverage = _coverage_index(legacy.get("baseline", {}), ("switch",))
+    core_fields = (
+        "mode", "mode_present", "domain", "domain_present", "version",
+        "version_present", "revision", "revision_present",
+    )
+    for host, row in extended_index.items():
+        protected = legacy_index.get(host)
+        if protected is None:
+            cell = legacy_coverage.get((host,))
+            explicit_disabled = bool(
+                isinstance(cell, Mapping)
+                and cell.get("explicit_no_subject") is True
+                and cell.get("parser_status") == "explicit_no_subject"
+                and row.get("mode") == "off"
+            )
+            co_owned_abstention = bool(
+                isinstance(cell, Mapping)
+                and cell.get("subject") is False
+                and row.get("status") == "not_verified"
+            )
+            if not explicit_disabled and not co_owned_abstention:
+                return _reconcilable(_invalidate_owner_evidence(
+                    extended,
+                    "The additive VTP row does not reconcile to protected v1 subject evidence.",
+                ))
+        elif any(row.get(field) != protected.get(field) for field in core_fields):
+            return _reconcilable(_invalidate_owner_evidence(
+                extended,
+                "The additive VTP mode/domain/version/revision leaves contradict protected v1.",
+            ))
+    if set(legacy_index) - set(extended_index):
+        return _reconcilable(_invalidate_owner_evidence(
+            extended,
+            "The protected v1 VTP owner contains a subject absent from additive evidence.",
+        ))
+    normalized = dict(extended)
+    normalized["source_bound"] = bool(
+        extended.get("source_bound") is True and legacy.get("source_bound") is True
+    )
+    return _reconcilable(normalized)
+
+
 def compute_vtp_safety_delta(
         before: Any, after: Any, *, comparison_source_binding: Any = None) -> dict:
-    """Compare validated VTP mode/domain/version/revision with movement defaulting to review."""
+    """Compare complete VTP/VLAN safety evidence with movement defaulting to review."""
     before_view, after_view = _pair_views(
-        _reconcilable(_reconcile_baseline_coverage_roster(
-            validate_vtp_safety_baseline(
-                _owner_value(before, "vtp_safety_baseline")),
-            before,
-            family="vtp_safety",
-        )),
-        _reconcilable(_reconcile_baseline_coverage_roster(
-            validate_vtp_safety_baseline(
-                _owner_value(after, "vtp_safety_baseline")),
-            after,
-            family="vtp_safety",
-        )),
+        _vtp_evidence_view(before),
+        _vtp_evidence_view(after),
         before,
         after,
         comparison_source_binding,
@@ -1407,18 +1906,34 @@ def compute_vtp_safety_delta(
     fields = (
         "status", "mode", "mode_present", "domain", "domain_present",
         "version", "version_present", "revision", "revision_present",
+        "database_identity", "vlan_database_digest", "vlan_count",
+        "pruning_state", "authentication_configured",
     )
 
-    def high_revision(row: Mapping[str, Any]) -> bool:
-        return any(
-            isinstance(item, dict) and item.get("code") == "high_revision_server"
-            for item in row.get("findings", [])
+    def revision_decreased(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+        return bool(
+            old.get("revision_present") is True and new.get("revision_present") is True
+            and type(old.get("revision")) is int and type(new.get("revision")) is int
+            and new["revision"] < old["revision"]
         )
 
-    def evidenced(row: Mapping[str, Any]) -> bool:
-        return _text(row.get("status")) == "assessed" or (
-            _text(row.get("status")) == "review" and high_revision(row)
+    def pure_revision_decrease(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+        invariant_fields = (
+            "mode", "mode_present", "domain", "domain_present", "version",
+            "version_present", "revision_present", "database_identity",
+            "vlan_database_digest", "vlan_count", "pruning_state",
+            "authentication_configured",
         )
+        return revision_decreased(old, new) and all(
+            old.get(field) == new.get(field) for field in invariant_fields
+        )
+
+    def with_change_kind(change: dict, old: Mapping[str, Any], new: Mapping[str, Any]) -> dict:
+        change["change_kind"] = (
+            "revision_decrease_observed" if pure_revision_decrease(old, new)
+            else "configuration_movement"
+        )
+        return change
 
     if not changes:
         before_index, after_index = before_view["index"], after_view["index"]
@@ -1428,8 +1943,9 @@ def compute_vtp_safety_delta(
             old, new = before_index.get(host), after_index.get(host)
             if old is None:
                 changes.append(_change(
-                    host, "appeared", "review", {}, _state(new, fields),
-                    "A new VTP subject appeared; reset/enablement intent is not inferred.",
+                    host, "appeared", "block" if new.get("status") == "unsafe" else "review",
+                    {}, _state(new, fields),
+                    "A new VTP subject appeared; current unsafe evidence blocks and reset/enablement intent is not inferred.",
                 ))
             elif new is None:
                 cell = after_coverage.get((host,))
@@ -1443,25 +1959,35 @@ def compute_vtp_safety_delta(
                         host, "disappeared", "review", _state(old, fields), {},
                         "A VTP subject disappeared; explicit disablement/reset intent must be reconciled.",
                     ))
-            elif not evidenced(old) or not evidenced(new):
+            elif old.get("status") == "not_verified" or new.get("status") == "not_verified":
                 changes.append(_change(
                     host, "coverage_lost", "not_verified", _state(old, fields), _state(new, fields),
-                    "At least one VTP row is parser/custody review or not verified; no safe movement is asserted.",
+                    "At least one complete three-command VTP/VLAN row is not verified; no safe movement is asserted.",
                 ))
-            elif any(old.get(field) != new.get(field) for field in fields[1:]):
-                changes.append(_change(
-                    host, "intent_changed", "review", _state(old, fields), _state(new, fields),
-                    "VTP mode, domain, version, or revision moved; reset/change intent must be reconciled.",
-                ))
-            elif high_revision(new):
+            elif old.get("status") == "unsafe" and new.get("status") == "unsafe":
                 changes.append(_change(
                     host, "unchanged_degraded", "block", _state(old, fields), _state(new, fields),
-                    "The high-revision Server safety blocker remains present; matching it is not acceptance.",
+                    "Current high-revision, authentication, or VLAN-digest unsafety remains; changed details do not make it acceptable.",
                 ))
+            elif new.get("status") == "unsafe":
+                changes.append(_change(
+                    host, "regressed", "block", _state(old, fields), _state(new, fields),
+                    "The current VTP/VLAN evidence is unsafe; expected movement cannot clear this blocker.",
+                ))
+            elif old.get("status") == "unsafe":
+                changes.append(with_change_kind(_change(
+                    host, "recovered", "review", _state(old, fields), _state(new, fields),
+                    "The prior VTP/VLAN safety fault cleared through observed movement that still requires explicit intent reconciliation.",
+                ), old, new))
+            elif any(old.get(field) != new.get(field) for field in fields[1:]):
+                changes.append(with_change_kind(_change(
+                    host, "intent_changed", "review", _state(old, fields), _state(new, fields),
+                    "VTP mode/domain/version/revision, VLAN digest, pruning, or authentication-presence moved; change intent must be reconciled.",
+                ), old, new))
             else:
                 changes.append(_change(
                     host, "unchanged_healthy", "none", _state(old, fields), _state(new, fields),
-                    "The validated bounded VTP safety state is unchanged.",
+                    "The validated complete VTP/VLAN safety projection is unchanged and currently healthy.",
                 ))
     if before_view.get("valid") and after_view.get("valid"):
         _append_coverage_gaps(
@@ -1480,8 +2006,9 @@ def compute_vtp_safety_delta(
         after_view=after_view,
         changes=changes,
         limitations=(
-            "Mode, domain, version, and revision movement requires review unless reconciled by the cutover intent owner.",
-            "VLAN database/digest equality, pruning, authentication, advertisement behavior, and revision-reset safety are not proved.",
+            "All mode/domain/version/revision, VLAN-digest, pruning, and authentication-presence movement requires review unless reconciled by cutover_change_intent/1.",
+            "A revision decrease is labelled only as an observed decrease; it can be reconciled as a reset only by exact-subject revision_reset intent in cutover_change_intent/1.",
+            "Advertisement reachability, convergence, per-port VLAN membership, and authentication secrets remain outside this owner.",
         ),
     )
 
@@ -1510,8 +2037,21 @@ def compute_fhrp_configured_group_delta(
         after_view.get("baseline", {}), ("switch", "protocol"))
 
     def appeared(name: str, row: Mapping[str, Any]) -> dict:
+        status = _text(row.get("status"))
+        state = _state(
+            row, ("status", "activation", "configured_vip", "runtime_state"))
+        if status in _UNAVAILABLE_STATUSES:
+            return _change(
+                name, "coverage_lost", "not_verified", {}, state,
+                "The new local FHRP group lacks verified configuration/runtime evidence, so its state is not asserted.",
+            )
+        if status == "degraded" and _text(row.get("activation")) == "active":
+            return _change(
+                name, "appeared", "block", {}, state,
+                "A new configured-active local FHRP group is already degraded; expected intent cannot clear a current fault.",
+            )
         return _change(name, "appeared", "review", {},
-                       _state(row, ("status", "activation", "configured_vip", "runtime_state")),
+                       state,
                        "A new literal local FHRP group requires intent reconciliation.")
 
     def disappeared(name: str, row: Mapping[str, Any]) -> dict:
@@ -1681,8 +2221,21 @@ def compute_fhrp_redundancy_domain_delta(
             old = _domain_state(old_raw) if isinstance(old_raw, Mapping) else None
             new = _domain_state(new_raw) if isinstance(new_raw, Mapping) else None
             if old is None:
-                changes.append(_change(subject, "appeared", "review", {}, new,
-                                       "A new observed FHRP redundancy domain requires intended-domain reconciliation."))
+                if not isinstance(new, Mapping) or new.get("status") == "not_verified":
+                    changes.append(_change(
+                        subject, "coverage_lost", "not_verified", {}, new or {},
+                        "The new FHRP redundancy domain is not source-verified, so no healthy domain is asserted.",
+                    ))
+                elif _domain_healthy(new):
+                    changes.append(_change(
+                        subject, "appeared", "review", {}, new,
+                        "A new healthy observed FHRP redundancy domain requires intended-domain reconciliation.",
+                    ))
+                else:
+                    changes.append(_change(
+                        subject, "appeared", "block", {}, new,
+                        "A new FHRP redundancy domain already has zero/multiple leaders or insufficient observed redundancy; expected intent cannot clear a current fault.",
+                    ))
                 continue
             if new is None:
                 changes.append(_change(subject, "disappeared", "block", old, {},

@@ -2899,6 +2899,104 @@ def parse_vlan_brief(output: str) -> Dict[str, Dict[str, object]]:
 _STP_STS_NAME = {"FWD": "Forwarding", "BLK": "Blocked", "BKN": "Blocked",
                  "LIS": "Listening", "LRN": "Learning", "DIS": "Disabled"}
 
+_STP_ROLE_NAME = {
+    "ROOT": "root",
+    "DESG": "designated",
+    "ALTN": "alternate",
+    "BACK": "backup",
+    "BOUN": "boundary",
+    "MSTR": "master",
+}
+
+
+def parse_spanning_tree_role_rows(output: str) -> List[Dict[str, object]]:
+    """Parse namespace-aware STP port roles and states from ``show spanning-tree``.
+
+    This is additive to :func:`parse_spanning_tree_detail`: the legacy helper intentionally
+    retains its historical ``{interface: {state: [id]}}`` shape.  Decision-grade comparison
+    needs the namespace and role that shape discarded, so this owner returns one closed row per
+    ``(namespace, instance, interface)`` without inferring a role from forwarding state.
+    """
+    rows: List[Dict[str, object]] = []
+    if not output:
+        return rows
+    header = re.compile(r"^(VLAN|MST)0*(\d+)\b", re.IGNORECASE)
+    port = re.compile(
+        r"^(\S+)\s+(Root|Desg|Altn|Back|Boun|Mstr)\*?\s+"
+        r"(FWD|BLK|LIS|LRN|DIS|BKN)\b",
+        re.IGNORECASE,
+    )
+    namespace = instance = ""
+    seen: set[tuple[str, str, str]] = set()
+    for raw in output.splitlines():
+        text = raw.strip()
+        if not text:
+            continue
+        match = header.match(text)
+        if match:
+            namespace = "pvst_vlan" if match.group(1).upper() == "VLAN" else "mst_instance"
+            instance = str(int(match.group(2)))
+            continue
+        match = port.match(text)
+        if not match or not namespace or not is_valid_iface(match.group(1)):
+            continue
+        interface = normalize_ifname(match.group(1))
+        key = (namespace, instance, interface)
+        if key in seen:
+            # A duplicate subject is withheld instead of allowing line order to choose a winner.
+            continue
+        seen.add(key)
+        rows.append({
+            "namespace": namespace,
+            "instance": instance,
+            "interface": interface,
+            "role": _STP_ROLE_NAME[match.group(2).upper()],
+            "state": _STP_STS_NAME[match.group(3).upper()].casefold(),
+        })
+    return rows
+
+
+def parse_spanning_tree_topology_changes(output: str) -> List[Dict[str, object]]:
+    """Parse per-PVST-VLAN/MST-instance topology-change counters from detail output.
+
+    A counter is emitted only while an explicit VLAN or MST instance header is in scope.  A
+    headerless aggregate number is intentionally ignored: assigning it to a VLAN/instance would
+    fabricate the subject identity needed by the cutover comparison.
+    """
+    rows: List[Dict[str, object]] = []
+    if not output:
+        return rows
+    header = re.compile(r"^(?:#+\s*)?(VLAN|MST)0*(\d+)\b", re.IGNORECASE)
+    counter = re.compile(
+        r"number\s+of\s+topology\s+changes\s+(\d+)(?:\s+last\s+change\s+occurred\s+(.+?))?\s*$",
+        re.IGNORECASE,
+    )
+    namespace = instance = ""
+    seen: set[tuple[str, str]] = set()
+    for raw in output.splitlines():
+        text = raw.strip()
+        if not text:
+            continue
+        match = header.match(text)
+        if match:
+            namespace = "pvst_vlan" if match.group(1).upper() == "VLAN" else "mst_instance"
+            instance = str(int(match.group(2)))
+            continue
+        match = counter.search(text)
+        if not match or not namespace:
+            continue
+        key = (namespace, instance)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "namespace": namespace,
+            "instance": instance,
+            "count": int(match.group(1)),
+            "last_change": (match.group(2) or "").strip(),
+        })
+    return rows
+
 def parse_spanning_tree_detail(output: str) -> Dict[str, Dict[str, List[str]]]:
     """Parse full 'show spanning-tree' -> {ifname: {state_name: [vlan/instance ids]}}.
 

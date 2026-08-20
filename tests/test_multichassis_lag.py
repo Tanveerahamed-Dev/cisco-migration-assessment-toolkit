@@ -5,6 +5,8 @@ import hashlib
 
 import pytest
 
+from cisco_toolkit import protocol_assurance as pa
+from cisco_toolkit.html import compute_cutover_gate
 from cisco_toolkit.multichassis_lag import (
     MULTICHASSIS_LAG_DELTA_SCHEMA,
     MULTICHASSIS_LAG_DOMAIN_BASELINE_SCHEMA,
@@ -15,6 +17,7 @@ from cisco_toolkit.multichassis_lag import (
     multichassis_lag_support_profile,
     produce_multichassis_lag_typed_observation,
     validate_multichassis_lag_domain_baseline,
+    validate_multichassis_lag_snapshot_evidence,
 )
 from cisco_toolkit.protocol_assurance import ASSURANCE_LEVELS, CHANGE_VOCABULARY
 
@@ -39,6 +42,11 @@ def _nxos_observation(
     collection_mode: str = "live",
     extra_legs: list[dict] | None = None,
     domain_state_overrides: dict[str, str] | None = None,
+    dual_active_status: str = "0",
+    orphan_output: str = "VLAN           Orphan Ports\n-------        -------------------------\n",
+    orphan_suspend_ports: tuple[str, ...] = (),
+    running_config_output: str | None = None,
+    declared_leg_count: int | None = None,
 ) -> dict:
     legs = []
     if attachment_id is not None:
@@ -69,7 +77,7 @@ def _nxos_observation(
 Peer status                       : {domain_state['peer_status']}
 vPC keep-alive status             : {domain_state['keepalive_status']}
 Configuration consistency status : {domain_state['consistency']}
-Number of vPCs configured         : {len(legs)}
+Number of vPCs configured         : {len(legs) if declared_leg_count is None else declared_leg_count}
 
 vPC Peer-link status
 id Port Status Active vlans
@@ -80,7 +88,7 @@ id Port Status Consistency Reason Active vlans
 {vpc_rows}""".encode()
     role = f"""vPC Role status
 vPC role                        : primary
-Dual Active Detection Status    : Disabled
+Dual Active Detection Status    : {dual_active_status}
 vPC system-mac                  : 00:00:5e:00:01:01
 vPC local system-mac            : {_identity(switch)}
 vPC peer system-mac             : {_identity(peer)}
@@ -107,6 +115,16 @@ Port Priority Oper Key Port State
         "show vpc": vpc,
         "show vpc role": role,
         "show lacp neighbor": ("\n".join(lacp_sections) or "No LACP neighbors\n").encode(),
+        "show vpc orphan-ports": orphan_output.encode(),
+        "show running-config": (
+            running_config_output
+            if running_config_output is not None else
+            "hostname " + switch + "\n" + "\n".join(
+                f"interface {interface}\n"
+                + (" vpc orphan-port suspend\n" if interface in orphan_suspend_ports else "")
+                for interface in sorted({"Eth1/1", *orphan_suspend_ports})
+            ) + "\nend\n"
+        ).encode(),
     }
     observation = produce_multichassis_lag_typed_observation(
         switch, vendor="cisco", platform="nxos", collection_mode=collection_mode,
@@ -172,19 +190,22 @@ def _nxos_pair(*, domain_id: str = "10", second_status: str = "up",
                partner_aggregation: str = "42",
                second_partner_system: str | None = None,
                second_partner_aggregation: str | None = None,
-               extra_legs: list[dict] | None = None) -> dict:
+               extra_legs: list[dict] | None = None,
+               dual_active_status: str = "0",
+               second_dual_active_status: str | None = None) -> dict:
     return {
         "observations": [
             _nxos_observation(
                 "leaf-a", "leaf-b", source_digit="a", domain_id=domain_id,
                 partner_system=partner_system, partner_aggregation=partner_aggregation,
-                extra_legs=extra_legs),
+                extra_legs=extra_legs, dual_active_status=dual_active_status),
             _nxos_observation(
                 "leaf-b", "leaf-a", source_digit="b", domain_id=domain_id,
                 status=second_status,
                 partner_system=(second_partner_system or partner_system),
                 partner_aggregation=(second_partner_aggregation or partner_aggregation),
-                extra_legs=extra_legs),
+                extra_legs=extra_legs,
+                dual_active_status=(second_dual_active_status or dual_active_status)),
         ]
     }
 
@@ -215,6 +236,39 @@ def _assert_no_overall_decision(value: dict) -> None:
     assert "verdict" not in value
 
 
+def _canonical_gate_for(native_delta: dict, expected_changes: list[dict]) -> tuple[dict, dict]:
+    ipv4 = {
+        "schema": "protocol_adjacency_delta/1",
+        "summary": {"n_preserved": 1},
+        "changes": [],
+        "coverage_gaps": [],
+    }
+    families = pa.protocol_family_change_set(
+        ipv4,
+        {"expected_changes": expected_changes},
+        native_deltas=[native_delta],
+    )
+    clean_delta = {
+        "verdict": "CLEAN",
+        "verdict_display": "NO DELTA REGRESSION OBSERVED",
+        "verdict_note": "legacy delta is clean",
+        "protocol_adjacencies": {
+            "gate": "PASS",
+            "summary": {
+                "n_state_regressed": 0,
+                "n_coverage_gaps": 0,
+                "n_baseline_peers": 1,
+            },
+        },
+    }
+    gate = compute_cutover_gate(
+        clean_delta,
+        {"verdict": "PASS", "verdict_note": "certificate clean"},
+        protocol_family_changes=families,
+    )
+    return families, gate
+
+
 def test_support_profile_and_subject_scope_are_closed_and_total() -> None:
     profile = multichassis_lag_support_profile()
     assert profile["owner_schema"] == MULTICHASSIS_LAG_DELTA_SCHEMA
@@ -222,6 +276,7 @@ def test_support_profile_and_subject_scope_are_closed_and_total() -> None:
     assert profile["variants"][0]["collection_modes"] == ["live", "offline"]
     assert profile["variants"][0]["raw_commands"] == [
         "show vpc", "show vpc role", "show lacp neighbor",
+        "show vpc orphan-ports", "show running-config",
     ]
     assert profile["variants"][0]["maximum_assurance"] == "intent_reconciled_survival"
     assert profile["variants"][1]["collection_modes"] == ["offline"]
@@ -489,6 +544,345 @@ def test_delta_uses_shared_vocabulary_and_tracks_health_and_intent_transitions()
             "lacp_partner_system_id",
         ]
         for row in intent["changes"]
+    )
+
+
+def test_changed_current_degradation_stays_blocking_through_expected_intent_and_gate() -> None:
+    before = compute_multichassis_lag_domain_baseline(
+        _nxos_pair(second_status="down"))
+    after = compute_multichassis_lag_domain_baseline(_nxos_pair(
+        second_status="down",
+        partner_system="00aa.bbcc.ddee",
+        partner_aggregation="84",
+    ))
+    native = compute_multichassis_lag_delta(
+        before, after, source_binding=_binding(before, after))
+
+    degraded = [row for row in native["changes"] if row["after_state"] == "degraded"]
+    assert len(degraded) == 2
+    assert all(row["changed_fields"] for row in degraded)
+    assert {row["transition"] for row in degraded} == {"unchanged_degraded"}
+    assert {row["decision_effect"] for row in degraded} == {"block"}
+
+    expected = [{
+        "family": "multichassis_lag",
+        "transitions": ["intent_changed", "unchanged_degraded"],
+        "subjects": [],
+        "reason": "planned attachment identity update",
+    }]
+    families, gate = _canonical_gate_for(native, expected)
+    family = next(
+        row for row in families["families"] if row["family"] == "multichassis_lag")
+    current_faults = [
+        row for row in family["changes"] if row["after_state"] == "degraded"
+    ]
+    assert current_faults and all(row["expected"] is True for row in current_faults)
+    assert {row["decision_effect"] for row in current_faults} == {"block"}
+    assert family["summary"]["n_blocking"] == len(current_faults)
+    assert gate["verdict"] == "REGRESSED"
+    assert gate["protocol_family_blocking"] == len(current_faults)
+
+
+def test_appeared_degraded_subjects_stay_blocking_through_expected_intent_and_gate() -> None:
+    before = compute_multichassis_lag_domain_baseline(_nxos_pair())
+    after = compute_multichassis_lag_domain_baseline(_nxos_pair(extra_legs=[{
+        "attachment_id": "30",
+        "local_port_channel": "Po30",
+        "status": "down",
+        "consistency": "success",
+        "lacp_partner_system_id": "00ff.eedd.ccbb",
+        "lacp_partner_aggregation_id": "60",
+    }]))
+    native = compute_multichassis_lag_delta(
+        before, after, source_binding=_binding(before, after))
+
+    appeared_faults = [
+        row for row in native["changes"]
+        if row["transition"] == "appeared" and row["after_state"] == "degraded"
+    ]
+    assert len(appeared_faults) == 3
+    assert {row["record_type"] for row in appeared_faults} == {
+        "local_leg", "reconciled_attachment",
+    }
+    assert {row["decision_effect"] for row in appeared_faults} == {"block"}
+
+    expected = [{
+        "family": "multichassis_lag",
+        "transitions": ["appeared"],
+        "subjects": [row["subject"] for row in appeared_faults],
+        "reason": "planned new dual-homed attachment",
+    }]
+    families, gate = _canonical_gate_for(native, expected)
+    family = next(
+        row for row in families["families"] if row["family"] == "multichassis_lag")
+    current_faults = [
+        row for row in family["changes"] if row["after_state"] == "degraded"
+    ]
+    assert current_faults and all(row["expected"] is True for row in current_faults)
+    assert {row["decision_effect"] for row in current_faults} == {"block"}
+    assert gate["verdict"] == "REGRESSED"
+    assert gate["protocol_family_blocking"] == len(current_faults)
+
+
+def test_source_bound_nxos_dual_active_status_is_preserved_and_compared() -> None:
+    before = compute_multichassis_lag_domain_baseline(
+        _nxos_pair(dual_active_status="0"))
+    after = compute_multichassis_lag_domain_baseline(
+        _nxos_pair(dual_active_status="1"))
+
+    assert {row["dual_active_status"] for row in before["local_observations"]} == {
+        "0"
+    }
+    assert {row["dual_active_status"] for row in after["local_observations"]} == {
+        "1"
+    }
+    native = compute_multichassis_lag_delta(
+        before, after, source_binding=_binding(before, after))
+    changed = [
+        row for row in native["changes"]
+        if row["record_type"] == "local_observation"
+        and "dual_active_status" in row["changed_fields"]
+    ]
+    assert len(changed) == 2
+    assert {row["transition"] for row in changed} == {"regressed"}
+    assert {row["decision_effect"] for row in changed} == {"block"}
+
+    expected = [{
+        "family": "multichassis_lag",
+        "transitions": ["regressed"],
+        "subjects": [row["subject"] for row in changed],
+        "reason": "planned vPC role work",
+    }]
+    families, gate = _canonical_gate_for(native, expected)
+    family = next(
+        row for row in families["families"] if row["family"] == "multichassis_lag")
+    regressed = [
+        row for row in family["changes"]
+        if row["subject"] in {item["subject"] for item in changed}
+    ]
+    assert regressed and all(row["expected"] is True for row in regressed)
+    assert {row["decision_effect"] for row in regressed} == {"block"}
+    assert gate["verdict"] == "REGRESSED"
+
+    unknown = compute_multichassis_lag_domain_baseline(
+        _nxos_pair(dual_active_status="Disabled"))
+    assert {row["health_state"] for row in unknown["local_observations"]} == {
+        "not_verified"
+    }
+
+
+def test_source_bound_nxos_orphan_ports_preserve_vlan_and_suspend_evidence() -> None:
+    orphan_output = """Switch# show vpc orphan-ports
+Note:
+--------::Going through port database. Please be patient.::--------
+
+VLAN           Orphan Ports
+-------        -------------------------
+10             Po21, Eth1/45
+20             Po21
+"""
+    baseline = compute_multichassis_lag_domain_baseline({"observations": [
+        _nxos_observation(
+            "leaf-a", "leaf-b", source_digit="a",
+            orphan_output=orphan_output,
+            orphan_suspend_ports=("Eth1/45",),
+        ),
+        _nxos_observation(
+            "leaf-b", "leaf-a", source_digit="b",
+            orphan_output="VLAN           Orphan Ports\n"
+                          "-------        -------------------------\n",
+        ),
+    ]})
+
+    leaf_a = next(
+        row for row in baseline["local_observations"] if row["switch"] == "leaf-a"
+    )
+    assert leaf_a["orphan_evidence"] == {
+        "status": "assessed",
+        "ports": [
+            {
+                "interface": "Eth1/45",
+                "vlans": [10],
+                "suspend_on_peer_link_loss": True,
+            },
+            {
+                "interface": "Po21",
+                "vlans": [10, 20],
+                "suspend_on_peer_link_loss": False,
+            },
+        ],
+        "orphan_table_observed": True,
+        "suspend_config_observed": True,
+    }
+    assert leaf_a["health_state"] == "healthy"
+    assert validate_multichassis_lag_domain_baseline(baseline)["valid"] is True
+
+    missing = compute_multichassis_lag_domain_baseline({"observations": [
+        _nxos_observation("leaf-a", "leaf-b", source_digit="a"),
+        _nxos_observation("leaf-b", "leaf-a", source_digit="b"),
+    ]})
+    changed = compute_multichassis_lag_delta(
+        missing, baseline, source_binding=_binding(missing, baseline))
+    rows = [
+        row for row in changed["changes"]
+        if row["record_type"] == "local_observation"
+        and "orphan_evidence" in row["changed_fields"]
+    ]
+    assert len(rows) == 1
+    assert rows[0]["transition"] == "intent_changed"
+    assert rows[0]["decision_effect"] == "review"
+
+
+@pytest.mark.parametrize(
+    ("orphan_output", "running_config_output"),
+    (
+        ("VLAN Orphan Ports\n", "interface Eth1/1\nend\n"),
+        ('{"TABLE_orphan_ports":{}}', "interface Eth1/1\nend\n"),
+        (
+            '{"TABLE_orphan_ports":{"ROW_orphan_ports":'
+            '{"vpc-vlan":"10"}}}',
+            "interface Eth1/1\nend\n",
+        ),
+        (
+            "VLAN           Orphan Ports\n-------        -------------------------\n",
+            "interface Eth1/1\n",
+        ),
+        (
+            "VLAN           Orphan Ports\n-------        -------------------------\n10\n",
+            "interface Eth1/1\nend\n",
+        ),
+        (
+            "VLAN           Orphan Ports\n-------        -------------------------\nBADVLAN Eth1/7\n",
+            "interface Eth1/1\nend\n",
+        ),
+        (
+            "VLAN           Orphan Ports\n-------        -------------------------\n10 BADPORT\n",
+            "interface Eth1/1\nend\n",
+        ),
+        (
+            "ERROR: no vPC orphan ports because authorization failed\n",
+            "interface Eth1/1\nend\n",
+        ),
+        (
+            "No orphan ports information available due timeout\n",
+            "interface Eth1/1\nend\n",
+        ),
+        (
+            "garbage no orphan port response truncated\n",
+            "interface Eth1/1\nend\n",
+        ),
+    ),
+    ids=(
+        "header-only", "json-table-only", "json-row-leaf-missing", "config-truncated",
+        "text-row-truncated", "text-vlan-malformed", "text-port-malformed",
+        "explicit-empty-error-prefix", "explicit-empty-error-suffix",
+        "explicit-empty-garbage-wrapper",
+    ),
+)
+def test_truncated_or_malformed_orphan_sources_cannot_authorize_health(
+        orphan_output: str, running_config_output: str) -> None:
+    baseline = compute_multichassis_lag_domain_baseline({"observations": [
+        _nxos_observation(
+            "leaf-a", "leaf-b", source_digit="a",
+            orphan_output=orphan_output,
+            running_config_output=running_config_output,
+        ),
+        _nxos_observation(
+            "leaf-b", "leaf-a", source_digit="b",
+            orphan_output=orphan_output,
+            running_config_output=running_config_output,
+        ),
+    ]})
+
+    assert {row["health_state"] for row in baseline["local_observations"]} == {
+        "not_verified"
+    }
+    delta = compute_multichassis_lag_delta(
+        baseline, baseline, source_binding=_binding(baseline, baseline))
+    _families, gate = _canonical_gate_for(delta, [])
+    assert gate["verdict"] == "INDETERMINATE"
+
+
+def test_closed_explicit_empty_orphan_response_remains_assessed() -> None:
+    baseline = compute_multichassis_lag_domain_baseline({"observations": [
+        _nxos_observation(
+            "leaf-a", "leaf-b", source_digit="a",
+            orphan_output="No vPC orphan ports\n",
+        ),
+        _nxos_observation(
+            "leaf-b", "leaf-a", source_digit="b",
+            orphan_output="No vPC orphan ports\n",
+        ),
+    ]})
+
+    assert {row["health_state"] for row in baseline["local_observations"]} == {"healthy"}
+    assert all(
+        row["orphan_evidence"] == {
+            "status": "assessed",
+            "ports": [],
+            "orphan_table_observed": True,
+            "suspend_config_observed": True,
+        }
+        for row in baseline["local_observations"]
+    )
+    delta = compute_multichassis_lag_delta(
+        baseline, baseline, source_binding=_binding(baseline, baseline))
+    _families, gate = _canonical_gate_for(delta, [])
+    assert gate["verdict"] == "PASS"
+
+
+def test_declared_vpc_count_without_member_rows_cannot_authorize_clean_gate() -> None:
+    baseline = compute_multichassis_lag_domain_baseline({"observations": [
+        _nxos_observation(
+            "leaf-a", "leaf-b", source_digit="a", attachment_id=None,
+            declared_leg_count=1,
+        ),
+        _nxos_observation(
+            "leaf-b", "leaf-a", source_digit="b", attachment_id=None,
+            declared_leg_count=1,
+        ),
+    ]})
+
+    assert {row["health_state"] for row in baseline["local_observations"]} == {
+        "not_verified"
+    }
+    assert baseline["reconciled_attachments"] == []
+    delta = compute_multichassis_lag_delta(
+        baseline, baseline, source_binding=_binding(baseline, baseline))
+    _families, gate = _canonical_gate_for(delta, [])
+    assert gate["verdict"] == "INDETERMINATE"
+
+
+def test_persisted_healthy_receipt_and_subject_scope_must_reconcile_exactly() -> None:
+    observations = _nxos_pair()
+    baseline = compute_multichassis_lag_domain_baseline(observations)
+    tampered = copy.deepcopy(dict(baseline))
+    for row in tampered["local_observations"]:
+        row["source_receipt"]["capture_status"] = "incomplete"
+        row["source_receipt"]["commands"].remove("show lacp neighbor")
+    tampered["summary"]["baseline_sha256"] = ""
+    tampered["summary"]["baseline_sha256"] = pa.canonical_sha256(tampered)
+
+    validation = validate_multichassis_lag_domain_baseline(tampered)
+    assert validation["valid"] is False
+    assert validation["reason"] == "baseline_local_false_health"
+
+    scope_tamper = copy.deepcopy(dict(baseline))
+    scope_tamper["subject_scope"]["rows"] = []
+    scope_tamper["subject_scope"]["summary"]["n_local_subjects"] = 0
+    scope_tamper["subject_scope"]["summary"]["n_in_scope"] = 0
+    scope_tamper["subject_scope"]["summary"]["scope_sha256"] = ""
+    scope_tamper["subject_scope"]["summary"]["scope_sha256"] = pa.canonical_sha256(
+        scope_tamper["subject_scope"]
+    )
+    scope_tamper["summary"]["baseline_sha256"] = ""
+    scope_tamper["summary"]["baseline_sha256"] = pa.canonical_sha256(scope_tamper)
+    reconciled = validate_multichassis_lag_snapshot_evidence(
+        scope_tamper, observations, {"leaf-a": {}, "leaf-b": {}}
+    )
+    assert reconciled["valid"] is False
+    assert reconciled["reason"] == (
+        "stored_baseline_invalid:baseline_subject_scope_invalid"
     )
 
 

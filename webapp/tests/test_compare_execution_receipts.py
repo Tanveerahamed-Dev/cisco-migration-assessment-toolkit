@@ -137,6 +137,55 @@ def _canonical_sha256(value: object) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+@pytest.mark.parametrize(
+    ("path", "raw"),
+    [
+        ("/api/compare", b'{"old_id":1,"old_id":2,"new_id":3}'),
+        (
+            "/api/compare",
+            b'{"old_id":1,"new_id":2,"change_intent":{"expected_changes":['
+            b'{"family":"vtp_safety","transitions":["intent_changed"],'
+            b'"intent_kind":"","intent_kind":"revision_reset"}]}}',
+        ),
+        (
+            "/api/compare",
+            b'{"old_id":1,"new_id":2,"change_intent":{"expected_changes":['
+            b'{"family":"vtp_safety","transitions":["intent_changed"],'
+            b'"reason":"first","reason":"second"}]}}',
+        ),
+        ("/api/executions/1/compare", b'{"after_snapshot_id":1,"after_snapshot_id":2}'),
+        (
+            "/api/executions/1/compare",
+            b'{"after_snapshot_id":2,"change_intent":{"expected_changes":['
+            b'{"family":"vtp_safety","transitions":["intent_changed"],'
+            b'"intent_kind":"","intent_kind":"revision_reset"}]}}',
+        ),
+    ],
+)
+def test_decision_json_wire_body_rejects_duplicate_keys(client, path, raw):
+    response = client.post(path, content=raw, headers={"content-type": "application/json"})
+
+    assert response.status_code == 400
+    assert "duplicate json object key" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("bad_id", [True, "1", 1.0])
+def test_compare_snapshot_ids_are_strict_integers(client, bad_id):
+    response = client.post("/api/compare", json={"old_id": bad_id, "new_id": 1})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("bad_id", [True, "1", 1.0])
+def test_execution_compare_snapshot_id_is_a_strict_integer(client, bad_id):
+    response = client.post(
+        "/api/executions/1/compare",
+        json={"after_snapshot_id": bad_id},
+    )
+
+    assert response.status_code == 422
+
+
 def _rehash_complete_comparison(comparison: dict) -> None:
     """Rebuild both detached and execution digests after an adversarial payload rewrite."""
     additive = {
@@ -493,6 +542,36 @@ def test_execution_compare_rejects_semantically_invalid_change_intent(client):
     assert stored["comparisons"] == []
 
 
+@pytest.mark.parametrize(
+    "change_intent",
+    [
+        {"expected_change": []},
+        {
+            "expected_changes": [{
+                "family": "ipv4_routing_adjacency",
+                "transitions": ["appeared"],
+                "subjects": [],
+                "reasno": "misspelled reason",
+            }],
+        },
+    ],
+)
+def test_compare_api_rejects_unknown_change_intent_fields(client, change_intent):
+    before_id, after_id = _pair(client)
+
+    response = client.post(
+        "/api/compare",
+        json={
+            "old_id": before_id,
+            "new_id": after_id,
+            "change_intent": change_intent,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "extra_forbidden" in response.text
+
+
 def test_execution_compare_detects_after_source_deleted_during_computation(
         client, monkeypatch):
     before_id, after_id = _pair(client)
@@ -747,6 +826,10 @@ def test_compare_and_execution_receipt_are_exactly_parity_bound_to_stored_bytes(
             (
                 "UPDATE snapshots SET script_version=? WHERE id=?",
                 ("V999.TAMPERED", after_id),
+            ),
+            (
+                "UPDATE snapshots SET uploaded_at=? WHERE id=?",
+                ("2099-01-01T00:00:00+00:00", after_id),
             ),
             (
                 "INSERT OR REPLACE INTO snapshots("

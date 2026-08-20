@@ -12,6 +12,12 @@ import type {
   ExecWave,
   SnapshotMeta,
 } from "../api";
+import {
+  baselinePresentationKey,
+  isLegacyBaselinePresentationCandidate,
+  isProducerDeclaredBaselineBlocker,
+  type BaselinePresentationRow,
+} from "../baselinePresentation";
 import ComparisonDecision from "../components/ComparisonDecision";
 import { CountUp, ErrorBox, Loading, SevChip, useAsync, useToast } from "../components/ui";
 
@@ -75,33 +81,10 @@ function FrozenBaselineGate({ gate, blockerCount, scope }: {
   );
 }
 
-type BaselineReceiptRow = {
-  device?: string;
-  wave?: string;
-  category?: string;
-  check?: string;
-  expect?: string;
-  source_key?: string;
-  evidence_state?: string;
-  baseline_state?: string;
-  baseline_blocker?: boolean;
-};
-
-function baselineReceiptKey(row: BaselineReceiptRow): string {
-  return [row.device, row.wave, row.category, row.check, row.source_key, row.expect]
-    .map((part) => String(part || "").trim())
-    .join("\u0000");
-}
-
-function checkIsBaselineBlocker(row: BaselineReceiptRow): boolean {
-  const state = String(row.baseline_state || row.evidence_state || "").trim().toLowerCase();
-  return row.baseline_blocker === true || ["degraded", "review", "not_verified"].includes(state);
-}
-
-function boundExecutionBlockers(wave: ExecWave): BaselineReceiptRow[] {
+function boundExecutionBlockers(wave: ExecWave): BaselinePresentationRow[] {
   if (Array.isArray(wave.baseline_blockers)) return wave.baseline_blockers;
   if (Array.isArray(wave.current_baseline?.blockers)) return wave.current_baseline.blockers;
-  return wave.checks.filter(checkIsBaselineBlocker);
+  return wave.checks.filter(isProducerDeclaredBaselineBlocker);
 }
 
 function frozenUnboundBlockers(ex: ExecutionState): CurrentBaselineBlocker[] {
@@ -114,11 +97,11 @@ function frozenUnboundBlockers(ex: ExecutionState): CurrentBaselineBlocker[] {
       ? ex.plan_summary.current_baseline.blockers : [];
   const boundCounts = new Map<string, number>();
   ex.waves.forEach((wave) => boundExecutionBlockers(wave).forEach((row) => {
-    const key = baselineReceiptKey(row);
+    const key = baselinePresentationKey(row);
     boundCounts.set(key, (boundCounts.get(key) || 0) + 1);
   }));
   return allRows.filter((row) => {
-    const key = baselineReceiptKey(row);
+    const key = baselinePresentationKey(row);
     const remaining = boundCounts.get(key) || 0;
     if (!remaining) return true;
     boundCounts.set(key, remaining - 1);
@@ -156,7 +139,7 @@ function FrozenUnboundBaselineReceipt({ blockers, reportedCount, diagnosticCappe
         const tone = state === "degraded" ? "var(--crit)" : "var(--watch)";
         return (
           <div data-testid="execution-unbound-baseline-blocker"
-            key={`${baselineReceiptKey(row)}\u0000${index}`}
+            key={`${baselinePresentationKey(row)}\u0000${index}`}
             style={{ borderTop: "1px solid var(--border-faint)", borderLeft: `3px solid ${tone}`, padding: "9px 10px" }}>
             <div className="row-flex" style={{ gap: 7, alignItems: "baseline", flexWrap: "wrap" }}>
               <span className="chip" style={{ color: tone, borderColor: tone }}>{state.replaceAll("_", " ").toUpperCase()}</span>
@@ -271,12 +254,16 @@ function CheckRow({ c, i, live, onSet }:
   const [editing, setEditing] = useState(false);
   const [observed, setObserved] = useState(c.observed);
   const baselineState = String(c.baseline_state || c.evidence_state || "").trim().toLowerCase();
-  const baselineBlocker = c.baseline_blocker === true
-    || ["degraded", "review", "not_verified"].includes(baselineState);
+  const baselineBlocker = isProducerDeclaredBaselineBlocker(c);
+  const legacyBaselineHint = isLegacyBaselinePresentationCandidate(c);
   const resColor = c.result === "pass" ? "var(--ok)" : c.result === "fail" ? "var(--crit)" : "var(--text-faint)";
   return (
-    <div className="checkrow" data-testid={baselineBlocker ? "execution-baseline-blocker" : undefined}
-      style={baselineBlocker ? { borderLeft: `3px solid ${baselineState === "degraded" ? "var(--crit)" : "var(--watch)"}`, paddingLeft: 8, background: baselineState === "degraded" ? "var(--crit-soft)" : "var(--watch-soft)" } : undefined}>
+    <div className="checkrow" data-testid={baselineBlocker
+      ? "execution-baseline-blocker"
+      : legacyBaselineHint ? "execution-legacy-baseline-candidate" : undefined}
+      style={baselineBlocker
+        ? { borderLeft: `3px solid ${baselineState === "degraded" ? "var(--crit)" : "var(--watch)"}`, paddingLeft: 8, background: baselineState === "degraded" ? "var(--crit-soft)" : "var(--watch-soft)" }
+        : legacyBaselineHint ? { borderLeft: "3px solid var(--text-faint)", paddingLeft: 8 } : undefined}>
       <SevChip sev={c.severity} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="row-flex" style={{ gap: 6, flexWrap: "wrap" }}>
@@ -284,6 +271,11 @@ function CheckRow({ c, i, live, onSet }:
           {baselineBlocker && (
             <span className="chip" style={{ color: baselineState === "degraded" ? "var(--crit)" : "var(--watch)" }}>
               START-SNAPSHOT {baselineState.replaceAll("_", " ").toUpperCase()} BLOCKER
+            </span>
+          )}
+          {legacyBaselineHint && (
+            <span className="chip" style={{ color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
+              LEGACY BASELINE MARKER · DISPLAY ONLY
             </span>
           )}
         </div>
@@ -296,6 +288,12 @@ function CheckRow({ c, i, live, onSet }:
             Evidence: <span className="mono">{baselineState}</span>
             {c.projection_custody && <> · custody: <span className="mono">{c.projection_custody}</span></>}
             {c.source_key && <> · source: <span className="mono">{c.source_key}</span></>}
+          </div>
+        )}
+        {legacyBaselineHint && (
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 4 }}>
+            No producer-owned <span className="mono">baseline_blocker</span> flag is frozen. This compatibility
+            hint does not alter the server-owned gate, outcome, or operator controls.
           </div>
         )}
         {c.result !== "pending" && !editing && (

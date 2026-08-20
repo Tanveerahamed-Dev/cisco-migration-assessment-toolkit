@@ -438,6 +438,33 @@ describe("ExecutionPage", () => {
     expect(screen.getAllByText(/not authorization by itself/i)).toHaveLength(2);
   });
 
+  it("does not reinterpret evidence text or state when the producer blocker flag is false or absent", async () => {
+    const st = execState();
+    st.waves[0].checks = [{
+      category: "Routing", severity: "High", check: "Typed non-blocker",
+      command: "show ip route", expect: "PRE-CUTOVER DEGRADED — BLOCKER: stale display text",
+      evidence_state: "degraded", baseline_state: "degraded", baseline_blocker: false,
+      result: "pending", observed: "", at: null, by: "",
+    }, {
+      category: "Routing", severity: "High", check: "Legacy untyped marker",
+      command: "show ip ospf neighbor", expect: "PRE-CUTOVER REVIEW — BLOCKER: legacy marker",
+      evidence_state: "review", baseline_state: "review",
+      result: "pending", observed: "", at: null, by: "",
+    }];
+    st.progress.checks = { pending: 2, pass: 0, fail: 0, na: 0 };
+    vi.spyOn(api, "getExecution").mockResolvedValue(st);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    await screen.findByText("Typed non-blocker");
+    expect(screen.queryByTestId("execution-baseline-blocker")).not.toBeInTheDocument();
+    const legacy = screen.getByTestId("execution-legacy-baseline-candidate");
+    expect(legacy).toHaveTextContent("LEGACY BASELINE MARKER · DISPLAY ONLY");
+    expect(legacy).toHaveTextContent(/does not alter the server-owned gate, outcome, or operator controls/i);
+    expect(screen.queryByRole("button", { name: "PASS BLOCKED" })).not.toBeInTheDocument();
+    screen.getAllByRole("button", { name: "PASS" }).forEach((button) => expect(button).toBeEnabled());
+  });
+
   // Live log empty state: with zero events the log used to render nothing at all — an honest
   // placeholder replaces that silent blank (companion test below confirms it steps aside once
   // entries exist).
