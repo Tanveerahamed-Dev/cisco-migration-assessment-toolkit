@@ -1555,8 +1555,8 @@ def _metadata_signature(
     # the contract derived from it -- yet it is standard and correct here. Core metadata spec: "In any
     # context other than a source distribution, `Dynamic` is for information only, and indicates that
     # the field value was calculated at wheel build time" (PEP 643, Metadata 2.2; `License-File` is
-    # 2.4). setuptools 83.0.0 emits `Dynamic: license-file` for a 2.4 wheel whose License-File it
-    # computed -- and 83.0.0 is the version THIS MODULE PINS via the Generator check, so rejecting it
+    # 2.4). setuptools 84.0.0 emits `Dynamic: license-file` for a 2.4 wheel whose License-File it
+    # computed -- and 84.0.0 is the version THIS MODULE PINS via the Generator check, so rejecting it
     # made the verifier refuse its own pinned backend's output. Found by building for real: every
     # other check passed and this alone failed the release gate.
     #
@@ -2002,7 +2002,7 @@ def _verify_wheel_metadata(
                 )
         if wheel_values.get("Wheel-Version") != ["1.0"]:
             errors.append("wheel WHEEL has an unsupported Wheel-Version")
-        if wheel_values.get("Generator") != ["setuptools (83.0.0)"]:
+        if wheel_values.get("Generator") != ["setuptools (84.0.0)"]:
             errors.append("wheel WHEEL Generator is not the pinned build backend")
         if wheel_values.get("Root-Is-Purelib") != ["true"]:
             errors.append("wheel WHEEL must be purelib")

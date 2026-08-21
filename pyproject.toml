@@ -11,7 +11,7 @@
 # than migrating into [tool.*] here, to avoid any change in how those tools resolve their settings.
 
 [build-system]
-requires = ["setuptools==83.0.0", "wheel==0.47.0"]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -64,7 +64,7 @@ dev = [
     # Tests execute the pinned setup.py guard directly. PEP 517 installs the
     # build backend only in an isolated environment, so the development/test
     # environment must also carry the exact backend version it imports.
-    "setuptools==83.0.0",
+    "setuptools==84.0.0",
     "pytest>=8,<10",
     "pytest-cov>=5,<8",
     # REQUIRED by the Stop hook's green gate, not an optional speed-up. The suite runs 486-611 s

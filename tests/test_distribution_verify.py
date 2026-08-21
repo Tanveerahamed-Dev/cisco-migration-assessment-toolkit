@@ -83,12 +83,14 @@ def test_pep639_license_expression_has_no_superseded_license_classifier():
 def test_build_backend_uses_exact_nonvulnerable_tool_versions():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert (
-        'requires = ["setuptools==83.0.0", "wheel==0.47.0"]'
+        'requires = ["setuptools==84.0.0", "wheel==0.48.0"]'
         in pyproject
     )
     assert "setuptools==80.9.0" not in pyproject
+    assert "setuptools==83.0.0" not in pyproject
     assert "wheel==0.45.1" not in pyproject
     assert "wheel==0.46.2" not in pyproject
+    assert "wheel==0.47.0" not in pyproject
 
 
 def test_traffic_intents_example_has_one_reconciled_distribution_owner():
@@ -1788,7 +1790,7 @@ def _wheel_payloads(project: Path, contract: dict, dist_info: str) -> dict[str, 
         "METADATA": _metadata_document(contract),
         "WHEEL": (
             "Wheel-Version: 1.0\n"
-            "Generator: setuptools (83.0.0)\n"
+            "Generator: setuptools (84.0.0)\n"
             "Root-Is-Purelib: true\n"
             "Tag: py3-none-any\n"
         ).encode("utf-8"),
@@ -2255,8 +2257,8 @@ def test_dynamic_is_accepted_as_a_backend_field_but_only_for_computable_values()
 
     Core metadata spec (PEP 643, Metadata 2.2; `License-File` is 2.4): "In any context other than a
     source distribution, `Dynamic` is for information only, and indicates that the field value was
-    calculated at wheel build time." setuptools 83.0.0 emits `Dynamic: license-file` for a 2.4 wheel
-    whose License-File it collected — and 83.0.0 is the version THIS MODULE PINS via its Generator
+    calculated at wheel build time." setuptools 84.0.0 emits `Dynamic: license-file` for a 2.4 wheel
+    whose License-File it collected — and 84.0.0 is the version THIS MODULE PINS via its Generator
     check, so rejecting the header made the verifier refuse its own pinned backend's output. Found by
     building for real: every other check passed and this alone failed the release gate.
 
