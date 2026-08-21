@@ -1600,9 +1600,9 @@ test("renders the complete protocol stage matrix and coverage-honest family doss
   for (const stage of model.stages) assert.ok(html.includes(stage.label));
   assert.ok(html.includes("No emitted family row means"));
   const visible = normalizedVisibleText(html);
-  assert.ok(visible.includes("30 adjacent or"));
+  assert.ok(visible.includes("31 adjacent or"));
   assert.match(visible, /current\s*:\s*0/);
-  assert.match(visible, /partial\s*:\s*21/);
+  assert.match(visible, /partial\s*:\s*22/);
   assert.match(visible, /missing\s*:\s*17/);
   assert.ok(visible.includes("IOS / NX-OS"));
   assert.ok(visible.includes("show spanning-tree detail"));
@@ -1735,7 +1735,7 @@ test("server-renders every source-derived default capability sink slot exactly o
   }
   assert.equal(
     slotText.size,
-    431,
+    433,
     "/capabilities emitted an unexpected or duplicate physical capability slot",
   );
 
