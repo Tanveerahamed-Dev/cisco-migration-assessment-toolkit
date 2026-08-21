@@ -43,40 +43,30 @@ _SUBSTANTIAL_FLOOR = 1000
 # it to silence a surprise. Owner of the doctrine: CLAUDE.md graphify section.
 _ALLOWED_ORIGINS = {"ast", None}
 
-# Installed Graphify 0.9.6 overrides .graphifyignore for its saved-memory corpus.  Keep that
+# Installed Graphify 0.9.47 overrides .graphifyignore for its saved-memory corpus.  Keep that
 # external residual exact and non-expanding until the producer makes explicit ignore/include
 # rules authoritative over the special scan.  This is a reviewed BLOCK, never a clean claim.
-_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_COUNT = 4
-_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_DIGEST = "6892dc6d15b355a0d1b5299c97894833e9f31d0da151de04e707f6e6ffc3211b"
-_KNOWN_MEMORY_IGNORE_OVERRIDE_NODES = 18
-_KNOWN_MEMORY_IGNORE_OVERRIDE_LINKS = 12
-_KNOWN_MEMORY_NODE_RECORDS_DIGEST = "cffc6d8e3679b6ddcc608c130ff03bda2f7a601e5a3c42a08a415cf2e444bcd5"
-_KNOWN_MEMORY_EDGE_RECORDS_DIGEST = "3940a886c8146408d13d6ae7c8ea3368cd9f698cb794f3c0abb5918be4219e31"
+_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_COUNT = 7
+_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_DIGEST = "2fd9736de0b731792ee7fa231d4047eb8d43edf2aa4cd2266dbe5a67344563e0"
+_KNOWN_MEMORY_IGNORE_OVERRIDE_NODES = 31
+_KNOWN_MEMORY_IGNORE_OVERRIDE_LINKS = 24
+_KNOWN_MEMORY_NODE_RECORDS_DIGEST = "e704a6380a460b62bba05eff237ff39096ba81efaef213f1946946dc4788c8ca"
+_KNOWN_MEMORY_EDGE_RECORDS_DIGEST = "768ff262dc47aa11c4beed72eba2fbd5e22b37360ddc54dab719bb0045838a7c"
 _MEMORY_AST_NODE_KEYS = {
     "_origin",
     "community",
-    "file_type",
-    "id",
-    "label",
-    "norm_label",
-    "source_file",
-    "source_location",
-}
-_MEMORY_CURATED_NODE_KEYS = {
-    "author",
-    "captured_at",
-    "community",
     "community_name",
-    "contributor",
     "file_type",
     "id",
     "label",
+    "node_kind",
     "norm_label",
     "source_file",
     "source_location",
-    "source_url",
 }
+_MEMORY_FRONTMATTER_NODE_KEYS = _MEMORY_AST_NODE_KEYS | {"frontmatter"}
 _MEMORY_LINK_KEYS = {
+    "_origin",
     "confidence",
     "confidence_score",
     "relation",
@@ -189,6 +179,12 @@ def _decoded_text_variants(value: str) -> tuple[tuple[str, ...], bool]:
     return tuple(variants), unquote(candidate) != candidate
 
 
+def _is_win32_graph_output_component(value: str) -> bool:
+    """Recognize the long directory name plus conservative Win32/DOS aliases."""
+    normalized = value.split(":", 1)[0].rstrip(" .").casefold()
+    return normalized == "graphify-out" or re.fullmatch(r"graphi~[0-9]+", normalized) is not None
+
+
 def _graph_output_path_kind(value: object) -> str | None:
     """Classify a graph-output path as canonical, a disguised alias, or unrelated."""
     if not isinstance(value, str) or not value:
@@ -197,7 +193,12 @@ def _graph_output_path_kind(value: object) -> str | None:
     for candidate in variants:
         slash_path = candidate.replace("\\", "/")
         parts = slash_path.split("/")
-        if "graphify-out" not in {part.casefold() for part in parts}:
+        has_win32_graph_output_component = any(_is_win32_graph_output_component(part) for part in parts)
+        drive_relative_graph_output = bool(
+            re.fullmatch(r"[A-Za-z]:.*", parts[0])
+            and _is_win32_graph_output_component(parts[0][2:])
+        )
+        if not has_win32_graph_output_component and not drive_relative_graph_output:
             continue
         canonical = (
             candidate == value == slash_path
@@ -225,6 +226,21 @@ def _canonical_records_digest(records: list[dict], *, excluded_keys: set[str] | 
         for record in records
     ]
     return _canonical_rows_digest(rows)
+
+
+def _invalid_structural_provenance_field_count(graph: dict) -> int:
+    """Count non-string node provenance and edge provenance/endpoint fields."""
+    node_values = (
+        node.get(key) for node in graph["nodes"] for key in ("id", "source_file")
+    )
+    link_values = (
+        link.get(key)
+        for link in graph["links"]
+        for key in ("source", "target", "source_file")
+    )
+    return sum(not isinstance(value, str) for value in node_values) + sum(
+        not isinstance(value, str) for value in link_values
+    )
 
 
 def _memory_related_hyperedge_count(hyperedges: object, memory_node_ids: set[str]) -> int:
@@ -305,8 +321,15 @@ def test_no_llm_derived_nodes():
 
 
 def test_graph_output_ingestion_is_only_the_reviewed_memory_override():
-    """Bound Graphify 0.9.6's ignore override without promoting corpus/privacy closure."""
+    """Bound Graphify 0.9.47's ignore override without promoting corpus/privacy closure."""
     graph, path = _load_graph()
+    invalid_structural_fields = _invalid_structural_provenance_field_count(graph)
+    if invalid_structural_fields:
+        pytest.fail(
+            f"{_MEMORY_IGNORE_OVERRIDE_CODE}: graph structural provenance field type changed; "
+            "reconcile the external residual",
+            pytrace=False,
+        )
     aliased_node_sources = sum(
         _graph_output_path_kind(node.get("source_file")) == "alias" for node in graph["nodes"]
     )
@@ -352,9 +375,9 @@ def test_graph_output_ingestion_is_only_the_reviewed_memory_override():
         )
     node_shapes = [set(node) for node in output_nodes]
     if (
-        sum(shape == _MEMORY_AST_NODE_KEYS for shape in node_shapes) != 16
-        or sum(shape == _MEMORY_CURATED_NODE_KEYS for shape in node_shapes) != 2
-        or any(shape not in (_MEMORY_AST_NODE_KEYS, _MEMORY_CURATED_NODE_KEYS) for shape in node_shapes)
+        sum(shape == _MEMORY_AST_NODE_KEYS for shape in node_shapes) != 24
+        or sum(shape == _MEMORY_FRONTMATTER_NODE_KEYS for shape in node_shapes) != 7
+        or any(shape not in (_MEMORY_AST_NODE_KEYS, _MEMORY_FRONTMATTER_NODE_KEYS) for shape in node_shapes)
     ):
         pytest.fail(
             f"{_MEMORY_IGNORE_OVERRIDE_CODE}: graph-output node key shape changed; "
@@ -434,16 +457,30 @@ def test_graph_output_ingestion_is_only_the_reviewed_memory_override():
 
 def test_memory_residual_receipts_reject_substitution_extra_and_path_aliases():
     """Synthetic mutations prove the residual receipt cannot expand or substitute at equal counts."""
+    baseline_sources = {
+        "graphify-out/memory/example.md",
+        "graphify-out/memory/other.md",
+    }
+    baseline_source_digest = _canonical_rows_digest(baseline_sources)
+    assert _canonical_rows_digest(
+        {"graphify-out/memory/example.md", "graphify-out/memory/substitute.md"}
+    ) != baseline_source_digest
+    assert _canonical_rows_digest(baseline_sources | {"graphify-out/memory/extra.md"}) != baseline_source_digest
+
     baseline_node = {
         "_origin": "ast",
         "community": 1,
+        "community_name": "Memory",
         "file_type": "document",
         "id": "graphify_out_memory_example",
         "label": "Example",
+        "node_kind": "section",
         "norm_label": "example",
         "source_file": "graphify-out/memory/example.md",
         "source_location": "L1",
     }
+    assert set(baseline_node) == _MEMORY_AST_NODE_KEYS
+    assert set({**baseline_node, "frontmatter": {"outcome": "useful"}}) == _MEMORY_FRONTMATTER_NODE_KEYS
     baseline_node_digest = _canonical_records_digest(
         [baseline_node], excluded_keys=_MEMORY_CLUSTER_DERIVED_KEYS
     )
@@ -466,6 +503,7 @@ def test_memory_residual_receipts_reject_substitution_extra_and_path_aliases():
     assert set({**baseline_node, "evil_key": "private"}) != _MEMORY_AST_NODE_KEYS
 
     baseline_edge = {
+        "_origin": "ast",
         "confidence": "EXTRACTED",
         "confidence_score": 1.0,
         "relation": "contains",
@@ -475,6 +513,7 @@ def test_memory_residual_receipts_reject_substitution_extra_and_path_aliases():
         "target": "graphify_out_memory_example_target",
         "weight": 1.0,
     }
+    assert set(baseline_edge) == _MEMORY_LINK_KEYS
     baseline_edge_digest = _canonical_records_digest([baseline_edge])
     assert _canonical_records_digest([{**baseline_edge, "confidence": "INFERRED"}]) != baseline_edge_digest
     assert set({**baseline_edge, "evil_key": "private"}) != _MEMORY_LINK_KEYS
@@ -483,11 +522,37 @@ def test_memory_residual_receipts_reject_substitution_extra_and_path_aliases():
     ) == 1
 
     assert _graph_output_path_kind("graphify-out/memory/example.md") == "canonical"
+    for structurally_invalid in (
+        ["safe.md", "graphify-out/memory/hidden.md"],
+        {"primary": "safe.md", "hidden": "graphify-out/memory/hidden.md"},
+    ):
+        assert (
+            _invalid_structural_provenance_field_count(
+                {
+                    "nodes": [{"id": "safe_node", "source_file": structurally_invalid}],
+                    "links": [
+                        {
+                            "source": "safe_node",
+                            "target": "safe_target",
+                            "source_file": structurally_invalid,
+                        }
+                    ],
+                }
+            )
+            == 2
+        )
     for alias in (
         "./graphify-out/memory/example.md",
         "graphify-out/../graphify-out/memory/example.md",
         "C:/private/graphify-out/memory/example.md",
         "graphify-out\\memory\\example.md",
+        "graphify-out./memory/example.md",
+        "graphify-out /memory/example.md",
+        "graphify-out::$INDEX_ALLOCATION/memory/example.md",
+        "graphify-out:$I30:$INDEX_ALLOCATION/memory/example.md",
+        "GRAPHI~2/memory/example.md",
+        "C:graphify-out\\memory\\example.md",
+        "C:GRAPHI~2\\memory\\example.md",
         quote(quote("C:/private/graphify-out/memory/example.md", safe=""), safe=""),
         quote(quote(quote("C:/private/graphify-out/memory/example.md", safe=""), safe=""), safe=""),
     ):
