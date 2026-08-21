@@ -2,14 +2,14 @@
 """Bounded, non-echoing integrity audit for Graphify's generated report.
 
 ``graphify-out/graph.json`` is the repository's structural owner and compiler
-input.  ``GRAPH_REPORT.md`` is an external-tool derivative.  Graphifyy 0.9.6
+input.  ``GRAPH_REPORT.md`` is an external-tool derivative.  Graphifyy 0.9.47
 can overstate the number of displayed communities when a community contains
-only synthetic file/stub nodes, and its report links do not use the collision-
-safe filename allocator used by the Obsidian exporter.  This verifier keeps
-those report defects from silently becoming repository facts.
+only synthetic file/stub nodes.  This verifier keeps that report defect from
+silently becoming a repository fact and binds saved community labels to the
+producer's membership-signature sidecar.
 
-The compatibility predicate below deliberately mirrors the installed
-Graphifyy 0.9.6 ``graphify.analyze._is_file_node`` behavior.  It is local code,
+The compatibility predicate below deliberately mirrors Graphifyy 0.9.47
+``graphify.analyze._is_file_node`` behavior.  It is local code,
 not a runtime import from mutable site-packages.  A producer upgrade must
 reconcile this contract explicitly.
 """
@@ -23,17 +23,17 @@ import math
 import os
 import re
 import stat
-import unicodedata
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA = "graph-report-audit/1"
-PRODUCER_COMPATIBILITY = "graphifyy/0.9.6"
+PRODUCER_COMPATIBILITY = "graphifyy/0.9.47"
 
 MAX_GRAPH_BYTES = 64 * 1024 * 1024
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 MAX_LABELS_BYTES = 4 * 1024 * 1024
+MAX_LABEL_SIGNATURE_BYTES = 4 * 1024 * 1024
 MAX_JSON_DEPTH = 64
 MAX_JSON_VALUES = 2_000_000
 MAX_JSON_STRING_CHARS = 8 * 1024 * 1024
@@ -44,14 +44,7 @@ MAX_IDENTIFIER_CHARS = 4096
 MAX_REPORT_LINES = 2_000_000
 MAX_COMMUNITY_ID = (1 << 53) - 1
 
-KNOWN_EXTERNAL_REPORT_RESIDUALS = frozenset(
-    {
-        "graph_report_label_membership_binding_unavailable",
-        "graph_report_navigation_projection_mismatch",
-        "graph_report_navigation_target_collision",
-        "graph_report_summary_partition_mismatch",
-    }
-)
+KNOWN_EXTERNAL_REPORT_RESIDUALS = frozenset({"graph_report_summary_partition_mismatch"})
 
 _SUMMARY_RE = re.compile(
     r"^- ([0-9]+) nodes · ([0-9]+) edges · ([0-9]+) communities"
@@ -123,6 +116,8 @@ class GraphPartition:
     thin_ids: frozenset[int]
     structural_only_ids: frozenset[int]
     community_order: tuple[int, ...]
+    membership_signatures: dict[int, str]
+    has_code: bool
     node_count: int
     link_count: int
 
@@ -424,17 +419,18 @@ def _community_id(value: Any) -> int:
     return value
 
 
-def _producer_basename(source_file: str) -> str:
-    # Graphify serializes repository paths with '/', even on Windows.  Reject a
-    # different separator rather than silently applying host-dependent pathlib
-    # behavior in this portable verifier.
-    if "\\" in source_file:
-        _fail("graph_report_graph_invalid")
-    return PureWindowsPath(source_file).name
+def _is_producer_file_node_label(label: str, source_file: str) -> bool:
+    """Mirror Graphifyy 0.9.47's basename-or-qualified-suffix predicate."""
+    normalized_source = source_file.replace("\\", "/")
+    if label == normalized_source.rsplit("/", 1)[-1]:
+        return True
+    return "/" in label and (
+        normalized_source == label or normalized_source.endswith("/" + label)
+    )
 
 
 def _is_file_node(attrs: dict[str, Any], degree: int) -> bool:
-    """Mirror graphifyy 0.9.6 ``analyze._is_file_node`` exactly."""
+    """Mirror graphifyy 0.9.47 ``analyze._is_file_node`` exactly."""
     label = attrs.get("label", "")
     if not isinstance(label, str):
         _fail("graph_report_graph_invalid")
@@ -443,7 +439,7 @@ def _is_file_node(attrs: dict[str, Any], degree: int) -> bool:
     source_file = attrs.get("source_file", "")
     if not isinstance(source_file, str):
         _fail("graph_report_graph_invalid")
-    if source_file and label == _producer_basename(source_file):
+    if source_file and _is_producer_file_node_label(label, source_file):
         return True
     if label.startswith(".") and label.endswith("()"):
         return True
@@ -468,6 +464,8 @@ def partition_graph(graph: dict[str, Any], *, min_community_size: int = 3) -> Gr
     degree: dict[str, int] = {}
     community_order: list[int] = []
     seen_communities: set[int] = set()
+    members_by_community: dict[int, list[str]] = {}
+    has_code = False
     for node in nodes:
         if not isinstance(node, dict):
             _fail("graph_report_graph_invalid")
@@ -478,6 +476,8 @@ def partition_graph(graph: dict[str, Any], *, min_community_size: int = 3) -> Gr
         attrs_by_id[node_id] = node
         community_by_id[node_id] = community
         degree[node_id] = 0
+        members_by_community.setdefault(community, []).append(node_id)
+        has_code = has_code or node.get("file_type") == "code"
         if community not in seen_communities:
             seen_communities.add(community)
             community_order.append(community)
@@ -494,6 +494,7 @@ def partition_graph(graph: dict[str, Any], *, min_community_size: int = 3) -> Gr
         if key in edge_keys:
             _fail("graph_report_graph_invalid")
         edge_keys.add(key)
+        has_code = has_code or link.get("relation") in ("imports", "imports_from")
         if source == target:
             degree[source] += 2
         else:
@@ -510,12 +511,21 @@ def partition_graph(graph: dict[str, Any], *, min_community_size: int = 3) -> Gr
     total = frozenset(real_counts)
     if total != shown | thin | structural or (shown & thin) or (shown & structural) or (thin & structural):
         _fail("graph_report_graph_invalid")
+    membership_signatures: dict[int, str] = {}
+    for community, members in members_by_community.items():
+        digest = hashlib.sha256()
+        for node_id in sorted(members):
+            digest.update(node_id.encode("utf-8", "replace"))
+            digest.update(b"\x00")
+        membership_signatures[community] = digest.hexdigest()[:16]
     return GraphPartition(
         total_ids=total,
         shown_ids=shown,
         thin_ids=thin,
         structural_only_ids=structural,
         community_order=tuple(community_order),
+        membership_signatures=membership_signatures,
+        has_code=has_code,
         node_count=len(nodes),
         link_count=len(links),
     )
@@ -547,33 +557,6 @@ def _section(lines: list[str], start: int) -> list[str]:
             end = index
             break
     return lines[start + 1 : end]
-
-
-def _export_safe_name(label: str) -> str:
-    cleaned = re.sub(
-        r'[\\/*?:"<>|#^[\]]',
-        "",
-        label.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
-    ).strip()
-    cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-    if not re.search(r"\w", cleaned, flags=re.UNICODE):
-        return "unnamed"
-    encoded = cleaned.encode("utf-8")
-    if len(encoded) <= 200:
-        return cleaned
-    digest = hashlib.sha1(encoded).hexdigest()[:8]  # nosec - producer compatibility only
-    prefix = encoded[:191].decode("utf-8", "ignore")
-    return f"{prefix}_{digest}"
-
-
-def _report_safe_name(label: str) -> str:
-    cleaned = re.sub(
-        r'[\\/*?:"<>|#^[\]]',
-        "",
-        label.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
-    ).strip()
-    cleaned = re.sub(r"\.(md|mdx|markdown)$", "", cleaned, flags=re.IGNORECASE)
-    return cleaned or "unnamed"
 
 
 def _parse_labels(payload: bytes, expected_ids: frozenset[int]) -> dict[int, str]:
@@ -631,12 +614,58 @@ def _validate_labels_mapping(labels: Any, expected_ids: frozenset[int]) -> None:
             _fail("graph_report_labels_invalid")
 
 
-def _normalized_target(value: str) -> str:
-    # Windows removes trailing spaces and periods from ordinary path components;
-    # normalize that host behavior plus Unicode/case collisions. Case folding can
-    # itself produce decomposed text, hence the second NFC pass.
-    normalized = unicodedata.normalize("NFC", value).casefold()
-    return unicodedata.normalize("NFC", normalized).rstrip(" .")
+def _parse_membership_signatures(
+    payload: bytes,
+    expected_ids: frozenset[int],
+) -> dict[int, str]:
+    failure_code = "graph_report_label_membership_signature_invalid"
+    try:
+        _preflight_json_bytes(payload, failure_code=failure_code)
+        text = payload.decode("utf-8", "strict")
+
+        def no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    _fail(failure_code)
+                value[key] = item
+            return value
+
+        raw = json.loads(text, object_pairs_hook=no_duplicates)
+    except _AuditFailure:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError, MemoryError, OverflowError):
+        _fail(failure_code)
+    if not isinstance(raw, dict) or len(raw) != len(expected_ids):
+        _fail(failure_code)
+    signatures: dict[int, str] = {}
+    for key, signature in raw.items():
+        if not isinstance(key, str) or not key or len(key) > 16 or not key.isascii() or not key.isdecimal():
+            _fail(failure_code)
+        try:
+            community = int(key)
+        except ValueError:
+            _fail(failure_code)
+        if key != str(community) or community not in expected_ids or community in signatures:
+            _fail(failure_code)
+        signatures[community] = signature
+    _validate_membership_signatures_mapping(signatures, expected_ids)
+    return signatures
+
+
+def _validate_membership_signatures_mapping(signatures: Any, expected_ids: frozenset[int]) -> None:
+    failure_code = "graph_report_label_membership_signature_invalid"
+    if not isinstance(signatures, dict) or frozenset(signatures) != expected_ids:
+        _fail(failure_code)
+    for community, signature in signatures.items():
+        if (
+            type(community) is not int
+            or community < 0
+            or community > MAX_COMMUNITY_ID
+            or not isinstance(signature, str)
+            or re.fullmatch(r"[0-9a-f]{16}", signature) is None
+        ):
+            _fail(failure_code)
 
 
 def _parse_report(
@@ -677,7 +706,7 @@ def _parse_report(
     if any(_CONTAINER_START_RE.match(line) and _NESTED_ATX_RE.search(line) for line in lines):
         _fail("graph_report_format_invalid")
 
-    # Graphify 0.9.6 emits a closed ATX-heading vocabulary.  Reject every other
+    # Graphify 0.9.47 emits a closed ATX-heading vocabulary. Reject every other
     # rendered heading instead of trying to interpret arbitrary inline Markdown.
     h1_rows: list[tuple[int, str]] = []
     h2_rows: list[tuple[int, str]] = []
@@ -717,10 +746,15 @@ def _parse_report(
         "## Summary",
         "## God Nodes (most connected - your core abstractions)",
         "## Surprising Connections (you probably didn't know these)",
-        "## Import Cycles",
         "## Communities",
     }
-    if not required_h2 <= set(normalized_h2):
+    normalized_h2_set = set(normalized_h2)
+    if partition.has_code:
+        required_h2.add("## Import Cycles")
+    if (
+        not required_h2 <= normalized_h2_set
+        or ("## Import Cycles" in normalized_h2_set) != partition.has_code
+    ):
         _fail("graph_report_format_invalid")
 
     if any(line.startswith("## Summary") and line != "## Summary" for line in lines):
@@ -772,12 +806,6 @@ def _parse_report(
         _fail("graph_report_format_invalid")
 
     errors: set[str] = set()
-    # Graphifyy 0.9.6's normal watch/update path atomically rewrites graph,
-    # report and labels but does not rewrite the membership-signature sidecar.
-    # Consequently report labels cannot be authenticated to the current
-    # community memberships.  Keep auditing their internal content exactly,
-    # but never promote that to graph-bound report integrity.
-    errors.add("graph_report_label_membership_binding_unavailable")
     if (
         _parse_count(summary.group(1)) != partition.node_count
         or _parse_count(summary.group(2)) != partition.link_count
@@ -819,7 +847,7 @@ def _parse_report(
     if section_rows != expected_section_rows:
         errors.add("graph_report_community_section_content_mismatch")
 
-    # Graphifyy 0.9.6 emits this reconciliation under ``## Knowledge Gaps``,
+    # Graphifyy 0.9.47 emits this reconciliation under ``## Knowledge Gaps``,
     # not inside the Communities section.  Require exactly one owned statement
     # anywhere rather than accidentally accepting a section-local lookalike.
     thin_candidates = [line for line in lines if "thin communities" in line]
@@ -837,45 +865,9 @@ def _parse_report(
 
     nav_lines = _section(lines, nav_start) if nav_start is not None else []
     nav_lines = [line for line in nav_lines if line.strip()]
-    all_nav_candidates = [line for line in lines if line.startswith("- [[_COMMUNITY_")]
-    nav_candidates = [line for line in nav_lines if line.startswith("- [[_COMMUNITY_")]
-    if all_nav_candidates != nav_candidates:
-        _fail("graph_report_format_invalid")
-    expected_report_entries = [
-        (f"_COMMUNITY_{_report_safe_name(labels[community])}", labels[community]) for community in expected_nav_ids
-    ]
-    exporter_targets: dict[int, str] = {}
-    used_targets: set[str] = set()
-    next_suffix_by_base: dict[str, int] = {}
-    for community in report_order:
-        base = f"_COMMUNITY_{_export_safe_name(labels[community])}"
-        candidate = base
-        base_key = base.lower()
-        suffix = next_suffix_by_base.get(base_key, 1)
-        while candidate.lower() in used_targets:
-            candidate = f"{base}_{suffix}"
-            suffix += 1
-        used_targets.add(candidate.lower())
-        next_suffix_by_base[base_key] = suffix
-        exporter_targets[community] = candidate
-    expected_export_entries = [(exporter_targets[community], labels[community]) for community in expected_nav_ids]
-    expected_report_lines = [f"- [[{target}|{label}]]" for target, label in expected_report_entries]
-    expected_export_lines = [f"- [[{target}|{label}]]" for target, label in expected_export_entries]
-    if nav_lines == expected_export_lines:
-        nav_entries = expected_export_entries
-    elif nav_lines == expected_report_lines:
-        nav_entries = expected_report_entries
-        errors.add("graph_report_navigation_projection_mismatch")
-    else:
-        nav_entries = []
+    expected_nav_lines = [f"- {labels[community]}" for community in expected_nav_ids]
+    if nav_lines != expected_nav_lines:
         errors.add("graph_report_navigation_content_corrupt")
-
-    if nav_entries:
-        normalized_targets = [_normalized_target(target) for target, _label in nav_entries]
-        if len(normalized_targets) != len(set(normalized_targets)):
-            errors.add("graph_report_navigation_target_collision")
-        if any(marker in target + label for target, label in nav_entries for marker in ("[[", "]]", "|")):
-            errors.add("graph_report_navigation_markup_unsafe")
 
     counts = {
         "communities_total": len(partition.total_ids),
@@ -899,6 +891,7 @@ def audit_graph_report_data(
     report_text: str,
     labels: dict[int, str],
     *,
+    membership_signatures: dict[int, str] | None = None,
     min_community_size: int = 3,
 ) -> AuditResult:
     """Audit already-decoded inputs.  Intended for tests and trusted callers."""
@@ -906,6 +899,11 @@ def audit_graph_report_data(
         _validate_json_bounds(graph)
         partition = partition_graph(graph, min_community_size=min_community_size)
         _validate_labels_mapping(labels, partition.total_ids)
+        if membership_signatures is None:
+            _fail("graph_report_label_membership_signature_missing")
+        _validate_membership_signatures_mapping(membership_signatures, partition.total_ids)
+        if membership_signatures != partition.membership_signatures:
+            _fail("graph_report_label_membership_signature_mismatch")
         return _parse_report(
             report_text,
             partition,
@@ -921,23 +919,38 @@ def audit_graph_report(
     report_path: str | Path,
     *,
     labels_path: str | Path | None = None,
+    labels_signature_path: str | Path | None = None,
     min_community_size: int = 3,
 ) -> AuditResult:
-    """Read and audit one stable graph/report/labels generation."""
+    """Read and audit one stable graph/report/labels/signature generation."""
     try:
         graph_path = Path(graph_path)
         report_path = Path(report_path)
         labels_path = Path(labels_path) if labels_path is not None else graph_path.with_name(".graphify_labels.json")
-        graph_payload, report_payload, labels_payload = _read_stable_group(
+        labels_signature_path = (
+            Path(labels_signature_path)
+            if labels_signature_path is not None
+            else Path(str(labels_path) + ".sig")
+        )
+        if not all(path.exists() for path in (graph_path, report_path, labels_path)):
+            _fail("graph_report_input_invalid")
+        if not labels_signature_path.exists():
+            _fail("graph_report_label_membership_signature_missing")
+        graph_payload, report_payload, labels_payload, labels_signature_payload = _read_stable_group(
             (
                 (graph_path, MAX_GRAPH_BYTES),
                 (report_path, MAX_REPORT_BYTES),
                 (labels_path, MAX_LABELS_BYTES),
+                (labels_signature_path, MAX_LABEL_SIGNATURE_BYTES),
             )
         )
         graph = _parse_graph(graph_payload)
         partition = partition_graph(graph, min_community_size=min_community_size)
         labels = _parse_labels(labels_payload, partition.total_ids)
+        membership_signatures = _parse_membership_signatures(
+            labels_signature_payload,
+            partition.total_ids,
+        )
         try:
             report_text = report_payload.decode("utf-8", "strict")
         except UnicodeDecodeError:
@@ -946,6 +959,7 @@ def audit_graph_report(
             graph,
             report_text,
             labels,
+            membership_signatures=membership_signatures,
             min_community_size=min_community_size,
         )
     except _AuditFailure as exc:
@@ -959,6 +973,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("graph_json")
     parser.add_argument("graph_report")
     parser.add_argument("--labels")
+    parser.add_argument("--labels-signature")
     parser.add_argument("--min-community-size", type=int, default=3)
     return parser
 
@@ -969,6 +984,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.graph_json,
         args.graph_report,
         labels_path=args.labels,
+        labels_signature_path=args.labels_signature,
         min_community_size=args.min_community_size,
     )
     print(json.dumps(result.as_dict(), sort_keys=True, separators=(",", ":")))
@@ -979,6 +995,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         "graph_report_input_unstable",
         "graph_report_graph_invalid",
         "graph_report_labels_invalid",
+        "graph_report_label_membership_signature_missing",
+        "graph_report_label_membership_signature_invalid",
+        "graph_report_label_membership_signature_mismatch",
         "graph_report_format_invalid",
     }:
         return 2
