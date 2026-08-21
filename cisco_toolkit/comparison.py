@@ -183,7 +183,8 @@ def compare_bound_pair(
         old: Dict[str, Any], new: Dict[str, Any], *,
         before_binding: Dict[str, Any], after_binding: Dict[str, Any],
         change_intent: Optional[Dict[str, Any]] = None,
-        path_intents: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        path_intents: Optional[List[Dict[str, Any]]] = None,
+        l2_failure_trial: Any = None) -> Dict[str, Any]:
     """Compose one canonical source-bound cutover comparison.
 
     The returned mapping deliberately keeps every legacy snapshot-delta field at the top level.
@@ -238,7 +239,14 @@ def compare_bound_pair(
     )
     protocol_families = _protocol_assurance.protocol_family_change_set(
         delta.get("protocol_adjacencies"), intent, native_deltas=native_deltas)
-    operator_evidence = _protocol_assurance.cutover_operator_evidence(new)
+    operator_evidence = _protocol_assurance.cutover_operator_evidence(
+        new,
+        observed_l2_failure_evidence=l2_failure_trial,
+        expected_recovery_binding=after_binding,
+        prior_snapshot=old,
+        expected_predecessor_collected_at=old.get("collected_at"),
+        expected_predecessor_binding=before_binding,
+    )
     decision_input_authority = _mint_cutover_decision_input_authority(
         delta=delta,
         certificate=certificate,

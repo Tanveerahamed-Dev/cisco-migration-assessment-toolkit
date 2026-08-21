@@ -7,8 +7,11 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import functools
+import hashlib
 import hmac
 import json
 import os
@@ -31,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cisco_toolkit import brand_tokens, docmeta
 from cisco_toolkit.protocol_assurance import (
+    PERSISTED_SOURCE as _PERSISTED_SNAPSHOT_SOURCE,
     reject_duplicate_json_keys as _reject_duplicate_json_keys,
 )
 
@@ -46,7 +50,7 @@ from . import (
     serve,
     summary,
 )
-from .storage import Store
+from .storage import ExecutionReceiptAuthorityError, Store
 
 _HERE = Path(__file__).resolve().parent
 _WEBAPP = _HERE.parent
@@ -152,12 +156,21 @@ class ChangeIntentIn(BaseModel):
     note: str = Field(default="", max_length=_LEN_NOTE)
 
 
+class L2FailureTrialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pre_failure_snapshot_id: BodyRowId
+    post_failure_snapshot_id: BodyRowId
+    witness_json_base64: str = Field(min_length=1, max_length=90_000)
+
+
 class CompareIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     old_id: BodyRowId
     new_id: BodyRowId
     change_intent: ChangeIntentIn | None = None
+    l2_failure_trial: L2FailureTrialIn | None = None
 
 
 class ExecutionCompareIn(BaseModel):
@@ -165,6 +178,7 @@ class ExecutionCompareIn(BaseModel):
 
     after_snapshot_id: BodyRowId
     change_intent: ChangeIntentIn | None = None
+    l2_failure_trial: L2FailureTrialIn | None = None
 
 
 class FolderIngestIn(BaseModel):
@@ -1002,6 +1016,19 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         version=engine.ENGINE_SCHEMA_VERSION,
         description="A live web platform over the Cisco Migration-Assessment engine.",
     )
+
+    @app.exception_handler(ExecutionReceiptAuthorityError)
+    async def execution_receipt_authority_error(
+            _request: Request, _error: ExecutionReceiptAuthorityError) -> JSONResponse:
+        # Do not publish corrupted/torn receipt detail as a usable decision. Operators get a closed
+        # conflict and must restore/recollect; server logs and integrity tooling retain diagnosis.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Execution comparison authority could not be revalidated from its "
+                          "persisted receipt and exact source rows; no PASS is available.",
+            },
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),                 # env extras only; empty by default
@@ -1714,12 +1741,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     def _bound_comparison_pair(before_snapshot_id: int, after_snapshot_id: int):
         if before_snapshot_id == after_snapshot_id:
             raise HTTPException(400, "Before and after snapshots must be different")
-        before_bound = store.get_bound_snapshot(before_snapshot_id)
-        after_bound = store.get_bound_snapshot(after_snapshot_id)
-        if before_bound is None or after_bound is None:
+        bound_set = store.get_bound_snapshot_set([before_snapshot_id, after_snapshot_id])
+        if bound_set is None:
             raise HTTPException(404, "One or both snapshots not found")
-        before, before_binding = before_bound
-        after, after_binding = after_bound
+        before_source = bound_set[before_snapshot_id]
+        after_source = bound_set[after_snapshot_id]
+        before = before_source["snapshot"]
+        before_binding = before_source["binding"]
+        after = after_source["snapshot"]
+        after_binding = after_source["binding"]
         if before_binding.get("engagement_id") != after_binding.get("engagement_id"):
             raise HTTPException(
                 409,
@@ -1731,6 +1761,99 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 "Snapshots belong to different campaigns; compare evidence within one campaign",
             )
         return before, before_binding, after, after_binding
+
+    def _stored_l2_failure_trial(
+            request_body: L2FailureTrialIn,
+            *,
+            before_snapshot_id: int,
+            recovery_snapshot_id: int) -> Dict[str, Any]:
+        """Atomically acquire four persisted phases and mint store-owned trial authority."""
+        pre_id = request_body.pre_failure_snapshot_id
+        post_id = request_body.post_failure_snapshot_id
+        recovery_id = recovery_snapshot_id
+        all_ids = (before_snapshot_id, pre_id, post_id, recovery_id)
+        if len(set(all_ids)) != 4:
+            raise HTTPException(
+                400,
+                "Before, pre-failure, post-failure, and recovery snapshots must be four distinct rows",
+            )
+        source_set = store.get_bound_snapshot_set(list(all_ids))
+        if source_set is None:
+            raise HTTPException(404, "One or more observed-trial phase snapshots were not found")
+        before_source = source_set[before_snapshot_id]
+        pre_source = source_set[pre_id]
+        post_source = source_set[post_id]
+        recovery_source = source_set[recovery_id]
+        pre_snapshot, pre_binding = pre_source["snapshot"], pre_source["binding"]
+        post_snapshot, post_binding = post_source["snapshot"], post_source["binding"]
+        recovery_snapshot = recovery_source["snapshot"]
+        recovery_binding = recovery_source["binding"]
+        bindings = (pre_binding, post_binding, recovery_binding)
+        contexts = {
+            (binding.get("source"), binding.get("campaign_id"), binding.get("engagement_id"))
+            for binding in (before_source["binding"], *bindings)
+        }
+        if (len(contexts) != 1
+                or next(iter(contexts))[0] != _PERSISTED_SNAPSHOT_SOURCE):
+            raise HTTPException(
+                409,
+                "Observed-trial phases must belong to one persisted campaign and engagement",
+            )
+        try:
+            witness_bytes = base64.b64decode(
+                request_body.witness_json_base64.encode("ascii"), validate=True
+            )
+        except (UnicodeEncodeError, ValueError, binascii.Error) as error:
+            raise HTTPException(
+                422, "witness_json_base64 must be canonical base64-encoded JSON bytes"
+            ) from error
+        if not witness_bytes or len(witness_bytes) > 64 * 1024:
+            raise HTTPException(422, "Observed-trial witness bytes exceed the 64 KiB limit")
+
+        phase_rows = (
+            ("pre_failure", pre_snapshot, pre_binding, pre_source),
+            ("post_failure", post_snapshot, post_binding, post_source),
+            ("recovery", recovery_snapshot, recovery_binding, recovery_source),
+        )
+        custody = {
+            phase: {
+                "source": binding["source"],
+                "source_id": f"snapshot:{binding['snapshot_id']}",
+                "campaign_id": binding["campaign_id"],
+                "engagement_id": binding["engagement_id"],
+                "custody_at": source["uploaded_at"],
+            }
+            for phase, _snapshot, binding, source in phase_rows
+        }
+        from cisco_toolkit.l2_rehearsal import compute_observed_l2_failure_evidence
+
+        evidence = compute_observed_l2_failure_evidence(
+            pre_snapshot,
+            post_snapshot,
+            recovery_snapshot,
+            witness_bytes=witness_bytes,
+            phase_custody=custody,
+        )
+        return {
+            "before_snapshot": before_source["snapshot"],
+            "before_binding": before_source["binding"],
+            "recovery_snapshot": recovery_snapshot,
+            "recovery_binding": recovery_binding,
+            "evidence": evidence,
+            # Internal persistence input. It is never accepted as a detached client receipt;
+            # storage re-reads every row and remints evidence while BEGIN IMMEDIATE is held.
+            "source_record": {
+                "schema": "stored_l2_failure_trial_source/1",
+                "pre_failure_snapshot_id": pre_id,
+                "post_failure_snapshot_id": post_id,
+                "recovery_snapshot_id": recovery_id,
+                "witness_bytes": witness_bytes,
+                "witness_sha256": "sha256:" + hashlib.sha256(witness_bytes).hexdigest(),
+                "source": recovery_binding["source"],
+                "campaign_id": recovery_binding["campaign_id"],
+                "engagement_id": recovery_binding["engagement_id"],
+            },
+        }
 
     # -- execution runs (war room) ------------------------------------------
     def _execution_view(rec: Dict[str, Any], state: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -1764,6 +1887,17 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     409,
                     "Execution run changed in another server process. Reload it and retry "
                     "the update so no operator's record is overwritten.",
+                )
+            if saved == "closed":
+                raise HTTPException(
+                    409,
+                    "Run is already finished and can no longer be modified.",
+                )
+            if saved == "authority_invalid":
+                raise HTTPException(
+                    409,
+                    "Execution comparison authority could not be revalidated from its persisted "
+                    "receipt and exact source rows; the mutation was refused.",
                 )
             return _execution_view(rec, rec["state"])
 
@@ -1833,8 +1967,23 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if rec["state"].get("status") != "in_progress":
             raise HTTPException(409, "A finished execution cannot accept new comparison evidence")
 
-        before, before_binding, after, after_binding = _bound_comparison_pair(
-            rec["snapshot_id"], body.after_snapshot_id)
+        trial_source_record = None
+        if body.l2_failure_trial is not None:
+            acquired_trial = _stored_l2_failure_trial(
+                body.l2_failure_trial,
+                before_snapshot_id=rec["snapshot_id"],
+                recovery_snapshot_id=body.after_snapshot_id,
+            )
+            before = acquired_trial["before_snapshot"]
+            before_binding = acquired_trial["before_binding"]
+            after = acquired_trial["recovery_snapshot"]
+            after_binding = acquired_trial["recovery_binding"]
+            l2_failure_trial = acquired_trial["evidence"]
+            trial_source_record = acquired_trial["source_record"]
+        else:
+            before, before_binding, after, after_binding = _bound_comparison_pair(
+                rec["snapshot_id"], body.after_snapshot_id)
+            l2_failure_trial = None
         frozen = policy.get("before_snapshot")
         required_keys = ("snapshot_id", "campaign_id", "engagement_id", "sha256")
         if (not isinstance(frozen, dict)
@@ -1850,6 +1999,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             after_binding=after_binding,
             change_intent=(body.change_intent.model_dump(mode="json")
                            if body.change_intent is not None else None),
+            l2_failure_trial=l2_failure_trial,
         )
         intent = comparison.get("change_intent")
         if not isinstance(intent, dict) or intent.get("valid") is not True:
@@ -1878,7 +2028,11 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             implementation_binding=implementation_binding,
         )
         saved = store.append_execution_comparison_if_unchanged(
-            execution_id, rec["_state_json"], receipt)
+            execution_id,
+            rec["_state_json"],
+            receipt,
+            l2_failure_trial_source=trial_source_record,
+        )
         status = saved.get("status")
         if status == "missing":
             raise HTTPException(404, "Execution run was deleted")
@@ -1903,6 +2057,27 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 409,
                 "Submitted comparison does not match a canonical recomputation from the persisted "
                 "source bytes",
+            )
+        if status == "authority_invalid":
+            raise HTTPException(
+                409,
+                "Existing execution comparison authority could not be revalidated from its "
+                "persisted receipt and exact source rows; no newer receipt was appended.",
+            )
+        if status == "l2_trial_required":
+            raise HTTPException(
+                409,
+                "A prior observed local L2 failure or not-verified trial remains unresolved. "
+                "Supply a newer complete "
+                "source-bound re-trial for that exact family, subject, and scenario; omitting or "
+                "substituting the trial cannot replace the blocking evidence.",
+            )
+        if status == "comparison_not_newer":
+            raise HTTPException(
+                409,
+                "Execution comparisons are append-only in evidence time. The new after snapshot "
+                "must have a strictly newer snapshot ID, source-owned collected_at, and persisted "
+                "upload time than the current latest comparison.",
             )
         if status == "after_not_post_change":
             raise HTTPException(
@@ -2086,8 +2261,21 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.post("/api/compare")
     def compare(body: CompareIn) -> Dict[str, Any]:
-        old, old_binding, new, new_binding = _bound_comparison_pair(
-            body.old_id, body.new_id)
+        if body.l2_failure_trial is not None:
+            acquired_trial = _stored_l2_failure_trial(
+                body.l2_failure_trial,
+                before_snapshot_id=body.old_id,
+                recovery_snapshot_id=body.new_id,
+            )
+            old = acquired_trial["before_snapshot"]
+            old_binding = acquired_trial["before_binding"]
+            new = acquired_trial["recovery_snapshot"]
+            new_binding = acquired_trial["recovery_binding"]
+            l2_failure_trial = acquired_trial["evidence"]
+        else:
+            old, old_binding, new, new_binding = _bound_comparison_pair(
+                body.old_id, body.new_id)
+            l2_failure_trial = None
         return engine.compare_bound_pair(
             old,
             new,
@@ -2095,6 +2283,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             after_binding=new_binding,
             change_intent=(body.change_intent.model_dump(mode="json")
                            if body.change_intent is not None else None),
+            l2_failure_trial=l2_failure_trial,
         )
 
     # -- demo --------------------------------------------------------------

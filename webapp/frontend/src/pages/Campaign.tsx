@@ -11,6 +11,12 @@ import type {
   SnapshotVerification,
 } from "../api";
 import ComparisonDecision from "../components/ComparisonDecision";
+import ObservedL2TrialInput, {
+  EMPTY_OBSERVED_L2_TRIAL,
+  observedL2TrialIsReading,
+  observedL2TrialRequest,
+} from "../components/ObservedL2TrialInput";
+import type { ObservedL2TrialDraft } from "../components/ObservedL2TrialInput";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
 import {
   normalizedVerification,
@@ -543,8 +549,27 @@ export default function CampaignPage() {
   const [cmpA, setCmpA] = useState<number | "">("");
   const [cmpB, setCmpB] = useState<number | "">("");
   const [changeIntentText, setChangeIntentText] = useState("");
+  const [observedL2Trial, setObservedL2Trial] = useState<ObservedL2TrialDraft>(
+    EMPTY_OBSERVED_L2_TRIAL,
+  );
   const [cmp, setCmp] = useState<CompareResponse | null>(null);
   const [cmpErr, setCmpErr] = useState<string | null>(null);
+  const [cmpBusy, setCmpBusy] = useState(false);
+  const [cmpContext, setCmpContext] = useState<{
+    before: number;
+    recovery: number;
+    preFailure?: number;
+    postFailure?: number;
+  } | null>(null);
+  const cmpRequestRef = useRef(0);
+
+  function invalidateComparison() {
+    cmpRequestRef.current += 1;
+    setCmp(null);
+    setCmpContext(null);
+    setCmpErr(null);
+    setCmpBusy(false);
+  }
 
   async function upload() {
     const f = fileRef.current?.files?.[0];
@@ -591,6 +616,7 @@ export default function CampaignPage() {
     // newly-selected pair — the reader attributes an old CLEAN/REGRESSED to snapshots it was never
     // computed from. Drop the stale result first and say the run failed where the result would be.
     setCmp(null);
+    setCmpContext(null);
     setCmpErr(null);
     let changeIntent: CutoverChangeIntentInput | undefined;
     if (changeIntentText.trim()) {
@@ -607,12 +633,40 @@ export default function CampaignPage() {
         return;
       }
     }
-    try {
-      setCmp(changeIntent
-        ? await api.compare(Number(cmpA), Number(cmpB), changeIntent)
-        : await api.compare(Number(cmpA), Number(cmpB)));
+    const observed = observedL2TrialRequest(observedL2Trial, cmpA, cmpB);
+    if (observed.error) {
+      setCmpErr(observed.error);
+      toast("Fix the observed local L2 trial before comparing.");
+      return;
     }
-    catch (e: any) { setCmpErr(e.message || String(e)); toast(e.message); }
+    const requestId = ++cmpRequestRef.current;
+    const submitted = {
+      before: Number(cmpA),
+      recovery: Number(cmpB),
+      ...(observed.input ? {
+        preFailure: observed.input.pre_failure_snapshot_id,
+        postFailure: observed.input.post_failure_snapshot_id,
+      } : {}),
+    };
+    setCmpBusy(true);
+    try {
+      const response = observed.input
+        ? await api.compare(Number(cmpA), Number(cmpB), changeIntent, observed.input)
+        : changeIntent
+          ? await api.compare(Number(cmpA), Number(cmpB), changeIntent)
+          : await api.compare(Number(cmpA), Number(cmpB));
+      if (requestId !== cmpRequestRef.current) return;
+      setCmp(response);
+      setCmpContext(submitted);
+      setObservedL2Trial({ ...EMPTY_OBSERVED_L2_TRIAL });
+    }
+    catch (e: any) {
+      if (requestId !== cmpRequestRef.current) return;
+      setCmpErr(e.message || String(e));
+      toast(e.message);
+    } finally {
+      if (requestId === cmpRequestRef.current) setCmpBusy(false);
+    }
   }
   async function delCampaign() {
     if (!confirm("Delete this campaign and all its snapshots?")) return;
@@ -732,12 +786,18 @@ export default function CampaignPage() {
                     /api/compare with old_id 0, getting back the server's "One or both snapshots not
                     found" 404 instead of the local "Pick two different snapshots." prompt. Keep ""
                     as "" so the unselected state stays distinguishable from a real id. */}
-                <select value={cmpA} onChange={(e) => setCmpA(e.target.value === "" ? "" : Number(e.target.value))}>
+                <select value={cmpA} onChange={(e) => {
+                  invalidateComparison();
+                  setCmpA(e.target.value === "" ? "" : Number(e.target.value));
+                }}>
                   <option value="">from…</option>
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
                 <span className="faint">→</span>
-                <select value={cmpB} onChange={(e) => setCmpB(e.target.value === "" ? "" : Number(e.target.value))}>
+                <select value={cmpB} onChange={(e) => {
+                  invalidateComparison();
+                  setCmpB(e.target.value === "" ? "" : Number(e.target.value));
+                }}>
                   <option value="">to…</option>
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
@@ -752,11 +812,28 @@ export default function CampaignPage() {
                   <span className="mono"> intent_kind: revision_reset</span>. Evidence loss or incompatibility can never be authorized.
                 </div>
                 <textarea aria-label="Expected family changes JSON" value={changeIntentText}
-                  onChange={(event) => setChangeIntentText(event.target.value)} rows={5}
+                  onChange={(event) => {
+                    invalidateComparison();
+                    setChangeIntentText(event.target.value);
+                  }} rows={5}
                   placeholder={'{"expected_changes":[{"family":"vtp_safety","transitions":["intent_changed"],"subjects":["dist-1"],"intent_kind":"revision_reset","reason":"planned revision reset"}],"note":"CAB-1234"}'}
                   style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 11 }} />
               </details>
-              <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}>Compare</button>
+              <ObservedL2TrialInput
+                idPrefix="campaign-compare"
+                draft={observedL2Trial}
+                onChange={(value) => {
+                  invalidateComparison();
+                  setObservedL2Trial(value);
+                }}
+                snapshots={snaps}
+                beforeSnapshotId={cmpA}
+                recoverySnapshotId={cmpB}
+              />
+              <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}
+                disabled={observedL2TrialIsReading(observedL2Trial)}>
+                {cmpBusy ? "Comparing…" : "Compare"}
+              </button>
               {cmpErr && (
                 <div style={{ marginTop: 12 }}>
                   <ErrorBox msg={cmpErr} />
@@ -773,8 +850,17 @@ export default function CampaignPage() {
                       value={cmp.current_baseline}
                       completeExport={cmp.operator_evidence?.current_baseline_blocker_export}
                     />}
-                    exportFilename={`campaign-${cid}-snapshots-${cmpA}-${cmpB}-comparison.json`}
+                    exportFilename={`campaign-${cid}-snapshots-${cmpContext?.before ?? "unknown"}-${cmpContext?.recovery ?? "unknown"}-comparison.json`}
                   />
+                  {cmpContext && (
+                    <div className="faint mono" data-testid="comparison-submitted-context"
+                      style={{ fontSize: 10.5, marginBottom: 8 }}>
+                      Submitted source roles: before {cmpContext.before} · recovery/new {cmpContext.recovery}
+                      {cmpContext.preFailure !== undefined
+                        ? ` · pre-failure ${cmpContext.preFailure} · post-failure ${cmpContext.postFailure}`
+                        : " · no observed local L2 trial"}
+                    </div>
+                  )}
                   <div className="row-flex" style={{ marginBottom: 8 }}>
                     <span className="faint" style={{ fontSize: 11 }}>Before→after change result:</span>
                     <span className="chip" data-testid="compare-delta-verdict"

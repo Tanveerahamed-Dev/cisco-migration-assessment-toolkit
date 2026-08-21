@@ -395,6 +395,14 @@ export interface CutoverChangeIntentInput {
   note?: string;
 }
 
+/** Optional observed local-L2 trial acquisition. Recovery is always the comparison's new/after id. */
+export interface L2FailureTrialInput {
+  pre_failure_snapshot_id: number;
+  post_failure_snapshot_id: number;
+  /** Exact operator witness JSON bytes encoded for transport; the server independently binds them. */
+  witness_json_base64: string;
+}
+
 export interface ProtocolComparisonAdmission {
   schema: "protocol_comparison_admission/1";
   status: ProtocolComparisonStatus;
@@ -553,13 +561,24 @@ export interface CutoverGate {
     | "simulation_only"
     | "projected_risk"
     | "current_fault"
+    | "observed_failure"
     | "not_verified";
   /** Verbatim server-owned basis consumed by cutover_gate/1; never recompute in the UI. */
   l2_rehearsal_note?: string;
-  l2_rehearsal_applicable_families?: Array<"stp" | "etherchannel" | "multichassis_lag">;
+  l2_rehearsal_applicable_families?: Array<
+    "stp" | "etherchannel" | "multichassis_lag" | "service_path"
+  >;
   l2_rehearsal_current_faults?: number;
   l2_rehearsal_projected_risks?: number;
   l2_rehearsal_not_verified?: number;
+  l2_observed_trial_status?: "observed_survival" | "observed_failure" | "not_verified";
+  l2_observed_trial_assurance?: "local_safety_preservation" | "not_verified";
+  l2_observed_trial_family?: "stp" | "etherchannel" | "multichassis_lag" | "not_verified";
+  l2_observed_trial_subject?: string;
+  l2_observed_trial_scenario?: string;
+  l2_observed_trial_matched_projected_risks?: number;
+  /** Exact server-owned context reconciliation; presentation must not infer a stronger claim. */
+  l2_observed_trial_note?: string;
   comparison_admission_status?: ProtocolComparisonStatus;
   comparison_admission_note?: string;
   current_baseline_verdict?: CurrentBaselineGate["verdict"];
@@ -611,6 +630,7 @@ export interface L2FailureRehearsal {
     stp: boolean;
     etherchannel: boolean;
     multichassis_lag: boolean;
+    service_path: boolean;
   };
   summary: {
     n_scenarios: number;
@@ -621,6 +641,59 @@ export interface L2FailureRehearsal {
     by_disposition: Record<L2FailureRehearsalDisposition, number>;
   };
   scenarios: L2FailureRehearsalScenario[];
+  limitations: string[];
+}
+
+export interface ObservedL2PhaseSourceReceipt {
+  source: string;
+  source_id: string;
+  campaign_id: number;
+  engagement_id: string;
+  sha256: string;
+  bytes: number;
+  collected_at: string;
+  custody_at: string;
+}
+
+export interface ObservedL2FailureEvidence {
+  schema: "observed_l2_failure_evidence/1";
+  owner: "observed_local_l2_failure_trial" | string;
+  owns_score: false;
+  owns_verdict: false;
+  status: "observed_survival" | "observed_failure" | "not_verified";
+  assurance_level: "local_safety_preservation" | "not_verified";
+  family: "stp" | "etherchannel" | "multichassis_lag" | "not_verified";
+  subject: string;
+  failure_scenario: string;
+  source_binding: {
+    pre_failure: ObservedL2PhaseSourceReceipt;
+    post_failure: ObservedL2PhaseSourceReceipt;
+    recovery: ObservedL2PhaseSourceReceipt;
+    failure_witness: {
+      encoding: "base64";
+      content_base64: string;
+      sha256: string;
+      bytes: number;
+      induced_at: string;
+    };
+  };
+  precondition: { status: string; evidence: Record<string, unknown> };
+  failure_witness: {
+    status: string;
+    action: string;
+    target: Record<string, unknown>;
+    induced_at: string;
+    evidence: Record<string, unknown>;
+  };
+  post_failure: { status: string; evidence: Record<string, unknown> };
+  recovery: { status: string; evidence: Record<string, unknown> };
+  claims: {
+    local_scenario: "observed_survival" | "observed_failure" | "not_verified";
+    service_path_survival: "not_verified";
+    traffic_continuity: "not_verified";
+    convergence: "not_verified";
+  };
+  failures: string[];
   limitations: string[];
 }
 
@@ -646,12 +719,19 @@ export interface CutoverOperatorEvidence {
     note: string;
   };
   rehearsal: {
-    status: "simulation_only" | "projected_risk" | "current_fault" | "not_verified";
-    assurance_level: "not_verified";
+    status:
+      | "simulation_only"
+      | "projected_risk"
+      | "current_fault"
+      | "local_safety_preservation"
+      | "observed_failure"
+      | "not_verified";
+    assurance_level: "local_safety_preservation" | "not_verified";
     source_owner: string;
     n_impacts_total: number;
     impacts: Array<Record<string, unknown>>;
     l2_failure_rehearsal?: L2FailureRehearsal;
+    observed_l2_failure_evidence?: ObservedL2FailureEvidence;
     note: string;
   };
   rollback: {
@@ -797,6 +877,20 @@ export interface ExecutionComparisonPolicy {
   snapshot_id_high_watermark?: number;
 }
 
+export interface ExecutionL2FailureTrialRequirement {
+  schema: "execution_l2_failure_trial_requirement/1";
+  family: "stp" | "etherchannel" | "multichassis_lag" | "not_verified";
+  subject: string;
+  failure_scenario: string;
+  status: "observed_failure" | "not_verified";
+  phase_sources: Record<"pre_failure" | "post_failure" | "recovery", {
+    snapshot_id: number;
+    collected_at: string;
+    uploaded_at: string;
+  }>;
+  latest_receipt_id?: number;
+}
+
 export interface ValidationCheck {
   device?: string;
   wave?: string;
@@ -904,6 +998,7 @@ export interface ExecutionState {
   comparison_policy?: ExecutionComparisonPolicy;
   latest_comparison?: ExecutionLatestComparison;
   comparison_receipts?: StoredExecutionComparisonReceipt[];
+  l2_failure_trial_requirement?: ExecutionL2FailureTrialRequirement;
   plan_summary: CutoverPlan["summary"];
   /** Full start-snapshot blocker receipt frozen when the execution record is created. */
   baseline_blockers?: CurrentBaselineBlocker[];
@@ -1360,11 +1455,17 @@ export const api = {
   cableMap: (id: number) => fetch(`/api/snapshots/${id}/cable_map`).then((r) => j<CableMap>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
-  compare: (oldId: number, newId: number, changeIntent?: CutoverChangeIntentInput) =>
+  compare: (
+    oldId: number,
+    newId: number,
+    changeIntent?: CutoverChangeIntentInput,
+    l2FailureTrial?: L2FailureTrialInput,
+  ) =>
     post<CompareResponse>("/api/compare", {
       old_id: oldId,
       new_id: newId,
       ...(changeIntent ? { change_intent: changeIntent } : {}),
+      ...(l2FailureTrial ? { l2_failure_trial: l2FailureTrial } : {}),
     }),
 
   seedDemo: () => fetch("/api/demo/seed", { method: "POST" }).then((r) => j<{ campaign: Campaign; snapshot: SnapshotMeta }>(r)),
@@ -1375,10 +1476,16 @@ export const api = {
   listExecutions: (snapId: number) =>
     fetch(`/api/snapshots/${snapId}/executions`).then((r) => j<ExecutionMeta[]>(r)),
   getExecution: (id: number) => fetch(`/api/executions/${id}`).then((r) => j<ExecutionState>(r)),
-  compareExecution: (id: number, afterSnapshotId: number, changeIntent?: CutoverChangeIntentInput) =>
+  compareExecution: (
+    id: number,
+    afterSnapshotId: number,
+    changeIntent?: CutoverChangeIntentInput,
+    l2FailureTrial?: L2FailureTrialInput,
+  ) =>
     post<ExecutionState>(`/api/executions/${id}/compare`, {
       after_snapshot_id: afterSnapshotId,
       ...(changeIntent ? { change_intent: changeIntent } : {}),
+      ...(l2FailureTrial ? { l2_failure_trial: l2FailureTrial } : {}),
     }),
   execStep: (id: number, wave: string, index: number, status: string, note = "", operator = "") =>
     post<ExecutionState>(`/api/executions/${id}/step`, { wave, index, status, note, operator }),

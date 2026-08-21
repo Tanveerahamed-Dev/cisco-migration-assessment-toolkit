@@ -1040,6 +1040,12 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     l2_note = "No canonical L2 rehearsal receipt was supplied."
     l2_applicable_families: list = []
     l2_current_faults = l2_projected_risks = l2_not_verified = 0
+    l2_observed_supplied = False
+    l2_observed_status = "not_supplied"
+    l2_observed_assurance = "not_verified"
+    l2_observed_family = l2_observed_subject = l2_observed_scenario = ""
+    l2_observed_matched_projected_risks = 0
+    l2_observed_note = "No source-bound observed local L2 trial was supplied."
     if l2_supplied and admission_supplied:
         if not decision_inputs_valid:
             l2_status = "not_verified"
@@ -1048,18 +1054,24 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             )
             l2_not_verified = 1
         else:
-            from cisco_toolkit.l2_rehearsal import validate_l2_failure_rehearsal
+            from cisco_toolkit.l2_rehearsal import (
+                validate_l2_failure_rehearsal,
+                validate_observed_l2_failure_evidence,
+            )
             from cisco_toolkit.protocol_assurance import CUTOVER_OPERATOR_EVIDENCE_SCHEMA
 
             evidence = _as_dict(operator_evidence)
             rehearsal_wrapper = _as_dict(evidence.get("rehearsal"))
+            wrapper_assurance = rehearsal_wrapper.get("assurance_level")
             l2_validation = validate_l2_failure_rehearsal(
                 rehearsal_wrapper.get("l2_failure_rehearsal")
             ) if (
                 evidence.get("schema") == CUTOVER_OPERATOR_EVIDENCE_SCHEMA
                 and evidence.get("owner") == "reference_only_projection"
                 and evidence.get("owns_verdict") is False
-                and rehearsal_wrapper.get("assurance_level") == "not_verified"
+                and wrapper_assurance in {
+                    "not_verified", "local_safety_preservation"
+                }
             ) else {"valid": False, "reason": "operator evidence root is malformed"}
             if l2_validation.get("valid") is not True:
                 l2_status = "not_verified"
@@ -1075,26 +1087,129 @@ def compute_cutover_gate(delta: dict, certificate: dict,
                 l2_current_faults = int(l2_validation.get("n_current_faults") or 0)
                 l2_projected_risks = int(l2_validation.get("n_projected_risks") or 0)
                 l2_not_verified = int(l2_validation.get("n_not_verified") or 0)
+                l2_observed_supplied = "observed_l2_failure_evidence" in rehearsal_wrapper
+                if l2_observed_supplied:
+                    observed_validation = validate_observed_l2_failure_evidence(
+                        rehearsal_wrapper.get("observed_l2_failure_evidence"),
+                        expected_recovery_binding=_as_dict(
+                            _as_dict(admission.get("source_binding")).get("after")
+                        ),
+                    )
+                    if observed_validation.get("valid") is True:
+                        expected_wrapper_status = {
+                            "observed_survival": "local_safety_preservation",
+                            "observed_failure": "observed_failure",
+                            "not_verified": "not_verified",
+                        }.get(observed_validation.get("status"), "not_verified")
+                        if rehearsal_wrapper.get("status") != expected_wrapper_status:
+                            observed_validation = {
+                                "valid": False,
+                                "reason": (
+                                    "observed L2 trial context does not reconcile to the "
+                                    "canonical operator-evidence status"
+                                ),
+                            }
+                    if observed_validation.get("valid") is not True:
+                        l2_observed_status = "not_verified"
+                        l2_observed_note = _bounded_note(
+                            observed_validation.get("reason"),
+                            "Observed local L2 trial is detached, malformed, or bound to another recovery snapshot.",
+                        )
+                        l2_status = "not_verified"
+                        l2_not_verified = max(1, l2_not_verified)
+                    else:
+                        l2_observed_status = str(
+                            observed_validation.get("status") or "not_verified"
+                        )
+                        l2_observed_family = str(
+                            observed_validation.get("family") or ""
+                        )
+                        l2_observed_subject = str(
+                            observed_validation.get("subject") or ""
+                        )
+                        l2_observed_scenario = str(
+                            observed_validation.get("failure_scenario") or ""
+                        )
+                        l2_observed_assurance = (
+                            "local_safety_preservation"
+                            if l2_observed_status in {
+                                "observed_survival", "observed_failure"
+                            }
+                            else "not_verified"
+                        )
+                        if l2_observed_status == "observed_failure":
+                            l2_status = "observed_failure"
+                            l2_observed_note = (
+                                "The source-bound trial observed an unsafe post-failure or recovery state "
+                                "for the exact local L2 subject."
+                            )
+                        elif l2_observed_status == "not_verified":
+                            l2_status = "not_verified"
+                            l2_not_verified = max(1, l2_not_verified)
+                            l2_observed_note = (
+                                "The supplied local L2 trial did not verify its exact precondition, "
+                                "failure transition, post-failure state, and recovery."
+                            )
+                        else:
+                            exact_matches = [
+                                row for row in l2_validation.get("gate_scenarios", [])
+                                if isinstance(row, dict)
+                                and row.get("family") == l2_observed_family
+                                and row.get("subject") == l2_observed_subject
+                                and row.get("failure_scenario") == l2_observed_scenario
+                                and row.get("disposition") == "projected_risk"
+                                and row.get("family") in {
+                                    "etherchannel", "multichassis_lag"
+                                }
+                            ]
+                            if len(exact_matches) == 1:
+                                l2_observed_matched_projected_risks = 1
+                                l2_projected_risks = max(0, l2_projected_risks - 1)
+                                l2_status = (
+                                    "current_fault" if l2_current_faults else
+                                    "not_verified" if l2_not_verified else
+                                    "projected_risk" if l2_projected_risks else
+                                    "simulation_only" if l2_applicable_families else
+                                    "not_applicable"
+                                )
+                                l2_observed_note = (
+                                    "The source-bound trial establishes local_safety_preservation only "
+                                    "for the exact matching local projected-risk scenario."
+                                )
+                            else:
+                                l2_observed_note = (
+                                    "The source-bound trial establishes local_safety_preservation for its "
+                                    "exact subject, but it does not neutralize an aggregate, unrelated, "
+                                    "service-path, current-fault, or coverage-gap scenario."
+                                )
                 if l2_status == "not_applicable":
                     l2_note = (
-                        "No applicable STP, EtherChannel, or multichassis-LAG subject is declared; "
+                        "No applicable STP, EtherChannel, multichassis-LAG, or requested service-path "
+                        "failure subject is declared; "
                         "placeholder NOT VERIFIED rows do not participate in the gate."
                     )
                 elif l2_status == "simulation_only":
                     l2_note = (
-                        "Applicable bounded local single-failure eligibility projections are present. "
-                        "They do not prove convergence, remote forwarding, traffic continuity, or "
-                        "service survival."
+                        "Applicable bounded local eligibility and/or coherent stored synthetic "
+                        "failure projections are present. Synthetic preservation is not an observed "
+                        "field trial; these projections do not prove convergence, remote forwarding, "
+                        "traffic continuity, or service survival."
                     )
                 elif l2_status == "projected_risk":
                     l2_note = (
-                        f"{l2_projected_risks} applicable bounded local single-failure projection(s) "
-                        "identify projected risk; service survival remains not verified."
+                        f"{l2_projected_risks} applicable bounded local or requested service-path "
+                        "failure projection(s) identify projected risk; field-observed service "
+                        "survival remains not verified."
                     )
                 elif l2_status == "current_fault":
                     l2_note = (
                         f"{l2_current_faults} applicable L2 scenario(s) retain a current fault; "
                         "local failure projections cannot make that fault acceptable."
+                    )
+                elif l2_status == "observed_failure":
+                    l2_note = (
+                        "The exact source-bound local L2 trial observed an unsafe post-failure or "
+                        "recovery state. Service-path survival remains not verified."
                     )
                 else:
                     l2_status = "not_verified"
@@ -1102,6 +1217,8 @@ def compute_cutover_gate(delta: dict, certificate: dict,
                         f"{l2_not_verified} applicable L2 family/scenario receipt(s) are missing "
                         "or not verified."
                     )
+                if l2_observed_supplied:
+                    l2_note = f"{l2_note} Observed-trial basis: {l2_observed_note}"
 
     families_supplied = protocol_family_changes is not None
     families = _as_dict(protocol_family_changes)
@@ -1383,7 +1500,7 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         verdict = "REGRESSED"
     elif baseline_supplied and baseline_verdict == "BLOCKED":
         verdict = "FAIL"
-    elif l2_supplied and l2_status == "current_fault":
+    elif l2_supplied and l2_status in {"current_fault", "observed_failure"}:
         verdict = "FAIL"
     elif certificate_verdict == "FAIL":
         verdict = "FAIL"
@@ -1440,6 +1557,11 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         elif l2_supplied and l2_status == "current_fault":
             action = (f"Do not proceed; resolve {l2_current_faults} current L2 fault(s), then "
                       "re-collect and recompute the bounded rehearsal evidence.")
+        elif l2_supplied and l2_status == "observed_failure":
+            action = (
+                "Do not proceed; the source-bound local L2 trial observed an unsafe "
+                "post-failure or recovery state. Restore safety and repeat the exact trial."
+            )
         else:
             action = "Do not proceed; resolve the blocking certificate condition(s) and re-run the comparison."
     elif verdict == "INDETERMINATE":
@@ -1454,14 +1576,20 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             action = (f"{protocol_baseline_peers} baseline-observed protocol {noun} not be compared; "
                       "re-collect protocol evidence before accepting the change.")
         elif l2_supplied and l2_status == "not_verified":
-            action = ("Do not declare the cutover good; collect and reconcile bounded rehearsal "
-                      "evidence for every applicable STP, EtherChannel, and multichassis-LAG subject.")
+            action = (
+                "Do not declare the cutover good; collect and reconcile bounded rehearsal "
+                "evidence for every applicable STP, EtherChannel, multichassis-LAG, and "
+                "requested service-path failure subject."
+            )
         else:
             action = "Do not declare the cutover good; repair the missing or invalid evidence and re-run."
     elif verdict == "REVIEW":
         if l2_supplied and l2_status == "projected_risk":
-            action = (f"Review and disposition {l2_projected_risks} bounded local L2 failure "
-                      "risk projection(s); this is not proof of service survival.")
+            action = (
+                f"Review and disposition {l2_projected_risks} bounded local or requested "
+                "service-path failure risk projection(s); synthetic results are not proof "
+                "of observed service survival."
+            )
         elif protocol_coverage_gaps:
             noun = "cell was" if protocol_coverage_gaps == 1 else "cells were"
             action = (f"{protocol_coverage_gaps} protocol comparison {noun} not assessable; "
@@ -1519,6 +1647,17 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             "l2_rehearsal_projected_risks": l2_projected_risks,
             "l2_rehearsal_not_verified": l2_not_verified,
         })
+        if l2_observed_supplied:
+            result.update({
+                "l2_observed_trial_status": l2_observed_status,
+                "l2_observed_trial_assurance": l2_observed_assurance,
+                "l2_observed_trial_family": l2_observed_family,
+                "l2_observed_trial_subject": l2_observed_subject,
+                "l2_observed_trial_scenario": l2_observed_scenario,
+                "l2_observed_trial_matched_projected_risks":
+                    l2_observed_matched_projected_risks,
+                "l2_observed_trial_note": l2_observed_note,
+            })
     if baseline_supplied:
         result.update({
             "current_baseline_verdict": baseline_verdict,
@@ -1941,6 +2080,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                      "INDETERMINATE": "D9D9D9", "FAIL": "FFC7CE", "BLOCKED": "FFC7CE",
                      "REGRESSED": "FFC7CE", "SIMULATION_ONLY": "D9D9D9",
                      "PROJECTED_RISK": "FFEB9C", "CURRENT_FAULT": "FFC7CE",
+                     "OBSERVED_FAILURE": "FFC7CE",
+                     "LOCAL_SAFETY_PRESERVATION": "C6EFCE",
                      "NOT_APPLICABLE": "D9D9D9", "NOT_VERIFIED": "D9D9D9"}
     metrics = [
         ("CUTOVER GATE VERDICT", "", gate_verdict, gate_note),
@@ -1997,16 +2138,82 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
             str(gate["l2_rehearsal_status"]).upper(),
             gate.get("l2_rehearsal_note", "Canonical L2 rehearsal basis was not published."),
         ))
+    if gate.get("l2_observed_trial_status"):
+        observed_status = str(gate["l2_observed_trial_status"])
+        observed_display = (
+            "LOCAL_SAFETY_PRESERVATION"
+            if observed_status == "observed_survival" else observed_status.upper()
+        )
+        metrics.insert(2, (
+            "L2 OBSERVED LOCAL TRIAL",
+            "",
+            observed_display,
+            (
+                f"family={gate.get('l2_observed_trial_family', '')}; "
+                f"subject={gate.get('l2_observed_trial_subject', '')}; "
+                f"scenario={gate.get('l2_observed_trial_scenario', '')}; "
+                f"assurance={gate.get('l2_observed_trial_assurance', 'not_verified')}; "
+                "matched projected risks="
+                f"{gate.get('l2_observed_trial_matched_projected_risks', 0)}. "
+                f"{gate.get('l2_observed_trial_note', '')}"
+            ),
+        ))
     r = 2
     for m in metrics:
         for c, v in enumerate(m, 1):
             cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
-        if m[0] in {"CUTOVER GATE VERDICT", "L2 BOUNDED REHEARSAL", "CURRENT BASELINE GATE"}:
+        if m[0] in {
+                "CUTOVER GATE VERDICT", "L2 BOUNDED REHEARSAL",
+                "L2 OBSERVED LOCAL TRIAL", "CURRENT BASELINE GATE"}:
             vc = ws.cell(row=r, column=3)
             vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(str(m[2]), "FFFFFF"))
             vc.font = Font(name="Calibri", bold=True, size=11)
         r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 70
+
+    if gate.get("l2_observed_trial_status"):
+        observed_receipt = _as_dict(_as_dict(_as_dict(
+            (comparison_doc or {}).get("operator_evidence")
+        ).get("rehearsal")).get("observed_l2_failure_evidence"))
+        ws = sheet("Observed L2 Trial", ["Field", "Value"])
+        observed_rows = [
+            ("Gate status", gate.get("l2_observed_trial_status")),
+            ("Assurance", gate.get("l2_observed_trial_assurance")),
+            ("Family", gate.get("l2_observed_trial_family")),
+            ("Subject", gate.get("l2_observed_trial_subject")),
+            ("Failure scenario", gate.get("l2_observed_trial_scenario")),
+            ("Matched projected risks", gate.get(
+                "l2_observed_trial_matched_projected_risks", 0)),
+            ("Gate note", gate.get("l2_observed_trial_note")),
+            ("Receipt schema", observed_receipt.get("schema")),
+            ("Receipt status", observed_receipt.get("status")),
+            ("Local scenario claim", _as_dict(
+                observed_receipt.get("claims")).get("local_scenario")),
+            ("Service-path survival", _as_dict(
+                observed_receipt.get("claims")).get("service_path_survival")),
+            ("Traffic continuity", _as_dict(
+                observed_receipt.get("claims")).get("traffic_continuity")),
+            ("Convergence", _as_dict(
+                observed_receipt.get("claims")).get("convergence")),
+        ]
+        sources = _as_dict(observed_receipt.get("source_binding"))
+        for phase in ("pre_failure", "post_failure", "recovery"):
+            phase_source = _as_dict(sources.get(phase))
+            observed_rows.extend([
+                (f"{phase} source ID", phase_source.get("source_id")),
+                (f"{phase} SHA-256", phase_source.get("sha256")),
+                (f"{phase} bytes", phase_source.get("bytes")),
+                (f"{phase} collected_at", phase_source.get("collected_at")),
+                (f"{phase} custody_at", phase_source.get("custody_at")),
+            ])
+        for row_index, (field, value) in enumerate(observed_rows, 2):
+            ws.cell(row=row_index, column=1, value=_cv(field)).font = DF
+            ws.cell(row=row_index, column=2, value=_cv(value)).font = DF
+            ws.cell(row=row_index, column=1).alignment = AL
+            ws.cell(row=row_index, column=2).alignment = AL
+        autofit(ws, 2)
+        ws.column_dimensions["A"].width = 34
+        ws.column_dimensions["B"].width = 90
 
     # Current Baseline Gate — actionable rows behind the headline FAIL/INDETERMINATE.  These are the
     # bounded, reconciled rows emitted by compute_current_baseline_gate, never a second workbook-local

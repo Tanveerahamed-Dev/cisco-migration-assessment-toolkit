@@ -301,7 +301,8 @@ def snapshot_delta(
 def compare_bound_pair(
         old: Dict[str, Any], new: Dict[str, Any], *,
         before_binding: Dict[str, Any], after_binding: Dict[str, Any],
-        change_intent: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        change_intent: Optional[Dict[str, Any]] = None,
+        l2_failure_trial: Any = None) -> Dict[str, Any]:
     """Delegate to the presentation-independent canonical comparison composer."""
     return _comparison.compare_bound_pair(
         old,
@@ -309,6 +310,7 @@ def compare_bound_pair(
         before_binding=before_binding,
         after_binding=after_binding,
         change_intent=change_intent,
+        l2_failure_trial=l2_failure_trial,
     )
 
 

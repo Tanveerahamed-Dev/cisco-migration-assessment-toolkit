@@ -283,7 +283,7 @@ import hashlib, io, ipaddress, os, sys, json, re, logging, warnings, argparse, t
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
@@ -384,6 +384,7 @@ from cisco_toolkit.etherchannel import (
     embedded_etherchannel_operational_evidence,
 )
 from cisco_toolkit.comparison import compare_bound_pair
+from cisco_toolkit.l2_rehearsal import compute_observed_l2_failure_evidence
 from cisco_toolkit.protocol_assurance import (
     OFFLINE_FILE_SOURCE,
     bind_snapshot_json_bytes,
@@ -1624,7 +1625,7 @@ def _stat_fingerprint(st) -> Tuple[int, int, int, int]:
             int(st.st_mtime_ns))
 
 
-def _read_stable_bytes(path: str) -> bytes:
+def _read_stable_bytes(path: str, *, max_bytes: Optional[int] = None) -> bytes:
     """Read one immutable byte view or reject a file that changed during the read.
 
     Parsing and provenance must share this returned object.  Reopening a caller-controlled path to
@@ -1632,17 +1633,29 @@ def _read_stable_bytes(path: str) -> bytes:
     """
     p = os.path.abspath(str(path))
     path_before = os.stat(p)
+    if max_bytes is not None and path_before.st_size > max_bytes:
+        raise ValueError(
+            f"{os.path.basename(p)} exceeds the {max_bytes}-byte input limit"
+        )
     with open(p, "rb") as fh:
         handle_before = os.fstat(fh.fileno())
         if _stat_fingerprint(path_before) != _stat_fingerprint(handle_before):
             raise RuntimeError(f"{os.path.basename(p)} changed before it could be read")
-        data = fh.read()
+        if max_bytes is not None and handle_before.st_size > max_bytes:
+            raise ValueError(
+                f"{os.path.basename(p)} exceeds the {max_bytes}-byte input limit"
+            )
+        data = fh.read(max_bytes + 1 if max_bytes is not None else -1)
         handle_after = os.fstat(fh.fileno())
     path_after = os.stat(p)
     expected = _stat_fingerprint(handle_before)
     if _stat_fingerprint(handle_after) != expected or \
             _stat_fingerprint(path_after) != expected or len(data) != handle_before.st_size:
         raise RuntimeError(f"{os.path.basename(p)} changed while it was being read")
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ValueError(
+            f"{os.path.basename(p)} exceeds the {max_bytes}-byte input limit"
+        )
     return data
 
 
@@ -1683,11 +1696,15 @@ def _record_from_bytes(data: bytes, *, role: str, name: str) -> dict:
     }
 
 
-def _bind_input(path: str, *, role: str,
-                logical_name: str = "") -> Tuple[bytes, dict, dict]:
+_L2_TRIAL_WITNESS_MAX_BYTES = 64 * 1024
+
+
+def _bind_input(path: str, *, role: str, logical_name: str = "",
+                capture_mtime: bool = False,
+                max_bytes: Optional[int] = None) -> Tuple[bytes, dict, dict]:
     """Capture one exact input byte string plus public record and private recheck binding."""
     p = os.path.abspath(str(path))
-    data = _read_stable_bytes(p)
+    data = _read_stable_bytes(p, max_bytes=max_bytes)
     record = _record_from_bytes(
         data, role=role, name=logical_name or os.path.basename(p))
     binding = {
@@ -1697,6 +1714,15 @@ def _bind_input(path: str, *, role: str,
         "size": record["size"],
         "sha256": record["sha256"],
     }
+    if capture_mtime:
+        stat = os.stat(p)
+        if stat.st_size != len(data):
+            raise RuntimeError(f"{os.path.basename(p)} changed after it was read")
+        seconds, nanoseconds = divmod(int(stat.st_mtime_ns), 1_000_000_000)
+        binding["mtime_ns"] = int(stat.st_mtime_ns)
+        binding["mtime_at"] = datetime.fromtimestamp(
+            seconds, timezone.utc
+        ).replace(microsecond=nanoseconds // 1000).isoformat(timespec="microseconds")
     return data, record, binding
 
 
@@ -1880,6 +1906,9 @@ def _input_binding_errors(bindings: List[dict]) -> List[str]:
             size, digest = _stable_file_digest(str(binding["path"]))
             if size != binding.get("size") or digest != binding.get("sha256"):
                 errors.append(f"{name}: bytes changed after parsing")
+            elif "mtime_ns" in binding and int(os.stat(str(binding["path"])).st_mtime_ns) \
+                    != binding.get("mtime_ns"):
+                errors.append(f"{name}: custody timestamp changed after parsing")
         except (KeyError, OSError, RuntimeError) as exc:
             errors.append(f"{name}: unavailable or unstable ({type(exc).__name__})")
     return errors
@@ -3343,6 +3372,16 @@ def main():
                          "before/after snapshot identity, and optional expected-change intent. JSON schema: "
                          "offline_comparison_context/1. Without it, artifacts are still written but the "
                          "canonical gate remains INDETERMINATE/not-comparable.")
+    ap.add_argument("--l2-trial-pre", default=None, metavar="SNAPSHOT",
+                    help="With --compare, exact post-implementation/pre-failure snapshot bytes for one "
+                         "bounded observed local L2 trial. Requires --l2-trial-post, "
+                         "--l2-trial-witness, and --comparison-context.")
+    ap.add_argument("--l2-trial-post", default=None, metavar="SNAPSHOT",
+                    help="With --compare, exact induced-failure/post-failure snapshot bytes. The "
+                         "--compare NEW snapshot is always the recovery/final-current phase.")
+    ap.add_argument("--l2-trial-witness", default=None, metavar="JSON",
+                    help="With --compare, bounded l2_failure_witness/1 operator context (maximum 64 KiB). "
+                         "Device-state phase snapshots independently prove or refute the transition.")
     ap.add_argument("--fail-on-compare-gate", action="store_true",
                     help="With --compare, exit 2 after writing the workbook and certificate unless the "
                          "combined CUTOVER GATE verdict is PASS. Opt-in; requires --compare.")
@@ -3482,6 +3521,20 @@ def main():
         ap.error("--fail-on-compare-gate requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
     if args.comparison_context and not args.compare:
         ap.error("--comparison-context requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    l2_trial_values = (
+        args.l2_trial_pre, args.l2_trial_post, args.l2_trial_witness
+    )
+    if any(value is not None for value in l2_trial_values) \
+            and not all(value is not None for value in l2_trial_values):
+        ap.error(
+            "--l2-trial-pre, --l2-trial-post, and --l2-trial-witness "
+            "must be supplied together"
+        )
+    if all(value is not None for value in l2_trial_values) and not args.compare:
+        ap.error("observed L2 trial inputs require --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    if all(value is not None for value in l2_trial_values) \
+            and not args.comparison_context:
+        ap.error("observed L2 trial inputs require --comparison-context")
     if args.trend_context and not args.trend:
         ap.error("--trend-context requires --trend SNAPSHOT SNAPSHOT [...]")
 
@@ -3516,17 +3569,50 @@ def main():
     # NEW-V15: diff mode - compare two snapshots, no SSH/template needed.
     if args.compare:
         old_p, new_p = args.compare
+        l2_trial_requested = all(
+            value is not None for value in (
+                args.l2_trial_pre, args.l2_trial_post, args.l2_trial_witness
+            )
+        )
+        trial_pre_snap = trial_post_snap = None
+        trial_pre_record = trial_post_record = trial_witness_record = None
+        trial_pre_binding = trial_post_binding = trial_witness_binding = None
+        trial_witness_bytes = b""
         try:                                              # NEW-V3.23.1: clean message, not a raw traceback
             old_bytes, old_record, old_binding = _bind_input(
                 old_p, role="compare_before")
             new_bytes, new_record, new_binding = _bind_input(
-                new_p, role="compare_after")
+                new_p, role="compare_after", capture_mtime=l2_trial_requested)
             old_snap = bind_snapshot_json_bytes(old_bytes)
             new_snap = bind_snapshot_json_bytes(new_bytes)
         except FileNotFoundError as e:
             ap.error(f"--compare: snapshot file not found: {e.filename}")
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
+        if l2_trial_requested:
+            try:
+                trial_pre_bytes, trial_pre_record, trial_pre_binding = _bind_input(
+                    args.l2_trial_pre,
+                    role="offline_l2_trial_pre_failure",
+                    capture_mtime=True,
+                )
+                trial_post_bytes, trial_post_record, trial_post_binding = _bind_input(
+                    args.l2_trial_post,
+                    role="offline_l2_trial_post_failure",
+                    capture_mtime=True,
+                )
+                trial_witness_bytes, trial_witness_record, trial_witness_binding = _bind_input(
+                    args.l2_trial_witness,
+                    role="offline_l2_trial_witness",
+                    max_bytes=_L2_TRIAL_WITNESS_MAX_BYTES,
+                )
+                trial_pre_snap = bind_snapshot_json_bytes(trial_pre_bytes)
+                trial_post_snap = bind_snapshot_json_bytes(trial_post_bytes)
+            except FileNotFoundError as exc:
+                ap.error(f"observed L2 trial input not found: {exc.filename}")
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError,
+                    UnicodeDecodeError) as exc:
+                ap.error(f"observed L2 trial input is invalid ({exc})")
         comparison_context = None
         comparison_context_binding = None
         if args.comparison_context:
@@ -3540,7 +3626,16 @@ def main():
                 ap.error(f"--comparison-context: {exc}")
         # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
         # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
-        _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
+        schema_snapshots = [old_snap, new_snap]
+        schema_labels = [old_p, new_p]
+        if l2_trial_requested:
+            schema_snapshots = [old_snap, trial_pre_snap, trial_post_snap, new_snap]
+            schema_labels = [
+                old_p, args.l2_trial_pre, args.l2_trial_post, new_p,
+            ]
+        _sc_status, _sc_msg = schema_compat_status(
+            schema_snapshots, labels=schema_labels
+        )
         _sc_binding = {
             "status": _sc_status,
             "message": _sc_msg,
@@ -3556,6 +3651,9 @@ def main():
             _require_current_bindings(
                 [old_binding, new_binding,
                  *([comparison_context_binding] if comparison_context_binding else []),
+                 *([
+                     trial_pre_binding, trial_post_binding, trial_witness_binding,
+                 ] if l2_trial_requested else []),
                  *(_validated_inputs.get("bindings") or [])],
                 "--compare input")
         except ValueError as exc:
@@ -3593,6 +3691,39 @@ def main():
 
         before_binding = offline_source_binding(old_record, old_snap, side="before")
         after_binding = offline_source_binding(new_record, new_snap, side="after")
+        observed_l2_trial = None
+        if l2_trial_requested:
+            assert all(isinstance(value, dict) for value in (
+                trial_pre_snap, trial_post_snap, trial_pre_record,
+                trial_post_record, trial_pre_binding, trial_post_binding,
+                new_record, new_binding,
+            ))
+
+            def offline_trial_phase_custody(record: dict, binding: dict) -> dict:
+                digest = "sha256:" + str(record.get("sha256") or "")
+                return {
+                    "source": OFFLINE_FILE_SOURCE,
+                    "source_id": "file-" + digest,
+                    "campaign_id": context["campaign_id"],
+                    "engagement_id": context["engagement_id"],
+                    "custody_at": binding.get("mtime_at"),
+                }
+
+            observed_l2_trial = compute_observed_l2_failure_evidence(
+                trial_pre_snap,
+                trial_post_snap,
+                new_snap,
+                witness_bytes=trial_witness_bytes,
+                phase_custody={
+                    "pre_failure": offline_trial_phase_custody(
+                        trial_pre_record, trial_pre_binding
+                    ),
+                    "post_failure": offline_trial_phase_custody(
+                        trial_post_record, trial_post_binding
+                    ),
+                    "recovery": offline_trial_phase_custody(new_record, new_binding),
+                },
+            )
         comparison_receipt = compare_bound_pair(
             old_snap,
             new_snap,
@@ -3600,6 +3731,7 @@ def main():
             after_binding=after_binding,
             change_intent=context.get("change_intent"),
             path_intents=_intents,
+            l2_failure_trial=observed_l2_trial,
         )
         cert = comparison_receipt["precert"]
         canonical_gate = comparison_receipt["cutover_gate"]
@@ -3620,6 +3752,19 @@ def main():
             comparison_path,
             cutover_gate.get("verdict", "INDETERMINATE"),
         )
+        if l2_trial_requested:
+            rehearsal = comparison_receipt.get("operator_evidence", {}).get(
+                "rehearsal", {}
+            )
+            logger.info(
+                "[OBSERVED L2 LOCAL TRIAL: %s] assurance=%s; family=%s; subject=%s. "
+                "This is bounded local safety evidence only; it does not prove service/path "
+                "survival or convergence.",
+                str(canonical_gate.get("l2_observed_trial_status") or "not_verified").upper(),
+                rehearsal.get("assurance_level", "not_verified"),
+                canonical_gate.get("l2_observed_trial_family", "not_verified"),
+                canonical_gate.get("l2_observed_trial_subject", "not_verified"),
+            )
         gate_verdict = str(cutover_gate.get("verdict") or "INDETERMINATE")
         gate_line = f"[CUTOVER GATE: {gate_verdict}] {cutover_gate.get('operator_note') or cutover_gate.get('note')}"
         if gate_verdict in ("REGRESSED", "FAIL"):

@@ -19,6 +19,12 @@ import {
   type BaselinePresentationRow,
 } from "../baselinePresentation";
 import ComparisonDecision from "../components/ComparisonDecision";
+import ObservedL2TrialInput, {
+  EMPTY_OBSERVED_L2_TRIAL,
+  observedL2TrialIsReading,
+  observedL2TrialRequest,
+} from "../components/ObservedL2TrialInput";
+import type { ObservedL2TrialDraft } from "../components/ObservedL2TrialInput";
 import { CountUp, ErrorBox, Loading, SevChip, useAsync, useToast } from "../components/ui";
 
 /* The cutover execution console (war room): the snapshot's gated run-of-show, made live.
@@ -484,6 +490,9 @@ export default function ExecutionPage() {
   const [operator, setOperator] = useState<string>(() => localStorage.getItem("assesshub-operator") || "");
   const [afterSnapshotId, setAfterSnapshotId] = useState<number | "">("");
   const [changeIntentText, setChangeIntentText] = useState("");
+  const [observedL2Trial, setObservedL2Trial] = useState<ObservedL2TrialDraft>(
+    EMPTY_OBSERVED_L2_TRIAL,
+  );
   const [compareBusy, setCompareBusy] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
   const { toast, node: toastNode } = useToast();
@@ -538,16 +547,31 @@ export default function ExecutionPage() {
         return;
       }
     }
+    const observed = observedL2TrialRequest(
+      observedL2Trial,
+      ex.snapshot_id,
+      afterSnapshotId,
+    );
+    if (observed.error) {
+      setCompareError(observed.error);
+      toast("Fix the observed local L2 trial before binding evidence.");
+      return;
+    }
     setCompareBusy(true);
     setCompareError(null);
     queueRef.current = queueRef.current
-      .then(() => changeIntent
-        ? api.compareExecution(eid, afterSnapshotId, changeIntent)
-        : api.compareExecution(eid, afterSnapshotId))
+      .then(() => observed.input
+        ? api.compareExecution(
+          eid, afterSnapshotId, changeIntent, observed.input,
+        )
+        : changeIntent
+          ? api.compareExecution(eid, afterSnapshotId, changeIntent)
+          : api.compareExecution(eid, afterSnapshotId))
       .then((updated) => {
         setEx(updated);
         setAfterSnapshotId("");
         setChangeIntentText("");
+        setObservedL2Trial({ ...EMPTY_OBSERVED_L2_TRIAL });
         toast("Post-change evidence bound to an immutable canonical comparison receipt.");
       })
       .catch((e) => {
@@ -584,6 +608,7 @@ export default function ExecutionPage() {
     const notComplete = ex.waves.filter((w) => w.closeout.decision !== "COMPLETE").length;
     const frozenBaseline = ex.plan_summary?.current_baseline;
     const baselineForcesPartial = !!frozenBaseline && frozenBaseline.verdict !== "CLEAR";
+    const trialForcesPartial = !!ex.l2_failure_trial_requirement;
     const canonicalVerdict = ex.latest_comparison?.cutover_gate?.verdict;
     const canonicalForcesPartial = ex.comparison_policy?.canonical_gate_required === true
       && canonicalVerdict !== "PASS";
@@ -594,6 +619,8 @@ export default function ExecutionPage() {
           ? `${notComplete} wave(s) closed out as something other than COMPLETE — finishing now derives a ${predicted} outcome. Finish anyway?`
           : baselineForcesPartial
             ? `The start-snapshot current-baseline gate is ${frozenBaseline.verdict}. Finishing now derives a PARTIALLY IMPLEMENTED outcome; re-collect a CLEAR snapshot and start a new run for successful acceptance. Finish anyway?`
+          : trialForcesPartial
+            ? `The ${ex.l2_failure_trial_requirement!.status.replaceAll("_", " ")} local L2 trial for ${ex.l2_failure_trial_requirement!.subject} remains unresolved. Finishing now derives a PARTIALLY IMPLEMENTED outcome; only a strictly newer exact observed-survival re-trial can clear it. Finish anyway?`
           : canonicalForcesPartial
             ? `The latest canonical post-change gate is ${canonicalVerdict || "NOT VERIFIED"}. Finishing now derives a PARTIALLY IMPLEMENTED outcome; bind a comparison whose server-owned cutover gate is PASS for successful acceptance. Finish anyway?`
           : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
@@ -627,6 +654,7 @@ export default function ExecutionPage() {
     && canonicalVerdict !== "PASS";
   const baselinePreventsSuccess = !!ex.plan_summary?.current_baseline
     && ex.plan_summary.current_baseline.verdict !== "CLEAR";
+  const trialPreventsSuccess = !!ex.l2_failure_trial_requirement;
 
   return (
     <div className="container">
@@ -703,7 +731,8 @@ export default function ExecutionPage() {
               ))}
             </select>
             <button type="button" className="btn primary" onClick={bindPostChangeComparison}
-              disabled={compareBusy || afterSnapshotId === ""}>
+              disabled={compareBusy || afterSnapshotId === ""
+                || observedL2TrialIsReading(observedL2Trial)}>
               {compareBusy ? "Comparing…" : "Bind and compare"}
             </button>
           </div>
@@ -720,6 +749,24 @@ export default function ExecutionPage() {
               placeholder={'{"expected_changes":[{"family":"fhrp_redundancy_domain","transitions":["intent_changed"],"subjects":[],"reason":"planned active role move"}],"note":"CAB-1234"}'}
               style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 11 }} />
           </details>
+          <ObservedL2TrialInput
+            idPrefix="execution-compare"
+            draft={observedL2Trial}
+            onChange={setObservedL2Trial}
+            snapshots={candidates}
+            beforeSnapshotId={ex.snapshot_id}
+            recoverySnapshotId={afterSnapshotId}
+            disabled={compareBusy}
+          />
+          {ex.l2_failure_trial_requirement && (
+            <div role="alert" data-testid="execution-l2-retrial-requirement"
+              style={{ color: "var(--crit)", fontSize: 11.5, marginTop: 8 }}>
+              A prior {ex.l2_failure_trial_requirement.status.replaceAll("_", " ")} trial remains
+              binding for <span className="mono">{ex.l2_failure_trial_requirement.family} · {ex.l2_failure_trial_requirement.subject}</span>.
+              Omission or a different scenario is refused; only a strictly newer exact observed-survival
+              trial can clear this requirement.
+            </div>
+          )}
           {candidates.length === 0 && (
             <div className="faint" style={{ fontSize: 11, marginTop: 7 }}>
               No post-start snapshot is available in this campaign yet.
@@ -777,10 +824,12 @@ export default function ExecutionPage() {
             <button className="btn primary" onClick={() => finish("completed")}
               title={baselinePreventsSuccess
                 ? "Finishing this frozen non-clear baseline can only derive PARTIALLY IMPLEMENTED"
+                : trialPreventsSuccess
+                  ? "An unresolved observed local L2 trial requires a strictly newer exact re-trial"
                 : canonicalRequiredWithoutPass
                   ? "A new execution requires a latest canonical PASS gate for SUCCESSFUL"
                   : undefined}>
-              ■ Finish run{baselinePreventsSuccess || canonicalRequiredWithoutPass ? " · partial" : ""}
+              ■ Finish run{baselinePreventsSuccess || trialPreventsSuccess || canonicalRequiredWithoutPass ? " · partial" : ""}
             </button>
             <button className="btn danger" onClick={() => finish("aborted")}>Abort</button>
           </>

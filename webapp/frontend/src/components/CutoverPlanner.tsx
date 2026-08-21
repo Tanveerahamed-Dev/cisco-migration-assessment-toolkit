@@ -19,6 +19,12 @@ import {
   type BaselinePresentationRow,
 } from "../baselinePresentation";
 import ComparisonDecision from "./ComparisonDecision";
+import ObservedL2TrialInput, {
+  EMPTY_OBSERVED_L2_TRIAL,
+  observedL2TrialIsReading,
+  observedL2TrialRequest,
+} from "./ObservedL2TrialInput";
+import type { ObservedL2TrialDraft } from "./ObservedL2TrialInput";
 import { CountUp, ErrorBox, SegBar, SevChip, SkelLines, useAsync } from "./ui";
 
 /* The cutover-plan panel: a gated, pilot-first run-of-show synthesized server-side from the
@@ -421,6 +427,9 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
   const [boundExecution, setBoundExecution] = useState<ExecutionState | null>(null);
   const [afterSnapshotId, setAfterSnapshotId] = useState<number | "">("");
   const [changeIntentText, setChangeIntentText] = useState("");
+  const [observedL2Trial, setObservedL2Trial] = useState<ObservedL2TrialDraft>(
+    EMPTY_OBSERVED_L2_TRIAL,
+  );
   const [compareBusy, setCompareBusy] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
   const [boundMessage, setBoundMessage] = useState<string | null>(null);
@@ -467,17 +476,31 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
         return;
       }
     }
+    const observed = observedL2TrialRequest(
+      observedL2Trial,
+      policy?.before_snapshot.snapshot_id ?? execution.snapshot_id,
+      afterSnapshotId,
+    );
+    if (observed.error) {
+      setCompareError(observed.error);
+      return;
+    }
     setCompareBusy(true);
     setCompareError(null);
     setBoundMessage(null);
-    const request = changeIntent
-      ? api.compareExecution(execution.id, afterSnapshotId, changeIntent)
-      : api.compareExecution(execution.id, afterSnapshotId);
+    const request = observed.input
+      ? api.compareExecution(
+        execution.id, afterSnapshotId, changeIntent, observed.input,
+      )
+      : changeIntent
+        ? api.compareExecution(execution.id, afterSnapshotId, changeIntent)
+        : api.compareExecution(execution.id, afterSnapshotId);
     request
       .then((updated) => {
         setBoundExecution(updated);
         setAfterSnapshotId("");
         setChangeIntentText("");
+        setObservedL2Trial({ ...EMPTY_OBSERVED_L2_TRIAL });
         setBoundMessage("Post-change evidence was appended as an immutable canonical comparison receipt.");
         onReceiptBound();
       })
@@ -549,7 +572,8 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
             </select>
             <button type="button" className="btn primary" onClick={bind}
               aria-label={`Bind and compare ${run.label}`}
-              disabled={compareBusy || afterSnapshotId === ""}>
+              disabled={compareBusy || afterSnapshotId === ""
+                || observedL2TrialIsReading(observedL2Trial)}>
               {compareBusy ? "Comparing…" : "Bind and compare"}
             </button>
           </div>
@@ -563,6 +587,23 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
               placeholder={'{"expected_changes":[{"family":"fhrp_redundancy_domain","transitions":["intent_changed"],"subjects":[],"reason":"planned active role move"}],"note":"CAB-1234"}'}
               style={{ width: "100%", marginTop: 6, fontFamily: "var(--mono)", fontSize: 11 }} />
           </details>
+          <ObservedL2TrialInput
+            idPrefix={`cutover-planner-${run.id}`}
+            draft={observedL2Trial}
+            onChange={setObservedL2Trial}
+            snapshots={candidates}
+            beforeSnapshotId={policy.before_snapshot.snapshot_id}
+            recoverySnapshotId={afterSnapshotId}
+            disabled={compareBusy}
+          />
+          {execution.l2_failure_trial_requirement && (
+            <div role="alert" data-testid={`cutover-execution-l2-retrial-${run.id}`}
+              style={{ color: "var(--crit)", fontSize: 11.5, marginTop: 8 }}>
+              A prior {execution.l2_failure_trial_requirement.status.replaceAll("_", " ")} trial
+              remains binding for <span className="mono">{execution.l2_failure_trial_requirement.family} · {execution.l2_failure_trial_requirement.subject}</span>.
+              Only a strictly newer exact observed-survival trial can clear it.
+            </div>
+          )}
           {candidates.length === 0 && (
             <div className="faint" style={{ fontSize: 11, marginTop: 7 }}>
               No second snapshot is available in this execution&apos;s campaign yet.

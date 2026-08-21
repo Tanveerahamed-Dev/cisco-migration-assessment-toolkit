@@ -63,7 +63,11 @@ _BARREL_HELPER_EXPORTS = frozenset(
 # static design-sync card would require maintaining a second fictional semantic receipt outside the
 # server-owned contract, so Campaign and Execution reuse it directly without publishing it as a
 # standalone design-system component.
-_DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({"ComparisonDecision", "Topology3D"})
+_DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({
+    "ComparisonDecision",
+    "ObservedL2TrialInput",
+    "Topology3D",
+})
 
 _BARREL_EXPORT_BLOCK = re.compile(
     r"^\s*export\s*{(?P<body>.*?)}\s*from\s*[\"'][^\"']+[\"']\s*;?",

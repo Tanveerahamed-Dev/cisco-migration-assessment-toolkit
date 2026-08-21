@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from openpyxl import load_workbook
+import pytest
 
 from cisco_toolkit import traffic_assurance
 from cisco_toolkit.analyze import (
@@ -220,6 +221,44 @@ def _canonical_pair(snapshot: dict, *, engagement: str = "ENG-L2-REHEARSAL"):
         after,
         before_binding=binding(9101),
         after_binding=binding(9102),
+    )
+    return before, after, comparison
+
+
+def _canonical_distinct_pair(
+        before_snapshot: dict, after_snapshot: dict,
+        *, engagement: str = "ENG-L2-REHEARSAL"):
+    def encode(snapshot: dict) -> bytes:
+        return json.dumps(
+            snapshot,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            allow_nan=False,
+            default=lambda item: dataclasses.asdict(item)
+            if dataclasses.is_dataclass(item) else str(item),
+        ).encode("utf-8")
+
+    before_raw, after_raw = encode(before_snapshot), encode(after_snapshot)
+    before = bind_snapshot_json_bytes(before_raw)
+    after = bind_snapshot_json_bytes(after_raw)
+
+    def binding(raw: bytes, snapshot_id: int) -> dict:
+        return {
+            "source": OFFLINE_FILE_SOURCE,
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+            "snapshot_id": snapshot_id,
+            "campaign_id": 91,
+            "engagement_id": engagement,
+            "label": f"snapshot-{snapshot_id}.json",
+            "script_version": "V3.23.0",
+        }
+
+    comparison = compare_bound_pair(
+        before,
+        after,
+        before_binding=binding(before_raw, 9101),
+        after_binding=binding(after_raw, 9102),
     )
     return before, after, comparison
 
@@ -840,6 +879,253 @@ def test_current_traffic_failure_continuity_gap_is_explicit_not_verified():
     assert row["evidence"]["producer_status"] == "l2_failover_not_proven"
     assert row["evidence"]["n_steps"] == 1
     assert row["evidence"]["n_indeterminate"] >= 1
+
+
+def test_requested_service_failure_is_closed_gate_applicability() -> None:
+    requested = compute_l2_failure_rehearsal(_bind(_traffic_failure_snapshot()))
+    requested_validation = validate_l2_failure_rehearsal(requested)
+    assert requested["applicability"]["service_path"] is True
+    assert requested_validation["applicable_families"] == ["service_path"]
+    assert requested_validation["gate_status"] == "not_verified"
+    assert requested_validation["n_not_verified"] == 1
+
+    malformed_snapshot = _traffic_failure_snapshot()
+    malformed_snapshot["traffic_assurance"]["results"][0].pop("claims")
+    malformed = compute_l2_failure_rehearsal(_bind(malformed_snapshot))
+    malformed_validation = validate_l2_failure_rehearsal(malformed)
+    assert malformed["applicability"]["service_path"] is True
+    assert _family(malformed, "service_path")[0]["disposition"] == "not_verified"
+    assert malformed_validation["gate_status"] == "not_verified"
+
+    absent = compute_l2_failure_rehearsal(_bind(_symmetric_snapshot()))
+    absent_validation = validate_l2_failure_rehearsal(absent)
+    assert absent["applicability"]["service_path"] is False
+    assert absent_validation["applicable_families"] == []
+    assert absent_validation["gate_status"] == "not_applicable"
+
+
+def test_canonical_comparison_retains_requested_service_capture_loss() -> None:
+    traffic = _traffic_failure_snapshot()
+    before_snapshot = copy.deepcopy(
+        _clean_comparison_snapshot("FULL/DR", "2026-08-20T00:00:00")
+    )
+    for key, value in traffic.items():
+        before_snapshot[key] = copy.deepcopy(value)
+    after_snapshot = copy.deepcopy(before_snapshot)
+    after_snapshot.pop("traffic_assurance")
+
+    _before, _after, comparison = _canonical_distinct_pair(
+        before_snapshot, after_snapshot, engagement="ENG-SERVICE-CAPTURE-LOSS"
+    )
+    rehearsal = comparison["operator_evidence"]["rehearsal"][
+        "l2_failure_rehearsal"
+    ]
+
+    assert comparison["comparison_admission"]["status"] == "admitted"
+    assert comparison["verdict"] == "CLEAN"
+    assert comparison["precert"]["verdict"] == "PASS"
+    assert rehearsal["applicability"]["service_path"] is True
+    assert any(
+        row["family"] == "service_path"
+        and row["subject"] == "erp-forward"
+        and row["disposition"] == "not_verified"
+        and row["evidence"].get("prior_requested_failure_denominator") is True
+        for row in rehearsal["scenarios"]
+    )
+    assert comparison["cutover_gate"]["l2_rehearsal_status"] == "not_verified"
+    assert comparison["cutover_gate"]["verdict"] == "INDETERMINATE"
+
+
+def test_requested_service_scenario_replacement_retains_exact_prior_gap() -> None:
+    before = _traffic_failure_snapshot()
+    after = copy.deepcopy(before)
+    after["traffic_assurance"] = traffic_assurance.assess_flows(after, [{
+        **_intent(),
+        "id": "replacement-flow",
+        "failure": {"action": "fail_node", "id": "R2"},
+    }])
+
+    rehearsal = compute_l2_failure_rehearsal(
+        _bind(after), prior_snapshot=_bind(before)
+    )
+    service_rows = _family(rehearsal, "service_path")
+
+    assert rehearsal["applicability"]["service_path"] is True
+    assert any(row["subject"] == "replacement-flow" for row in service_rows)
+    lost = next(row for row in service_rows if row["subject"] == "erp-forward")
+    assert lost["failure_scenario"] == "fail_node"
+    assert lost["disposition"] == "not_verified"
+    assert lost["evidence"]["prior_requested_failure_denominator"] is True
+    assert lost["evidence"]["current_exact_scenario_present"] is False
+    assert lost["evidence"]["prior_scenario_identity"].startswith("sha256:")
+    assert validate_l2_failure_rehearsal(rehearsal)["gate_status"] == "not_verified"
+
+
+@pytest.mark.parametrize(
+    ("intent_changes", "failure_target"),
+    [({"dst_port": 8443}, "R2"), ({}, "R1")],
+)
+def test_same_service_labels_cannot_alias_a_changed_tuple_or_failure_target(
+        intent_changes: dict, failure_target: str) -> None:
+    before = _traffic_failure_snapshot()
+    after = _symmetric_snapshot()
+    after["traffic_assurance"] = traffic_assurance.assess_flows(after, [{
+        **_intent(),
+        **intent_changes,
+        "id": "erp-forward",
+        "failure": {"action": "fail_node", "id": failure_target},
+    }])
+
+    rehearsal = compute_l2_failure_rehearsal(
+        _bind(after), prior_snapshot=_bind(before)
+    )
+    same_labels = [
+        row for row in _family(rehearsal, "service_path")
+        if row["subject"] == "erp-forward"
+        and row["failure_scenario"] == "fail_node"
+    ]
+
+    assert any(
+        row["disposition"] == "not_verified"
+        and row["evidence"].get("prior_requested_failure_denominator") is True
+        and row["evidence"].get("current_exact_scenario_present") is False
+        and row["evidence"].get("prior_scenario_identity", "").startswith("sha256:")
+        for row in same_labels
+    )
+    assert validate_l2_failure_rehearsal(rehearsal)["gate_status"] == "not_verified"
+
+    before_snapshot = copy.deepcopy(
+        _clean_comparison_snapshot("FULL/DR", "2026-08-20T00:00:00")
+    )
+    after_snapshot = copy.deepcopy(before_snapshot)
+    for key, value in before.items():
+        before_snapshot[key] = copy.deepcopy(value)
+    for key, value in after.items():
+        after_snapshot[key] = copy.deepcopy(value)
+    _old, _new, comparison = _canonical_distinct_pair(
+        before_snapshot,
+        after_snapshot,
+        engagement=(
+            f"ENG-SERVICE-EXACT-{failure_target}-"
+            f"{intent_changes.get('dst_port', 'same')}"
+        ),
+    )
+    canonical_rows = _family(
+        comparison["operator_evidence"]["rehearsal"]["l2_failure_rehearsal"],
+        "service_path",
+    )
+    assert any(
+        row["subject"] == "erp-forward"
+        and row["failure_scenario"] == "fail_node"
+        and row["evidence"].get("current_exact_scenario_present") is False
+        for row in canonical_rows
+    )
+    assert comparison["cutover_gate"]["verdict"] != "PASS"
+
+
+def test_service_refutation_and_synthetic_preservation_gate_semantics_are_closed(
+        monkeypatch) -> None:
+    def disposition(value: dict, token: str) -> dict:
+        changed = copy.deepcopy(value)
+        service = _family(changed, "service_path")[0]
+        service["disposition"] = token
+        counts = {
+            name: sum(row["disposition"] == name for row in changed["scenarios"])
+            for name in (
+                "simulation_only", "projected_risk", "current_fault", "not_verified"
+            )
+        }
+        changed["summary"].update({
+            "n_current_faults": counts["current_fault"],
+            "n_projected_risks": counts["projected_risk"],
+            "n_not_verified": counts["not_verified"],
+            "by_disposition": counts,
+        })
+        changed["status"] = (
+            "current_fault" if counts["current_fault"] else
+            "projected_risk" if counts["projected_risk"] else
+            "not_verified" if counts["not_verified"] else
+            "simulation_only"
+        )
+        return changed
+
+    base = compute_l2_failure_rehearsal(_bind(_traffic_failure_snapshot()))
+    refuted = validate_l2_failure_rehearsal(disposition(base, "projected_risk"))
+    assert refuted["valid"] is True
+    assert refuted["gate_status"] == "projected_risk"
+    assert refuted["n_projected_risks"] == 1
+
+    synthetic = validate_l2_failure_rehearsal(disposition(base, "simulation_only"))
+    assert synthetic["valid"] is True
+    assert synthetic["gate_status"] == "simulation_only"
+    assert synthetic["n_projected_risks"] == 0
+    assert synthetic["n_not_verified"] == 0
+
+    from cisco_toolkit import l2_rehearsal as l2_owner
+
+    for token, expected_gate in (
+        ("projected_risk", "REVIEW"),
+        ("simulation_only", "PASS"),
+    ):
+        canonical_receipt = disposition(base, token)
+        monkeypatch.setattr(
+            l2_owner,
+            "compute_l2_failure_rehearsal",
+            lambda _snapshot, *, prior_snapshot=None, receipt=canonical_receipt: receipt,
+        )
+        before = _clean_comparison_snapshot("FULL/DR", "2026-08-20T00:00:00")
+        after = _clean_comparison_snapshot("FULL/DR", "2026-08-20T00:01:00")
+        _old, _new, comparison = _canonical_distinct_pair(
+            before,
+            after,
+            engagement=f"ENG-SERVICE-GATE-{token.upper()}",
+        )
+        assert comparison["comparison_admission"]["status"] == "admitted"
+        assert comparison["verdict"] == "CLEAN"
+        assert comparison["precert"]["verdict"] == "PASS"
+        assert comparison["cutover_gate"]["l2_rehearsal_status"] == token
+        assert comparison["cutover_gate"]["verdict"] == expected_gate
+
+
+def test_service_failure_applicability_consumes_full_uncapped_denominator() -> None:
+    rows = [
+        {"failure": {"requested": False}}
+        for _index in range(16_385)
+    ]
+    rows.append({"failure": {"requested": True}})
+    snapshot = _bind({
+        "script_version": "V3.23.0",
+        "traffic_assurance": {"results": rows},
+    })
+
+    rehearsal = compute_l2_failure_rehearsal(snapshot)
+    validation = validate_l2_failure_rehearsal(rehearsal)
+
+    assert rehearsal["applicability"]["service_path"] is True
+    assert _family(rehearsal, "service_path")[0]["disposition"] == "not_verified"
+    assert validation["gate_status"] == "not_verified"
+    assert validation["n_not_verified"] == 1
+
+
+def test_present_malformed_service_owner_is_applicable_even_without_request_flag() -> None:
+    clean = _symmetric_snapshot()
+    clean["traffic_assurance"] = traffic_assurance.assess_flows(
+        clean, [{**_intent(), "id": "baseline-only"}]
+    )
+    no_request = compute_l2_failure_rehearsal(_bind(clean))
+    assert no_request["applicability"]["service_path"] is False
+
+    for mutate in (
+        lambda owner: owner.__setitem__("schema", "wrong/1"),
+        lambda owner: owner["summary"].__setitem__("n", 999),
+    ):
+        malformed = copy.deepcopy(clean)
+        mutate(malformed["traffic_assurance"])
+        rehearsal = compute_l2_failure_rehearsal(_bind(malformed))
+        validation = validate_l2_failure_rehearsal(rehearsal)
+        assert rehearsal["applicability"]["service_path"] is True
+        assert validation["gate_status"] == "not_verified"
+        assert validation["n_not_verified"] == 1
 
 
 def test_malformed_stored_cutover_simulation_cannot_claim_favorable_projection():

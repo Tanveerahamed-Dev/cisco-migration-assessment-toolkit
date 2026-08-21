@@ -2176,7 +2176,11 @@ def current_baseline_blocker_export(snapshot: Any) -> dict:
     return payload
 
 
-def cutover_operator_evidence(snapshot: Any) -> dict:
+def cutover_operator_evidence(
+        snapshot: Any, *, observed_l2_failure_evidence: Any = None,
+        expected_recovery_binding: Any = None, prior_snapshot: Any = None,
+        expected_predecessor_collected_at: Any = None,
+        expected_predecessor_binding: Any = None) -> dict:
     """Project existing simulation and rollback owners without inventing rehearsal success.
 
     ``failure_impact`` is an existing bounded simulation projection, not proof that an operator
@@ -2189,9 +2193,14 @@ def cutover_operator_evidence(snapshot: Any) -> dict:
     snap = _dict(snapshot)
     # Lazy import avoids a module cycle: the rehearsal composer reuses the native delta owners,
     # which in turn consume the shared contracts in this module.
-    from cisco_toolkit.l2_rehearsal import compute_l2_failure_rehearsal
+    from cisco_toolkit.l2_rehearsal import (
+        compute_l2_failure_rehearsal,
+        validate_observed_l2_failure_evidence,
+    )
 
-    l2_rehearsal = compute_l2_failure_rehearsal(snapshot)
+    l2_rehearsal = compute_l2_failure_rehearsal(
+        snapshot, prior_snapshot=prior_snapshot
+    )
     raw_impacts = snap.get("failure_impact")
     impacts = [dict(row) for row in raw_impacts
                if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
@@ -2216,6 +2225,42 @@ def cutover_operator_evidence(snapshot: Any) -> dict:
             "No supported source-bound failure projection or operator rehearsal receipt is present."
         ),
     }
+    if observed_l2_failure_evidence is not None:
+        observed_validation = validate_observed_l2_failure_evidence(
+            observed_l2_failure_evidence,
+            expected_recovery_binding=expected_recovery_binding,
+            expected_predecessor_collected_at=expected_predecessor_collected_at,
+            expected_predecessor_binding=expected_predecessor_binding,
+        )
+        observed_status = (
+            str(observed_validation.get("status") or "not_verified")
+            if observed_validation.get("valid") is True else "not_verified"
+        )
+        rehearsal["observed_l2_failure_evidence"] = observed_l2_failure_evidence
+        rehearsal["status"] = (
+            "local_safety_preservation" if observed_status == "observed_survival" else
+            "observed_failure" if observed_status == "observed_failure" else
+            "not_verified"
+        )
+        rehearsal["assurance_level"] = (
+            "local_safety_preservation"
+            if observed_status in {"observed_survival", "observed_failure"}
+            else "not_verified"
+        )
+        rehearsal["source_owner"] = (
+            "observed_local_l2_failure_trial + failure_impact projection"
+        )
+        rehearsal["note"] = (
+            "The exact local L2 subject and named failure transition were observed across "
+            "source-bound phases. This is local_safety_preservation only; service-path "
+            "survival, traffic continuity, and convergence remain not verified."
+            if observed_status == "observed_survival" else
+            "The source-bound local L2 trial observed or retained an unsafe post-failure or "
+            "recovery state. It is blocking evidence, not a service-path claim."
+            if observed_status == "observed_failure" else
+            "An observed local L2 trial was supplied but its source, chronology, subject, "
+            "transition, or recovery evidence is not verified."
+        )
 
     scenarios = _dict(snap.get("migration_scenarios"))
     raw_groups = scenarios.get("per_group")

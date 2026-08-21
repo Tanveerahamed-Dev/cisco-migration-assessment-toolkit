@@ -398,7 +398,7 @@ describe("CutoverPlanner (render)", () => {
     );
   });
 
-  it("binds a same-campaign snapshot to a live execution and renders the returned canonical receipt", async () => {
+  it("binds a same-campaign observed phase set to a live execution and renders the returned canonical receipt", async () => {
     const sourceBinding = {
       source: "persisted snapshots.snapshot_json blob",
       sha256: `sha256:${"1".repeat(64)}`,
@@ -440,16 +440,16 @@ describe("CutoverPlanner (render)", () => {
       latest_comparison: {
         schema: "execution_latest_comparison/1", receipt_id: 91,
         receipt_sha256: `sha256:${"a".repeat(64)}`,
-        before_snapshot_id: 1, after_snapshot_id: 2,
+        before_snapshot_id: 1, after_snapshot_id: 4,
         cutover_gate: comparison.cutover_gate,
       },
       comparison_receipts: [{
-        id: 91, execution_id: 41, before_snapshot_id: 1, after_snapshot_id: 2,
+        id: 91, execution_id: 41, before_snapshot_id: 1, after_snapshot_id: 4,
         receipt_sha256: `sha256:${"a".repeat(64)}`, cutover_verdict: "PASS",
         created_at: "2026-08-20T01:00:00Z",
         receipt: {
           schema: "execution_comparison_receipt/1",
-          before_snapshot_id: 1, after_snapshot_id: 2,
+          before_snapshot_id: 1, after_snapshot_id: 4,
           comparison, receipt_sha256: `sha256:${"a".repeat(64)}`,
         },
       }],
@@ -465,7 +465,9 @@ describe("CutoverPlanner (render)", () => {
       id: 73, name: "DC East", description: "", created_at: "2026-08-19T00:00:00Z",
       snapshots: [
         { id: 1, campaign_id: 73, label: "Baseline" },
-        { id: 2, campaign_id: 73, label: "Post-change" },
+        { id: 2, campaign_id: 73, label: "Trial pre" },
+        { id: 3, campaign_id: 73, label: "Trial post" },
+        { id: 4, campaign_id: 73, label: "Recovery" },
       ],
     } as never);
     const compare = vi.spyOn(api, "compareExecution").mockResolvedValue(updatedExecution as never);
@@ -476,8 +478,8 @@ describe("CutoverPlanner (render)", () => {
     expect(getCampaign).toHaveBeenCalledWith(73);
     const after = screen.getByLabelText("After snapshot for Cutover run 1");
     expect(within(after).queryByRole("option", { name: /Baseline/ })).toBeNull();
-    expect(within(after).getByRole("option", { name: /Post-change · snapshot 2/ })).toBeInTheDocument();
-    fireEvent.change(after, { target: { value: "2" } });
+    expect(within(after).getByRole("option", { name: /Recovery · snapshot 4/ })).toBeInTheDocument();
+    fireEvent.change(after, { target: { value: "4" } });
     const intent = {
       expected_changes: [{
         family: "fhrp_redundancy_domain", transitions: ["intent_changed"],
@@ -488,9 +490,25 @@ describe("CutoverPlanner (render)", () => {
     fireEvent.change(screen.getByLabelText("Expected family changes for Cutover run 1"), {
       target: { value: JSON.stringify(intent) },
     });
+    fireEvent.click(screen.getByLabelText("cutover-planner-41 include observed local L2 trial"));
+    fireEvent.change(screen.getByLabelText("cutover-planner-41 pre-failure snapshot"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("cutover-planner-41 post-failure snapshot"), {
+      target: { value: "3" },
+    });
+    const witness = '{"schema":"l2_failure_witness/1","subject":"dist1|Po10"}';
+    fireEvent.change(screen.getByLabelText("cutover-planner-41 failure witness JSON"), {
+      target: { files: [new File([witness], "planner-trial.json", { type: "application/json" })] },
+    });
+    expect(await screen.findByText("Witness loaded: planner-trial.json")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Bind and compare Cutover run 1" }));
 
-    await waitFor(() => expect(compare).toHaveBeenCalledWith(41, 2, intent));
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(41, 4, intent, {
+      pre_failure_snapshot_id: 2,
+      post_failure_snapshot_id: 3,
+      witness_json_base64: btoa(witness),
+    }));
     expect(await screen.findByTestId("canonical-cutover-verdict")).toHaveTextContent("PASS");
     expect(screen.getByTestId("canonical-cutover-operator-note")).toHaveTextContent(
       "Overall before/after cutover decision: PASS.",

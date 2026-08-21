@@ -46,6 +46,20 @@ def _fmt_ts(ts: Any) -> str:
         return str(ts)
 
 
+def _fmt_source_ts(ts: Any) -> str:
+    """Preserve the exact source-owned timestamp used to prove trial chronology."""
+    if not ts:
+        return "—"
+    text = str(ts)
+    try:
+        datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    # Do not normalize or truncate: trial phases are deliberately ordered at microsecond
+    # resolution, and the original UTC offset is part of the operator-visible custody record.
+    return text
+
+
 def _fmt_min(m: Any) -> str:
     try:
         m = int(m)
@@ -55,6 +69,15 @@ def _fmt_min(m: Any) -> str:
         return "0 min"
     h, mm = divmod(m, 60)
     return f"{h}h{mm:02d}m" if h else f"{mm} min"
+
+
+def _requirement_phase_text(value: Any) -> str:
+    phase = value if isinstance(value, dict) else {}
+    return (
+        f"snapshot:{phase.get('snapshot_id', '—')} · "
+        f"collected {_fmt_source_ts(phase.get('collected_at'))} · "
+        f"uploaded {_fmt_source_ts(phase.get('uploaded_at'))}"
+    )
 
 
 def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str) -> None:
@@ -256,6 +279,9 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
             default=None,
         )
         receipt_rows: List[List[Any]] = []
+        observed_trial_rows: List[List[Any]] = []
+        observed_phase_rows: List[List[Any]] = []
+        observed_detail_rows: List[List[Any]] = []
         for row in comparison_receipts:
             body = row.get("receipt") if isinstance(row.get("receipt"), dict) else {}
             comparison = body.get("comparison") if isinstance(body.get("comparison"), dict) else {}
@@ -287,6 +313,115 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
                 f"execution receipt: {body.get('receipt_sha256') or row.get('receipt_sha256') or '—'}\n"
                 f"comparison payload: {comparison_envelope.get('payload_sha256') or '—'}",
             ])
+
+            operator_evidence = (
+                comparison.get("operator_evidence")
+                if isinstance(comparison.get("operator_evidence"), dict) else {}
+            )
+            rehearsal = (
+                operator_evidence.get("rehearsal")
+                if isinstance(operator_evidence.get("rehearsal"), dict) else {}
+            )
+            observed = (
+                rehearsal.get("observed_l2_failure_evidence")
+                if isinstance(rehearsal.get("observed_l2_failure_evidence"), dict) else {}
+            )
+            gate_status = gate.get("l2_observed_trial_status")
+            if observed or gate_status is not None:
+                # The gate fields were validated against this comparison's exact recovery binding.
+                # The serialized observed receipt is custody/audit detail only: it deliberately
+                # cannot remint its in-process authority after a JSON round-trip. Never allow its
+                # detached status to upgrade a missing or context-rejected canonical gate field.
+                canonical_status = (
+                    gate_status
+                    if gate_status in {"observed_survival", "observed_failure", "not_verified"}
+                    else "not_verified"
+                )
+                gate_assurance = gate.get("l2_observed_trial_assurance")
+                canonical_assurance = (
+                    gate_assurance
+                    if gate_assurance in {"local_safety_preservation", "not_verified"}
+                    else "not_verified"
+                )
+                failures = observed.get("failures") if isinstance(observed.get("failures"), list) else []
+                limitations = (
+                    observed.get("limitations")
+                    if isinstance(observed.get("limitations"), list) else []
+                )
+                if canonical_status == "observed_survival" \
+                        and canonical_assurance == "local_safety_preservation":
+                    local_claim = "local safety preservation: VERIFIED for this exact scenario only"
+                elif canonical_status == "observed_failure":
+                    local_claim = "local safety preservation: REFUTED for this exact scenario"
+                else:
+                    local_claim = "local safety preservation: NOT VERIFIED"
+                observed_trial_rows.append([
+                    f"#{row.get('id', '—')}\n{marker}",
+                    f"{str(canonical_status).replace('_', ' ').upper()}\n"
+                    f"assurance: {canonical_assurance}\n"
+                    f"matched local projected risks: "
+                    f"{gate.get('l2_observed_trial_matched_projected_risks', 0)}",
+                    f"{gate.get('l2_observed_trial_family') or observed.get('family') or 'not verified'}\n"
+                    f"{gate.get('l2_observed_trial_subject') or observed.get('subject') or 'not verified'}\n"
+                    f"{gate.get('l2_observed_trial_scenario') or observed.get('failure_scenario') or 'not verified'}",
+                    f"precondition: {(observed.get('precondition') or {}).get('status', 'not verified') if isinstance(observed.get('precondition'), dict) else 'not verified'}\n"
+                    f"failure witness: {(observed.get('failure_witness') or {}).get('status', 'not verified') if isinstance(observed.get('failure_witness'), dict) else 'not verified'}\n"
+                    f"post-failure: {(observed.get('post_failure') or {}).get('status', 'not verified') if isinstance(observed.get('post_failure'), dict) else 'not verified'}\n"
+                    f"recovery: {(observed.get('recovery') or {}).get('status', 'not verified') if isinstance(observed.get('recovery'), dict) else 'not verified'}\n"
+                    f"validation failures: {len(failures)}",
+                    f"{local_claim}\n"
+                    "service-path survival: NOT VERIFIED\n"
+                    "traffic continuity: NOT VERIFIED\n"
+                    "convergence: NOT VERIFIED",
+                ])
+
+                source_binding = (
+                    observed.get("source_binding")
+                    if isinstance(observed.get("source_binding"), dict) else {}
+                )
+                for phase_key, phase_label in (
+                    ("pre_failure", "Pre-failure"),
+                    ("post_failure", "Post-failure"),
+                    ("recovery", "Recovery / comparison after"),
+                ):
+                    phase = source_binding.get(phase_key) \
+                        if isinstance(source_binding.get(phase_key), dict) else {}
+                    observed_phase_rows.append([
+                        f"#{row.get('id', '—')}\n{phase_label}",
+                        f"{phase.get('source_id') or 'source id unavailable'}\n"
+                        f"campaign {phase.get('campaign_id', '—')} · "
+                        f"engagement {phase.get('engagement_id') or '—'}\n"
+                        f"owner: {phase.get('source') or 'not verified'}",
+                        f"collected: {_fmt_source_ts(phase.get('collected_at'))}\n"
+                        f"custody: {_fmt_source_ts(phase.get('custody_at'))}",
+                        f"{phase.get('sha256') or 'hash unavailable'}\n"
+                        f"{phase.get('bytes', '—')} exact bytes",
+                    ])
+                witness = source_binding.get("failure_witness") \
+                    if isinstance(source_binding.get("failure_witness"), dict) else {}
+                observed_phase_rows.append([
+                    f"#{row.get('id', '—')}\nFailure witness",
+                    "Operator context only; device-state phase snapshots independently prove "
+                    "the transition.",
+                    f"induced: {_fmt_source_ts(witness.get('induced_at'))}",
+                    f"{witness.get('sha256') or 'hash unavailable'}\n"
+                    f"{witness.get('bytes', '—')} exact bytes\n"
+                    "raw base64 intentionally omitted",
+                ])
+                observed_detail_rows.append([
+                    f"#{row.get('id', '—')}",
+                    "Canonical gate note",
+                    gate.get("l2_observed_trial_note")
+                    or "No observed-trial gate note was recorded.",
+                ])
+                observed_detail_rows.extend([
+                    [f"#{row.get('id', '—')}", "Validation failure", str(detail)]
+                    for detail in failures
+                ])
+                observed_detail_rows.extend([
+                    [f"#{row.get('id', '—')}", "Limitation", str(detail)]
+                    for detail in limitations
+                ])
         table(
             ["Receipt", "Before snapshot / source hash", "After snapshot / source hash",
              "Canonical gate", "Receipt custody"],
@@ -311,6 +446,57 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
         p.add_run("Latest canonical operator decision: ").bold = True
         p.add_run(str(latest_gate.get("operator_note") or
                       "No operator note was present in the canonical gate receipt."))
+
+        if observed_trial_rows:
+            doc.add_heading("Observed local L2 failure-trial evidence", level=3)
+            doc.add_paragraph(
+                "These results are the context-bound cutover_gate/1 projection for each immutable "
+                "comparison receipt. They apply only to the exact local L2 subject and induced "
+                "scenario shown; they do not establish service-path survival, traffic continuity, "
+                "or convergence. The tables are complete for every stored comparison receipt; no "
+                "UI display cap is applied to this PIR export."
+            )
+            table(
+                ["Receipt", "Canonical local result", "Family / subject / scenario",
+                 "Observed phase statuses", "Claim boundary"],
+                observed_trial_rows,
+                widths=[0.55, 1.25, 1.45, 1.45, 1.55],
+            )
+            table(
+                ["Receipt / phase", "Exact source identity / context", "Source chronology",
+                 "Exact source custody"],
+                observed_phase_rows,
+                widths=[0.8, 2.15, 1.5, 1.75],
+            )
+            table(
+                ["Receipt", "Observed-trial detail", "Complete reason / limitation"],
+                observed_detail_rows,
+                widths=[0.75, 1.25, 4.2],
+            )
+
+    trial_requirement = state.get("l2_failure_trial_requirement")
+    if isinstance(trial_requirement, dict):
+        doc.add_heading("Unresolved observed local L2 re-trial requirement", level=3)
+        doc.add_paragraph(
+            "A supplied source-bound local L2 trial remains unresolved. Omission or a different "
+            "scenario cannot erase it, and this execution cannot receive a SUCCESSFUL outcome. "
+            "Only a strictly newer observed-survival trial for the exact family, subject, and "
+            "scenario can clear the requirement."
+        )
+        requirement_phases = (
+            trial_requirement.get("phase_sources")
+            if isinstance(trial_requirement.get("phase_sources"), dict) else {}
+        )
+        table(["Field", "Frozen requirement"], [
+            ["Status", str(trial_requirement.get("status") or "not_verified").upper()],
+            ["Exact subject", f"{trial_requirement.get('family') or 'not verified'} · "
+                              f"{trial_requirement.get('subject') or 'not verified'}"],
+            ["Exact scenario", trial_requirement.get("failure_scenario") or "not verified"],
+            ["Latest receipt", trial_requirement.get("latest_receipt_id") or "—"],
+            ["Pre-failure anchor", _requirement_phase_text(requirement_phases.get("pre_failure"))],
+            ["Post-failure anchor", _requirement_phase_text(requirement_phases.get("post_failure"))],
+            ["Recovery anchor", _requirement_phase_text(requirement_phases.get("recovery"))],
+        ], widths=[1.6, 4.9])
 
     # ---- 2. Planned vs actual, per wave ----
     doc.add_heading("2. Planned vs actual, per wave", level=1)

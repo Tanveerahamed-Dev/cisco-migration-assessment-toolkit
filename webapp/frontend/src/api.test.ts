@@ -106,6 +106,29 @@ describe("api client (request construction + the j response handler)", () => {
     });
   });
 
+  it("sends an observed L2 trial only through the typed compare request field", async () => {
+    const spy = mockFetch(new Response(JSON.stringify({ verdict: "CLEAN" }), { status: 200 }));
+    const trial = {
+      pre_failure_snapshot_id: 11,
+      post_failure_snapshot_id: 12,
+      witness_json_base64: "eyJzY2hlbWEiOiJsMl9mYWlsdXJlX3dpdG5lc3MvMSJ9",
+    };
+    await api.compare(10, 13, undefined, trial);
+    expect(spy).toHaveBeenCalledWith("/api/compare", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ old_id: 10, new_id: 13, l2_failure_trial: trial }),
+    });
+
+    spy.mockResolvedValueOnce(new Response(JSON.stringify({ id: 9 }), { status: 200 }));
+    await api.compareExecution(9, 13, undefined, trial);
+    expect(spy).toHaveBeenLastCalledWith("/api/executions/9/compare", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ after_snapshot_id: 13, l2_failure_trial: trial }),
+    });
+  });
+
   it("exchanges a bearer token for the HttpOnly browser session", async () => {
     const spy = mockFetch(new Response(null, { status: 204 }));
     await api.authenticate("field-secret");

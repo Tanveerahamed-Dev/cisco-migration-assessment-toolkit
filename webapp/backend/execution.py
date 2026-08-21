@@ -361,6 +361,11 @@ def _derive_outcome(state: Dict[str, Any], status: str) -> str:
     if (isinstance(policy, dict)
             and policy.get("schema") == "execution_comparison_policy/1"
             and policy.get("canonical_gate_required") is True):
+        if isinstance(state.get("l2_failure_trial_requirement"), dict):
+            # An observed local failure is monotone execution evidence.  A later comparison that
+            # omits the trial cannot erase it; only a newer exact successful re-trial clears the
+            # storage-owned requirement.
+            return OUTCOME_PARTIAL
         latest = state.get("latest_comparison")
         gate = latest.get("cutover_gate") if isinstance(latest, dict) else None
         if (not isinstance(gate, dict) or gate.get("schema") != "cutover_gate/1"

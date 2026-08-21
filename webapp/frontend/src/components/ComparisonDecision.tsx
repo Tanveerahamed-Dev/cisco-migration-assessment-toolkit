@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import type {
   CompareResponse,
+  CutoverGate,
   CutoverGateVerdict,
+  ObservedL2FailureEvidence,
   PrecertReceipt,
   ProtocolComparisonStatus,
   ProtocolFamilyChange,
@@ -37,6 +39,9 @@ const L2_REHEARSAL_COLOR: Record<string, string> = {
   simulation_only: "var(--accent)",
   projected_risk: "var(--watch)",
   current_fault: "var(--crit)",
+  local_safety_preservation: "var(--accent)",
+  observed_survival: "var(--accent)",
+  observed_failure: "var(--crit)",
   not_verified: "var(--text-faint)",
 };
 
@@ -289,7 +294,103 @@ function PrecertEvidence({ value }: { value?: PrecertReceipt }) {
   );
 }
 
-function OperatorEvidence({ value }: { value: CompareResponse["operator_evidence"] }) {
+function ObservedL2Evidence({ value, gate }: {
+  value?: ObservedL2FailureEvidence;
+  gate?: CutoverGate;
+}) {
+  const gateStatus = gate?.l2_observed_trial_status;
+  if (!value && !gateStatus) return null;
+  const status = gateStatus || value?.status || "not_verified";
+  const assurance = gate?.l2_observed_trial_assurance
+    || value?.assurance_level
+    || "not_verified";
+  const color = L2_REHEARSAL_COLOR[status] || "var(--text-faint)";
+  const phases = value ? ([
+    ["Pre-failure", value.source_binding.pre_failure],
+    ["Post-failure", value.source_binding.post_failure],
+    ["Recovery / comparison after", value.source_binding.recovery],
+  ] as const) : [];
+  const stepRows = value ? ([
+    ["Precondition", value.precondition.status],
+    ["Failure witness", value.failure_witness.status],
+    ["Post-failure", value.post_failure.status],
+    ["Recovery", value.recovery.status],
+  ] as const) : [];
+  const failures = value?.failures || [];
+  const renderedFailures = failures.slice(0, ROW_CAP);
+  return (
+    <div data-testid="comparison-observed-l2-trial"
+      style={{ borderTop: "1px solid var(--border-faint)", marginTop: 8, paddingTop: 8 }}>
+      <div className="spread" style={{ gap: 8, alignItems: "start" }}>
+        <div>
+          <b style={{ fontSize: 11.5 }}>Observed local L2 failure trial</b>
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+            Exact subject/scenario only · no service, traffic, or convergence inference
+          </div>
+        </div>
+        <span className="chip" data-testid="comparison-observed-l2-status"
+          style={{ color, borderColor: color }}>
+          {status.replaceAll("_", " ").toUpperCase()}
+        </span>
+      </div>
+      <div className="dim" data-testid="comparison-observed-l2-note"
+        style={{ fontSize: 11, marginTop: 5, overflowWrap: "anywhere" }}>
+        {gate?.l2_observed_trial_note
+          || "The canonical gate did not publish a context-bound observed-trial conclusion."}
+      </div>
+      <div className="faint" style={{ fontSize: 10.5, marginTop: 5 }}>
+        Family: <span className="mono">{gate?.l2_observed_trial_family || value?.family || "not verified"}</span>
+        {" · "}Subject: <span className="mono">{gate?.l2_observed_trial_subject || value?.subject || "not verified"}</span>
+        {" · "}Scenario: <span className="mono">{gate?.l2_observed_trial_scenario || value?.failure_scenario || "not verified"}</span>
+        {" · "}Assurance: {assurance.replaceAll("_", " ")}
+        {" · "}Matched exact local projected risk(s): {gate?.l2_observed_trial_matched_projected_risks ?? 0}
+      </div>
+      {phases.map(([label, source]) => (
+        <div key={label} data-testid="comparison-observed-l2-phase"
+          className="faint mono" style={{ fontSize: 10, marginTop: 5, overflowWrap: "anywhere" }}>
+          <b>{label}:</b> {source.source_id} · {source.sha256} · {source.bytes} bytes
+          <br />collected {source.collected_at} · custody {source.custody_at}
+        </div>
+      ))}
+      {value && (
+        <div className="faint mono" data-testid="comparison-observed-l2-witness"
+          style={{ fontSize: 10, marginTop: 5, overflowWrap: "anywhere" }}>
+          Witness: {value.source_binding.failure_witness.sha256} · {value.source_binding.failure_witness.bytes} bytes
+          {" · induced "}{value.source_binding.failure_witness.induced_at}
+        </div>
+      )}
+      {stepRows.length > 0 && (
+        <div className="row-flex" style={{ gap: 5, flexWrap: "wrap", marginTop: 6 }}>
+          {stepRows.map(([label, stepStatus]) => (
+            <span key={label} className="chip" data-testid="comparison-observed-l2-step">
+              {label}: {stepStatus.replaceAll("_", " ").toUpperCase()}
+            </span>
+          ))}
+        </div>
+      )}
+      {value && (
+        <div className="faint" data-testid="comparison-observed-l2-claim-boundary"
+          style={{ fontSize: 10.5, marginTop: 6 }}>
+          Local scenario: {value.claims.local_scenario.replaceAll("_", " ")} · service-path survival: {value.claims.service_path_survival.replaceAll("_", " ")} · traffic continuity: {value.claims.traffic_continuity.replaceAll("_", " ")} · convergence: {value.claims.convergence.replaceAll("_", " ")}
+        </div>
+      )}
+      {renderedFailures.map((failure, index) => (
+        <div key={`${failure}|${index}`} data-testid="comparison-observed-l2-failure"
+          style={{ color: "var(--crit)", fontSize: 10.5, marginTop: 4 }}>
+          {failure}
+        </div>
+      ))}
+      {failures.length > 0 && (
+        <CapDisclosure rendered={renderedFailures.length} total={failures.length} />
+      )}
+    </div>
+  );
+}
+
+function OperatorEvidence({ value, gate }: {
+  value: CompareResponse["operator_evidence"];
+  gate?: CutoverGate;
+}) {
   const rehearsal = value?.rehearsal;
   const rollback = value?.rollback;
   const impactRows = (rehearsal?.impacts || []).slice(0, ROW_CAP);
@@ -313,6 +414,10 @@ function OperatorEvidence({ value }: { value: CompareResponse["operator_evidence
         <div className="dim" style={{ fontSize: 11.5, marginTop: 6 }}>
           {rehearsal?.note || "No cutover_operator_evidence/1 rehearsal projection was published; rehearsal is not verified."}
         </div>
+        <ObservedL2Evidence
+          value={rehearsal?.observed_l2_failure_evidence}
+          gate={gate}
+        />
         {impactRows.map((row, index) => (
           <div key={`${String(row.host || "impact")}|${index}`} data-testid="comparison-rehearsal-row"
             style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
@@ -590,7 +695,7 @@ export default function ComparisonDecision({
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
         <PrecertEvidence value={value.precert} />
-        <OperatorEvidence value={value.operator_evidence} />
+        <OperatorEvidence value={value.operator_evidence} gate={gate} />
         <ReceiptCustody value={value} />
       </div>
     </div>

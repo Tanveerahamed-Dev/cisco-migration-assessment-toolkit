@@ -176,6 +176,83 @@ function trendPair(index: number, verdict: "PASS" | "FAIL"): CampaignAdjacentCom
   };
 }
 
+function observedTrendPair(): CampaignAdjacentComparison {
+  const pair = trendPair(0, "PASS");
+  const phase = (id: number, at: string) => ({
+    source: "persisted snapshots.snapshot_json blob",
+    source_id: `snapshot:${id}`,
+    campaign_id: 3,
+    engagement_id: "eng-east",
+    sha256: `sha256:${String(id).padStart(64, "0")}`,
+    bytes: 4000 + id,
+    collected_at: at,
+    custody_at: at,
+  });
+  pair.comparison.cutover_gate = {
+    ...pair.comparison.cutover_gate!,
+    l2_observed_trial_status: "observed_survival",
+    l2_observed_trial_assurance: "local_safety_preservation",
+    l2_observed_trial_family: "etherchannel",
+    l2_observed_trial_subject: "dist1|Po10",
+    l2_observed_trial_scenario: "single_observed_forwarding_member_loss",
+    l2_observed_trial_matched_projected_risks: 1,
+    l2_observed_trial_note: "Stored adjacent receipt retained exact local evidence.",
+  };
+  pair.comparison.operator_evidence = {
+    schema: "cutover_operator_evidence/1",
+    owner: "reference_only_projection",
+    owns_verdict: false,
+    rehearsal: {
+      status: "local_safety_preservation",
+      assurance_level: "local_safety_preservation",
+      source_owner: "observed_local_l2_failure_trial",
+      n_impacts_total: 0,
+      impacts: [],
+      note: "Exact local scenario only.",
+      observed_l2_failure_evidence: {
+        schema: "observed_l2_failure_evidence/1",
+        owner: "observed_local_l2_failure_trial",
+        owns_score: false,
+        owns_verdict: false,
+        status: "observed_survival",
+        assurance_level: "local_safety_preservation",
+        family: "etherchannel",
+        subject: "dist1|Po10",
+        failure_scenario: "single_observed_forwarding_member_loss",
+        source_binding: {
+          pre_failure: phase(11, "2026-08-20T01:00:00+00:00"),
+          post_failure: phase(12, "2026-08-20T01:01:00+00:00"),
+          recovery: phase(13, "2026-08-20T01:02:00+00:00"),
+          failure_witness: {
+            encoding: "base64", content_base64: "e30=",
+            sha256: `sha256:${"f".repeat(64)}`, bytes: 2,
+            induced_at: "2026-08-20T01:00:30+00:00",
+          },
+        },
+        precondition: { status: "passed", evidence: {} },
+        failure_witness: {
+          status: "witnessed", action: "shut_link", target: { host: "dist1" },
+          induced_at: "2026-08-20T01:00:30+00:00", evidence: {},
+        },
+        post_failure: { status: "survived", evidence: {} },
+        recovery: { status: "recovered", evidence: {} },
+        claims: {
+          local_scenario: "observed_survival", service_path_survival: "not_verified",
+          traffic_continuity: "not_verified", convergence: "not_verified",
+        },
+        failures: [],
+        limitations: ["Exact local scenario only."],
+      },
+    },
+    rollback: {
+      status: "not_verified", assurance_level: "not_verified",
+      source_owner: "migration_scenarios playbook.rollback",
+      n_groups_total: 0, n_plans_total: 0, plans: [], note: "Not verified.",
+    },
+  };
+  return pair;
+}
+
 const emptyGates: GateBoardData = { cadence: [], waves: [], records: [] };
 
 function renderCampaign() {
@@ -330,6 +407,34 @@ describe("CampaignPage", () => {
     expect(screen.getByRole("button", { name: "Export Trend JSON" })).toBeInTheDocument();
     expect(screen.getAllByTestId("canonical-cutover-verdict")[1]).toHaveTextContent("FAIL");
     expect(screen.getByText("Aggregate direction only; adjacent decisions remain authoritative.")).toBeInTheDocument();
+  });
+
+  it("preserves and renders observed fields already present in a canonical Trend receipt", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    const trend = vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "IMPROVING",
+      verdict_note: "No per-pair trial is synthesized; this stored canonical field is preserved.",
+      trajectory: [],
+      adjacent_comparison_status: {
+        schema: "campaign_adjacent_comparison_set/1",
+        status: "verified",
+        n_pairs_total: 1,
+        n_pairs_returned: 1,
+        complete: true,
+        note: "One canonical adjacent receipt was published.",
+      },
+      adjacent_comparisons: [observedTrendPair()],
+    });
+    renderCampaign();
+
+    const observed = await screen.findByTestId("comparison-observed-l2-trial");
+    expect(within(observed).getByTestId("comparison-observed-l2-status"))
+      .toHaveTextContent("OBSERVED SURVIVAL");
+    expect(observed).toHaveTextContent("dist1|Po10");
+    expect(observed).toHaveTextContent(/service-path survival: not verified/i);
+    expect(trend).toHaveBeenCalledWith(3);
+    expect(screen.getByRole("button", { name: "Export Trend JSON" })).toBeInTheDocument();
   });
 
   it("distinguishes missing adjacent evidence from rows omitted only by the UI cap", async () => {
@@ -563,6 +668,74 @@ describe("CampaignPage · coverage honesty and stale state", () => {
     fireEvent.click(screen.getByRole("button", { name: "Compare" }));
 
     await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 2, intent));
+  });
+
+  it("binds the advanced observed L2 phase selectors and exact witness bytes", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({
+      snapshots: [snap(1), snap(2), snap(3), snap(4)],
+    }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockRejectedValue(new Error("no trend"));
+    const compare = vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+    });
+    const { container } = renderCampaign();
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "4" } });
+    fireEvent.click(screen.getByLabelText("campaign-compare include observed local L2 trial"));
+    fireEvent.change(screen.getByLabelText("campaign-compare pre-failure snapshot"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("campaign-compare post-failure snapshot"), {
+      target: { value: "3" },
+    });
+    const witness = '{"schema":"l2_failure_witness/1","subject":"dist1|Po10"}';
+    const file = new File([witness], "trial.json", { type: "application/json" });
+    fireEvent.change(screen.getByLabelText("campaign-compare failure witness JSON"), {
+      target: { files: [file] },
+    });
+    expect(await screen.findByText("Witness loaded: trial.json")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 4, undefined, {
+      pre_failure_snapshot_id: 2,
+      post_failure_snapshot_id: 3,
+      witness_json_base64: btoa(witness),
+    }));
+  });
+
+  it("keeps the newest submitted pair when an older compare resolves late", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({
+      snapshots: [snap(1), snap(2), snap(3)],
+    }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockRejectedValue(new Error("no trend"));
+    let resolveA!: (value: CompareResponse) => void;
+    let resolveB!: (value: CompareResponse) => void;
+    vi.spyOn(api, "compare")
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveB = resolve; }));
+    const { container } = renderCampaign();
+    await screen.findByText("Compare two waves");
+    const selectors = container.querySelectorAll("select");
+    fireEvent.change(selectors[0], { target: { value: "1" } });
+    fireEvent.change(selectors[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    fireEvent.change(selectors[0], { target: { value: "2" } });
+    fireEvent.change(selectors[1], { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    resolveB({ verdict: "REVIEW", findings: {}, health: {}, cabling: { assessed: true } });
+    await waitFor(() => expect(screen.getByTestId("compare-delta-verdict")).toHaveTextContent("REVIEW"));
+    expect(screen.getByTestId("comparison-submitted-context")).toHaveTextContent(
+      "before 2 · recovery/new 3",
+    );
+    resolveA({ verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true } });
+    await waitFor(() => expect(screen.getByTestId("compare-delta-verdict")).toHaveTextContent("REVIEW"));
+    expect(screen.getByTestId("comparison-submitted-context")).toHaveTextContent(
+      "before 2 · recovery/new 3",
+    );
   });
 
   it("keeps an unchanged OSPF EXSTART baseline red even when the delta itself is CLEAN", async () => {

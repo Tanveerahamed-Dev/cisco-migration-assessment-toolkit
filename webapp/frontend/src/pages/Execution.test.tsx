@@ -591,6 +591,85 @@ describe("ExecutionPage · immutable post-change comparison", () => {
     await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 8, intent));
   });
 
+  it("binds the typed observed L2 phase set and exact witness bytes to execution compare", async () => {
+    const initial = execState({
+      execution_schema: "cutover_execution/2",
+      comparison_policy: comparisonPolicy(),
+      comparison_receipts: [],
+    });
+    vi.spyOn(api, "getExecution").mockResolvedValue(initial);
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    vi.spyOn(api, "getCampaign").mockResolvedValue({
+      id: 3,
+      name: "DC East Migration",
+      description: "",
+      created_at: "2026-01-01T00:00:00Z",
+      snapshots: [
+        snapMeta,
+        { ...snapMeta, id: 8, label: "Trial pre", uploaded_at: "2026-01-01T10:30:00Z" },
+        { ...snapMeta, id: 9, label: "Trial post", uploaded_at: "2026-01-01T10:40:00Z" },
+        { ...snapMeta, id: 10, label: "Recovery", uploaded_at: "2026-01-01T10:50:00Z" },
+      ],
+    });
+    const compare = vi.spyOn(api, "compareExecution").mockResolvedValue(
+      executionWithComparison("PASS"),
+    );
+    renderExec();
+
+    const after = await screen.findByLabelText("After snapshot");
+    expect(await within(after).findByRole("option", { name: /Recovery · snapshot 10/ }))
+      .toBeInTheDocument();
+    fireEvent.change(after, { target: { value: "10" } });
+    fireEvent.click(screen.getByLabelText("execution-compare include observed local L2 trial"));
+    fireEvent.change(screen.getByLabelText("execution-compare pre-failure snapshot"), {
+      target: { value: "8" },
+    });
+    fireEvent.change(screen.getByLabelText("execution-compare post-failure snapshot"), {
+      target: { value: "9" },
+    });
+    const witness = '{"schema":"l2_failure_witness/1","subject":"dist1|Po10"}';
+    fireEvent.change(screen.getByLabelText("execution-compare failure witness JSON"), {
+      target: { files: [new File([witness], "execution-trial.json", { type: "application/json" })] },
+    });
+    expect(await screen.findByText("Witness loaded: execution-trial.json")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Bind and compare" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 10, undefined, {
+      pre_failure_snapshot_id: 8,
+      post_failure_snapshot_id: 9,
+      witness_json_base64: btoa(witness),
+    }));
+  });
+
+  it("renders an unresolved exact local re-trial requirement as a finish-blocking warning", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(execState({
+      execution_schema: "cutover_execution/2",
+      comparison_policy: comparisonPolicy(),
+      comparison_receipts: [],
+      l2_failure_trial_requirement: {
+        schema: "execution_l2_failure_trial_requirement/1",
+        family: "etherchannel",
+        subject: "dist1|Po10",
+        failure_scenario: "single_observed_forwarding_member_loss",
+        status: "not_verified",
+        phase_sources: {
+          pre_failure: { snapshot_id: 8, collected_at: "2026-01-01T10:30:00Z", uploaded_at: "2026-01-01T10:31:00Z" },
+          post_failure: { snapshot_id: 9, collected_at: "2026-01-01T10:40:00Z", uploaded_at: "2026-01-01T10:41:00Z" },
+          recovery: { snapshot_id: 10, collected_at: "2026-01-01T10:50:00Z", uploaded_at: "2026-01-01T10:51:00Z" },
+        },
+      },
+    }));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaignWithAfterSnapshot());
+    renderExec();
+
+    const warning = await screen.findByTestId("execution-l2-retrial-requirement");
+    expect(warning).toHaveTextContent(/not verified trial remains binding/i);
+    expect(warning).toHaveTextContent("etherchannel · dist1|Po10");
+    expect(warning).toHaveTextContent(/only a strictly newer exact observed-survival/i);
+    expect(screen.getByRole("button", { name: /Finish run · partial/i })).toBeInTheDocument();
+  });
+
   it("keeps a legacy execution neutral and offers no backfill control", async () => {
     vi.spyOn(api, "getExecution").mockResolvedValue(execState());
     vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);

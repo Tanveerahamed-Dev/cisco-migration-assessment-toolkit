@@ -14,16 +14,31 @@ owner remains ``cutover_gate/1``.
 
 from __future__ import annotations
 
+import base64
 from collections import Counter
+from copy import deepcopy
+from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any, List, Mapping
 
 from . import cutover_sim, failover, traffic_assurance
-from .etherchannel import validate_etherchannel_operational_evidence
+from .analyze import validate_etherchannel_baseline
+from .etherchannel import (
+    _platforms as _etherchannel_platforms,
+    validate_etherchannel_operational_evidence,
+)
 from .multichassis_lag import (
     compute_multichassis_lag_delta,
     validate_multichassis_lag_snapshot_evidence,
 )
-from .protocol_assurance import bound_snapshot_source
+from .protocol_assurance import (
+    OFFLINE_FILE_SOURCE,
+    PERSISTED_SOURCE,
+    bound_snapshot_source,
+    canonical_sha256,
+    reject_duplicate_json_keys,
+)
 from .protocol_deltas import (
     compute_etherchannel_delta,
     compute_stp_consistency_delta,
@@ -34,6 +49,32 @@ from .textutils import normalize_mac
 
 
 L2_FAILURE_REHEARSAL_SCHEMA = "l2_failure_rehearsal/1"
+OBSERVED_L2_FAILURE_EVIDENCE_SCHEMA = "observed_l2_failure_evidence/1"
+L2_FAILURE_WITNESS_SCHEMA = "l2_failure_witness/1"
+
+_BOUND_OBSERVED_L2_AUTHORITY = object()
+
+
+class BoundObservedL2FailureEvidence(dict):
+    """Process-local authority over one exact, mutation-sensitive observed L2 trial.
+
+    The JSON form is an operator/audit receipt.  It cannot be fed back into the cutover gate after
+    a round trip because only :func:`compute_observed_l2_failure_evidence` can bind the exact
+    pre-failure, post-failure, recovery, and witness bytes to this private marker.
+    """
+
+    __slots__ = ("_bound_payload_sha256", "_bound_recovery_binding")
+
+    def __init__(
+            self, value: Mapping[str, Any], *, payload_sha256: str,
+            recovery_binding: Mapping[str, Any], _authority: object) -> None:
+        if _authority is not _BOUND_OBSERVED_L2_AUTHORITY:
+            raise TypeError(
+                "observed L2 failure evidence can only be minted from exact phase bytes"
+            )
+        super().__init__(value)
+        self._bound_payload_sha256 = payload_sha256
+        self._bound_recovery_binding = dict(recovery_binding)
 
 _DISPOSITIONS = (
     "simulation_only",
@@ -42,6 +83,7 @@ _DISPOSITIONS = (
     "not_verified",
 )
 _GATE_FAMILIES = ("stp", "etherchannel", "multichassis_lag")
+_APPLICABILITY_FAMILIES = (*_GATE_FAMILIES, "service_path")
 _SCENARIO_FAMILIES = frozenset((*_GATE_FAMILIES, "service_path"))
 _SCENARIO_FIELDS = frozenset({
     "family", "subject", "failure_scenario", "disposition", "assurance_level",
@@ -62,6 +104,36 @@ _TRAFFIC_FAILURE_PARAMS = {
     "fail_site": frozenset({"id"}),
     "shut_link": frozenset({"host", "interface"}),
 }
+_OBSERVED_FAMILIES = ("stp", "etherchannel", "multichassis_lag")
+_OBSERVED_OUTCOMES = ("observed_survival", "observed_failure", "not_verified")
+_OBSERVED_ROOT_FIELDS = frozenset({
+    "schema", "owner", "owns_score", "owns_verdict", "status", "assurance_level",
+    "family", "subject", "failure_scenario", "source_binding", "precondition",
+    "failure_witness", "post_failure", "recovery", "claims", "failures", "limitations",
+})
+_OBSERVED_SOURCE_FIELDS = frozenset({
+    "source", "source_id", "campaign_id", "engagement_id", "sha256", "bytes",
+    "collected_at", "custody_at",
+})
+_OBSERVED_WITNESS_SOURCE_FIELDS = frozenset({
+    "encoding", "content_base64", "sha256", "bytes", "induced_at",
+})
+_OBSERVED_STEP_FIELDS = frozenset({"status", "evidence"})
+_OBSERVED_WITNESS_FIELDS = frozenset({
+    "status", "action", "target", "induced_at", "evidence",
+})
+_OBSERVED_CLAIM_FIELDS = frozenset({
+    "local_scenario", "service_path_survival", "traffic_continuity", "convergence",
+})
+_WITNESS_FIELDS = frozenset({
+    "schema", "family", "subject", "failure_scenario", "action", "target", "induced_at",
+})
+_PHASE_CUSTODY_FIELDS = frozenset({
+    "source", "source_id", "campaign_id", "engagement_id", "custody_at",
+})
+_MAX_WITNESS_BYTES = 64 * 1024
+_MAX_OBSERVED_FAILURES = 20
+_OBSERVED_SOURCE_OWNERS = frozenset({PERSISTED_SOURCE, OFFLINE_FILE_SOURCE})
 _CUTOVER_STEP_FIELDS = frozenset({
     "step_index", "action", "params", "ignored_field_count", "removed_hosts",
     "newly_lost_flows", "recovered_flows", "stp_reroots", "fhrp_takeovers",
@@ -116,6 +188,26 @@ def _text(value: Any) -> str:
 
 def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
+
+
+def _persisted_snapshot_source_id(value: Any) -> bool:
+    text = _text(value)
+    prefix, separator, numeric = text.partition(":")
+    if (prefix != "snapshot" or not separator or not numeric.isdigit()
+            or len(numeric) > 19 or numeric.startswith("0")):
+        return False
+    return int(numeric) > 0
+
+
+def _phase_source_id_valid(
+        source: Any, source_id: Any, source_sha256: Any) -> bool:
+    if source == PERSISTED_SOURCE:
+        return _persisted_snapshot_source_id(source_id)
+    if source == OFFLINE_FILE_SOURCE:
+        digest = _text(source_sha256)
+        expected = f"file-{digest}" if digest.startswith("sha256:") else ""
+        return bool(expected and source_id == expected)
+    return False
 
 
 def _exact_fields(value: Any, fields: frozenset[str]) -> bool:
@@ -194,10 +286,33 @@ def _gate_family_applicability(snapshot: Mapping[str, Any]) -> dict:
         or bool(snapshot.get("vpc"))
         or bool(snapshot.get("arista"))
     )
+    traffic_present = "traffic_assurance" in snapshot
+    traffic_set = snapshot.get("traffic_assurance")
+    traffic_rows = traffic_set.get("results") if isinstance(traffic_set, dict) else None
+    if not traffic_present:
+        service_path = False
+    elif (not isinstance(traffic_set, dict) or not isinstance(traffic_rows, list)
+          or not _valid_traffic_set(traffic_set)):
+        service_path = True
+    elif len(traffic_rows) > _MAX_SCENARIOS:
+        service_path = True
+    elif any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("failure"), dict)
+            or type(row["failure"].get("requested")) is not bool
+            for row in traffic_rows):
+        service_path = True
+    else:
+        # The bounded denominator is consumed in full. UI/export caps never
+        # participate in applicability or the decision.
+        service_path = any(
+            row["failure"]["requested"] is True for row in traffic_rows
+        )
     return {
         "stp": bool(stp),
         "etherchannel": bool(etherchannel),
         "multichassis_lag": bool(multichassis),
+        "service_path": service_path,
     }
 
 
@@ -1757,17 +1872,116 @@ def _service_path_scenarios(
     )]
 
 
-def compute_l2_failure_rehearsal(snapshot: Any) -> dict:
+_SERVICE_INTENT_IDENTITY_FIELDS = (
+    "id", "src", "dst", "protocol", "src_port", "dst_port", "expected",
+    "return_required", "required_mtu", "vrf",
+)
+
+
+def _requested_service_scenario_keys(
+        snapshot: Mapping[str, Any]) -> dict[str, tuple[str, str]]:
+    """Return exact, producer-normalized requested-failure identities and display labels.
+
+    A human-readable intent id plus action is not a decision denominator: the same labels can be
+    reused with a different tuple, MTU/return contract, or failure target.  Bind continuity to the
+    normalized traffic intent and canonical cutover mutation while retaining readable labels for
+    the operator row.
+    """
+    value = snapshot.get("traffic_assurance")
+    if not _valid_traffic_set(value):
+        return {}
+    keys: dict[str, tuple[str, str]] = {}
+    for index, result in enumerate(value["results"]):
+        row = _dict(result)
+        failure = _dict(row.get("failure"))
+        if failure.get("requested") is not True:
+            continue
+        intent = _dict(row.get("intent"))
+        mutation = _dict(failure.get("mutation"))
+        subject = _text(intent.get("id")) or f"traffic_intent|{index}"
+        scenario = _text(failure.get("action")) or "bounded_failure"
+        identity = canonical_sha256({
+            "intent": {
+                field: deepcopy(intent.get(field))
+                for field in _SERVICE_INTENT_IDENTITY_FIELDS
+            },
+            "failure": {
+                "action": scenario,
+                "mutation_action": _text(mutation.get("action")),
+                "params": deepcopy(_dict(mutation.get("params"))),
+            },
+        })
+        keys[identity] = (subject, scenario)
+    return keys
+
+
+def compute_l2_failure_rehearsal(snapshot: Any, *, prior_snapshot: Any = None) -> dict:
     """Compose bounded L2 failure evidence without emitting a score or overall verdict."""
     snap = _dict(snapshot)
     source = bound_snapshot_source(snapshot)
     applicability = _gate_family_applicability(snap)
+    prior_service_applicable = bool(
+        prior_snapshot is not None
+        and _gate_family_applicability(_dict(prior_snapshot)).get("service_path") is True
+    )
+    service_capture_lost = bool(
+        prior_service_applicable and applicability.get("service_path") is False
+    )
+    prior_service_keys = (
+        _requested_service_scenario_keys(_dict(prior_snapshot))
+        if prior_snapshot is not None else set()
+    )
+    current_service_keys = _requested_service_scenario_keys(snap)
+    lost_service_identities = sorted(
+        set(prior_service_keys) - set(current_service_keys),
+        key=lambda identity: (*prior_service_keys[identity], identity),
+    )
+    if service_capture_lost or lost_service_identities:
+        # Pair composition owns denominator continuity.  A current snapshot with no owner is
+        # non-applicable on a single-snapshot surface, but cannot erase a previously requested
+        # bounded-failure scenario from a comparison decision.
+        applicability["service_path"] = True
     scenarios = [
         *_stp_scenarios(snap, source),
         *_etherchannel_scenarios(snap, source),
         *_multichassis_scenarios(snap, source),
         *_service_path_scenarios(snap, source),
     ]
+    if service_capture_lost:
+        for row in scenarios:
+            if (row.get("family"), row.get("subject")) == (
+                    "service_path", "service_path|coverage"):
+                row["evidence"] = {
+                    **_dict(row.get("evidence")),
+                    "prior_requested_failure_denominator": True,
+                    "current_owner_present": "traffic_assurance" in snap,
+                }
+                row["note"] = (
+                    "A previously requested traffic-assurance failure denominator disappeared "
+                    "from the recovery snapshot. Service-path evidence coverage is lost and "
+                    "remains not verified."
+                )
+    scenarios.extend(
+        _scenario(
+            family="service_path",
+            subject=prior_service_keys[identity][0],
+            failure_scenario=prior_service_keys[identity][1],
+            disposition="not_verified",
+            source_owner="traffic_assurance_set/1 -> cutover_sim/1",
+            current_fault=False,
+            evidence={
+                "prior_requested_failure_denominator": True,
+                "current_exact_scenario_present": False,
+                "prior_scenario_identity": identity,
+            },
+            note=(
+                "A previously requested traffic-assurance failure scenario is absent from the "
+                "recovery denominator. Its exact subject/action coverage is lost and remains "
+                "not verified."
+            ),
+        )
+        for identity in lost_service_identities
+    )
     scenarios.sort(key=lambda row: (
         row["family"].casefold(), row["family"], row["subject"].casefold(), row["subject"]
     ))
@@ -1809,10 +2023,11 @@ def compute_l2_failure_rehearsal(snapshot: Any) -> dict:
 def validate_l2_failure_rehearsal(value: Any) -> dict:
     """Validate the closed, source-bound local rehearsal receipt for gate use.
 
-    The returned ``gate_status`` is derived only from applicable STP,
-    EtherChannel, and multichassis scenarios. Service-path rows and placeholder
-    gaps for absent families remain disclosure evidence and never become a
-    service-survival or runtime-support claim.
+    The returned ``gate_status`` is derived from applicable STP, EtherChannel,
+    multichassis, and explicitly requested service-path failure scenarios.
+    Placeholder gaps for absent/non-requested families remain disclosure only.
+    A coherent synthetic service-path preservation is nonblocking, but never an
+    observed field-rehearsal or service-survival claim.
     """
     invalid = {
         "valid": False,
@@ -1822,6 +2037,7 @@ def validate_l2_failure_rehearsal(value: Any) -> dict:
         "n_current_faults": 0,
         "n_projected_risks": 0,
         "n_not_verified": 0,
+        "gate_scenarios": [],
     }
     if not isinstance(value, dict) or frozenset(value) != _ROOT_FIELDS:
         return invalid
@@ -1835,11 +2051,13 @@ def validate_l2_failure_rehearsal(value: Any) -> dict:
 
     applicability = value.get("applicability")
     if (not isinstance(applicability, dict)
-            or frozenset(applicability) != frozenset(_GATE_FAMILIES)
+            or frozenset(applicability) != frozenset(_APPLICABILITY_FAMILIES)
             or any(type(applicability.get(family)) is not bool
-                   for family in _GATE_FAMILIES)):
+                   for family in _APPLICABILITY_FAMILIES)):
         return invalid
-    applicable = [family for family in _GATE_FAMILIES if applicability[family]]
+    applicable = [
+        family for family in _APPLICABILITY_FAMILIES if applicability[family]
+    ]
 
     scenarios = value.get("scenarios")
     if (not isinstance(scenarios, list) or len(scenarios) > _MAX_SCENARIOS
@@ -1847,7 +2065,7 @@ def validate_l2_failure_rehearsal(value: Any) -> dict:
         return invalid
     previous_key = None
     counts = Counter()
-    by_family = {family: [] for family in _GATE_FAMILIES}
+    by_family = {family: [] for family in _APPLICABILITY_FAMILIES}
     for row in scenarios:
         disposition = row.get("disposition")
         family = row.get("family")
@@ -1938,11 +2156,1176 @@ def validate_l2_failure_rehearsal(value: Any) -> dict:
         "n_current_faults": int(gate_counts["current_fault"]),
         "n_projected_risks": int(gate_counts["projected_risk"]),
         "n_not_verified": int(gate_counts["not_verified"] + missing),
+        # Internal uncapped decision rows.  Presentation code must consume the
+        # counts above; the canonical gate uses these only for exact observed-
+        # trial subject/scenario reconciliation.
+        "gate_scenarios": applicable_rows,
+    }
+
+
+def _aware_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        offset = parsed.utcoffset()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None or offset is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _witness_bytes(value: Any) -> bytes | None:
+    if isinstance(value, memoryview):
+        payload = value.tobytes()
+    elif isinstance(value, bytearray):
+        payload = bytes(value)
+    elif isinstance(value, bytes):
+        payload = value
+    else:
+        return None
+    return payload if 0 < len(payload) <= _MAX_WITNESS_BYTES else None
+
+
+def _reject_nonfinite_witness(token: str) -> None:
+    raise ValueError(f"non-finite witness number: {token}")
+
+
+def _parse_failure_witness(value: Any) -> tuple[dict, bytes | None, List[str]]:
+    payload = _witness_bytes(value)
+    failures: List[str] = []
+    witness: dict = {}
+    if payload is None:
+        return witness, payload, ["failure witness bytes are missing or exceed the bounded limit"]
+    try:
+        parsed = json.loads(
+            payload.decode("utf-8"),
+            parse_constant=_reject_nonfinite_witness,
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError, MemoryError):
+        return witness, payload, ["failure witness JSON bytes are malformed or ambiguous"]
+    if not isinstance(parsed, dict) or frozenset(parsed) != _WITNESS_FIELDS:
+        return witness, payload, ["failure witness root or field roster is malformed"]
+    witness = parsed
+    family = _text(witness.get("family"))
+    subject = _text(witness.get("subject"))
+    scenario = _text(witness.get("failure_scenario"))
+    action = _text(witness.get("action"))
+    target = witness.get("target")
+    if witness.get("schema") != L2_FAILURE_WITNESS_SCHEMA:
+        failures.append("failure witness schema is unsupported")
+    if family not in _OBSERVED_FAMILIES:
+        failures.append("failure witness family is unsupported")
+    if not subject or len(subject) > 512:
+        failures.append("failure witness subject is missing or too long")
+    expected = {
+        "stp": ("single_proven_root_host_loss", "fail_node", frozenset({"host"})),
+        "etherchannel": (
+            "single_observed_forwarding_member_loss", "shut_link",
+            frozenset({"host", "interface"}),
+        ),
+        "multichassis_lag": (
+            "single_reciprocal_peer_or_local_leg_loss", "fail_node",
+            frozenset({"host"}),
+        ),
+    }.get(family)
+    if expected is not None and (scenario, action) != expected[:2]:
+        failures.append("failure witness scenario/action tuple is unsupported")
+    if (expected is None or not isinstance(target, dict)
+            or frozenset(target) != expected[2]
+            or any(not _text(item) or len(_text(item)) > 256 for item in target.values())):
+        failures.append("failure witness target identity is missing or malformed")
+    if _aware_timestamp(witness.get("induced_at")) is None:
+        failures.append("failure witness induced_at is missing or not timezone-aware")
+    return witness, payload, failures
+
+
+def _phase_source_receipt(
+        phase: str, snapshot: Any, custody: Any, failures: List[str]) -> dict:
+    marker = bound_snapshot_source(snapshot)
+    custody_value = custody if isinstance(custody, dict) else {}
+    collected_at = _text(_dict(snapshot).get("collected_at"))
+    if marker.get("source_bound") is not True:
+        failures.append(f"{phase} snapshot is detached or changed from its exact source bytes")
+    if frozenset(custody_value) != _PHASE_CUSTODY_FIELDS:
+        failures.append(f"{phase} custody field roster is malformed")
+    source = _text(custody_value.get("source"))
+    source_id = _text(custody_value.get("source_id"))
+    campaign_id = custody_value.get("campaign_id")
+    engagement_id = _text(custody_value.get("engagement_id"))
+    custody_at = _text(custody_value.get("custody_at"))
+    if (source not in _OBSERVED_SOURCE_OWNERS
+            or not _phase_source_id_valid(source, source_id, marker.get("sha256"))):
+        failures.append(f"{phase} source owner or identity is missing")
+    if type(campaign_id) is not int or campaign_id <= 0 or not engagement_id \
+            or len(engagement_id) > 256:
+        failures.append(f"{phase} campaign or engagement identity is missing")
+    if _aware_timestamp(collected_at) is None:
+        failures.append(f"{phase} collected_at is missing or not timezone-aware")
+    if _aware_timestamp(custody_at) is None:
+        failures.append(f"{phase} custody timestamp is missing or not timezone-aware")
+    return {
+        "source": source,
+        "source_id": source_id,
+        "campaign_id": campaign_id,
+        "engagement_id": engagement_id,
+        "sha256": _text(marker.get("sha256")),
+        "bytes": marker.get("bytes") if _count(marker.get("bytes")) is not None else 0,
+        "collected_at": collected_at,
+        "custody_at": custody_at,
+    }
+
+
+def _stp_topology_view(snapshot: Mapping[str, Any]) -> dict:
+    from .stp_topology import validate_stp_topology_baseline
+
+    return validate_stp_topology_baseline(
+        snapshot.get("stp_topology_baseline"),
+        observations=snapshot.get("stp_topology_observations"),
+        legacy_roots=snapshot.get("stp_roots"),
+        devices=snapshot.get("devices"),
+    )
+
+
+def _stp_trial(
+        pre: Mapping[str, Any], post: Mapping[str, Any], recovery: Mapping[str, Any],
+        witness: Mapping[str, Any]) -> dict:
+    subject = _text(witness.get("subject"))
+    parts = subject.split("|")
+    target = _dict(witness.get("target"))
+    empty = {
+        "precondition": {"status": "not_verified", "evidence": {}},
+        "failure_witness": {
+            "status": "not_verified", "action": "fail_node", "target": dict(target),
+            "induced_at": _text(witness.get("induced_at")), "evidence": {},
+        },
+        "post_failure": {"status": "not_verified", "evidence": {}},
+        "recovery": {"status": "not_verified", "evidence": {}},
+        "status": "not_verified",
+        "failures": [],
+    }
+    if len(parts) != 4 or parts[0] != "root" or target.get("host") != parts[1]:
+        empty["failures"].append("STP root subject and failed-node identity do not reconcile")
+        return empty
+    host, namespace, instance = parts[1:]
+    views = [_stp_topology_view(value) for value in (pre, post, recovery)]
+    if any(view.get("valid") is not True for view in views):
+        empty["failures"].append("one or more STP phase baselines are missing or malformed")
+        return empty
+    pre_index, post_index, recovery_index = [
+        view.get("index") if isinstance(view.get("index"), dict) else {} for view in views
+    ]
+    key = (host, namespace, instance)
+    pre_row = _dict(pre_index.get(key))
+    recovery_row = _dict(recovery_index.get(key))
+    pre_domain = [
+        row for row in pre_index.values()
+        if isinstance(row, dict)
+        and (row.get("namespace"), row.get("instance")) == (namespace, instance)
+    ]
+    post_domain = [
+        row for row in post_index.values()
+        if isinstance(row, dict)
+        and (row.get("namespace"), row.get("instance")) == (namespace, instance)
+    ]
+    recovery_domain = [
+        row for row in recovery_index.values()
+        if isinstance(row, dict)
+        and (row.get("namespace"), row.get("instance")) == (namespace, instance)
+    ]
+    pre_roots = [row for row in pre_domain if row.get("is_root") is True]
+    precondition_ok = bool(
+        pre_row.get("status") == "assessed" and pre_row.get("is_root") is True
+        and len(pre_domain) >= 2 and len(pre_roots) == 1
+        and all(row.get("status") == "assessed" for row in pre_domain)
+        and len({row.get("root_address") for row in pre_domain}) == 1
+    )
+    empty["precondition"] = {
+        "status": "passed" if precondition_ok else "not_verified",
+        "evidence": {
+            "target_root_subject": subject,
+            "target_root_address": _text(pre_row.get("root_address")),
+            "observed_instance_devices": sorted(
+                _text(row.get("switch")) for row in pre_domain if _text(row.get("switch"))
+            ),
+            "assessed_instance_rows": sum(row.get("status") == "assessed" for row in pre_domain),
+        },
+    }
+    if not precondition_ok:
+        empty["failures"].append("STP pre-failure root/redundancy precondition is not verified")
+        return empty
+
+    post_roots = [row for row in post_domain if row.get("is_root") is True]
+    new_root = post_roots[0] if len(post_roots) == 1 else {}
+    pre_domain_hosts = {
+        _text(row.get("switch")) for row in pre_domain if _text(row.get("switch"))
+    }
+    post_domain_hosts = {
+        _text(row.get("switch")) for row in post_domain if _text(row.get("switch"))
+    }
+    expected_post_hosts = pre_domain_hosts - {host}
+    exact_survivor_roster = bool(
+        pre_domain_hosts and post_domain_hosts == expected_post_hosts
+    )
+    shared_survivors = [
+        (_dict(pre_index.get(key0)), row)
+        for key0, row in post_index.items()
+        if isinstance(row, dict) and isinstance(key0, tuple) and len(key0) == 3
+        and key0[0] != host and key0[1:] == (namespace, instance)
+        and isinstance(pre_index.get(key0), dict)
+    ]
+    counter_witnesses = [
+        _text(new.get("switch")) for old, new in shared_survivors
+        if type(old.get("topology_change_count")) is int
+        and type(new.get("topology_change_count")) is int
+        and new["topology_change_count"] > old["topology_change_count"]
+    ]
+    post_devices = _dict(post.get("devices"))
+    post_observations = _dict(post.get("stp_topology_observations"))
+    target_absent = bool(
+        host not in post_devices and host not in post_observations
+        and not any(
+            isinstance(key0, tuple) and len(key0) == 3 and key0[0] == host
+            for key0 in post_index
+        )
+    )
+    transition_witnessed = bool(
+        target_absent and exact_survivor_roster and len(post_roots) == 1
+        and _text(new_root.get("switch")) in expected_post_hosts
+        and _text(new_root.get("root_address"))
+        and new_root.get("root_address") != pre_row.get("root_address")
+        and counter_witnesses
+    )
+    post_safe = bool(
+        transition_witnessed and post_domain
+        and all(row.get("status") == "assessed" for row in post_domain)
+        and len({row.get("root_address") for row in post_domain}) == 1
+        and any(_list(row.get("forwarding_paths")) for row in post_domain)
+    )
+    empty["failure_witness"] = {
+        "status": "witnessed" if transition_witnessed else "not_verified",
+        "action": "fail_node",
+        "target": dict(target),
+        "induced_at": _text(witness.get("induced_at")),
+        "evidence": {
+            "post_failure_root_switch": _text(new_root.get("switch")),
+            "post_failure_root_address": _text(new_root.get("root_address")),
+            "failed_root_absent_from_post_phase": target_absent,
+            "exact_pre_failure_survivor_roster": exact_survivor_roster,
+            "topology_counter_witness_switches": sorted(counter_witnesses),
+        },
+    }
+    empty["post_failure"] = {
+        "status": "survived" if post_safe else (
+            "failed" if transition_witnessed else "not_verified"
+        ),
+        "evidence": {
+            "assessed_instance_rows": sum(row.get("status") == "assessed" for row in post_domain),
+            "forwarding_path_count": sum(len(_list(row.get("forwarding_paths"))) for row in post_domain),
+            "blocked_path_count": sum(len(_list(row.get("blocked_paths"))) for row in post_domain),
+        },
+    }
+    recovery_roots = [row for row in recovery_domain if row.get("is_root") is True]
+    recovery_domain_hosts = {
+        _text(row.get("switch")) for row in recovery_domain if _text(row.get("switch"))
+    }
+    recovery_ok = bool(
+        recovery_row.get("status") == "assessed" and recovery_row.get("is_root") is True
+        and recovery_row.get("root_address") == pre_row.get("root_address")
+        and len(recovery_roots) == 1 and len(recovery_domain) >= 2
+        and recovery_domain_hosts == pre_domain_hosts
+        and all(row.get("status") == "assessed" for row in recovery_domain)
+        and len({row.get("root_address") for row in recovery_domain}) == 1
+    )
+    empty["recovery"] = {
+        "status": "recovered" if recovery_ok else "failed",
+        "evidence": {
+            "restored_root_switch": _text(recovery_row.get("switch")),
+            "restored_root_address": _text(recovery_row.get("root_address")),
+            "assessed_instance_rows": sum(
+                row.get("status") == "assessed" for row in recovery_domain
+            ),
+        },
+    }
+    if not transition_witnessed:
+        empty["failures"].append("post-failure STP device evidence does not witness the induced root loss")
+        return empty
+    empty["status"] = "observed_survival" if post_safe and recovery_ok else "observed_failure"
+    return empty
+
+
+def _etherchannel_trial(
+        pre: Mapping[str, Any], post: Mapping[str, Any], recovery: Mapping[str, Any],
+        witness: Mapping[str, Any]) -> dict:
+    subject = _text(witness.get("subject"))
+    target = _dict(witness.get("target"))
+    parts = subject.split("|")
+    empty = {
+        "precondition": {"status": "not_verified", "evidence": {}},
+        "failure_witness": {
+            "status": "not_verified", "action": "shut_link", "target": dict(target),
+            "induced_at": _text(witness.get("induced_at")), "evidence": {},
+        },
+        "post_failure": {"status": "not_verified", "evidence": {}},
+        "recovery": {"status": "not_verified", "evidence": {}},
+        "status": "not_verified",
+        "failures": [],
+    }
+    if (len(parts) != 2 or target.get("host") != parts[0]
+            or not _text(target.get("interface"))):
+        empty["failures"].append(
+            "EtherChannel subject and failed-member identity do not reconcile"
+        )
+        return empty
+    key = (parts[0], parts[1])
+    views = []
+    for value in (pre, post, recovery):
+        view = validate_etherchannel_operational_evidence(
+            value.get("etherchannel_operational_evidence")
+        )
+        device_matches = [
+            (name, row) for name, row in _dict(value.get("devices")).items()
+            if _text(name).casefold() == parts[0].casefold() and isinstance(row, dict)
+        ]
+        legacy = {"valid": False, "index": {}}
+        if len(device_matches) == 1:
+            device_name, device_row = device_matches[0]
+            legacy = validate_etherchannel_baseline(
+                value.get("etherchannel_baseline"),
+                projection=value.get("etherchannel_projection"),
+                protocol_assessability=value.get("protocol_assessability"),
+                devices={device_name: device_row},
+            )
+        view = {
+            **view,
+            "coowners_valid": bool(view.get("valid") is True and legacy.get("valid") is True),
+            "legacy_index": legacy.get("index") if isinstance(legacy.get("index"), dict) else {},
+        }
+        views.append(view)
+    if any(view.get("valid") is not True or view.get("coowners_valid") is not True
+           for view in views):
+        empty["failures"].append(
+            "one or more EtherChannel phase co-owners are missing, malformed, or contradictory"
+        )
+        return empty
+    indices = [view.get("index") if isinstance(view.get("index"), dict) else {} for view in views]
+    pre_row, post_row, recovery_row = [_dict(index.get(key)) for index in indices]
+    legacy_groups = []
+    for view in views:
+        legacy_host = _dict(view.get("legacy_index", {}).get(parts[0]))
+        legacy_groups.append(next((
+            group for group in _list(legacy_host.get("groups"))
+            if isinstance(group, dict) and _text(group.get("group")) == parts[1]
+        ), {}))
+    if any(
+        not legacy_group
+        or _text(legacy_group.get("group_id")) != _text(operational.get("group_id"))
+        or _text(legacy_group.get("protocol")).casefold()
+        != _text(operational.get("protocol")).casefold()
+        or {
+            _text(member.get("interface")): _text(member.get("state"))
+            for member in _list(legacy_group.get("members")) if isinstance(member, dict)
+        } != {
+            _text(member.get("interface")): _text(member.get("state"))
+            for member in _list(operational.get("runtime_members"))
+            if isinstance(member, dict)
+        }
+        for legacy_group, operational in zip(
+            legacy_groups, (pre_row, post_row, recovery_row)
+        )
+    ):
+        empty["failures"].append(
+            "EtherChannel operational evidence does not reconcile to its native co-owner subject"
+        )
+        return empty
+    target_interface = _text(target.get("interface"))
+
+    def subject_device_platform(
+            snapshot: Mapping[str, Any], view: Mapping[str, Any], row: Mapping[str, Any]) -> str:
+        normalized = _etherchannel_platforms(snapshot.get("devices"))
+        platform_matches = [
+            platform for name, platform in normalized.items()
+            if _text(name).casefold() == parts[0].casefold()
+        ]
+        coverage = _list(_dict(view.get("baseline")).get("coverage"))
+        coverage_matches = [
+            cell for cell in coverage
+            if isinstance(cell, dict)
+            and _text(cell.get("switch")).casefold() == parts[0].casefold()
+        ]
+        row_platform = _text(row.get("platform"))
+        if (
+            len(platform_matches) != 1
+            or len(coverage_matches) != 1
+            or platform_matches[0] not in {"ios", "nxos"}
+            or row_platform != platform_matches[0]
+            or coverage_matches[0].get("platform") != row_platform
+            or coverage_matches[0].get("subject") is not True
+            or coverage_matches[0].get("status") not in {"assessed", "degraded"}
+        ):
+            return ""
+        return row_platform
+
+    pre_device_platform, post_device_platform, recovery_device_platform = [
+        subject_device_platform(value, view, row)
+        for value, view, row in zip(
+            (pre, post, recovery), views, (pre_row, post_row, recovery_row)
+        )
+    ]
+    pre_device_bound = bool(pre_device_platform)
+    post_device_bound = bool(
+        post_device_platform and post_device_platform == pre_device_platform
+    )
+    recovery_device_bound = bool(
+        recovery_device_platform and recovery_device_platform == pre_device_platform
+    )
+
+    def forwarding(row: Mapping[str, Any]) -> List[str]:
+        return sorted(
+            _text(member.get("interface")) for member in _list(row.get("runtime_members"))
+            if isinstance(member, dict) and member.get("forwarding") is True
+            and _text(member.get("interface"))
+        )
+
+    pre_forwarding = forwarding(pre_row)
+    post_forwarding = forwarding(post_row)
+    recovery_forwarding = forwarding(recovery_row)
+    pre_min = _dict(pre_row.get("min_links"))
+    pre_partner = _dict(pre_row.get("partner"))
+    precondition_ok = bool(
+        pre_device_bound and pre_row.get("status") == "assessed" and len(pre_forwarding) >= 2
+        and target_interface in pre_forwarding and pre_min.get("status") == "assessed"
+        and type(pre_min.get("value")) is int and pre_min["value"] > 0
+        and pre_partner.get("status") in {"assessed", "not_applicable"}
+    )
+    empty["precondition"] = {
+        "status": "passed" if precondition_ok else "not_verified",
+        "evidence": {
+            "group_subject": subject,
+            "forwarding_members": pre_forwarding,
+            "configured_min_links": pre_min.get("value"),
+            "partner_system_id": _text(pre_partner.get("system_id")),
+            "partner_aggregation_id": _text(pre_partner.get("aggregation_id")),
+            "subject_device_platform": pre_device_platform,
+        },
+    }
+    if not precondition_ok:
+        empty["failures"].append("EtherChannel pre-failure group/member precondition is not verified")
+        return empty
+    exact_loss = bool(
+        post_device_bound and post_row and target_interface not in post_forwarding
+        and set(pre_forwarding) - set(post_forwarding) == {target_interface}
+        and not (set(post_forwarding) - set(pre_forwarding))
+    )
+    pre_configured = sorted(
+        _text(member.get("interface")) for member in _list(pre_row.get("configured_members"))
+        if isinstance(member, dict) and _text(member.get("interface"))
+    )
+    post_configured = sorted(
+        _text(member.get("interface")) for member in _list(post_row.get("configured_members"))
+        if isinstance(member, dict) and _text(member.get("interface"))
+    )
+    target_runtime = next((
+        member for member in _list(post_row.get("runtime_members"))
+        if isinstance(member, dict) and _text(member.get("interface")) == target_interface
+    ), {})
+    configured_failure_witness = bool(
+        pre_configured and post_configured == pre_configured
+        and target_interface in post_configured
+        and target_runtime and target_runtime.get("forwarding") is False
+        and _text(target_runtime.get("state")) == "non_forwarding_observed"
+    )
+    post_min = _dict(post_row.get("min_links"))
+    post_partner = _dict(post_row.get("partner"))
+    findings = _list(post_row.get("findings"))
+    allowed_failure_codes = {"runtime_group_degraded", "single_member_failure_unsafe"}
+    unrelated_findings = sorted(
+        _text(item.get("code")) for item in findings
+        if isinstance(item, dict) and _text(item.get("code")) not in allowed_failure_codes
+    )
+    identity_stable = bool(
+        post_row and post_row.get("protocol") == pre_row.get("protocol")
+        and post_row.get("group_id") == pre_row.get("group_id")
+        and post_min.get("status") == "assessed" and post_min.get("value") == pre_min.get("value")
+        and post_partner.get("status") == pre_partner.get("status")
+        and _text(post_partner.get("system_id")) == _text(pre_partner.get("system_id"))
+        and _text(post_partner.get("aggregation_id")) == _text(pre_partner.get("aggregation_id"))
+    )
+    post_safe = bool(
+        exact_loss and configured_failure_witness and identity_stable
+        and not unrelated_findings and post_forwarding
+        and len(post_forwarding) >= pre_min["value"]
+    )
+    empty["failure_witness"] = {
+        "status": "witnessed" if exact_loss else "not_verified",
+        "action": "shut_link",
+        "target": dict(target),
+        "induced_at": _text(witness.get("induced_at")),
+        "evidence": {
+            "pre_forwarding_members": pre_forwarding,
+            "post_forwarding_members": post_forwarding,
+            "lost_forwarding_members": sorted(set(pre_forwarding) - set(post_forwarding)),
+            "configured_members_preserved": post_configured == pre_configured,
+            "target_runtime_state": _text(target_runtime.get("state")),
+            "post_subject_device_bound": post_device_bound,
+        },
+    }
+    empty["post_failure"] = {
+        "status": "survived" if post_safe else ("failed" if exact_loss else "not_verified"),
+        "evidence": {
+            "remaining_forwarding_members": len(post_forwarding),
+            "configured_min_links": pre_min["value"],
+            "target_remained_configured": target_interface in post_configured,
+            "partner_identity_preserved": identity_stable,
+            "unrelated_finding_codes": unrelated_findings,
+        },
+    }
+    recovery_partner = _dict(recovery_row.get("partner"))
+    recovery_min = _dict(recovery_row.get("min_links"))
+    recovery_ok = bool(
+        recovery_row.get("status") == "assessed"
+        and recovery_device_bound
+        and recovery_forwarding == pre_forwarding
+        and recovery_row.get("protocol") == pre_row.get("protocol")
+        and recovery_row.get("group_id") == pre_row.get("group_id")
+        and recovery_min == pre_min and recovery_partner == pre_partner
+        and recovery_row.get("configured_members") == pre_row.get("configured_members")
+    )
+    empty["recovery"] = {
+        "status": "recovered" if recovery_ok else "failed",
+        "evidence": {
+            "restored_forwarding_members": recovery_forwarding,
+            "target_member_restored": target_interface in recovery_forwarding,
+            "partner_identity_restored": recovery_partner == pre_partner,
+            "recovery_subject_device_bound": recovery_device_bound,
+        },
+    }
+    if not exact_loss or not configured_failure_witness:
+        empty["failures"].append(
+            "post-failure EtherChannel device evidence does not witness an exact configured member loss"
+        )
+        return empty
+    empty["status"] = "observed_survival" if post_safe and recovery_ok else "observed_failure"
+    return empty
+
+
+def _multichassis_view(snapshot: Mapping[str, Any]) -> dict:
+    return validate_multichassis_lag_snapshot_evidence(
+        snapshot.get("multichassis_lag_domain_baseline"),
+        snapshot.get("multichassis_lag_typed_observations"),
+        snapshot.get("devices"),
+        legacy_vpc=snapshot.get("vpc"),
+        legacy_arista=snapshot.get("arista"),
+    )
+
+
+def _multichassis_trial(
+        pre: Mapping[str, Any], post: Mapping[str, Any], recovery: Mapping[str, Any],
+        witness: Mapping[str, Any]) -> dict:
+    subject = _text(witness.get("subject"))
+    target = _dict(witness.get("target"))
+    empty = {
+        "precondition": {"status": "not_verified", "evidence": {}},
+        "failure_witness": {
+            "status": "not_verified", "action": "fail_node", "target": dict(target),
+            "induced_at": _text(witness.get("induced_at")), "evidence": {},
+        },
+        "post_failure": {"status": "not_verified", "evidence": {}},
+        "recovery": {"status": "not_verified", "evidence": {}},
+        "status": "not_verified",
+        "failures": [],
+    }
+    views = [_multichassis_view(value) for value in (pre, post, recovery)]
+    if any(view.get("valid") is not True for view in views):
+        empty["failures"].append("one or more multichassis phase owners are missing or malformed")
+        return empty
+    baselines = [_dict(view.get("baseline")) for view in views]
+
+    def attachment_index(baseline: Mapping[str, Any]) -> dict:
+        return {
+            _text(row.get("subject_id")): row
+            for row in _list(baseline.get("reconciled_attachments"))
+            if isinstance(row, dict) and _text(row.get("subject_id"))
+        }
+
+    pre_attachment = _dict(attachment_index(baselines[0]).get(subject))
+    recovery_attachment = _dict(attachment_index(baselines[2]).get(subject))
+    switches = _list(pre_attachment.get("switches"))
+    failed_host = _text(target.get("host"))
+    survivor = next((_text(host) for host in switches if _text(host) != failed_host), "")
+    precondition_ok = bool(
+        subject and pre_attachment.get("health_state") == "healthy"
+        and len(switches) == 2 and failed_host in switches and survivor
+        and all(
+            _text(row.get("platform")) == "nxos"
+            for row in _list(baselines[0].get("local_observations"))
+            if isinstance(row, dict) and _text(row.get("switch")) in switches
+        )
+    )
+    empty["precondition"] = {
+        "status": "passed" if precondition_ok else "not_verified",
+        "evidence": {
+            "attachment_subject": subject,
+            "proven_pair_id": _text(pre_attachment.get("pair_id")),
+            "pair_switches": list(switches),
+            "failed_peer": failed_host,
+            "surviving_peer": survivor,
+            "lacp_partner_system_id": _text(pre_attachment.get("lacp_partner_system_id")),
+            "lacp_partner_aggregation_id": _text(
+                pre_attachment.get("lacp_partner_aggregation_id")
+            ),
+        },
+    }
+    if not precondition_ok:
+        empty["failures"].append(
+            "NX-OS multichassis pre-failure pair/attachment precondition is not verified"
+        )
+        return empty
+    post_locals = {
+        _text(row.get("switch")): row
+        for row in _list(baselines[1].get("local_observations"))
+        if isinstance(row, dict) and _text(row.get("switch"))
+    }
+    survivor_local = _dict(post_locals.get(survivor))
+    pre_locals = {
+        _text(row.get("switch")): row
+        for row in _list(baselines[0].get("local_observations"))
+        if isinstance(row, dict) and _text(row.get("switch"))
+    }
+    pre_survivor_local = _dict(pre_locals.get(survivor))
+    pre_failed_local = _dict(pre_locals.get(failed_host))
+    domain = _dict(survivor_local.get("domain_state"))
+    survivor_source = _dict(survivor_local.get("source_receipt"))
+    survivor_source_bound = bool(
+        survivor_local.get("source_custody") == "current_run_source_bound"
+        and survivor_source.get("valid") is True
+        and survivor_source.get("source_bound") is True
+        and survivor_source.get("capture_status") == "ok"
+        and survivor_source.get("projection_custody") == "current_run_source_bound"
+    )
+    pair_identity_preserved = bool(
+        pre_survivor_local and pre_failed_local
+        and normalize_mac(_text(survivor_local.get("local_identity")))
+        == normalize_mac(_text(pre_survivor_local.get("local_identity")))
+        and normalize_mac(_text(survivor_local.get("peer_identity")))
+        == normalize_mac(_text(pre_failed_local.get("local_identity")))
+        and normalize_mac(_text(survivor_local.get("peer_identity")))
+        == normalize_mac(_text(pre_survivor_local.get("peer_identity")))
+        and _text(survivor_local.get("domain_id")).casefold()
+        == _text(pre_survivor_local.get("domain_id")).casefold()
+    )
+    peer_loss_witnessed = bool(
+        survivor_local and failed_host not in post_locals
+        and failed_host not in _dict(post.get("devices"))
+        and survivor_source_bound and pair_identity_preserved
+        and _text(survivor_local.get("platform")) == "nxos"
+        and domain.get("peer_status") == "peer adjacency not formed"
+        and domain.get("keepalive_status") == "peer is not alive"
+        and domain.get("peer_link_status") == "down"
+    )
+    dual_active_safe = survivor_local.get("dual_active_status") == "0"
+    pre_legs = {
+        _text(row.get("switch")): row
+        for row in _list(baselines[0].get("local_legs"))
+        if isinstance(row, dict)
+        and _text(row.get("attachment_subject_id")) == subject
+    }
+    pre_survivor_leg = _dict(pre_legs.get(survivor))
+    post_survivor_leg = next((
+        row for row in _list(baselines[1].get("local_legs"))
+        if isinstance(row, dict) and _text(row.get("switch")) == survivor
+        and _text(row.get("attachment_id")) == _text(pre_survivor_leg.get("attachment_id"))
+        and _text(row.get("local_port_channel")) == _text(
+            pre_survivor_leg.get("local_port_channel")
+        )
+    ), {})
+    leg_safe = bool(
+        post_survivor_leg and post_survivor_leg.get("status") == "up"
+        and post_survivor_leg.get("consistency") == "success"
+        and post_survivor_leg.get("source_custody") == "current_run_source_bound"
+        and normalize_mac(_text(post_survivor_leg.get("lacp_partner_system_id")))
+        == normalize_mac(_text(pre_attachment.get("lacp_partner_system_id")))
+        and _text(post_survivor_leg.get("lacp_partner_aggregation_id"))
+        == _text(pre_attachment.get("lacp_partner_aggregation_id"))
+    )
+    post_ec_view = validate_etherchannel_operational_evidence(
+        post.get("etherchannel_operational_evidence")
+    )
+    ec_key = (survivor, _text(pre_survivor_leg.get("local_port_channel")))
+    ec_index = post_ec_view.get("index") if isinstance(post_ec_view.get("index"), dict) else {}
+    ec_row = _dict(ec_index.get(ec_key))
+    ec_capacity = _dict(ec_row.get("capacity"))
+    ec_min = _dict(ec_row.get("min_links"))
+    ec_partner = _dict(ec_row.get("partner"))
+    ec_safe = bool(
+        post_ec_view.get("valid") is True and ec_row.get("status") == "assessed"
+        and type(ec_capacity.get("forwarding_member_count")) is int
+        and ec_capacity["forwarding_member_count"] > 0
+        and ec_min.get("status") == "assessed" and type(ec_min.get("value")) is int
+        and ec_capacity["forwarding_member_count"] >= ec_min["value"]
+        and ec_partner.get("status") == "assessed"
+        and normalize_mac(_text(ec_partner.get("system_id")))
+        == normalize_mac(_text(pre_attachment.get("lacp_partner_system_id")))
+        and _text(ec_partner.get("aggregation_id"))
+        == _text(pre_attachment.get("lacp_partner_aggregation_id"))
+    )
+    post_safe = peer_loss_witnessed and dual_active_safe and leg_safe and ec_safe
+    empty["failure_witness"] = {
+        "status": "witnessed" if peer_loss_witnessed else "not_verified",
+        "action": "fail_node",
+        "target": dict(target),
+        "induced_at": _text(witness.get("induced_at")),
+        "evidence": {
+            "surviving_peer": survivor,
+            "peer_status": _text(domain.get("peer_status")),
+            "keepalive_status": _text(domain.get("keepalive_status")),
+            "peer_link_status": _text(domain.get("peer_link_status")),
+            "surviving_source_custody": _text(
+                survivor_local.get("source_custody")
+            ),
+            "pair_identity_preserved": pair_identity_preserved,
+        },
+    }
+    empty["post_failure"] = {
+        "status": "survived" if post_safe else (
+            "failed" if peer_loss_witnessed else "not_verified"
+        ),
+        "evidence": {
+            "dual_active_status": _text(survivor_local.get("dual_active_status")),
+            "surviving_local_leg_status": _text(_dict(post_survivor_leg).get("status")),
+            "surviving_local_leg_consistency": _text(
+                _dict(post_survivor_leg).get("consistency")
+            ),
+            "surviving_etherchannel_status": _text(ec_row.get("status")),
+            "remaining_forwarding_members": ec_capacity.get("forwarding_member_count"),
+            "configured_min_links": ec_min.get("value"),
+            "service_path_survival": "not_verified",
+        },
+    }
+    recovery_ok = bool(
+        recovery_attachment.get("health_state") == "healthy"
+        and recovery_attachment.get("pair_id") == pre_attachment.get("pair_id")
+        and recovery_attachment.get("switches") == pre_attachment.get("switches")
+        and recovery_attachment.get("leg_subject_ids") == pre_attachment.get("leg_subject_ids")
+        and recovery_attachment.get("lacp_partner_system_id")
+        == pre_attachment.get("lacp_partner_system_id")
+        and recovery_attachment.get("lacp_partner_aggregation_id")
+        == pre_attachment.get("lacp_partner_aggregation_id")
+    )
+    empty["recovery"] = {
+        "status": "recovered" if recovery_ok else "failed",
+        "evidence": {
+            "attachment_identity_restored": bool(recovery_attachment),
+            "pair_id": _text(recovery_attachment.get("pair_id")),
+            "pair_switches": list(_list(recovery_attachment.get("switches"))),
+            "health_state": _text(recovery_attachment.get("health_state")),
+        },
+    }
+    if not peer_loss_witnessed:
+        empty["failures"].append(
+            "post-failure NX-OS device evidence does not witness the exact peer loss"
+        )
+        return empty
+    empty["status"] = "observed_survival" if post_safe and recovery_ok else "observed_failure"
+    return empty
+
+
+def compute_observed_l2_failure_evidence(
+        pre_failure_snapshot: Any,
+        post_failure_snapshot: Any,
+        recovery_snapshot: Any,
+        *,
+        witness_bytes: Any,
+        phase_custody: Any) -> BoundObservedL2FailureEvidence:
+    """Mint one exact, source-bound observed local L2 failure-trial receipt.
+
+    The witness is bounded operator context.  It never proves the action by itself: the post-failure
+    typed device owners must independently show the exact transition, and the final recovery bytes
+    must restore the same subject identity.  ``collected_at`` from each exact snapshot is primary;
+    API upload times or offline file mtimes are independent ordering witnesses only.
+    """
+    failures: List[str] = []
+    witness, payload, witness_failures = _parse_failure_witness(witness_bytes)
+    failures.extend(witness_failures)
+    custody = phase_custody if isinstance(phase_custody, dict) else {}
+    if frozenset(custody) != frozenset({"pre_failure", "post_failure", "recovery"}):
+        failures.append("phase custody roster is missing or malformed")
+    phases = {
+        "pre_failure": pre_failure_snapshot,
+        "post_failure": post_failure_snapshot,
+        "recovery": recovery_snapshot,
+    }
+    sources = {
+        phase: _phase_source_receipt(
+            phase, snapshot, custody.get(phase), failures
+        ) for phase, snapshot in phases.items()
+    }
+    source_ids = [sources[phase]["source_id"] for phase in phases]
+    if any(not item for item in source_ids) or len(set(source_ids)) != len(source_ids):
+        failures.append("phase source identities must be distinct and complete")
+    custody_contexts = {
+        (
+            sources[phase]["source"],
+            sources[phase]["campaign_id"],
+            sources[phase]["engagement_id"],
+        )
+        for phase in phases
+    }
+    if len(custody_contexts) != 1:
+        failures.append(
+            "phase sources must share one exact source owner, campaign, and engagement"
+        )
+    collected = [_aware_timestamp(sources[phase]["collected_at"]) for phase in phases]
+    custody_times = [_aware_timestamp(sources[phase]["custody_at"]) for phase in phases]
+    induced = _aware_timestamp(witness.get("induced_at"))
+    if all(item is not None for item in collected):
+        if not (collected[0] < collected[1] < collected[2]):
+            failures.append("phase collected_at timestamps are not strictly pre < post < recovery")
+        if induced is None or not (collected[0] < induced < collected[1] < collected[2]):
+            failures.append(
+                "witness/phase collected_at timestamps are not strictly pre < induced < post < recovery"
+            )
+    if all(item is not None for item in custody_times) \
+            and not (custody_times[0] < custody_times[1] < custody_times[2]):
+        failures.append("phase custody timestamps are not strictly pre < post < recovery")
+    if all(item is not None for item in collected + custody_times) and any(
+            collected[index] > custody_times[index] for index in range(3)):
+        failures.append("a phase custody timestamp precedes its source-owned collection timestamp")
+
+    family = _text(witness.get("family")) if witness else "not_verified"
+    if family not in _OBSERVED_FAMILIES:
+        family = "not_verified"
+    subject = _text(witness.get("subject")) or "observed_l2_failure|coverage"
+    scenario = _text(witness.get("failure_scenario")) or "not_verified"
+    result = {
+        "precondition": {"status": "not_verified", "evidence": {}},
+        "failure_witness": {
+            "status": "not_verified",
+            "action": _text(witness.get("action")),
+            "target": deepcopy(witness.get("target")) if isinstance(witness.get("target"), dict) else {},
+            "induced_at": _text(witness.get("induced_at")),
+            "evidence": {},
+        },
+        "post_failure": {"status": "not_verified", "evidence": {}},
+        "recovery": {"status": "not_verified", "evidence": {}},
+        "status": "not_verified",
+        "failures": [],
+    }
+    if not failures:
+        evaluator = {
+            "stp": _stp_trial,
+            "etherchannel": _etherchannel_trial,
+            "multichassis_lag": _multichassis_trial,
+        }.get(family)
+        if evaluator is None:
+            failures.append("observed L2 trial family is unsupported")
+        else:
+            try:
+                result = evaluator(
+                    _dict(pre_failure_snapshot),
+                    _dict(post_failure_snapshot),
+                    _dict(recovery_snapshot),
+                    witness,
+                )
+            except (Exception, MemoryError):
+                failures.append("typed L2 phase owners could not reconcile the observed trial")
+    failures.extend(_text(item) for item in _list(result.get("failures")) if _text(item))
+    status = result.get("status") if result.get("status") in _OBSERVED_OUTCOMES else "not_verified"
+    if failures:
+        status = "not_verified"
+    witness_source = {
+        "encoding": "base64",
+        "content_base64": base64.b64encode(payload or b"").decode("ascii"),
+        "sha256": (
+            "sha256:" + hashlib.sha256(payload).hexdigest() if payload is not None else ""
+        ),
+        "bytes": len(payload) if payload is not None else 0,
+        "induced_at": _text(witness.get("induced_at")),
+    }
+    root = {
+        "schema": OBSERVED_L2_FAILURE_EVIDENCE_SCHEMA,
+        "owner": "observed_local_l2_failure_trial",
+        "owns_score": False,
+        "owns_verdict": False,
+        "status": status,
+        "assurance_level": (
+            "local_safety_preservation" if status != "not_verified" else "not_verified"
+        ),
+        "family": family,
+        "subject": subject,
+        "failure_scenario": scenario,
+        "source_binding": {**sources, "failure_witness": witness_source},
+        "precondition": deepcopy(result["precondition"]),
+        "failure_witness": deepcopy(result["failure_witness"]),
+        "post_failure": deepcopy(result["post_failure"]),
+        "recovery": deepcopy(result["recovery"]),
+        "claims": {
+            "local_scenario": status,
+            "service_path_survival": "not_verified",
+            "traffic_continuity": "not_verified",
+            "convergence": "not_verified",
+        },
+        "failures": list(dict.fromkeys(failures))[:_MAX_OBSERVED_FAILURES],
+        "limitations": [
+            "This receipt proves only the exact local L2 subject and induced-failure scenario named above.",
+            "Operator witness bytes provide context; typed phase snapshots independently prove or refute the transition.",
+            "Collection timestamps establish observation order, not convergence time or simultaneous state.",
+            "Traffic continuity, service-path survival, remote forwarding, and end-to-end convergence remain not verified.",
+        ],
+    }
+    return BoundObservedL2FailureEvidence(
+        root,
+        payload_sha256=canonical_sha256(root),
+        recovery_binding=sources["recovery"],
+        _authority=_BOUND_OBSERVED_L2_AUTHORITY,
+    )
+
+
+def validate_observed_l2_failure_evidence(
+        value: Any, *, expected_recovery_binding: Any = None,
+        expected_predecessor_collected_at: Any = None,
+        expected_predecessor_binding: Any = None) -> dict:
+    """Validate one unchanged in-process observed-trial receipt for canonical gate use."""
+    invalid = {
+        "present": value is not None,
+        "valid": False,
+        "reason": "observed L2 failure evidence is detached, changed, or malformed",
+        "status": "not_verified",
+        "family": "",
+        "subject": "",
+        "failure_scenario": "",
+    }
+    if not isinstance(value, BoundObservedL2FailureEvidence):
+        return invalid
+    try:
+        digest = canonical_sha256(dict(value))
+    except (TypeError, ValueError, OverflowError, RecursionError, MemoryError):
+        return invalid
+    if digest != getattr(value, "_bound_payload_sha256", None):
+        return invalid
+    recovery_binding = getattr(value, "_bound_recovery_binding", None)
+    if not isinstance(recovery_binding, dict):
+        return invalid
+    if frozenset(value) != _OBSERVED_ROOT_FIELDS:
+        return invalid
+    status = value.get("status")
+    family = value.get("family")
+    subject = value.get("subject")
+    scenario = value.get("failure_scenario")
+    if (value.get("schema") != OBSERVED_L2_FAILURE_EVIDENCE_SCHEMA
+            or value.get("owner") != "observed_local_l2_failure_trial"
+            or value.get("owns_score") is not False or value.get("owns_verdict") is not False
+            or status not in _OBSERVED_OUTCOMES
+            or family not in (*_OBSERVED_FAMILIES, "not_verified")
+            or not _text(subject) or not _text(scenario)
+            or value.get("assurance_level") != (
+                "local_safety_preservation" if status != "not_verified" else "not_verified"
+            )):
+        return invalid
+    sources = value.get("source_binding")
+    if (not isinstance(sources, dict)
+            or frozenset(sources) != frozenset({
+                "pre_failure", "post_failure", "recovery", "failure_witness"
+            })):
+        return invalid
+    for phase in ("pre_failure", "post_failure", "recovery"):
+        receipt = sources.get(phase)
+        if (not isinstance(receipt, dict) or frozenset(receipt) != _OBSERVED_SOURCE_FIELDS
+                or receipt.get("source") not in _OBSERVED_SOURCE_OWNERS
+                or not _phase_source_id_valid(
+                    receipt.get("source"), receipt.get("source_id"),
+                    receipt.get("sha256"))
+                or type(receipt.get("campaign_id")) is not int
+                or receipt.get("campaign_id") <= 0
+                or not _text(receipt.get("engagement_id"))
+                or not _text(receipt.get("sha256"))
+                or not _text(receipt.get("sha256")).startswith("sha256:")
+                or _count(receipt.get("bytes")) in {None, 0}
+                or _aware_timestamp(receipt.get("collected_at")) is None
+                or _aware_timestamp(receipt.get("custody_at")) is None):
+            return invalid
+    phase_rows = [sources[phase] for phase in (
+        "pre_failure", "post_failure", "recovery"
+    )]
+    if (len({row["source_id"] for row in phase_rows}) != 3
+            or len({(
+                row["source"], row["campaign_id"], row["engagement_id"]
+            ) for row in phase_rows}) != 1):
+        return invalid
+    witness_source = sources.get("failure_witness")
+    if (not isinstance(witness_source, dict)
+            or frozenset(witness_source) != _OBSERVED_WITNESS_SOURCE_FIELDS
+            or witness_source.get("encoding") != "base64"
+            or _count(witness_source.get("bytes")) is None
+            or _aware_timestamp(witness_source.get("induced_at")) is None):
+        return invalid
+    try:
+        decoded = base64.b64decode(
+            witness_source.get("content_base64"), validate=True
+        )
+    except (TypeError, ValueError):
+        return invalid
+    if (len(decoded) != witness_source.get("bytes")
+            or "sha256:" + hashlib.sha256(decoded).hexdigest()
+            != witness_source.get("sha256")):
+        return invalid
+    if sources["recovery"] != recovery_binding:
+        return invalid
+    if expected_recovery_binding is not None:
+        expected = expected_recovery_binding \
+            if isinstance(expected_recovery_binding, dict) else {}
+        snapshot_id = expected.get("snapshot_id")
+        expected_source = expected.get("source")
+        expected_sha256 = expected.get("sha256")
+        expected_source_id = (
+            f"snapshot:{snapshot_id}"
+            if expected_source == PERSISTED_SOURCE
+            and type(snapshot_id) is int and snapshot_id > 0 else
+            f"file-{expected_sha256}"
+            if expected_source == OFFLINE_FILE_SOURCE
+            and isinstance(expected_sha256, str)
+            and expected_sha256.startswith("sha256:") else ""
+        )
+        canonical_recovery = {
+            "source": expected_source,
+            "source_id": expected_source_id,
+            "campaign_id": expected.get("campaign_id"),
+            "engagement_id": _text(expected.get("engagement_id")),
+            "sha256": expected_sha256,
+            "bytes": expected.get("bytes"),
+        }
+        actual_recovery = {
+            field: sources["recovery"].get(field) for field in canonical_recovery
+        }
+        if (canonical_recovery["source"] not in _OBSERVED_SOURCE_OWNERS
+                or not canonical_recovery["source_id"]
+                or type(canonical_recovery["campaign_id"]) is not int
+                or canonical_recovery["campaign_id"] <= 0
+                or not canonical_recovery["engagement_id"]
+                or _count(canonical_recovery["bytes"]) in {None, 0}
+                or actual_recovery != canonical_recovery):
+            return {
+                **invalid,
+                "reason": (
+                    "observed L2 trial belongs to a different recovery "
+                    "snapshot, campaign, engagement, or source owner"
+                ),
+            }
+    collected = [_aware_timestamp(sources[phase]["collected_at"])
+                 for phase in ("pre_failure", "post_failure", "recovery")]
+    custody = [_aware_timestamp(sources[phase]["custody_at"])
+               for phase in ("pre_failure", "post_failure", "recovery")]
+    induced = _aware_timestamp(witness_source.get("induced_at"))
+    if (not all(collected) or not all(custody) or induced is None
+            or not (collected[0] < induced < collected[1] < collected[2])
+            or not (custody[0] < custody[1] < custody[2])
+            or any(collected[index] > custody[index] for index in range(3))):
+        return invalid
+    if (expected_predecessor_binding is not None
+            or expected_predecessor_collected_at is not None):
+        predecessor_collected = _aware_timestamp(expected_predecessor_collected_at)
+        if predecessor_collected is None or predecessor_collected >= collected[0]:
+            return {
+                **invalid,
+                "reason": (
+                    "observed L2 trial pre-failure capture is not newer than the "
+                    "comparison before snapshot"
+                ),
+            }
+    if expected_predecessor_binding is not None:
+        predecessor = (
+            expected_predecessor_binding
+            if isinstance(expected_predecessor_binding, dict) else {}
+        )
+        pre_source = sources["pre_failure"]
+        source_context_matches = bool(
+            predecessor.get("source") == pre_source.get("source")
+            and predecessor.get("campaign_id") == pre_source.get("campaign_id")
+            and predecessor.get("engagement_id") == pre_source.get("engagement_id")
+        )
+        persisted_ordered = True
+        if predecessor.get("source") == PERSISTED_SOURCE:
+            pre_source_id = _text(pre_source.get("source_id"))
+            pre_numeric = pre_source_id.partition(":")[2]
+            before_snapshot_id = predecessor.get("snapshot_id")
+            persisted_ordered = bool(
+                type(before_snapshot_id) is int and before_snapshot_id > 0
+                and pre_numeric.isdigit() and int(pre_numeric) > before_snapshot_id
+            )
+        if not source_context_matches or not persisted_ordered:
+            return {
+                **invalid,
+                "reason": (
+                    "observed L2 trial pre-failure source does not follow the exact "
+                    "comparison before source in the same custody context"
+                ),
+            }
+    for field in ("precondition", "post_failure", "recovery"):
+        step = value.get(field)
+        if (not isinstance(step, dict) or frozenset(step) != _OBSERVED_STEP_FIELDS
+                or not _text(step.get("status")) or not isinstance(step.get("evidence"), dict)):
+            return invalid
+    witness_step = value.get("failure_witness")
+    if (not isinstance(witness_step, dict)
+            or frozenset(witness_step) != _OBSERVED_WITNESS_FIELDS
+            or not _text(witness_step.get("status"))
+            or not _text(witness_step.get("action"))
+            or not isinstance(witness_step.get("target"), dict)
+            or _aware_timestamp(witness_step.get("induced_at")) is None
+            or not isinstance(witness_step.get("evidence"), dict)):
+        return invalid
+    claims = value.get("claims")
+    if (not isinstance(claims, dict) or frozenset(claims) != _OBSERVED_CLAIM_FIELDS
+            or claims.get("local_scenario") != status
+            or any(claims.get(field) != "not_verified" for field in (
+                "service_path_survival", "traffic_continuity", "convergence"
+            ))):
+        return invalid
+    failures = value.get("failures")
+    limitations = value.get("limitations")
+    if (not isinstance(failures, list) or len(failures) > _MAX_OBSERVED_FAILURES
+            or any(not _text(item) for item in failures)
+            or (status == "not_verified") is not bool(failures)
+            or not isinstance(limitations, list) or not limitations
+            or any(not _text(item) for item in limitations)):
+        return invalid
+    expected_steps = {
+        "observed_survival": ("passed", "witnessed", "survived", "recovered"),
+        "observed_failure": ("passed", "witnessed", "failed_or_survived", "failed_or_recovered"),
+    }
+    if status == "observed_survival" and (
+            value["precondition"]["status"], value["failure_witness"]["status"],
+            value["post_failure"]["status"], value["recovery"]["status"]
+    ) != expected_steps["observed_survival"]:
+        return invalid
+    if status == "observed_failure" and (
+            value["precondition"]["status"] != "passed"
+            or value["failure_witness"]["status"] != "witnessed"
+            or (value["post_failure"]["status"] != "failed"
+                and value["recovery"]["status"] != "failed")):
+        return invalid
+    return {
+        "present": True,
+        "valid": True,
+        "reason": "ok",
+        "status": status,
+        "family": family,
+        "subject": subject,
+        "failure_scenario": scenario,
+        "recovery_binding": dict(recovery_binding),
+        "receipt": value,
     }
 
 
 __all__ = [
     "L2_FAILURE_REHEARSAL_SCHEMA",
+    "OBSERVED_L2_FAILURE_EVIDENCE_SCHEMA",
+    "L2_FAILURE_WITNESS_SCHEMA",
+    "BoundObservedL2FailureEvidence",
     "compute_l2_failure_rehearsal",
+    "compute_observed_l2_failure_evidence",
     "validate_l2_failure_rehearsal",
+    "validate_observed_l2_failure_evidence",
 ]
