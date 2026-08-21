@@ -96,8 +96,11 @@ _BUILD_DIRECTORY_PRUNE_CODE = "graph_corpus_authored_build_dir_pruned"
 _KNOWN_FILE_TYPES = {"code", "rationale", "document", "concept"}
 _KNOWN_RELATIONS = {
     "calls",
+    "cites",
     "contains",
     "defines",
+    "dynamic_import",
+    "extends",
     "imports",
     "imports_from",
     "indirect_call",
@@ -108,6 +111,21 @@ _KNOWN_RELATIONS = {
     "references",
     "uses",
 }
+_REVIEWED_RELATION_RECEIPTS = {
+    "cites": (
+        7,
+        "96aaf88b2b57be58de4e7b06056dc3627b8be4280bd97411f4619005355bc67f",
+    ),
+    "dynamic_import": (
+        3,
+        "3d687feff00bbdd655be8a0e11b0ac66cf76e6fb6b32efc9297e0af2e872c4e8",
+    ),
+    "extends": (
+        1,
+        "d3b19fd1df648e6917c42d58ef04f77ceedc92926b43985e633c8e7a8ede3fc9",
+    ),
+}
+_MAX_REVIEWED_RELATION_SOURCE_BYTES = 4 * 1024 * 1024
 _REQUIRED_NODE_KEYS = {"id", "label", "file_type", "community", "source_file", "norm_label"}
 
 
@@ -226,6 +244,76 @@ def _canonical_records_digest(records: list[dict], *, excluded_keys: set[str] | 
         for record in records
     ]
     return _canonical_rows_digest(rows)
+
+
+def _extends_edge_has_scalar_json_source(
+    edge: object,
+    repo_root: Path,
+    tracked_sources: set[str],
+) -> bool:
+    """Accept only Graphify's top-level scalar JSON ``extends`` relation."""
+    if not isinstance(edge, dict) or edge.get("relation") != "extends":
+        return False
+    source = edge.get("source_file")
+    location = edge.get("source_location")
+    target = edge.get("target")
+    if (
+        not isinstance(source, str)
+        or not source.endswith(".json")
+        or "\\" in source
+        or source != posixpath.normpath(source)
+        or source.startswith("/")
+        or source not in tracked_sources
+        or not isinstance(location, str)
+        or (line_match := re.fullmatch(r"L([1-9][0-9]*)", location)) is None
+        or not isinstance(target, str)
+    ):
+        return False
+
+    root = repo_root.resolve()
+    candidate = (root / Path(*source.split("/"))).resolve()
+    try:
+        candidate.relative_to(root)
+        size = candidate.stat().st_size
+    except (OSError, ValueError):
+        return False
+    if not candidate.is_file() or size > _MAX_REVIEWED_RELATION_SOURCE_BYTES:
+        return False
+    try:
+        text = candidate.read_bytes().decode("utf-8", "strict")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    try:
+        document = json.loads(text, object_pairs_hook=no_duplicates)
+        lines = text.splitlines()
+        line_number = int(line_match.group(1))
+        if not 1 <= line_number <= len(lines):
+            return False
+        property_text = lines[line_number - 1].strip()
+        if property_text.endswith(","):
+            property_text = property_text[:-1]
+        property_value = json.loads("{" + property_text + "}", object_pairs_hook=no_duplicates)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if (
+        not isinstance(document, dict)
+        or not isinstance(property_value, dict)
+        or set(property_value) != {"extends"}
+        or not isinstance(property_value["extends"], str)
+        or document.get("extends") != property_value["extends"]
+    ):
+        return False
+    normalized_target = _normalized_path_slug(property_value["extends"])
+    return bool(normalized_target) and target == f"ref_{normalized_target}"
 
 
 def _invalid_structural_provenance_field_count(graph: dict) -> int:
@@ -688,6 +776,87 @@ def test_relation_kinds_within_known_vocabulary():
     seen = {edge.get("relation") for edge in graph["links"]}
     unknown = seen - _KNOWN_RELATIONS
     assert not unknown, f"unknown edge relation(s) {unknown} - the edge vocabulary grew; reconcile intentionally"
+
+
+def test_reviewed_relation_receipts_are_exact_and_source_grounded():
+    graph, path = _load_graph()
+    repo_root = Path(path).resolve().parent.parent
+    try:
+        tracked_result = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        pytest.fail("reviewed relation source census unavailable", pytrace=False)
+    tracked_sources = set(tracked_result.stdout.split("\0"))
+    tracked_sources.discard("")
+
+    reviewed: dict[str, list[dict]] = {}
+    for relation, (expected_count, expected_digest) in _REVIEWED_RELATION_RECEIPTS.items():
+        edges = [edge for edge in graph["links"] if edge.get("relation") == relation]
+        reviewed[relation] = edges
+        if len(edges) != expected_count or _canonical_records_digest(edges) != expected_digest:
+            pytest.fail(
+                f"reviewed {relation} relation receipt changed; reconcile intentionally",
+                pytrace=False,
+            )
+
+    extends_edges = reviewed["extends"]
+    if len(extends_edges) != 1 or not _extends_edge_has_scalar_json_source(
+        extends_edges[0],
+        repo_root,
+        tracked_sources,
+    ):
+        pytest.fail(
+            "reviewed extends relation is not grounded in a canonical tracked scalar JSON property",
+            pytrace=False,
+        )
+
+
+def test_extends_source_semantic_guard_accepts_scalar_and_rejects_aliases(tmp_path):
+    source = tmp_path / "scalar.json"
+    source.write_text(json.dumps({"extends": "./base.json"}, indent=2) + "\n", encoding="utf-8")
+    edge = {
+        "relation": "extends",
+        "source_file": "scalar.json",
+        "source_location": "L2",
+        "target": "ref_base_json",
+    }
+    tracked = {"scalar.json"}
+
+    assert _extends_edge_has_scalar_json_source(edge, tmp_path, tracked)
+    for mutation in (
+        {**edge, "relation": "calls"},
+        {**edge, "source_file": "./scalar.json"},
+        {**edge, "source_location": "L0"},
+        {**edge, "source_location": "L2:1"},
+        {**edge, "target": "ref_substitute"},
+    ):
+        assert not _extends_edge_has_scalar_json_source(mutation, tmp_path, tracked)
+
+
+@pytest.mark.parametrize(
+    ("array_key", "value"),
+    [
+        ("required", "phantom"),
+        ("enum", "ghost"),
+        ("include", "src"),
+        ("extends", "base"),
+    ],
+)
+def test_extends_source_semantic_guard_rejects_unrelated_json_arrays(tmp_path, array_key, value):
+    source = tmp_path / "array.json"
+    source.write_text(json.dumps({array_key: [value]}, indent=2) + "\n", encoding="utf-8")
+    false_edge = {
+        "relation": "extends",
+        "source_file": "array.json",
+        "source_location": "L2",
+        "target": f"ref_{_normalized_path_slug(value)}",
+    }
+
+    assert not _extends_edge_has_scalar_json_source(false_edge, tmp_path, {"array.json"})
 
 
 def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
