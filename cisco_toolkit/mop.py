@@ -443,7 +443,8 @@ def write_mop_docx(
         snap_dict: dict,
         label: str,
         *,
-        protocol_assurance_bundle=None) -> None:
+        protocol_assurance_bundle=None,
+        complete_export_reference: str = "") -> None:
     """Emit the per-wave Method of Procedure (.docx) to `output_path`. Fail-soft: a missing python-docx
     is a warning + skip, and every snapshot read is defensive so malformed input degrades to placeholders.
     A genuine render error still propagates to the caller — the CLI phase wrapper logs-and-continues,
@@ -639,7 +640,11 @@ def write_mop_docx(
     doc.add_paragraph(
         "Complete these once, before the first wave. They are the fleet-wide gating items the assessment "
         "flagged; cutting over before they are resolved or risk-accepted carries the documented risk.")
-    add_protocol_assurance_receipt(doc, protocol_assurance_bundle)
+    add_protocol_assurance_receipt(
+        doc,
+        protocol_assurance_bundle,
+        complete_export_reference=complete_export_reference,
+    )
     # element-coerced: unlike a table cell (add_table str()s every value), add_paragraph() takes the raw
     # element and char-iterates it -- a scalar gating item raised TypeError mid-document.
     gating = _as_strs(_as_dict(snap.get("executive_brief")).get("top_gating"))

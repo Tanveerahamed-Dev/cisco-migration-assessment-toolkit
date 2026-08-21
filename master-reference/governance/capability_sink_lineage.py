@@ -17,18 +17,18 @@ from typing import Any
 SCHEMA_VERSION = "rendered-sink-lineage-capability/1.0.0"
 CONTRACT_SCHEMA_VERSION = "rendered-sink-lineage-capability-contract/1.0.0"
 CONTRACT_ID = "atlas.rendered-sink-lineage.capability-catalog.v1"
-EXPECTED_CONTRACT_DIGEST = "1b219cd558bc2a6c717293008872d24f0035fbf7314d254ed1f065d9173a4a06"
+EXPECTED_CONTRACT_DIGEST = "59a2f835396156f801d22ab5c367e36d1426ece04af87de8436488fa3a84db34"
 SOURCE_PATH = "master-reference/content/capability-catalog.json"
-GLOBAL_CANDIDATES = 2_138
-IN_SCOPE_CANDIDATES = 424
+GLOBAL_CANDIDATES = 2_140
+IN_SCOPE_CANDIDATES = 426
 OUT_OF_SCOPE_CANDIDATES = 1_714
 EXPECTED_SAFETY_INPUTS = 7
-EXPECTED_SEMANTIC_RECORDS = 226
-EXPECTED_ENTRIES = 212
-CLAIM_CONTRACT_DIGEST = "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de"
-CLASSIFICATION_DIGEST = "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1"
-SOURCE_RECEIPTS_DIGEST = "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100"
-CANDIDATE_SET_DIGEST = "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b"
+EXPECTED_SEMANTIC_RECORDS = 227
+EXPECTED_ENTRIES = 213
+CLAIM_CONTRACT_DIGEST = "cf123369749c14ef140a9eb906b63f7183e93fd45a943a25087f5411a17399b6"
+CLASSIFICATION_DIGEST = "594013cefc9f293cb6b224e6f869014e6015dd6f23a4ff708899afbb44c1f19c"
+SOURCE_RECEIPTS_DIGEST = "aad6fbb1305ccaddea2b5257cbfa5704ba1548a1855c97bcbaa144ed6d8ecb30"
+CANDIDATE_SET_DIGEST = "ed4bb19838118841b5f5cc3a3d7348ee9763d11e8f4ad4f610c5e3853a1f0d31"
 MAX_CONTRACT_BYTES = 512 * 1024
 MAX_STRING_LENGTH = 16_384
 MAX_VALUES = 100_000
@@ -221,9 +221,9 @@ def _validate_contract(contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]
             or source["expected_records"] != EXPECTED_SEMANTIC_RECORDS
             or source["expected_candidates"] != IN_SCOPE_CANDIDATES
             or source["expected_safety_inputs"] != EXPECTED_SAFETY_INPUTS
-            or source["candidate_digest"] != "1a6037a66182272ebff882ce471a273b66c0b938bb0de92d4172a0564032269c"
+            or source["candidate_digest"] != "69c1b86c5ca41aca8b6f332e604448e024f3339a4f486b36a1ed4679025cd9ed"
             or source["facet_id_set_digest"]
-            != "39208afa193db3adc07a5f4c4e137d770f86d32c61188041750478602e11e7f7"
+            != "33488e2d456d874f0d80059e94fc196a0bb927e11deef58a7e274485f91d1f89"
         ):
             raise KeyError
         universe = contract["sink_universe"]
@@ -242,9 +242,9 @@ def _validate_contract(contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]
         if len(sinks) != 2 or set(sink_by_id) != {"pdf.capability-catalog", "web.capabilities.default"}:
             raise KeyError
         for sink in sinks:
-            if sink["expected_rendered"] != 424 or sink["expected_omitted"] != 0 or sink["omission_rules"] != []:
+            if sink["expected_rendered"] != 426 or sink["expected_omitted"] != 0 or sink["omission_rules"] != []:
                 raise KeyError
-            if sum(row["expected_subjects"] for row in sink["rendered_rules"]) != 424:
+            if sum(row["expected_subjects"] for row in sink["rendered_rules"]) != 426:
                 raise KeyError
             if sum(row["expected_inputs"] for row in sink["safety_mappings"]) != 7:
                 raise KeyError

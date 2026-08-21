@@ -17,6 +17,7 @@ via `/ingest`). It is the repo/engine facts worth remembering. To add one: state
 - An evidence-content digest must distinguish malformed structure from absence: coercing an unexpected dict/list
   to `""` or `{}` creates a same-hash mutation seam that can restore a hard verdict. Evidence: `cisco_toolkit/traffic_assurance.py::_content_binding_payload` + `tests/test_traffic_assurance.py`.
 - A reference-only failure projection can be a required gate input without claiming survival when its complete receipt is bound to canonical authority, applicability is evidence-driven, and local eligibility stays below convergence/traffic/service assurance. Evidence: `cisco_toolkit/l2_rehearsal.py::validate_l2_failure_rehearsal` + `tests/test_l2_failure_rehearsal.py`.
+- An offline renderer may claim a single-snapshot receipt only after the final emitted snapshot bytes are reread and frozen; rebuild the portfolio from that exact `BoundSnapshot`, publish the canonical uncapped export, and revalidate source + owner rebuild + export immediately before and after each atomic BOUND replacement. Post-freeze failures belong in custody/manifest metadata, never back in the bound snapshot. NRFU is AssessHub-only because the normal CLI has no NRFU writer. Evidence: `COLLECT_PARSE_V3_23_0.py::_stage_finalize/_atomic_receipt_refresh` + `tests/test_custody_pipeline.py`.
 
 ## Fixtures / goldens
 

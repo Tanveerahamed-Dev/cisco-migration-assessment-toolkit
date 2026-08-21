@@ -5,30 +5,30 @@
   "closes_global_gate": false,
   "global_denominator": {
     "kind": "bounded_curated_content_claim_denominator",
-    "expected_candidates": 2138,
-    "in_scope_candidates": 424,
+    "expected_candidates": 2140,
+    "in_scope_candidates": 426,
     "out_of_scope_candidates": 1714,
     "independently_reviewed": 0,
-    "unresolved": 2138,
-    "claim_contract_digest": "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de",
-    "classification_digest": "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1",
-    "source_receipts_digest": "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100",
-    "candidate_set_digest": "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b"
+    "unresolved": 2140,
+    "claim_contract_digest": "cf123369749c14ef140a9eb906b63f7183e93fd45a943a25087f5411a17399b6",
+    "classification_digest": "594013cefc9f293cb6b224e6f869014e6015dd6f23a4ff708899afbb44c1f19c",
+    "source_receipts_digest": "aad6fbb1305ccaddea2b5257cbfa5704ba1548a1855c97bcbaa144ed6d8ecb30",
+    "candidate_set_digest": "ed4bb19838118841b5f5cc3a3d7348ee9763d11e8f4ad4f610c5e3853a1f0d31"
   },
   "source_scope": {
     "path": "master-reference/content/capability-catalog.json",
-    "git_blob_oid": "b95c5a629203976e0046497f7c66804c62305635",
-    "sha256": "c680d0977547c2ed2a0200d0c3e15c5e4a5faba478278de22c563eeb56aac54a",
-    "expected_records": 226,
-    "expected_candidates": 424,
+    "git_blob_oid": "bbd5fc3f6ff524299a580bce0925e27b85597f0f",
+    "sha256": "b62290c58b7427dd96a38206715bef4cd65a4847c7442112ddd678c573c8774e",
+    "expected_records": 227,
+    "expected_candidates": 426,
     "expected_safety_inputs": 7,
-    "candidate_digest": "1a6037a66182272ebff882ce471a273b66c0b938bb0de92d4172a0564032269c",
-    "facet_id_set_digest": "39208afa193db3adc07a5f4c4e137d770f86d32c61188041750478602e11e7f7",
+    "candidate_digest": "69c1b86c5ca41aca8b6f332e604448e024f3339a4f486b36a1ed4679025cd9ed",
+    "facet_id_set_digest": "33488e2d456d874f0d80059e94fc196a0bb927e11deef58a7e274485f91d1f89",
     "candidate_rules": [
       {"rule_id": "capability.root", "record_kind": "capability_catalog", "selector": "root", "identity": "root", "expected_records": 1, "candidate_fields": []},
       {"rule_id": "capability.entry_contract", "record_kind": "capability_entry_contract", "selector": "entry_contract", "identity": "root", "expected_records": 1, "candidate_fields": []},
       {"rule_id": "capability.domain", "record_kind": "capability_domain", "selector": "domains", "identity": "id", "expected_records": 12, "candidate_fields": []},
-      {"rule_id": "capability.entry", "record_kind": "capability_entry", "selector": "entries", "identity": "id", "expected_records": 212, "candidate_fields": ["state", "current_scope"]}
+      {"rule_id": "capability.entry", "record_kind": "capability_entry", "selector": "entries", "identity": "id", "expected_records": 213, "candidate_fields": ["state", "current_scope"]}
     ],
     "safety_rules": [
       {"rule_id": "capability.root", "selector": "root", "identity": "root", "expected_records": 1, "fields": [{"field": "denominator_rule", "expected_value": "Every entry in this finite version is classified. Adding or removing an entry changes the denominator and must be disclosed as scope evolution, never disguised as progress or regression."}]},
@@ -56,10 +56,10 @@
       "locator": "master-reference.pdf#closed-capability-catalog",
       "renderer_path": "master-reference/release/pdf_report.py",
       "renderer_symbol": "_capabilities",
-      "expected_rendered": 424,
+      "expected_rendered": 426,
       "expected_omitted": 0,
       "rendered_rules": [
-        {"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.state", "transform_id": "pdf.capability_heading_state/1"}, {"facet_path": "current_scope", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "pdf.capability_scope_plain_text/1"}], "expected_subjects": 424}
+        {"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.state", "transform_id": "pdf.capability_heading_state/1"}, {"facet_path": "current_scope", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "pdf.capability_scope_plain_text/1"}], "expected_subjects": 426}
       ],
       "omission_rules": [],
       "safety_mappings": [
@@ -74,10 +74,10 @@
       "locator": "/capabilities",
       "renderer_path": "master-reference/app/atlas/CapabilityExplorer.tsx",
       "renderer_symbol": "CapabilityExplorer",
-      "expected_rendered": 424,
+      "expected_rendered": 426,
       "expected_omitted": 0,
       "rendered_rules": [
-        {"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_derived", "slot_template": "web.capabilities.capability.entry.{record_identity}.state", "transform_id": "state-mark-label"}, {"facet_path": "current_scope", "disposition": "rendered_identity", "slot_template": "web.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "identity-text"}], "expected_subjects": 424}
+        {"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_derived", "slot_template": "web.capabilities.capability.entry.{record_identity}.state", "transform_id": "state-mark-label"}, {"facet_path": "current_scope", "disposition": "rendered_identity", "slot_template": "web.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "identity-text"}], "expected_subjects": 426}
       ],
       "omission_rules": [],
       "safety_mappings": [

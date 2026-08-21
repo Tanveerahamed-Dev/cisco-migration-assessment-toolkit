@@ -387,6 +387,7 @@ from cisco_toolkit.comparison import compare_bound_pair
 from cisco_toolkit.protocol_assurance import (
     OFFLINE_FILE_SOURCE,
     bind_snapshot_json_bytes,
+    bound_snapshot_source,
     reject_duplicate_json_keys,
 )
 from cisco_toolkit.multichassis_lag import compute_multichassis_lag_domain_baseline
@@ -1944,6 +1945,8 @@ def _start_run_custody(out_xlsx: str, input_records: Optional[List[dict]] = None
         "input_bindings": list(input_bindings or []),
         "evidence": {},
         "mandatory_failures": {},
+        "post_snapshot_failures": {},
+        "snapshot_authority": None,
         "redaction": {"requested": False, "status": "not_requested"},
     }
     _ACTIVE_INTEGRITY_SNAPSHOT = None
@@ -1952,11 +1955,17 @@ def _start_run_custody(out_xlsx: str, input_records: Optional[List[dict]] = None
 def _record_phase_failure(label: str, detail: str = "") -> None:
     """Make a late failure immediately visible in the canonical snapshot integrity channel."""
     global _ACTIVE_INTEGRITY_SNAPSHOT
+    name = str(label)
     if not isinstance(_ACTIVE_INTEGRITY_SNAPSHOT, dict):
+        # Once exact snapshot bytes are frozen they are immutable authority. Optional presentation
+        # failures remain visible in custody/timings/manifest, but may not rewrite the bytes to which
+        # a receipt is already bound.
+        if isinstance(_RUN_CUSTODY.get("snapshot_authority"), dict):
+            bounded = str(detail or "post-snapshot phase failed")[:500]
+            _RUN_CUSTODY.setdefault("post_snapshot_failures", {})[name] = bounded
         return
     integrity = _ACTIVE_INTEGRITY_SNAPSHOT.setdefault("assessment_integrity", {})
     failed = integrity.setdefault("failed_phases", [])
-    name = str(label)
     if name not in failed:
         failed.append(name)
     if detail:
@@ -1976,6 +1985,8 @@ def _record_mandatory_failure(label: str, detail: str = "") -> None:
 def _sync_mandatory_failures(snap_dict: dict) -> None:
     """Copy failures captured before snapshot assembly into its canonical integrity channel."""
     global _ACTIVE_INTEGRITY_SNAPSHOT
+    if isinstance(_RUN_CUSTODY.get("snapshot_authority"), dict):
+        return
     _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
     for name, detail in (_RUN_CUSTODY.get("mandatory_failures") or {}).items():
         _record_phase_failure(name, detail)
@@ -2238,6 +2249,8 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
             "mandatory_prerequisites": (
                 "failed" if state.get("mandatory_failures") else "complete"),
             "failed_mandatory": sorted((state.get("mandatory_failures") or {}).keys()),
+            "post_snapshot_failures": dict(state.get("post_snapshot_failures") or {}),
+            "snapshot_authority": dict(state.get("snapshot_authority") or {}),
             "manifest_self_verification": "required-after-write",
         },
         "abstention_ledger": ledger,
@@ -2451,6 +2464,463 @@ def _emit_artifact(label: str, path: str, kind: str, fn, *args,
                      label, exc)
         return False
     return True
+
+
+def _verify_frozen_snapshot(path: str, source_binding: Dict[str, Any]):
+    """Re-bind the current file bytes and reject any drift from the frozen receipt authority."""
+    bound = bind_snapshot_json_bytes(_read_stable_bytes(path))
+    marker = bound_snapshot_source(bound)
+    if marker.get("source_bound") is not True or (
+        marker.get("sha256") != source_binding.get("sha256")
+        or marker.get("bytes") != source_binding.get("bytes")
+    ):
+        raise ValueError("assessment snapshot bytes changed after receipt binding")
+    return bound
+
+
+def _verify_protocol_receipt_authority(
+        snapshot_path: str,
+        source_binding: Dict[str, Any],
+        bundle: Dict[str, Any],
+        export_path: str):
+    """Validate the detached receipt, its exact export bytes, and its frozen source together."""
+    from cisco_toolkit.docmeta import protocol_assurance_receipt_view
+    from webapp.backend.protocol_portfolio import (
+        build_protocol_single_snapshot_bundle,
+        canonical_export_bytes,
+    )
+
+    bound = _verify_frozen_snapshot(snapshot_path, source_binding)
+    subject_cap = (bundle.get("receipt") or {}).get("render_cap")
+    rebuilt = build_protocol_single_snapshot_bundle(
+        bound,
+        source_binding,
+        subject_cap=subject_cap,
+    )
+    if canonical_export_bytes(rebuilt) != canonical_export_bytes(bundle):
+        raise ValueError("protocol receipt bundle does not match the exact frozen snapshot")
+    view = protocol_assurance_receipt_view(bundle)
+    if not view.get("valid") or view.get("custody_status") != "bound":
+        raise ValueError(
+            "protocol receipt is not a validated BOUND owner sidecar: "
+            + str(view.get("reason") or view.get("custody_failures") or "unknown failure")
+        )
+    if view.get("source_binding") != source_binding:
+        raise ValueError("protocol receipt source binding changed after snapshot freeze")
+    expected_export = canonical_export_bytes(bundle.get("complete_export") or {})
+    emitted_export = _read_stable_bytes(export_path)
+    if emitted_export != expected_export:
+        raise ValueError("protocol assurance complete export bytes changed after publication")
+    expected_digest = ((bundle.get("receipt") or {}).get("complete_export") or {}).get("sha256")
+    actual_digest = "sha256:" + hashlib.sha256(emitted_export).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError("protocol assurance complete export digest does not reconcile")
+    return bound
+
+
+def _verify_bound_receipt_surface(
+        path: str,
+        kind: str,
+        snapshot_path: str,
+        source_binding: Dict[str, Any],
+        bundle: Dict[str, Any],
+        export_path: str,
+        expected_html_label: Optional[str] = None) -> None:
+    """Prove the staged artifact projects the exact BOUND owner view, not a decoy token bag."""
+    from cisco_toolkit.docmeta import protocol_assurance_receipt_view
+    from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
+
+    expected_reference = os.path.basename(export_path)
+    surface = protocol_assurance_surface_payload(
+        bundle,
+        complete_export_reference=expected_reference,
+    )
+    view = protocol_assurance_receipt_view(bundle)
+    if (
+        not view.get("valid")
+        or surface.get("receipt_valid") is not True
+        or surface.get("status") != "BOUND"
+        or surface.get("source_binding") != source_binding
+    ):
+        raise ValueError("BOUND receipt semantic expectations are incomplete")
+
+    if kind == "html":
+        from html.parser import HTMLParser
+
+        document = _read_stable_bytes(path).decode("utf-8")
+
+        class _ScriptCollector(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.in_script = False
+                self.parts: List[str] = []
+                self.scripts: List[str] = []
+                self.comments: List[str] = []
+
+            def handle_starttag(self, tag, _attrs):
+                if tag.lower() == "script":
+                    if self.in_script:
+                        raise ValueError("HTML contains nested script elements")
+                    self.in_script = True
+                    self.parts = []
+
+            def handle_endtag(self, tag):
+                if tag.lower() == "script" and self.in_script:
+                    self.scripts.append("".join(self.parts))
+                    self.parts = []
+                    self.in_script = False
+
+            def handle_data(self, data):
+                if self.in_script:
+                    self.parts.append(data)
+
+            def handle_comment(self, data):
+                self.comments.append(data)
+                if self.in_script:
+                    self.parts.append(f"<!--{data}-->")
+
+        assignment = "const EMBEDDED_PROTOCOL_ASSURANCE="
+        snapshot_assignment = "const EMBEDDED_SNAPSHOT="
+        if document.count(assignment) != 1 or document.count(snapshot_assignment) != 1:
+            raise ValueError("HTML receipt/snapshot assignments are missing or duplicated")
+        parser = _ScriptCollector()
+        try:
+            parser.feed(document)
+            parser.close()
+        except (UnicodeError, ValueError) as exc:
+            raise ValueError("HTML receipt script structure is malformed") from exc
+        if any(assignment in comment or snapshot_assignment in comment
+               for comment in parser.comments):
+            raise ValueError("HTML receipt authority appears inside a comment")
+        receipt_scripts = [script for script in parser.scripts if assignment in script]
+        if len(receipt_scripts) != 1:
+            raise ValueError("HTML has no unique executable Protocol Assurance assignment")
+        script = receipt_scripts[0]
+        block = re.compile(
+            r'^const EMBEDDED_PROTOCOL_ASSURANCE=(?P<surface>\{[^\r\n]*\});\r?\n'
+            r'const EMBEDDED_SNAPSHOT=(?P<snapshot>\{[^\r\n]*\});\r?\n'
+            r'load\(EMBEDDED_SNAPSHOT,(?P<label>"(?:\\.|[^"\\])*")'
+            r',true,EMBEDDED_PROTOCOL_ASSURANCE\);\r?$',
+            re.MULTILINE,
+        )
+        matches = list(block.finditer(script))
+        if len(matches) != 1:
+            raise ValueError("HTML receipt is not adjacent to the executable snapshot load")
+        match = matches[0]
+        prefix = script[:match.start()]
+        if (
+            prefix.rfind("<!--") > prefix.rfind("-->")
+            or prefix.rfind("/*") > prefix.rfind("*/")
+            or prefix.rsplit("\n", 1)[-1].lstrip().startswith("//")
+        ):
+            raise ValueError("HTML receipt authority is commented out")
+        try:
+            embedded_surface = json.loads(match.group("surface"))
+            embedded_snapshot = json.loads(match.group("snapshot"))
+            embedded_label = json.loads(match.group("label"))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError("HTML has no parseable executable Protocol Assurance payload") from exc
+        if (
+            embedded_surface != surface
+            or not isinstance(embedded_snapshot, dict)
+            or not isinstance(expected_html_label, str)
+            or embedded_label != expected_html_label
+        ):
+            raise ValueError("HTML Protocol Assurance surface does not match the exact BOUND sidecar")
+        if "/api/snapshots/" in json.dumps(embedded_surface):
+            raise ValueError("local HTML receipt synthesized an AssessHub snapshot endpoint")
+        # Lexical JS inspection cannot prove execution: an exact-looking block inside if(false), a
+        # comment, or another dead branch is still inert. Rebuild the one authoritative Explorer
+        # from the pristine shipped template and exact parsed frozen snapshot, then compare every
+        # emitted byte. This also makes the writer's deliberate slim projection explicit and proves
+        # the receipt is attached to the snapshot the page actually loads.
+        import tempfile
+        from cisco_toolkit.html import write_html_explorer as _canonical_html_writer
+
+        bound_snapshot = _verify_frozen_snapshot(snapshot_path, source_binding)
+        fd, canonical_path = tempfile.mkstemp(
+            prefix=".protocol-receipt-authority-",
+            suffix=".html",
+            dir=os.path.dirname(os.path.abspath(path)) or ".",
+        )
+        os.close(fd)
+        try:
+            _canonical_html_writer(
+                canonical_path,
+                bound_snapshot,
+                expected_html_label,
+                protocol_assurance_bundle=bundle,
+                complete_export_reference=expected_reference,
+            )
+            if _read_stable_bytes(path) != _read_stable_bytes(canonical_path):
+                raise ValueError(
+                    "HTML bytes do not match the canonical executable Explorer projection")
+        finally:
+            try:
+                os.unlink(canonical_path)
+            except OSError:
+                pass
+        return
+
+    if kind == "xlsx":
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            if "Protocol Assurance" not in workbook.sheetnames:
+                raise ValueError("workbook has no Protocol Assurance sheet")
+            sheet = workbook["Protocol Assurance"]
+            source = surface["source_binding"]
+            cap = surface["subject_cap"]
+            export = surface["complete_export"]
+            source_label = (
+                "Exact persisted source"
+                if source["source"] == "persisted snapshots.snapshot_json blob"
+                else "Exact emitted source"
+            )
+            source_value = (
+                f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
+                f"snapshot {source['snapshot_id']} · {source['bytes']} bytes · {source['sha256']}"
+                if source_label == "Exact persisted source" else
+                f"local snapshot {source['label']} · {source['bytes']} bytes · {source['sha256']}"
+            )
+            expected_rows = {
+                3: ("Receipt status", "BOUND"),
+                4: ("Receipt contract", surface["schema"]),
+                5: ("Decision ownership", "No score · no verdict"),
+                6: ("Custody", "bound"),
+                7: (source_label, source_value),
+                8: ("Receipt SHA-256", surface["receipt_sha256"]),
+                9: (
+                    "Receipt subject cap",
+                    f"Rendered / total / omitted: {cap['rendered']} / {cap['total']} / {cap['omitted']}",
+                ),
+                10: (
+                    "Complete export",
+                    f"{export['schema']} · uncapped JSON · {export['sha256']} · {export['reference']}",
+                ),
+                11: ("Operator boundary", surface["operator_note"]),
+            }
+            if sheet["A1"].value != "Protocol Assurance · single-snapshot receipt":
+                raise ValueError("workbook receipt title is missing")
+            for row_number, expected in expected_rows.items():
+                actual = (sheet.cell(row_number, 1).value, sheet.cell(row_number, 2).value)
+                if actual != expected:
+                    raise ValueError(f"workbook receipt row {row_number} is not canonical")
+            headers = (
+                "Protocol family", "Assurance level", "Evidence status",
+                "Rendered", "Total", "Omitted",
+            )
+            if tuple(sheet.cell(13, column).value for column in range(1, 7)) != headers:
+                raise ValueError("workbook receipt family header is not canonical")
+            expected_families = [
+                (
+                    family["family"], family["assurance_level"], family["evidence_status"],
+                    family["rendered"], family["total"], family["omitted"],
+                )
+                for family in surface["families"]
+            ]
+            actual_families = [
+                tuple(sheet.cell(row_number, column).value for column in range(1, 7))
+                for row_number in range(14, 14 + len(expected_families))
+            ]
+            if actual_families != expected_families:
+                raise ValueError("workbook receipt family rows do not match the owner view")
+            if any(
+                sheet.cell(row_number, column).value is not None
+                for row_number in range(14 + len(expected_families), sheet.max_row + 1)
+                for column in range(1, 7)
+            ):
+                raise ValueError("workbook receipt contains undeclared family rows")
+        finally:
+            workbook.close()
+        return
+
+    if kind == "docx":
+        from docx import Document
+
+        document = Document(path)
+        paragraphs = [paragraph.text for paragraph in document.paragraphs]
+        headings = [
+            index for index, value in enumerate(paragraphs)
+            if value.endswith("Source-bound Protocol Assurance receipt")
+        ]
+        if len(headings) != 1:
+            raise ValueError("DOCX has no unique canonical Protocol Assurance heading")
+        source = view["source_binding"]
+        totals = view["subject_totals"]
+        custody = str(view["custody_status"] or "not_verified").upper()
+        source_description = (
+            f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
+            f"snapshot {source['snapshot_id']} · exact persisted bytes {source['bytes']}"
+            if source["source"] == "persisted snapshots.snapshot_json blob" else
+            f"local snapshot {source['label']} · exact emitted bytes {source['bytes']}"
+        )
+        expected_paragraphs = [
+            (
+                f"{view['schema']} · owner {view['owner_version']} · custody {custody}. This portfolio "
+                "owns no score and no verdict; evidence status is a coverage/observation classification, "
+                "not cutover authorization."
+            ),
+            (
+                f"Source owner: {source['source']} · {source_description} · source SHA-256 "
+                f"{source['sha256']} · receipt SHA-256 {view['receipt_sha256']}."
+            ),
+        ]
+        if view["custody_failures"]:
+            expected_paragraphs.append(
+                "Custody failures: " + "; ".join(str(item) for item in view["custody_failures"])
+            )
+        expected_paragraphs.extend([
+            (
+                f"Signed receipt payload cap (rendered / total / omitted): {totals['rendered']} / "
+                f"{totals['total']} / {totals['omitted']}. This document renders family aggregates, not "
+                f"subject-detail rows; its subject-detail display is 0 / {totals['total']} / "
+                f"{totals['total']}. Every family discloses the receipt payload's rendered / total / "
+                "omitted counters below. Decision code does not consume capped presentation arrays."
+            ),
+            (
+                f"Complete export: {view['complete_export']['schema']} · "
+                f"{view['complete_export']['media_type']} · {view['complete_export']['sha256']} · "
+                f"all {totals['total']} subject row(s), uncapped. Reference: {expected_reference}. "
+                "Retrieve and archive that JSON beside this document; the digest above reconciles it "
+                "to this receipt."
+            ),
+        ])
+        if view["custody_note"]:
+            expected_paragraphs.append(view["custody_note"])
+        following = [value for value in paragraphs[headings[0] + 1:] if value]
+        if following[:len(expected_paragraphs)] != expected_paragraphs:
+            raise ValueError("DOCX receipt paragraphs do not match the canonical owner projection")
+        headers = [
+            "Protocol family", "Assurance level", "Evidence status",
+            "Receipt payload rendered / total / omitted", "Producer custody",
+        ]
+        family_tables = [
+            table for table in document.tables
+            if table.rows and [cell.text for cell in table.rows[0].cells] == headers
+        ]
+        if len(family_tables) != 1:
+            raise ValueError("DOCX has no unique canonical Protocol Assurance family table")
+        expected_families = [
+            [
+                family["family"], family["assurance_level"], family["evidence_status"],
+                f"{family['rendered']} / {family['total']} / {family['omitted']}",
+                family["source_custody"],
+            ]
+            for family in view["families"]
+        ]
+        actual_families = [
+            [cell.text for cell in row.cells]
+            for row in family_tables[0].rows[1:]
+        ]
+        if actual_families != expected_families:
+            raise ValueError("DOCX receipt family rows do not match the owner view")
+        if any("/api/snapshots/" in value for value in paragraphs):
+            raise ValueError("local DOCX receipt synthesized an AssessHub snapshot endpoint")
+        return
+
+    raise ValueError(f"no BOUND receipt semantic verifier for artifact kind {kind!r}")
+
+
+def _replace_with_retries(source: str, destination: str) -> None:
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError:
+            if attempt == _ATOMIC_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_ATOMIC_REPLACE_BACKOFF_S)
+
+
+def _atomic_receipt_refresh(
+        label: str,
+        path: str,
+        kind: str,
+        writer,
+        *args,
+        snapshot_path: str,
+        source_binding: Dict[str, Any],
+        bundle: Dict[str, Any],
+        export_path: str,
+        expected_html_label: Optional[str] = None,
+        **kwargs) -> bool:
+    """Stage a BOUND renderer and replace its earlier NOT VERIFIED output as one transaction."""
+    target = os.path.abspath(str(path))
+    directory = os.path.dirname(target) or "."
+    stem, ext = os.path.splitext(os.path.basename(target))
+    nonce = str(_RUN_CUSTODY.get("run_id") or os.getpid()).replace("-", "")[:12]
+    staged = os.path.join(directory, f".{stem}.receipt-{nonce}.tmp{ext}")
+    previous = os.path.join(directory, f".{stem}.receipt-{nonce}.previous{ext}")
+    artifacts = _RUN_CUSTODY.setdefault("artifacts", {})
+    previous_record = artifacts.get(target)
+    previous_moved = False
+    published = False
+
+    def _restore_previous() -> None:
+        artifacts.pop(target, None)
+        if previous_moved and os.path.exists(previous):
+            _replace_with_retries(previous, target)
+        elif published and previous_record is None:
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+        if previous_record is not None:
+            artifacts[target] = previous_record
+
+    try:
+        os.makedirs(directory, exist_ok=True)
+        result = _run_phase(label, writer, staged, *args, _default=_PHASE_FAILED, **kwargs)
+        if result is _PHASE_FAILED:
+            artifacts.pop(target, None)
+            return False
+        ok, reason = validate_artifact(staged, kind)
+        if not ok:
+            raise ValueError(f"staged BOUND artifact failed structural validation: {reason}")
+        _verify_bound_receipt_surface(
+            staged, kind, snapshot_path, source_binding, bundle, export_path,
+            expected_html_label)
+        # This is intentionally the last read before replacement: no artifact becomes BOUND from a
+        # stale sidecar, a changed export, or a snapshot different from the bytes the owner parsed.
+        _verify_protocol_receipt_authority(
+            snapshot_path, source_binding, bundle, export_path)
+        if os.path.exists(target):
+            _replace_with_retries(target, previous)
+            previous_moved = True
+        _replace_with_retries(staged, target)
+        published = True
+        # Close the check/replace race before these bytes may enter the current-run registry.
+        _verify_protocol_receipt_authority(
+            snapshot_path, source_binding, bundle, export_path)
+        _verify_bound_receipt_surface(
+            target, kind, snapshot_path, source_binding, bundle, export_path,
+            expected_html_label)
+        _register_artifact(target, kind=kind, source=label)
+        if previous_moved:
+            try:
+                os.unlink(previous)
+            except OSError:
+                # A retained dot-prefixed recovery file is not in the artifact registry or candidate
+                # set. The canonical target is already validated and registered.
+                pass
+        return True
+    except (KeyboardInterrupt, SystemExit):
+        _restore_previous()
+        raise
+    except Exception as exc:
+        _restore_previous()
+        artifacts.pop(target, None)
+        _record_phase_failure(label, f"{type(exc).__name__}: {exc}")
+        logger.error("  [INTEGRITY] BOUND refresh '%s' was withheld: %s", label, exc)
+        return False
+    finally:
+        for temporary in (staged, previous):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def _write_integrity_disclosure_sheet(wb, snap_dict: dict) -> None:
@@ -4791,6 +5261,10 @@ def main():
         _paths=[os.path.join(diagram_dir, "topology.mmd"),
                 os.path.join(diagram_dir, "topology.dot")])
 
+    html_out = ""
+    docx_out = ""
+    mop_out = ""
+
     # Phase 22: HTML Explorer (self-contained) - NEW-V3.17. Embeds the same snap_dict the
     # finalizer later writes to snapshot.json into a copy of blast_radius_explorer.html, so one
     # run yields both the workbook and a ready-to-open, air-gapped topology explorer.
@@ -4911,6 +5385,13 @@ def main():
     _actx.snap_path = snap_path
     _actx.all_cmd_to_files = all_cmd_to_files
     _actx.wb = wb
+    _actx.protocol_assurance_receipt_enabled = True
+    _actx.protocol_assurance_export_path = (
+        os.path.splitext(os.path.abspath(out_xlsx))[0] + ".protocol-assurance.json")
+    _actx.html_output_path = html_out
+    _actx.runbook_output_path = docx_out
+    _actx.mop_output_path = mop_out
+    _actx.flow_paths = flow_paths or {}
     finalization = _stage_finalize(_actx)
     if not finalization.complete:
         # Mandatory production/custody failure is a broken run, never a successful gate refusal.
@@ -5090,33 +5571,175 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
     _sync_mandatory_failures(snap_dict)
     _sync_failed_phases(snap_dict)
     wb = getattr(ctx, "wb", None)
+    receipt_enabled = bool(getattr(ctx, "protocol_assurance_receipt_enabled", False))
+    snap_path = getattr(ctx, "snap_path", "") or base + ".snapshot.json"
+    export_path = (
+        getattr(ctx, "protocol_assurance_export_path", "")
+        or base + ".protocol-assurance.json"
+    )
+    snapshot_ok = False
+    source_binding: Dict[str, Any] = {}
+    protocol_bundle = None
+    export_ok = False
+
+    def _publish_snapshot() -> bool:
+        ok = _emit_artifact(
+            "Assessment snapshot", snap_path, "snapshot",
+            write_json_file, snap_path, sparsify_interfaces(snap_dict), compact=True)
+        if ok:
+            logger.info("[OK] Snapshot: %s (use --compare OLD NEW for pre/post diff)", snap_path)
+            return True
+        detail = (((snap_dict.get("assessment_integrity") or {}).get(
+            "phase_errors") or {}).get("Assessment snapshot")
+            or "snapshot writer or structural validation failed")
+        _record_mandatory_failure("Assessment snapshot", detail)
+        return False
+
+    # Normal engine runs publish the canonical snapshot first, then bind every BOUND surface to the
+    # exact bytes read back from that file. Direct/legacy finalizer callers retain the explicitly
+    # NOT VERIFIED workbook fallback and publish their snapshot after mutable finalization state.
+    if receipt_enabled:
+        snapshot_ok = _publish_snapshot()
+        if snapshot_ok:
+            try:
+                from webapp.backend.protocol_portfolio import (
+                    CLI_EMITTED_SOURCE,
+                    build_protocol_single_snapshot_bundle,
+                    canonical_export_bytes,
+                    emitted_snapshot_binding,
+                )
+
+                frozen_bytes = _read_stable_bytes(snap_path)
+                _RUN_CUSTODY["snapshot_authority"] = {
+                    "source": CLI_EMITTED_SOURCE,
+                    "name": os.path.basename(snap_path),
+                    "sha256": "sha256:" + hashlib.sha256(frozen_bytes).hexdigest(),
+                    "bytes": len(frozen_bytes),
+                }
+                # From this boundary onward failures belong to run custody/timings/manifest. They
+                # must never mutate the byte authority a receipt is about to bind.
+                _ACTIVE_INTEGRITY_SNAPSHOT = None
+                bound_snapshot = bind_snapshot_json_bytes(frozen_bytes)
+                source_binding = emitted_snapshot_binding(
+                    bound_snapshot, label=os.path.basename(snap_path))
+                protocol_bundle = build_protocol_single_snapshot_bundle(
+                    bound_snapshot, source_binding)
+                export_bytes = canonical_export_bytes(protocol_bundle["complete_export"])
+                export_digest = "sha256:" + hashlib.sha256(export_bytes).hexdigest()
+                claimed_digest = ((protocol_bundle.get("receipt") or {}).get(
+                    "complete_export") or {}).get("sha256")
+                if export_digest != claimed_digest:
+                    raise ValueError("protocol assurance complete export digest disagrees before write")
+                _verify_frozen_snapshot(snap_path, source_binding)
+                os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+                _write_json_atomic(
+                    export_path,
+                    lambda fh: fh.write(export_bytes.decode("ascii")),
+                )
+                if _read_stable_bytes(export_path) != export_bytes:
+                    raise ValueError("emitted protocol assurance export bytes are not canonical")
+                _verify_protocol_receipt_authority(
+                    snap_path, source_binding, protocol_bundle, export_path)
+                _register_artifact(
+                    export_path, kind="json", source="Protocol Assurance complete export")
+                export_ok = True
+                ctx.protocol_assurance_bundle = protocol_bundle
+                ctx.protocol_assurance_export_path = export_path
+                logger.info("[OK] Protocol Assurance complete export: %s", export_path)
+            except Exception as exc:
+                _record_mandatory_failure(
+                    "Protocol Assurance complete export", f"{type(exc).__name__}: {exc}")
+                logger.error("  Protocol Assurance receipt/export FAILED: %s", exc)
+
+    # Refresh only the four receipt-bearing engine artifacts. The writers receive the exact parsed
+    # BoundSnapshot; staged bytes cannot replace the earlier NOT VERIFIED artifact until the source
+    # snapshot and uncapped export have both been revalidated.
+    export_reference = os.path.basename(export_path) if export_ok else ""
+    if receipt_enabled and protocol_bundle is not None and export_ok:
+        try:
+            bound_snapshot = _verify_protocol_receipt_authority(
+                snap_path, source_binding, protocol_bundle, export_path)
+        except Exception as exc:
+            bound_snapshot = None
+            export_ok = False
+            export_reference = ""
+            _record_mandatory_failure(
+                "Protocol Assurance source authority", f"{type(exc).__name__}: {exc}")
+            logger.error("  Protocol Assurance source authority FAILED: %s", exc)
+        if bound_snapshot is not None:
+            label = os.path.splitext(os.path.basename(out_xlsx))[0]
+            html_path = getattr(ctx, "html_output_path", "")
+            if html_path:
+                _atomic_receipt_refresh(
+                    "HTML Explorer BOUND receipt", html_path, "html", write_html_explorer,
+                    bound_snapshot, label,
+                    snapshot_path=snap_path, source_binding=source_binding,
+                    bundle=protocol_bundle, export_path=export_path,
+                    expected_html_label=label,
+                    protocol_assurance_bundle=protocol_bundle,
+                    complete_export_reference=export_reference,
+                )
+            runbook_path = getattr(ctx, "runbook_output_path", "")
+            if runbook_path:
+                _atomic_receipt_refresh(
+                    "Runbook DOCX BOUND receipt", runbook_path, "docx", write_runbook_docx,
+                    bound_snapshot, label,
+                    snapshot_path=snap_path, source_binding=source_binding,
+                    bundle=protocol_bundle, export_path=export_path,
+                    flow_paths=getattr(ctx, "flow_paths", {}) or {},
+                    protocol_assurance_bundle=protocol_bundle,
+                    complete_export_reference=export_reference,
+                )
+            mop_path = getattr(ctx, "mop_output_path", "")
+            if mop_path:
+                _atomic_receipt_refresh(
+                    "MOP DOCX BOUND receipt", mop_path, "docx", write_mop_docx,
+                    bound_snapshot, label,
+                    snapshot_path=snap_path, source_binding=source_binding,
+                    bundle=protocol_bundle, export_path=export_path,
+                    protocol_assurance_bundle=protocol_bundle,
+                    complete_export_reference=export_reference,
+                )
+
     if wb is None:
         _record_mandatory_failure(
             "Assessment workbook", "workbook object was absent at finalization")
     else:
-        def _save_workbook():
-            # The CLI renderer holds only the mutable parsed mapping, not the later exact persisted
-            # snapshot bytes. Unless a caller explicitly supplies the portfolio owner's validated
-            # receipt/export sidecar, the sheet truthfully renders NOT VERIFIED and names the
-            # complete AssessHub export instead of hashing this detached object.
+        workbook_bundle = protocol_bundle if export_ok else None
+
+        def _prepare_workbook() -> None:
             write_protocol_assurance_receipt_sheet(
                 wb,
-                getattr(ctx, "protocol_assurance_bundle", None),
+                workbook_bundle,
+                complete_export_reference=export_reference,
             )
             _write_integrity_disclosure_sheet(wb, snap_dict)
-            wb.save(out_xlsx)
 
-        workbook_ok = _emit_artifact(
-            "Assessment workbook", out_xlsx, "xlsx", _save_workbook)
+        def _save_workbook(output_path: str) -> None:
+            _prepare_workbook()
+            wb.save(output_path)
+
+        if receipt_enabled and protocol_bundle is not None and export_ok:
+            workbook_ok = _atomic_receipt_refresh(
+                "Assessment workbook BOUND receipt", out_xlsx, "xlsx",
+                _save_workbook,
+                snapshot_path=snap_path, source_binding=source_binding,
+                bundle=protocol_bundle, export_path=export_path,
+            )
+        else:
+            workbook_ok = _emit_artifact(
+                "Assessment workbook", out_xlsx, "xlsx", _save_workbook, out_xlsx)
         if not workbook_ok:
             detail = (((snap_dict.get("assessment_integrity") or {}).get(
                 "phase_errors") or {}).get("Assessment workbook")
+                or (_RUN_CUSTODY.get("post_snapshot_failures") or {}).get(
+                    "Assessment workbook BOUND receipt")
                 or "workbook writer or structural validation failed")
             _record_mandatory_failure("Assessment workbook", detail)
         logger.info("[OK] Log:   %s", LOG_FILE)
 
-    # Timings are finalized and registered before the manifest. A rerun can no longer hash the
-    # previous timings file and then overwrite it after sealing.
+    # Timings are finalized and registered before the manifest. A sidecar failure stays fail-soft;
+    # after receipt freeze it is custody metadata and cannot rewrite the source snapshot.
     timings_path = base + ".phase_timings.json"
     timings = {
         "n_devices": len(all_devices_meta),
@@ -5130,34 +5753,11 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                       default={"phase": "-", "seconds": 0})
         logger.info("[OK] Phase timings: %s (%s timed phase(s), slowest: %s %ss)",
                     timings_path, len(_PHASE_TIMINGS), slowest["phase"], slowest["seconds"])
-    # DELIBERATELY FAIL-SOFT. An escalation to `_record_mandatory_failure` was added here on
-    # 2026-07-31 and REVERTED the same day after an independent review measured the cost: two real
-    # `--redact` runs, identical inputs, differing only in that an ordinary Windows file lock (an AV
-    # scanner or an open viewer) held the PREVIOUS ledger. Control exited 0 `[COMPLETE]`; the
-    # treatment exited 1 `[INCOMPLETE]` having produced all 14 deliverables byte-identically.
-    # `webapp/backend/ingest.py` maps a non-zero engine exit to `_mark_output_unsafe` + a
-    # do-not-send verdict, so a locked stale sidecar would have told a field engineer that a
-    # correctly redacted deliverable set must be treated as UNREDACTED.
-    #
-    # The escalation was justified by a coupling that does not exist on any reachable path: the
-    # consumer's absent-ledger refusal sits ~28 lines AFTER ingest already raises on `returncode
-    # != 0`, so no field engineer can ever observe it. It bought a live false-alarm to harden a
-    # branch that is dead. A sidecar ledger does not belong in the same mandatory tier as the
-    # workbook, snapshot and manifest, and the escalation was not even gated on `--redact`.
 
-    _sync_mandatory_failures(snap_dict)
-    _sync_failed_phases(snap_dict)
-    snap_path = getattr(ctx, "snap_path", "") or base + ".snapshot.json"
-    snapshot_ok = _emit_artifact(
-        "Assessment snapshot", snap_path, "snapshot",
-        write_json_file, snap_path, sparsify_interfaces(snap_dict), compact=True)
-    if snapshot_ok:
-        logger.info("[OK] Snapshot: %s (use --compare OLD NEW for pre/post diff)", snap_path)
-    else:
-        detail = (((snap_dict.get("assessment_integrity") or {}).get(
-            "phase_errors") or {}).get("Assessment snapshot")
-            or "snapshot writer or structural validation failed")
-        _record_mandatory_failure("Assessment snapshot", detail)
+    if not receipt_enabled:
+        _sync_mandatory_failures(snap_dict)
+        _sync_failed_phases(snap_dict)
+        snapshot_ok = _publish_snapshot()
 
     # ``--redact`` is a safety claim over every shareable artifact, not merely a producer phase.
     # Independently inspect the exact bytes, bind the verifier's digests, then re-read and compare
@@ -5203,6 +5803,17 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
             logger.error(
                 "  Independent shareable redaction verification FAILED: %s", exc
             )
+
+    if receipt_enabled and protocol_bundle is not None and export_ok:
+        try:
+            _verify_protocol_receipt_authority(
+                snap_path, source_binding, protocol_bundle, export_path)
+        except Exception as exc:
+            _record_mandatory_failure(
+                "Protocol Assurance pre-manifest authority",
+                f"{type(exc).__name__}: {exc}",
+            )
+            logger.error("  Protocol Assurance pre-manifest authority FAILED: %s", exc)
 
     stale = _excluded_stale_outputs()
     if stale:

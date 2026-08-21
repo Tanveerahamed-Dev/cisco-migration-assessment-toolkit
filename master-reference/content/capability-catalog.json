@@ -40,7 +40,7 @@
           "id": "cap.outcomes.cross-artifact-consistency",
           "title": "Cross-artifact consistency",
           "state": "current",
-          "current_scope": "The twelve-artifact pre-cutover family derives from the same snapshot and uses explicit completeness and manifest controls; the thirteenth lifecycle record is the conditional post-execution PIR and requires an AssessHub execution run.",
+          "current_scope": "The thirteen-artifact pre-cutover family derives from the same snapshot and uses explicit completeness and manifest controls; the fourteenth lifecycle record is the conditional post-execution PIR and requires an AssessHub execution run.",
           "owner_refs": ["owner.deliverable.family", "owner.manifest", "owner.ssot.engine"]
         },
         {
@@ -1327,6 +1327,7 @@
         {"id": "cap.artifact.engagement", "title": "Engagement Workflow and Plan of Record", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
         {"id": "cap.artifact.crd", "title": "Customer Requirements Document", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
         {"id": "cap.artifact.workbook", "title": "Assessment workbook", "state": "current", "current_scope": "CLI-produced XLSX family member and evidence-rich tabular view.", "owner_refs": ["owner.deliverable.family"]},
+        {"id": "cap.artifact.protocol-assurance-export", "title": "Protocol Assurance complete export", "state": "current", "current_scope": "CLI-produced uncapped JSON family member bound to the exact emitted assessment snapshot bytes.", "owner_refs": ["owner.deliverable.family"]},
         {"id": "cap.artifact.explorer", "title": "Blast-Radius Explorer", "state": "current", "current_scope": "CLI-produced interactive HTML family member.", "owner_refs": ["owner.deliverable.family", "owner.explorer"]},
         {"id": "cap.artifact.runbook", "title": "Assessment and Migration Runbook", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
         {"id": "cap.artifact.design", "title": "As-Built Network Design Document", "state": "current", "current_scope": "CLI-produced HLD/LLD DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
@@ -1336,7 +1337,7 @@
         {"id": "cap.artifact.nrfu", "title": "NRFU / Acceptance Test Plan", "state": "current", "current_scope": "AssessHub-rendered DOCX family member; intentionally not part of a complete offline CLI set.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
         {"id": "cap.artifact.opshandbook", "title": "Operations Handbook", "state": "current", "current_scope": "CLI-produced DOCX family member.", "owner_refs": ["owner.deliverable.family"]},
         {"id": "cap.artifact.deck", "title": "Executive Presentation Deck", "state": "current", "current_scope": "CLI-produced PPTX family member.", "owner_refs": ["owner.deliverable.family"]},
-        {"id": "cap.artifact.pir", "title": "Conditional Post-Implementation Review", "state": "current", "current_scope": "AssessHub execution-produced DOCX lifecycle record generated only when an execution run exists; it is conditional post-execution and intentionally outside both the twelve-artifact pre-cutover family and the complete engine CLI denominator.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
+        {"id": "cap.artifact.pir", "title": "Conditional Post-Implementation Review", "state": "current", "current_scope": "AssessHub execution-produced DOCX lifecycle record generated only when an execution run exists; it is conditional post-execution and intentionally outside both the thirteen-artifact pre-cutover family and the complete engine CLI denominator.", "owner_refs": ["owner.deliverable.family", "owner.web.trust"]},
         {
           "id": "cap.artifact.snapshot",
           "title": "Canonical snapshot JSON",

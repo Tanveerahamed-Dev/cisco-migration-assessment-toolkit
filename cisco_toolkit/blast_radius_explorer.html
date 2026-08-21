@@ -10366,6 +10366,9 @@ function protocolAssuranceReceiptSection(){
     cap=p.subject_cap&&typeof p.subject_cap==="object"?p.subject_cap:{rendered:0,total:0,omitted:0},
     families=Array.isArray(p.families)?p.families:[], custody=String(p.custody_status||"not_verified"),
     tok=custody==="bound"?"ok":"watch", status=custody==="bound"?"BOUND":"NOT VERIFIED";
+  const sourceLine=source.source==="exact emitted assessment snapshot file bytes"
+    ?`<b>Exact emitted source:</b> local snapshot ${esc(source.label||"—")} · ${esc(source.bytes)} bytes.`
+    :`<b>Exact persisted source:</b> engagement ${esc(source.engagement_id||"—")} · campaign ${esc(source.campaign_id)} · snapshot ${esc(source.snapshot_id)} · ${esc(source.bytes)} bytes.`;
   const rows=families.map(f=>{const evidence=String(f.evidence_status||"not_verified"),
     ftok=evidence==="observed"?"ok":evidence==="not_applicable"?"neutral":"watch";
     return `<tr><td><b>${esc(f.family||"—")}</b></td><td>${esc(f.assurance_level||"not_verified")}</td>`+
@@ -10373,7 +10376,7 @@ function protocolAssuranceReceiptSection(){
       `<td class="mono">${esc(f.rendered||0)} / ${esc(f.total||0)} / ${esc(f.omitted||0)}</td></tr>`;}).join("");
   return `<div class="sec"><h3>Protocol Assurance receipt <span class="badge b-${tok}">${status}</span></h3>`+
     `<div class="card ${tok}"><div class="ln"><b><span class="mono">${esc(p.schema)}</span></b> · owner ${esc(p.owner_version||"—")} · no score · no verdict.</div>`+
-    `<div class="ln"><b>Exact persisted source:</b> engagement ${esc(source.engagement_id||"—")} · campaign ${esc(source.campaign_id)} · snapshot ${esc(source.snapshot_id)} · ${esc(source.bytes)} bytes.</div>`+
+    `<div class="ln">${sourceLine}</div>`+
     `<div class="ln mono" style="overflow-wrap:anywhere"><b>Source SHA-256:</b> ${esc(source.sha256||"—")}<br><b>Receipt SHA-256:</b> ${esc(p.receipt_sha256||"—")}</div>`+
     `<div class="ln"><b>Receipt subject cap (rendered / total / omitted):</b> ${esc(cap.rendered||0)} / ${esc(cap.total||0)} / ${esc(cap.omitted||0)}. `+
     `This panel renders all ${families.length} family aggregate row(s) and zero subject rows; decision code does not consume capped arrays.</div>`+

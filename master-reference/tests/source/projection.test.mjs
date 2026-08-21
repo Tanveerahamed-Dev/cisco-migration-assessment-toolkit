@@ -958,20 +958,20 @@ async function makeCompilerFixture(root) {
 async function trackedConsequentialClaimFixture() {
   const goldenReceipts = new Map([
     ["master-reference/content/atlas-core.json", {
-      git_blob_oid: "27b7c166a78894d957bd3f35b5f64170dd11afb4",
-      sha256: "e6c53929bab88f27eb31f48afd4fe60a8dab80d04d06dd03759347924f110a26",
-      bytes: 40781,
+      git_blob_oid: "3d2c841f8855596007e45a5e165e2f462a95e260",
+      sha256: "3084a31bf02c6e44d41b189e7449e5a4265d18ed9c95765a1526d5d3b29ab6c0",
+      bytes: 40793,
       rule_set_digest: "04ab89206d463fced49716ebef233b71f9e5f5e77e922f7b752dc6cb6c3a4f34",
       candidate_count: 155,
-      candidate_digest: "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894",
+      candidate_digest: "11ed8db087e05999e6401b53d251421aec4777c42fa99cf2a617e7cad54d9ad1",
     }],
     ["master-reference/content/capability-catalog.json", {
-      git_blob_oid: "b95c5a629203976e0046497f7c66804c62305635",
-      sha256: "c680d0977547c2ed2a0200d0c3e15c5e4a5faba478278de22c563eeb56aac54a",
-      bytes: 93347,
-      rule_set_digest: "971e96f4e07b358862388646f280ac4ec78a1d090709681cc41d4deff75df9e7",
-      candidate_count: 424,
-      candidate_digest: "1a6037a66182272ebff882ce471a273b66c0b938bb0de92d4172a0564032269c",
+      git_blob_oid: "bbd5fc3f6ff524299a580bce0925e27b85597f0f",
+      sha256: "b62290c58b7427dd96a38206715bef4cd65a4847c7442112ddd678c573c8774e",
+      bytes: 93635,
+      rule_set_digest: "7a15fc6cbfdd0881845a399a4b1d3e014e3d991d38c2b0bc5542fd784b2472e6",
+      candidate_count: 426,
+      candidate_digest: "69c1b86c5ca41aca8b6f332e604448e024f3339a4f486b36a1ed4679025cd9ed",
     }],
     ["master-reference/content/delivery-governance.json", {
       git_blob_oid: "4db11fe882cc5c498c85e4b71c34979ae35e1b8b",
@@ -1005,7 +1005,7 @@ async function trackedConsequentialClaimFixture() {
   const contract = JSON.parse(contractRaw.toString("utf8"));
   assert.equal(
     sha256(contractRaw),
-    "bed99adaf4dea5ec8f6293993ecb981c1258354563ddf00cf35f2e837eef75de",
+    "cf123369749c14ef140a9eb906b63f7183e93fd45a943a25087f5411a17399b6",
   );
   rawSources.set(CONSEQUENTIAL_CLAIM_CONTRACT_PATH, {
     raw: contractRaw,
@@ -1045,18 +1045,18 @@ async function trackedConsequentialClaimFixture() {
     contract_path: CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
     contract_git_blob_oid: gitBlobOid(contractRaw),
     contract_digest: sha256(contractRaw),
-    classification_digest: "1319f15e0439eb85277982ab8d36086770156161e11328c82a17209ef22cf6f1",
+    classification_digest: "594013cefc9f293cb6b224e6f869014e6015dd6f23a4ff708899afbb44c1f19c",
     source_universe_expected: 5,
     source_universe_registered: 5,
     source_universe_unclassified: 0,
     source_receipts: sourceReceipts,
-    source_receipts_digest: "dbf82e7d86db36468af02bcc475a6d7b8da54d794560e0c66005a6978317f100",
-    expected_candidates: 2138,
-    discovered_candidates: 2138,
-    classified_candidates: 2138,
+    source_receipts_digest: "aad6fbb1305ccaddea2b5257cbfa5704ba1548a1855c97bcbaa144ed6d8ecb30",
+    expected_candidates: 2140,
+    discovered_candidates: 2140,
+    classified_candidates: 2140,
     independently_reviewed_candidates: 0,
-    unresolved_candidates: 2138,
-    candidate_set_digest: "0500bab20bb6e4e1220d9a1d83ab566206f539cfbdc30077b2e50a16755f3f6b",
+    unresolved_candidates: 2140,
+    candidate_set_digest: "ed4bb19838118841b5f5cc3a3d7348ee9763d11e8f4ad4f610c5e3853a1f0d31",
     compiler_integrity_claims_expected: 6,
     compiler_integrity_claims_classified: 6,
     compiler_integrity_claims_consequential: 0,
@@ -1569,7 +1569,7 @@ test("projection independently recomputes the bounded claim census and rejects s
 
 test("projection binds every consequential-claim facet subject without accepting review promotion", async () => {
   const fixture = await trackedConsequentialClaimFixture();
-  assert.equal(fixture.facetRecords.length, 2_138);
+  assert.equal(fixture.facetRecords.length, 2_140);
   assert.equal(
     digestObject(fixture.facetRecords.map(
       ({ id: _id, entity_type: _entityType, evidence_state: _evidenceState, ...subject }) => subject,

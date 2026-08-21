@@ -557,9 +557,9 @@ def _rendered_sink_lineage_inputs(
         or receipt.get("git_blob_oid") != source_oid
         or receipt.get("candidate_count") != scope.get("expected_candidates")
         or receipt.get("candidate_digest") != scope.get("candidate_digest")
-        or summary.get("expected_candidates") != 2138
+        or summary.get("expected_candidates") != 2140
         or summary.get("independently_reviewed_candidates") != 0
-        or summary.get("unresolved_candidates") != 2138
+        or summary.get("unresolved_candidates") != 2140
         or summary.get("contract_digest") != contract["global_denominator"]["claim_contract_digest"]
         or summary.get("classification_digest") != contract["global_denominator"]["classification_digest"]
         or summary.get("source_receipts_digest") != contract["global_denominator"]["source_receipts_digest"]
@@ -614,9 +614,9 @@ def _capability_sink_lineage_inputs(
         or receipt.get("git_blob_oid") != source_oid
         or receipt.get("candidate_count") != scope.get("expected_candidates")
         or receipt.get("candidate_digest") != scope.get("candidate_digest")
-        or summary.get("expected_candidates") != 2138
+        or summary.get("expected_candidates") != 2140
         or summary.get("independently_reviewed_candidates") != 0
-        or summary.get("unresolved_candidates") != 2138
+        or summary.get("unresolved_candidates") != 2140
         or summary.get("contract_digest") != contract["global_denominator"]["claim_contract_digest"]
         or summary.get("classification_digest") != contract["global_denominator"]["classification_digest"]
         or summary.get("source_receipts_digest") != contract["global_denominator"]["source_receipts_digest"]
@@ -671,9 +671,9 @@ def _core_sink_lineage_inputs(
         or receipt.get("git_blob_oid") != source_oid
         or receipt.get("candidate_count") != scope.get("expected_candidates")
         or receipt.get("candidate_digest") != scope.get("candidate_digest")
-        or summary.get("expected_candidates") != 2138
+        or summary.get("expected_candidates") != 2140
         or summary.get("independently_reviewed_candidates") != 0
-        or summary.get("unresolved_candidates") != 2138
+        or summary.get("unresolved_candidates") != 2140
         or summary.get("contract_digest") != contract["global_denominator"]["claim_contract_digest"]
         or summary.get("classification_digest") != contract["global_denominator"]["classification_digest"]
         or summary.get("source_receipts_digest") != contract["global_denominator"]["source_receipts_digest"]

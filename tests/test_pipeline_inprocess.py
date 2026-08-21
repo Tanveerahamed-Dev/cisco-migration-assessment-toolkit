@@ -15,6 +15,7 @@ It deliberately asserts only STRUCTURAL properties (the files exist, the workboo
 lead sheets, the snapshot carries its computed keys, the explorer embeds the snapshot) — never the
 byte-exact golden, which stays the subprocess test's job, so the two don't duplicate each other.
 """
+import hashlib
 import json
 import os
 import sys
@@ -131,7 +132,8 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # ---- snapshot (the data contract) ----
     snap_path = os.path.splitext(str(out_xlsx))[0] + ".snapshot.json"
     assert os.path.isfile(snap_path), "snapshot.json was not written"
-    snap = json.loads(open(snap_path, encoding="utf-8").read())
+    snapshot_bytes = open(snap_path, "rb").read()
+    snap = json.loads(snapshot_bytes)
     for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief",
                 "parse_yield", "unknown_evidence", "protocol_assessability",
                 "bgp_configured_peer_baseline", "fhrp_configured_group_baseline",
@@ -834,6 +836,58 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert os.path.isfile(explorer), "explorer HTML was not written"
     html = open(explorer, encoding="utf-8").read()
     assert "EMBEDDED_SNAPSHOT" in html, "explorer did not get the live snapshot embedded"
+    receipt_surface = json.loads(
+        html.split("const EMBEDDED_PROTOCOL_ASSURANCE=", 1)[1].split(
+            ";\nconst EMBEDDED_SNAPSHOT=", 1)[0]
+    )
+    receipt_source = receipt_surface["source_binding"]
+    assert receipt_surface["receipt_valid"] is True
+    assert receipt_surface["status"] == "BOUND"
+    assert receipt_source == {
+        "source": "exact emitted assessment snapshot file bytes",
+        "sha256": "sha256:" + hashlib.sha256(snapshot_bytes).hexdigest(),
+        "bytes": len(snapshot_bytes),
+        "label": os.path.basename(snap_path),
+        "script_version": snap["script_version"],
+    }
+    assert not ({"snapshot_id", "campaign_id", "engagement_id"} & set(receipt_source))
+    export_path = os.path.splitext(str(out_xlsx))[0] + ".protocol-assurance.json"
+    export_bytes = open(export_path, "rb").read()
+    from webapp.backend.protocol_portfolio import canonical_export_bytes
+    assert export_bytes == canonical_export_bytes(json.loads(export_bytes))
+    assert receipt_surface["complete_export"]["sha256"] == (
+        "sha256:" + hashlib.sha256(export_bytes).hexdigest()
+    )
+    assert receipt_surface["complete_export"]["reference"] == os.path.basename(export_path)
+    assert "/api/snapshots/" not in json.dumps(receipt_surface)
+    receipt_wb = load_workbook(str(out_xlsx), read_only=True, data_only=True)
+    receipt_text = "\n".join(
+        str(cell.value) for row in receipt_wb["Protocol Assurance"].iter_rows()
+        for cell in row if cell.value is not None
+    )
+    receipt_wb.close()
+    assert receipt_source["sha256"] in receipt_text
+    assert os.path.basename(export_path) in receipt_text
+    run_manifest = json.loads(
+        (tmp_path / "out.run_manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_artifacts = {row["name"]: row for row in run_manifest["artifacts"]}
+    assert manifest_artifacts[os.path.basename(export_path)]["sha256"] == (
+        hashlib.sha256(export_bytes).hexdigest()
+    )
+    from docx import Document
+    for suffix in ("_runbook.docx", "_mop.docx"):
+        receipt_docx = os.path.splitext(str(out_xlsx))[0] + suffix
+        assert os.path.isfile(receipt_docx), f"receipt-bearing {suffix} was not written"
+        document = Document(receipt_docx)
+        document_text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+        )
+        assert "custody BOUND" in document_text
+        assert receipt_source["sha256"] in document_text
+        assert os.path.basename(export_path) in document_text
+        assert "/api/snapshots/" not in document_text
     # SSOT (explorer dashboard): _slim_for_embed shrinks the in-page payload, so it must PRESERVE the
     # canonical executive_brief.scale — that is the one source the explorer's censusSec() reads
     # (SNAP.executive_brief.scale ?? MODEL...). If a future slim drops it, the census silently falls back

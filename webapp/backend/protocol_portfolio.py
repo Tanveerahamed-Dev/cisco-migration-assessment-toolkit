@@ -44,6 +44,15 @@ EXPORT_SCHEMA = "protocol_single_snapshot_export/1"
 OWNER_VERSION = "1"
 SUBJECT_RENDER_CAP = 100
 PERSISTED_SOURCE = "persisted snapshots.snapshot_json blob"
+CLI_EMITTED_SOURCE = "exact emitted assessment snapshot file bytes"
+
+_PERSISTED_BINDING_FIELDS = frozenset({
+    "source", "sha256", "bytes", "snapshot_id", "campaign_id", "engagement_id",
+    "label", "script_version",
+})
+_CLI_EMITTED_BINDING_FIELDS = frozenset({
+    "source", "sha256", "bytes", "label", "script_version",
+})
 
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _UNAVAILABLE_STATES = {
@@ -1010,31 +1019,57 @@ def supported_family_count() -> int:
 def _binding_failures(snapshot: Mapping[str, Any], binding: Mapping[str, Any]) -> List[str]:
     failures: List[str] = []
     source_marker = bound_snapshot_source(snapshot)
+    source = binding.get("source")
     if source_marker.get("source_bound") is not True:
-        failures.append("exact persisted snapshot byte authority is unavailable")
-    if binding.get("source") != PERSISTED_SOURCE:
-        failures.append("persisted snapshot source owner is missing or unsupported")
+        failures.append(
+            "exact persisted snapshot byte authority is unavailable"
+            if source == PERSISTED_SOURCE else
+            "exact emitted snapshot byte authority is unavailable"
+        )
+    expected_fields = {
+        PERSISTED_SOURCE: _PERSISTED_BINDING_FIELDS,
+        CLI_EMITTED_SOURCE: _CLI_EMITTED_BINDING_FIELDS,
+    }.get(source)
+    if expected_fields is None:
+        failures.append("snapshot source owner is missing or unsupported")
+    elif frozenset(binding) != expected_fields:
+        failures.append("snapshot source binding fields are not the closed source variant")
     digest = binding.get("sha256")
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
-        failures.append("persisted snapshot SHA-256 is missing or malformed")
+        failures.append("snapshot SHA-256 is missing or malformed")
     byte_count = binding.get("bytes")
     if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count <= 0:
-        failures.append("persisted snapshot byte count is missing or malformed")
+        failures.append("snapshot byte count is missing or malformed")
     if source_marker.get("source_bound") is True and (
             digest != source_marker.get("sha256")
             or byte_count != source_marker.get("bytes")):
-        failures.append("persisted snapshot binding does not match exact parsed source bytes")
-    for field in ("snapshot_id", "campaign_id"):
-        value = binding.get(field)
-        if not isinstance(value, int) or isinstance(value, bool):
-            failures.append(f"{field.replace('_', ' ')} is missing or malformed")
-    if not _text(binding.get("engagement_id")):
-        failures.append("engagement identity is missing or malformed")
+        failures.append("snapshot binding does not match exact parsed source bytes")
+    if source == PERSISTED_SOURCE:
+        for field in ("snapshot_id", "campaign_id"):
+            value = binding.get(field)
+            if not isinstance(value, int) or isinstance(value, bool):
+                failures.append(f"{field.replace('_', ' ')} is missing or malformed")
+        if not _text(binding.get("engagement_id")):
+            failures.append("engagement identity is missing or malformed")
+    if not _text(binding.get("label")):
+        failures.append("snapshot label is missing or malformed")
     stored_owner = _text(binding.get("script_version"))
     snapshot_owner = _text(snapshot.get("script_version"))
     if not stored_owner or not snapshot_owner or stored_owner != snapshot_owner:
         failures.append("stored script owner does not match snapshot.script_version")
     return list(dict.fromkeys(failures))
+
+
+def emitted_snapshot_binding(snapshot: Mapping[str, Any], *, label: str) -> dict:
+    """Describe an engine-emitted snapshot without inventing AssessHub database identities."""
+    source_marker = bound_snapshot_source(snapshot)
+    return {
+        "source": CLI_EMITTED_SOURCE,
+        "sha256": source_marker.get("sha256", ""),
+        "bytes": source_marker.get("bytes", 0),
+        "label": _text(label),
+        "script_version": _text(snapshot.get("script_version")),
+    }
 
 
 def build_protocol_single_snapshot_bundle(
@@ -1059,7 +1094,7 @@ def build_protocol_single_snapshot_bundle(
         if custody_failures:
             evidence = dict(evidence)
             evidence["evidence_status"] = "not_verified"
-            evidence["status_reason"] = "Persisted-source custody is not verified for this receipt."
+            evidence["status_reason"] = "Snapshot-source custody is not verified for this receipt."
         all_subjects = list(evidence.pop("subjects"))
         contracts = profile.get("evidence_contracts")
         if not isinstance(contracts, list):
@@ -1098,7 +1133,11 @@ def build_protocol_single_snapshot_bundle(
         "by_evidence_status": by_status,
     }
     script_owner = {
-        "source": "snapshot.script_version + snapshots.script_version column",
+        "source": (
+            "snapshot.script_version + snapshots.script_version column"
+            if binding_copy.get("source") == PERSISTED_SOURCE
+            else "snapshot.script_version + exact emitted snapshot bytes"
+        ),
         "snapshot_value": _text(snap.get("script_version")),
         "stored_value": _text(binding_copy.get("script_version")),
         "status": "bound" if not any("script owner" in item for item in custody_failures) else "not_verified",
@@ -1118,6 +1157,9 @@ def build_protocol_single_snapshot_bundle(
         "custody_note": (
             "This export binds the exact persisted snapshots.snapshot_json bytes. AssessHub does not "
             "retain or claim the original upload bytes, and this receipt does not authenticate raw device captures."
+            if binding_copy.get("source") == PERSISTED_SOURCE else
+            "This export binds the exact assessment snapshot file bytes emitted by this engine run. "
+            "It does not claim an AssessHub database identity or authenticate raw device captures."
         ),
     }
     export_sha256 = canonical_sha256(complete_export)
@@ -1157,11 +1199,13 @@ def canonical_export_bytes(value: Mapping[str, Any]) -> bytes:
 
 
 __all__ = [
+    "CLI_EMITTED_SOURCE",
     "SECTION_KEY",
     "RECEIPT_SCHEMA",
     "EXPORT_SCHEMA",
     "SUBJECT_RENDER_CAP",
     "build_protocol_single_snapshot_bundle",
     "canonical_export_bytes",
+    "emitted_snapshot_binding",
     "supported_family_count",
 ]

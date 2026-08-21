@@ -79,3 +79,12 @@ class AnalysisContext:
     # --- stage 4: the assembled snapshot ---
     snap_dict: Dict[str, Any] = field(default_factory=dict)
     snap_path: str = ""
+    # --- stage 5: exact-byte publication / receipt-bearing artifact refresh ---
+    wb: Any = None
+    protocol_assurance_receipt_enabled: bool = False
+    protocol_assurance_bundle: Any = None
+    protocol_assurance_export_path: str = ""
+    html_output_path: str = ""
+    runbook_output_path: str = ""
+    mop_output_path: str = ""
+    flow_paths: Dict[str, Any] = field(default_factory=dict)

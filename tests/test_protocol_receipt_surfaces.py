@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -14,11 +15,16 @@ from cisco_toolkit.protocol_assurance import (
 )
 from cisco_toolkit.protocol_receipt_surfaces import (
     SHEET_NAME,
+    protocol_assurance_surface_payload,
     write_protocol_assurance_receipt_sheet,
 )
+from cisco_toolkit.docmeta import protocol_assurance_receipt_view
 from webapp.backend.protocol_portfolio import (
+    CLI_EMITTED_SOURCE,
     PERSISTED_SOURCE,
     build_protocol_single_snapshot_bundle,
+    canonical_export_bytes,
+    emitted_snapshot_binding,
 )
 
 
@@ -50,6 +56,63 @@ def _bound_bundle(*, subject_cap: int = 1) -> dict:
         binding,
         subject_cap=subject_cap,
     )
+
+
+def _emitted_bundle(*, subject_cap: int = 1) -> tuple[dict, bytes, dict]:
+    snapshot = json.loads(
+        (Path(__file__).parent / "golden" / "snapshot.json").read_text(encoding="utf-8")
+    )
+    raw = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    bound = bind_snapshot_json_bytes(raw)
+    binding = emitted_snapshot_binding(bound, label="assessment.snapshot.json")
+    return (
+        build_protocol_single_snapshot_bundle(bound, binding, subject_cap=subject_cap),
+        raw,
+        binding,
+    )
+
+
+def test_emitted_snapshot_receipt_uses_closed_local_binding_and_exact_uncapped_export():
+    bundle, raw, binding = _emitted_bundle(subject_cap=1)
+    receipt = bundle["receipt"]
+
+    assert receipt["custody_status"] == "bound"
+    assert binding == {
+        "source": CLI_EMITTED_SOURCE,
+        "sha256": bound_snapshot_source(bind_snapshot_json_bytes(raw))["sha256"],
+        "bytes": len(raw),
+        "label": "assessment.snapshot.json",
+        "script_version": json.loads(raw)["script_version"],
+    }
+    assert not ({"snapshot_id", "campaign_id", "engagement_id"} & set(binding))
+    encoded = canonical_export_bytes(bundle["complete_export"])
+    assert json.loads(encoded) == bundle["complete_export"]
+    assert receipt["complete_export"]["sha256"] == (
+        "sha256:" + hashlib.sha256(encoded).hexdigest()
+    )
+
+    surface = protocol_assurance_surface_payload(
+        bundle,
+        complete_export_reference="assessment.protocol-assurance.json",
+    )
+    assert surface["receipt_valid"] is True
+    assert surface["complete_export"]["reference"] == "assessment.protocol-assurance.json"
+    assert "/api/snapshots/" not in json.dumps(surface)
+
+
+def test_emitted_snapshot_receipt_rejects_fake_ids_and_requires_explicit_local_reference():
+    bundle, raw, binding = _emitted_bundle()
+    bound = bind_snapshot_json_bytes(raw)
+    forged = build_protocol_single_snapshot_bundle(
+        bound,
+        {**binding, "snapshot_id": 99},
+    )
+
+    assert forged["receipt"]["custody_status"] == "not_verified"
+    assert protocol_assurance_receipt_view(forged)["valid"] is False
+    surface = protocol_assurance_surface_payload(bundle)
+    assert surface["complete_export"]["reference"] == "local export reference not supplied"
+    assert "/api/snapshots/" not in json.dumps(surface)
 
 
 def _workbook_text(path: Path) -> str:

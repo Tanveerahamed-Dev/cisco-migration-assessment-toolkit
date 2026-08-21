@@ -656,16 +656,16 @@ test("validates the exact capability shape and exposes the default /capabilities
   const entries = view.catalog.domains.flatMap((domain) => domain.entries);
 
   assert.equal(view.catalog.domains.length, 12);
-  assert.equal(entries.length, 212);
-  assert.equal(new Set(entries.map((entry) => entry.id)).size, 212);
-  assert.equal(view.semantic_record_count, 226);
+  assert.equal(entries.length, 213);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 213);
+  assert.equal(view.semantic_record_count, 227);
   assert.equal(
     view.semantic_record_count,
     capabilitySinkLineageContract.source_scope.expected_records,
   );
   assert.deepEqual(view.rendered_observations, envelope.rendered_observations);
   assert.deepEqual(view.safety_observations, envelope.safety_observations);
-  assert.equal(view.rendered_observations.length, 424);
+  assert.equal(view.rendered_observations.length, 426);
   assert.equal(view.safety_observations.length, 7);
   const webSink = capabilitySinkLineageContract.sinks.find(
     (sink) => sink.sink_id === "web.capabilities.default",
@@ -687,7 +687,7 @@ test("validates the exact capability shape and exposes the default /capabilities
         (row) => row.slot_id,
       ),
     ).size,
-    431,
+    433,
   );
 
   const renderedKeys = [
@@ -1664,8 +1664,8 @@ test("reconciles cached live counts to their code owners", async () => {
   );
   const deliverableOwner = core.owners.find((owner) => owner.id === "owner.deliverable.family");
   assert.match(deliverableOwner.symbol, /\bARTIFACT_SPECS\b/);
-  assert.match(deliverableOwner.claim_scope, /thirteen-record artifact lifecycle/i);
-  assert.match(deliverableOwner.claim_scope, /twelve pre-cutover/i);
+  assert.match(deliverableOwner.claim_scope, /fourteen-record artifact lifecycle/i);
+  assert.match(deliverableOwner.claim_scope, /thirteen pre-cutover/i);
   assert.match(deliverableOwner.claim_scope, /conditional post-execution PIR/i);
 });
 

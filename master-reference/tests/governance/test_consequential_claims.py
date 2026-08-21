@@ -144,11 +144,11 @@ def test_tracked_contract_schemas_exact_totals_and_fixed_gate() -> None:
     assert {row["path"]: row["candidate_count"] for row in summary["source_receipts"]} == EXPECTED_SOURCE_COUNTS
     assert (summary["source_universe_registered"], summary["source_universe_unclassified"]) == (5, 0)
     assert (summary["expected_candidates"], summary["discovered_candidates"], summary["classified_candidates"]) == (
-        2138,
-        2138,
-        2138,
+        2140,
+        2140,
+        2140,
     )
-    assert (summary["independently_reviewed_candidates"], summary["unresolved_candidates"]) == (0, 2138)
+    assert (summary["independently_reviewed_candidates"], summary["unresolved_candidates"]) == (0, 2140)
     assert summary["closed"] is False
     assert summary["error_codes"] == [
         "consequential_claim_independent_review_pending",
@@ -167,7 +167,7 @@ def test_reviewed_source_semantic_specs_have_independent_digest_pins() -> None:
             "88945e355209ff0d42376c1fc5273f23729a21d5d82021f7c1ae63d38f65402e"
         ),
         "master-reference/content/capability-catalog.json": (
-            "4f5c453366826242722b987f5af073b94eeccddf75177ef3a44e07773d123820"
+            "ae20a8f8e43d41ff3e752366a7f4d822f839ad91735bd16bcce9fd7b336f0450"
         ),
         "master-reference/content/delivery-governance.json": (
             "62b113259ea0bc532a3c76faa63c8ee55f20746dd928e17a29b380ca45c15d38"
@@ -290,7 +290,7 @@ def test_false_and_explicit_empty_candidate_values_are_preserved() -> None:
     assert sources[CONTENT_PATHS[2]]["labs"][0]["mutates_assessment_truth"] is False
     assert any(row["exceptions_allowed"] == [] for row in sources[CONTENT_PATHS[2]]["invariants"])
     summary = evaluate(contract, sources)
-    assert summary["discovered_candidates"] == 2138
+    assert summary["discovered_candidates"] == 2140
 
 
 def test_reference_registry_and_reference_values_are_exact_and_nonblank() -> None:
@@ -317,7 +317,7 @@ def test_python_nonblank_unicode_scalars_are_valid_in_schema_and_evaluator(value
     Draft202012Validator(focused).validate(value)
     contract, sources = fixture()
     sources[CONTENT_PATHS[1]]["domains"][0]["entries"][0]["current_scope"] = value
-    assert evaluate(contract, sources)["discovered_candidates"] == 2_138
+    assert evaluate(contract, sources)["discovered_candidates"] == 2_140
 
 
 @pytest.mark.parametrize("value", ["\u00a0", "\u2007", "\u202f"])

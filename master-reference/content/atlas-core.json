@@ -138,7 +138,7 @@
       "path": "cisco_toolkit/docmeta.py",
       "symbol": "ARTIFACT_SPECS / artifact_family_metadata",
       "kind": "code-owner",
-      "claim_scope": "Thirteen-record artifact lifecycle: twelve pre-cutover artifacts (ten engine CLI and two AssessHub-only) plus the conditional post-execution PIR."
+      "claim_scope": "Fourteen-record artifact lifecycle: thirteen pre-cutover artifacts (eleven engine CLI and two AssessHub-only) plus the conditional post-execution PIR."
     },
     {
       "id": "owner.manifest",
@@ -263,11 +263,11 @@
     },
     {
       "id": "baseline.deliverables",
-      "statement": "The artifact lifecycle has thirteen records: twelve pre-cutover artifacts, comprising ten from a complete engine CLI run and two AssessHub-only snapshot downloads, plus the conditional post-execution PIR.",
+      "statement": "The artifact lifecycle has fourteen records: thirteen pre-cutover artifacts, comprising eleven from a complete engine CLI run and two AssessHub-only snapshot downloads, plus the conditional post-execution PIR.",
       "value": {
-        "lifecycle": 13,
-        "pre_cutover": 12,
-        "engine_cli": 10,
+        "lifecycle": 14,
+        "pre_cutover": 13,
+        "engine_cli": 11,
         "assesshub_only_pre_cutover": 2,
         "conditional_post_execution": 1
       },
@@ -394,7 +394,7 @@
       "dimension": "delivery-and-governance",
       "level": 4,
       "state": "current",
-      "basis": "The governed workflow and thirteen-record artifact lifecycle—twelve pre-cutover artifacts plus conditional post-execution PIR—have explicit owners and verification boundaries.",
+      "basis": "The governed workflow and fourteen-record artifact lifecycle—thirteen pre-cutover artifacts plus conditional post-execution PIR—have explicit owners and verification boundaries.",
       "owner_refs": ["owner.operating.doctrine", "owner.deliverable.family", "owner.manifest"]
     },
     {

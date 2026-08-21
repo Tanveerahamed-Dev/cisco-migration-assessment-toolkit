@@ -205,7 +205,8 @@ def write_runbook_docx(
         label: str,
         flow_paths: dict = None,
         *,
-        protocol_assurance_bundle=None) -> None:
+        protocol_assurance_bundle=None,
+        complete_export_reference: str = "") -> None:
     """Emit the assessment & migration runbook (.docx) from the live snapshot. Safe/fail-soft:
     a missing python-docx is a warning + skip; never crashes a run whose other outputs are saved."""
     try:
@@ -725,6 +726,7 @@ def write_runbook_docx(
         protocol_assurance_bundle,
         heading="6.5.1 Source-bound Protocol Assurance receipt",
         level=3,
+        complete_export_reference=complete_export_reference,
     )
 
     # VTP safety is a closed local-status audit receipt, distinct from sparse

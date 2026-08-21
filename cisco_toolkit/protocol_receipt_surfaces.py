@@ -74,7 +74,11 @@ def protocol_assurance_surface_payload(
         "subject_cap": dict(view["subject_totals"]),
         "complete_export": {
             **export,
-            "reference": reference or str(export.get("endpoint") or DEFAULT_EXPORT_REFERENCE),
+            "reference": (
+                reference
+                or str(export.get("default_reference") or "")
+                or "local export reference not supplied"
+            ),
             "available": True,
         },
         "operator_note": (
@@ -150,12 +154,22 @@ def write_protocol_assurance_receipt_sheet(
     source = payload["source_binding"]
     cap = payload["subject_cap"]
     export = payload["complete_export"]
+    if source["source"] == "persisted snapshots.snapshot_json blob":
+        source_label = "Exact persisted source"
+        source_value = (
+            f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
+            f"snapshot {source['snapshot_id']} · {source['bytes']} bytes · {source['sha256']}"
+        )
+    else:
+        source_label = "Exact emitted source"
+        source_value = (
+            f"local snapshot {source['label']} · {source['bytes']} bytes · {source['sha256']}"
+        )
     _write_row(
         sheet,
         7,
-        "Exact persisted source",
-        f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
-        f"snapshot {source['snapshot_id']} · {source['bytes']} bytes · {source['sha256']}",
+        source_label,
+        source_value,
     )
     _write_row(sheet, 8, "Receipt SHA-256", payload["receipt_sha256"])
     _write_row(

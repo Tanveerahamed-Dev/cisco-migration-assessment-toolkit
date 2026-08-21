@@ -44,6 +44,8 @@ EXECUTION_REPORT = "execution-report"
 
 _PROTOCOL_RECEIPT_SCHEMA = "protocol_single_snapshot_receipt/1"
 _PROTOCOL_EXPORT_SCHEMA = "protocol_single_snapshot_export/1"
+_PROTOCOL_PERSISTED_SOURCE = "persisted snapshots.snapshot_json blob"
+_PROTOCOL_CLI_EMITTED_SOURCE = "exact emitted assessment snapshot file bytes"
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,12 @@ ARTIFACT_SPECS = (
         "workbook", "Assessment workbook (.xlsx)", "Assessment workbook",
         "Full per-sheet evidence; every number in the narrative documents reconciles to it",
         "xlsx", _XLSX_MEDIA, ENGINE_PRODUCER, cli_suffix=".xlsx"),
+    ArtifactSpec(
+        "protocol-assurance-export", "Protocol Assurance complete export (.json)",
+        "Protocol Assurance complete export",
+        "Uncapped protocol-family and subject evidence bound to the exact emitted snapshot bytes",
+        "json", "application/json", ENGINE_PRODUCER,
+        cli_suffix=".protocol-assurance.json"),
     ArtifactSpec(
         "explorer", "Blast-Radius Explorer (.html)", "Blast-Radius Explorer",
         "Interactive topology, health and what-if view of the same snapshot",
@@ -531,20 +539,38 @@ def protocol_assurance_receipt_view(bundle: Any) -> dict:
     if not isinstance(source, dict):
         return _protocol_receipt_invalid("source binding is missing")
     digest = source.get("sha256")
+    source_owner = source.get("source")
+    expected_fields = {
+        _PROTOCOL_PERSISTED_SOURCE: {
+            "source", "sha256", "bytes", "snapshot_id", "campaign_id", "engagement_id",
+            "label", "script_version",
+        },
+        _PROTOCOL_CLI_EMITTED_SOURCE: {
+            "source", "sha256", "bytes", "label", "script_version",
+        },
+    }.get(source_owner)
     if (
-        source.get("source") != "persisted snapshots.snapshot_json blob"
+        expected_fields is None
+        or set(source) != expected_fields
         or not isinstance(digest, str)
         or len(digest) != 71
         or not digest.startswith("sha256:")
         or any(char not in "0123456789abcdef" for char in digest[7:])
         or not _protocol_receipt_int(source.get("bytes"))
         or source.get("bytes") == 0
-        or not _protocol_receipt_int(source.get("snapshot_id"))
+        or not isinstance(source.get("label"), str)
+        or not source["label"].strip()
+        or not isinstance(source.get("script_version"), str)
+        or not source["script_version"].strip()
+    ):
+        return _protocol_receipt_invalid("source binding is malformed or unsupported")
+    if source_owner == _PROTOCOL_PERSISTED_SOURCE and (
+        not _protocol_receipt_int(source.get("snapshot_id"))
         or not _protocol_receipt_int(source.get("campaign_id"))
         or not isinstance(source.get("engagement_id"), str)
         or not source["engagement_id"].strip()
     ):
-        return _protocol_receipt_invalid("source binding is malformed or unsupported")
+        return _protocol_receipt_invalid("persisted source identity is malformed")
 
     receipt_families = receipt.get("families")
     complete_families = complete.get("families")
@@ -637,8 +663,9 @@ def protocol_assurance_receipt_view(bundle: Any) -> dict:
             "schema": export_meta["schema"],
             "sha256": export_digest,
             "media_type": export_meta["media_type"],
-            "endpoint": (
+            "default_reference": (
                 f"/api/snapshots/{source['snapshot_id']}/protocol-assurance/export"
+                if source_owner == _PROTOCOL_PERSISTED_SOURCE else ""
             ),
         },
         "custody_note": str(receipt.get("custody_note") or ""),
@@ -650,7 +677,8 @@ def add_protocol_assurance_receipt(
         bundle: Any,
         *,
         heading: str = "Source-bound Protocol Assurance receipt",
-        level: int = 2) -> dict:
+        level: int = 2,
+        complete_export_reference: str = "") -> dict:
     """Render one validated portfolio receipt consistently across operator DOCX surfaces."""
     view = protocol_assurance_receipt_view(bundle)
     doc.add_heading(heading, level=level)
@@ -671,11 +699,18 @@ def add_protocol_assurance_receipt(
         "owns no score and no verdict; evidence status is a coverage/observation classification, "
         "not cutover authorization."
     )
+    if source["source"] == _PROTOCOL_PERSISTED_SOURCE:
+        source_description = (
+            f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
+            f"snapshot {source['snapshot_id']} · exact persisted bytes {source['bytes']}"
+        )
+    else:
+        source_description = (
+            f"local snapshot {source['label']} · exact emitted bytes {source['bytes']}"
+        )
     doc.add_paragraph(
-        f"Source owner: {source['source']} · engagement {source['engagement_id']} · campaign "
-        f"{source['campaign_id']} · snapshot {source['snapshot_id']} · exact persisted bytes "
-        f"{source['bytes']} · source SHA-256 {source['sha256']} · receipt SHA-256 "
-        f"{view['receipt_sha256']}."
+        f"Source owner: {source['source']} · {source_description} · source SHA-256 "
+        f"{source['sha256']} · receipt SHA-256 {view['receipt_sha256']}."
     )
     if view["custody_failures"]:
         doc.add_paragraph(
@@ -703,10 +738,14 @@ def add_protocol_assurance_receipt(
         fixed=False,
     )
     export = view["complete_export"]
+    reference = complete_export_reference.strip() if isinstance(
+        complete_export_reference, str) else ""
+    reference = reference or str(export.get("default_reference") or "")
+    reference = reference or "local export reference not supplied"
     doc.add_paragraph(
         f"Complete export: {export['schema']} · {export['media_type']} · {export['sha256']} · "
-        f"all {totals['total']} subject row(s), uncapped. AssessHub endpoint: "
-        f"{export['endpoint']}. Retrieve and archive that JSON beside this document; the digest above "
+        f"all {totals['total']} subject row(s), uncapped. Reference: "
+        f"{reference}. Retrieve and archive that JSON beside this document; the digest above "
         "reconciles it to this receipt."
     )
     if view["custody_note"]:
