@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 from cisco_toolkit.fhrp_intent import (
     FHRP_CONFIGURED_GROUP_SCHEMA,
+    embedded_fhrp_configured_group_baseline,
     validate_fhrp_configured_group_baseline,
 )
 from cisco_toolkit.textutils import normalize_ifname
@@ -1298,12 +1299,94 @@ def validate_fhrp_redundancy_domain_baseline(
     }
 
 
-def embedded_fhrp_redundancy_domain_baseline(value: Any) -> dict:
-    """Return a JSON-safe audit projection unable to authorize a decision."""
+def validate_fhrp_redundancy_domain_snapshot_evidence(
+        value: Any, all_interfaces: Any) -> dict:
+    """Reconcile one stored domain receipt to its co-published SVI source.
+
+    Structural validation proves the receipt is internally self-consistent, but
+    comparison custody also requires the exact normalized SVI projection that
+    produced it.  Reuse the producer's normalization and digest routines so a
+    valid receipt generated from a different or truncated ``interfaces`` tree
+    cannot be grafted beside the admitted snapshot source.
+    """
+    view = validate_fhrp_redundancy_domain_baseline(value)
+    if view.get("valid") is not True:
+        return view
+    # The process-local owner object already binds this exact normalized source
+    # projection and supports legacy in-process callers that do not serialize
+    # the full interface tree.  Stored JSON loses that authority and must prove
+    # reconciliation to the co-published snapshot source below.
+    if view.get("source_bound") is True:
+        return view
+
+    def invalid(reason: str) -> dict:
+        return {
+            "present": True,
+            "valid": False,
+            "reason": reason,
+            "source_bound": False,
+            "rows": [],
+            "index": {},
+            "domains": [],
+            "domain_index": {},
+            "baseline": {},
+        }
+
+    if not isinstance(all_interfaces, dict):
+        return invalid("snapshot_interfaces_missing_or_malformed")
+    try:
+        svis, _duplicate_ids = _normalized_svis(all_interfaces)
+        expected_digest = _svi_projection_hash(svis)
+    except (TypeError, ValueError, KeyError, AttributeError, RecursionError, MemoryError):
+        return invalid("snapshot_svi_projection_normalization_failed")
+    baseline = view.get("baseline")
+    source = baseline.get("source_receipt") if isinstance(baseline, dict) else None
+    if not isinstance(source, dict) or source.get("svi_projection_sha256") != expected_digest:
+        return invalid("snapshot_svi_projection_digest_mismatch")
+    return view
+
+
+def embedded_fhrp_redundancy_domain_baseline(
+        value: Any, *, configured_group_baseline: Any = None) -> dict:
+    """Return a JSON-safe audit projection unable to authorize a decision.
+
+    When the current-run configured-group owner is supplied, first prove it is
+    the exact upstream receipt consumed by ``value`` and then bind the embedded
+    domain receipt to that owner's deterministic embedded digest.  This keeps
+    the two co-published JSON projections reconcilable without allowing an
+    arbitrary embedded object or digest string to re-authorize the domain.
+    """
     view = validate_fhrp_redundancy_domain_baseline(value)
     if not view.get("valid"):
         return _invalid_baseline()
     result = view["baseline"]
+    if configured_group_baseline is not None:
+        configured = validate_fhrp_configured_group_baseline(
+            configured_group_baseline, require_current_run=True)
+        configured_value = configured.get("baseline") \
+            if configured.get("valid") is True else {}
+        configured_summary = configured_value.get("summary") \
+            if isinstance(configured_value, dict) else {}
+        current_digest = configured_summary.get("baseline_sha256") \
+            if isinstance(configured_summary, dict) else None
+        source = result.get("source_receipt")
+        if (not isinstance(source, dict) or source.get("valid") is not True
+                or source.get("configured_baseline_sha256") != current_digest):
+            return _invalid_baseline()
+        embedded_configured = embedded_fhrp_configured_group_baseline(
+            configured_group_baseline)
+        embedded_view = validate_fhrp_configured_group_baseline(
+            embedded_configured)
+        embedded_value = embedded_view.get("baseline") \
+            if embedded_view.get("valid") is True else {}
+        embedded_summary = embedded_value.get("summary") \
+            if isinstance(embedded_value, dict) else {}
+        embedded_digest = embedded_summary.get("baseline_sha256") \
+            if isinstance(embedded_summary, dict) else None
+        if not isinstance(embedded_digest, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", embedded_digest):
+            return _invalid_baseline()
+        source["configured_baseline_sha256"] = embedded_digest
     result["projection_custody"] = "embedded_unverified"
     result["source_receipt"]["source_bound"] = False
     for row in result["rows"]:
@@ -1320,6 +1403,7 @@ __all__ = [
     "FHRP_REDUNDANCY_DOMAIN_SCHEMA",
     "compute_fhrp_redundancy_domain_baseline",
     "validate_fhrp_redundancy_domain_baseline",
+    "validate_fhrp_redundancy_domain_snapshot_evidence",
     "embedded_fhrp_redundancy_domain_baseline",
     "scope_fhrp_redundancy_domains",
 ]

@@ -2079,7 +2079,7 @@ function demoSnapshot(){
     "DIST-2":[{prefix:"10.0.10.0/24",source:"connected",next_hop:"",out_intf:"Vlan10"},
               {prefix:"10.0.20.0/24",source:"connected",next_hop:"",out_intf:"Vlan20"},
               {prefix:"0.0.0.0/0",source:"OSPF",next_hop:"10.0.99.2",out_intf:"Po1"}]},
-  // V3.23.125: vPC / MLAG status (compute from 'show vpc') — DIST-1/DIST-2 are a CONFIRMED vPC pair (domain 10).
+  // V3.23.125: local vPC / MLAG status (compute from 'show vpc') — shared domain 10 is an UNVERIFIED pair candidate only.
   vpc:{
     "DIST-1":{domain_id:10,role:"primary",peer_status:"peer adjacency formed ok",keepalive_status:"peer is alive",consistency:"success",num_vpcs:1,
       peer_link:{id:"1",port:"Po1",status:"up",vlans:"1,10,20,30,99"},vpcs:[{id:"20",port:"Po20",status:"up",consistency:"success",vlans:"10,20"}]},
@@ -2792,6 +2792,7 @@ let SNAP=null, MODEL=null, CHAINS=[], POS={}, LOGICAL={w:1000,h:600};
 let SEL=null, VLAN="all", MODE="health", LAYOUT="layered";   // V3.23.76: land on the Risk cockpit (Health) so the first view is the "where's the risk / fix-first" synthesis, not a raw 60-node hairball; a deep-link #mode=… still overrides via readHash()
 let TRACE_SRC=null, TRACE_DST=null, TRACE=null;
 let SNAP_B=null, MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
+let PROTOCOL_ASSURANCE_SURFACE=null;   // renderer sidecar; never read from the snapshot mapping
 let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
@@ -2888,8 +2889,11 @@ function setComparisonSnapshot(snapB){
   SNAP_B=snapB;MODEL_B=modelB;CMP=cmp;
 }
 /* ---- entry point (signature preserved for Python embed) ---- */
-function load(snap,label,live){
+function load(snap,label,live,protocolAssurance){
   SNAP=snap; SNAP_LABEL=label;
+  // A receipt belongs to the exact source used for THIS load. Manual/demo JSON loads do not inherit
+  // the previously embedded sidecar and cannot mint authority from receipt-looking snapshot keys.
+  PROTOCOL_ASSURANCE_SURFACE=protocolAssuranceSurface(protocolAssurance);
   const warn=schemaNotice(snap); showSchemaWarn(warn); if(warn)srAnnounce(warn);
   try{
     MODEL=buildModel(snap); CHAINS=causalityChains(MODEL);
@@ -5621,14 +5625,24 @@ function appDomainOf(host){ if(!host)return ""; const doms=(SNAP&&SNAP.applicati
   const d=doms.find(x=>(x.switches||[]).includes(host)); return d?d.domain:"";}
 /* inferred MLAG/vPC pairs (no `show vpc` yet): two gateways for a VLAN that are directly linked
    (peer-link candidate), or the two switches a dual-homed endpoint lands on. Labeled "inferred". */
-/* V3.23.125: CONFIRMED vPC/MLAG pairs from `show vpc` (SNAP.vpc) — two hosts in the same vPC domain. */
+/* V3.23.125 compatibility visualization: shared-domain candidates from local `show vpc`
+   observations. A domain ID is an attribute, never pair identity; every generated combination is
+   unverified. Confirmation requires explicit reciprocal peer identities, both local legs (one on
+   each proven peer), and matching remote LACP system and aggregation/key identity. */
 function vpcPairs(){const out=new Set(); const vpc=(SNAP&&SNAP.vpc)||{}; const byDom={};
   Object.keys(vpc).forEach(h=>{const d=vpc[h]&&vpc[h].domain_id; if(d!=null)(byDom[d]=byDom[d]||[]).push(h);});
   Object.keys(byDom).forEach(k=>{const hs=byDom[k]; for(let i=0;i<hs.length;i++)for(let j=i+1;j<hs.length;j++)out.add([hs[i],hs[j]].sort().join("||"));});
   return out;}
-function _mlagTag(a,b){return vpcPairs().has([a,b].sort().join("||"))?"confirmed":"inferred";}
+const _MLAG_CONFIRM_REQUIREMENTS="Confirmation requires explicit reciprocal peer identities, both local legs (one on each proven peer), and matching remote LACP system and aggregation/key identity.";
+function _mlagEvidence(a,b){const vpc=(SNAP&&SNAP.vpc)||{},da=vpc[a]&&vpc[a].domain_id,db=vpc[b]&&vpc[b].domain_id;
+  const same=da!=null&&db!=null&&String(da)===String(db);
+  if(!same)return {tag:"inferred",note:`Inferred MLAG/vPC candidate from topology or endpoint placement only. ${_MLAG_CONFIRM_REQUIREMENTS}`};
+  const n=Object.keys(vpc).filter(h=>vpc[h]&&vpc[h].domain_id!=null&&String(vpc[h].domain_id)===String(da)).length;
+  const collision=n>2?` ${n} hosts report this domain, so every pairwise combination is ambiguous.`:"";
+  return {tag:"candidate",note:`Unverified vPC/MLAG candidate from shared domain ID only.${collision} ${_MLAG_CONFIRM_REQUIREMENTS}`};}
+function _mlagTag(a,b){return _mlagEvidence(a,b).tag;}
 function inferMlagPairs(){const pairs=new Set(); const add=(a,b)=>{if(a&&b&&a!==b)pairs.add([a,b].sort().join("||"));};
-  vpcPairs().forEach(k=>pairs.add(k));                              // confirmed vPC pairs take precedence (tagged via _mlagTag)
+  vpcPairs().forEach(k=>pairs.add(k));                              // compatibility candidates stay explicitly unverified via _mlagTag
   if(MODEL&&MODEL.gateways)for(const gws of MODEL.gateways.values()){const g=[...gws];
     for(let i=0;i<g.length;i++)for(let j=i+1;j<g.length;j++){
       const linked=(MODEL.adj.get(g[i])||[]).some(li=>{const L=MODEL.links[li];return (L.a===g[i]&&L.b===g[j])||(L.a===g[j]&&L.b===g[i]);});
@@ -5739,13 +5753,13 @@ function buildFlowJourney(F,srcOverride){if(!F||!F.src||!F.dst)return null;
   // transit + gateway nodes
   for(let i=0;i<hosts.length;i++){const h=hosts[i],nx=hosts[i+1]; const isGw=(h===sgw||h===dgw); const layers=[];
     if(nx){const onSrcSide=(idxGw<0)||(i<idxGw); const vid=onSrcSide?sv:dv;
-      const li=_edgeBetween(MODEL,vid,h,nx,false), L=li>=0?MODEL.links[li]:null, pc=!!(L&&L.portChannel), peer=_isMlag(h,nx,mlag);
+      const li=_edgeBetween(MODEL,vid,h,nx,false), L=li>=0?MODEL.links[li]:null, pc=!!(L&&L.portChannel), peer=_isMlag(h,nx,mlag), mev=peer?_mlagEvidence(h,nx):null;
       const root=onSrcSide?rootS:rootD;
       layers.push(rung("L1","Physical",pc?"ok":"watch",pc?"Port-channel (redundant)":"Single uplink",
         pc?"Bundle survives a member loss (bandwidth degrades only).":"Single physical link — its loss drops this hop (see backup path)."));
       layers.push(rung("L2","Data-Link","ok",`${shortName(h)} → ${shortName(nx)} via ${pc?"port-channel":"trunk uplink"}`,
-        `${root?`Forwards toward STP root ${shortName(root)} on the root port.`:"STP-forwarding trunk."}${pc?" Egress is a port-channel (member chosen by src-dst hash).":""}${peer?` ${shortName(h)}/${shortName(nx)} are ${_mlagTag(h,nx)==="confirmed"?"a confirmed vPC pair (show vpc)":"an inferred MLAG/vPC pair"}.`:""}`,
-        peer?_mlagTag(h,nx):"derived"));}
+        `${root?`Forwards toward STP root ${shortName(root)} on the root port.`:"STP-forwarding trunk."}${pc?" Egress is a port-channel (member chosen by src-dst hash).":""}${peer?` ${shortName(h)}/${shortName(nx)}: ${mev.note}`:""}`,
+        peer?mev.tag:"derived"));}
     if(isGw&&routed&&h===sgw){const fh=(MODEL.fhrp&&MODEL.fhrp.get(sv))||null;
       const act=fh&&fh.active&&fh.active.size?[...fh.active][0]:null, sby=fh&&fh.standby&&fh.standby.size?[...fh.standby][0]:null;
       const rt=d.ip?_routeCovers(sgw,d.ip):null, vrf=gwVrf(sgw,sv)||"global";
@@ -6165,8 +6179,8 @@ function _fsimMapHtml(S,J,i){return (S.both&&S.Jr)?fsimDualMap(S.J,S.Jr):fsimMap
 function _fsimStackHtml(S,J,i,backupActive,reverseActive){
   const nd=J.nodes[i]||J.nodes[0];
   const ep=nd.ep?`<div class="fsim-ep faint">${esc(nd.ep.ip||"")}${nd.ep.mac?` · ${esc(nd.ep.mac)}`:""}${nd.ep.cls?` · ${esc(nd.ep.cls)}${nd.ep.vendor?" ("+esc(nd.ep.vendor)+")":""}`:""}</div>`:"";
-  const mtag=nd.mlagPeer?_mlagTag(nd.host,nd.mlagPeer):"";
-  const mlag=nd.mlagPeer?` <span class="pill pl-${mtag==="confirmed"?"ok":"watch"}" title="${mtag==="confirmed"?"confirmed via show vpc":"inferred from topology — confirm with show vpc"}">${mtag} ${mtag==="confirmed"?"vPC":"MLAG"} peer ${esc(shortName(nd.mlagPeer))}</span>`:"";
+  const mev=nd.mlagPeer?_mlagEvidence(nd.host,nd.mlagPeer):null;
+  const mlag=mev?` <span class="pill pl-watch" title="${esc(mev.note)}">${mev.tag==="candidate"?"unverified vPC/MLAG candidate":"inferred MLAG/vPC candidate"} peer ${esc(shortName(nd.mlagPeer))}</span>`:"";
   const rungs=(nd.layers||[]).map(l=>`<div class="fsim-rung ${_fsimLrTok(l.verdict)}">`+
     `<div class="fsim-rh"><span class="fsim-ll">${esc(l.layer)} · ${esc(l.label)}</span><b>${esc(l.decision)}</b><span class="fsim-tag">${esc(l.tag)}</span></div>`+
     `<div class="fsim-why">${esc(l.why)}</div></div>`).join("");
@@ -10321,6 +10335,55 @@ function serviceMapSection(){
     `<div class="ln" style="margin-top:8px"><b>Multicast:</b> ${mc.active_interfaces||0} interface(s) across ${mc.active_switch_count||0} switch(es) run PIM/mroute <span class="faint">(Confirmed forwarding presence)</span>.${mcNote}</div>`+
     gset+ptpLine+qLine+mediaBlock+`</div>`;
 }
+/* Source-bound portfolio receipt sidecar. Python validates the detached receipt/export hashes and
+   counters before embedding this projection. This browser never searches SNAP for a receipt-looking
+   key: a manual/legacy JSON load is explicitly NOT VERIFIED and clears any prior bound sidecar. */
+function protocolAssuranceSurface(value){
+  if(!value||typeof value!=="object"||value.schema!=="protocol_single_snapshot_receipt/1"||
+      typeof value.receipt_valid!=="boolean")return {
+    schema:"protocol_single_snapshot_receipt/1",receipt_valid:false,status:"NOT VERIFIED",
+    reason:"source-bound sidecar not supplied",owns_score:false,owns_verdict:false,
+    custody_status:"not_verified",source_binding:{},receipt_sha256:"",families:[],
+    subject_cap:{rendered:0,total:0,omitted:0},
+    complete_export:{schema:"protocol_single_snapshot_export/1",sha256:"",media_type:"application/json",
+      reference:"AssessHub /api/snapshots/{id}/protocol-assurance/export after persisted-byte import",
+      available:false},
+    operator_note:"This renderer did not hash the parsed snapshot or mint source custody."
+  };
+  return value;
+}
+function protocolAssuranceReceiptSection(){
+  const p=protocolAssuranceSurface(PROTOCOL_ASSURANCE_SURFACE),exp=p.complete_export||{},
+    ref=String(exp.reference||"protocol_single_snapshot_export/1"),reason=String(p.reason||"source-bound sidecar unavailable");
+  if(p.receipt_valid!==true)return `<div class="sec"><h3>Protocol Assurance receipt <span class="badge b-watch">NOT VERIFIED</span></h3>`+
+    `<div class="card watch"><div class="ln"><b><span class="mono">protocol_single_snapshot_receipt/1</span> unavailable.</b> `+
+    `This Explorer did not hash the parsed snapshot or mint source custody.</div>`+
+    `<div class="ln"><b>Reason:</b> ${esc(reason)}.</div>`+
+    `<div class="ln"><b>Cap disclosure:</b> rendered / total / omitted = 0 / 0 / 0 because no source-bound receipt was supplied.</div>`+
+    `<div class="ln"><b>Complete export:</b> <span class="mono">protocol_single_snapshot_export/1</span> · uncapped JSON · NOT ATTACHED · ${esc(ref)}.</div>`+
+    `<div class="ln faint">This portfolio owns no score and no verdict. Import the exact snapshot into AssessHub to obtain and archive the complete export beside this file.</div></div></div>`;
+  const source=p.source_binding&&typeof p.source_binding==="object"?p.source_binding:{},
+    cap=p.subject_cap&&typeof p.subject_cap==="object"?p.subject_cap:{rendered:0,total:0,omitted:0},
+    families=Array.isArray(p.families)?p.families:[], custody=String(p.custody_status||"not_verified"),
+    tok=custody==="bound"?"ok":"watch", status=custody==="bound"?"BOUND":"NOT VERIFIED";
+  const sourceLine=source.source==="exact emitted assessment snapshot file bytes"
+    ?`<b>Exact emitted source:</b> local snapshot ${esc(source.label||"—")} · ${esc(source.bytes)} bytes.`
+    :`<b>Exact persisted source:</b> engagement ${esc(source.engagement_id||"—")} · campaign ${esc(source.campaign_id)} · snapshot ${esc(source.snapshot_id)} · ${esc(source.bytes)} bytes.`;
+  const rows=families.map(f=>{const evidence=String(f.evidence_status||"not_verified"),
+    ftok=evidence==="observed"?"ok":evidence==="not_applicable"?"neutral":"watch";
+    return `<tr><td><b>${esc(f.family||"—")}</b></td><td>${esc(f.assurance_level||"not_verified")}</td>`+
+      `<td><span class="pill pl-${ftok}">${esc(evidence.replaceAll("_"," ").toUpperCase())}</span></td>`+
+      `<td class="mono">${esc(f.rendered||0)} / ${esc(f.total||0)} / ${esc(f.omitted||0)}</td></tr>`;}).join("");
+  return `<div class="sec"><h3>Protocol Assurance receipt <span class="badge b-${tok}">${status}</span></h3>`+
+    `<div class="card ${tok}"><div class="ln"><b><span class="mono">${esc(p.schema)}</span></b> · owner ${esc(p.owner_version||"—")} · no score · no verdict.</div>`+
+    `<div class="ln">${sourceLine}</div>`+
+    `<div class="ln mono" style="overflow-wrap:anywhere"><b>Source SHA-256:</b> ${esc(source.sha256||"—")}<br><b>Receipt SHA-256:</b> ${esc(p.receipt_sha256||"—")}</div>`+
+    `<div class="ln"><b>Receipt subject cap (rendered / total / omitted):</b> ${esc(cap.rendered||0)} / ${esc(cap.total||0)} / ${esc(cap.omitted||0)}. `+
+    `This panel renders all ${families.length} family aggregate row(s) and zero subject rows; decision code does not consume capped arrays.</div>`+
+    `<div class="ln"><b>Complete export:</b> <span class="mono">${esc(exp.schema||"protocol_single_snapshot_export/1")}</span> · uncapped ${esc(exp.media_type||"application/json")} · `+
+    `<span class="mono" style="overflow-wrap:anywhere">${esc(exp.sha256||"—")}</span> · ${esc(ref)}. Retrieve and archive that JSON beside this Explorer.</div></div>`+
+    (rows?`<table style="margin-top:8px"><thead><tr><th>Family</th><th>Assurance</th><th>Evidence</th><th>Receipt rendered / total / omitted</th></tr></thead><tbody>${rows}</tbody></table>`:"")+`</div>`;
+}
 function protocolDetailHosts(routingHosts,receiptRows,healthRows,intelligenceRows){
   const hosts=new Set((routingHosts||[]).filter(h=>typeof h==="string"&&h));
   const bgpRows=typeof bgpConfiguredPeerRows==="function"?bgpConfiguredPeerRows():[],
@@ -10349,6 +10412,7 @@ function drawProtocols(){
   const pa=protocolAssessability(), paRows=pa?pa.rows:[];
   const detailHosts=protocolDetailHosts(withProto,paRows,ph,pi);
   if(!detailHosts.length)return `<div class="drawer-head"><div class="eyebrow">Protocols</div><div class="title">Routing-protocol topology</div></div>
+    ${protocolAssuranceReceiptSection()}
     ${vtpSafetySection()}
     ${ipv6RoutingAdjacencySection()}
     ${fhrpConfiguredGroupSection()}
@@ -10372,6 +10436,7 @@ function drawProtocols(){
     :`<p class="faint">No protocol boundaries — every routing device runs a single protocol domain.</p>`;
   const adjRows=adj.length?adj.slice().sort((a,b)=>(a.ok-b.ok)||a.host.localeCompare(b.host)).map(a=>`<div class="ln"><span class="pill pl-${a.ok?"ok":"crit"}">${a.ok?"✓":"✗"} ${_protoLabel(a.proto)}</span> <span class="mono">${esc(shortName(a.host))}</span> ↔ <span class="mono">${esc(a.peer)}</span> <span class="faint">${esc(a.state)} · ${esc(a.via)}</span></div>`).join(""):`<p class="faint">No adjacencies in snapshot.</p>`;
   return `<div class="drawer-head"><div class="eyebrow">Protocols</div><div class="title">Routing-protocol topology</div></div>
+    ${protocolAssuranceReceiptSection()}
     <div class="sec"><div class="headline">
       <div class="stat"><div class="v">${withProto.length}</div><div class="k">routing devices</div></div>
       <div class="stat ${redistPts.length?"watch":""}"><div class="v">${redistPts.length}</div><div class="k">boundaries</div></div>

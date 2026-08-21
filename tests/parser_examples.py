@@ -65,6 +65,17 @@ _STP_REAL_BLOCK = (
     "Po31             Desg FWD 200       128.4126 (vPC) P2p \n"
 )
 
+# Real IOS-XE ``show spanning-tree detail`` shape.  The protocol-specific instance
+# headers are retained so the parser cannot accidentally collapse a PVST VLAN and an
+# MST instance into one synthetic numeric namespace.
+_STP_DETAIL_REAL_BLOCK = (
+    "VLAN0012 is executing the rstp compatible Spanning Tree protocol\n"
+    "  Number of topology changes 4 last change occurred 00:02:17 ago\n"
+    "\n"
+    "###### MST0002 vlans mapped:   12,20-29\n"
+    "  Number of topology changes 7 last change occurred 1d02h ago\n"
+)
+
 PARSER_EXAMPLES = {
     # ------------------------------------------------------------------ multicast / PIM
     "parse_multicast_info": [
@@ -629,6 +640,38 @@ PARSER_EXAMPLES = {
             "spot_facts": [
                 (("Po1",), "Forwarding"),
                 (("Po31",), "Forwarding"),
+            ],
+        },
+    ],
+    "parse_spanning_tree_role_rows": [
+        {
+            "note": "Same real NX-OS per-VLAN Role/Sts tables, preserving the PVST "
+                    "namespace and closed role/state values.",
+            "input": _STP_REAL_BLOCK,
+            "expect_min_entities": 6,
+            "spot_facts": [
+                ((0, "namespace"), "pvst_vlan"),
+                ((0, "instance"), "1"),
+                ((0, "interface"), "Po1"),
+                ((0, "role"), "root"),
+                ((0, "state"), "forwarding"),
+                ((3, "instance"), "12"),
+            ],
+        },
+    ],
+    "parse_spanning_tree_topology_changes": [
+        {
+            "note": "Real IOS-XE detail counter lines under explicit PVST and MST "
+                    "instance headers; namespaces must never be conflated.",
+            "input": _STP_DETAIL_REAL_BLOCK,
+            "expect_min_entities": 2,
+            "spot_facts": [
+                ((0, "namespace"), "pvst_vlan"),
+                ((0, "instance"), "12"),
+                ((0, "count"), 4),
+                ((1, "namespace"), "mst_instance"),
+                ((1, "instance"), "2"),
+                ((1, "count"), 7),
             ],
         },
     ],

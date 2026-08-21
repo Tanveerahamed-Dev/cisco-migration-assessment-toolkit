@@ -1,6 +1,30 @@
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, CutoverWave, gateColor } from "../api";
+import {
+  api,
+  gateColor,
+  type Campaign,
+  type CutoverChangeIntentInput,
+  type CurrentBaselineBlocker,
+  type CurrentBaselineGate,
+  type CutoverWave,
+  type ExecutionMeta,
+  type ExecutionState,
+  type ValidationCheck,
+} from "../api";
+import {
+  baselinePresentationKey,
+  isLegacyBaselinePresentationCandidate,
+  isProducerDeclaredBaselineBlocker,
+  type BaselinePresentationRow,
+} from "../baselinePresentation";
+import ComparisonDecision from "./ComparisonDecision";
+import ObservedL2TrialInput, {
+  EMPTY_OBSERVED_L2_TRIAL,
+  observedL2TrialIsReading,
+  observedL2TrialRequest,
+} from "./ObservedL2TrialInput";
+import type { ObservedL2TrialDraft } from "./ObservedL2TrialInput";
 import { CountUp, ErrorBox, SegBar, SevChip, SkelLines, useAsync } from "./ui";
 
 /* The cutover-plan panel: a gated, pilot-first run-of-show synthesized server-side from the
@@ -30,42 +54,7 @@ function Stat({ value, label, color }: { value: ReactNode; label: string; color?
   );
 }
 
-type BaselineBlocker = {
-  device?: string;
-  wave?: string;
-  category?: string;
-  severity?: string;
-  check?: string;
-  command?: string;
-  expect?: string;
-  why?: string;
-  evidence_state?: string;
-  baseline_state?: string;
-  projection_custody?: string;
-  source_key?: string;
-};
-
-type CurrentBaselineGate = {
-  schema?: string;
-  verdict?: "BLOCKED" | "INDETERMINATE" | "CLEAR" | "NOT_ASSESSED" | string;
-  assessed?: boolean;
-  note?: string;
-  summary?: {
-    n_items?: number;
-    n_blockers?: number;
-    n_blockers_returned?: number;
-    blockers_capped?: boolean;
-    by_state?: Partial<Record<"degraded" | "review" | "not_verified", number>>;
-  };
-  blockers?: BaselineBlocker[];
-  integrity?: { valid?: boolean; failures?: string[] };
-};
-
-type CutoverWaveWithBaseline = CutoverWave & {
-  current_baseline?: CurrentBaselineGate;
-  baseline_blockers?: BaselineBlocker[];
-  validation: Array<CutoverWave["validation"][number] & BaselineBlocker>;
-};
+type PlannerBaselineRow = CurrentBaselineBlocker | ValidationCheck;
 
 const BASELINE_GATE_COLOR: Record<string, string> = {
   BLOCKED: "var(--crit)",
@@ -74,47 +63,45 @@ const BASELINE_GATE_COLOR: Record<string, string> = {
   CLEAR: "var(--ok)",
 };
 
-function baselineBlockerKey(row: BaselineBlocker) {
-  return [row.device, row.wave, row.category, row.check, row.source_key, row.expect]
-    .map((part) => String(part || "").trim())
-    .join("\u0000");
+function baselinePresentationForWave(w: CutoverWave): {
+  blockers: PlannerBaselineRow[];
+  legacyCandidates: ValidationCheck[];
+} {
+  const explicitRows = Array.isArray(w.baseline_blockers)
+    ? w.baseline_blockers
+    : Array.isArray(w.current_baseline?.blockers)
+      ? w.current_baseline.blockers
+      : null;
+  const blockers = explicitRows ?? w.validation.filter(isProducerDeclaredBaselineBlocker);
+  const legacyCandidates = explicitRows === null
+    ? w.validation.filter(isLegacyBaselinePresentationCandidate)
+    : [];
+  return {
+    blockers: Array.from(new Map(blockers.map((row) => [baselinePresentationKey(row), row])).values()),
+    legacyCandidates: Array.from(new Map(
+      legacyCandidates.map((row) => [baselinePresentationKey(row), row]),
+    ).values()),
+  };
 }
 
-function isBaselineBlocker(row: BaselineBlocker) {
-  const state = String(row.evidence_state || "").trim().toLowerCase();
-  if (state === "degraded" || state === "review" || state === "not_verified") return true;
-  const expected = String(row.expect || "").trim();
-  return /^PRE-CUTOVER (?:DEGRADED|REVIEW) — BLOCKER:/i.test(expected)
-    || /^(?:ROUTING|ETHERCHANNEL) BASELINE NOT VERIFIED(?:\s+—\s+BLOCKER)?(?::|\b)/i.test(expected);
-}
-
-function displayBaselineBlockersForWave(w: CutoverWaveWithBaseline): BaselineBlocker[] {
-  const rows = [
-    ...(Array.isArray(w.baseline_blockers) ? w.baseline_blockers : []),
-    ...(Array.isArray(w.current_baseline?.blockers) ? w.current_baseline.blockers : []),
-    ...w.validation.filter(isBaselineBlocker),
-  ];
-  return Array.from(new Map(rows.map((row) => [baselineBlockerKey(row), row])).values());
-}
-
-/** Use the explicit wave receipt as authority; fall back only for mixed-version API payloads. */
-function boundBaselineBlockersForWave(w: CutoverWaveWithBaseline): BaselineBlocker[] {
+/** Use explicit receipts first; mixed-version fallback consumes only the producer-owned boolean. */
+function boundBaselineBlockersForWave(w: CutoverWave): PlannerBaselineRow[] {
   if (Array.isArray(w.baseline_blockers)) return w.baseline_blockers;
   if (Array.isArray(w.current_baseline?.blockers)) return w.current_baseline.blockers;
-  return w.validation.filter(isBaselineBlocker);
+  return w.validation.filter(isProducerDeclaredBaselineBlocker);
 }
 
 /** Multiset subtraction preserves repeated top-level rows while removing only bound occurrences. */
 function unboundBaselineBlockers(
-  allRows: BaselineBlocker[], waves: CutoverWaveWithBaseline[],
-): BaselineBlocker[] {
+  allRows: CurrentBaselineBlocker[], waves: CutoverWave[],
+): CurrentBaselineBlocker[] {
   const boundCounts = new Map<string, number>();
   waves.forEach((wave) => boundBaselineBlockersForWave(wave).forEach((row) => {
-    const key = baselineBlockerKey(row);
+    const key = baselinePresentationKey(row);
     boundCounts.set(key, (boundCounts.get(key) || 0) + 1);
   }));
   return allRows.filter((row) => {
-    const key = baselineBlockerKey(row);
+    const key = baselinePresentationKey(row);
     const remaining = boundCounts.get(key) || 0;
     if (!remaining) return true;
     boundCounts.set(key, remaining - 1);
@@ -123,7 +110,7 @@ function unboundBaselineBlockers(
 }
 
 function BaselineBlockerRow({ row, index, testId = "baseline-blocker" }: {
-  row: BaselineBlocker;
+  row: PlannerBaselineRow;
   index: number;
   testId?: string;
 }) {
@@ -131,7 +118,7 @@ function BaselineBlockerRow({ row, index, testId = "baseline-blocker" }: {
   const degraded = state === "degraded";
   const tone = degraded ? "var(--crit)" : "var(--watch)";
   return (
-    <div data-testid={testId} key={`${baselineBlockerKey(row)}\u0000${index}`}
+    <div data-testid={testId} key={`${baselinePresentationKey(row)}\u0000${index}`}
       style={{ borderLeft: `3px solid ${tone}`, borderTop: "1px solid var(--border-faint)", padding: "9px 10px", background: degraded ? "var(--crit-soft)" : "var(--watch-soft)" }}>
       <div className="row-flex" style={{ gap: 7, alignItems: "baseline", flexWrap: "wrap" }}>
         <span className="chip" style={{ color: tone, borderColor: tone }}>{state.replaceAll("_", " ").toUpperCase()}</span>
@@ -155,13 +142,40 @@ function BaselineBlockerRow({ row, index, testId = "baseline-blocker" }: {
   );
 }
 
+function LegacyBaselineCandidateRow({ row, index }: {
+  row: BaselinePresentationRow;
+  index: number;
+}) {
+  const state = String(row.baseline_state || row.evidence_state || "unspecified")
+    .trim().toLowerCase();
+  return (
+    <div data-testid="legacy-baseline-candidate"
+      key={`${baselinePresentationKey(row)}\u0000legacy\u0000${index}`}
+      style={{ borderLeft: "3px solid var(--text-faint)", borderTop: "1px solid var(--border-faint)", padding: "9px 10px" }}>
+      <div className="row-flex" style={{ gap: 7, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span className="chip" style={{ color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
+          LEGACY MARKER · DISPLAY ONLY
+        </span>
+        {row.device && <span className="chip mono">{row.device}</span>}
+        <b style={{ fontSize: 12.5 }}>{row.check || "Legacy current-baseline marker"}</b>
+      </div>
+      {row.expect && <div className="dim" style={{ fontSize: 11.5, marginTop: 4 }}>{row.expect}</div>}
+      <div className="faint" style={{ fontSize: 10.5, marginTop: 5 }}>
+        Legacy evidence marker: <span className="mono">{state || "unspecified"}</span>. No producer-owned
+        <span className="mono"> baseline_blocker</span> flag is attached, so this row does not derive a gate or blocker count.
+      </div>
+    </div>
+  );
+}
+
 function CurrentBaselinePanel({
-  gate, blockers, scope, title = "Current baseline gate",
+  gate, blockers, legacyCandidates = [], scope, title = "Current baseline gate",
   subtitle = "Current observed state, separate from before→after change detection",
   rowTestId = "baseline-blocker", footer, fullOperationalCount,
 }: {
   gate?: CurrentBaselineGate;
-  blockers: BaselineBlocker[];
+  blockers: PlannerBaselineRow[];
+  legacyCandidates?: BaselinePresentationRow[];
   scope?: string;
   title?: string;
   subtitle?: string;
@@ -169,17 +183,14 @@ function CurrentBaselinePanel({
   footer?: ReactNode;
   fullOperationalCount?: number;
 }) {
-  if (!gate && blockers.length === 0 && !footer) return null;
-  const verdict = gate?.verdict || (blockers.some((row) =>
-    String(row.evidence_state || row.baseline_state || "").trim().toLowerCase() === "degraded") ? "BLOCKED" : "INDETERMINATE");
+  if (!gate && blockers.length === 0 && legacyCandidates.length === 0 && !footer) return null;
+  const verdict = gate?.verdict || "NOT_ASSESSED";
   const color = BASELINE_GATE_COLOR[verdict] || "var(--text-dim)";
   const testSuffix = scope ? `-${scope}` : "";
-  const counts = gate?.summary?.by_state || {};
-  const stateCount = (state: "degraded" | "review" | "not_verified") => {
-    const supplied = counts[state];
-    if (typeof supplied === "number" && Number.isFinite(supplied) && supplied >= 0) return supplied;
-    return blockers.filter((row) => String(row.evidence_state || row.baseline_state || "").trim().toLowerCase() === state).length;
-  };
+  const suppliedCounts = Object.entries(gate?.summary?.by_state || {})
+    .filter((entry): entry is [string, number] => (
+      typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0
+    ));
   return (
     <section aria-label={title} data-testid={`current-baseline-gate${testSuffix}`}
       style={{ marginTop: 12, border: `1px solid ${color}`, borderRadius: 9, overflow: "hidden" }}>
@@ -196,9 +207,7 @@ function CurrentBaselinePanel({
       </div>
       <div style={{ padding: "8px 10px" }}>
         <div className="dim" style={{ fontSize: 11.5 }}>
-          {gate?.note || (verdict === "CLEAR"
-            ? "No producer-declared baseline blocker was found in observed validation scope."
-            : `${blockers.length} producer-declared baseline blocker(s) require disposition.`)}
+          {gate?.note || "No server-owned current_baseline_gate/1 is attached. Compatibility rows are display-only; no verdict is inferred."}
         </div>
         {verdict === "CLEAR" && (
           <div className="faint" data-testid={`current-baseline-clear-boundary${testSuffix}`} style={{ fontSize: 10.5, marginTop: 4 }}>
@@ -206,13 +215,26 @@ function CurrentBaselinePanel({
           </div>
         )}
         <div className="faint" style={{ fontSize: 10.5, marginTop: 4 }}>
-          {stateCount("degraded")} degraded · {stateCount("review")} review · {stateCount("not_verified")} not verified
+          {suppliedCounts.length
+            ? suppliedCounts.map(([state, count]) => `${count} ${state.replaceAll("_", " ")}`).join(" · ")
+            : `${blockers.length} producer-declared blocker row(s) rendered · server state totals not supplied`}
           {gate?.integrity?.valid === false && " · validation-plan integrity failed"}
         </div>
       </div>
       {blockers.map((row, index) => (
         <BaselineBlockerRow row={row} index={index} testId={rowTestId}
-          key={`${baselineBlockerKey(row)}\u0000${index}`} />
+          key={`${baselinePresentationKey(row)}\u0000${index}`} />
+      ))}
+      {legacyCandidates.length > 0 && (
+        <div className="faint" data-testid="legacy-baseline-disclosure"
+          style={{ fontSize: 10.5, padding: "7px 10px", borderTop: "1px solid var(--border-faint)" }}>
+          {legacyCandidates.length} compatibility candidate(s) are shown so legacy evidence is not hidden.
+          They are neutral presentation hints and do not alter the server-owned gate, counts, or cutover decision.
+        </div>
+      )}
+      {legacyCandidates.map((row, index) => (
+        <LegacyBaselineCandidateRow row={row} index={index}
+          key={`${baselinePresentationKey(row)}\u0000legacy\u0000${index}`} />
       ))}
       {gate?.summary?.blockers_capped && (
         <div className="faint" style={{ fontSize: 10.5, padding: "7px 10px" }}>
@@ -227,18 +249,18 @@ function CurrentBaselinePanel({
   );
 }
 
-function WaveCard({ w, i }: { w: CutoverWaveWithBaseline; i: number }) {
+function WaveCard({ w, i }: { w: CutoverWave; i: number }) {
   const [open, setOpen] = useState(false);
   const split: Record<string, number> = {};
   if (w.make_before_break.length) split["make-before-break"] = w.make_before_break.length;
   if (w.hard_cutover.length) split["hard-cutover"] = w.hard_cutover.length;
   const splitColor = (k: string) => (k === "make-before-break" ? "var(--ok)" : "var(--risk)");
   const br = w.blast_radius;
-  // The API supplies an explicit per-wave list. Retain a metadata-derived fallback so a mixed-version
-  // backend cannot strand a producer-declared blocker after the ordinary ten-row display cap.
-  const baselineBlockers = displayBaselineBlockersForWave(w);
-  const blockerKeys = new Set(baselineBlockers.map(baselineBlockerKey));
-  const ordinaryValidation = w.validation.filter((row) => !blockerKeys.has(baselineBlockerKey(row)));
+  // Explicit receipt rows and the typed producer boolean are authoritative. Untyped legacy markers
+  // are separated as neutral display hints and never promoted into the current-baseline decision.
+  const { blockers: baselineBlockers, legacyCandidates } = baselinePresentationForWave(w);
+  const separatedKeys = new Set([...baselineBlockers, ...legacyCandidates].map(baselinePresentationKey));
+  const ordinaryValidation = w.validation.filter((row) => !separatedKeys.has(baselinePresentationKey(row)));
 
   return (
     // .ros-reveal: reveal-up on mount, capped+staggered per card (DesignBlueprint's DecisionCard idiom)
@@ -305,7 +327,8 @@ function WaveCard({ w, i }: { w: CutoverWaveWithBaseline; i: number }) {
         </div>
       )}
 
-      <CurrentBaselinePanel gate={w.current_baseline} blockers={baselineBlockers} />
+      <CurrentBaselinePanel gate={w.current_baseline} blockers={baselineBlockers}
+        legacyCandidates={legacyCandidates} />
 
       <div style={{ marginTop: 12 }}>
         <button className="btn" onClick={() => setOpen((v) => !v)} aria-expanded={open} style={{ padding: "6px 12px", fontSize: 12 }}>
@@ -375,6 +398,276 @@ function WaveCard({ w, i }: { w: CutoverWaveWithBaseline; i: number }) {
   );
 }
 
+function canonicalGateColor(verdict: string) {
+  return verdict === "PASS"
+    ? "var(--ok)"
+    : verdict === "FAIL" || verdict === "REGRESSED"
+      ? "var(--crit)"
+      : verdict === "CONDITIONAL" || verdict === "REVIEW"
+        ? "var(--watch)"
+        : "var(--text-faint)";
+}
+
+type PlannerExecutionContext = {
+  execution: ExecutionState;
+  campaign: Campaign | null;
+};
+
+function PlannerExecutionComparison({ run, onReceiptBound }: {
+  run: ExecutionMeta;
+  onReceiptBound: () => void;
+}) {
+  const { data, error, loading } = useAsync<PlannerExecutionContext>(async () => {
+    const execution = await api.getExecution(run.id);
+    const campaign = execution.comparison_policy
+      ? await api.getCampaign(execution.comparison_policy.before_snapshot.campaign_id)
+      : null;
+    return { execution, campaign };
+  }, [run.id]);
+  const [boundExecution, setBoundExecution] = useState<ExecutionState | null>(null);
+  const [afterSnapshotId, setAfterSnapshotId] = useState<number | "">("");
+  const [changeIntentText, setChangeIntentText] = useState("");
+  const [observedL2Trial, setObservedL2Trial] = useState<ObservedL2TrialDraft>(
+    EMPTY_OBSERVED_L2_TRIAL,
+  );
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [boundMessage, setBoundMessage] = useState<string | null>(null);
+
+  if (loading && !boundExecution) {
+    return <div className="faint" style={{ padding: 10, fontSize: 11.5 }}>Loading the immutable execution receipt…</div>;
+  }
+  if (error && !boundExecution) return <ErrorBox msg={error} />;
+  const execution = boundExecution || data?.execution;
+  if (!execution) return null;
+
+  const policy = execution.comparison_policy;
+  const receipts = Array.isArray(execution.comparison_receipts) ? execution.comparison_receipts : [];
+  const latestStored = execution.latest_comparison
+    ? receipts.find((row) => row.id === execution.latest_comparison!.receipt_id)
+    : receipts[receipts.length - 1];
+  const latestComparison = latestStored?.receipt.comparison;
+  const frozenCampaignId = policy?.before_snapshot.campaign_id;
+  const campaign = data?.campaign;
+  const candidates = policy && campaign && campaign.id === frozenCampaignId
+    ? (campaign.snapshots || []).filter((snapshot) => (
+      snapshot.campaign_id === frozenCampaignId
+      && snapshot.id !== execution.snapshot_id
+      && snapshot.id !== policy?.before_snapshot.snapshot_id
+    ))
+    : [];
+  const live = execution.status === "in_progress";
+
+  const bind = () => {
+    if (afterSnapshotId === "") {
+      setCompareError("Choose the post-change snapshot first.");
+      return;
+    }
+    let changeIntent: CutoverChangeIntentInput | undefined;
+    if (changeIntentText.trim()) {
+      try {
+        const parsed = JSON.parse(changeIntentText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Expected-change intent must be a JSON object.");
+        }
+        changeIntent = parsed as CutoverChangeIntentInput;
+      } catch (intentError: any) {
+        setCompareError(`Expected-change intent is not valid JSON: ${intentError?.message || String(intentError)}`);
+        return;
+      }
+    }
+    const observed = observedL2TrialRequest(
+      observedL2Trial,
+      policy?.before_snapshot.snapshot_id ?? execution.snapshot_id,
+      afterSnapshotId,
+    );
+    if (observed.error) {
+      setCompareError(observed.error);
+      return;
+    }
+    setCompareBusy(true);
+    setCompareError(null);
+    setBoundMessage(null);
+    const request = observed.input
+      ? api.compareExecution(
+        execution.id, afterSnapshotId, changeIntent, observed.input,
+      )
+      : changeIntent
+        ? api.compareExecution(execution.id, afterSnapshotId, changeIntent)
+        : api.compareExecution(execution.id, afterSnapshotId);
+    request
+      .then((updated) => {
+        setBoundExecution(updated);
+        setAfterSnapshotId("");
+        setChangeIntentText("");
+        setObservedL2Trial({ ...EMPTY_OBSERVED_L2_TRIAL });
+        setBoundMessage("Post-change evidence was appended as an immutable canonical comparison receipt.");
+        onReceiptBound();
+      })
+      .catch((compareFailure) => setCompareError(compareFailure.message || String(compareFailure)))
+      .finally(() => setCompareBusy(false));
+  };
+
+  return (
+    <div data-testid={`cutover-execution-evidence-${run.id}`}
+      style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: 10, marginTop: 8 }}>
+      {latestComparison ? (
+        <ComparisonDecision
+          value={latestComparison}
+          exportFilename={`execution-${execution.id}-comparison-receipt-${latestStored?.id || "latest"}.json`}
+        />
+      ) : policy ? (
+        <section aria-label="Canonical post-change cutover decision"
+          data-testid={`cutover-execution-gate-missing-${run.id}`}
+          style={{ border: "1px solid var(--text-faint)", borderRadius: 9, padding: "9px 10px", marginBottom: 10 }}>
+          <div className="spread" style={{ gap: 8 }}>
+            <div>
+              <b>Canonical post-change cutover decision</b>
+              <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+                {execution.latest_comparison
+                  ? `Latest receipt ${execution.latest_comparison.receipt_id} is identified, but its complete payload is unavailable.`
+                  : "No immutable comparison receipt has been bound to this run."}
+              </div>
+            </div>
+            <span className="chip" style={{ color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
+              NOT VERIFIED
+            </span>
+          </div>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 6 }}>
+            Only the server-owned cutover_gate/1 in a complete stored receipt can authorize this execution.
+          </div>
+        </section>
+      ) : (
+        <section aria-label="Legacy execution comparison status"
+          data-testid={`cutover-execution-legacy-${run.id}`}
+          style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: "9px 10px", marginBottom: 10 }}>
+          <b>Post-change comparison · legacy execution</b>
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 4 }}>
+            This run predates immutable canonical comparison receipts. It remains unchanged and cannot be reinterpreted or backfilled.
+          </div>
+        </section>
+      )}
+
+      {policy && live && (
+        <section aria-label={`Bind post-change evidence for ${run.label}`}
+          data-testid={`cutover-execution-compare-form-${run.id}`}>
+          <b>Bind post-change evidence</b>
+          <div className="dim" style={{ fontSize: 11.5, margin: "4px 0 8px" }}>
+            Candidates come only from frozen campaign {policy.before_snapshot.campaign_id}. The server rechecks campaign, engagement, source custody, subjects, and owner semantics before appending—not replacing—an immutable receipt.
+          </div>
+          <div className="row-flex" style={{ gap: 8, flexWrap: "wrap" }}>
+            <label htmlFor={`cutover-execution-after-${run.id}`} className="faint" style={{ fontSize: 11 }}>
+              After snapshot
+            </label>
+            <select id={`cutover-execution-after-${run.id}`}
+              aria-label={`After snapshot for ${run.label}`}
+              value={afterSnapshotId}
+              onChange={(event) => setAfterSnapshotId(event.target.value === "" ? "" : Number(event.target.value))}
+              disabled={compareBusy || candidates.length === 0}
+              style={{ minWidth: 220 }}>
+              <option value="">choose post-change evidence…</option>
+              {candidates.map((snapshot) => (
+                <option key={snapshot.id} value={snapshot.id}>{snapshot.label} · snapshot {snapshot.id}</option>
+              ))}
+            </select>
+            <button type="button" className="btn primary" onClick={bind}
+              aria-label={`Bind and compare ${run.label}`}
+              disabled={compareBusy || afterSnapshotId === ""
+                || observedL2TrialIsReading(observedL2Trial)}>
+              {compareBusy ? "Comparing…" : "Bind and compare"}
+            </button>
+          </div>
+          <details style={{ marginTop: 8 }}>
+            <summary className="faint" style={{ cursor: "pointer", fontSize: 11.5 }}>
+              Expected family changes (optional, frozen into this receipt)
+            </summary>
+            <textarea aria-label={`Expected family changes for ${run.label}`}
+              value={changeIntentText}
+              onChange={(event) => setChangeIntentText(event.target.value)} rows={4}
+              placeholder={'{"expected_changes":[{"family":"fhrp_redundancy_domain","transitions":["intent_changed"],"subjects":[],"reason":"planned active role move"}],"note":"CAB-1234"}'}
+              style={{ width: "100%", marginTop: 6, fontFamily: "var(--mono)", fontSize: 11 }} />
+          </details>
+          <ObservedL2TrialInput
+            idPrefix={`cutover-planner-${run.id}`}
+            draft={observedL2Trial}
+            onChange={setObservedL2Trial}
+            snapshots={candidates}
+            beforeSnapshotId={policy.before_snapshot.snapshot_id}
+            recoverySnapshotId={afterSnapshotId}
+            disabled={compareBusy}
+          />
+          {execution.l2_failure_trial_requirement && (
+            <div role="alert" data-testid={`cutover-execution-l2-retrial-${run.id}`}
+              style={{ color: "var(--crit)", fontSize: 11.5, marginTop: 8 }}>
+              A prior {execution.l2_failure_trial_requirement.status.replaceAll("_", " ")} trial
+              remains binding for <span className="mono">{execution.l2_failure_trial_requirement.family} · {execution.l2_failure_trial_requirement.subject}</span>.
+              Only a strictly newer exact observed-survival trial can clear it.
+            </div>
+          )}
+          {candidates.length === 0 && (
+            <div className="faint" style={{ fontSize: 11, marginTop: 7 }}>
+              No second snapshot is available in this execution&apos;s campaign yet.
+            </div>
+          )}
+          {compareError && <div role="alert" style={{ color: "var(--crit)", fontSize: 11.5, marginTop: 7 }}>{compareError}</div>}
+          {boundMessage && <div role="status" style={{ color: "var(--ok)", fontSize: 11.5, marginTop: 7 }}>{boundMessage}</div>}
+        </section>
+      )}
+      {policy && !live && (
+        <div className="faint" style={{ fontSize: 11.5 }}>
+          This execution is read-only; its {receipts.length} immutable comparison receipt(s) cannot be replaced or appended.
+        </div>
+      )}
+      {policy && receipts.length > 0 && (
+        <div className="faint" style={{ fontSize: 10.5, marginTop: 7 }}>
+          {receipts.length} immutable comparison receipt(s) retained · latest receipt {execution.latest_comparison?.receipt_id ?? "not identified"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExecutionRunCard({ run, onReceiptBound }: {
+  run: ExecutionMeta;
+  onReceiptBound: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const STATUS_COLOR: Record<string, string> = {
+    in_progress: "var(--accent)", completed: "var(--ok)", aborted: "var(--crit)",
+  };
+  return (
+    <div data-testid={`cutover-execution-card-${run.id}`}>
+      <div className="row-flex" style={{ gap: 7, flexWrap: "wrap" }}>
+        <Link to={`/executions/${run.id}`} className="chip"
+          data-testid={`cutover-execution-${run.id}`} style={{ textDecoration: "none" }}>
+          <span className="dot" style={{ background: STATUS_COLOR[run.status] || "var(--text-faint)" }} />
+          {run.label} · <span className="faint">{run.status.replace("_", " ")}</span>
+          {run.latest_comparison ? (
+            <>
+              {" · "}<span style={{ color: canonicalGateColor(run.latest_comparison.cutover_gate.verdict) }}>
+                post-change {run.latest_comparison.cutover_gate.verdict}
+              </span>
+              <span className="faint"> · after snapshot {run.latest_comparison.after_snapshot_id}</span>
+            </>
+          ) : run.comparison_required ? (
+            <span style={{ color: "var(--text-faint)" }}> · post-change NOT VERIFIED</span>
+          ) : (
+            <span className="faint"> · legacy · no canonical receipt</span>
+          )}
+        </Link>
+        <button type="button" className="btn ghost"
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Open"} post-change evidence for ${run.label}`}
+          onClick={() => setOpen((value) => !value)}
+          style={{ padding: "3px 8px", fontSize: 10.5 }}>
+          {open ? "Hide evidence" : run.comparison_required ? "Bind / view evidence" : "View legacy status"}
+        </button>
+      </div>
+      {open && <PlannerExecutionComparison run={run} onReceiptBound={onReceiptBound} />}
+    </div>
+  );
+}
+
 /* Existing war-room runs over this plan + the entry point to start a new one. */
 function ExecutionRuns({ snapId }: { snapId: number }) {
   const navigate = useNavigate();
@@ -395,9 +688,6 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
       .then((ex) => navigate(`/executions/${ex.id}`))
       .catch((e) => { setError(e.message || String(e)); reload(); })
       .finally(() => setStarting(false));
-  };
-  const STATUS_COLOR: Record<string, string> = {
-    in_progress: "var(--accent)", completed: "var(--ok)", aborted: "var(--crit)",
   };
   return (
     <div style={{ marginTop: 16, borderTop: "1px solid var(--border-faint)", paddingTop: 14 }}>
@@ -426,12 +716,9 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
         <div className="faint" style={{ fontSize: 11.5, marginTop: 8 }}>Checking for existing runs…</div>
       )}
       {(runs || []).length > 0 && (
-        <div className="row-flex" style={{ marginTop: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
           {(runs || []).map((r) => (
-            <Link key={r.id} to={`/executions/${r.id}`} className="chip" style={{ textDecoration: "none" }}>
-              <span className="dot" style={{ background: STATUS_COLOR[r.status] || "var(--text-faint)" }} />
-              {r.label} · <span className="faint">{r.status.replace("_", " ")}</span>
-            </Link>
+            <ExecutionRunCard key={r.id} run={r} onReceiptBound={reload} />
           ))}
         </div>
       )}
@@ -447,11 +734,11 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
   if (error) return <ErrorBox msg={error} />;
   const plan = data!;
   const s = plan.summary;
-  const fleetBaselineBlockers: BaselineBlocker[] = Array.isArray(plan.baseline_blockers)
+  const fleetBaselineBlockers: CurrentBaselineBlocker[] = Array.isArray(plan.baseline_blockers)
     ? plan.baseline_blockers
     : Array.isArray(s.current_baseline?.blockers) ? s.current_baseline.blockers : [];
   const fleetUnboundBlockers = unboundBaselineBlockers(
-    fleetBaselineBlockers, plan.waves as CutoverWaveWithBaseline[],
+    fleetBaselineBlockers, plan.waves,
   );
   const reportedUnbound = typeof s.n_unbound_baseline_blockers === "number"
     ? s.n_unbound_baseline_blockers : fleetUnboundBlockers.length;

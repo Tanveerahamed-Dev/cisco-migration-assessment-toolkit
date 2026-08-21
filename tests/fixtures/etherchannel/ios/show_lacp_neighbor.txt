@@ -1,0 +1,11 @@
+Flags:  S - Device is requesting Slow LACPDUs
+        A - Device is in Active mode
+
+Channel group 10 neighbors
+
+Partner's information:
+
+                  LACP port                      Admin  Oper   Port    Port
+Port      Flags   Priority  Dev ID          Age  key    Key    Number  State
+Gi1/0/1  SA      32768     0011.2233.4455  12s  0x0    0x2    0x101   0x3D
+Gi1/0/2  SP      32768     0011.2233.4455  11s  0x0    0x2    0x102   0x3D

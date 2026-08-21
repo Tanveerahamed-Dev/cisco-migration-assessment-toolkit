@@ -6,7 +6,7 @@
   "denominator": {
     "baseline_ref": "baseline.protocol.health",
     "catalog_domain_ref": "domain.protocols",
-    "catalog_cell_count": 38,
+    "catalog_cell_count": 39,
     "health_family_count": 7,
     "family_count": 8,
     "stage_count": 8,

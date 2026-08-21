@@ -18,6 +18,8 @@ deviations, was partially implemented, or was backed out.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -50,7 +52,11 @@ OUTCOME_ABORTED = "ABORTED"
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Share the persistence owner's monotonic UTC clock so a coarse Windows wall clock cannot
+    # collapse start, step-completion, and upload into one ambiguous timestamp.
+    from .storage import _now as persistence_now
+
+    return persistence_now()
 
 
 def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -60,6 +66,68 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(ts)
     except ValueError:
         return None
+
+
+def implementation_evidence_binding(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Bind the complete actioned implementation step set for post-change evidence.
+
+    Validation checks and closeout may legitimately follow snapshot collection, but every planned
+    change step must already be actioned. The canonical digest also makes a later reset/re-action
+    distinguishable even if a coarse platform clock repeats the same displayed timestamp.
+    """
+    waves = state.get("waves") if isinstance(state, dict) else None
+    rows: List[Dict[str, Any]] = []
+    timestamps: List[datetime] = []
+    failures: List[str] = []
+    if not isinstance(waves, list) or not waves:
+        failures.append("execution has no implementation waves")
+    else:
+        for wave_index, wave in enumerate(waves):
+            if not isinstance(wave, dict):
+                failures.append(f"wave {wave_index} is malformed")
+                continue
+            group = str(wave.get("group") or f"wave-{wave_index + 1}")
+            steps = wave.get("steps")
+            if not isinstance(steps, list) or not steps:
+                failures.append(f"wave {group} has no implementation steps")
+                continue
+            for step_index, step in enumerate(steps):
+                if not isinstance(step, dict):
+                    failures.append(f"wave {group} step {step_index} is malformed")
+                    continue
+                status = step.get("status")
+                at = step.get("at")
+                parsed = _parse_ts(at if isinstance(at, str) else None)
+                if status not in {"done", "skipped"}:
+                    failures.append(f"wave {group} step {step_index} is still pending")
+                if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
+                    failures.append(
+                        f"wave {group} step {step_index} has no aware completion timestamp"
+                    )
+                else:
+                    parsed = parsed.astimezone(timezone.utc)
+                    timestamps.append(parsed)
+                rows.append({
+                    "wave": group,
+                    "index": step_index,
+                    "phase": str(step.get("phase") or ""),
+                    "action": str(step.get("action") or ""),
+                    "status": status,
+                    "at": at,
+                })
+    payload = json.dumps(
+        rows, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return {
+        "schema": "execution_implementation_binding/1",
+        "valid": not failures and bool(rows),
+        "n_steps": len(rows),
+        "completed_at": (
+            max(timestamps).isoformat(timespec="microseconds") if timestamps else ""
+        ),
+        "steps_sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "failures": failures,
+    }
 
 
 def _unique_groups(plan_waves: List[Dict[str, Any]]) -> List[str]:
@@ -80,7 +148,8 @@ def _unique_groups(plan_waves: List[Dict[str, Any]]) -> List[str]:
     return names
 
 
-def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]:
+def start_run(snap: Dict[str, Any], label: str, operator: str,
+              *, source_binding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Materialize the snapshot's cutover plan into a frozen, executable run state."""
     plan = cutover.build_plan(snap)
     raw_plan_blockers = [
@@ -151,6 +220,16 @@ def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]
         "waves": waves,
         "events": [],
     }
+    if isinstance(source_binding, dict):
+        # Only API-created Release-1 executions carry this marker. Legacy persisted runs and direct
+        # library fixtures omit it and retain their historical outcome semantics; they are never
+        # backfilled or reinterpreted as having post-change evidence.
+        state["execution_schema"] = "cutover_execution/2"
+        state["comparison_policy"] = {
+            "schema": "execution_comparison_policy/1",
+            "canonical_gate_required": True,
+            "before_snapshot": dict(source_binding),
+        }
     _log(state, "run", f"Execution run started from the cutover plan (posture at start: "
                        f"{plan['summary'].get('verdict', '—')}).", "", operator)
     return state
@@ -278,6 +357,26 @@ def _derive_outcome(state: Dict[str, Any], status: str) -> str:
         return OUTCOME_PARTIAL
     if any(c.get("result") == "pending" for w in state["waves"] for c in w["checks"]):
         return OUTCOME_PARTIAL
+    policy = state.get("comparison_policy")
+    if (isinstance(policy, dict)
+            and policy.get("schema") == "execution_comparison_policy/1"
+            and policy.get("canonical_gate_required") is True):
+        if isinstance(state.get("l2_failure_trial_requirement"), dict):
+            # An observed local failure is monotone execution evidence.  A later comparison that
+            # omits the trial cannot erase it; only a newer exact successful re-trial clears the
+            # storage-owned requirement.
+            return OUTCOME_PARTIAL
+        latest = state.get("latest_comparison")
+        gate = latest.get("cutover_gate") if isinstance(latest, dict) else None
+        if (not isinstance(gate, dict) or gate.get("schema") != "cutover_gate/1"
+                or gate.get("verdict") != "PASS"):
+            return OUTCOME_PARTIAL
+        implementation_binding = implementation_evidence_binding(state)
+        if (
+            implementation_binding.get("valid") is not True
+            or latest.get("implementation_binding") != implementation_binding
+        ):
+            return OUTCOME_PARTIAL
     failed = any(c.get("result") != "pass" for w in state["waves"] for c in w["checks"])
     skipped = any(s.get("status") != "done" for w in state["waves"] for s in w["steps"])
     deviations = any(e["kind"] == "deviation" for e in state["events"])
@@ -298,13 +397,22 @@ def finish(state: Dict[str, Any], status: str, note: str, by: str) -> None:
 
 
 def with_current_outcome(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a read view whose finished outcome uses the current evidence rules.
+    """Return a read view whose finished v2 outcome uses the current evidence rules.
 
-    Older rows may have persisted ``SUCCESSFUL`` under the former closeout-only rule. Reads and
-    PIR exports must not keep publishing that stale verdict after the authority rule is fixed.
+    Legacy executions predate canonical comparison custody.  Their persisted outcome is historical
+    evidence and must not be reinterpreted at read/export time; only ``cutover_execution/2`` rows
+    carrying the canonical comparison policy opt into the current evidence-derived outcome rules.
     """
     status = state.get("status")
     if status not in ("completed", "aborted"):
+        return state
+    policy = state.get("comparison_policy")
+    if (
+        state.get("execution_schema") != "cutover_execution/2"
+        or not isinstance(policy, dict)
+        or policy.get("schema") != "execution_comparison_policy/1"
+        or policy.get("canonical_gate_required") is not True
+    ):
         return state
     current = _derive_outcome(state, status)
     if state.get("outcome") == current:

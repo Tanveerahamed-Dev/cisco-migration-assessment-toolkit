@@ -1789,7 +1789,7 @@
    "schema": "fhrp_configured_group_baseline/1",
    "valid": true,
    "source_bound": false,
-   "configured_baseline_sha256": "72ceeb7ac7d049a5738c5386828b51eacadf69d6fe8e24ec0a4bf141695724e6",
+   "configured_baseline_sha256": "dd9eae3398e8632ff7b1270899dd44131674812ab4f0ddcc4910245673966cae",
    "svi_projection_sha256": "7c28339ac17ccb725a78c24654b29587d621ac5831a6dfa3f1b39cc83fcf7c66"
   },
   "rows": [
@@ -1927,44 +1927,44 @@
     "virtual_ip": "10.0.10.1",
     "members": [
      {
-      "protocol": "HSRP",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "group": "10",
       "source_group_key": "HSRP:Vlan10:10",
-      "switch": "core1",
-      "role": "ACTIVE",
-      "interface": "Vlan10",
       "virtual_ip": "10.0.10.1",
-      "participation": "positive",
-      "svi_ip": "10.0.10.2/24",
+      "protocol": "HSRP",
+      "interface": "Vlan10",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ]
+      ],
+      "local_status": "not_verified",
+      "role": "ACTIVE",
+      "group": "10",
+      "switch": "core1",
+      "svi_ip": "10.0.10.2/24",
+      "participation": "positive"
      },
      {
-      "protocol": "HSRP",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "group": "10",
       "source_group_key": "HSRP:Vlan10:10",
-      "switch": "core2",
-      "role": "STANDBY",
-      "interface": "Vlan10",
       "virtual_ip": "10.0.10.1",
-      "participation": "positive",
-      "svi_ip": "10.0.10.3/24",
+      "protocol": "HSRP",
+      "interface": "Vlan10",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ]
+      ],
+      "local_status": "not_verified",
+      "role": "STANDBY",
+      "group": "10",
+      "switch": "core2",
+      "svi_ip": "10.0.10.3/24",
+      "participation": "positive"
      }
     ],
     "findings": [
@@ -1992,44 +1992,44 @@
     "virtual_ip": "10.0.20.1",
     "members": [
      {
-      "protocol": "HSRP",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "group": "20",
       "source_group_key": "HSRP:Vlan20:20",
-      "switch": "core1",
-      "role": "STANDBY",
-      "interface": "Vlan20",
       "virtual_ip": "10.0.20.1",
-      "participation": "positive",
-      "svi_ip": "10.0.20.2/24",
+      "protocol": "HSRP",
+      "interface": "Vlan20",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ]
+      ],
+      "local_status": "not_verified",
+      "role": "STANDBY",
+      "group": "20",
+      "switch": "core1",
+      "svi_ip": "10.0.20.2/24",
+      "participation": "positive"
      },
      {
-      "protocol": "HSRP",
-      "local_status": "not_verified",
-      "projection_custody": "embedded_unverified",
-      "group": "20",
       "source_group_key": "HSRP:Vlan20:20",
-      "switch": "core2",
-      "role": "ACTIVE",
-      "interface": "Vlan20",
       "virtual_ip": "10.0.20.1",
-      "participation": "positive",
-      "svi_ip": "10.0.20.3/24",
+      "protocol": "HSRP",
+      "interface": "Vlan20",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ]
+      ],
+      "local_status": "not_verified",
+      "role": "ACTIVE",
+      "group": "20",
+      "switch": "core2",
+      "svi_ip": "10.0.20.3/24",
+      "participation": "positive"
      }
     ],
     "findings": [
@@ -2071,7 +2071,7 @@
     "not_verified": 2,
     "assessed": 0
    },
-   "baseline_sha256": "566951784c7e048b34bb6edf27a8b783b4fb7e283e89ed914713ce24e64c186c"
+   "baseline_sha256": "25465cc2a87f3862774b0b05dbae844b108093cdf87ab5b7ed6a4ba72b2bcdf1"
   },
   "limitations": [
    "Subjects are exact observed VLAN + normalized VRF + observed IPv4 subnet domains with at least two in-scope gateway SVIs and at least one positive FHRP participant.",
@@ -2169,6 +2169,220 @@
    "A configuration revision is an observed counter, not a freshness, correctness, or safe-to-match target; matching a high revision is not acceptance.",
    "VTP passwords, database contents, pruning behavior, per-VLAN propagation, simultaneous state, failover, and cutover authorization remain outside this receipt.",
    "NOT_APPLICABLE means no positive local VTP-status subject was identified in the bounded input; it is not proof that VTP is absent from the platform or network."
+  ]
+ },
+ "vtp_extended_evidence": {
+  "schema": "vtp_extended_evidence/1",
+  "owner_version": "1",
+  "family": "vtp_safety",
+  "owns_score": false,
+  "owns_verdict": false,
+  "projection_custody": "embedded_unverified",
+  "rows": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "status": "not_verified",
+    "mode": "off",
+    "mode_present": false,
+    "domain": "",
+    "domain_present": false,
+    "version": "",
+    "version_present": false,
+    "revision": 0,
+    "revision_present": false,
+    "database_identity": "",
+    "vlan_database_digest": "",
+    "vlan_count": 0,
+    "pruning_state": "not_configured",
+    "authentication_configured": false,
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "code": "capture_not_verified",
+      "note": "running configuration evidence lacks one unique integrity-ok show running-config receipt."
+     }
+    ]
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "status": "not_verified",
+    "mode": "off",
+    "mode_present": false,
+    "domain": "",
+    "domain_present": false,
+    "version": "",
+    "version_present": false,
+    "revision": 0,
+    "revision_present": false,
+    "database_identity": "",
+    "vlan_database_digest": "",
+    "vlan_count": 0,
+    "pruning_state": "not_configured",
+    "authentication_configured": false,
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "code": "capture_not_verified",
+      "note": "running configuration evidence lacks one unique integrity-ok show running-config receipt."
+     }
+    ]
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "status": "not_verified",
+    "mode": "off",
+    "mode_present": false,
+    "domain": "",
+    "domain_present": false,
+    "version": "",
+    "version_present": false,
+    "revision": 0,
+    "revision_present": false,
+    "database_identity": "",
+    "vlan_database_digest": "",
+    "vlan_count": 0,
+    "pruning_state": "not_configured",
+    "authentication_configured": false,
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "code": "capture_not_verified",
+      "note": "running configuration evidence lacks one unique integrity-ok show running-config receipt."
+     }
+    ]
+   }
+  ],
+  "coverage": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "status": "not_verified",
+    "commands": {
+     "show vtp status": {
+      "capture_status": "not_observed",
+      "parser_status": "not_verified",
+      "candidate_count": 0,
+      "parsed_count": 0,
+      "rejected_count": 0,
+      "source_sha256": ""
+     },
+     "show vlan brief": {
+      "capture_status": "ok",
+      "parser_status": "complete",
+      "candidate_count": 3,
+      "parsed_count": 3,
+      "rejected_count": 0,
+      "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
+     },
+     "show running-config": {
+      "capture_status": "incomplete",
+      "parser_status": "not_verified",
+      "candidate_count": 0,
+      "parsed_count": 0,
+      "rejected_count": 0,
+      "source_sha256": ""
+     }
+    },
+    "projection_sha256": "sha256:ba50bb2acbe68ecbace7ffd51c4f014c1d6af29d887836e0335835649c89220a",
+    "finding_codes": [
+     "capture_not_verified"
+    ]
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "status": "not_verified",
+    "commands": {
+     "show vtp status": {
+      "capture_status": "not_observed",
+      "parser_status": "not_verified",
+      "candidate_count": 0,
+      "parsed_count": 0,
+      "rejected_count": 0,
+      "source_sha256": ""
+     },
+     "show vlan brief": {
+      "capture_status": "ok",
+      "parser_status": "complete",
+      "candidate_count": 3,
+      "parsed_count": 3,
+      "rejected_count": 0,
+      "source_sha256": "sha256:843bd55d3ddf68f03a3c6671a2bf486b155528f87127605f0b8a80d9eb9132f9"
+     },
+     "show running-config": {
+      "capture_status": "incomplete",
+      "parser_status": "not_verified",
+      "candidate_count": 0,
+      "parsed_count": 0,
+      "rejected_count": 0,
+      "source_sha256": ""
+     }
+    },
+    "projection_sha256": "sha256:f59cc72547164fd91bb49b9f80f6a0705ade00ab00a7708cf89c2c49512c4ee4",
+    "finding_codes": [
+     "capture_not_verified"
+    ]
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "status": "not_verified",
+    "commands": {
+     "show vtp status": {
+      "capture_status": "not_observed",
+      "parser_status": "not_verified",
+      "candidate_count": 0,
+      "parsed_count": 0,
+      "rejected_count": 0,
+      "source_sha256": ""
+     },
+     "show vlan brief": {
+      "capture_status": "ok",
+      "parser_status": "complete",
+      "candidate_count": 2,
+      "parsed_count": 2,
+      "rejected_count": 0,
+      "source_sha256": "sha256:08d0a361a1e61544d4b836efd1b277e536f125256d9b29543f42c06ce77213dd"
+     },
+     "show running-config": {
+      "capture_status": "not_observed",
+      "parser_status": "not_verified",
+      "candidate_count": 0,
+      "parsed_count": 0,
+      "rejected_count": 0,
+      "source_sha256": ""
+     }
+    },
+    "projection_sha256": "sha256:50d1bc5739a492338bc67644e12f7c7c90eb92474dbaa4f06b391fa77c2ee687",
+    "finding_codes": [
+     "capture_not_verified"
+    ]
+   }
+  ],
+  "summary": {
+   "n_hosts": 3,
+   "n_healthy": 0,
+   "n_unsafe": 0,
+   "n_not_verified": 3,
+   "n_active": 0,
+   "n_high_revision_servers": 0,
+   "n_authentication_contradictions": 0,
+   "n_vlan_digest_contradictions": 0,
+   "by_status": {
+    "healthy": 0,
+    "unsafe": 0,
+    "not_verified": 3
+   },
+   "baseline_sha256": "bd3d7225a84122745b3325339098e36eec60d5dd18fbd3fd8ace39e66250d331"
+  },
+  "limitations": [
+   "IOS/IOS-XE and NX-OS text variants are supported only when all three exact command captures have unique integrity-ok receipts.",
+   "The VLAN database digest is derived from sorted VLAN id/name/status rows; it does not prove advertisement reachability, convergence, or per-port membership.",
+   "Authentication records configured presence only. Passwords, password hashes, and device-reported authentication digests are never retained.",
+   "A revision decrease is only an observation; only exact-subject revision_reset intent in cutover_change_intent/1 may classify and reconcile it as a planned reset."
   ]
  },
  "ipv6_routing_adjacency_baseline": {
@@ -2807,6 +3021,557 @@
    "Association-only evidence carries no operational state and requires a current summary capture.",
    "A single snapshot cannot establish waiting persistence, hashing, capacity, or multi-chassis consistency.",
    "The embedded receipt does not cryptographically bind the projection to raw captures."
+  ]
+ },
+ "etherchannel_operational_evidence": {
+  "schema": "etherchannel_operational_evidence/1",
+  "scope": {
+   "subject": "single_chassis_local_aggregation_group",
+   "platforms": [
+    "ios",
+    "nxos"
+   ],
+   "configured_modes": [
+    "active",
+    "passive",
+    "desirable",
+    "auto",
+    "on"
+   ],
+   "counter_fields": [
+    "input_errors",
+    "crc",
+    "output_errors",
+    "output_drops"
+   ]
+  },
+  "verdict": "INDETERMINATE",
+  "assessed": false,
+  "projection_custody": "embedded_unverified",
+  "rows": [
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "group": "Po1",
+    "group_id": "1",
+    "status": "not_verified",
+    "protocol": "lacp",
+    "configured_members": [
+     {
+      "interface": "Gi1/0/1",
+      "mode": "active"
+     },
+     {
+      "interface": "Gi1/0/2",
+      "mode": "active"
+     }
+    ],
+    "runtime_members": [
+     {
+      "interface": "Gi1/0/1",
+      "flags": "P",
+      "state": "forwarding_observed",
+      "forwarding": true
+     },
+     {
+      "interface": "Gi1/0/2",
+      "flags": "P",
+      "state": "forwarding_observed",
+      "forwarding": true
+     }
+    ],
+    "member_metrics": [
+     {
+      "interface": "Gi1/0/1",
+      "speed_mbps": 1000,
+      "counters": {
+       "input_errors": null,
+       "crc": null,
+       "output_errors": null,
+       "output_drops": null
+      }
+     },
+     {
+      "interface": "Gi1/0/2",
+      "speed_mbps": 1000,
+      "counters": {
+       "input_errors": null,
+       "crc": null,
+       "output_errors": null,
+       "output_drops": null
+      }
+     }
+    ],
+    "partner": {
+     "status": "not_verified",
+     "system_id": "",
+     "aggregation_id": "",
+     "member_count": 0
+    },
+    "min_links": {
+     "status": "not_verified",
+     "configured": false,
+     "value": null
+    },
+    "capacity": {
+     "status": "assessed",
+     "configured_member_count": 2,
+     "runtime_member_count": 2,
+     "forwarding_member_count": 2,
+     "configured_bandwidth_mbps": 2000,
+     "forwarding_bandwidth_mbps": 2000
+    },
+    "hashing": {
+     "status": "not_verified",
+     "algorithm": ""
+    },
+    "counter_evidence": {
+     "status": "not_verified",
+     "fields": [
+      "input_errors",
+      "crc",
+      "output_errors",
+      "output_drops"
+     ],
+     "fault_total": 0,
+     "fault_members": []
+    },
+    "member_failure_rehearsal": {
+     "schema": "etherchannel_single_member_failure/1",
+     "scenario": "single_forwarding_member_loss",
+     "status": "not_verified",
+     "claim": "local_count_min_links_and_worst_case_bandwidth_only",
+     "before_forwarding_members": 2,
+     "after_forwarding_members": 1,
+     "min_links": null,
+     "count_survives": null,
+     "before_bandwidth_mbps": 2000,
+     "after_worst_case_bandwidth_mbps": 1000,
+     "service_path_survival": "not_verified"
+    },
+    "source_key": "core1:Po1#running-config+summary+partner+interface-status+counters",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "config_scope_mismatch",
+      "issue": "Full and interface-scoped running configuration do not reconcile for EtherChannel intent."
+     },
+     {
+      "kind": "not_verified",
+      "code": "configured_group_not_reconciled",
+      "issue": "The group is not present in both full and interface-scoped configuration evidence."
+     },
+     {
+      "kind": "not_verified",
+      "code": "full_config_capture_incomplete",
+      "issue": "Required full config evidence is incomplete."
+     },
+     {
+      "kind": "not_verified",
+      "code": "hashing_algorithm_not_verified",
+      "issue": "No exact configured port-channel load-balance algorithm was normalized."
+     },
+     {
+      "kind": "not_verified",
+      "code": "lacp_partner_not_verified",
+      "issue": "Every runtime LACP member does not carry an explicit partner system and aggregation key."
+     },
+     {
+      "kind": "not_verified",
+      "code": "member_counters_not_verified",
+      "issue": "Every bounded physical counter leaf was not captured for every member."
+     },
+     {
+      "kind": "not_verified",
+      "code": "min_links_not_verified",
+      "issue": "An explicit, reconciled min-links value is required for local failure assurance."
+     },
+     {
+      "kind": "not_verified",
+      "code": "scoped_config_terminator_missing",
+      "issue": "A relevant running-configuration line could not be normalized without guessing."
+     },
+     {
+      "kind": "not_verified",
+      "code": "single_member_failure_not_verified",
+      "issue": "Local one-member-loss eligibility cannot be reconciled without explicit min-links."
+     }
+    ]
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "group": "Po1",
+    "group_id": "1",
+    "status": "not_verified",
+    "protocol": "lacp",
+    "configured_members": [
+     {
+      "interface": "Eth1/1",
+      "mode": "active"
+     },
+     {
+      "interface": "Eth1/2",
+      "mode": "active"
+     }
+    ],
+    "runtime_members": [
+     {
+      "interface": "Eth1/1",
+      "flags": "P",
+      "state": "forwarding_observed",
+      "forwarding": true
+     },
+     {
+      "interface": "Eth1/2",
+      "flags": "P",
+      "state": "forwarding_observed",
+      "forwarding": true
+     }
+    ],
+    "member_metrics": [
+     {
+      "interface": "Eth1/1",
+      "speed_mbps": 1000,
+      "counters": {
+       "input_errors": 0,
+       "crc": 0,
+       "output_errors": null,
+       "output_drops": 0
+      }
+     },
+     {
+      "interface": "Eth1/2",
+      "speed_mbps": 1000,
+      "counters": {
+       "input_errors": null,
+       "crc": null,
+       "output_errors": null,
+       "output_drops": null
+      }
+     }
+    ],
+    "partner": {
+     "status": "not_verified",
+     "system_id": "",
+     "aggregation_id": "",
+     "member_count": 0
+    },
+    "min_links": {
+     "status": "not_verified",
+     "configured": false,
+     "value": null
+    },
+    "capacity": {
+     "status": "assessed",
+     "configured_member_count": 2,
+     "runtime_member_count": 2,
+     "forwarding_member_count": 2,
+     "configured_bandwidth_mbps": 2000,
+     "forwarding_bandwidth_mbps": 2000
+    },
+    "hashing": {
+     "status": "not_verified",
+     "algorithm": ""
+    },
+    "counter_evidence": {
+     "status": "not_verified",
+     "fields": [
+      "input_errors",
+      "crc",
+      "output_errors",
+      "output_drops"
+     ],
+     "fault_total": 0,
+     "fault_members": []
+    },
+    "member_failure_rehearsal": {
+     "schema": "etherchannel_single_member_failure/1",
+     "scenario": "single_forwarding_member_loss",
+     "status": "not_verified",
+     "claim": "local_count_min_links_and_worst_case_bandwidth_only",
+     "before_forwarding_members": 2,
+     "after_forwarding_members": 1,
+     "min_links": null,
+     "count_survives": null,
+     "before_bandwidth_mbps": 2000,
+     "after_worst_case_bandwidth_mbps": 1000,
+     "service_path_survival": "not_verified"
+    },
+    "source_key": "core2:Po1#running-config+summary+partner+interface-status+counters",
+    "projection_custody": "embedded_unverified",
+    "findings": [
+     {
+      "kind": "not_verified",
+      "code": "config_scope_mismatch",
+      "issue": "Full and interface-scoped running configuration do not reconcile for EtherChannel intent."
+     },
+     {
+      "kind": "not_verified",
+      "code": "configured_group_not_reconciled",
+      "issue": "The group is not present in both full and interface-scoped configuration evidence."
+     },
+     {
+      "kind": "not_verified",
+      "code": "full_config_capture_not_observed",
+      "issue": "Required full config evidence is not observed."
+     },
+     {
+      "kind": "not_verified",
+      "code": "hashing_algorithm_not_verified",
+      "issue": "No exact configured port-channel load-balance algorithm was normalized."
+     },
+     {
+      "kind": "not_verified",
+      "code": "lacp_partner_not_verified",
+      "issue": "Every runtime LACP member does not carry an explicit partner system and aggregation key."
+     },
+     {
+      "kind": "not_verified",
+      "code": "member_counters_not_verified",
+      "issue": "Every bounded physical counter leaf was not captured for every member."
+     },
+     {
+      "kind": "not_verified",
+      "code": "min_links_not_verified",
+      "issue": "An explicit, reconciled min-links value is required for local failure assurance."
+     },
+     {
+      "kind": "not_verified",
+      "code": "scoped_config_terminator_missing",
+      "issue": "A relevant running-configuration line could not be normalized without guessing."
+     },
+     {
+      "kind": "not_verified",
+      "code": "single_member_failure_not_verified",
+      "issue": "Local one-member-loss eligibility cannot be reconciled without explicit min-links."
+     }
+    ]
+   }
+  ],
+  "coverage": [
+   {
+    "switch": "access1",
+    "platform": "ios",
+    "subject": false,
+    "absence_verified": false,
+    "status": "not_verified",
+    "subject_group_count": 0,
+    "source_receipts": [
+     {
+      "role": "summary",
+      "command": "",
+      "capture_status": "not_observed",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "full_config",
+      "command": "show running-config",
+      "capture_status": "incomplete",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "scoped_config",
+      "command": "show running-config | section ^interface",
+      "capture_status": "ok",
+      "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+      "bytes": 382
+     },
+     {
+      "role": "partner",
+      "command": "",
+      "capture_status": "not_observed",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "interface_status",
+      "command": "show interface status",
+      "capture_status": "ok",
+      "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+      "bytes": 409
+     },
+     {
+      "role": "interface_counters",
+      "command": "show interfaces",
+      "capture_status": "ok",
+      "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+      "bytes": 306
+     }
+    ],
+    "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
+    "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "finding_codes": [
+     "absence_not_verified"
+    ]
+   },
+   {
+    "switch": "core1",
+    "platform": "ios",
+    "subject": true,
+    "absence_verified": false,
+    "status": "not_verified",
+    "subject_group_count": 1,
+    "source_receipts": [
+     {
+      "role": "summary",
+      "command": "show etherchannel summary",
+      "capture_status": "ok",
+      "source_sha256": "sha256:402888b00b7f2ece0fcd5bf949b322ec492c3909e409b5c8e998b5844142f048",
+      "bytes": 339
+     },
+     {
+      "role": "full_config",
+      "command": "show running-config",
+      "capture_status": "incomplete",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "scoped_config",
+      "command": "show running-config | section ^interface",
+      "capture_status": "ok",
+      "source_sha256": "sha256:8b657e7ab5f0c74b95befcb00a9b940f03f8bf9e4c640752e197a9d1b9a9f96c",
+      "bytes": 1047
+     },
+     {
+      "role": "partner",
+      "command": "",
+      "capture_status": "not_observed",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "interface_status",
+      "command": "show interface status",
+      "capture_status": "ok",
+      "source_sha256": "sha256:d37c1ff0ab311d59396195ce580cc6132944a7cd191fcff018f6aa39e1f74631",
+      "bytes": 560
+     },
+     {
+      "role": "interface_counters",
+      "command": "show interfaces",
+      "capture_status": "ok",
+      "source_sha256": "sha256:3a999b0d9e4d324a8a85ccc914e1263b04e572b94c62c16b24d949bc8f6084e3",
+      "bytes": 626
+     }
+    ],
+    "source_sha256": "sha256:61970f223169a4d6b55dac1c084b49e4a9f30ecc2d29c5326f052c8e4b5ca9dd",
+    "projection_sha256": "sha256:e244936d9f321f13f77b7a65089d80ded7437b26ef4e0ebc295760303a73b867",
+    "finding_codes": [
+     "config_scope_mismatch",
+     "configured_group_not_reconciled",
+     "full_config_capture_incomplete",
+     "hashing_algorithm_not_verified",
+     "lacp_partner_not_verified",
+     "member_counters_not_verified",
+     "min_links_not_verified",
+     "scoped_config_terminator_missing",
+     "single_member_failure_not_verified"
+    ]
+   },
+   {
+    "switch": "core2",
+    "platform": "nxos",
+    "subject": true,
+    "absence_verified": false,
+    "status": "not_verified",
+    "subject_group_count": 1,
+    "source_receipts": [
+     {
+      "role": "summary",
+      "command": "show port-channel summary",
+      "capture_status": "ok",
+      "source_sha256": "sha256:2f2a252a336f6c0298ae30b354690481125d95c5a96d26870892207ee1614fc1",
+      "bytes": 381
+     },
+     {
+      "role": "full_config",
+      "command": "",
+      "capture_status": "not_observed",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "scoped_config",
+      "command": "show running-config interface",
+      "capture_status": "ok",
+      "source_sha256": "sha256:89d616ee011c0402411f099f7e90fea1339c96145adc77c1fda1fdb11f244188",
+      "bytes": 470
+     },
+     {
+      "role": "partner",
+      "command": "",
+      "capture_status": "not_observed",
+      "source_sha256": "",
+      "bytes": 0
+     },
+     {
+      "role": "interface_status",
+      "command": "show interface status",
+      "capture_status": "ok",
+      "source_sha256": "sha256:6fd757a6a11ca0a97b55f826fb2b4323eae65d372b87549eb5989bc2c80a5163",
+      "bytes": 454
+     },
+     {
+      "role": "interface_counters",
+      "command": "show interface",
+      "capture_status": "ok",
+      "source_sha256": "sha256:e24c9aeaf77ef0068056c579eb9ea272b3392303104f75d78a7eedd66022dffb",
+      "bytes": 211
+     }
+    ],
+    "source_sha256": "sha256:eee3b17a77be1e25c5544384ee4dd7461b7dd20c7acdfec39e32dfb41cccce3d",
+    "projection_sha256": "sha256:729ef1b82864202dc29813bdcbb11f732570a5a1b399a71acc8aa9da98e0beae",
+    "finding_codes": [
+     "config_scope_mismatch",
+     "configured_group_not_reconciled",
+     "full_config_capture_not_observed",
+     "hashing_algorithm_not_verified",
+     "lacp_partner_not_verified",
+     "member_counters_not_verified",
+     "min_links_not_verified",
+     "scoped_config_terminator_missing",
+     "single_member_failure_not_verified"
+    ]
+   }
+  ],
+  "summary": {
+   "n_hosts": 3,
+   "n_subject_hosts": 2,
+   "n_groups": 2,
+   "n_assessed": 0,
+   "n_degraded": 0,
+   "n_review": 0,
+   "n_not_verified": 2,
+   "n_counter_fault_groups": 0,
+   "n_member_failure_pass": 0,
+   "n_member_failure_fail": 0,
+   "by_status": {
+    "assessed": 0,
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 2
+   },
+   "by_coverage_status": {
+    "assessed": 0,
+    "degraded": 0,
+    "review": 0,
+    "not_verified": 3,
+    "not_applicable": 0
+   },
+   "evidence_sha256": "sha256:5a4c43741e2bbb700a2dd85a82b86dd64b9fc9dbffd4d7d27a3f87b0d4fac7d5"
+  },
+  "limitations": [
+   "Only Cisco IOS/IOS-XE and NX-OS show-text variants are implemented; no other vendor parity is inferred.",
+   "LACP partner identity is asserted only when every observed local member carries one explicit partner system and operational aggregation key.",
+   "Counters are bounded cumulative observations, not rates; any non-zero bounded fault counter blocks acceptance until disposition and recollection.",
+   "The single-member-loss rehearsal proves only local count/min-links eligibility and bounded remaining bandwidth when member speeds are explicit.",
+   "A local rehearsal does not prove convergence, hashing distribution, remote forwarding, traffic continuity, or service-path survival.",
+   "This owner is distinct from multichassis LAG and never asserts a peer pair or dual-homed attachment."
   ]
  },
  "protocol_intelligence": [
@@ -7539,6 +8304,481 @@
    }
   }
  },
+ "stp_topology_observations": {
+  "core1": {
+   "schema": "stp_topology_observation/1",
+   "state_capture_state": "usable",
+   "detail_capture_state": "missing",
+   "explicit_no_subject": false,
+   "state_instance_count": 2,
+   "role_candidate_count": 4,
+   "role_parsed_count": 4,
+   "detail_instance_count": 0,
+   "counter_candidate_count": 0,
+   "counter_parsed_count": 0,
+   "roots": [
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "root_address": "aaaa.0001.0001",
+     "root_priority": 24586,
+     "bridge_priority": 24586,
+     "is_root": true
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "30",
+     "root_address": "cccc.0003.0003",
+     "root_priority": 32798,
+     "bridge_priority": 32798,
+     "is_root": false
+    }
+   ],
+   "roles": [
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "interface": "Gi1/0/24",
+     "role": "designated",
+     "state": "forwarding"
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "interface": "Po1",
+     "role": "designated",
+     "state": "forwarding"
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "30",
+     "interface": "Gi1/0/24",
+     "role": "designated",
+     "state": "forwarding"
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "30",
+     "interface": "Po1",
+     "role": "root",
+     "state": "forwarding"
+    }
+   ],
+   "topology_changes": [],
+   "finding_codes": [
+    "detail_capture_missing",
+    "detail_instance_missing",
+    "topology_counter_missing"
+   ]
+  },
+  "core2": {
+   "schema": "stp_topology_observation/1",
+   "state_capture_state": "usable",
+   "detail_capture_state": "missing",
+   "explicit_no_subject": false,
+   "state_instance_count": 2,
+   "role_candidate_count": 2,
+   "role_parsed_count": 2,
+   "detail_instance_count": 0,
+   "counter_candidate_count": 0,
+   "counter_parsed_count": 0,
+   "roots": [
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "root_address": "",
+     "root_priority": null,
+     "bridge_priority": null,
+     "is_root": false
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "20",
+     "root_address": "",
+     "root_priority": null,
+     "bridge_priority": null,
+     "is_root": false
+    }
+   ],
+   "roles": [
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "interface": "Po1",
+     "role": "designated",
+     "state": "forwarding"
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "20",
+     "interface": "Po1",
+     "role": "designated",
+     "state": "forwarding"
+    }
+   ],
+   "topology_changes": [],
+   "finding_codes": [
+    "detail_capture_missing",
+    "detail_instance_missing",
+    "root_evidence_incomplete",
+    "topology_counter_missing"
+   ]
+  },
+  "access1": {
+   "schema": "stp_topology_observation/1",
+   "state_capture_state": "usable",
+   "detail_capture_state": "missing",
+   "explicit_no_subject": false,
+   "state_instance_count": 2,
+   "role_candidate_count": 2,
+   "role_parsed_count": 2,
+   "detail_instance_count": 0,
+   "counter_candidate_count": 0,
+   "counter_parsed_count": 0,
+   "roots": [
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "root_address": "aaaa.0001.0001",
+     "root_priority": 24586,
+     "bridge_priority": 32778,
+     "is_root": false
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "30",
+     "root_address": "cccc.0003.0003",
+     "root_priority": 32798,
+     "bridge_priority": 32798,
+     "is_root": true
+    }
+   ],
+   "roles": [
+    {
+     "namespace": "pvst_vlan",
+     "instance": "10",
+     "interface": "Gi0/1",
+     "role": "root",
+     "state": "forwarding"
+    },
+    {
+     "namespace": "pvst_vlan",
+     "instance": "30",
+     "interface": "Gi0/1",
+     "role": "designated",
+     "state": "forwarding"
+    }
+   ],
+   "topology_changes": [],
+   "finding_codes": [
+    "detail_capture_missing",
+    "detail_instance_missing",
+    "topology_counter_missing"
+   ]
+  }
+ },
+ "stp_topology_baseline": {
+  "schema": "stp_topology_baseline/1",
+  "scope": {
+   "commands": [
+    "show spanning-tree",
+    "show spanning-tree detail"
+   ],
+   "subject": "observed_local_pvst_or_mst_instance",
+   "identity": [
+    "switch",
+    "namespace",
+    "instance"
+   ]
+  },
+  "verdict": "INDETERMINATE",
+  "assessed": false,
+  "projection_custody": "embedded_unverified",
+  "rows": [
+   {
+    "switch": "access1",
+    "namespace": "pvst_vlan",
+    "instance": "10",
+    "root_address": "aaaa.0001.0001",
+    "root_priority": 24586,
+    "bridge_priority": 32778,
+    "is_root": false,
+    "port_roles": [
+     {
+      "interface": "Gi0/1",
+      "role": "root",
+      "state": "forwarding"
+     }
+    ],
+    "forwarding_paths": [
+     "Gi0/1"
+    ],
+    "blocked_paths": [],
+    "topology_change_count": null,
+    "topology_change_last_change": "",
+    "status": "not_verified",
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "topology_counter_missing"
+    ],
+    "source_key": "stp_topology_observations.access1.pvst_vlan.10",
+    "projection_custody": "embedded_unverified"
+   },
+   {
+    "switch": "access1",
+    "namespace": "pvst_vlan",
+    "instance": "30",
+    "root_address": "cccc.0003.0003",
+    "root_priority": 32798,
+    "bridge_priority": 32798,
+    "is_root": true,
+    "port_roles": [
+     {
+      "interface": "Gi0/1",
+      "role": "designated",
+      "state": "forwarding"
+     }
+    ],
+    "forwarding_paths": [
+     "Gi0/1"
+    ],
+    "blocked_paths": [],
+    "topology_change_count": null,
+    "topology_change_last_change": "",
+    "status": "not_verified",
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "topology_counter_missing"
+    ],
+    "source_key": "stp_topology_observations.access1.pvst_vlan.30",
+    "projection_custody": "embedded_unverified"
+   },
+   {
+    "switch": "core1",
+    "namespace": "pvst_vlan",
+    "instance": "10",
+    "root_address": "aaaa.0001.0001",
+    "root_priority": 24586,
+    "bridge_priority": 24586,
+    "is_root": true,
+    "port_roles": [
+     {
+      "interface": "Gi1/0/24",
+      "role": "designated",
+      "state": "forwarding"
+     },
+     {
+      "interface": "Po1",
+      "role": "designated",
+      "state": "forwarding"
+     }
+    ],
+    "forwarding_paths": [
+     "Gi1/0/24",
+     "Po1"
+    ],
+    "blocked_paths": [],
+    "topology_change_count": null,
+    "topology_change_last_change": "",
+    "status": "not_verified",
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "topology_counter_missing"
+    ],
+    "source_key": "stp_topology_observations.core1.pvst_vlan.10",
+    "projection_custody": "embedded_unverified"
+   },
+   {
+    "switch": "core1",
+    "namespace": "pvst_vlan",
+    "instance": "30",
+    "root_address": "cccc.0003.0003",
+    "root_priority": 32798,
+    "bridge_priority": 32798,
+    "is_root": false,
+    "port_roles": [
+     {
+      "interface": "Gi1/0/24",
+      "role": "designated",
+      "state": "forwarding"
+     },
+     {
+      "interface": "Po1",
+      "role": "root",
+      "state": "forwarding"
+     }
+    ],
+    "forwarding_paths": [
+     "Gi1/0/24",
+     "Po1"
+    ],
+    "blocked_paths": [],
+    "topology_change_count": null,
+    "topology_change_last_change": "",
+    "status": "not_verified",
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "topology_counter_missing"
+    ],
+    "source_key": "stp_topology_observations.core1.pvst_vlan.30",
+    "projection_custody": "embedded_unverified"
+   },
+   {
+    "switch": "core2",
+    "namespace": "pvst_vlan",
+    "instance": "10",
+    "root_address": "",
+    "root_priority": null,
+    "bridge_priority": null,
+    "is_root": false,
+    "port_roles": [
+     {
+      "interface": "Po1",
+      "role": "designated",
+      "state": "forwarding"
+     }
+    ],
+    "forwarding_paths": [
+     "Po1"
+    ],
+    "blocked_paths": [],
+    "topology_change_count": null,
+    "topology_change_last_change": "",
+    "status": "not_verified",
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "root_evidence_incomplete",
+     "root_path_missing",
+     "topology_counter_missing"
+    ],
+    "source_key": "stp_topology_observations.core2.pvst_vlan.10",
+    "projection_custody": "embedded_unverified"
+   },
+   {
+    "switch": "core2",
+    "namespace": "pvst_vlan",
+    "instance": "20",
+    "root_address": "",
+    "root_priority": null,
+    "bridge_priority": null,
+    "is_root": false,
+    "port_roles": [
+     {
+      "interface": "Po1",
+      "role": "designated",
+      "state": "forwarding"
+     }
+    ],
+    "forwarding_paths": [
+     "Po1"
+    ],
+    "blocked_paths": [],
+    "topology_change_count": null,
+    "topology_change_last_change": "",
+    "status": "not_verified",
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "root_evidence_incomplete",
+     "root_path_missing",
+     "topology_counter_missing"
+    ],
+    "source_key": "stp_topology_observations.core2.pvst_vlan.20",
+    "projection_custody": "embedded_unverified"
+   }
+  ],
+  "coverage": [
+   {
+    "switch": "access1",
+    "status": "not_verified",
+    "state_capture_state": "usable",
+    "detail_capture_state": "missing",
+    "explicit_no_subject": false,
+    "state_instance_count": 2,
+    "role_candidate_count": 2,
+    "role_parsed_count": 2,
+    "detail_instance_count": 0,
+    "counter_candidate_count": 0,
+    "counter_parsed_count": 0,
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "topology_counter_missing"
+    ],
+    "projection_sha256": "be532b3687eb199dd5b30b146080be0ad9847f968c3de759a721ad551b9b86a9"
+   },
+   {
+    "switch": "core1",
+    "status": "not_verified",
+    "state_capture_state": "usable",
+    "detail_capture_state": "missing",
+    "explicit_no_subject": false,
+    "state_instance_count": 2,
+    "role_candidate_count": 4,
+    "role_parsed_count": 4,
+    "detail_instance_count": 0,
+    "counter_candidate_count": 0,
+    "counter_parsed_count": 0,
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "topology_counter_missing"
+    ],
+    "projection_sha256": "490c4ddfc806c5da9b7f8b006c7fdbacfd656d48c3ab0727a447220745b47fe9"
+   },
+   {
+    "switch": "core2",
+    "status": "not_verified",
+    "state_capture_state": "usable",
+    "detail_capture_state": "missing",
+    "explicit_no_subject": false,
+    "state_instance_count": 2,
+    "role_candidate_count": 2,
+    "role_parsed_count": 2,
+    "detail_instance_count": 0,
+    "counter_candidate_count": 0,
+    "counter_parsed_count": 0,
+    "finding_codes": [
+     "detail_capture_missing",
+     "detail_instance_missing",
+     "root_evidence_incomplete",
+     "topology_counter_missing"
+    ],
+    "projection_sha256": "73a6f8c1d9de211369e4684deeaef19ee6b6f05b81f1a1ccd935a3771058f1da"
+   }
+  ],
+  "summary": {
+   "n_hosts": 3,
+   "n_subject_hosts": 3,
+   "n_rows": 6,
+   "n_assessed": 0,
+   "n_degraded": 0,
+   "n_not_verified": 6,
+   "by_status": {
+    "assessed": 0,
+    "degraded": 0,
+    "not_verified": 6
+   },
+   "by_coverage_status": {
+    "assessed": 0,
+    "degraded": 0,
+    "not_verified": 3,
+    "not_applicable": 0
+   },
+   "baseline_sha256": "2e119562cec392eca029e9c0a5c8bafcb077772f32ddad7d9b8d7c64f4e77918"
+  },
+  "limitations": [
+   "The baseline covers observed local PVST VLAN or MST instance roots, port roles/states, and topology-change counters from paired captures.",
+   "It does not establish configured topology intent, complete VLAN-to-MST mapping, timers, loop freedom, convergence time, or simultaneous multi-device state.",
+   "Forwarding and blocked paths are current local STP states, not proof of end-to-end service or failure survival.",
+   "A topology-change counter is monotonic observed state; an increase is a cutover regression signal but does not attribute cause."
+  ]
+ },
  "stp_roots": {
   "core1": {
    "10": {
@@ -7588,6 +8828,360 @@
   }
  },
  "vpc": {},
+ "multichassis_lag_typed_observations": {
+  "observations": [
+   {
+    "switch": "core2",
+    "vendor": "arista",
+    "platform": "eos",
+    "collection_mode": "offline",
+    "local_identity": "",
+    "peer_identity": "",
+    "domain_id": "MLAG-DC1",
+    "domain_state": {
+     "state": "active",
+     "neg_status": "connected",
+     "config_sanity": "inconsistent",
+     "peer_link_status": "up",
+     "local_intf_status": "up"
+    },
+    "legs": [],
+    "source": {
+     "schema": "multichassis_lag_typed_source_receipt/1",
+     "capture_status": "incomplete",
+     "projection_custody": "current_run_source_bound",
+     "source_sha256": "sha256:49b0125fa25572a77e3c6294c00477763480b69a2f1b261b1cde5ad67a39074d",
+     "owner_version": "raw-producer-1",
+     "commands": [
+      "show mlag"
+     ]
+    }
+   }
+  ]
+ },
+ "multichassis_lag_domain_baseline": {
+  "schema": "multichassis_lag_domain_baseline/1",
+  "owner_version": "1",
+  "family": "multichassis_lag",
+  "owns_score": false,
+  "owns_verdict": false,
+  "support_profile": {
+   "schema": "protocol_support_profile/1",
+   "family": "multichassis_lag",
+   "owner_schema": "multichassis_lag_delta/1",
+   "implementation_state": "implemented",
+   "assurance_level": "intent_reconciled_survival",
+   "evidence_contracts": [
+    "multichassis_lag_typed_source_receipt/1",
+    "multichassis_lag_subject_scope/1",
+    "multichassis_lag_domain_baseline/1"
+   ],
+   "scope": {
+    "pair_identity": "explicit_reciprocal_device_system_mac",
+    "attachment_identity": "both_local_legs_plus_matching_remote_lacp_system_and_aggregation_key",
+    "record_types": [
+     "local_observation",
+     "reciprocal_peer_pair",
+     "local_leg",
+     "reconciled_attachment"
+    ]
+   },
+   "variants": [
+    {
+     "vendor": "cisco",
+     "platform": "nxos",
+     "collection_modes": [
+      "live",
+      "offline"
+     ],
+     "raw_commands": [
+      "show vpc",
+      "show vpc role",
+      "show lacp neighbor",
+      "show vpc orphan-ports",
+      "show running-config"
+     ],
+     "maximum_assurance": "intent_reconciled_survival",
+     "required_typed_evidence": [
+      "vpc_domain_state",
+      "explicit_peer_identity",
+      "lacp_partner_identity"
+     ]
+    },
+    {
+     "vendor": "arista",
+     "platform": "eos",
+     "collection_modes": [
+      "offline"
+     ],
+     "raw_commands": [
+      "show mlag",
+      "show mlag interfaces detail",
+      "show lacp peer"
+     ],
+     "maximum_assurance": "local_safety_preservation",
+     "required_typed_evidence": [
+      "mlag_domain_state",
+      "explicit_peer_identity",
+      "lacp_partner_identity"
+     ]
+    }
+   ],
+   "runtime_support_claim": "process_local_exact_raw_byte_projection_required_per_local_observation",
+   "limitations": [
+    "Catalog presence and parser availability are not runtime support evidence.",
+    "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+    "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+    "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+    "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+    "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+    "NX-OS dual-active detection is interpreted only for the documented numeric 0 (clear) and 1 (detected/member ports shut) states; every other value abstains.",
+    "NX-OS orphan-port inventory and configured peer-link-loss suspension are observed; endpoint continuity is not inferred from that local evidence.",
+    "Capacity, hashing, counters, convergence, and service-path failure survival remain outside this bounded owner."
+   ]
+  },
+  "subject_scope": {
+   "schema": "multichassis_lag_subject_scope/1",
+   "owner_version": "1",
+   "family": "multichassis_lag",
+   "owns_score": false,
+   "owns_verdict": false,
+   "support_profile": {
+    "schema": "protocol_support_profile/1",
+    "family": "multichassis_lag",
+    "owner_schema": "multichassis_lag_delta/1",
+    "implementation_state": "implemented",
+    "assurance_level": "intent_reconciled_survival",
+    "evidence_contracts": [
+     "multichassis_lag_typed_source_receipt/1",
+     "multichassis_lag_subject_scope/1",
+     "multichassis_lag_domain_baseline/1"
+    ],
+    "scope": {
+     "pair_identity": "explicit_reciprocal_device_system_mac",
+     "attachment_identity": "both_local_legs_plus_matching_remote_lacp_system_and_aggregation_key",
+     "record_types": [
+      "local_observation",
+      "reciprocal_peer_pair",
+      "local_leg",
+      "reconciled_attachment"
+     ]
+    },
+    "variants": [
+     {
+      "vendor": "cisco",
+      "platform": "nxos",
+      "collection_modes": [
+       "live",
+       "offline"
+      ],
+      "raw_commands": [
+       "show vpc",
+       "show vpc role",
+       "show lacp neighbor",
+       "show vpc orphan-ports",
+       "show running-config"
+      ],
+      "maximum_assurance": "intent_reconciled_survival",
+      "required_typed_evidence": [
+       "vpc_domain_state",
+       "explicit_peer_identity",
+       "lacp_partner_identity"
+      ]
+     },
+     {
+      "vendor": "arista",
+      "platform": "eos",
+      "collection_modes": [
+       "offline"
+      ],
+      "raw_commands": [
+       "show mlag",
+       "show mlag interfaces detail",
+       "show lacp peer"
+      ],
+      "maximum_assurance": "local_safety_preservation",
+      "required_typed_evidence": [
+       "mlag_domain_state",
+       "explicit_peer_identity",
+       "lacp_partner_identity"
+      ]
+     }
+    ],
+    "runtime_support_claim": "process_local_exact_raw_byte_projection_required_per_local_observation",
+    "limitations": [
+     "Catalog presence and parser availability are not runtime support evidence.",
+     "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+     "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+     "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+     "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+     "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+     "NX-OS dual-active detection is interpreted only for the documented numeric 0 (clear) and 1 (detected/member ports shut) states; every other value abstains.",
+     "NX-OS orphan-port inventory and configured peer-link-loss suspension are observed; endpoint continuity is not inferred from that local evidence.",
+     "Capacity, hashing, counters, convergence, and service-path failure survival remain outside this bounded owner."
+    ]
+   },
+   "rows": [
+    {
+     "subject_id": "local:6a6f04cfe574264b03ff24d1ca512b4b1bd7530e0816d1be6d641f5aca7f4fa6",
+     "switch": "core2",
+     "vendor": "arista",
+     "platform": "eos",
+     "collection_mode": "offline",
+     "local_identity_present": false,
+     "peer_identity_present": false,
+     "domain_id_present": true,
+     "local_leg_candidate_count": 0,
+     "status": "not_verified",
+     "assurance_level": "not_verified",
+     "source_custody": "current_run_source_bound",
+     "source_receipt": {
+      "schema": "multichassis_lag_typed_source_receipt/1",
+      "valid": true,
+      "source_bound": true,
+      "capture_status": "incomplete",
+      "projection_custody": "current_run_source_bound",
+      "source_sha256": "sha256:49b0125fa25572a77e3c6294c00477763480b69a2f1b261b1cde5ad67a39074d",
+      "owner_version": "raw-producer-1",
+      "commands": [
+       "show mlag"
+      ],
+      "failures": []
+     },
+     "findings": [
+      {
+       "kind": "not_verified",
+       "code": "local_identity_missing",
+       "issue": "An explicit local device system identity was not observed."
+      },
+      {
+       "kind": "not_verified",
+       "code": "peer_identity_missing",
+       "issue": "An explicit peer device system identity was not observed."
+      },
+      {
+       "kind": "not_verified",
+       "code": "source_capture_incomplete",
+       "issue": "The exact raw-byte source set is incomplete for this declared variant."
+      }
+     ]
+    }
+   ],
+   "findings": [],
+   "summary": {
+    "n_local_subjects": 1,
+    "n_in_scope": 0,
+    "n_not_verified": 1,
+    "scope_sha256": "sha256:a63886b9dba4aaf62e6779cef3c36e0a5ac39b1f1bdc5a3b03b710426a876ae5"
+   },
+   "limitations": [
+    "Catalog presence and parser availability are not runtime support evidence.",
+    "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+    "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+    "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+    "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+    "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+    "NX-OS dual-active detection is interpreted only for the documented numeric 0 (clear) and 1 (detected/member ports shut) states; every other value abstains.",
+    "NX-OS orphan-port inventory and configured peer-link-loss suspension are observed; endpoint continuity is not inferred from that local evidence.",
+    "Capacity, hashing, counters, convergence, and service-path failure survival remain outside this bounded owner."
+   ]
+  },
+  "projection_custody": "current_run_source_bound",
+  "local_observations": [
+   {
+    "record_type": "local_observation",
+    "subject_id": "local:6a6f04cfe574264b03ff24d1ca512b4b1bd7530e0816d1be6d641f5aca7f4fa6",
+    "switch": "core2",
+    "vendor": "arista",
+    "platform": "eos",
+    "collection_mode": "offline",
+    "local_identity": "",
+    "peer_identity": "",
+    "domain_id": "MLAG-DC1",
+    "domain_state": {
+     "state": "active",
+     "neg_status": "connected",
+     "config_sanity": "inconsistent",
+     "peer_link_status": "up",
+     "local_intf_status": "up"
+    },
+    "reciprocal_pair_id": "",
+    "leg_count": 0,
+    "health_state": "degraded",
+    "assurance_level": "local_safety_preservation",
+    "source_custody": "current_run_source_bound",
+    "source_receipt": {
+     "schema": "multichassis_lag_typed_source_receipt/1",
+     "valid": true,
+     "source_bound": true,
+     "capture_status": "incomplete",
+     "projection_custody": "current_run_source_bound",
+     "source_sha256": "sha256:49b0125fa25572a77e3c6294c00477763480b69a2f1b261b1cde5ad67a39074d",
+     "owner_version": "raw-producer-1",
+     "commands": [
+      "show mlag"
+     ],
+     "failures": []
+    },
+    "findings": [
+     {
+      "kind": "degraded",
+      "code": "config_sanity_degraded",
+      "issue": "Observed eos config sanity is a closed known-bad state."
+     },
+     {
+      "kind": "not_verified",
+      "code": "local_identity_missing",
+      "issue": "An explicit local device system identity was not observed."
+     },
+     {
+      "kind": "not_verified",
+      "code": "peer_identity_missing",
+      "issue": "An explicit peer device system identity was not observed."
+     },
+     {
+      "kind": "not_verified",
+      "code": "source_capture_incomplete",
+      "issue": "The exact raw-byte source set is incomplete for this declared variant."
+     }
+    ]
+   }
+  ],
+  "reciprocal_peer_pairs": [],
+  "local_legs": [],
+  "reconciled_attachments": [],
+  "findings": [],
+  "summary": {
+   "n_local_observations": 1,
+   "n_reciprocal_peer_pairs": 0,
+   "n_local_legs": 0,
+   "n_reconciled_attachments": 0,
+   "n_findings": 4,
+   "by_record_type": {
+    "local_observation": 1,
+    "reciprocal_peer_pair": 0,
+    "local_leg": 0,
+    "reconciled_attachment": 0
+   },
+   "by_health_state": {
+    "healthy": 0,
+    "degraded": 1,
+    "not_verified": 0
+   },
+   "baseline_sha256": "sha256:509377d023ea1493ff6324b75b5c67ef4a519e9ffe9d22f445c1453a436d9a93"
+  },
+  "limitations": [
+   "Catalog presence and parser availability are not runtime support evidence.",
+   "Only process-local projections parsed from exact command/import bytes receive current-run source custody.",
+   "NX-OS is supported for live or offline raw evidence; EOS is supported only for offline raw evidence.",
+   "Standard EOS MLAG captures expose the shared MLAG system ID and peer address, not reciprocal peer-device identity; EOS pair and attachment claims therefore remain not verified.",
+   "No IOS, IOS-XE, Junos, VSS, StackWise Virtual, or other vendor/platform parity is inferred.",
+   "Domain ID, vPC/MLAG ID, same-MAC learning, and topology proximity never establish a peer pair or attachment.",
+   "NX-OS dual-active detection is interpreted only for the documented numeric 0 (clear) and 1 (detected/member ports shut) states; every other value abstains.",
+   "NX-OS orphan-port inventory and configured peer-link-loss suspension are observed; endpoint continuity is not inferred from that local evidence.",
+   "Capacity, hashing, counters, convergence, and service-path failure survival remain outside this bounded owner."
+  ]
+ },
  "fhrp_detail": {
   "core1": [
    {
@@ -10103,13 +11697,13 @@
     "id": "read_only_command_surface",
     "method": "re-derive over every COMMANDS_* registry of the collector: the WHOLE of each command must be read-only \u2014 a read verb (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths) AND no way to chain, redirect or substitute a second command out of it (no CR/LF ; & ` $ > < \\, and every pipe stage an output filter, never redirect/tee/append or a URL sink)",
     "result": "HOLDS",
-    "detail": "all 291 registry commands across 7 COMMANDS_* registries match the read-only grammar"
+    "detail": "all 301 registry commands across 7 COMMANDS_* registries match the read-only grammar"
    },
    {
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 79 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 88 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -10121,7 +11715,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 81 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 90 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -13626,6 +15220,13 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "vtp_extended_evidence",
+    "state": "published",
+    "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "ipv6_routing_adjacency_baseline",
     "state": "published",
     "count": 10,
@@ -13643,6 +15244,13 @@
     "key": "etherchannel_baseline",
     "state": "published",
     "count": 10,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "etherchannel_operational_evidence",
+    "state": "published",
+    "count": 9,
     "kind": "dict",
     "note": "seen \u2014 collected and non-empty"
    },
@@ -13801,6 +15409,20 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "stp_topology_observations",
+    "state": "published",
+    "count": 3,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "stp_topology_baseline",
+    "state": "published",
+    "count": 9,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "stp_roots",
     "state": "published",
     "count": 3,
@@ -13813,6 +15435,20 @@
     "count": 0,
     "kind": "dict",
     "note": "collected, nothing of this kind found (not a blind spot)"
+   },
+   {
+    "key": "multichassis_lag_typed_observations",
+    "state": "published",
+    "count": 1,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
+    "key": "multichassis_lag_domain_baseline",
+    "state": "published",
+    "count": 15,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
    },
    {
     "key": "fhrp_detail",
@@ -14306,10 +15942,10 @@
    }
   ],
   "summary": {
-   "n_published": 105,
+   "n_published": 111,
    "n_collected_but_empty": 7,
    "n_not_collected": 0,
-   "n_sections": 112
+   "n_sections": 118
   }
  }
 }

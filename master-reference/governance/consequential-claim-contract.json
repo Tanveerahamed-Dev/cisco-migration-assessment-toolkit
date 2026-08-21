@@ -4,7 +4,7 @@
   "source_universe": [
     {
       "path": "master-reference/content/atlas-core.json",
-      "git_blob_oid": "27b7c166a78894d957bd3f35b5f64170dd11afb4",
+      "git_blob_oid": "3d2c841f8855596007e45a5e165e2f462a95e260",
       "classification": "candidate_census",
       "expected_records": 135,
       "expected_candidates": 155,
@@ -1069,10 +1069,10 @@
     },
     {
       "path": "master-reference/content/capability-catalog.json",
-      "git_blob_oid": "19312d959afd79e0ae91330f6b864e0bcfba0456",
+      "git_blob_oid": "bbd5fc3f6ff524299a580bce0925e27b85597f0f",
       "classification": "candidate_census",
-      "expected_records": 225,
-      "expected_candidates": 422,
+      "expected_records": 227,
+      "expected_candidates": 426,
       "grounding": {
         "relationships": [
           {
@@ -1246,7 +1246,7 @@
             "kind": "field",
             "field": "id"
           },
-          "expected_records": 211,
+          "expected_records": 213,
           "fields": [
             {
               "field": "id",

@@ -44,6 +44,11 @@ _RICH = _WEBAPP / "sample_data" / "sample_fleet.snapshot.json"
 # transient-feed exemptions in tests/test_axis_registry.py -- the same coverage-honesty.
 _OPT_IN_SECTIONS = {"state_assertions", "path_intents", "external_reconcile", "whatif"}
 
+# This section is intentionally synthesized at read time from Store.get_bound_snapshot so it can
+# bind the exact persisted snapshot_json bytes. It is not, and must not become, an engine-emitted
+# top-level snapshot key.
+_SOURCE_BOUND_SECTIONS = {"protocol_assurance"}
+
 # The sections the webapp hard-codes as fetchable extras that ARE per-device axes (as
 # opposed to computed aggregates / raw inventory). If any is renamed or removed in the
 # registry, the webapp's hardcoded name goes stale -- caught by the registry test below.
@@ -62,7 +67,7 @@ def test_no_advertised_section_is_a_phantom():
     engine -- otherwise the tab 404s. Checked against the rich demo snapshot, minus the
     opt-in engines that need a CLI flag to appear."""
     keys = _rich_keys()
-    phantom = sorted((_ALLOWED_SECTIONS - _OPT_IN_SECTIONS) - keys)
+    phantom = sorted((_ALLOWED_SECTIONS - _OPT_IN_SECTIONS - _SOURCE_BOUND_SECTIONS) - keys)
     assert not phantom, (
         f"webapp _ALLOWED_SECTIONS advertises section(s) the engine never emits: {phantom}. "
         f"Either the section was renamed/removed in the engine (update the webapp allowlist), "
@@ -78,6 +83,11 @@ def test_opt_in_exemptions_are_really_absent_and_allowed():
     leaked = sorted(_OPT_IN_SECTIONS & _rich_keys())
     assert not leaked, (
         f"exempted section(s) ARE present in the sample -- drop them from _OPT_IN_SECTIONS: {leaked}")
+
+
+def test_source_bound_sections_are_allowed_but_never_snapshot_claims():
+    assert _SOURCE_BOUND_SECTIONS <= _ALLOWED_SECTIONS
+    assert _SOURCE_BOUND_SECTIONS.isdisjoint(_rich_keys())
 
 
 def test_webapp_axis_sections_are_live_registry_axes():

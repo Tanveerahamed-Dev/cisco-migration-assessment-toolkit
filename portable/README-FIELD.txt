@@ -136,8 +136,9 @@ short - what this run wrote is redacted, there is just less of it (read
 the note if DO-NOT-SEND-NOT-REDACTED.txt is also present).  1 = failed;
 do not send.
 
-This command produces ten items: the workbook, the explorer, seven Word
-documents and the deck. The Cutover Plan and the NRFU / Acceptance Test
+This command produces eleven items: the workbook, the source-bound Protocol
+Assurance JSON export, the explorer, seven Word documents and the deck.
+The Cutover Plan and the NRFU / Acceptance Test
 Plan are NOT among them - those two are generated in AssessHub, not by
 this command, so a set with no warning is complete WITHOUT them.
 A Post-Implementation Review (PIR) is conditional post-execution: it is

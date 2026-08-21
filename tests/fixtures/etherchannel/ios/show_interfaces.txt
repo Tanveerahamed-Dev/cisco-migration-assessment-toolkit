@@ -1,0 +1,8 @@
+GigabitEthernet1/0/1 is up, line protocol is up (connected)
+  0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+  Total output drops: 0
+  0 output errors, 0 collisions, 0 interface resets
+GigabitEthernet1/0/2 is up, line protocol is up (connected)
+  0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+  Total output drops: 0
+  0 output errors, 0 collisions, 0 interface resets

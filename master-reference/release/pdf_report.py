@@ -617,8 +617,8 @@ def _validated_capabilities_impl(
                 raise _PdfCapabilityInputError("PDF capability boundary fields are reserved for the training entry")
             entries.append(entry)
 
-    if len(entries) != 211:
-        raise _PdfCapabilityInputError("PDF capability catalog must contain exactly 211 entries")
+    if len(entries) != 213:
+        raise _PdfCapabilityInputError("PDF capability catalog must contain exactly 213 entries")
     if domain_ids != domain_registry:
         raise _PdfCapabilityInputError("PDF capability domains do not exactly bind the domain registry")
     if observed_states != _CAPABILITY_STATES:
@@ -652,7 +652,7 @@ def _validate_capability_observation_envelope(
         ):
             raise _PdfCapabilityInputError("PDF capability observation envelope shape mismatch")
         for field, row_fields, expected_count in (
-            ("rendered_observations", _CAPABILITY_RENDERED_OBSERVATION_FIELDS, 422),
+            ("rendered_observations", _CAPABILITY_RENDERED_OBSERVATION_FIELDS, 426),
             ("safety_observations", _CAPABILITY_SAFETY_OBSERVATION_FIELDS, 7),
         ):
             rows = observations[field]
@@ -1146,7 +1146,7 @@ def verify_pdf_capability_sink_observations(
             segments[str(entry["id"])] = segment
 
     rendered_rows = expected["rendered_observations"]
-    if len(rendered_rows) != 422:
+    if len(rendered_rows) != 426:
         errors.append("capability_candidate_observation_count_mismatch")
     for index, entry in enumerate(entries):
         state_row, scope_row = rendered_rows[index * 2 : index * 2 + 2]

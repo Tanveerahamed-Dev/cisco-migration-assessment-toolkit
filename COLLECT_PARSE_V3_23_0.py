@@ -283,7 +283,7 @@ import hashlib, io, ipaddress, os, sys, json, re, logging, warnings, argparse, t
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
@@ -370,11 +370,29 @@ from cisco_toolkit.vtp_safety import (
     compute_vtp_safety_subject_scope,
     embedded_vtp_safety_baseline,
 )
+from cisco_toolkit.vtp_extended import (
+    compute_vtp_extended_evidence,
+    embedded_vtp_extended_evidence,
+)
 from cisco_toolkit.ipv6_routing import (
     compute_ipv6_routing_adjacency_baseline,
     compute_ipv6_routing_subject_scope,
     embedded_ipv6_routing_adjacency_baseline,
 )
+from cisco_toolkit.etherchannel import (
+    compute_etherchannel_operational_evidence,
+    embedded_etherchannel_operational_evidence,
+)
+from cisco_toolkit.comparison import compare_bound_pair
+from cisco_toolkit.l2_rehearsal import compute_observed_l2_failure_evidence
+from cisco_toolkit.protocol_assurance import (
+    OFFLINE_FILE_SOURCE,
+    bind_snapshot_json_bytes,
+    bound_snapshot_source,
+    reject_duplicate_json_keys,
+)
+from cisco_toolkit.multichassis_lag import compute_multichassis_lag_domain_baseline
+from cisco_toolkit.stp_topology import compute_stp_topology_baseline
 from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase NRFU certification pack (READ-ONLY commands + expected values pre-filled from the snapshot)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -466,7 +484,7 @@ from cisco_toolkit.traffic_assurance import (
 )
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
-from cisco_toolkit.precert import compute_precert, schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
+from cisco_toolkit.precert import schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
 from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
 # InterfaceData builder + switch-level DevicePhysical / switch-identity records + global-ARP
@@ -478,7 +496,7 @@ from cisco_toolkit.build import (
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_stp_topology_observation, build_vpc, build_multichassis_lag_typed_observation, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
     build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
     build_aci,   # Cisco ACI (APIC JSON-ingestion channel)
     build_sdwan,   # Cisco Catalyst SD-WAN (vManage JSON-ingestion channel)
@@ -499,13 +517,13 @@ from cisco_toolkit.build import (
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_explorer, write_diff_workbook,
-                                compute_snapshot_delta, compute_cutover_gate,
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
 from cisco_toolkit.docmeta import (artifact_candidate_paths, artifact_kind,
                                    validate_artifact)
+from cisco_toolkit.protocol_receipt_surfaces import write_protocol_assurance_receipt_sheet
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.detector_schema import compute_detector_schema   # J1 (per-detector descriptors; not-observed != healthy)
 from cisco_toolkit.unknown_evidence import (                        # governed, aggregate-only parser/coverage unknown queue
@@ -566,6 +584,9 @@ COMMANDS_NXOS = [
     "show port-channel summary",
     "show etherchannel summary",
     "show vpc",                          # NEW-V3.23.125 (vPC / MLAG peer confirmation for the flow simulator)
+    "show vpc role",                     # explicit local/peer device system-MAC identity for typed vPC custody
+    "show lacp neighbor",                # explicit downstream LACP partner system + operational key
+    "show vpc orphan-ports",             # explicit NX-OS orphan-port/VLAN failure exposure
     "show nve peers",                    # VXLAN-EVPN VTEP peer state -> build_overlay / _d_nve_peer_health
     "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
     "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
@@ -603,6 +624,7 @@ COMMANDS_NXOS = [
     "show port-security interface",      # access-edge port-security DETAIL (Secure-shutdown) -> build_port_security_detail / _d_port_security_errdisable
     "show storm-control",                # storm-control action audit (toothless 'None') -> build_storm_control / _d_storm_control_action
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
+    "show spanning-tree detail",         # typed per-instance topology-change counters
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
     "show cdp neighbors detail",
@@ -658,6 +680,7 @@ COMMANDS_IOS = [
     "show interfaces trunk",
     "show interfaces transceiver",
     "show etherchannel summary",
+    "show lacp neighbor",                # explicit single-chassis LACP partner system + operational key
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
@@ -738,6 +761,8 @@ COMMANDS_IOS = [
 # universal entry point and needs only this.
 COMMANDS_ARISTA = [
     "show mlag",                         # Arista MLAG (multi-chassis link agg) state -> build_arista / _d_arista_mlag_degraded
+    "show mlag interfaces detail",       # explicit local MLAG legs; peer device identity is not present
+    "show lacp peer",                    # explicit downstream LACP partner system + operational key
     "show bgp evpn summary",             # Arista BGP-EVPN overlay control plane -> build_arista / _d_arista_evpn_degraded
 ]
 # MULTI-VENDOR (Juniper Junos): device-native JSON via 'show ... | display json'. Same offline-only fold as
@@ -1600,7 +1625,7 @@ def _stat_fingerprint(st) -> Tuple[int, int, int, int]:
             int(st.st_mtime_ns))
 
 
-def _read_stable_bytes(path: str) -> bytes:
+def _read_stable_bytes(path: str, *, max_bytes: Optional[int] = None) -> bytes:
     """Read one immutable byte view or reject a file that changed during the read.
 
     Parsing and provenance must share this returned object.  Reopening a caller-controlled path to
@@ -1608,17 +1633,29 @@ def _read_stable_bytes(path: str) -> bytes:
     """
     p = os.path.abspath(str(path))
     path_before = os.stat(p)
+    if max_bytes is not None and path_before.st_size > max_bytes:
+        raise ValueError(
+            f"{os.path.basename(p)} exceeds the {max_bytes}-byte input limit"
+        )
     with open(p, "rb") as fh:
         handle_before = os.fstat(fh.fileno())
         if _stat_fingerprint(path_before) != _stat_fingerprint(handle_before):
             raise RuntimeError(f"{os.path.basename(p)} changed before it could be read")
-        data = fh.read()
+        if max_bytes is not None and handle_before.st_size > max_bytes:
+            raise ValueError(
+                f"{os.path.basename(p)} exceeds the {max_bytes}-byte input limit"
+            )
+        data = fh.read(max_bytes + 1 if max_bytes is not None else -1)
         handle_after = os.fstat(fh.fileno())
     path_after = os.stat(p)
     expected = _stat_fingerprint(handle_before)
     if _stat_fingerprint(handle_after) != expected or \
             _stat_fingerprint(path_after) != expected or len(data) != handle_before.st_size:
         raise RuntimeError(f"{os.path.basename(p)} changed while it was being read")
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ValueError(
+            f"{os.path.basename(p)} exceeds the {max_bytes}-byte input limit"
+        )
     return data
 
 
@@ -1659,11 +1696,15 @@ def _record_from_bytes(data: bytes, *, role: str, name: str) -> dict:
     }
 
 
-def _bind_input(path: str, *, role: str,
-                logical_name: str = "") -> Tuple[bytes, dict, dict]:
+_L2_TRIAL_WITNESS_MAX_BYTES = 64 * 1024
+
+
+def _bind_input(path: str, *, role: str, logical_name: str = "",
+                capture_mtime: bool = False,
+                max_bytes: Optional[int] = None) -> Tuple[bytes, dict, dict]:
     """Capture one exact input byte string plus public record and private recheck binding."""
     p = os.path.abspath(str(path))
-    data = _read_stable_bytes(p)
+    data = _read_stable_bytes(p, max_bytes=max_bytes)
     record = _record_from_bytes(
         data, role=role, name=logical_name or os.path.basename(p))
     binding = {
@@ -1673,7 +1714,187 @@ def _bind_input(path: str, *, role: str,
         "size": record["size"],
         "sha256": record["sha256"],
     }
+    if capture_mtime:
+        stat = os.stat(p)
+        if stat.st_size != len(data):
+            raise RuntimeError(f"{os.path.basename(p)} changed after it was read")
+        seconds, nanoseconds = divmod(int(stat.st_mtime_ns), 1_000_000_000)
+        binding["mtime_ns"] = int(stat.st_mtime_ns)
+        binding["mtime_at"] = datetime.fromtimestamp(
+            seconds, timezone.utc
+        ).replace(microsecond=nanoseconds // 1000).isoformat(timespec="microseconds")
     return data, record, binding
+
+
+def _parse_offline_comparison_context(data: bytes) -> dict:
+    """Validate the explicit identity/change contract for a decision-grade file comparison.
+
+    Snapshot filenames and directory proximity are not engagement or campaign identity.  The CLI
+    therefore abstains unless the operator supplies this small, closed, exact-byte context object.
+    It carries no credentials and does not broaden the comparison evidence surface.
+    """
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON number: {token}")
+
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            parse_constant=reject_constant,
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid JSON ({exc})") from exc
+    if not isinstance(value, dict):
+        raise ValueError("root must be an object")
+    allowed = {
+        "schema", "engagement_id", "campaign_id", "before_snapshot_id",
+        "after_snapshot_id", "change_intent",
+    }
+    if set(value) - allowed:
+        raise ValueError(
+            "unsupported field(s): " + ", ".join(sorted(set(value) - allowed))
+        )
+    if value.get("schema") != "offline_comparison_context/1":
+        raise ValueError("schema must be offline_comparison_context/1")
+    engagement_id = value.get("engagement_id")
+    if not isinstance(engagement_id, str) or not engagement_id.strip():
+        raise ValueError("engagement_id must be a non-empty string")
+    for field in ("campaign_id", "before_snapshot_id", "after_snapshot_id"):
+        field_value = value.get(field)
+        if type(field_value) is not int or field_value <= 0:
+            raise ValueError(f"{field} must be a positive integer")
+    if value["before_snapshot_id"] == value["after_snapshot_id"]:
+        raise ValueError("before_snapshot_id and after_snapshot_id must be distinct")
+    if "change_intent" in value and not isinstance(value["change_intent"], dict):
+        raise ValueError("change_intent must be an object when supplied")
+    return {
+        "schema": value["schema"],
+        "engagement_id": engagement_id.strip(),
+        "campaign_id": value["campaign_id"],
+        "before_snapshot_id": value["before_snapshot_id"],
+        "after_snapshot_id": value["after_snapshot_id"],
+        "change_intent": value.get("change_intent"),
+    }
+
+
+def _parse_offline_trend_context(data: bytes) -> dict:
+    """Validate the exact ordered identity contract for an offline campaign trend.
+
+    A series of filenames is not campaign identity.  Every declared snapshot identity is therefore
+    bound to the SHA-256 of the exact bytes supplied on the matching ``--trend`` position.  Expected
+    changes, when present, are also ordered one-for-one with the adjacent comparison pairs.
+    """
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON number: {token}")
+
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            parse_constant=reject_constant,
+            object_pairs_hook=reject_duplicate_json_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid JSON ({exc})") from exc
+    if not isinstance(value, dict):
+        raise ValueError("root must be an object")
+    allowed = {
+        "schema", "engagement_id", "campaign_id", "snapshots",
+        "adjacent_change_intents",
+    }
+    if set(value) - allowed:
+        raise ValueError(
+            "unsupported field(s): " + ", ".join(sorted(set(value) - allowed))
+        )
+    if value.get("schema") != "offline_trend_context/1":
+        raise ValueError("schema must be offline_trend_context/1")
+    engagement_id = value.get("engagement_id")
+    if not isinstance(engagement_id, str) or not engagement_id.strip():
+        raise ValueError("engagement_id must be a non-empty string")
+    campaign_id = value.get("campaign_id")
+    if type(campaign_id) is not int or campaign_id <= 0:
+        raise ValueError("campaign_id must be a positive integer")
+    snapshots = value.get("snapshots")
+    if not isinstance(snapshots, list) or len(snapshots) < 2:
+        raise ValueError("snapshots must be an ordered list with at least two entries")
+    normalized_snapshots = []
+    seen_ids = set()
+    for index, item in enumerate(snapshots):
+        if not isinstance(item, dict):
+            raise ValueError(f"snapshots[{index}] must be an object")
+        if set(item) - {"snapshot_id", "source_sha256", "label"}:
+            raise ValueError(
+                f"snapshots[{index}] has unsupported field(s): "
+                + ", ".join(sorted(set(item) - {"snapshot_id", "source_sha256", "label"}))
+            )
+        snapshot_id = item.get("snapshot_id")
+        if type(snapshot_id) is not int or snapshot_id <= 0:
+            raise ValueError(f"snapshots[{index}].snapshot_id must be a positive integer")
+        if snapshot_id in seen_ids:
+            raise ValueError("snapshot identities must be unique within the ordered campaign")
+        seen_ids.add(snapshot_id)
+        source_sha256 = item.get("source_sha256")
+        if (
+            not isinstance(source_sha256, str)
+            or len(source_sha256) != 71
+            or not source_sha256.startswith("sha256:")
+            or any(ch not in "0123456789abcdefABCDEF" for ch in source_sha256[7:])
+        ):
+            raise ValueError(
+                f"snapshots[{index}].source_sha256 must be sha256:<64 hexadecimal characters>"
+            )
+        label = item.get("label", f"C{index + 1}")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"snapshots[{index}].label must be a non-empty string when supplied")
+        normalized_snapshots.append({
+            "snapshot_id": snapshot_id,
+            "source_sha256": "sha256:" + source_sha256[7:].lower(),
+            "label": label.strip(),
+        })
+    intents = value.get("adjacent_change_intents")
+    if intents is None:
+        normalized_intents = [None] * (len(normalized_snapshots) - 1)
+    else:
+        if not isinstance(intents, list) or len(intents) != len(normalized_snapshots) - 1:
+            raise ValueError(
+                "adjacent_change_intents must contain exactly one object or null per adjacent pair"
+            )
+        normalized_intents = []
+        for index, item in enumerate(intents):
+            if item is not None and not isinstance(item, dict):
+                raise ValueError(
+                    f"adjacent_change_intents[{index}] must be an object or null"
+                )
+            normalized_intents.append(item)
+    return {
+        "schema": "offline_trend_context/1",
+        "engagement_id": engagement_id.strip(),
+        "campaign_id": campaign_id,
+        "snapshots": normalized_snapshots,
+        "adjacent_change_intents": normalized_intents,
+    }
+
+
+def _publish_multichassis_lag_blocks(
+        snapshot: dict, typed_observations: Any, domain_baseline: Any) -> None:
+    """Publish runtime multichassis evidence only when a real local observation exists."""
+    observations = (
+        typed_observations.get("observations")
+        if isinstance(typed_observations, dict) else None
+    )
+    rows = (
+        [dict(row) for row in observations if isinstance(row, dict)]
+        if isinstance(observations, list) else []
+    )
+    if not rows:
+        snapshot.pop("multichassis_lag_typed_observations", None)
+        snapshot.pop("multichassis_lag_domain_baseline", None)
+        return
+    snapshot["multichassis_lag_typed_observations"] = {
+        "observations": rows
+    }
+    snapshot["multichassis_lag_domain_baseline"] = (
+        dict(domain_baseline) if isinstance(domain_baseline, dict) else {}
+    )
 
 
 def _input_binding_errors(bindings: List[dict]) -> List[str]:
@@ -1685,6 +1906,9 @@ def _input_binding_errors(bindings: List[dict]) -> List[str]:
             size, digest = _stable_file_digest(str(binding["path"]))
             if size != binding.get("size") or digest != binding.get("sha256"):
                 errors.append(f"{name}: bytes changed after parsing")
+            elif "mtime_ns" in binding and int(os.stat(str(binding["path"])).st_mtime_ns) \
+                    != binding.get("mtime_ns"):
+                errors.append(f"{name}: custody timestamp changed after parsing")
         except (KeyError, OSError, RuntimeError) as exc:
             errors.append(f"{name}: unavailable or unstable ({type(exc).__name__})")
     return errors
@@ -1750,6 +1974,8 @@ def _start_run_custody(out_xlsx: str, input_records: Optional[List[dict]] = None
         "input_bindings": list(input_bindings or []),
         "evidence": {},
         "mandatory_failures": {},
+        "post_snapshot_failures": {},
+        "snapshot_authority": None,
         "redaction": {"requested": False, "status": "not_requested"},
     }
     _ACTIVE_INTEGRITY_SNAPSHOT = None
@@ -1758,11 +1984,17 @@ def _start_run_custody(out_xlsx: str, input_records: Optional[List[dict]] = None
 def _record_phase_failure(label: str, detail: str = "") -> None:
     """Make a late failure immediately visible in the canonical snapshot integrity channel."""
     global _ACTIVE_INTEGRITY_SNAPSHOT
+    name = str(label)
     if not isinstance(_ACTIVE_INTEGRITY_SNAPSHOT, dict):
+        # Once exact snapshot bytes are frozen they are immutable authority. Optional presentation
+        # failures remain visible in custody/timings/manifest, but may not rewrite the bytes to which
+        # a receipt is already bound.
+        if isinstance(_RUN_CUSTODY.get("snapshot_authority"), dict):
+            bounded = str(detail or "post-snapshot phase failed")[:500]
+            _RUN_CUSTODY.setdefault("post_snapshot_failures", {})[name] = bounded
         return
     integrity = _ACTIVE_INTEGRITY_SNAPSHOT.setdefault("assessment_integrity", {})
     failed = integrity.setdefault("failed_phases", [])
-    name = str(label)
     if name not in failed:
         failed.append(name)
     if detail:
@@ -1782,6 +2014,8 @@ def _record_mandatory_failure(label: str, detail: str = "") -> None:
 def _sync_mandatory_failures(snap_dict: dict) -> None:
     """Copy failures captured before snapshot assembly into its canonical integrity channel."""
     global _ACTIVE_INTEGRITY_SNAPSHOT
+    if isinstance(_RUN_CUSTODY.get("snapshot_authority"), dict):
+        return
     _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict
     for name, detail in (_RUN_CUSTODY.get("mandatory_failures") or {}).items():
         _record_phase_failure(name, detail)
@@ -2044,6 +2278,8 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
             "mandatory_prerequisites": (
                 "failed" if state.get("mandatory_failures") else "complete"),
             "failed_mandatory": sorted((state.get("mandatory_failures") or {}).keys()),
+            "post_snapshot_failures": dict(state.get("post_snapshot_failures") or {}),
+            "snapshot_authority": dict(state.get("snapshot_authority") or {}),
             "manifest_self_verification": "required-after-write",
         },
         "abstention_ledger": ledger,
@@ -2063,12 +2299,17 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
     earliest member-file mtime, else -- last resort -- now() flagged `defaulted=True` so the caller
     can disclose that the collection date was unknown. Pure read; no side effects."""
     if not no_collect:
-        return datetime.now().isoformat(), False
+        return datetime.now().astimezone().isoformat(), False
     base = os.path.basename(os.path.normpath(collection_dir or root_dir or ""))
     m = re.search(r"(\d{8})_(\d{6})", base)
     if m:
         try:
-            return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").isoformat(), False
+            return (
+                datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                .astimezone()
+                .isoformat(),
+                False,
+            )
         except ValueError:
             pass
     d = collection_dir or root_dir or ""
@@ -2076,10 +2317,10 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
         mtimes = [os.path.getmtime(os.path.join(dp, f))
                   for dp, _dirs, files in os.walk(d) for f in files]
         if mtimes:
-            return datetime.fromtimestamp(min(mtimes)).isoformat(), False
+            return datetime.fromtimestamp(min(mtimes)).astimezone().isoformat(), False
     except OSError:
         pass
-    return datetime.now().isoformat(), True
+    return datetime.now().astimezone().isoformat(), True
 
 # =============================================================================
 # V3.15.0 ADDITIONS - new analysis outputs (Tier 1) + new collection (Tier 2).
@@ -2252,6 +2493,463 @@ def _emit_artifact(label: str, path: str, kind: str, fn, *args,
                      label, exc)
         return False
     return True
+
+
+def _verify_frozen_snapshot(path: str, source_binding: Dict[str, Any]):
+    """Re-bind the current file bytes and reject any drift from the frozen receipt authority."""
+    bound = bind_snapshot_json_bytes(_read_stable_bytes(path))
+    marker = bound_snapshot_source(bound)
+    if marker.get("source_bound") is not True or (
+        marker.get("sha256") != source_binding.get("sha256")
+        or marker.get("bytes") != source_binding.get("bytes")
+    ):
+        raise ValueError("assessment snapshot bytes changed after receipt binding")
+    return bound
+
+
+def _verify_protocol_receipt_authority(
+        snapshot_path: str,
+        source_binding: Dict[str, Any],
+        bundle: Dict[str, Any],
+        export_path: str):
+    """Validate the detached receipt, its exact export bytes, and its frozen source together."""
+    from cisco_toolkit.docmeta import protocol_assurance_receipt_view
+    from webapp.backend.protocol_portfolio import (
+        build_protocol_single_snapshot_bundle,
+        canonical_export_bytes,
+    )
+
+    bound = _verify_frozen_snapshot(snapshot_path, source_binding)
+    subject_cap = (bundle.get("receipt") or {}).get("render_cap")
+    rebuilt = build_protocol_single_snapshot_bundle(
+        bound,
+        source_binding,
+        subject_cap=subject_cap,
+    )
+    if canonical_export_bytes(rebuilt) != canonical_export_bytes(bundle):
+        raise ValueError("protocol receipt bundle does not match the exact frozen snapshot")
+    view = protocol_assurance_receipt_view(bundle)
+    if not view.get("valid") or view.get("custody_status") != "bound":
+        raise ValueError(
+            "protocol receipt is not a validated BOUND owner sidecar: "
+            + str(view.get("reason") or view.get("custody_failures") or "unknown failure")
+        )
+    if view.get("source_binding") != source_binding:
+        raise ValueError("protocol receipt source binding changed after snapshot freeze")
+    expected_export = canonical_export_bytes(bundle.get("complete_export") or {})
+    emitted_export = _read_stable_bytes(export_path)
+    if emitted_export != expected_export:
+        raise ValueError("protocol assurance complete export bytes changed after publication")
+    expected_digest = ((bundle.get("receipt") or {}).get("complete_export") or {}).get("sha256")
+    actual_digest = "sha256:" + hashlib.sha256(emitted_export).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError("protocol assurance complete export digest does not reconcile")
+    return bound
+
+
+def _verify_bound_receipt_surface(
+        path: str,
+        kind: str,
+        snapshot_path: str,
+        source_binding: Dict[str, Any],
+        bundle: Dict[str, Any],
+        export_path: str,
+        expected_html_label: Optional[str] = None) -> None:
+    """Prove the staged artifact projects the exact BOUND owner view, not a decoy token bag."""
+    from cisco_toolkit.docmeta import protocol_assurance_receipt_view
+    from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
+
+    expected_reference = os.path.basename(export_path)
+    surface = protocol_assurance_surface_payload(
+        bundle,
+        complete_export_reference=expected_reference,
+    )
+    view = protocol_assurance_receipt_view(bundle)
+    if (
+        not view.get("valid")
+        or surface.get("receipt_valid") is not True
+        or surface.get("status") != "BOUND"
+        or surface.get("source_binding") != source_binding
+    ):
+        raise ValueError("BOUND receipt semantic expectations are incomplete")
+
+    if kind == "html":
+        from html.parser import HTMLParser
+
+        document = _read_stable_bytes(path).decode("utf-8")
+
+        class _ScriptCollector(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.in_script = False
+                self.parts: List[str] = []
+                self.scripts: List[str] = []
+                self.comments: List[str] = []
+
+            def handle_starttag(self, tag, _attrs):
+                if tag.lower() == "script":
+                    if self.in_script:
+                        raise ValueError("HTML contains nested script elements")
+                    self.in_script = True
+                    self.parts = []
+
+            def handle_endtag(self, tag):
+                if tag.lower() == "script" and self.in_script:
+                    self.scripts.append("".join(self.parts))
+                    self.parts = []
+                    self.in_script = False
+
+            def handle_data(self, data):
+                if self.in_script:
+                    self.parts.append(data)
+
+            def handle_comment(self, data):
+                self.comments.append(data)
+                if self.in_script:
+                    self.parts.append(f"<!--{data}-->")
+
+        assignment = "const EMBEDDED_PROTOCOL_ASSURANCE="
+        snapshot_assignment = "const EMBEDDED_SNAPSHOT="
+        if document.count(assignment) != 1 or document.count(snapshot_assignment) != 1:
+            raise ValueError("HTML receipt/snapshot assignments are missing or duplicated")
+        parser = _ScriptCollector()
+        try:
+            parser.feed(document)
+            parser.close()
+        except (UnicodeError, ValueError) as exc:
+            raise ValueError("HTML receipt script structure is malformed") from exc
+        if any(assignment in comment or snapshot_assignment in comment
+               for comment in parser.comments):
+            raise ValueError("HTML receipt authority appears inside a comment")
+        receipt_scripts = [script for script in parser.scripts if assignment in script]
+        if len(receipt_scripts) != 1:
+            raise ValueError("HTML has no unique executable Protocol Assurance assignment")
+        script = receipt_scripts[0]
+        block = re.compile(
+            r'^const EMBEDDED_PROTOCOL_ASSURANCE=(?P<surface>\{[^\r\n]*\});\r?\n'
+            r'const EMBEDDED_SNAPSHOT=(?P<snapshot>\{[^\r\n]*\});\r?\n'
+            r'load\(EMBEDDED_SNAPSHOT,(?P<label>"(?:\\.|[^"\\])*")'
+            r',true,EMBEDDED_PROTOCOL_ASSURANCE\);\r?$',
+            re.MULTILINE,
+        )
+        matches = list(block.finditer(script))
+        if len(matches) != 1:
+            raise ValueError("HTML receipt is not adjacent to the executable snapshot load")
+        match = matches[0]
+        prefix = script[:match.start()]
+        if (
+            prefix.rfind("<!--") > prefix.rfind("-->")
+            or prefix.rfind("/*") > prefix.rfind("*/")
+            or prefix.rsplit("\n", 1)[-1].lstrip().startswith("//")
+        ):
+            raise ValueError("HTML receipt authority is commented out")
+        try:
+            embedded_surface = json.loads(match.group("surface"))
+            embedded_snapshot = json.loads(match.group("snapshot"))
+            embedded_label = json.loads(match.group("label"))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError("HTML has no parseable executable Protocol Assurance payload") from exc
+        if (
+            embedded_surface != surface
+            or not isinstance(embedded_snapshot, dict)
+            or not isinstance(expected_html_label, str)
+            or embedded_label != expected_html_label
+        ):
+            raise ValueError("HTML Protocol Assurance surface does not match the exact BOUND sidecar")
+        if "/api/snapshots/" in json.dumps(embedded_surface):
+            raise ValueError("local HTML receipt synthesized an AssessHub snapshot endpoint")
+        # Lexical JS inspection cannot prove execution: an exact-looking block inside if(false), a
+        # comment, or another dead branch is still inert. Rebuild the one authoritative Explorer
+        # from the pristine shipped template and exact parsed frozen snapshot, then compare every
+        # emitted byte. This also makes the writer's deliberate slim projection explicit and proves
+        # the receipt is attached to the snapshot the page actually loads.
+        import tempfile
+        from cisco_toolkit.html import write_html_explorer as _canonical_html_writer
+
+        bound_snapshot = _verify_frozen_snapshot(snapshot_path, source_binding)
+        fd, canonical_path = tempfile.mkstemp(
+            prefix=".protocol-receipt-authority-",
+            suffix=".html",
+            dir=os.path.dirname(os.path.abspath(path)) or ".",
+        )
+        os.close(fd)
+        try:
+            _canonical_html_writer(
+                canonical_path,
+                bound_snapshot,
+                expected_html_label,
+                protocol_assurance_bundle=bundle,
+                complete_export_reference=expected_reference,
+            )
+            if _read_stable_bytes(path) != _read_stable_bytes(canonical_path):
+                raise ValueError(
+                    "HTML bytes do not match the canonical executable Explorer projection")
+        finally:
+            try:
+                os.unlink(canonical_path)
+            except OSError:
+                pass
+        return
+
+    if kind == "xlsx":
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            if "Protocol Assurance" not in workbook.sheetnames:
+                raise ValueError("workbook has no Protocol Assurance sheet")
+            sheet = workbook["Protocol Assurance"]
+            source = surface["source_binding"]
+            cap = surface["subject_cap"]
+            export = surface["complete_export"]
+            source_label = (
+                "Exact persisted source"
+                if source["source"] == "persisted snapshots.snapshot_json blob"
+                else "Exact emitted source"
+            )
+            source_value = (
+                f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
+                f"snapshot {source['snapshot_id']} · {source['bytes']} bytes · {source['sha256']}"
+                if source_label == "Exact persisted source" else
+                f"local snapshot {source['label']} · {source['bytes']} bytes · {source['sha256']}"
+            )
+            expected_rows = {
+                3: ("Receipt status", "BOUND"),
+                4: ("Receipt contract", surface["schema"]),
+                5: ("Decision ownership", "No score · no verdict"),
+                6: ("Custody", "bound"),
+                7: (source_label, source_value),
+                8: ("Receipt SHA-256", surface["receipt_sha256"]),
+                9: (
+                    "Receipt subject cap",
+                    f"Rendered / total / omitted: {cap['rendered']} / {cap['total']} / {cap['omitted']}",
+                ),
+                10: (
+                    "Complete export",
+                    f"{export['schema']} · uncapped JSON · {export['sha256']} · {export['reference']}",
+                ),
+                11: ("Operator boundary", surface["operator_note"]),
+            }
+            if sheet["A1"].value != "Protocol Assurance · single-snapshot receipt":
+                raise ValueError("workbook receipt title is missing")
+            for row_number, expected in expected_rows.items():
+                actual = (sheet.cell(row_number, 1).value, sheet.cell(row_number, 2).value)
+                if actual != expected:
+                    raise ValueError(f"workbook receipt row {row_number} is not canonical")
+            headers = (
+                "Protocol family", "Assurance level", "Evidence status",
+                "Rendered", "Total", "Omitted",
+            )
+            if tuple(sheet.cell(13, column).value for column in range(1, 7)) != headers:
+                raise ValueError("workbook receipt family header is not canonical")
+            expected_families = [
+                (
+                    family["family"], family["assurance_level"], family["evidence_status"],
+                    family["rendered"], family["total"], family["omitted"],
+                )
+                for family in surface["families"]
+            ]
+            actual_families = [
+                tuple(sheet.cell(row_number, column).value for column in range(1, 7))
+                for row_number in range(14, 14 + len(expected_families))
+            ]
+            if actual_families != expected_families:
+                raise ValueError("workbook receipt family rows do not match the owner view")
+            if any(
+                sheet.cell(row_number, column).value is not None
+                for row_number in range(14 + len(expected_families), sheet.max_row + 1)
+                for column in range(1, 7)
+            ):
+                raise ValueError("workbook receipt contains undeclared family rows")
+        finally:
+            workbook.close()
+        return
+
+    if kind == "docx":
+        from docx import Document
+
+        document = Document(path)
+        paragraphs = [paragraph.text for paragraph in document.paragraphs]
+        headings = [
+            index for index, value in enumerate(paragraphs)
+            if value.endswith("Source-bound Protocol Assurance receipt")
+        ]
+        if len(headings) != 1:
+            raise ValueError("DOCX has no unique canonical Protocol Assurance heading")
+        source = view["source_binding"]
+        totals = view["subject_totals"]
+        custody = str(view["custody_status"] or "not_verified").upper()
+        source_description = (
+            f"engagement {source['engagement_id']} · campaign {source['campaign_id']} · "
+            f"snapshot {source['snapshot_id']} · exact persisted bytes {source['bytes']}"
+            if source["source"] == "persisted snapshots.snapshot_json blob" else
+            f"local snapshot {source['label']} · exact emitted bytes {source['bytes']}"
+        )
+        expected_paragraphs = [
+            (
+                f"{view['schema']} · owner {view['owner_version']} · custody {custody}. This portfolio "
+                "owns no score and no verdict; evidence status is a coverage/observation classification, "
+                "not cutover authorization."
+            ),
+            (
+                f"Source owner: {source['source']} · {source_description} · source SHA-256 "
+                f"{source['sha256']} · receipt SHA-256 {view['receipt_sha256']}."
+            ),
+        ]
+        if view["custody_failures"]:
+            expected_paragraphs.append(
+                "Custody failures: " + "; ".join(str(item) for item in view["custody_failures"])
+            )
+        expected_paragraphs.extend([
+            (
+                f"Signed receipt payload cap (rendered / total / omitted): {totals['rendered']} / "
+                f"{totals['total']} / {totals['omitted']}. This document renders family aggregates, not "
+                f"subject-detail rows; its subject-detail display is 0 / {totals['total']} / "
+                f"{totals['total']}. Every family discloses the receipt payload's rendered / total / "
+                "omitted counters below. Decision code does not consume capped presentation arrays."
+            ),
+            (
+                f"Complete export: {view['complete_export']['schema']} · "
+                f"{view['complete_export']['media_type']} · {view['complete_export']['sha256']} · "
+                f"all {totals['total']} subject row(s), uncapped. Reference: {expected_reference}. "
+                "Retrieve and archive that JSON beside this document; the digest above reconciles it "
+                "to this receipt."
+            ),
+        ])
+        if view["custody_note"]:
+            expected_paragraphs.append(view["custody_note"])
+        following = [value for value in paragraphs[headings[0] + 1:] if value]
+        if following[:len(expected_paragraphs)] != expected_paragraphs:
+            raise ValueError("DOCX receipt paragraphs do not match the canonical owner projection")
+        headers = [
+            "Protocol family", "Assurance level", "Evidence status",
+            "Receipt payload rendered / total / omitted", "Producer custody",
+        ]
+        family_tables = [
+            table for table in document.tables
+            if table.rows and [cell.text for cell in table.rows[0].cells] == headers
+        ]
+        if len(family_tables) != 1:
+            raise ValueError("DOCX has no unique canonical Protocol Assurance family table")
+        expected_families = [
+            [
+                family["family"], family["assurance_level"], family["evidence_status"],
+                f"{family['rendered']} / {family['total']} / {family['omitted']}",
+                family["source_custody"],
+            ]
+            for family in view["families"]
+        ]
+        actual_families = [
+            [cell.text for cell in row.cells]
+            for row in family_tables[0].rows[1:]
+        ]
+        if actual_families != expected_families:
+            raise ValueError("DOCX receipt family rows do not match the owner view")
+        if any("/api/snapshots/" in value for value in paragraphs):
+            raise ValueError("local DOCX receipt synthesized an AssessHub snapshot endpoint")
+        return
+
+    raise ValueError(f"no BOUND receipt semantic verifier for artifact kind {kind!r}")
+
+
+def _replace_with_retries(source: str, destination: str) -> None:
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError:
+            if attempt == _ATOMIC_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_ATOMIC_REPLACE_BACKOFF_S)
+
+
+def _atomic_receipt_refresh(
+        label: str,
+        path: str,
+        kind: str,
+        writer,
+        *args,
+        snapshot_path: str,
+        source_binding: Dict[str, Any],
+        bundle: Dict[str, Any],
+        export_path: str,
+        expected_html_label: Optional[str] = None,
+        **kwargs) -> bool:
+    """Stage a BOUND renderer and replace its earlier NOT VERIFIED output as one transaction."""
+    target = os.path.abspath(str(path))
+    directory = os.path.dirname(target) or "."
+    stem, ext = os.path.splitext(os.path.basename(target))
+    nonce = str(_RUN_CUSTODY.get("run_id") or os.getpid()).replace("-", "")[:12]
+    staged = os.path.join(directory, f".{stem}.receipt-{nonce}.tmp{ext}")
+    previous = os.path.join(directory, f".{stem}.receipt-{nonce}.previous{ext}")
+    artifacts = _RUN_CUSTODY.setdefault("artifacts", {})
+    previous_record = artifacts.get(target)
+    previous_moved = False
+    published = False
+
+    def _restore_previous() -> None:
+        artifacts.pop(target, None)
+        if previous_moved and os.path.exists(previous):
+            _replace_with_retries(previous, target)
+        elif published and previous_record is None:
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+        if previous_record is not None:
+            artifacts[target] = previous_record
+
+    try:
+        os.makedirs(directory, exist_ok=True)
+        result = _run_phase(label, writer, staged, *args, _default=_PHASE_FAILED, **kwargs)
+        if result is _PHASE_FAILED:
+            artifacts.pop(target, None)
+            return False
+        ok, reason = validate_artifact(staged, kind)
+        if not ok:
+            raise ValueError(f"staged BOUND artifact failed structural validation: {reason}")
+        _verify_bound_receipt_surface(
+            staged, kind, snapshot_path, source_binding, bundle, export_path,
+            expected_html_label)
+        # This is intentionally the last read before replacement: no artifact becomes BOUND from a
+        # stale sidecar, a changed export, or a snapshot different from the bytes the owner parsed.
+        _verify_protocol_receipt_authority(
+            snapshot_path, source_binding, bundle, export_path)
+        if os.path.exists(target):
+            _replace_with_retries(target, previous)
+            previous_moved = True
+        _replace_with_retries(staged, target)
+        published = True
+        # Close the check/replace race before these bytes may enter the current-run registry.
+        _verify_protocol_receipt_authority(
+            snapshot_path, source_binding, bundle, export_path)
+        _verify_bound_receipt_surface(
+            target, kind, snapshot_path, source_binding, bundle, export_path,
+            expected_html_label)
+        _register_artifact(target, kind=kind, source=label)
+        if previous_moved:
+            try:
+                os.unlink(previous)
+            except OSError:
+                # A retained dot-prefixed recovery file is not in the artifact registry or candidate
+                # set. The canonical target is already validated and registered.
+                pass
+        return True
+    except (KeyboardInterrupt, SystemExit):
+        _restore_previous()
+        raise
+    except Exception as exc:
+        _restore_previous()
+        artifacts.pop(target, None)
+        _record_phase_failure(label, f"{type(exc).__name__}: {exc}")
+        logger.error("  [INTEGRITY] BOUND refresh '%s' was withheld: %s", label, exc)
+        return False
+    finally:
+        for temporary in (staged, previous):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def _write_integrity_disclosure_sheet(wb, snap_dict: dict) -> None:
@@ -2565,6 +3263,11 @@ _PER_DEVICE_AXES: List[_AxisSpec] = [
                         f"{v.get('summary', {}).get('unused', 0)} unused structure(s)", None, False),
     _AxisSpec("stp_roots", build_stp_roots, "STP",
               lambda v: f"root bridge info for {len(v)} VLAN(s)", None, False),
+    _AxisSpec("stp_topology_observations", build_stp_topology_observation, "STP-TOPOLOGY",
+              lambda v: f"{len(v.get('roots', []))} typed instance(s), "
+                        f"{len(v.get('roles', []))} role(s), "
+                        f"{len(v.get('topology_changes', []))} counter(s)",
+              None, True),
     _AxisSpec("vpc", build_vpc, "vPC",
               lambda v: f"domain {v.get('domain_id')} role {v.get('role') or '?'}, "
                         f"{len(v.get('vpcs', []))} vPC(s)", None, False),
@@ -2664,6 +3367,21 @@ def main():
                          "Findings Delta + Pre-Change Certificate) plus a <output>.precert.json "
                          "Pre-Change Validation Certificate (roadmap C1; --path-intents is honored); "
                          "skips collection and the template.")
+    ap.add_argument("--comparison-context", default=None, metavar="FILE",
+                    help="With --compare, bind the exact file pair to an explicit engagement, campaign, "
+                         "before/after snapshot identity, and optional expected-change intent. JSON schema: "
+                         "offline_comparison_context/1. Without it, artifacts are still written but the "
+                         "canonical gate remains INDETERMINATE/not-comparable.")
+    ap.add_argument("--l2-trial-pre", default=None, metavar="SNAPSHOT",
+                    help="With --compare, exact post-implementation/pre-failure snapshot bytes for one "
+                         "bounded observed local L2 trial. Requires --l2-trial-post, "
+                         "--l2-trial-witness, and --comparison-context.")
+    ap.add_argument("--l2-trial-post", default=None, metavar="SNAPSHOT",
+                    help="With --compare, exact induced-failure/post-failure snapshot bytes. The "
+                         "--compare NEW snapshot is always the recovery/final-current phase.")
+    ap.add_argument("--l2-trial-witness", default=None, metavar="JSON",
+                    help="With --compare, bounded l2_failure_witness/1 operator context (maximum 64 KiB). "
+                         "Device-state phase snapshots independently prove or refute the transition.")
     ap.add_argument("--fail-on-compare-gate", action="store_true",
                     help="With --compare, exit 2 after writing the workbook and certificate unless the "
                          "combined CUTOVER GATE verdict is PASS. Opt-in; requires --compare.")
@@ -2772,6 +3490,13 @@ def main():
                     help="NEW-V3.23.145: migration-campaign trend across a SERIES of snapshot JSONs (>=2, "
                          "oldest first) -> a trend workbook (Campaign Summary verdict + Timeline w/ chart + "
                          "Burndown). Skips collection and the template.")
+    ap.add_argument("--trend-context", default=None, metavar="FILE",
+                    help="With --trend, bind each ordered snapshot identity to its exact source SHA-256, "
+                         "one engagement, and one campaign. JSON schema: offline_trend_context/1. Without "
+                         "it, the trajectory remains available but adjacent canonical comparison receipts "
+                         "are explicitly NOT VERIFIED and incomplete. Contract fields: engagement_id, "
+                         "campaign_id, snapshots:[{snapshot_id,source_sha256,label?}], and optional "
+                         "adjacent_change_intents:[object|null] with exactly one entry per pair.")
     ap.add_argument("--allow-schema-mismatch", action="store_true",
                     help="P3-E2: permit --compare/--trend across snapshots produced by DIFFERENT engine "
                          "schema versions (script_version). OFF by default, so a cross-schema diff -- which "
@@ -2794,11 +3519,30 @@ def main():
 
     if args.fail_on_compare_gate and not args.compare:
         ap.error("--fail-on-compare-gate requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    if args.comparison_context and not args.compare:
+        ap.error("--comparison-context requires --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    l2_trial_values = (
+        args.l2_trial_pre, args.l2_trial_post, args.l2_trial_witness
+    )
+    if any(value is not None for value in l2_trial_values) \
+            and not all(value is not None for value in l2_trial_values):
+        ap.error(
+            "--l2-trial-pre, --l2-trial-post, and --l2-trial-witness "
+            "must be supplied together"
+        )
+    if all(value is not None for value in l2_trial_values) and not args.compare:
+        ap.error("observed L2 trial inputs require --compare OLD_SNAPSHOT NEW_SNAPSHOT")
+    if all(value is not None for value in l2_trial_values) \
+            and not args.comparison_context:
+        ap.error("observed L2 trial inputs require --comparison-context")
+    if args.trend_context and not args.trend:
+        ap.error("--trend-context requires --trend SNAPSHOT SNAPSHOT [...]")
 
     if args.traffic_intents and (args.compare or args.trend):
         ap.error(
             "--traffic-intents is supported only for a full offline assessment run; "
-            "--compare/--trend do not evaluate or publish Traffic Assurance"
+            "--compare/--trend project any stored traffic_assurance receipt but never rerun the "
+            "path engine with a new intent catalog"
         )
 
     # This run's gate ledger starts empty. Matters for hosts that call main() twice in one process --
@@ -2825,36 +3569,77 @@ def main():
     # NEW-V15: diff mode - compare two snapshots, no SSH/template needed.
     if args.compare:
         old_p, new_p = args.compare
+        l2_trial_requested = all(
+            value is not None for value in (
+                args.l2_trial_pre, args.l2_trial_post, args.l2_trial_witness
+            )
+        )
+        trial_pre_snap = trial_post_snap = None
+        trial_pre_record = trial_post_record = trial_witness_record = None
+        trial_pre_binding = trial_post_binding = trial_witness_binding = None
+        trial_witness_bytes = b""
         try:                                              # NEW-V3.23.1: clean message, not a raw traceback
             old_bytes, old_record, old_binding = _bind_input(
                 old_p, role="compare_before")
             new_bytes, new_record, new_binding = _bind_input(
-                new_p, role="compare_after")
-            old_snap = json.loads(old_bytes.decode("utf-8"))
-            new_snap = json.loads(new_bytes.decode("utf-8"))
+                new_p, role="compare_after", capture_mtime=l2_trial_requested)
+            old_snap = bind_snapshot_json_bytes(old_bytes)
+            new_snap = bind_snapshot_json_bytes(new_bytes)
         except FileNotFoundError as e:
             ap.error(f"--compare: snapshot file not found: {e.filename}")
-        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
-        if any(isinstance(snap, dict) and "traffic_assurance" in snap
-               for snap in (old_snap, new_snap)):
-            ap.error(
-                "--compare: an input snapshot contains traffic_assurance, but --compare does not "
-                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
-                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
-                "full offline assessments"
-            )
+        if l2_trial_requested:
+            try:
+                trial_pre_bytes, trial_pre_record, trial_pre_binding = _bind_input(
+                    args.l2_trial_pre,
+                    role="offline_l2_trial_pre_failure",
+                    capture_mtime=True,
+                )
+                trial_post_bytes, trial_post_record, trial_post_binding = _bind_input(
+                    args.l2_trial_post,
+                    role="offline_l2_trial_post_failure",
+                    capture_mtime=True,
+                )
+                trial_witness_bytes, trial_witness_record, trial_witness_binding = _bind_input(
+                    args.l2_trial_witness,
+                    role="offline_l2_trial_witness",
+                    max_bytes=_L2_TRIAL_WITNESS_MAX_BYTES,
+                )
+                trial_pre_snap = bind_snapshot_json_bytes(trial_pre_bytes)
+                trial_post_snap = bind_snapshot_json_bytes(trial_post_bytes)
+            except FileNotFoundError as exc:
+                ap.error(f"observed L2 trial input not found: {exc.filename}")
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError,
+                    UnicodeDecodeError) as exc:
+                ap.error(f"observed L2 trial input is invalid ({exc})")
+        comparison_context = None
+        comparison_context_binding = None
+        if args.comparison_context:
+            try:
+                context_bytes, _context_record, comparison_context_binding = _bind_input(
+                    args.comparison_context, role="offline_comparison_context")
+                comparison_context = _parse_offline_comparison_context(context_bytes)
+            except FileNotFoundError as exc:
+                ap.error(f"--comparison-context: file not found: {exc.filename}")
+            except (OSError, RuntimeError, ValueError) as exc:
+                ap.error(f"--comparison-context: {exc}")
         # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
         # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
-        _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
+        schema_snapshots = [old_snap, new_snap]
+        schema_labels = [old_p, new_p]
+        if l2_trial_requested:
+            schema_snapshots = [old_snap, trial_pre_snap, trial_post_snap, new_snap]
+            schema_labels = [
+                old_p, args.l2_trial_pre, args.l2_trial_post, new_p,
+            ]
+        _sc_status, _sc_msg = schema_compat_status(
+            schema_snapshots, labels=schema_labels
+        )
         _sc_binding = {
             "status": _sc_status,
             "message": _sc_msg,
             "override": bool(args.allow_schema_mismatch),
-        }
-        _source_binding = {
-            "before": old_record["sha256"],
-            "after": new_record["sha256"],
         }
         if _sc_status == "mismatch" and not args.allow_schema_mismatch:
             ap.error(f"--compare: {_sc_msg}. Re-run with --allow-schema-mismatch to diff across schema "
@@ -2864,36 +3649,122 @@ def main():
                            + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
         try:
             _require_current_bindings(
-                [old_binding, new_binding, *(_validated_inputs.get("bindings") or [])],
+                [old_binding, new_binding,
+                 *([comparison_context_binding] if comparison_context_binding else []),
+                 *([
+                     trial_pre_binding, trial_post_binding, trial_witness_binding,
+                 ] if l2_trial_requested else []),
+                 *(_validated_inputs.get("bindings") or [])],
                 "--compare input")
         except ValueError as exc:
             ap.error(str(exc))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         diff_out = args.output or f"Migration_Diff_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
-        # roadmap C1: the Pre-Change Validation Certificate — the fib differential packaged as the PPDIOO
-        # gate artifact (<output>.precert.json + a 'Pre-Change Certificate' sheet). An optional
-        # --path-intents catalog is re-validated across the pair and folded into the certificate.
+        # One source-owned comparison document now feeds JSON, workbook, terminal, and optional exit
+        # enforcement.  File location is not engagement/campaign identity: absent an explicit context,
+        # the exact bytes remain useful diagnostics but the unsupported source owner deliberately makes
+        # admission not-comparable and prevents PASS.
         _intents = _validated_inputs.get("path_intents")
-        cert = compute_precert(
-            old_snap, new_snap, path_intents=_intents,
-            source_hashes=_source_binding, schema_status=_sc_binding)
+        context = comparison_context or {
+            "engagement_id": "offline-context-not-supplied",
+            "campaign_id": 0,
+            "before_snapshot_id": -1,
+            "after_snapshot_id": -2,
+            "change_intent": None,
+        }
+        source_owner = (OFFLINE_FILE_SOURCE if comparison_context is not None
+                        else "unbound exact input snapshot file bytes")
+
+        def offline_source_binding(record: dict, snapshot: dict, *, side: str) -> dict:
+            return {
+                "source": source_owner,
+                "sha256": "sha256:" + str(record.get("sha256") or ""),
+                "bytes": record.get("size"),
+                "snapshot_id": context[f"{side}_snapshot_id"],
+                "campaign_id": context["campaign_id"],
+                "engagement_id": context["engagement_id"],
+                "label": record.get("name") or os.path.basename(
+                    old_p if side == "before" else new_p),
+                "script_version": str(snapshot.get("script_version") or ""),
+            }
+
+        before_binding = offline_source_binding(old_record, old_snap, side="before")
+        after_binding = offline_source_binding(new_record, new_snap, side="after")
+        observed_l2_trial = None
+        if l2_trial_requested:
+            assert all(isinstance(value, dict) for value in (
+                trial_pre_snap, trial_post_snap, trial_pre_record,
+                trial_post_record, trial_pre_binding, trial_post_binding,
+                new_record, new_binding,
+            ))
+
+            def offline_trial_phase_custody(record: dict, binding: dict) -> dict:
+                digest = "sha256:" + str(record.get("sha256") or "")
+                return {
+                    "source": OFFLINE_FILE_SOURCE,
+                    "source_id": "file-" + digest,
+                    "campaign_id": context["campaign_id"],
+                    "engagement_id": context["engagement_id"],
+                    "custody_at": binding.get("mtime_at"),
+                }
+
+            observed_l2_trial = compute_observed_l2_failure_evidence(
+                trial_pre_snap,
+                trial_post_snap,
+                new_snap,
+                witness_bytes=trial_witness_bytes,
+                phase_custody={
+                    "pre_failure": offline_trial_phase_custody(
+                        trial_pre_record, trial_pre_binding
+                    ),
+                    "post_failure": offline_trial_phase_custody(
+                        trial_post_record, trial_post_binding
+                    ),
+                    "recovery": offline_trial_phase_custody(new_record, new_binding),
+                },
+            )
+        comparison_receipt = compare_bound_pair(
+            old_snap,
+            new_snap,
+            before_binding=before_binding,
+            after_binding=after_binding,
+            change_intent=context.get("change_intent"),
+            path_intents=_intents,
+            l2_failure_trial=observed_l2_trial,
+        )
+        cert = comparison_receipt["precert"]
+        canonical_gate = comparison_receipt["cutover_gate"]
         cutover_gate = write_diff_workbook(
-            old_snap, new_snap, diff_out, precert=cert,
-            source_binding=_source_binding, schema_status=_sc_binding)
+            old_snap, new_snap, diff_out, comparison=comparison_receipt)
         # Compatibility for embedders that temporarily wrap/monkeypatch the writer with the historic
         # no-return contract.  The shipped writer always returns this exact canonical receipt after save.
         if not isinstance(cutover_gate, dict):
-            cutover_gate = compute_cutover_gate(
-                compute_snapshot_delta(
-                    old_snap, new_snap, source_binding=_source_binding,
-                    schema_status=_sc_binding),
-                cert,
-            )
+            cutover_gate = canonical_gate
         precert_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".precert.json"
+        comparison_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".comparison.json"
         write_json_file(precert_path, cert)
+        write_json_file(comparison_path, comparison_receipt)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
         logger.info(f"[OK] Pre-Change Validation Certificate: {precert_path}  (verdict: {cert.get('verdict')})")
+        logger.info(
+            "[OK] Canonical source-bound comparison receipt: %s  (gate: %s)",
+            comparison_path,
+            cutover_gate.get("verdict", "INDETERMINATE"),
+        )
+        if l2_trial_requested:
+            rehearsal = comparison_receipt.get("operator_evidence", {}).get(
+                "rehearsal", {}
+            )
+            logger.info(
+                "[OBSERVED L2 LOCAL TRIAL: %s] assurance=%s; family=%s; subject=%s. "
+                "This is bounded local safety evidence only; it does not prove service/path "
+                "survival or convergence.",
+                str(canonical_gate.get("l2_observed_trial_status") or "not_verified").upper(),
+                rehearsal.get("assurance_level", "not_verified"),
+                canonical_gate.get("l2_observed_trial_family", "not_verified"),
+                canonical_gate.get("l2_observed_trial_subject", "not_verified"),
+            )
         gate_verdict = str(cutover_gate.get("verdict") or "INDETERMINATE")
         gate_line = f"[CUTOVER GATE: {gate_verdict}] {cutover_gate.get('operator_note') or cutover_gate.get('note')}"
         if gate_verdict in ("REGRESSED", "FAIL"):
@@ -2923,20 +3794,40 @@ def main():
             for index, p in enumerate(args.trend):
                 data, record, binding = _bind_input(
                     p, role=f"trend_snapshot_{index + 1}")
-                snaps.append(json.loads(data.decode("utf-8")))
+                # The source-bound parser rejects duplicate keys, non-finite numbers, non-object roots,
+                # and later mutation of the parsed mapping.  Trend must never be a weaker admission path
+                # than the pair comparison built from the same exact bytes.
+                snaps.append(bind_snapshot_json_bytes(data))
                 trend_records.append(record)
                 trend_bindings.append(binding)
         except FileNotFoundError as e:
             ap.error(f"--trend: snapshot file not found: {e.filename}")
-        except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--trend: could not parse snapshot JSON ({e})")
-        if any(isinstance(snap, dict) and "traffic_assurance" in snap for snap in snaps):
-            ap.error(
-                "--trend: an input snapshot contains traffic_assurance, but --trend does not "
-                "evaluate or publish Traffic Assurance; rerun generic snapshots from the original "
-                "evidence without --traffic-intents, and run Traffic Assurance only through separate "
-                "full offline assessments"
-            )
+        trend_context = None
+        trend_context_binding = None
+        if args.trend_context:
+            try:
+                context_bytes, _context_record, trend_context_binding = _bind_input(
+                    args.trend_context, role="offline_trend_context")
+                trend_context = _parse_offline_trend_context(context_bytes)
+            except FileNotFoundError as exc:
+                ap.error(f"--trend-context: file not found: {exc.filename}")
+            except (OSError, RuntimeError, ValueError) as exc:
+                ap.error(f"--trend-context: {exc}")
+            identities = trend_context["snapshots"]
+            if len(identities) != len(snaps):
+                ap.error(
+                    "--trend-context: snapshots must contain exactly one ordered identity for each "
+                    "--trend input"
+                )
+            for index, (identity, record) in enumerate(zip(identities, trend_records)):
+                actual_sha256 = "sha256:" + record["sha256"]
+                if identity["source_sha256"] != actual_sha256:
+                    ap.error(
+                        f"--trend-context: snapshots[{index}].source_sha256 does not match the "
+                        "exact bytes of the corresponding --trend input"
+                    )
         # P3-E2: same schema/script_version gate for the campaign series (an engine upgrade mid-campaign
         # would otherwise trend across incompatible schemas silently).
         _sc_status, _sc_msg = schema_compat_status(snaps, labels=list(args.trend))
@@ -2953,17 +3844,142 @@ def main():
                            + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
         try:
             _require_current_bindings(
-                [*trend_bindings, *(_validated_inputs.get("bindings") or [])],
+                [*trend_bindings,
+                 *([trend_context_binding] if trend_context_binding else []),
+                 *(_validated_inputs.get("bindings") or [])],
                 "--trend input")
         except ValueError as exc:
             ap.error(str(exc))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         trend_out = args.output or f"Migration_Trend_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(trend_out)) or ".", exist_ok=True)
+
+        n_pairs = len(snaps) - 1
+        pair_entries = []
+        source_receipts = []
+        if trend_context is not None:
+            canonical_bindings = []
+            for snapshot, record, identity in zip(
+                    snaps, trend_records, trend_context["snapshots"]):
+                source_binding = {
+                    "source": OFFLINE_FILE_SOURCE,
+                    "sha256": "sha256:" + record["sha256"],
+                    "bytes": record["size"],
+                    "snapshot_id": identity["snapshot_id"],
+                    "campaign_id": trend_context["campaign_id"],
+                    "engagement_id": trend_context["engagement_id"],
+                    "label": identity["label"],
+                    "script_version": str(snapshot.get("script_version") or ""),
+                }
+                canonical_bindings.append(source_binding)
+                source_receipts.append(dict(source_binding))
+            for index in range(n_pairs):
+                before_binding = canonical_bindings[index]
+                after_binding = canonical_bindings[index + 1]
+                comparison = compare_bound_pair(
+                    snaps[index],
+                    snaps[index + 1],
+                    before_binding=before_binding,
+                    after_binding=after_binding,
+                    change_intent=trend_context["adjacent_change_intents"][index],
+                    path_intents=_validated_inputs.get("path_intents"),
+                )
+                gate = comparison.get("cutover_gate")
+                admission = comparison.get("comparison_admission")
+                envelope = comparison.get("comparison_receipt")
+                pair_entries.append({
+                    "schema": "campaign_adjacent_comparison/1",
+                    "index": index,
+                    "from": f"C{index + 1}",
+                    "to": f"C{index + 2}",
+                    "before_snapshot_id": before_binding["snapshot_id"],
+                    "after_snapshot_id": after_binding["snapshot_id"],
+                    "before_label": before_binding["label"],
+                    "after_label": after_binding["label"],
+                    "before_sha256": before_binding["sha256"],
+                    "after_sha256": after_binding["sha256"],
+                    # Projection only: these values are copied from the canonical comparison owners.
+                    "canonical_gate": (
+                        gate.get("verdict", "INDETERMINATE")
+                        if isinstance(gate, dict) else "INDETERMINATE"
+                    ),
+                    "admission_status": (
+                        admission.get("status", "not_comparable")
+                        if isinstance(admission, dict) else "not_comparable"
+                    ),
+                    "comparison_receipt_sha256": (
+                        envelope.get("receipt_sha256", "")
+                        if isinstance(envelope, dict) else ""
+                    ),
+                    "comparison": comparison,
+                })
+            receipt_status = "verified"
+            receipt_note = (
+                "Canonical comparisons were produced from the exact offline source bytes and the "
+                "explicit ordered campaign identity contract for every adjacent pair."
+            )
+        else:
+            for index, (snapshot, record) in enumerate(zip(snaps, trend_records)):
+                source_receipts.append({
+                    "source": "exact offline snapshot bytes; campaign identity not supplied",
+                    "sha256": "sha256:" + record["sha256"],
+                    "bytes": record["size"],
+                    "snapshot_id": None,
+                    "campaign_id": None,
+                    "engagement_id": "",
+                    "label": f"C{index + 1}",
+                    "script_version": str(snapshot.get("script_version") or ""),
+                })
+            receipt_status = "not_verified"
+            receipt_note = (
+                "Canonical adjacent comparisons were not produced because --trend-context did not "
+                "supply a complete ordered engagement, campaign, snapshot identity, and exact-source "
+                "binding. Filenames were not treated as identity."
+            )
+        adjacent_comparisons = {
+            "schema": "campaign_adjacent_comparison_set/1",
+            "status": receipt_status,
+            "assurance_level": (
+                "observed_state_preservation" if receipt_status == "verified" else "not_verified"
+            ),
+            "engagement_id": (
+                trend_context["engagement_id"] if trend_context is not None else ""
+            ),
+            "campaign_id": (
+                trend_context["campaign_id"] if trend_context is not None else None
+            ),
+            "n_pairs_total": n_pairs,
+            "n_pairs_returned": len(pair_entries),
+            "complete": receipt_status == "verified" and len(pair_entries) == n_pairs,
+            "note": receipt_note,
+            "source_receipts": source_receipts,
+            # This portable sidecar is the uncapped sink. Workbook rendering is separately capped and
+            # discloses its rendered/total/omitted counts without feeding a capped array to any decision.
+            "comparisons": pair_entries,
+            "portable_export": {
+                "rendered": len(pair_entries),
+                "total": len(pair_entries),
+                "omitted": 0,
+                "complete": True,
+            },
+        }
         write_campaign_workbook(
             snaps, trend_out, source_bindings=_source_bindings,
-            schema_status=_sc_binding)
+            schema_status=_sc_binding, adjacent_comparisons=adjacent_comparisons)
+        comparison_export = (
+            os.path.splitext(os.path.abspath(trend_out))[0] + ".trend-comparisons.json"
+        )
+        write_json_file(comparison_export, adjacent_comparisons)
         logger.info(f"[OK] Saved campaign trend workbook: {os.path.abspath(trend_out)}")
+        logger.info(
+            "[OK] Adjacent canonical comparison receipt export: %s  "
+            "(status: %s; complete: %s; pairs: %s/%s)",
+            comparison_export,
+            adjacent_comparisons["status"],
+            str(adjacent_comparisons["complete"]).lower(),
+            adjacent_comparisons["n_pairs_returned"],
+            adjacent_comparisons["n_pairs_total"],
+        )
         return
 
     if not args.devices_file:
@@ -3233,6 +4249,7 @@ def main():
     all_security = _axis_stores["security"]
     all_config_hygiene = _axis_stores["config_hygiene"]
     all_stp_roots = _axis_stores["stp_roots"]
+    all_stp_topology_observations = _axis_stores["stp_topology_observations"]
     all_vpc = _axis_stores["vpc"]
     all_fhrp_detail = _axis_stores["fhrp_detail"]
     all_overlay = _axis_stores["overlay"]
@@ -3264,6 +4281,19 @@ def main():
     all_shadow_infra = _axis_stores["shadow_infra"]
     all_routing_neighbors = _axis_stores["routing_neighbors"]
     all_redistribution = _axis_stores["redistribution"]
+
+    # Release-1 multichassis assurance producer.  This runs after raw evidence has been bound and
+    # reads the exact command bytes through input_custody.  The process-local markers survive only
+    # long enough to authorize this baseline; JSON serialization intentionally strips them.
+    multichassis_lag_typed_observations = {"observations": []}
+    _multichassis_collection_mode = "offline" if args.no_collect else "live"
+    for hostname, platform, cmd_to_file in all_devices_meta:
+        observation = build_multichassis_lag_typed_observation(
+            hostname, platform, _multichassis_collection_mode, cmd_to_file)
+        if observation is not None:
+            multichassis_lag_typed_observations["observations"].append(observation)
+    multichassis_lag_domain_baseline = compute_multichassis_lag_domain_baseline(
+        multichassis_lag_typed_observations)
 
     # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
     # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
@@ -3496,6 +4526,17 @@ def main():
         str(device.get("hostname") or "").strip(): device
         for device in devices if isinstance(device, dict) and str(device.get("hostname") or "").strip()
     }
+    etherchannel_operational_evidence = _run_phase(
+        "EtherChannel operational evidence", compute_etherchannel_operational_evidence,
+        all_cmd_to_files, capture_integrity, etherchannel_projection,
+        _default={}, devices=_etherchannel_devices)
+    embedded_etherchannel_operational_evidence_receipt = _run_phase(
+        "Embed EtherChannel operational evidence",
+        embedded_etherchannel_operational_evidence,
+        etherchannel_operational_evidence, _default={})
+    stp_topology_baseline = _run_phase(
+        "STP topology baseline", compute_stp_topology_baseline,
+        all_stp_topology_observations, _default={}, devices=_etherchannel_devices)
     vtp_safety_subject_scope = _run_phase(
         "VTP safety subject scope", compute_vtp_safety_subject_scope,
         all_cmd_to_files, _default={}, devices=_etherchannel_devices)
@@ -3505,6 +4546,12 @@ def main():
     embedded_vtp_safety_baseline_receipt = _run_phase(
         "Embed VTP safety baseline", embedded_vtp_safety_baseline,
         vtp_safety_baseline, _default={})
+    vtp_extended_evidence = _run_phase(
+        "VTP extended evidence", compute_vtp_extended_evidence,
+        all_cmd_to_files, capture_integrity, _default={}, devices=_etherchannel_devices)
+    embedded_vtp_extended_evidence_receipt = _run_phase(
+        "Embed VTP extended evidence", embedded_vtp_extended_evidence,
+        vtp_extended_evidence, _default={})
     _run_phase("VTP Safety sheet", write_vtp_safety_sheet, wb,
                embedded_vtp_safety_baseline_receipt)
     ipv6_routing_subject_scope = _run_phase(
@@ -3538,7 +4585,8 @@ def main():
         all_interfaces, fhrp_configured_group_baseline, _default={})
     embedded_fhrp_redundancy_domain_baseline_receipt = _run_phase(
         "Embed FHRP redundancy-domain baseline", embedded_fhrp_redundancy_domain_baseline,
-        fhrp_redundancy_domain_baseline, _default={})
+        fhrp_redundancy_domain_baseline, _default={},
+        configured_group_baseline=fhrp_configured_group_baseline)
     _run_phase("FHRP Group Intent sheet", write_fhrp_configured_group_sheet, wb,
                embedded_fhrp_baseline)
     _run_phase("FHRP Domains sheet", write_fhrp_redundancy_domain_sheet, wb,
@@ -3995,6 +5043,7 @@ def main():
            "ipv6_routing_subject_scope": ipv6_routing_subject_scope,
            "etherchannel_projection": etherchannel_projection,
            "etherchannel_baseline": etherchannel_baseline,
+           "etherchannel_operational_evidence": etherchannel_operational_evidence,
           "application_intelligence": application_intelligence},
         _default={})
     _run_phase("NRFU Commands sheet", write_nrfu_commands_sheet, wb, nrfu_commands)
@@ -4017,9 +5066,11 @@ def main():
     snap_dict["fhrp_configured_group_baseline"] = embedded_fhrp_baseline  # normalized embedded audit projection; current-run source marker never serialized
     snap_dict["fhrp_redundancy_domain_baseline"] = embedded_fhrp_redundancy_domain_baseline_receipt  # exact cross-switch FHRP domain/candidate audit projection; current-run custody erased
     snap_dict["vtp_safety_baseline"] = embedded_vtp_safety_baseline_receipt  # bounded local VTP mode/domain/revision audit projection; current-run custody erased
+    snap_dict["vtp_extended_evidence"] = embedded_vtp_extended_evidence_receipt  # exact three-command VTP/VLAN digest/pruning/auth-presence evidence; secrets and current-run custody erased
     snap_dict["ipv6_routing_adjacency_baseline"] = embedded_ipv6_routing_adjacency_baseline_receipt  # bounded observed OSPFv3/BGPv6 audit projection; current-run custody erased
     snap_dict["etherchannel_projection"] = etherchannel_projection   # Exact local group/member summary tokens + association-only subjects
     snap_dict["etherchannel_baseline"] = etherchannel_baseline       # Receipt-gated observed bundle baseline for Validation/NRFU
+    snap_dict["etherchannel_operational_evidence"] = embedded_etherchannel_operational_evidence_receipt  # strict additive configured/runtime/capacity/failure audit projection; current-run custody erased
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
     snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
@@ -4042,8 +5093,18 @@ def main():
     snap_dict["framework_coverage"] = framework_cov                 # W2-3 (CIS/NIST/PCI/STIG mapping; computed once at the workbook stage above)
     snap_dict["detector_schema"] = detector_schema                   # J1 (per-detector descriptors; not-observed != healthy as a schema property; computed once at the workbook stage above)
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
+    snap_dict["stp_topology_observations"] = all_stp_topology_observations  # additive exact PVST/MST root + role/state + counter projection
+    snap_dict["stp_topology_baseline"] = stp_topology_baseline       # strict embedded stp_topology_baseline/1 receipt
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
+    # Catalog/parser presence is not runtime evidence.  Publish this family only when at least one
+    # real typed local observation exists; an estate with no vPC/MLAG capture must remain
+    # not-applicable, not acquire a synthetic empty family that withholds every cutover PASS.
+    _publish_multichassis_lag_blocks(
+        snap_dict,
+        multichassis_lag_typed_observations,
+        multichassis_lag_domain_baseline,
+    )                                                               # process marker intentionally erased
     snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-Meridian coverage)
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
@@ -4345,6 +5406,10 @@ def main():
         _paths=[os.path.join(diagram_dir, "topology.mmd"),
                 os.path.join(diagram_dir, "topology.dot")])
 
+    html_out = ""
+    docx_out = ""
+    mop_out = ""
+
     # Phase 22: HTML Explorer (self-contained) - NEW-V3.17. Embeds the same snap_dict the
     # finalizer later writes to snapshot.json into a copy of blast_radius_explorer.html, so one
     # run yields both the workbook and a ready-to-open, air-gapped topology explorer.
@@ -4465,6 +5530,13 @@ def main():
     _actx.snap_path = snap_path
     _actx.all_cmd_to_files = all_cmd_to_files
     _actx.wb = wb
+    _actx.protocol_assurance_receipt_enabled = True
+    _actx.protocol_assurance_export_path = (
+        os.path.splitext(os.path.abspath(out_xlsx))[0] + ".protocol-assurance.json")
+    _actx.html_output_path = html_out
+    _actx.runbook_output_path = docx_out
+    _actx.mop_output_path = mop_out
+    _actx.flow_paths = flow_paths or {}
     finalization = _stage_finalize(_actx)
     if not finalization.complete:
         # Mandatory production/custody failure is a broken run, never a successful gate refusal.
@@ -4644,25 +5716,175 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
     _sync_mandatory_failures(snap_dict)
     _sync_failed_phases(snap_dict)
     wb = getattr(ctx, "wb", None)
+    receipt_enabled = bool(getattr(ctx, "protocol_assurance_receipt_enabled", False))
+    snap_path = getattr(ctx, "snap_path", "") or base + ".snapshot.json"
+    export_path = (
+        getattr(ctx, "protocol_assurance_export_path", "")
+        or base + ".protocol-assurance.json"
+    )
+    snapshot_ok = False
+    source_binding: Dict[str, Any] = {}
+    protocol_bundle = None
+    export_ok = False
+
+    def _publish_snapshot() -> bool:
+        ok = _emit_artifact(
+            "Assessment snapshot", snap_path, "snapshot",
+            write_json_file, snap_path, sparsify_interfaces(snap_dict), compact=True)
+        if ok:
+            logger.info("[OK] Snapshot: %s (use --compare OLD NEW for pre/post diff)", snap_path)
+            return True
+        detail = (((snap_dict.get("assessment_integrity") or {}).get(
+            "phase_errors") or {}).get("Assessment snapshot")
+            or "snapshot writer or structural validation failed")
+        _record_mandatory_failure("Assessment snapshot", detail)
+        return False
+
+    # Normal engine runs publish the canonical snapshot first, then bind every BOUND surface to the
+    # exact bytes read back from that file. Direct/legacy finalizer callers retain the explicitly
+    # NOT VERIFIED workbook fallback and publish their snapshot after mutable finalization state.
+    if receipt_enabled:
+        snapshot_ok = _publish_snapshot()
+        if snapshot_ok:
+            try:
+                from webapp.backend.protocol_portfolio import (
+                    CLI_EMITTED_SOURCE,
+                    build_protocol_single_snapshot_bundle,
+                    canonical_export_bytes,
+                    emitted_snapshot_binding,
+                )
+
+                frozen_bytes = _read_stable_bytes(snap_path)
+                _RUN_CUSTODY["snapshot_authority"] = {
+                    "source": CLI_EMITTED_SOURCE,
+                    "name": os.path.basename(snap_path),
+                    "sha256": "sha256:" + hashlib.sha256(frozen_bytes).hexdigest(),
+                    "bytes": len(frozen_bytes),
+                }
+                # From this boundary onward failures belong to run custody/timings/manifest. They
+                # must never mutate the byte authority a receipt is about to bind.
+                _ACTIVE_INTEGRITY_SNAPSHOT = None
+                bound_snapshot = bind_snapshot_json_bytes(frozen_bytes)
+                source_binding = emitted_snapshot_binding(
+                    bound_snapshot, label=os.path.basename(snap_path))
+                protocol_bundle = build_protocol_single_snapshot_bundle(
+                    bound_snapshot, source_binding)
+                export_bytes = canonical_export_bytes(protocol_bundle["complete_export"])
+                export_digest = "sha256:" + hashlib.sha256(export_bytes).hexdigest()
+                claimed_digest = ((protocol_bundle.get("receipt") or {}).get(
+                    "complete_export") or {}).get("sha256")
+                if export_digest != claimed_digest:
+                    raise ValueError("protocol assurance complete export digest disagrees before write")
+                _verify_frozen_snapshot(snap_path, source_binding)
+                os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+                _write_json_atomic(
+                    export_path,
+                    lambda fh: fh.write(export_bytes.decode("ascii")),
+                )
+                if _read_stable_bytes(export_path) != export_bytes:
+                    raise ValueError("emitted protocol assurance export bytes are not canonical")
+                _verify_protocol_receipt_authority(
+                    snap_path, source_binding, protocol_bundle, export_path)
+                _register_artifact(
+                    export_path, kind="json", source="Protocol Assurance complete export")
+                export_ok = True
+                ctx.protocol_assurance_bundle = protocol_bundle
+                ctx.protocol_assurance_export_path = export_path
+                logger.info("[OK] Protocol Assurance complete export: %s", export_path)
+            except Exception as exc:
+                _record_mandatory_failure(
+                    "Protocol Assurance complete export", f"{type(exc).__name__}: {exc}")
+                logger.error("  Protocol Assurance receipt/export FAILED: %s", exc)
+
+    # Refresh only the four receipt-bearing engine artifacts. The writers receive the exact parsed
+    # BoundSnapshot; staged bytes cannot replace the earlier NOT VERIFIED artifact until the source
+    # snapshot and uncapped export have both been revalidated.
+    export_reference = os.path.basename(export_path) if export_ok else ""
+    if receipt_enabled and protocol_bundle is not None and export_ok:
+        try:
+            bound_snapshot = _verify_protocol_receipt_authority(
+                snap_path, source_binding, protocol_bundle, export_path)
+        except Exception as exc:
+            bound_snapshot = None
+            export_ok = False
+            export_reference = ""
+            _record_mandatory_failure(
+                "Protocol Assurance source authority", f"{type(exc).__name__}: {exc}")
+            logger.error("  Protocol Assurance source authority FAILED: %s", exc)
+        if bound_snapshot is not None:
+            label = os.path.splitext(os.path.basename(out_xlsx))[0]
+            html_path = getattr(ctx, "html_output_path", "")
+            if html_path:
+                _atomic_receipt_refresh(
+                    "HTML Explorer BOUND receipt", html_path, "html", write_html_explorer,
+                    bound_snapshot, label,
+                    snapshot_path=snap_path, source_binding=source_binding,
+                    bundle=protocol_bundle, export_path=export_path,
+                    expected_html_label=label,
+                    protocol_assurance_bundle=protocol_bundle,
+                    complete_export_reference=export_reference,
+                )
+            runbook_path = getattr(ctx, "runbook_output_path", "")
+            if runbook_path:
+                _atomic_receipt_refresh(
+                    "Runbook DOCX BOUND receipt", runbook_path, "docx", write_runbook_docx,
+                    bound_snapshot, label,
+                    snapshot_path=snap_path, source_binding=source_binding,
+                    bundle=protocol_bundle, export_path=export_path,
+                    flow_paths=getattr(ctx, "flow_paths", {}) or {},
+                    protocol_assurance_bundle=protocol_bundle,
+                    complete_export_reference=export_reference,
+                )
+            mop_path = getattr(ctx, "mop_output_path", "")
+            if mop_path:
+                _atomic_receipt_refresh(
+                    "MOP DOCX BOUND receipt", mop_path, "docx", write_mop_docx,
+                    bound_snapshot, label,
+                    snapshot_path=snap_path, source_binding=source_binding,
+                    bundle=protocol_bundle, export_path=export_path,
+                    protocol_assurance_bundle=protocol_bundle,
+                    complete_export_reference=export_reference,
+                )
+
     if wb is None:
         _record_mandatory_failure(
             "Assessment workbook", "workbook object was absent at finalization")
     else:
-        def _save_workbook():
-            _write_integrity_disclosure_sheet(wb, snap_dict)
-            wb.save(out_xlsx)
+        workbook_bundle = protocol_bundle if export_ok else None
 
-        workbook_ok = _emit_artifact(
-            "Assessment workbook", out_xlsx, "xlsx", _save_workbook)
+        def _prepare_workbook() -> None:
+            write_protocol_assurance_receipt_sheet(
+                wb,
+                workbook_bundle,
+                complete_export_reference=export_reference,
+            )
+            _write_integrity_disclosure_sheet(wb, snap_dict)
+
+        def _save_workbook(output_path: str) -> None:
+            _prepare_workbook()
+            wb.save(output_path)
+
+        if receipt_enabled and protocol_bundle is not None and export_ok:
+            workbook_ok = _atomic_receipt_refresh(
+                "Assessment workbook BOUND receipt", out_xlsx, "xlsx",
+                _save_workbook,
+                snapshot_path=snap_path, source_binding=source_binding,
+                bundle=protocol_bundle, export_path=export_path,
+            )
+        else:
+            workbook_ok = _emit_artifact(
+                "Assessment workbook", out_xlsx, "xlsx", _save_workbook, out_xlsx)
         if not workbook_ok:
             detail = (((snap_dict.get("assessment_integrity") or {}).get(
                 "phase_errors") or {}).get("Assessment workbook")
+                or (_RUN_CUSTODY.get("post_snapshot_failures") or {}).get(
+                    "Assessment workbook BOUND receipt")
                 or "workbook writer or structural validation failed")
             _record_mandatory_failure("Assessment workbook", detail)
         logger.info("[OK] Log:   %s", LOG_FILE)
 
-    # Timings are finalized and registered before the manifest. A rerun can no longer hash the
-    # previous timings file and then overwrite it after sealing.
+    # Timings are finalized and registered before the manifest. A sidecar failure stays fail-soft;
+    # after receipt freeze it is custody metadata and cannot rewrite the source snapshot.
     timings_path = base + ".phase_timings.json"
     timings = {
         "n_devices": len(all_devices_meta),
@@ -4676,34 +5898,11 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                       default={"phase": "-", "seconds": 0})
         logger.info("[OK] Phase timings: %s (%s timed phase(s), slowest: %s %ss)",
                     timings_path, len(_PHASE_TIMINGS), slowest["phase"], slowest["seconds"])
-    # DELIBERATELY FAIL-SOFT. An escalation to `_record_mandatory_failure` was added here on
-    # 2026-07-31 and REVERTED the same day after an independent review measured the cost: two real
-    # `--redact` runs, identical inputs, differing only in that an ordinary Windows file lock (an AV
-    # scanner or an open viewer) held the PREVIOUS ledger. Control exited 0 `[COMPLETE]`; the
-    # treatment exited 1 `[INCOMPLETE]` having produced all 14 deliverables byte-identically.
-    # `webapp/backend/ingest.py` maps a non-zero engine exit to `_mark_output_unsafe` + a
-    # do-not-send verdict, so a locked stale sidecar would have told a field engineer that a
-    # correctly redacted deliverable set must be treated as UNREDACTED.
-    #
-    # The escalation was justified by a coupling that does not exist on any reachable path: the
-    # consumer's absent-ledger refusal sits ~28 lines AFTER ingest already raises on `returncode
-    # != 0`, so no field engineer can ever observe it. It bought a live false-alarm to harden a
-    # branch that is dead. A sidecar ledger does not belong in the same mandatory tier as the
-    # workbook, snapshot and manifest, and the escalation was not even gated on `--redact`.
 
-    _sync_mandatory_failures(snap_dict)
-    _sync_failed_phases(snap_dict)
-    snap_path = getattr(ctx, "snap_path", "") or base + ".snapshot.json"
-    snapshot_ok = _emit_artifact(
-        "Assessment snapshot", snap_path, "snapshot",
-        write_json_file, snap_path, sparsify_interfaces(snap_dict), compact=True)
-    if snapshot_ok:
-        logger.info("[OK] Snapshot: %s (use --compare OLD NEW for pre/post diff)", snap_path)
-    else:
-        detail = (((snap_dict.get("assessment_integrity") or {}).get(
-            "phase_errors") or {}).get("Assessment snapshot")
-            or "snapshot writer or structural validation failed")
-        _record_mandatory_failure("Assessment snapshot", detail)
+    if not receipt_enabled:
+        _sync_mandatory_failures(snap_dict)
+        _sync_failed_phases(snap_dict)
+        snapshot_ok = _publish_snapshot()
 
     # ``--redact`` is a safety claim over every shareable artifact, not merely a producer phase.
     # Independently inspect the exact bytes, bind the verifier's digests, then re-read and compare
@@ -4749,6 +5948,17 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
             logger.error(
                 "  Independent shareable redaction verification FAILED: %s", exc
             )
+
+    if receipt_enabled and protocol_bundle is not None and export_ok:
+        try:
+            _verify_protocol_receipt_authority(
+                snap_path, source_binding, protocol_bundle, export_path)
+        except Exception as exc:
+            _record_mandatory_failure(
+                "Protocol Assurance pre-manifest authority",
+                f"{type(exc).__name__}: {exc}",
+            )
+            logger.error("  Protocol Assurance pre-manifest authority FAILED: %s", exc)
 
     stale = _excluded_stale_outputs()
     if stale:

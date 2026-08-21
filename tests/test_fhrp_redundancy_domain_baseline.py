@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from pathlib import Path
 
 from cisco_toolkit import fhrp_redundancy as redundancy
 from cisco_toolkit.capture_integrity import compute_capture_integrity_from_paths
-from cisco_toolkit.fhrp_intent import compute_fhrp_configured_group_baseline
+from cisco_toolkit.fhrp_intent import (
+    compute_fhrp_configured_group_baseline,
+    embedded_fhrp_configured_group_baseline,
+    validate_fhrp_configured_group_baseline,
+)
+from cisco_toolkit.protocol_assurance import (
+    bind_snapshot_json_bytes,
+    bound_snapshot_source,
+)
+from cisco_toolkit.protocol_deltas import compute_fhrp_redundancy_domain_delta
 from cisco_toolkit.fhrp_redundancy import (
     FHRP_REDUNDANCY_DOMAIN_SCHEMA,
     _baseline_digest,
@@ -458,6 +468,110 @@ def test_json_and_embedded_receipts_cannot_self_authorize(tmp_path: Path):
     assert embedded["projection_custody"] == "embedded_unverified"
     assert embedded["source_receipt"]["source_bound"] is False
     assert validate_fhrp_redundancy_domain_baseline(embedded)["valid"] is True
+
+
+def test_embedded_domain_rebinds_only_to_its_exact_current_configured_owner(
+        tmp_path: Path):
+    (tmp_path / "matching").mkdir()
+    configured, interfaces = _owner(tmp_path / "matching", {
+        "edge-a": {"ip": "10.0.10.2", "role": "Active"},
+        "edge-b": {"ip": "10.0.10.3", "role": "Standby"},
+    })
+    domain = compute_fhrp_redundancy_domain_baseline(interfaces, configured)
+    embedded_configured = embedded_fhrp_configured_group_baseline(configured)
+    embedded_domain = embedded_fhrp_redundancy_domain_baseline(
+        domain, configured_group_baseline=configured)
+
+    assert validate_fhrp_configured_group_baseline(
+        embedded_configured)["valid"] is True
+    assert validate_fhrp_redundancy_domain_baseline(
+        embedded_domain)["valid"] is True
+    assert embedded_domain["source_receipt"]["configured_baseline_sha256"] == (
+        embedded_configured["summary"]["baseline_sha256"]
+    )
+
+    snapshot = {
+        "script_version": "fhrp-persisted-reconciliation-test/1",
+        "devices": {"edge-a": {"platform": "ios"}, "edge-b": {"platform": "ios"}},
+        "interfaces": interfaces,
+        "fhrp_configured_group_baseline": embedded_configured,
+        "fhrp_redundancy_domain_baseline": embedded_domain,
+    }
+    raw = json.dumps(
+        snapshot,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=lambda item: dataclasses.asdict(item)
+        if dataclasses.is_dataclass(item) else str(item),
+    ).encode("utf-8")
+    bound = bind_snapshot_json_bytes(raw)
+    binding = bound_snapshot_source(bound)
+    delta = compute_fhrp_redundancy_domain_delta(
+        bound,
+        bound,
+        comparison_source_binding={"before": binding, "after": binding},
+    )
+    assert delta["summary"]["by_transition"]["unchanged_healthy"] == 1
+    assert delta["summary"]["by_transition"]["not_comparable"] == 0
+
+    (tmp_path / "mismatched").mkdir()
+    mismatched, _other_interfaces = _owner(tmp_path / "mismatched", {
+        "edge-a": {"ip": "10.0.10.2", "role": "Active"},
+        "edge-b": {"ip": "10.0.10.3", "role": "Active"},
+    })
+    rejected = embedded_fhrp_redundancy_domain_baseline(
+        domain, configured_group_baseline=mismatched)
+    rejected_view = validate_fhrp_redundancy_domain_baseline(rejected)
+    assert rejected_view["valid"] is True
+    assert rejected["source_receipt"]["valid"] is False
+    assert rejected["verdict"] == "INDETERMINATE"
+
+
+def test_domain_receipt_from_different_svi_projection_fails_closed(
+        tmp_path: Path):
+    configured, interfaces = _owner(tmp_path, {
+        "edge-a": {"ip": "10.0.10.2", "role": "Active"},
+        "edge-b": {"ip": "10.0.10.3", "role": "", "group": False},
+    })
+    actual = compute_fhrp_redundancy_domain_baseline(interfaces, configured)
+    assert actual["domains"][0]["status"] == "review"
+
+    # This receipt is structurally valid and consumes the exact same configured
+    # owner, but its SVI source was empty.  It must not erase the review domain
+    # when grafted beside the real, co-published interface projection.
+    grafted = compute_fhrp_redundancy_domain_baseline({}, configured)
+    snapshot = {
+        "script_version": "fhrp-svi-graft-test/1",
+        "devices": {"edge-a": {"platform": "ios"}, "edge-b": {"platform": "ios"}},
+        "interfaces": interfaces,
+        "fhrp_configured_group_baseline": embedded_fhrp_configured_group_baseline(
+            configured),
+        "fhrp_redundancy_domain_baseline": embedded_fhrp_redundancy_domain_baseline(
+            grafted, configured_group_baseline=configured),
+    }
+    raw = json.dumps(
+        snapshot,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=lambda item: dataclasses.asdict(item)
+        if dataclasses.is_dataclass(item) else str(item),
+    ).encode("utf-8")
+    bound = bind_snapshot_json_bytes(raw)
+    binding = bound_snapshot_source(bound)
+
+    delta = compute_fhrp_redundancy_domain_delta(
+        bound,
+        bound,
+        comparison_source_binding={"before": binding, "after": binding},
+    )
+
+    assert delta["applicability"] == "applicable"
+    assert delta["comparable"] is False
+    assert delta["summary"]["by_transition"]["not_comparable"] == 1
+    assert delta["summary"]["by_decision_effect"]["not_verified"] == 1
+    assert delta["changes"][0]["transition"] == "not_comparable"
 
 
 def test_consistently_resealed_nested_local_status_loses_current_authority(

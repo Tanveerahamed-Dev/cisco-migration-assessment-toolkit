@@ -17,8 +17,8 @@ const META: Meta = {
     { key: "deck", label: "Executive deck", ext: "pptx", available: true, producer: "engine-cli" },
   ],
   artifact_family: {
-    pre_cutover: 12,
-    engine_cli: 10,
+    pre_cutover: 13,
+    engine_cli: 11,
     assesshub_only_pre_cutover: 2,
     conditional_post_execution: 1,
   },
@@ -38,7 +38,7 @@ describe("AboutPage", () => {
     expect(await screen.findByText("Atlas — by Tanveer Ahamed")).toBeInTheDocument();
     expect(screen.getByText(/3\.31\.0 \(checkout\)/)).toBeInTheDocument();
     expect(screen.getByText(/3\.23\.0/)).toBeInTheDocument(); // engine schema
-    expect(screen.getByText(/12 pre-cutover \+ 1 conditional post-execution/)).toBeInTheDocument();
+    expect(screen.getByText(/13 pre-cutover \+ 1 conditional post-execution/)).toBeInTheDocument();
     expect(screen.getByText(/OUI\/port\/EoL knowledge packs/)).toBeInTheDocument();
   });
 

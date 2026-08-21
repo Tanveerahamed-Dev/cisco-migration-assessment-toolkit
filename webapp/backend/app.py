@@ -7,8 +7,11 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import functools
+import hashlib
 import hmac
 import json
 import os
@@ -19,7 +22,7 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO, Dict, List
+from typing import Annotated, Any, BinaryIO, Dict, List, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi import Path as PathParam
@@ -27,12 +30,27 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from cisco_toolkit import brand_tokens, docmeta
+from cisco_toolkit.protocol_assurance import (
+    PERSISTED_SOURCE as _PERSISTED_SNAPSHOT_SOURCE,
+    reject_duplicate_json_keys as _reject_duplicate_json_keys,
+)
 
-from . import cutover, deliverables, engine, execution, gates, graph, ingest, serve, summary
-from .storage import Store
+from . import (
+    cutover,
+    deliverables,
+    engine,
+    execution,
+    gates,
+    graph,
+    ingest,
+    protocol_portfolio,
+    serve,
+    summary,
+)
+from .storage import ExecutionReceiptAuthorityError, Store
 
 _HERE = Path(__file__).resolve().parent
 _WEBAPP = _HERE.parent
@@ -107,17 +125,60 @@ _SQLITE_INT_MIN = -(2 ** 63)
 _SQLITE_INT_MAX = 2 ** 63 - 1
 RowId = Annotated[int, PathParam(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)]
 #: The same bound for an id carried in a request BODY (Pydantic model field).
-BodyRowId = Field(ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX)
+BodyRowId = Annotated[
+    int,
+    Field(strict=True, ge=_SQLITE_INT_MIN, le=_SQLITE_INT_MAX),
+]
+BoundedToken = Annotated[str, Field(max_length=_LEN_TOKEN)]
+BoundedName = Annotated[str, Field(max_length=_LEN_NAME)]
 
 
 class CampaignIn(BaseModel):
     name: str = Field(max_length=_LEN_NAME)
     description: str = Field(default="", max_length=_LEN_NOTE)
+    engagement_id: str = Field(default="", max_length=_LEN_NAME)
+
+
+class ExpectedFamilyChangeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    family: str = Field(min_length=1, max_length=_LEN_NAME)
+    transitions: List[BoundedToken] = Field(min_length=1, max_length=9)
+    subjects: List[BoundedName] = Field(default_factory=list, max_length=200)
+    reason: str = Field(default="", max_length=_LEN_NOTE)
+    intent_kind: Literal["", "revision_reset"] = ""
+
+
+class ChangeIntentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_changes: List[ExpectedFamilyChangeIn] = Field(default_factory=list, max_length=200)
+    note: str = Field(default="", max_length=_LEN_NOTE)
+
+
+class L2FailureTrialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pre_failure_snapshot_id: BodyRowId
+    post_failure_snapshot_id: BodyRowId
+    witness_json_base64: str = Field(min_length=1, max_length=90_000)
 
 
 class CompareIn(BaseModel):
-    old_id: int = BodyRowId
-    new_id: int = BodyRowId
+    model_config = ConfigDict(extra="forbid")
+
+    old_id: BodyRowId
+    new_id: BodyRowId
+    change_intent: ChangeIntentIn | None = None
+    l2_failure_trial: L2FailureTrialIn | None = None
+
+
+class ExecutionCompareIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    after_snapshot_id: BodyRowId
+    change_intent: ChangeIntentIn | None = None
+    l2_failure_trial: L2FailureTrialIn | None = None
 
 
 class FolderIngestIn(BaseModel):
@@ -266,6 +327,29 @@ class _RequestBodyLimitMiddleware:
                 if not message.get("more_body", False):
                     break
             await run_in_threadpool(spool.seek, 0)
+
+            # FastAPI/Pydantic normally receives an already-decoded mapping, which means duplicate
+            # JSON member names have been silently collapsed before any route model can reject
+            # them.  Comparison intent and snapshot identities are decision inputs, so the exact
+            # bounded wire body must have one unambiguous interpretation.  Validate ordinary JSON
+            # bodies here, while their original bytes still exist, then rewind for Starlette.  The
+            # multipart snapshot-upload path retains its dedicated strict snapshot parser.
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if received and content_type == "application/json":
+                raw_body = await run_in_threadpool(spool.read)
+                try:
+                    json.loads(
+                        raw_body,
+                        parse_constant=ingest.reject_nonfinite,
+                        object_pairs_hook=_reject_duplicate_json_keys,
+                    )
+                except (UnicodeDecodeError, ValueError) as exc:
+                    await JSONResponse(
+                        {"detail": f"Invalid JSON request body: {exc}"},
+                        status_code=400,
+                    )(scope, receive, send)
+                    return
+                await run_in_threadpool(spool.seek, 0)
 
             # Take the shared heavy-work slot ONLY NOW — the body is fully received and spooled, so
             # the slot covers the handler's actual work rather than the network read.
@@ -575,16 +659,6 @@ def _validate_snapshot(value: Any) -> Dict[str, Any]:
         elif isinstance(node, list):
             stack.extend((child, depth + 1) for child in node)
     return value
-
-
-def _reject_duplicate_json_keys(pairs: List[tuple[str, Any]]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for key, value in pairs:
-        if key in out:
-            shown = key if len(key) <= 120 else key[:117] + "..."
-            raise ValueError(f"duplicate JSON object key {shown!r}")
-        out[key] = value
-    return out
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -942,6 +1016,19 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         version=engine.ENGINE_SCHEMA_VERSION,
         description="A live web platform over the Cisco Migration-Assessment engine.",
     )
+
+    @app.exception_handler(ExecutionReceiptAuthorityError)
+    async def execution_receipt_authority_error(
+            _request: Request, _error: ExecutionReceiptAuthorityError) -> JSONResponse:
+        # Do not publish corrupted/torn receipt detail as a usable decision. Operators get a closed
+        # conflict and must restore/recollect; server logs and integrity tooling retain diagnosis.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Execution comparison authority could not be revalidated from its "
+                          "persisted receipt and exact source rows; no PASS is available.",
+            },
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),                 # env extras only; empty by default
@@ -1142,7 +1229,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.post("/api/campaigns", status_code=201)
     def create_campaign(body: CampaignIn) -> Dict[str, Any]:
-        return store.create_campaign(body.name, body.description)
+        return store.create_campaign(body.name, body.description, body.engagement_id)
 
     # freshens EVERY snapshot: parse + DB write each
     @app.get("/api/campaigns/{campaign_id}")
@@ -1158,8 +1245,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.delete("/api/campaigns/{campaign_id}", status_code=204)
     def delete_campaign(campaign_id: RowId):
-        if not store.delete_campaign(campaign_id):
+        deleted = store.delete_campaign_if_unreceipted(campaign_id)
+        if deleted == "missing":
             raise HTTPException(404, "Campaign not found")
+        if deleted == "receipted":
+            raise HTTPException(
+                409,
+                "A campaign containing canonical comparison receipts is an immutable decision "
+                "record and cannot be deleted",
+            )
         # A bare 204 — JSONResponse(content=None) would serialize a "null" body, which uvicorn
         # rejects on a 204 with an ASGI RuntimeError on every delete.
         return Response(status_code=204)
@@ -1171,6 +1265,31 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if not c:
             raise HTTPException(404, "Campaign not found")
         bound = [store.get_bound_snapshot(s["id"]) for s in c["snapshots"]]
+        if any(item is None for item in bound):
+            # Never bridge over a snapshot that disappeared between the roster read and the
+            # exact-byte reads: C1→C3 is not the adjacent-pair evidence C1→C2 and C2→C3 named.
+            # Return an explicit incomplete/indeterminate receipt set with the original expected
+            # denominator. A retry may succeed against a coherent campaign roster.
+            expected_pairs = max(0, len(c["snapshots"]) - 1)
+            unavailable = engine.campaign_trend([], source_bindings=[])
+            unavailable["verdict"] = "INDETERMINATE"
+            prior_note = str(unavailable.get("verdict_note") or "")
+            race_note = (
+                "Canonical adjacent comparisons are NOT VERIFIED because a source snapshot "
+                "disappeared while the ordered campaign was read; no non-adjacent pair was "
+                "substituted. Retry against a stable campaign roster."
+            )
+            unavailable["verdict_note"] = f"{race_note} {prior_note}".strip()
+            unavailable["adjacent_comparisons"] = []
+            unavailable["adjacent_comparison_status"] = {
+                "schema": "campaign_adjacent_comparison_set/1",
+                "status": "not_verified",
+                "n_pairs_total": expected_pairs,
+                "n_pairs_returned": 0,
+                "complete": False,
+                "note": race_note,
+            }
+            return unavailable
         available = [item for item in bound if item is not None]
         return engine.campaign_trend(
             [item[0] for item in available],
@@ -1344,6 +1463,23 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     def get_section(snapshot_id: RowId, name: str) -> Dict[str, Any]:
         if name not in _ALLOWED_SECTIONS:
             raise HTTPException(400, f"Unknown section '{name}'")
+        if name == protocol_portfolio.SECTION_KEY:
+            bound = store.get_bound_snapshot(snapshot_id)
+            if bound is None:
+                raise HTTPException(404, "Snapshot not found")
+            snap, binding = bound
+            bundle = protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+            receipt = bundle["receipt"]
+            return {
+                "section": name,
+                "data": {
+                    "receipt": receipt,
+                    "complete_export": {
+                        **receipt["complete_export"],
+                        "url": f"/api/snapshots/{snapshot_id}/protocol-assurance/export",
+                    },
+                },
+            }
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, "Snapshot not found")
@@ -1376,6 +1512,28 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
                     move_groups=snap.get("move_groups"))
         return {"section": name, "data": data}
+
+    @app.get("/api/snapshots/{snapshot_id}/protocol-assurance/export")
+    def protocol_assurance_export(snapshot_id: RowId) -> Response:
+        """Complete, uncapped JSON portfolio bound to the exact persisted snapshot blob."""
+        bound = store.get_bound_snapshot(snapshot_id)
+        if bound is None:
+            raise HTTPException(404, "Snapshot not found")
+        snap, binding = bound
+        bundle = protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+        payload = protocol_portfolio.canonical_export_bytes(bundle["complete_export"])
+        digest = bundle["receipt"]["complete_export"]["sha256"]
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="protocol-assurance-snapshot-{snapshot_id}.json"'
+                ),
+                "Cache-Control": "no-store",
+                "X-Atlas-Content-SHA256": digest,
+            },
+        )
 
     @app.get("/api/snapshots/{snapshot_id}/graph")
     def snapshot_graph(snapshot_id: RowId) -> Dict[str, Any]:
@@ -1580,7 +1738,130 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
+    def _bound_comparison_pair(before_snapshot_id: int, after_snapshot_id: int):
+        if before_snapshot_id == after_snapshot_id:
+            raise HTTPException(400, "Before and after snapshots must be different")
+        bound_set = store.get_bound_snapshot_set([before_snapshot_id, after_snapshot_id])
+        if bound_set is None:
+            raise HTTPException(404, "One or both snapshots not found")
+        before_source = bound_set[before_snapshot_id]
+        after_source = bound_set[after_snapshot_id]
+        before = before_source["snapshot"]
+        before_binding = before_source["binding"]
+        after = after_source["snapshot"]
+        after_binding = after_source["binding"]
+        if before_binding.get("engagement_id") != after_binding.get("engagement_id"):
+            raise HTTPException(
+                409,
+                "Snapshots belong to different engagements; cross-engagement comparison is non-overridable",
+            )
+        if before_binding.get("campaign_id") != after_binding.get("campaign_id"):
+            raise HTTPException(
+                409,
+                "Snapshots belong to different campaigns; compare evidence within one campaign",
+            )
+        return before, before_binding, after, after_binding
+
+    def _stored_l2_failure_trial(
+            request_body: L2FailureTrialIn,
+            *,
+            before_snapshot_id: int,
+            recovery_snapshot_id: int) -> Dict[str, Any]:
+        """Atomically acquire four persisted phases and mint store-owned trial authority."""
+        pre_id = request_body.pre_failure_snapshot_id
+        post_id = request_body.post_failure_snapshot_id
+        recovery_id = recovery_snapshot_id
+        all_ids = (before_snapshot_id, pre_id, post_id, recovery_id)
+        if len(set(all_ids)) != 4:
+            raise HTTPException(
+                400,
+                "Before, pre-failure, post-failure, and recovery snapshots must be four distinct rows",
+            )
+        source_set = store.get_bound_snapshot_set(list(all_ids))
+        if source_set is None:
+            raise HTTPException(404, "One or more observed-trial phase snapshots were not found")
+        before_source = source_set[before_snapshot_id]
+        pre_source = source_set[pre_id]
+        post_source = source_set[post_id]
+        recovery_source = source_set[recovery_id]
+        pre_snapshot, pre_binding = pre_source["snapshot"], pre_source["binding"]
+        post_snapshot, post_binding = post_source["snapshot"], post_source["binding"]
+        recovery_snapshot = recovery_source["snapshot"]
+        recovery_binding = recovery_source["binding"]
+        bindings = (pre_binding, post_binding, recovery_binding)
+        contexts = {
+            (binding.get("source"), binding.get("campaign_id"), binding.get("engagement_id"))
+            for binding in (before_source["binding"], *bindings)
+        }
+        if (len(contexts) != 1
+                or next(iter(contexts))[0] != _PERSISTED_SNAPSHOT_SOURCE):
+            raise HTTPException(
+                409,
+                "Observed-trial phases must belong to one persisted campaign and engagement",
+            )
+        try:
+            witness_bytes = base64.b64decode(
+                request_body.witness_json_base64.encode("ascii"), validate=True
+            )
+        except (UnicodeEncodeError, ValueError, binascii.Error) as error:
+            raise HTTPException(
+                422, "witness_json_base64 must be canonical base64-encoded JSON bytes"
+            ) from error
+        if not witness_bytes or len(witness_bytes) > 64 * 1024:
+            raise HTTPException(422, "Observed-trial witness bytes exceed the 64 KiB limit")
+
+        phase_rows = (
+            ("pre_failure", pre_snapshot, pre_binding, pre_source),
+            ("post_failure", post_snapshot, post_binding, post_source),
+            ("recovery", recovery_snapshot, recovery_binding, recovery_source),
+        )
+        custody = {
+            phase: {
+                "source": binding["source"],
+                "source_id": f"snapshot:{binding['snapshot_id']}",
+                "campaign_id": binding["campaign_id"],
+                "engagement_id": binding["engagement_id"],
+                "custody_at": source["uploaded_at"],
+            }
+            for phase, _snapshot, binding, source in phase_rows
+        }
+        from cisco_toolkit.l2_rehearsal import compute_observed_l2_failure_evidence
+
+        evidence = compute_observed_l2_failure_evidence(
+            pre_snapshot,
+            post_snapshot,
+            recovery_snapshot,
+            witness_bytes=witness_bytes,
+            phase_custody=custody,
+        )
+        return {
+            "before_snapshot": before_source["snapshot"],
+            "before_binding": before_source["binding"],
+            "recovery_snapshot": recovery_snapshot,
+            "recovery_binding": recovery_binding,
+            "evidence": evidence,
+            # Internal persistence input. It is never accepted as a detached client receipt;
+            # storage re-reads every row and remints evidence while BEGIN IMMEDIATE is held.
+            "source_record": {
+                "schema": "stored_l2_failure_trial_source/1",
+                "pre_failure_snapshot_id": pre_id,
+                "post_failure_snapshot_id": post_id,
+                "recovery_snapshot_id": recovery_id,
+                "witness_bytes": witness_bytes,
+                "witness_sha256": "sha256:" + hashlib.sha256(witness_bytes).hexdigest(),
+                "source": recovery_binding["source"],
+                "campaign_id": recovery_binding["campaign_id"],
+                "engagement_id": recovery_binding["engagement_id"],
+            },
+        }
+
     # -- execution runs (war room) ------------------------------------------
+    def _execution_view(rec: Dict[str, Any], state: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        view = execution.with_progress(
+            rec["id"], rec["snapshot_id"], state if state is not None else rec["state"])
+        view["comparison_receipts"] = list(rec.get("comparisons") or [])
+        return view
+
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
         """Atomic read-modify-write on one run's state; returns the updated derived state."""
         with execution.MUTATION_LOCK:
@@ -1607,17 +1888,30 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     "Execution run changed in another server process. Reload it and retry "
                     "the update so no operator's record is overwritten.",
                 )
-            return execution.with_progress(execution_id, rec["snapshot_id"], rec["state"])
+            if saved == "closed":
+                raise HTTPException(
+                    409,
+                    "Run is already finished and can no longer be modified.",
+                )
+            if saved == "authority_invalid":
+                raise HTTPException(
+                    409,
+                    "Execution comparison authority could not be revalidated from its persisted "
+                    "receipt and exact source rows; the mutation was refused.",
+                )
+            return _execution_view(rec, rec["state"])
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
     def start_execution(snapshot_id: RowId, body: ExecutionIn) -> Dict[str, Any]:
         """Materialize the snapshot's cutover plan into a live, frozen execution run."""
-        snap = store.get_snapshot(snapshot_id)
-        if snap is None:
+        bound = store.get_bound_snapshot(snapshot_id)
+        if bound is None:
             raise HTTPException(404, "Snapshot not found")
+        snap, source_binding = bound
         # Build the (label-independent) plan OFF the lock — it can block for a while and must not
         # serialize the whole war room.
-        state = execution.start_run(snap, body.label, body.operator)
+        state = execution.start_run(
+            snap, body.label, body.operator, source_binding=source_binding)
         if not state["waves"]:
             raise HTTPException(400, "No migration waves were derived from this snapshot — nothing to execute")
         # Auto-label + insert atomically under Store's BEGIN IMMEDIATE, so independent server
@@ -1637,7 +1931,10 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 # start-side sibling that was left raw. The plan build is unaffected — it ran off the
                 # snapshot already in memory — so nothing partial is persisted.
                 raise HTTPException(404, "Snapshot not found") from e
-        return execution.with_progress(eid, snapshot_id, state)
+        return {
+            **execution.with_progress(eid, snapshot_id, state),
+            "comparison_receipts": [],
+        }
 
     @app.get("/api/snapshots/{snapshot_id}/executions")
     def list_executions(snapshot_id: RowId) -> List[Dict[str, Any]]:
@@ -1650,7 +1947,155 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         rec = store.get_execution(execution_id)
         if not rec:
             raise HTTPException(404, "Execution run not found")
-        return execution.with_progress(rec["id"], rec["snapshot_id"], rec["state"])
+        return _execution_view(rec)
+
+    @app.post("/api/executions/{execution_id}/compare")
+    def compare_execution(execution_id: RowId, body: ExecutionCompareIn) -> Dict[str, Any]:
+        """Bind one after snapshot and append the canonical comparison receipt to a live run."""
+        rec = store.get_execution(execution_id)
+        if not rec:
+            raise HTTPException(404, "Execution run not found")
+        policy = rec["state"].get("comparison_policy") \
+            if isinstance(rec.get("state"), dict) else None
+        if (not isinstance(policy, dict)
+                or policy.get("schema") != "execution_comparison_policy/1"
+                or policy.get("canonical_gate_required") is not True):
+            raise HTTPException(
+                409,
+                "This legacy execution predates canonical comparison receipts and cannot be backfilled",
+            )
+        if rec["state"].get("status") != "in_progress":
+            raise HTTPException(409, "A finished execution cannot accept new comparison evidence")
+
+        trial_source_record = None
+        if body.l2_failure_trial is not None:
+            acquired_trial = _stored_l2_failure_trial(
+                body.l2_failure_trial,
+                before_snapshot_id=rec["snapshot_id"],
+                recovery_snapshot_id=body.after_snapshot_id,
+            )
+            before = acquired_trial["before_snapshot"]
+            before_binding = acquired_trial["before_binding"]
+            after = acquired_trial["recovery_snapshot"]
+            after_binding = acquired_trial["recovery_binding"]
+            l2_failure_trial = acquired_trial["evidence"]
+            trial_source_record = acquired_trial["source_record"]
+        else:
+            before, before_binding, after, after_binding = _bound_comparison_pair(
+                rec["snapshot_id"], body.after_snapshot_id)
+            l2_failure_trial = None
+        frozen = policy.get("before_snapshot")
+        required_keys = ("snapshot_id", "campaign_id", "engagement_id", "sha256")
+        if (not isinstance(frozen, dict)
+                or any(frozen.get(key) != before_binding.get(key) for key in required_keys)):
+            raise HTTPException(
+                409,
+                "The execution's frozen start-snapshot custody no longer matches stored source bytes",
+            )
+        comparison = engine.compare_bound_pair(
+            before,
+            after,
+            before_binding=before_binding,
+            after_binding=after_binding,
+            change_intent=(body.change_intent.model_dump(mode="json")
+                           if body.change_intent is not None else None),
+            l2_failure_trial=l2_failure_trial,
+        )
+        intent = comparison.get("change_intent")
+        if not isinstance(intent, dict) or intent.get("valid") is not True:
+            failures = intent.get("failures") if isinstance(intent, dict) else []
+            detail = "; ".join(str(item) for item in failures if str(item).strip())
+            raise HTTPException(
+                422,
+                "Change intent is malformed and cannot be bound to an execution receipt"
+                + (f": {detail}" if detail else ""),
+            )
+        implementation_binding = execution.implementation_evidence_binding(rec["state"])
+        if implementation_binding.get("valid") is not True:
+            raise HTTPException(
+                409,
+                "Post-change comparison is available only after every implementation step has "
+                "been actioned. Complete or explicitly skip the pending run-of-show steps, then "
+                "collect and upload fresh evidence.",
+            )
+        receipt = engine.compact_execution_comparison(
+            comparison,
+            before_snapshot_id=rec["snapshot_id"],
+            after_snapshot_id=body.after_snapshot_id,
+            after_collected_at=(
+                after.get("collected_at") if isinstance(after.get("collected_at"), str) else None
+            ),
+            implementation_binding=implementation_binding,
+        )
+        saved = store.append_execution_comparison_if_unchanged(
+            execution_id,
+            rec["_state_json"],
+            receipt,
+            l2_failure_trial_source=trial_source_record,
+        )
+        status = saved.get("status")
+        if status == "missing":
+            raise HTTPException(404, "Execution run was deleted")
+        if status == "closed":
+            raise HTTPException(409, "A finished execution cannot accept new comparison evidence")
+        if status == "legacy":
+            raise HTTPException(409, "Legacy execution comparison backfill is not allowed")
+        if status == "identity_mismatch":
+            raise HTTPException(409, "Execution start-snapshot identity no longer matches")
+        if status == "source_missing":
+            raise HTTPException(
+                404,
+                "A comparison source snapshot was deleted while the canonical gate was computed",
+            )
+        if status == "source_mismatch":
+            raise HTTPException(
+                409,
+                "Canonical comparison custody no longer matches the persisted source bytes",
+            )
+        if status == "comparison_mismatch":
+            raise HTTPException(
+                409,
+                "Submitted comparison does not match a canonical recomputation from the persisted "
+                "source bytes",
+            )
+        if status == "authority_invalid":
+            raise HTTPException(
+                409,
+                "Existing execution comparison authority could not be revalidated from its "
+                "persisted receipt and exact source rows; no newer receipt was appended.",
+            )
+        if status == "l2_trial_required":
+            raise HTTPException(
+                409,
+                "A prior observed local L2 failure or not-verified trial remains unresolved. "
+                "Supply a newer complete "
+                "source-bound re-trial for that exact family, subject, and scenario; omitting or "
+                "substituting the trial cannot replace the blocking evidence.",
+            )
+        if status == "comparison_not_newer":
+            raise HTTPException(
+                409,
+                "Execution comparisons are append-only in evidence time. The new after snapshot "
+                "must have a strictly newer snapshot ID, source-owned collected_at, and persisted "
+                "upload time than the current latest comparison.",
+            )
+        if status == "after_not_post_change":
+            raise HTTPException(
+                409,
+                "Post-change evidence must be a newer snapshot uploaded after this execution "
+                "started, with an aware collected_at after run start and no later than upload; "
+                "stale, missing, future-dated, or ambiguously ordered captures cannot satisfy "
+                "the canonical gate",
+            )
+        if status != "saved":
+            raise HTTPException(
+                409,
+                "Execution run changed while comparison was computed. Reload and compare again.",
+            )
+        updated = store.get_execution(execution_id)
+        if not updated:
+            raise HTTPException(404, "Execution run was deleted")
+        return _execution_view(updated)
 
     @app.post("/api/executions/{execution_id}/step")
     def execution_step(execution_id: RowId, body: StepIn) -> Dict[str, Any]:
@@ -1704,10 +2149,13 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             fd, path = tempfile.mkstemp(suffix="." + pir_spec.ext, prefix="assesshub_pir_")
             os.close(fd)
             try:
-                # Old rows may carry SUCCESSFUL from the former closeout-only authority rule.
-                # Recompute the read view before exporting so a PIR cannot publish that stale
-                # verdict when required steps/checks were never completed.
-                report_state = execution.with_current_outcome(rec["state"])
+                # Recompute only opted-in cutover_execution/2 read views before export. Legacy
+                # outcomes are historical evidence and remain unchanged; they also remain
+                # explicitly disclosed below as having no canonical comparison receipt.
+                report_state = {
+                    **execution.with_current_outcome(rec["state"]),
+                    "comparison_receipts": list(rec.get("comparisons") or []),
+                }
                 write_pir_docx(path, report_state, snap_label)
             except Exception as e:
                 if os.path.exists(path):
@@ -1722,18 +2170,33 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         # Under the mutation lock so a delete can't land inside another request's
         # read-modify-write window (whose save would then be a silent no-op).
         with execution.MUTATION_LOCK:
-            if not store.delete_execution(execution_id):
+            deleted = store.delete_execution_if_unreceipted(execution_id)
+            if deleted == "missing":
                 raise HTTPException(404, "Execution run not found")
+            if deleted == "receipted":
+                raise HTTPException(
+                    409,
+                    "An execution with canonical comparison receipts is an immutable decision "
+                    "record and cannot be deleted",
+                )
         return Response(status_code=204)
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
     def snapshot_explorer(snapshot_id: RowId, request: Request) -> HTMLResponse:
         meta = store.get_snapshot_meta(snapshot_id)
-        snap = store.get_snapshot(snapshot_id)
-        if snap is None or meta is None:
+        bound = store.get_bound_snapshot(snapshot_id)
+        if bound is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
+        snap, binding = bound
+        protocol_assurance_bundle = (
+            protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+        )
         with _generation_slot(request.app.state.generation_semaphore):   # bound concurrent heavy renders
-            html = engine.render_explorer_html(snap, meta["label"])
+            html = engine.render_explorer_html(
+                snap,
+                meta["label"],
+                protocol_assurance_bundle=protocol_assurance_bundle,
+            )
         return HTMLResponse(content=html)
 
     @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}")
@@ -1741,7 +2204,17 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if kind not in deliverables.SPECS:
             raise HTTPException(400, f"Unknown deliverable '{kind}'")
         meta = store.get_snapshot_meta(snapshot_id)
-        snap = store.get_snapshot(snapshot_id)
+        protocol_assurance_bundle = None
+        if kind in {"runbook", "mop", "nrfu"}:
+            bound = store.get_bound_snapshot(snapshot_id)
+            if bound is None:
+                raise HTTPException(404, "Snapshot not found")
+            snap, binding = bound
+            protocol_assurance_bundle = (
+                protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+            )
+        else:
+            snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
         if not _deliverable_availability().get(kind):
@@ -1754,7 +2227,13 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         # rewritten to a 500; released by the context manager even if generation raises.
         with _generation_slot(request.app.state.generation_semaphore):
             try:
-                path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
+                path = deliverables.generate(
+                    kind,
+                    snap,
+                    meta["label"],
+                    gates=gate_rec,
+                    protocol_assurance_bundle=protocol_assurance_bundle,
+                )
             except Exception as e:  # generation failure (e.g. a malformed snapshot)
                 raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]
@@ -1769,21 +2248,42 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
     def delete_snapshot(snapshot_id: RowId):
-        if not store.delete_snapshot(snapshot_id):
+        deleted = store.delete_snapshot_if_unreceipted(snapshot_id)
+        if deleted == "missing":
             raise HTTPException(404, "Snapshot not found")
+        if deleted == "receipted":
+            raise HTTPException(
+                409,
+                "A snapshot bound by a canonical comparison receipt is immutable and cannot be "
+                "deleted",
+            )
         return Response(status_code=204)
 
     @app.post("/api/compare")
     def compare(body: CompareIn) -> Dict[str, Any]:
-        old_bound = store.get_bound_snapshot(body.old_id)
-        new_bound = store.get_bound_snapshot(body.new_id)
-        if old_bound is None or new_bound is None:
-            raise HTTPException(404, "One or both snapshots not found")
-        old, old_binding = old_bound
-        new, new_binding = new_bound
-        return engine.snapshot_delta(
-            old, new,
-            source_binding={"before": old_binding, "after": new_binding},
+        if body.l2_failure_trial is not None:
+            acquired_trial = _stored_l2_failure_trial(
+                body.l2_failure_trial,
+                before_snapshot_id=body.old_id,
+                recovery_snapshot_id=body.new_id,
+            )
+            old = acquired_trial["before_snapshot"]
+            old_binding = acquired_trial["before_binding"]
+            new = acquired_trial["recovery_snapshot"]
+            new_binding = acquired_trial["recovery_binding"]
+            l2_failure_trial = acquired_trial["evidence"]
+        else:
+            old, old_binding, new, new_binding = _bound_comparison_pair(
+                body.old_id, body.new_id)
+            l2_failure_trial = None
+        return engine.compare_bound_pair(
+            old,
+            new,
+            before_binding=old_binding,
+            after_binding=new_binding,
+            change_intent=(body.change_intent.model_dump(mode="json")
+                           if body.change_intent is not None else None),
+            l2_failure_trial=l2_failure_trial,
         )
 
     # -- demo --------------------------------------------------------------

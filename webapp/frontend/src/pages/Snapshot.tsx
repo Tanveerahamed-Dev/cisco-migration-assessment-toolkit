@@ -1,6 +1,18 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, bandColor, readyColor, sevColor, LifecycleSummary, SnapshotMeta, Summary } from "../api";
+import {
+  api,
+  bandColor,
+  readyColor,
+  sevColor,
+  LifecycleSummary,
+  PROTOCOL_SUBJECT_DETAIL_FIELDS,
+  ProtocolAssuranceSection,
+  ProtocolSingleSnapshotFamily,
+  ProtocolSingleSnapshotSubject,
+  SnapshotMeta,
+  Summary,
+} from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
 import CableMap from "../components/CableMap";
@@ -337,10 +349,144 @@ function ParseYieldPane({ data }: { data: any }) {
   );
 }
 
+function evidenceLabel(value: string): string {
+  return value.replaceAll("_", " ").toUpperCase();
+}
+
+function SubjectEvidenceDetail({ subject, detail }:
+  { subject: string; detail: ProtocolSingleSnapshotSubject["detail"] }) {
+  const rows = PROTOCOL_SUBJECT_DETAIL_FIELDS
+    .filter((field) => Object.prototype.hasOwnProperty.call(detail, field))
+    .map((field) => [field, detail[field]] as const)
+    .filter(([, value]) => value !== null && value !== "" && value !== undefined);
+  if (!rows.length) return <span className="faint">No typed detail</span>;
+  return (
+    <details aria-label={`${subject} typed protocol evidence`}>
+      <summary style={{ cursor: "pointer", whiteSpace: "nowrap" }}>
+        {rows.length} typed field{rows.length === 1 ? "" : "s"}
+      </summary>
+      <dl style={{ margin: "8px 0 0", minWidth: 260, maxWidth: 520 }}>
+        {rows.map(([field, value]) => (
+          <div key={field} style={{ display: "grid", gridTemplateColumns: "minmax(120px, 0.7fr) minmax(140px, 1.3fr)", gap: 8, marginTop: 4 }}>
+            <dt className="faint">{field.replaceAll("_", " ")}</dt>
+            <dd className="mono" style={{ margin: 0, overflowWrap: "anywhere" }}>{cell(value)}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+function FamilySubjects({ family }: { family: ProtocolSingleSnapshotFamily }) {
+  const subjects = family.subjects;
+  if (!subjects.rows.length) {
+    return (
+      <div className="faint" style={{ fontSize: 12, marginTop: 10 }}>
+        No validated subject rows are rendered. {family.status_reason}
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ overflow: "auto" }}>
+        <table className="tbl" aria-label={`${family.family} protocol subjects`}>
+          <thead><tr><th>Subject</th><th>Kind</th><th>Producer evidence state</th><th>Source contract</th><th>Typed evidence</th></tr></thead>
+          <tbody>
+            {subjects.rows.map((row) => (
+              <tr key={`${row.kind}|${row.subject}`}>
+                <td className="mono">{row.subject}</td>
+                <td>{evidenceLabel(row.kind)}</td>
+                <td>{evidenceLabel(row.evidence_state)}</td>
+                <td className="mono">{row.source_contract}</td>
+                <td><SubjectEvidenceDetail subject={row.subject} detail={row.detail || {}} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {subjects.omitted > 0 && (
+        <div className="faint" role="note" style={{ fontSize: 11, marginTop: 8 }}>
+          Showing {subjects.rendered} of {subjects.total} subjects; {subjects.omitted} omitted from
+          this rendered view. The complete JSON export contains all {subjects.total} subjects.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProtocolAssurancePane({ value, snapId }:
+  { value: ProtocolAssuranceSection["data"] | undefined; snapId: number }) {
+  const receipt = value?.receipt;
+  if (!receipt || receipt.schema !== "protocol_single_snapshot_receipt/1") {
+    return (
+      <div role="alert" className="faint">
+        The source-bound Protocol Assurance receipt is missing or malformed. Family evidence remains NOT VERIFIED.
+      </div>
+    );
+  }
+  const source = receipt.source_binding;
+  const exportUrl = value?.complete_export?.url || api.protocolAssuranceExportUrl(snapId);
+  return (
+    <section aria-label="Protocol Assurance portfolio" data-testid="protocol-assurance-portfolio">
+      <div className="row-flex" style={{ alignItems: "flex-start", gap: 16 }}>
+        <div style={{ flex: 1 }}>
+          <h3 style={{ marginBottom: 6 }}>Protocol Assurance portfolio</h3>
+          <div className="faint" style={{ fontSize: 12 }}>
+            {receipt.summary.n_families} closed executable family profiles · {receipt.summary.n_subjects_total} producer-owned subjects.
+            Catalog presence is not runtime support, and this receipt owns no score or cutover verdict.
+          </div>
+        </div>
+        <a className="btn" href={exportUrl} download={`protocol-assurance-snapshot-${snapId}.json`}>
+          ↓ Complete JSON export
+        </a>
+      </div>
+
+      <div style={{ marginTop: 12, padding: 12, borderRadius: 8,
+                    background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+        <div><b>Persisted-source custody:</b> {evidenceLabel(receipt.custody_status)}</div>
+        <div className="mono" style={{ fontSize: 11, overflowWrap: "anywhere", marginTop: 4 }}>
+          {source.sha256} · {source.bytes} bytes · engagement {source.engagement_id} · campaign {source.campaign_id} · snapshot {source.snapshot_id}
+        </div>
+        <div className="faint" style={{ fontSize: 11, marginTop: 6 }}>{receipt.custody_note}</div>
+        <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>
+          Script owner: {receipt.script_owner.stored_value || "NOT VERIFIED"} · receipt {receipt.receipt_sha256}
+        </div>
+        {receipt.custody_failures.length > 0 && (
+          <ul>{receipt.custody_failures.map((failure) => <li key={failure}>{failure}</li>)}</ul>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+        {receipt.families.map((family) => (
+          <details key={family.family} style={{ padding: "10px 12px", borderRadius: 8,
+                                               background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+            <summary style={{ cursor: "pointer" }}>
+              <b>{family.family}</b>{" · "}
+              <span>{evidenceLabel(family.evidence_status)}</span>{" · "}
+              <span className="faint">{family.subject_total} subject(s)</span>
+            </summary>
+            <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
+              Assurance: {family.assurance_level} · owner: {family.owner_schema} · source custody: {family.source_custody}
+            </div>
+            <div style={{ fontSize: 12, marginTop: 6 }}>{family.status_reason}</div>
+            <FamilySubjects family={family} />
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function SectionPane({ snapId, name }: { snapId: number; name: string }) {
-  const { data, error, loading } = useAsync(() => api.section(snapId, name), [snapId, name]);
+  const { data, error, loading } = useAsync(
+    () => name === "protocol_assurance" ? api.protocolAssurance(snapId) : api.section(snapId, name),
+    [snapId, name],
+  );
   if (loading) return <SkelTable />;
   if (error) return <ErrorBox msg={error} />;
+  if (name === "protocol_assurance") {
+    return <ProtocolAssurancePane value={(data as ProtocolAssuranceSection)?.data} snapId={snapId} />;
+  }
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;
   if (name === "device_dossiers" && d?.per_device) return <RegisterTable rows={d.per_device} note={d.note} />;

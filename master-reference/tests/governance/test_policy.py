@@ -302,13 +302,28 @@ def test_protocol_evidence_owners_are_derived_truth() -> None:
         path: component_for_path(path, contract)
         for path in (
             "cisco_toolkit/bgp_intent.py",
+            "cisco_toolkit/comparison.py",
+            "cisco_toolkit/etherchannel.py",
             "cisco_toolkit/fhrp_intent.py",
             "cisco_toolkit/fhrp_redundancy.py",
             "cisco_toolkit/ipv6_routing.py",
+            "cisco_toolkit/l2_rehearsal.py",
+            "cisco_toolkit/multichassis_lag.py",
+            "cisco_toolkit/protocol_assurance.py",
+            "cisco_toolkit/protocol_deltas.py",
+            "cisco_toolkit/protocol_receipt_surfaces.py",
+            "cisco_toolkit/stp_topology.py",
+            "cisco_toolkit/vtp_extended.py",
             "cisco_toolkit/vtp_safety.py",
         )
     }
     assert protocol_owners == {path: "analysis" for path in protocol_owners}
+    allowed = {tuple(edge) for edge in contract["allowed_edges"]}
+    assert {
+        ("parse_model", "analysis"),
+        ("analysis", "governance"),
+        ("analysis", "deliverables"),
+    }.issubset(allowed)
 
 
 def test_master_reference_ci_fetches_review_basis_history() -> None:

@@ -162,7 +162,7 @@ def test_related_rows_excludes_the_document_being_written():
     names = [n for n, _ in rows]
     assert not any("Method of Procedure" in n for n in names)
     assert any("Assessment workbook" in n for n in names)
-    assert len(rows) == 11  # the 12-document family (incl. the ops handbook, V3.23.168) minus self
+    assert len(rows) == 12  # the 13-artifact family (incl. the protocol export) minus self
     # a bare-string exclude is one key, not an iterable of letters (set("mop") footgun)
     assert related_rows(exclude="mop") == rows
 

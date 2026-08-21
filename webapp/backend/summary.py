@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from . import engine  # noqa: F401  (also bootstraps sys.path for the cisco_toolkit import below)
+from . import protocol_portfolio
 from cisco_toolkit import registry_integrity
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
@@ -59,6 +60,10 @@ SECTION_LABELS: List[tuple] = [
     ("wave_sequencing", "Wave sequencing"),
     ("application_intelligence", "Application domains"),
     ("segmentation", "Segmentation"),
+    # Release-1 Protocol Assurance is synthesized from the exact persisted snapshot blob at read
+    # time.  It is always available as a coverage-honest receipt, including when every family is
+    # not verified; the count is the closed executable profile set, never the capability catalog.
+    (protocol_portfolio.SECTION_KEY, "Protocol Assurance"),
     ("protocol_health", "Protocols"),
     ("multicast_intelligence", "Multicast / timing"),
     ("remediation_plan", "Remediation"),
@@ -141,6 +146,13 @@ def _section_index(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Which detail sections carry data + a count, for tab visibility."""
     out = []
     for key, label in SECTION_LABELS:
+        if key == protocol_portfolio.SECTION_KEY:
+            out.append({
+                "key": key,
+                "label": label,
+                "count": protocol_portfolio.supported_family_count(),
+            })
+            continue
         v = snap.get(key)
         if isinstance(v, list):
             count = len(v)

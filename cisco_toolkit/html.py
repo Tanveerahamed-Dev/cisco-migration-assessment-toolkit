@@ -20,6 +20,7 @@ from cisco_toolkit.analyze import (compute_current_baseline_gate,
                                    normalize_routing_adjacency_state)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
+from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
 from cisco_toolkit.textutils import is_finite_num, xml_safe as _cv
 
 logger = logging.getLogger(__name__)
@@ -929,7 +930,11 @@ def compute_snapshot_delta(old: dict, new: dict, *, source_binding: Optional[dic
 
 
 def compute_cutover_gate(delta: dict, certificate: dict,
-                         current_baseline: Optional[dict] = None) -> dict:
+                         current_baseline: Optional[dict] = None,
+                         comparison_admission: Optional[dict] = None,
+                         protocol_family_changes: Optional[dict] = None,
+                         operator_evidence: Optional[dict] = None,
+                         decision_input_authority: Any = None) -> dict:
     """Return the one combined before/after decision shown to an operator.
 
     ``compute_snapshot_delta`` and the Pre-Change Certificate answer different questions.  The former
@@ -939,7 +944,17 @@ def compute_cutover_gate(delta: dict, certificate: dict,
 
     The function is pure and total so every presentation surface can render the exact same receipt.
     ``current_baseline`` is optional for backward compatibility with direct legacy callers; when
-    omitted, the receipt embedded by ``compute_snapshot_delta`` is consumed.
+    omitted, the receipt embedded by ``compute_snapshot_delta`` is consumed.  The additive
+    ``comparison_admission`` contract is consumed only when supplied by a source-owning caller.
+    It can withhold a PASS for incompatible ownership, malformed identity/custody, or missing
+    comparison scope without changing the legacy two-argument contract.  A supplied admission also
+    requires the process-local canonical gate-input authority minted by ``compare_bound_pair`` so receipts from
+    different source pairs cannot be mixed and rehashed.  The additive reference-only family change
+    set owns no verdict; when supplied, this sole decision owner consumes each native family's
+    producer-owned decision effect over the complete, uncapped row set. Canonical operator evidence
+    is likewise reference-only: when it is source-bound into the admitted private input bundle, this
+    gate consumes only bounded local L2 failure risks and coverage faults. It never promotes a
+    simulation to convergence, traffic-continuity, or service-survival proof.
     """
     delta = _as_dict(delta)
     certificate = _as_dict(certificate)
@@ -972,6 +987,406 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     delta_note = _bounded_note(delta.get("verdict_note"), "No delta basis was emitted.")
     certificate_note = _bounded_note(
         certificate.get("verdict_note"), "No certificate basis was emitted.")
+
+    admission_supplied = comparison_admission is not None
+    admission = _as_dict(comparison_admission)
+    admission_status = "not_comparable"
+    admission_failures: list = []
+    admission_gaps: list = []
+    decision_inputs_valid = False
+    if admission_supplied:
+        from cisco_toolkit.protocol_assurance import validate_comparison_admission
+
+        admission_validation = validate_comparison_admission(comparison_admission)
+        if admission_validation.get("valid") is True:
+            admission_status = str(admission.get("status") or "not_comparable").strip().lower()
+            admission_failures = admission.get("failures") \
+                if isinstance(admission.get("failures"), list) else []
+            admission_gaps = admission.get("coverage_gaps") \
+                if isinstance(admission.get("coverage_gaps"), list) else []
+        else:
+            admission_failures = [
+                _bounded_note(
+                    admission_validation.get("reason"),
+                    "Comparison admission receipt is missing, malformed, or semantically inconsistent.",
+                )
+            ]
+        from cisco_toolkit.comparison import validate_cutover_decision_input_authority
+
+        decision_input_validation = validate_cutover_decision_input_authority(
+            decision_input_authority,
+            delta=delta,
+            certificate=certificate,
+            admission=comparison_admission,
+            protocol_families=protocol_family_changes,
+            operator_evidence=operator_evidence,
+        )
+        decision_inputs_valid = decision_input_validation.get("valid") is True
+        if not decision_inputs_valid:
+            admission_status = "not_comparable"
+            admission_failures.append(_bounded_note(
+                decision_input_validation.get("reason"),
+                "Canonical source-bound cutover decision inputs are missing or detached.",
+            ))
+    admission_note = _bounded_note(
+        "; ".join(str(item) for item in (admission_failures or admission_gaps) if str(item).strip()),
+        ("Comparison ownership, custody, subjects, and owner semantics were admitted."
+         if admission_status == "admitted"
+         else "Comparison admission did not establish decision-grade comparability."),
+    )
+
+    l2_supplied = operator_evidence is not None
+    l2_status = "not_supplied"
+    l2_note = "No canonical L2 rehearsal receipt was supplied."
+    l2_applicable_families: list = []
+    l2_current_faults = l2_projected_risks = l2_not_verified = 0
+    l2_observed_supplied = False
+    l2_observed_status = "not_supplied"
+    l2_observed_assurance = "not_verified"
+    l2_observed_family = l2_observed_subject = l2_observed_scenario = ""
+    l2_observed_matched_projected_risks = 0
+    l2_observed_note = "No source-bound observed local L2 trial was supplied."
+    if l2_supplied and admission_supplied:
+        if not decision_inputs_valid:
+            l2_status = "not_verified"
+            l2_note = (
+                "L2 rehearsal evidence is detached from the canonical admitted gate-input bundle."
+            )
+            l2_not_verified = 1
+        else:
+            from cisco_toolkit.l2_rehearsal import (
+                validate_l2_failure_rehearsal,
+                validate_observed_l2_failure_evidence,
+            )
+            from cisco_toolkit.protocol_assurance import CUTOVER_OPERATOR_EVIDENCE_SCHEMA
+
+            evidence = _as_dict(operator_evidence)
+            rehearsal_wrapper = _as_dict(evidence.get("rehearsal"))
+            wrapper_assurance = rehearsal_wrapper.get("assurance_level")
+            l2_validation = validate_l2_failure_rehearsal(
+                rehearsal_wrapper.get("l2_failure_rehearsal")
+            ) if (
+                evidence.get("schema") == CUTOVER_OPERATOR_EVIDENCE_SCHEMA
+                and evidence.get("owner") == "reference_only_projection"
+                and evidence.get("owns_verdict") is False
+                and wrapper_assurance in {
+                    "not_verified", "local_safety_preservation"
+                }
+            ) else {"valid": False, "reason": "operator evidence root is malformed"}
+            if l2_validation.get("valid") is not True:
+                l2_status = "not_verified"
+                l2_note = _bounded_note(
+                    l2_validation.get("reason"),
+                    "Applicable L2 rehearsal evidence is missing or malformed.",
+                )
+                l2_not_verified = 1
+            else:
+                l2_status = str(l2_validation.get("gate_status") or "not_verified")
+                l2_applicable_families = list(
+                    l2_validation.get("applicable_families") or [])
+                l2_current_faults = int(l2_validation.get("n_current_faults") or 0)
+                l2_projected_risks = int(l2_validation.get("n_projected_risks") or 0)
+                l2_not_verified = int(l2_validation.get("n_not_verified") or 0)
+                l2_observed_supplied = "observed_l2_failure_evidence" in rehearsal_wrapper
+                if l2_observed_supplied:
+                    observed_validation = validate_observed_l2_failure_evidence(
+                        rehearsal_wrapper.get("observed_l2_failure_evidence"),
+                        expected_recovery_binding=_as_dict(
+                            _as_dict(admission.get("source_binding")).get("after")
+                        ),
+                    )
+                    if observed_validation.get("valid") is True:
+                        expected_wrapper_status = {
+                            "observed_survival": "local_safety_preservation",
+                            "observed_failure": "observed_failure",
+                            "not_verified": "not_verified",
+                        }.get(observed_validation.get("status"), "not_verified")
+                        if rehearsal_wrapper.get("status") != expected_wrapper_status:
+                            observed_validation = {
+                                "valid": False,
+                                "reason": (
+                                    "observed L2 trial context does not reconcile to the "
+                                    "canonical operator-evidence status"
+                                ),
+                            }
+                    if observed_validation.get("valid") is not True:
+                        l2_observed_status = "not_verified"
+                        l2_observed_note = _bounded_note(
+                            observed_validation.get("reason"),
+                            "Observed local L2 trial is detached, malformed, or bound to another recovery snapshot.",
+                        )
+                        l2_status = "not_verified"
+                        l2_not_verified = max(1, l2_not_verified)
+                    else:
+                        l2_observed_status = str(
+                            observed_validation.get("status") or "not_verified"
+                        )
+                        l2_observed_family = str(
+                            observed_validation.get("family") or ""
+                        )
+                        l2_observed_subject = str(
+                            observed_validation.get("subject") or ""
+                        )
+                        l2_observed_scenario = str(
+                            observed_validation.get("failure_scenario") or ""
+                        )
+                        l2_observed_assurance = (
+                            "local_safety_preservation"
+                            if l2_observed_status in {
+                                "observed_survival", "observed_failure"
+                            }
+                            else "not_verified"
+                        )
+                        if l2_observed_status == "observed_failure":
+                            l2_status = "observed_failure"
+                            l2_observed_note = (
+                                "The source-bound trial observed an unsafe post-failure or recovery state "
+                                "for the exact local L2 subject."
+                            )
+                        elif l2_observed_status == "not_verified":
+                            l2_status = "not_verified"
+                            l2_not_verified = max(1, l2_not_verified)
+                            l2_observed_note = (
+                                "The supplied local L2 trial did not verify its exact precondition, "
+                                "failure transition, post-failure state, and recovery."
+                            )
+                        else:
+                            exact_matches = [
+                                row for row in l2_validation.get("gate_scenarios", [])
+                                if isinstance(row, dict)
+                                and row.get("family") == l2_observed_family
+                                and row.get("subject") == l2_observed_subject
+                                and row.get("failure_scenario") == l2_observed_scenario
+                                and row.get("disposition") == "projected_risk"
+                                and row.get("family") in {
+                                    "etherchannel", "multichassis_lag"
+                                }
+                            ]
+                            if len(exact_matches) == 1:
+                                l2_observed_matched_projected_risks = 1
+                                l2_projected_risks = max(0, l2_projected_risks - 1)
+                                l2_status = (
+                                    "current_fault" if l2_current_faults else
+                                    "not_verified" if l2_not_verified else
+                                    "projected_risk" if l2_projected_risks else
+                                    "simulation_only" if l2_applicable_families else
+                                    "not_applicable"
+                                )
+                                l2_observed_note = (
+                                    "The source-bound trial establishes local_safety_preservation only "
+                                    "for the exact matching local projected-risk scenario."
+                                )
+                            else:
+                                l2_observed_note = (
+                                    "The source-bound trial establishes local_safety_preservation for its "
+                                    "exact subject, but it does not neutralize an aggregate, unrelated, "
+                                    "service-path, current-fault, or coverage-gap scenario."
+                                )
+                if l2_status == "not_applicable":
+                    l2_note = (
+                        "No applicable STP, EtherChannel, multichassis-LAG, or requested service-path "
+                        "failure subject is declared; "
+                        "placeholder NOT VERIFIED rows do not participate in the gate."
+                    )
+                elif l2_status == "simulation_only":
+                    l2_note = (
+                        "Applicable bounded local eligibility and/or coherent stored synthetic "
+                        "failure projections are present. Synthetic preservation is not an observed "
+                        "field trial; these projections do not prove convergence, remote forwarding, "
+                        "traffic continuity, or service survival."
+                    )
+                elif l2_status == "projected_risk":
+                    l2_note = (
+                        f"{l2_projected_risks} applicable bounded local or requested service-path "
+                        "failure projection(s) identify projected risk; field-observed service "
+                        "survival remains not verified."
+                    )
+                elif l2_status == "current_fault":
+                    l2_note = (
+                        f"{l2_current_faults} applicable L2 scenario(s) retain a current fault; "
+                        "local failure projections cannot make that fault acceptable."
+                    )
+                elif l2_status == "observed_failure":
+                    l2_note = (
+                        "The exact source-bound local L2 trial observed an unsafe post-failure or "
+                        "recovery state. Service-path survival remains not verified."
+                    )
+                else:
+                    l2_status = "not_verified"
+                    l2_note = (
+                        f"{l2_not_verified} applicable L2 family/scenario receipt(s) are missing "
+                        "or not verified."
+                    )
+                if l2_observed_supplied:
+                    l2_note = f"{l2_note} Observed-trial basis: {l2_observed_note}"
+
+    families_supplied = protocol_family_changes is not None
+    families = _as_dict(protocol_family_changes)
+    family_status = "not_supplied"
+    family_blocking = family_review = family_not_verified = family_rows = 0
+    family_note = "No additive protocol family change set was supplied."
+    if families_supplied:
+        from cisco_toolkit.protocol_assurance import (
+            validate_protocol_family_change_set_authority,
+        )
+
+        family_authority = validate_protocol_family_change_set_authority(
+            protocol_family_changes,
+            expected_source_binding=(admission.get("source_binding")
+                                     if admission_supplied else None),
+        )
+        transition_tokens = (
+            "unchanged_healthy", "unchanged_degraded", "recovered", "regressed",
+            "appeared", "disappeared", "intent_changed", "coverage_lost",
+            "not_comparable",
+        )
+        effect_tokens = ("block", "review", "none", "not_verified")
+        assurance_tokens = {
+            "intent_reconciled_survival", "observed_state_preservation",
+            "local_safety_preservation", "not_verified",
+        }
+
+        def _natural(value: Any) -> Optional[int]:
+            return (value if isinstance(value, int) and not isinstance(value, bool)
+                    and value >= 0 else None)
+
+        malformed = (
+            family_authority.get("valid") is not True
+            or families.get("schema") != "protocol_family_change_set/1"
+            or families.get("owner") != "reference_only_composition"
+            or families.get("owns_score") is not False
+            or families.get("owns_verdict") is not False
+            or not isinstance(families.get("families"), list)
+            or not families.get("families")
+            or not isinstance(families.get("summary"), dict)
+        )
+        aggregate = {
+            "n_families": 0, "n_subject_changes": 0, "n_expected": 0,
+            "n_unexpected": 0, "n_coverage_lost": 0, "n_blocking": 0,
+            "n_review": 0, "n_not_verified": 0,
+            "by_transition": {token: 0 for token in transition_tokens},
+            "by_decision_effect": {token: 0 for token in effect_tokens},
+        }
+        seen_families = set()
+        for family in families.get("families", []) if not malformed else []:
+            family_name = (family.get("family") if isinstance(family, dict) else None)
+            owner_schema = (family.get("owner_schema") if isinstance(family, dict) else None)
+            family_summary = family.get("summary") if isinstance(family, dict) else None
+            support = family.get("support_profile") if isinstance(family, dict) else None
+            changes = family.get("changes") if isinstance(family, dict) else None
+            if (not isinstance(family_name, str) or not family_name.strip()
+                    or family_name in seen_families
+                    or not isinstance(owner_schema, str) or not owner_schema.strip()
+                    or family.get("assurance_level") not in assurance_tokens
+                    or not isinstance(changes, list)
+                    or not isinstance(family_summary, dict)
+                    or not isinstance(family.get("source_receipt"), dict)
+                    or not isinstance(support, dict)
+                    or support.get("schema") != "protocol_support_profile/1"
+                    or support.get("family") != family_name
+                    or support.get("owner_schema") != owner_schema
+                    or support.get("implementation_state") != "implemented"
+                    or support.get("assurance_level") not in assurance_tokens
+                    or not isinstance(support.get("evidence_contracts"), list)
+                    or not support.get("evidence_contracts")
+                    or not isinstance(support.get("scope"), dict) or not support.get("scope")
+                    or not isinstance(support.get("runtime_support_claim"), str)
+                    or not support.get("runtime_support_claim").strip()
+                    or not isinstance(support.get("limitations"), list)
+                    or not support.get("limitations")):
+                malformed = True
+                break
+            seen_families.add(family_name)
+            row_transitions = {token: 0 for token in transition_tokens}
+            row_effects = {token: 0 for token in effect_tokens}
+            expected_count = unexpected_count = 0
+            for row in changes:
+                if (not isinstance(row, dict)
+                        or row.get("family") != family_name
+                        or not isinstance(row.get("subject"), str)
+                        or not row.get("subject").strip()
+                        or row.get("transition") not in transition_tokens
+                        or row.get("decision_effect") not in effect_tokens
+                        or not isinstance(row.get("expected"), bool)
+                        or "before_state" not in row or "after_state" not in row
+                        or not isinstance(row.get("note"), str) or not row.get("note").strip()):
+                    malformed = True
+                    break
+                family_rows += 1
+                row_transitions[row["transition"]] += 1
+                effect = row["decision_effect"]
+                row_effects[effect] += 1
+                family_blocking += effect == "block"
+                family_review += effect == "review"
+                family_not_verified += effect == "not_verified"
+                expected_count += row["expected"]
+                unexpected_count += (
+                    not row["expected"] and row["transition"] in {
+                        "unchanged_degraded", "regressed", "appeared", "disappeared",
+                        "intent_changed",
+                    }
+                )
+            if malformed:
+                break
+            implicit = _natural(family_summary.get("n_implicit_unchanged_healthy"))
+            declared_transitions = family_summary.get("by_transition")
+            declared_effects = family_summary.get("by_decision_effect")
+            expected_transitions = dict(row_transitions)
+            if implicit is not None:
+                expected_transitions["unchanged_healthy"] += implicit
+            expected_summary = {
+                "n_subject_changes": len(changes),
+                "n_expected": expected_count,
+                "n_unexpected": unexpected_count,
+                "n_coverage_lost": expected_transitions["coverage_lost"],
+                "n_blocking": row_effects["block"],
+                "n_review": row_effects["review"],
+                "n_not_verified": row_effects["not_verified"],
+            }
+            if (implicit is None
+                    or any(_natural(family_summary.get(key)) != value
+                           for key, value in expected_summary.items())
+                    or declared_transitions != expected_transitions
+                    or declared_effects != row_effects):
+                malformed = True
+                break
+            aggregate["n_families"] += 1
+            for key in (
+                    "n_subject_changes", "n_expected", "n_unexpected", "n_coverage_lost",
+                    "n_blocking", "n_review", "n_not_verified"):
+                aggregate[key] += expected_summary[key]
+            for token in transition_tokens:
+                aggregate["by_transition"][token] += expected_transitions[token]
+            for token in effect_tokens:
+                aggregate["by_decision_effect"][token] += row_effects[token]
+        if not malformed:
+            supplied_summary = families["summary"]
+            malformed = any(
+                supplied_summary.get(key) != value for key, value in aggregate.items()
+            )
+        if malformed:
+            family_status = "not_comparable"
+            family_blocking = family_review = family_rows = 0
+            family_not_verified = 1
+            family_note = _bounded_note(
+                (family_authority.get("reason")
+                 if family_authority.get("valid") is not True else None),
+                "Protocol family change set is missing or malformed.",
+            )
+        elif family_not_verified:
+            family_status = "coverage_lost"
+            family_note = (
+                f"{family_not_verified} protocol family subject(s) are not verified or comparable."
+            )
+        elif family_blocking:
+            family_status = "regressed"
+            family_note = f"{family_blocking} protocol family subject regression(s) block acceptance."
+        elif family_review:
+            family_status = "review"
+            family_note = f"{family_review} unexpected protocol family change(s) require review."
+        else:
+            family_status = "clear"
+            family_note = f"{family_rows} protocol family change row(s) carry no blocking effect."
 
     # A direct pre-existing caller may supply only the historical delta + certificate pair.  Preserve
     # its exact receipt shape and precedence.  Every real compute_snapshot_delta result now carries the
@@ -1074,16 +1489,28 @@ def compute_cutover_gate(delta: dict, certificate: dict,
     # Preserve the established workbook precedence: a proven observed regression is strongest; then
     # current/certificate blockers; missing evidence; reviewable delta; and certificate conditions.
     # CLEAR is the only supplied current-baseline state compatible with an overall PASS.
-    if delta_verdict == "REGRESSED":
+    if admission_supplied and admission_status != "admitted":
+        verdict = "INDETERMINATE"
+    elif families_supplied and family_status == "not_comparable":
+        verdict = "INDETERMINATE"
+    elif delta_verdict == "REGRESSED":
+        verdict = "REGRESSED"
+    elif (families_supplied and family_blocking
+          and delta_verdict != "INDETERMINATE"):
         verdict = "REGRESSED"
     elif baseline_supplied and baseline_verdict == "BLOCKED":
+        verdict = "FAIL"
+    elif l2_supplied and l2_status in {"current_fault", "observed_failure"}:
         verdict = "FAIL"
     elif certificate_verdict == "FAIL":
         verdict = "FAIL"
     elif (delta_verdict == "INDETERMINATE" or certificate_verdict == "INDETERMINATE"
+          or (families_supplied and family_not_verified)
+          or (l2_supplied and l2_status == "not_verified")
           or (baseline_supplied and baseline_verdict in {"INDETERMINATE", "NOT_ASSESSED"})):
         verdict = "INDETERMINATE"
-    elif delta_verdict == "REVIEW":
+    elif (delta_verdict == "REVIEW" or (families_supplied and family_review)
+          or (l2_supplied and l2_status == "projected_risk")):
         verdict = "REVIEW"
     elif certificate_verdict == "CONDITIONAL":
         verdict = "CONDITIONAL"
@@ -1092,12 +1519,27 @@ def compute_cutover_gate(delta: dict, certificate: dict,
 
     baseline_basis = (f"Current baseline: {baseline_verdict}. Current-baseline basis: {baseline_note} "
                       if baseline_supplied else "")
-    note = (f"Delta observation: {delta_display}. Delta basis: {delta_note} "
+    admission_basis = (f"Comparison admission: {admission_status.upper()}. "
+                       f"Admission basis: {admission_note} " if admission_supplied else "")
+    family_basis = (f"Protocol family changes: {family_status.upper()}. "
+                    f"Family basis: {family_note} " if families_supplied else "")
+    l2_basis = (f"L2 bounded rehearsal: {l2_status.upper()}. "
+                f"L2 basis: {l2_note} " if l2_supplied else "")
+    note = (f"{admission_basis}Delta observation: {delta_display}. Delta basis: {delta_note} "
+            f"{family_basis}"
+            f"{l2_basis}"
             f"{baseline_basis}Pre-Change Certificate: {certificate_verdict}. "
             f"Certificate basis: {certificate_note}")
 
-    if verdict == "REGRESSED":
-        if protocol_regressions:
+    if admission_supplied and admission_status != "admitted":
+        action = ("Do not declare the cutover good; repair the comparison admission failure or "
+                  "missing coverage and recompute from bound evidence.")
+    elif verdict == "REGRESSED":
+        if families_supplied and family_blocking:
+            noun = "subject was" if family_blocking == 1 else "subjects were"
+            action = (f"{family_blocking} protocol family {noun} classified as blocking by the "
+                      "native family owner; investigate or roll back before proceeding.")
+        elif protocol_regressions:
             noun = "regression was" if protocol_regressions == 1 else "regressions were"
             action = (f"{protocol_regressions} baseline-observed protocol adjacency state {noun} "
                       "proven; investigate or roll back before proceeding.")
@@ -1112,6 +1554,14 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             other = " and the blocking certificate condition(s)" if certificate_verdict == "FAIL" else ""
             action = (f"Do not proceed; resolve or explicitly disposition {baseline_degraded} definite "
                       f"current-baseline degradation(s){other}, then re-run the comparison.")
+        elif l2_supplied and l2_status == "current_fault":
+            action = (f"Do not proceed; resolve {l2_current_faults} current L2 fault(s), then "
+                      "re-collect and recompute the bounded rehearsal evidence.")
+        elif l2_supplied and l2_status == "observed_failure":
+            action = (
+                "Do not proceed; the source-bound local L2 trial observed an unsafe "
+                "post-failure or recovery state. Restore safety and repeat the exact trial."
+            )
         else:
             action = "Do not proceed; resolve the blocking certificate condition(s) and re-run the comparison."
     elif verdict == "INDETERMINATE":
@@ -1125,10 +1575,22 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             noun = "peer could" if protocol_baseline_peers == 1 else "peers could"
             action = (f"{protocol_baseline_peers} baseline-observed protocol {noun} not be compared; "
                       "re-collect protocol evidence before accepting the change.")
+        elif l2_supplied and l2_status == "not_verified":
+            action = (
+                "Do not declare the cutover good; collect and reconcile bounded rehearsal "
+                "evidence for every applicable STP, EtherChannel, multichassis-LAG, and "
+                "requested service-path failure subject."
+            )
         else:
             action = "Do not declare the cutover good; repair the missing or invalid evidence and re-run."
     elif verdict == "REVIEW":
-        if protocol_coverage_gaps:
+        if l2_supplied and l2_status == "projected_risk":
+            action = (
+                f"Review and disposition {l2_projected_risks} bounded local or requested "
+                "service-path failure risk projection(s); synthetic results are not proof "
+                "of observed service survival."
+            )
+        elif protocol_coverage_gaps:
             noun = "cell was" if protocol_coverage_gaps == 1 else "cells were"
             action = (f"{protocol_coverage_gaps} protocol comparison {noun} not assessable; "
                       "re-collect and review before accepting the change.")
@@ -1143,6 +1605,8 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         operator_note += f" Delta basis: {delta_note}"
         if baseline_supplied:
             operator_note += f" Current-baseline basis: {baseline_note}"
+        if l2_supplied:
+            operator_note += f" L2 bounded-rehearsal basis: {l2_note}"
         operator_note += f" Certificate basis: {certificate_note}"
 
     result = {
@@ -1160,6 +1624,40 @@ def compute_cutover_gate(delta: dict, certificate: dict,
         "protocol_regressions": protocol_regressions,
         "protocol_coverage_gaps": protocol_coverage_gaps,
     }
+    if admission_supplied:
+        result.update({
+            "comparison_admission_status": admission_status,
+            "comparison_admission_note": admission_note,
+        })
+    if families_supplied:
+        result.update({
+            "protocol_family_status": family_status,
+            "protocol_family_note": family_note,
+            "protocol_family_rows": family_rows,
+            "protocol_family_blocking": family_blocking,
+            "protocol_family_review": family_review,
+            "protocol_family_not_verified": family_not_verified,
+        })
+    if l2_supplied:
+        result.update({
+            "l2_rehearsal_status": l2_status,
+            "l2_rehearsal_note": l2_note,
+            "l2_rehearsal_applicable_families": l2_applicable_families,
+            "l2_rehearsal_current_faults": l2_current_faults,
+            "l2_rehearsal_projected_risks": l2_projected_risks,
+            "l2_rehearsal_not_verified": l2_not_verified,
+        })
+        if l2_observed_supplied:
+            result.update({
+                "l2_observed_trial_status": l2_observed_status,
+                "l2_observed_trial_assurance": l2_observed_assurance,
+                "l2_observed_trial_family": l2_observed_family,
+                "l2_observed_trial_subject": l2_observed_subject,
+                "l2_observed_trial_scenario": l2_observed_scenario,
+                "l2_observed_trial_matched_projected_risks":
+                    l2_observed_matched_projected_risks,
+                "l2_observed_trial_note": l2_observed_note,
+            })
     if baseline_supplied:
         result.update({
             "current_baseline_verdict": baseline_verdict,
@@ -1173,12 +1671,27 @@ def compute_cutover_gate(delta: dict, certificate: dict,
 
 
 def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = None, *,
-                        source_binding: Optional[dict] = None, schema_status: Any = None) -> dict:
+                        source_binding: Optional[dict] = None, schema_status: Any = None,
+                        protocol_families: Optional[dict] = None,
+                        comparison: Optional[dict] = None) -> dict:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts. `precert` is an optional precomputed
     Pre-Change Validation Certificate (roadmap C1); when None it is computed here, so the
     'Pre-Change Certificate' sheet is always present.  Exact input hashes and schema-gate status
-    supplied by the file-loading caller are rendered into both decision surfaces."""
+    supplied by the file-loading caller are rendered into both decision surfaces.
+
+    ``protocol_families`` is an optional complete ``protocol_family_change_set/1`` composed by a
+    source-owning caller.  When omitted, the workbook computes each applicable native owner from the
+    same in-memory snapshots and source hashes, then composes it with the unchanged IPv4 adjacency
+    delta.  In both cases that one, uncapped object is passed to the canonical cutover gate and
+    rendered without recomputation.
+
+    ``comparison`` is the preferred decision-grade input: one complete
+    ``source_bound_cutover_comparison/1`` from the canonical composer.  When supplied, the workbook
+    projects its delta, precertification, family changes, gate, and receipt verbatim; it never
+    recomputes or reinterprets any decision owner.  The older arguments remain for direct callers
+    and legacy artifacts.
+    """
     old = old if isinstance(old, dict) else {}            # total on a non-dict snapshot (parsed null/[]/scalar)
     new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
@@ -1224,14 +1737,83 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         ok = all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in (a, b))
         return round(b - a, 1) if ok else ""
 
+    comparison_doc: Optional[dict] = None
+    comparison_delta: Optional[dict] = None
+    decision_input_authority: Any = None
+    if comparison is not None:
+        if not isinstance(comparison, dict):
+            raise ValueError("comparison must be a source_bound_cutover_comparison/1 object")
+        from cisco_toolkit.comparison import (
+            bound_comparison_decision_input_authority,
+            validate_bound_comparison_authority,
+        )
+
+        comparison_authority = validate_bound_comparison_authority(comparison)
+        if comparison_authority.get("valid") is not True:
+            raise ValueError(str(comparison_authority.get("reason") or (
+                "comparison is detached from the canonical source/context owner"
+            )))
+        if precert is not None or protocol_families is not None:
+            raise ValueError(
+                "comparison is the complete decision input; detached precert/protocol families "
+                "cannot also be supplied"
+            )
+        comparison_doc = comparison
+        decision_input_authority = bound_comparison_decision_input_authority(comparison)
+        additive_keys = {
+            "comparison_schema", "comparison_admission", "change_intent",
+            "protocol_families", "precert", "cutover_gate", "operator_evidence",
+            "comparison_receipt",
+        }
+        comparison_delta = {
+            key: value for key, value in comparison_doc.items() if key not in additive_keys
+        }
+        from cisco_toolkit.protocol_assurance import (
+            bound_snapshot_source,
+            verify_receipt_envelope,
+        )
+        receipt_payload = {
+            "admission": comparison_doc.get("comparison_admission"),
+            "change_intent": comparison_doc.get("change_intent"),
+            "protocol_families": comparison_doc.get("protocol_families"),
+            "delta": comparison_delta,
+            "precert": comparison_doc.get("precert"),
+            "cutover_gate": comparison_doc.get("cutover_gate"),
+            "operator_evidence": comparison_doc.get("operator_evidence"),
+        }
+        required_objects = (
+            "comparison_admission", "change_intent", "protocol_families", "precert",
+            "cutover_gate", "operator_evidence", "comparison_receipt",
+        )
+        if comparison_doc.get("comparison_schema") != "source_bound_cutover_comparison/1" \
+                or any(not isinstance(comparison_doc.get(key), dict) for key in required_objects) \
+                or not verify_receipt_envelope(
+                    comparison_doc.get("comparison_receipt"), receipt_payload):
+            raise ValueError("comparison receipt is missing, malformed, or detached from its payload")
+        admitted_sources = _as_dict(
+            _as_dict(comparison_doc.get("comparison_admission")).get("source_binding")
+        )
+        for side, snapshot in (("before", old), ("after", new)):
+            marker = bound_snapshot_source(snapshot)
+            binding = _as_dict(admitted_sources.get(side))
+            if (marker.get("source_bound") is not True
+                    or marker.get("sha256") != binding.get("sha256")
+                    or marker.get("bytes") != binding.get("bytes")):
+                raise ValueError(
+                    f"comparison {side} source binding does not match the rendered snapshot bytes"
+                )
+
     oi, ni = _ifmap(old), _ifmap(new)
     od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
-    delta = compute_snapshot_delta(old, new, source_binding=source_binding,
-                                   schema_status=schema_status)   # migration-validation analysis
+    delta = (comparison_delta if comparison_delta is not None else compute_snapshot_delta(
+        old, new, source_binding=source_binding,
+        schema_status=schema_status))   # migration-validation analysis
     # Compute the independent certificate BEFORE the Summary so its coverage verdict can constrain
     # the headline gate.  A clean delta over an unassessed reachability surface is not a PASS.
     from cisco_toolkit.precert import CERT_SHEET_HEADERS, CERT_SHEET_NAME, compute_precert
-    if isinstance(precert, dict):
+    if comparison_doc is not None:
+        cert = comparison_doc["precert"]
+    elif isinstance(precert, dict):
         cert = dict(precert)
         if source_binding and not cert.get("source_binding"):
             cert["source_binding"] = dict(source_binding)
@@ -1244,15 +1826,207 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     cd0 = (delta.get("cabling") or {}).get("summary") or {}   # physical cable delta (EDA cable-map SSOT)
     pd0 = delta.get("protocol_adjacencies") or {}              # receipt-gated observed adjacency delta
     pds0 = pd0.get("summary") or {}
+    if comparison_doc is not None:
+        family_changes = comparison_doc["protocol_families"]
+    elif protocol_families is None:
+        # Release 1's CLI has no expected-change-intent input.  Compose the reference-only initial
+        # family view from the SAME in-memory pair and IPv4 delta already owned above; an empty intent
+        # means every material change remains unexpected and reviewable.
+        from cisco_toolkit.protocol_assurance import (
+            compute_native_protocol_deltas,
+            protocol_family_change_set,
+        )
+        source_pair = _as_dict(source_binding)
+        native_deltas = compute_native_protocol_deltas(
+            old,
+            new,
+            before_binding=source_pair.get("before"),
+            after_binding=source_pair.get("after"),
+        )
+        family_changes = protocol_family_change_set(
+            pd0, {"expected_changes": []}, native_deltas=native_deltas)
+    else:
+        # Do not copy, truncate, or reinterpret a caller-composed native family set: the gate and
+        # workbook below must consume/project the exact same object.
+        family_changes = protocol_families
     bd0 = _as_dict(delta.get("current_baseline"))              # current-snapshot acceptance baseline
     bds0 = _as_dict(bd0.get("summary"))
     bd_states0 = _as_dict(bds0.get("by_state"))
+    bd_total0 = (
+        bds0.get("n_blockers")
+        if type(bds0.get("n_blockers")) is int and bds0.get("n_blockers") >= 0 else 0
+    )
+    bd_rendered0 = (
+        bds0.get("n_blockers_returned")
+        if type(bds0.get("n_blockers_returned")) is int
+        and bds0.get("n_blockers_returned") >= 0 else 0
+    )
+    bd_omitted0 = max(0, bd_total0 - bd_rendered0)
+    if comparison_doc is not None:
+        baseline_export0 = _as_dict(
+            _as_dict(comparison_doc.get("operator_evidence")).get(
+                "current_baseline_blocker_export"
+            )
+        )
+    else:
+        from cisco_toolkit.protocol_assurance import current_baseline_blocker_export
+
+        baseline_export0 = current_baseline_blocker_export(new)
+    baseline_export_summary0 = _as_dict(baseline_export0.get("summary"))
+    baseline_export_rows0 = (
+        baseline_export0.get("rows")
+        if isinstance(baseline_export0.get("rows"), list) else []
+    )
 
     def _protocol_metric(key: str):
         value = pds0.get(key, 0)
         # A positive observed result remains useful under partial coverage; a zero does not.  When one
         # scoped cell is unassessed, render its zero outcomes as an abstention rather than an all-clear.
         return value if value or pd0.get("assessed") else "—"
+
+    def _family_state_cell(value: Any) -> Any:
+        """Render a producer-owned before/after state without turning absence into a clean blank."""
+        if value is None or value == "" or value == {} or value == [] or value == ():
+            return "NOT VERIFIED"
+        if isinstance(value, str):
+            return value.strip() or "NOT VERIFIED"
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                return json.dumps(value, sort_keys=True, ensure_ascii=True,
+                                  separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError, OverflowError):
+                return "NOT VERIFIED — malformed producer state"
+        if isinstance(value, set):
+            return "NOT VERIFIED — malformed producer state"
+        return value
+
+    def _family_surface(change_set: Any) -> tuple:
+        """Project every producer row and calculate display-only totals over that full row set.
+
+        These counts never participate in a decision; ``compute_cutover_gate`` above remains the
+        sole consumer of family-native ``decision_effect`` values.  Placeholder rows are deliberate:
+        a missing family/list/leaf must remain visible as NOT VERIFIED, never disappear as a clean zero.
+        """
+        closed_transitions = {
+            "unchanged_healthy", "unchanged_degraded", "recovered", "regressed",
+            "appeared", "disappeared", "intent_changed", "coverage_lost", "not_comparable",
+        }
+        closed_effects = {"block", "review", "none", "not_verified"}
+        closed_assurance = {
+            "intent_reconciled_survival", "observed_state_preservation",
+            "local_safety_preservation", "not_verified",
+        }
+        block = _as_dict(change_set)
+        raw_families = block.get("families")
+        family_records = raw_families if isinstance(raw_families, list) else []
+        rows: List[dict] = []
+        source_rows = 0
+        placeholder_rows = 0
+        expected_counts = {"YES": 0, "NO": 0, "NOT VERIFIED": 0}
+        effect_counts = {name: 0 for name in ("block", "review", "none", "not_verified")}
+        effect_counts["NOT VERIFIED"] = 0
+        transition_counts: Dict[str, int] = {}
+        assurance_counts: Dict[str, int] = {}
+
+        def _placeholder(family: Any, note: str) -> None:
+            nonlocal placeholder_rows
+            placeholder_rows += 1
+            rows.append({
+                "family": _family_state_cell(family),
+                "subject_kind": "NOT VERIFIED",
+                "subject": "NOT VERIFIED",
+                "transition": "NOT VERIFIED",
+                "expected": "NOT VERIFIED",
+                "decision_effect": "NOT VERIFIED",
+                "assurance": "NOT VERIFIED",
+                "before": "NOT VERIFIED",
+                "after": "NOT VERIFIED",
+                "note": note,
+                "placeholder": True,
+            })
+
+        if not isinstance(raw_families, list) or not raw_families:
+            _placeholder(
+                "NOT VERIFIED",
+                "Protocol family change set is missing or empty; row-level changes are NOT VERIFIED.",
+            )
+        else:
+            for family_index, raw_family in enumerate(raw_families):
+                if not isinstance(raw_family, dict):
+                    _placeholder(
+                        "NOT VERIFIED",
+                        f"families[{family_index}] is malformed; its changes are NOT VERIFIED.",
+                    )
+                    continue
+                family_name = raw_family.get("family")
+                assurance = raw_family.get("assurance_level")
+                raw_changes = raw_family.get("changes")
+                if not isinstance(raw_changes, list) or not raw_changes:
+                    _placeholder(
+                        family_name,
+                        (f"Family {family_name or 'NOT VERIFIED'} emitted no materialized subject-change "
+                         "rows; row-level before/after evidence is NOT VERIFIED on this sheet."),
+                    )
+                    continue
+                for row_index, raw_row in enumerate(raw_changes):
+                    source_rows += 1
+                    if not isinstance(raw_row, dict):
+                        _placeholder(
+                            family_name,
+                            (f"Family {family_name or 'NOT VERIFIED'} changes[{row_index}] is malformed; "
+                             "the producer row is retained as NOT VERIFIED."),
+                        )
+                        expected_counts["NOT VERIFIED"] += 1
+                        effect_counts["NOT VERIFIED"] += 1
+                        transition_counts["NOT VERIFIED"] = transition_counts.get("NOT VERIFIED", 0) + 1
+                        assurance_counts["NOT VERIFIED"] = assurance_counts.get("NOT VERIFIED", 0) + 1
+                        continue
+
+                    transition_raw = raw_row.get("transition")
+                    transition_key = (transition_raw if transition_raw in closed_transitions
+                                      else "NOT VERIFIED")
+                    effect_raw = raw_row.get("decision_effect")
+                    effect_key = effect_raw if effect_raw in closed_effects else "NOT VERIFIED"
+                    assurance_raw = raw_row.get("assurance_level", assurance)
+                    assurance_key = (assurance_raw if assurance_raw in closed_assurance
+                                     else "NOT VERIFIED")
+                    expected_raw = raw_row.get("expected")
+                    expected_key = ("YES" if expected_raw is True else
+                                    "NO" if expected_raw is False else "NOT VERIFIED")
+                    transition_counts[transition_key] = transition_counts.get(transition_key, 0) + 1
+                    effect_counts[effect_key] += 1
+                    assurance_counts[assurance_key] = assurance_counts.get(assurance_key, 0) + 1
+                    expected_counts[expected_key] += 1
+                    rows.append({
+                        "family": _family_state_cell(raw_row.get("family", family_name)),
+                        "subject_kind": _family_state_cell(
+                            raw_row.get("subject_kind") or "family_subject"
+                        ),
+                        "subject": _family_state_cell(raw_row.get("subject")),
+                        "transition": _family_state_cell(transition_raw),
+                        "expected": expected_key,
+                        "decision_effect": _family_state_cell(effect_raw),
+                        "assurance": _family_state_cell(assurance_raw),
+                        "before": _family_state_cell(raw_row.get("before_state")),
+                        "after": _family_state_cell(raw_row.get("after_state")),
+                        "note": _family_state_cell(raw_row.get("note")),
+                        "placeholder": False,
+                    })
+
+        def _counts_text(counts: Dict[str, int]) -> str:
+            return ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+
+        disclosure = (
+            f"Complete uncapped export: rendered {source_rows} of {source_rows} producer subject-change "
+            f"row(s); omitted=0; family records={len(family_records)}; placeholder NOT VERIFIED "
+            f"rows={placeholder_rows}. Expected: {_counts_text(expected_counts)}. "
+            f"Producer decision effects: {_counts_text(effect_counts)}. "
+            f"Transitions: {_counts_text(transition_counts) if transition_counts else 'NOT VERIFIED'}. "
+            f"Assurance: {_counts_text(assurance_counts) if assurance_counts else 'NOT VERIFIED'}."
+        )
+        return rows, source_rows, disclosure
+
+    family_surface_rows, family_source_rows, family_disclosure = _family_surface(family_changes)
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
@@ -1264,13 +2038,51 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
     # the AssessHub compare view and the CLI diff workbook disagreeing at the cutover gate.
     o_sw, n_sw = delta["switches"]["old"], delta["switches"]["new"]
     o_if, n_if = delta["interfaces"]["old"], delta["interfaces"]["new"]
-    gate = compute_cutover_gate(delta, cert)
+    if comparison_doc is not None:
+        # A detached envelope proves only that its caller rehashed a payload.  Re-run the sole gate
+        # owner over the exact uncapped decision inputs while the process-local family authority is
+        # still present, then render the supplied canonical object only if every JSON type/value is
+        # identical.  This rejects a regenerated envelope carrying a forged PASS or an edited family
+        # subset without introducing a second workbook verdict owner.
+        expected_gate = compute_cutover_gate(
+            delta,
+            cert,
+            comparison_admission=comparison_doc["comparison_admission"],
+            protocol_family_changes=family_changes,
+            operator_evidence=comparison_doc["operator_evidence"],
+            decision_input_authority=decision_input_authority,
+        )
+        expected_gate_wire = json.dumps(
+            expected_gate,
+            sort_keys=True,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        supplied_gate_wire = json.dumps(
+            comparison_doc["cutover_gate"],
+            sort_keys=True,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if expected_gate_wire != supplied_gate_wire:
+            raise ValueError(
+                "comparison cutover gate is detached from its canonical decision inputs"
+            )
+        gate = comparison_doc["cutover_gate"]
+    else:
+        gate = compute_cutover_gate(delta, cert, protocol_family_changes=family_changes)
     gate_verdict = gate["verdict"]
     gate_note = gate["note"]
     _VERDICT_FILL = {"PASS": "C6EFCE", "CLEAN": "C6EFCE", "CONDITIONAL": "FFEB9C",
                      "CLEAR": "C6EFCE", "REVIEW": "FFEB9C", "NOT_ASSESSED": "D9D9D9",
                      "INDETERMINATE": "D9D9D9", "FAIL": "FFC7CE", "BLOCKED": "FFC7CE",
-                     "REGRESSED": "FFC7CE"}
+                     "REGRESSED": "FFC7CE", "SIMULATION_ONLY": "D9D9D9",
+                     "PROJECTED_RISK": "FFEB9C", "CURRENT_FAULT": "FFC7CE",
+                     "OBSERVED_FAILURE": "FFC7CE",
+                     "LOCAL_SAFETY_PRESERVATION": "C6EFCE",
+                     "NOT_APPLICABLE": "D9D9D9", "NOT_VERIFIED": "D9D9D9"}
     metrics = [
         ("CUTOVER GATE VERDICT", "", gate_verdict, gate_note),
         ("DELTA OBSERVATION", "", delta.get("verdict_display", delta["verdict"]), delta["verdict_note"]),
@@ -1279,8 +2091,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         ("Current baseline blockers", "", bds0.get("n_blockers", 0),
          (f"{bd_states0.get('degraded', 0)} degraded, {bd_states0.get('review', 0)} review, "
           f"{bd_states0.get('not_verified', 0)} not verified; "
-          f"{bds0.get('n_blockers_returned', 0)} bounded row(s) returned"
-          f"{' (CAPPED)' if bds0.get('blockers_capped') else ''}")),
+          f"rendered={bd_rendered0}, total={bd_total0}, omitted={bd_omitted0}; "
+          "complete sink: Current Baseline Export sheet")),
         ("Switches", o_sw, n_sw, _dnum(o_sw, n_sw)),
         # ...added/removed enumerate the COLLECTED devices, which is a narrower set than the canonical
         # count above whenever the estate holds devices that were inventoried but not collected. Labelled,
@@ -1301,6 +2113,10 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         ("Protocol adjacency coverage gaps", "", pds0.get("n_coverage_gaps", 0),
          (f"Gate {pd0.get('gate', 'NOT_ASSESSED')}; projection custody "
           f"{pd0.get('projection_custody', 'embedded_unverified')}")),
+        ("Protocol family changes (complete)", "",
+         family_source_rows if family_source_rows else "NOT VERIFIED",
+         (f"Canonical family status {gate.get('protocol_family_status', 'NOT VERIFIED')}. "
+          f"{family_disclosure}")),
         ("Reachability flows newly blocked", "", len(rd0.get("newly_blocked") or []),
          (f"{rd0.get('pairs_tested', 0)} sampled flow(s) across {rd0.get('subnets_tested', 0)} of "
           f"{rd0.get('subnets_total', 0)} subnet(s){' (CAPPED — coverage incomplete)' if rd0.get('capped') else ''}, "
@@ -1315,16 +2131,89 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
           if (delta.get("cabling") or {}).get("assessed") else
           "NOT assessed — no CDP/LLDP links in either snapshot (NOT a statement that cabling is unchanged)")),
     ]
+    if gate.get("l2_rehearsal_status"):
+        metrics.insert(1, (
+            "L2 BOUNDED REHEARSAL",
+            "",
+            str(gate["l2_rehearsal_status"]).upper(),
+            gate.get("l2_rehearsal_note", "Canonical L2 rehearsal basis was not published."),
+        ))
+    if gate.get("l2_observed_trial_status"):
+        observed_status = str(gate["l2_observed_trial_status"])
+        observed_display = (
+            "LOCAL_SAFETY_PRESERVATION"
+            if observed_status == "observed_survival" else observed_status.upper()
+        )
+        metrics.insert(2, (
+            "L2 OBSERVED LOCAL TRIAL",
+            "",
+            observed_display,
+            (
+                f"family={gate.get('l2_observed_trial_family', '')}; "
+                f"subject={gate.get('l2_observed_trial_subject', '')}; "
+                f"scenario={gate.get('l2_observed_trial_scenario', '')}; "
+                f"assurance={gate.get('l2_observed_trial_assurance', 'not_verified')}; "
+                "matched projected risks="
+                f"{gate.get('l2_observed_trial_matched_projected_risks', 0)}. "
+                f"{gate.get('l2_observed_trial_note', '')}"
+            ),
+        ))
     r = 2
     for m in metrics:
         for c, v in enumerate(m, 1):
             cell = ws.cell(row=r, column=c, value=_cv(v)); cell.font = DF; cell.alignment = AL
-        if m[0] in {"CUTOVER GATE VERDICT", "CURRENT BASELINE GATE"}:
+        if m[0] in {
+                "CUTOVER GATE VERDICT", "L2 BOUNDED REHEARSAL",
+                "L2 OBSERVED LOCAL TRIAL", "CURRENT BASELINE GATE"}:
             vc = ws.cell(row=r, column=3)
             vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(str(m[2]), "FFFFFF"))
             vc.font = Font(name="Calibri", bold=True, size=11)
         r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 70
+
+    if gate.get("l2_observed_trial_status"):
+        observed_receipt = _as_dict(_as_dict(_as_dict(
+            (comparison_doc or {}).get("operator_evidence")
+        ).get("rehearsal")).get("observed_l2_failure_evidence"))
+        ws = sheet("Observed L2 Trial", ["Field", "Value"])
+        observed_rows = [
+            ("Gate status", gate.get("l2_observed_trial_status")),
+            ("Assurance", gate.get("l2_observed_trial_assurance")),
+            ("Family", gate.get("l2_observed_trial_family")),
+            ("Subject", gate.get("l2_observed_trial_subject")),
+            ("Failure scenario", gate.get("l2_observed_trial_scenario")),
+            ("Matched projected risks", gate.get(
+                "l2_observed_trial_matched_projected_risks", 0)),
+            ("Gate note", gate.get("l2_observed_trial_note")),
+            ("Receipt schema", observed_receipt.get("schema")),
+            ("Receipt status", observed_receipt.get("status")),
+            ("Local scenario claim", _as_dict(
+                observed_receipt.get("claims")).get("local_scenario")),
+            ("Service-path survival", _as_dict(
+                observed_receipt.get("claims")).get("service_path_survival")),
+            ("Traffic continuity", _as_dict(
+                observed_receipt.get("claims")).get("traffic_continuity")),
+            ("Convergence", _as_dict(
+                observed_receipt.get("claims")).get("convergence")),
+        ]
+        sources = _as_dict(observed_receipt.get("source_binding"))
+        for phase in ("pre_failure", "post_failure", "recovery"):
+            phase_source = _as_dict(sources.get(phase))
+            observed_rows.extend([
+                (f"{phase} source ID", phase_source.get("source_id")),
+                (f"{phase} SHA-256", phase_source.get("sha256")),
+                (f"{phase} bytes", phase_source.get("bytes")),
+                (f"{phase} collected_at", phase_source.get("collected_at")),
+                (f"{phase} custody_at", phase_source.get("custody_at")),
+            ])
+        for row_index, (field, value) in enumerate(observed_rows, 2):
+            ws.cell(row=row_index, column=1, value=_cv(field)).font = DF
+            ws.cell(row=row_index, column=2, value=_cv(value)).font = DF
+            ws.cell(row=row_index, column=1).alignment = AL
+            ws.cell(row=row_index, column=2).alignment = AL
+        autofit(ws, 2)
+        ws.column_dimensions["A"].width = 34
+        ws.column_dimensions["B"].width = 90
 
     # Current Baseline Gate — actionable rows behind the headline FAIL/INDETERMINATE.  These are the
     # bounded, reconciled rows emitted by compute_current_baseline_gate, never a second workbook-local
@@ -1350,15 +2239,70 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
         r += 1
     cap_state = "CAPPED" if bds0.get("blockers_capped") else "NOT CAPPED"
     disclosure = (
-        f"Gate {bd0.get('verdict', 'INDETERMINATE')}; returned "
-        f"{bds0.get('n_blockers_returned', 0)} of {bds0.get('n_blockers', 0)} blocker row(s) "
-        f"({cap_state}). Counts cover the full reconciled plan: "
+        f"Gate {bd0.get('verdict', 'INDETERMINATE')}; rendered={bd_rendered0}, "
+        f"total={bd_total0}, omitted={bd_omitted0} ({cap_state}). Complete sink: Current "
+        "Baseline Export sheet. Counts cover the full reconciled plan: "
         f"{bd_states0.get('degraded', 0)} degraded, {bd_states0.get('review', 0)} review, "
         f"{bd_states0.get('not_verified', 0)} not verified. "
         f"{bd0.get('note', 'Current-baseline receipt is missing or malformed.')}"
     )
     ws.cell(row=r, column=1, value="DISCLOSURE").font = Font(name="Calibri", bold=True, size=10)
     ws.cell(row=r, column=6, value=_cv(disclosure)).font = DF
+    ws.cell(row=r, column=6).alignment = AL
+    ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor="D9D9D9")
+    autofit(ws, 8)
+    ws.column_dimensions["E"].width = 44
+    ws.column_dimensions["F"].width = 76
+    ws.column_dimensions["G"].width = 28
+    ws.column_dimensions["H"].width = 48
+
+    # Additive complete sink for the v1 gate's intentional 50-row compatibility cap.  The sheet is
+    # reference-only: cutover_gate/1 consumed the original gate counts before this projection and
+    # never reads these uncapped presentation rows.
+    ws = sheet("Current Baseline Export",
+               ["State", "Device", "Wave", "Category", "Check",
+                "Observed baseline / acceptance", "Projection custody", "Source key"])
+    r = 2
+    if baseline_export0.get("status") == "available":
+        for blocker in baseline_export_rows0:
+            if not isinstance(blocker, dict):
+                continue
+            vals = [
+                blocker.get("evidence_state", ""), blocker.get("device", ""),
+                blocker.get("wave", ""), blocker.get("category", ""),
+                blocker.get("check", ""), blocker.get("expect", ""),
+                blocker.get("projection_custody", ""), blocker.get("source_key", ""),
+            ]
+            for c, value in enumerate(vals, 1):
+                cell = ws.cell(row=r, column=c, value=_cv(value))
+                cell.font = DF
+                cell.alignment = AL
+            r += 1
+    if r == 2:
+        ws.cell(row=r, column=1, value="NOT VERIFIED").font = DF
+        ws.cell(row=r, column=6, value=_cv(
+            baseline_export0.get(
+                "note", "Complete current-baseline blocker export is unavailable."
+            )
+        )).font = DF
+        r += 1
+    export_total = baseline_export_summary0.get("n_blockers_total")
+    export_rendered = baseline_export_summary0.get("n_rows_returned")
+    export_omitted = baseline_export_summary0.get("omitted")
+    export_complete = baseline_export_summary0.get("complete")
+    export_disclosure = (
+        f"status={baseline_export0.get('status', 'not_verified')}; "
+        f"rendered={export_rendered if type(export_rendered) is int else 0}, "
+        f"total={export_total if type(export_total) is int else 0}, "
+        f"omitted={export_omitted if type(export_omitted) is int else 0}, "
+        f"complete={'YES' if export_complete is True else 'NO'}; "
+        f"rows_sha256={baseline_export_summary0.get('rows_sha256', 'NOT VERIFIED')}. "
+        "Reference-only export; this sheet does not participate in the verdict."
+    )
+    ws.cell(row=r, column=1, value="DISCLOSURE").font = Font(
+        name="Calibri", bold=True, size=10
+    )
+    ws.cell(row=r, column=6, value=_cv(export_disclosure)).font = DF
     ws.cell(row=r, column=6).alignment = AL
     ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor="D9D9D9")
     autofit(ws, 8)
@@ -1500,6 +2444,156 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
                                           "Protocol adjacency preservation NOT assessed.")).font = DF
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=7)
     autofit(ws, 7); ws.column_dimensions["G"].width = 72
+
+    # Protocol Family Changes — complete, uncapped projection of the same reference-only change set
+    # consumed by the canonical cutover gate.  This is additive: the established IPv4 owner sheet above
+    # remains intact.  The renderer neither infers native semantics nor drops malformed/empty producer rows;
+    # every evidence absence is a visible NOT VERIFIED placeholder.
+    ws = sheet("Protocol Family Changes",
+               ["Family", "Subject kind", "Subject", "Transition", "Expected",
+                "Producer decision_effect", "Assurance", "Before", "After", "Note"])
+    r = 2
+    for item in family_surface_rows:
+        vals = [
+            item["family"], item["subject_kind"], item["subject"], item["transition"],
+            item["expected"], item["decision_effect"], item["assurance"], item["before"],
+            item["after"], item["note"],
+        ]
+        for c, value in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=_cv(value)); cell.font = DF; cell.alignment = AL
+        effect = str(item.get("decision_effect") or "")
+        transition = str(item.get("transition") or "")
+        fill = (
+            "FFC7CE" if effect == "block" else
+            "FFEB9C" if effect == "review" else
+            "C6EFCE" if transition == "recovered" else
+            "D9D9D9" if item.get("placeholder") or effect in {"not_verified", "NOT VERIFIED"}
+            else "FFFFFF"
+        )
+        ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    totals_subject = (f"{family_source_rows} producer row(s)" if family_source_rows
+                      else "NOT VERIFIED")
+    totals = ["FULL TOTALS", "see Note", totals_subject, "see Note", "see Note", "see Note",
+              "see Note", f"rendered {family_source_rows} of {family_source_rows}",
+              "omitted 0", family_disclosure]
+    for c, value in enumerate(totals, 1):
+        cell = ws.cell(row=r, column=c, value=_cv(value)); cell.font = DF; cell.alignment = AL
+        cell.fill = PatternFill("solid", fgColor="D9D9D9")
+    ws.cell(row=r, column=1).font = Font(name="Calibri", bold=True, size=10)
+    autofit(ws, 10)
+    ws.column_dimensions["C"].width = 54
+    ws.column_dimensions["H"].width = 54
+    ws.column_dimensions["I"].width = 54
+    ws.column_dimensions["J"].width = 80
+
+    # Comparison Receipt — complete, uncapped projection of the same detached receipt and decision
+    # components that own this workbook.  This sheet is deliberately metadata-only: the complete
+    # subject-change population remains on Protocol Family Changes, and no UI/export cap feeds the
+    # gate.  Legacy direct callers receive an explicit NOT VERIFIED row rather than an invented bind.
+    ws = sheet("Comparison Receipt", ["Section", "Field", "Value", "Completeness"])
+    receipt_rows: List[tuple] = []
+    if comparison_doc is None:
+        receipt_rows.append((
+            "Receipt", "status", "NOT VERIFIED — no canonical source-bound comparison supplied",
+            "rendered 1 / total 1 / omitted 0; complete",
+        ))
+    else:
+        from cisco_toolkit.protocol_assurance import canonical_sha256
+        admission = _as_dict(comparison_doc.get("comparison_admission"))
+        source_pair = _as_dict(admission.get("source_binding"))
+        envelope = _as_dict(comparison_doc.get("comparison_receipt"))
+        intent = _as_dict(comparison_doc.get("change_intent"))
+        families_receipt = _as_dict(comparison_doc.get("protocol_families"))
+        gate_receipt = _as_dict(comparison_doc.get("cutover_gate"))
+        receipt_rows.extend([
+            ("Comparison", "schema", comparison_doc.get("comparison_schema"), "complete"),
+            ("Admission", "status", admission.get("status"), "complete"),
+            ("Admission", "engagement_id", admission.get("engagement_id"), "complete"),
+            ("Admission", "campaign_id", admission.get("campaign_id"), "complete"),
+            ("Admission", "failures", json.dumps(
+                admission.get("failures") if isinstance(admission.get("failures"), list) else [],
+                sort_keys=True, ensure_ascii=True, separators=(",", ":")), "complete"),
+            ("Admission", "coverage_gaps", json.dumps(
+                admission.get("coverage_gaps")
+                if isinstance(admission.get("coverage_gaps"), list) else [],
+                sort_keys=True, ensure_ascii=True, separators=(",", ":")), "complete"),
+            ("Receipt integrity", "status", "VERIFIED", "complete"),
+        ])
+        for side in ("before", "after"):
+            binding = _as_dict(source_pair.get(side))
+            for field in (
+                    "source", "snapshot_id", "label", "sha256", "bytes", "script_version"):
+                receipt_rows.append((
+                    f"Source {side}", field, binding.get(field, "NOT VERIFIED"), "complete",
+                ))
+        subject_pair = _as_dict(admission.get("subject_binding"))
+        for side in ("before", "after"):
+            subjects = _as_dict(subject_pair.get(side))
+            receipt_rows.extend([
+                (f"Subjects {side}", "schema", subjects.get("schema", "NOT VERIFIED"),
+                 "complete"),
+                (f"Subjects {side}", "identity_kind",
+                 subjects.get("identity_kind", "NOT VERIFIED"), "complete"),
+                (f"Subjects {side}", "n_subjects",
+                 subjects.get("n_subjects", "NOT VERIFIED"), "complete"),
+                (f"Subjects {side}", "subjects_sha256",
+                 subjects.get("subjects_sha256", "NOT VERIFIED"), "complete"),
+                (f"Subjects {side}", "subjects", json.dumps(
+                    subjects.get("subjects") if isinstance(subjects.get("subjects"), list) else [],
+                    sort_keys=True, ensure_ascii=True, separators=(",", ":")), "complete"),
+                (f"Subjects {side}", "valid", subjects.get("valid", "NOT VERIFIED"),
+                 "complete"),
+                (f"Subjects {side}", "failures", json.dumps(
+                    subjects.get("failures") if isinstance(subjects.get("failures"), list) else [],
+                    sort_keys=True, ensure_ascii=True, separators=(",", ":")), "complete"),
+            ])
+        for key, value in sorted(_as_dict(admission.get("owner_versions")).items()):
+            receipt_rows.append(("Decision owner", key, value, "complete"))
+        for profile in admission.get("support_profiles") or []:
+            profile = _as_dict(profile)
+            receipt_rows.append((
+                "Support profile", str(profile.get("family") or "NOT VERIFIED"),
+                json.dumps(profile, sort_keys=True, ensure_ascii=True, separators=(",", ":")),
+                "complete",
+            ))
+        receipt_rows.extend([
+            ("Digest", "change_intent", canonical_sha256(intent), "complete"),
+            ("Digest", "protocol_family_change_set", canonical_sha256(families_receipt), "complete"),
+            ("Digest", "cutover_gate", canonical_sha256(gate_receipt), "complete"),
+            ("Digest", "comparison_payload", envelope.get("payload_sha256"), "complete"),
+            ("Digest", "comparison_receipt", envelope.get("receipt_sha256"), "complete"),
+        ])
+        total = len(receipt_rows) + 1
+        receipt_rows.append((
+            "Export", "row disclosure", f"rendered {total} / total {total} / omitted 0",
+            "complete uncapped receipt metadata and subject identities; protocol family rows are "
+            "complete on their sheet",
+        ))
+    for row_number, values in enumerate(receipt_rows, 2):
+        for column, value in enumerate(values, 1):
+            cell = ws.cell(row=row_number, column=column, value=_cv(value))
+            cell.font = DF
+            cell.alignment = AL
+        fill = None
+        if values[0] == "Receipt":
+            fill = "D9D9D9"
+        elif values[0] == "Receipt integrity" and values[1] == "status":
+            fill = "C6EFCE" if values[2] == "VERIFIED" else "FFC7CE"
+        elif values[0] == "Admission" and values[1] == "status":
+            fill = {
+                "admitted": "C6EFCE",
+                "coverage_lost": "FFEB9C",
+                "not_comparable": "FFC7CE",
+            }.get(str(values[2]), "D9D9D9")
+        elif values[0] == "Export":
+            fill = "D9D9D9"
+        if fill:
+            ws.cell(row=row_number, column=3).fill = PatternFill("solid", fgColor=fill)
+    autofit(ws, 4)
+    ws.column_dimensions["B"].width = 44
+    ws.column_dimensions["C"].width = 82
+    ws.column_dimensions["D"].width = 70
 
     # Reachability (W2) — computed RIB->FIB flows the change DEFINITIVELY broke (the offline Batfish-peer what-if).
     # Coverage-honest: distinguishes 'tested, no regressions' from 'no routes collected -> not assessed'.
@@ -1937,7 +3031,8 @@ def compute_campaign_trend(snapshots: List[dict], *, source_bindings: Optional[l
 
 
 def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
-                            source_bindings: Optional[list] = None, schema_status: Any = None) -> None:
+                            source_bindings: Optional[list] = None, schema_status: Any = None,
+                            adjacent_comparisons: Any = None) -> None:
     """Write a migration-campaign trend workbook (Campaign Summary verdict + per-metric trajectory /
     Timeline w/ a trajectory line chart / Burndown of findings opened-vs-resolved per step) from a SERIES
     of snapshot_state() dicts."""
@@ -1950,6 +3045,32 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
 
     trend = compute_campaign_trend(
         snapshots, source_bindings=source_bindings, schema_status=schema_status)
+    receipt_set = _as_dict(adjacent_comparisons)
+    receipt_rows = (
+        receipt_set.get("comparisons")
+        if isinstance(receipt_set.get("comparisons"), list) else []
+    )
+    receipt_rows = [row for row in receipt_rows if isinstance(row, dict)]
+    expected_pairs = receipt_set.get("n_pairs_total")
+    if type(expected_pairs) is not int or expected_pairs < 0:
+        expected_pairs = max(0, len(snapshots or []) - 1)
+    receipt_status = str(receipt_set.get("status") or "not_verified").strip().lower()
+    if receipt_set.get("schema") != "campaign_adjacent_comparison_set/1":
+        receipt_status = "not_verified"
+    receipt_note = str(receipt_set.get("note") or (
+        "Canonical adjacent comparison receipts were not supplied to this workbook writer."
+    ))
+    receipt_complete = (
+        receipt_status == "verified"
+        and receipt_set.get("complete") is True
+        and len(receipt_rows) == expected_pairs
+    )
+    receipt_render_cap = 1000
+    rendered_receipts = receipt_rows[:receipt_render_cap]
+    rendered_count = len(rendered_receipts)
+    total_produced = len(receipt_rows)
+    omitted_count = max(0, total_produced - rendered_count)
+    complete_export = os.path.splitext(os.path.abspath(out_path))[0] + ".trend-comparisons.json"
     wb = Workbook(); wb.remove(wb.active)
     from cisco_toolkit.excel import harden_workbook
     harden_workbook(wb)   # sanitize control chars in device-derived text -> no IllegalCharacterError abort
@@ -1993,6 +3114,25 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
     ws.cell(row=3, column=3, value=_cv(current_baseline.get(
         "note", "Current-baseline receipt is missing or malformed."))).alignment = AL
     ws.merge_cells(start_row=3, start_column=3, end_row=3, end_column=5)
+    rc = ws.cell(row=4, column=1, value="ADJACENT CANONICAL RECEIPTS")
+    rc.font = Font(name="Calibri", bold=True, size=11)
+    rv = ws.cell(row=4, column=2, value=_cv(receipt_status.upper()))
+    rv.font = Font(name="Calibri", bold=True, size=11)
+    rv.fill = PatternFill(
+        "solid",
+        fgColor=("C6EFCE" if receipt_status == "verified" and receipt_complete
+                 else "FFC7CE" if receipt_status == "not_comparable" else "FFEB9C"),
+    )
+    ws.cell(
+        row=4,
+        column=3,
+        value=_cv(
+            f"complete={str(receipt_complete).lower()}; rendered={rendered_count}; "
+            f"total produced={total_produced}; omitted={omitted_count}; expected pairs={expected_pairs}. "
+            f"Complete uncapped export: {complete_export}. {receipt_note}"
+        ),
+    ).alignment = AL
+    ws.merge_cells(start_row=4, start_column=3, end_row=4, end_column=5)
     r = 5
     for t in trend["trajectory"]:
         for c, v in enumerate([t["metric"], t["first"], t["last"], t["delta"], t["direction"]], 1):
@@ -2082,6 +3222,70 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str, *,
     if not trend["steps"]:
         ws.cell(row=2, column=1, value="Need at least two snapshots for a protocol adjacency delta.").font = DF
     autofit(ws, 10); ws.column_dimensions["I"].width = 38; ws.column_dimensions["J"].width = 72
+
+    # ---- Adjacent Comparison Receipts (canonical source-bound pair decisions; presentation only) ----
+    # The portable JSON sidecar owns the complete uncapped row set.  This sheet may cap rendering, and
+    # discloses rendered/total/omitted explicitly; no gate or decision code consumes this UI projection.
+    cols = [
+        "Pair", "Before snapshot ID", "After snapshot ID", "Before SHA-256", "After SHA-256",
+        "Canonical gate", "Admission", "Comparison receipt SHA-256", "Set complete", "Rendered",
+        "Total produced", "Omitted", "Status / complete-export action",
+    ]
+    ws = sheet("Adjacent Comparison Receipts", cols)
+    summary_values = [
+        "PAIR SET STATUS", "", "", "", "", receipt_status.upper(), "", "",
+        receipt_complete, rendered_count, total_produced, omitted_count,
+        f"Expected pairs={expected_pairs}. Complete uncapped export: {complete_export}. {receipt_note}",
+    ]
+    for column, value in enumerate(summary_values, 1):
+        cell = ws.cell(row=2, column=column, value=_cv(value)); cell.font = DF; cell.alignment = AL
+    ws.cell(row=2, column=6).fill = PatternFill(
+        "solid",
+        fgColor=("C6EFCE" if receipt_status == "verified" and receipt_complete
+                 else "FFC7CE" if receipt_status == "not_comparable" else "FFEB9C"),
+    )
+    for row_index, entry in enumerate(rendered_receipts, start=3):
+        comparison = _as_dict(entry.get("comparison"))
+        gate = _as_dict(comparison.get("cutover_gate"))
+        admission = _as_dict(comparison.get("comparison_admission"))
+        envelope = _as_dict(comparison.get("comparison_receipt"))
+        source_pair = _as_dict(admission.get("source_binding"))
+        before_source = _as_dict(source_pair.get("before"))
+        after_source = _as_dict(source_pair.get("after"))
+        canonical_gate = entry.get("canonical_gate", gate.get("verdict", "INDETERMINATE"))
+        admission_status = entry.get("admission_status", admission.get("status", "not_comparable"))
+        values = [
+            f"{entry.get('from', '')} → {entry.get('to', '')}",
+            entry.get("before_snapshot_id", before_source.get("snapshot_id", "")),
+            entry.get("after_snapshot_id", after_source.get("snapshot_id", "")),
+            entry.get("before_sha256", before_source.get("sha256", "")),
+            entry.get("after_sha256", after_source.get("sha256", "")),
+            canonical_gate,
+            admission_status,
+            entry.get("comparison_receipt_sha256", envelope.get("receipt_sha256", "")),
+            receipt_complete,
+            "", "", "", "Copied from the canonical comparison; no gate reinterpretation.",
+        ]
+        for column, value in enumerate(values, 1):
+            cell = ws.cell(row=row_index, column=column, value=_cv(value)); cell.font = DF
+            cell.alignment = CEN if column in {2, 3, 6, 7, 9} else AL
+        ws.cell(row=row_index, column=6).fill = PatternFill(
+            "solid",
+            fgColor={"PASS": "C6EFCE", "REVIEW": "FFEB9C", "CONDITIONAL": "FFEB9C",
+                     "REGRESSED": "FFC7CE", "FAIL": "FFC7CE"}.get(
+                         str(canonical_gate), "D9D9D9"),
+        )
+    if not rendered_receipts:
+        ws.cell(
+            row=3,
+            column=1,
+            value="No canonical adjacent comparison receipts were produced; see the status row.",
+        ).font = DF
+    autofit(ws, len(cols))
+    ws.column_dimensions["D"].width = 72
+    ws.column_dimensions["E"].width = 72
+    ws.column_dimensions["H"].width = 72
+    ws.column_dimensions["M"].width = 100
 
     wb.save(out_path)
     logger.info(f"[OK] Campaign trend: {trend['verdict']} across {len(trend['timeline'])} collections")
@@ -2208,7 +3412,13 @@ def _slim_for_embed(snap_dict: dict) -> dict:
 # and a ready-to-open, air-gapped topology explorer (no second tool, no manual
 # snapshot load). Pure stdlib (os + json); no new imports.
 # -----------------------------------------------------------------------------
-def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
+def write_html_explorer(
+        output_path: str,
+        snap_dict: dict,
+        label: str,
+        *,
+        protocol_assurance_bundle: Any = None,
+        complete_export_reference: str = "") -> None:
     """
     Emit a self-contained Blast-Radius Explorer with the live topology embedded.
 
@@ -2229,8 +3439,11 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
       * Missing template -> warn and skip (never crash a run whose workbook already saved).
       * Bootstrap line absent (template changed) -> warn and skip.
       * Snapshot is minified (separators=(',',':')) to keep the embedded payload small.
-      * BOTH the payload and the label are emitted via ``_script_safe_json`` -- see there. Neither
-        device-derived text nor the caller-supplied label can break out of the <script> block.
+      * The optional Protocol Assurance sidecar is accepted only through the shared receipt/export
+        validator. A detached snapshot or malformed sidecar renders NOT VERIFIED; this writer never
+        hashes a parsed mapping or mints source custody.
+      * The snapshot, receipt projection, and label are all emitted via ``_script_safe_json`` -- see
+        there. Neither device-derived text nor caller-supplied metadata can break out of the script.
     """
     # The explorer template ships INSIDE the package (cisco_toolkit/blast_radius_explorer.html), so it is
     # present in a built wheel and resolves the same whether the package is run from a checkout or a
@@ -2262,8 +3475,15 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
     # UPLOADED FILENAME, stores it, and serves it back from the explorer route -- so this was stored
     # XSS with same-origin access to every stored client snapshot.
     embedded = _script_safe_json(slim)
-    replacement = (f"const EMBEDDED_SNAPSHOT={embedded};\n"
-                   f"load(EMBEDDED_SNAPSHOT,{_script_safe_json(label)},true);")
+    protocol_surface = protocol_assurance_surface_payload(
+        protocol_assurance_bundle,
+        complete_export_reference=complete_export_reference,
+    )
+    embedded_protocol = _script_safe_json(protocol_surface)
+    replacement = (f"const EMBEDDED_PROTOCOL_ASSURANCE={embedded_protocol};\n"
+                   f"const EMBEDDED_SNAPSHOT={embedded};\n"
+                   f"load(EMBEDDED_SNAPSHOT,{_script_safe_json(label)},true,"
+                   "EMBEDDED_PROTOCOL_ASSURANCE);")
 
     # Replace ONLY the last occurrence (the bootstrap), not the button's onclick.
     head, _sep, tail = html.rpartition(bootstrap)

@@ -405,3 +405,196 @@ describe("Snapshot cockpit · coverage honesty", () => {
     expect(note).toMatch(/NOT absent/);
   });
 });
+
+describe("Snapshot cockpit · Protocol Assurance portfolio", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function assuranceReceipt(overrides: Record<string, unknown> = {}) {
+    const family = {
+      family: "ipv4_routing_adjacency",
+      owner_schema: "protocol_adjacency_delta/1",
+      assurance_level: "observed_state_preservation",
+      evidence_contracts: ["routing_adjacency_baseline/1"],
+      evidence_status: "partial",
+      status_reason: "One producer leaf remains not verified.",
+      source_custody: "embedded_unverified",
+      producer_summary: {},
+      producer_state_counts: { assessed: 3 },
+      coverage_state_counts: { not_verified: 1 },
+      subject_total: 5,
+      subjects: {
+        total: 5,
+        rendered: 3,
+        omitted: 2,
+        rows: Array.from({ length: 3 }, (_, index) => ({
+          family: "ipv4_routing_adjacency",
+          subject: `core1|OSPF|10.0.0.${index + 1}`,
+          kind: "observed_peer",
+          evidence_state: "assessed",
+          source_contract: "routing_adjacency_baseline/1",
+          detail: { switch: "core1", protocol: "OSPF" },
+        })),
+      },
+      limitations: [],
+      ...overrides,
+    };
+    return {
+      section: "protocol_assurance",
+      data: {
+        receipt: {
+          schema: "protocol_single_snapshot_receipt/1",
+          owner_version: "1",
+          owns_score: false,
+          owns_verdict: false,
+          custody_status: "bound",
+          custody_failures: [],
+          source_binding: {
+            source: "persisted snapshots.snapshot_json blob",
+            sha256: `sha256:${"a".repeat(64)}`,
+            bytes: 4321,
+            snapshot_id: 1,
+            campaign_id: 1,
+            engagement_id: "eng-1",
+            label: "Demo Fleet",
+            script_version: "V3.23.0",
+          },
+          script_owner: {
+            source: "snapshot.script_version + snapshots.script_version column",
+            snapshot_value: "V3.23.0",
+            stored_value: "V3.23.0",
+            status: "bound",
+          },
+          support_profiles: [],
+          summary: { n_families: 1, n_subjects_total: 5, by_evidence_status: { partial: 1 } },
+          families: [family],
+          render_cap: 3,
+          complete_export: {
+            schema: "protocol_single_snapshot_export/1",
+            sha256: `sha256:${"b".repeat(64)}`,
+            media_type: "application/json",
+          },
+          custody_note: "This receipt binds exact persisted snapshot_json bytes; original upload bytes are not retained.",
+          receipt_sha256: `sha256:${"c".repeat(64)}`,
+        },
+        complete_export: {
+          schema: "protocol_single_snapshot_export/1",
+          sha256: `sha256:${"b".repeat(64)}`,
+          media_type: "application/json",
+          url: "/api/snapshots/1/protocol-assurance/export",
+        },
+      },
+    };
+  }
+
+  function mockAssurance(value: ReturnType<typeof assuranceReceipt>) {
+    const m: any = meta(72);
+    m.id = 1;
+    m.summary.sections = [{ key: "protocol_assurance", label: "Protocol Assurance", count: 1 }];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/snapshots/1/section/protocol_assurance")) {
+        return new Response(JSON.stringify(value), { status: 200 });
+      }
+      if (/\/api\/snapshots\/1\/graph\b/.test(url)) {
+        return new Response(JSON.stringify({ nodes: [], edges: [] }), { status: 200 });
+      }
+      if (/\/api\/snapshots\/1(\?.*)?$/.test(url)) {
+        return new Response(JSON.stringify(m), { status: 200 });
+      }
+      return new Response(JSON.stringify({ detail: "not mocked" }), { status: 404 });
+    });
+  }
+
+  it("renders source custody, family-to-subject drill-down, cap disclosure, and complete export", async () => {
+    mockAssurance(assuranceReceipt());
+    renderSnap();
+
+    expect(await screen.findByRole("heading", { name: "Protocol Assurance portfolio" })).toBeInTheDocument();
+    expect(screen.getByText(/persisted-source custody/i).parentElement?.textContent).toMatch(/BOUND/);
+    expect(screen.getByText(/4321 bytes/)).toHaveTextContent(`sha256:${"a".repeat(64)}`);
+    expect(screen.getByText(/catalog presence is not runtime support/i)).toBeInTheDocument();
+
+    const family = screen.getByText("ipv4_routing_adjacency").closest("details")!;
+    fireEvent.click(family.querySelector("summary")!);
+    expect(await screen.findByRole("table", { name: /ipv4_routing_adjacency protocol subjects/i }))
+      .toBeInTheDocument();
+    expect(family).toHaveTextContent(/Showing 3 of 5 subjects; 2 omitted/);
+    expect(family).toHaveTextContent(/complete JSON export contains all 5 subjects/);
+
+    const link = screen.getByRole("link", { name: /complete json export/i });
+    expect(link).toHaveAttribute("href", "/api/snapshots/1/protocol-assurance/export");
+    expect(link).toHaveAttribute("download", "protocol-assurance-snapshot-1.json");
+  });
+
+  it("renders missing or malformed family evidence as neutral NOT VERIFIED without inventing a verdict", async () => {
+    mockAssurance(assuranceReceipt({
+      evidence_status: "not_verified",
+      assurance_level: "not_verified",
+      status_reason: "Required family evidence is malformed (baseline not object).",
+      subject_total: 0,
+      subjects: { total: 0, rendered: 0, omitted: 0, rows: [] },
+    }));
+    renderSnap();
+
+    await screen.findByRole("heading", { name: "Protocol Assurance portfolio" });
+    const family = screen.getByText("ipv4_routing_adjacency").closest("details")!;
+    expect(family).toHaveTextContent(/NOT VERIFIED/);
+    fireEvent.click(family.querySelector("summary")!);
+    expect(family).toHaveTextContent(/Required family evidence is malformed/);
+    expect(family).toHaveTextContent(/No validated subject rows are rendered/);
+    expect(family.className).not.toMatch(/\bok\b/);
+    expect(family.textContent).not.toMatch(/\bPASS\b|\bCLEAR\b/);
+  });
+
+  it("expands typed VTP subject evidence without rendering uncontracted secret fields", async () => {
+    mockAssurance(assuranceReceipt({
+      family: "vtp_safety",
+      owner_schema: "vtp_extended_evidence/1",
+      assurance_level: "local_safety_preservation",
+      evidence_contracts: ["vtp_extended_evidence/1"],
+      evidence_status: "observed",
+      status_reason: "Typed VTP evidence is source-bound.",
+      source_custody: "current_run_source_bound",
+      subject_total: 1,
+      subjects: {
+        total: 1,
+        rendered: 1,
+        omitted: 0,
+        rows: [{
+          family: "vtp_safety",
+          subject: "dist1",
+          kind: "device",
+          evidence_state: "safe",
+          source_contract: "vtp_extended_evidence/1",
+          detail: {
+            switch: "dist1",
+            mode: "server",
+            domain: "CAMPUS",
+            version: "2",
+            revision: 9,
+            vlan_count: 42,
+            pruning_state: "configured",
+            authentication_configured: true,
+            password: "must-never-render",
+          },
+        }],
+      },
+    }));
+    renderSnap();
+
+    await screen.findByRole("heading", { name: "Protocol Assurance portfolio" });
+    const family = screen.getByText("vtp_safety").closest("details")!;
+    fireEvent.click(family.querySelector("summary")!);
+    const subjectDetail = family.querySelector("tbody details") as HTMLDetailsElement;
+    expect(subjectDetail).not.toBeNull();
+    expect(subjectDetail.open).toBe(false);
+    fireEvent.click(subjectDetail.querySelector("summary")!);
+    expect(subjectDetail.open).toBe(true);
+    expect(screen.getByText("mode").nextElementSibling).toHaveTextContent("server");
+    expect(screen.getByText("domain").nextElementSibling).toHaveTextContent("CAMPUS");
+    expect(screen.getByText("revision").nextElementSibling).toHaveTextContent("9");
+    expect(screen.getByText("authentication configured").nextElementSibling).toHaveTextContent("true");
+    expect(family).not.toHaveTextContent("must-never-render");
+    expect(family).not.toHaveTextContent(/password/i);
+  });
+});

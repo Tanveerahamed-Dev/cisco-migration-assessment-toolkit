@@ -13,6 +13,11 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.html import (compute_campaign_trend, compute_cutover_gate, compute_snapshot_delta,
                                 write_campaign_workbook, write_diff_workbook)
 from cisco_toolkit.model import InterfaceData
+from cisco_toolkit.protocol_assurance import (
+    compute_native_protocol_deltas,
+    current_baseline_blocker_export,
+    protocol_family_change_set,
+)
 
 
 def _row(number=1, *, state="assessed", marker="", wave="Group 1", category="Routing"):
@@ -136,7 +141,7 @@ def test_gate_reconciles_all_plan_views_and_never_echoes_rows_from_an_invalid_pl
     assert "hostile" not in str(gate)
 
 
-def test_gate_bounds_returned_rows_and_device_controlled_text_without_hiding_counts():
+def test_gate_bounds_returned_rows_and_device_controlled_text_without_hiding_counts(tmp_path):
     rows = []
     for number in range(55):
         row = _row(number, state="degraded", wave="Group 10")
@@ -154,6 +159,37 @@ def test_gate_bounds_returned_rows_and_device_controlled_text_without_hiding_cou
     assert len(gate["blockers"]) == 50
     assert max(map(len, (row["check"] for row in gate["blockers"]))) == 240
     assert max(map(len, (row["expect"] for row in gate["blockers"]))) == 600
+
+    complete = current_baseline_blocker_export({"validation_plan": _plan(rows)})
+    assert complete["status"] == "available"
+    assert complete["owns_verdict"] is False
+    assert complete["summary"]["n_blockers_total"] == 55
+    assert complete["summary"]["n_rows_returned"] == 55
+    assert complete["summary"]["omitted"] == 0
+    assert complete["summary"]["complete"] is True
+    assert len(complete["rows"]) == 55
+    assert complete["rows"][54]["device"] == "r54"
+
+    snapshot = {
+        "devices": {f"r{number}": {} for number in range(55)},
+        "interfaces": {},
+        "health_scores": [],
+        "punchlist": [],
+        "validation_plan": _plan(rows),
+    }
+    output = tmp_path / "capped-baseline.xlsx"
+    write_diff_workbook(snapshot, deepcopy(snapshot), str(output))
+    workbook = load_workbook(output, read_only=True)
+    try:
+        capped_rows = list(workbook["Current Baseline Gate"].iter_rows(values_only=True))
+        export_rows = list(workbook["Current Baseline Export"].iter_rows(values_only=True))
+    finally:
+        workbook.close()
+    assert len([row for row in capped_rows[1:] if row[0] == "degraded"]) == 50
+    assert len([row for row in export_rows[1:] if row[0] == "degraded"]) == 55
+    assert any(row[1] == "r54" for row in export_rows)
+    assert "rendered=50, total=55, omitted=5" in capped_rows[-1][5]
+    assert "rendered=55, total=55, omitted=0, complete=YES" in export_rows[-1][5]
 
     long_wave = "Group 20 " + "z" * 400
     long_gate = compute_current_baseline_gate(_plan([_row(state="review", wave=long_wave)]))
@@ -223,7 +259,16 @@ def test_unchanged_degraded_current_state_fails_combined_gate_without_changing_d
             "flows": {}, "stamps": {}, "segmentation": [], "intents": [], "blind_spots": [],
         },
     )
-    assert workbook_gate == gate
+    family_changes = protocol_family_change_set(
+        delta["protocol_adjacencies"], {"expected_changes": []},
+        native_deltas=compute_native_protocol_deltas(snapshot, deepcopy(snapshot)))
+    additive_gate = compute_cutover_gate(
+        delta,
+        {"verdict": "PASS", "verdict_note": "bounded certificate passed"},
+        protocol_family_changes=family_changes,
+    )
+    assert workbook_gate == additive_gate
+    assert workbook_gate["verdict"] == gate["verdict"]
     workbook = load_workbook(output, read_only=True)
     try:
         assert "Current Baseline Gate" in workbook.sheetnames
@@ -233,7 +278,8 @@ def test_unchanged_degraded_current_state_fails_combined_gate_without_changing_d
     assert rows[1][:5] == ("degraded", "r1", "Group 1", "Routing", "check 1")
     assert rows[1][6:] == ("embedded_unverified", "routing_neighbors.r1.ospf")
     assert rows[2][0] == "DISCLOSURE"
-    assert "returned 1 of 1 blocker row(s) (NOT CAPPED)" in rows[2][5]
+    assert "rendered=1, total=1, omitted=0 (NOT CAPPED)" in rows[2][5]
+    assert "Current Baseline Export sheet" in rows[2][5]
 
 
 def test_missing_current_validation_plan_withholds_pass_for_a_computed_delta():

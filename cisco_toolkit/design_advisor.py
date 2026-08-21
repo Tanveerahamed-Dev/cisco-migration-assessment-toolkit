@@ -73,6 +73,21 @@ _L2_SPAN_SWITCHES = 8  # a single user VLAN touching this many switches is an ov
 _WAVE_CAP = 40  # max switches per candidate migration wave (a maintenance-window-sized batch)
 _PORT_UTIL_HOT = 85.0  # PERCENT: a switch at/above this port- (or PoE-) utilisation has < 15% headroom (capacity[].port_util/poe_util are percentages)
 
+# Closed NX-OS ``show vpc`` good-state vocabulary.  These are the exact canonical values exercised by
+# the parser-to-detector fixture; substring matching is unsafe because the observed failure strings
+# ``peer adjacency not formed`` and ``peer is not alive`` contain their positive-state words.  A
+# present vPC observation with a blank, missing, or unfamiliar required leaf is therefore unhealthy
+# evidence for this existing integrity signal, never a silent pass.
+_VPC_GOOD_PEER_STATES = frozenset({"peer adjacency formed ok"})
+_VPC_GOOD_KEEPALIVE_STATES = frozenset({"peer is alive"})
+_VPC_GOOD_CONSISTENCY_STATES = frozenset({"success"})
+_VPC_GOOD_PEER_LINK_STATES = frozenset({"up"})
+
+
+def _canonical_vpc_state(value) -> str:
+    """Normalize case and whitespace without broadening the closed vPC state vocabulary."""
+    return " ".join(str(value or "").strip().casefold().split())
+
 
 def is_access_mode(mode) -> bool:
     """ONE owner for the 'is this port ACCESS-mode by switchport_mode' decision inside this module -- the
@@ -1510,12 +1525,14 @@ def _signals(snap):
         if not isinstance(r, dict):
             continue
         bad = False
-        cons = str(r.get("consistency", "")).strip().lower()
-        peer = str(r.get("peer_status", "")).strip().lower()
-        ka = str(r.get("keepalive_status", "")).strip().lower()
-        plst = str(_as_dict(r.get("peer_link")).get("status", "")).strip().lower()
-        if (cons and cons != "success") or (peer and "ok" not in peer and "formed" not in peer) \
-                or (ka and "alive" not in ka) or (plst and plst != "up"):
+        cons = _canonical_vpc_state(r.get("consistency"))
+        peer = _canonical_vpc_state(r.get("peer_status"))
+        ka = _canonical_vpc_state(r.get("keepalive_status"))
+        plst = _canonical_vpc_state(_as_dict(r.get("peer_link")).get("status"))
+        if (cons not in _VPC_GOOD_CONSISTENCY_STATES
+                or peer not in _VPC_GOOD_PEER_STATES
+                or ka not in _VPC_GOOD_KEEPALIVE_STATES
+                or plst not in _VPC_GOOD_PEER_LINK_STATES):
             vpc_dom_bad += 1
             bad = True
         for m in _as_list(r.get("vpcs")):

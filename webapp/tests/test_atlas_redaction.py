@@ -155,6 +155,8 @@ def _family_engine(record: dict, omit=(), stderr="", truncate=(), extra_files=()
                 target.write_bytes(b"")          # truncate-then-ENOSPC: the file exists, empty
             elif target.suffix in _OFFICE_PART:
                 target.write_bytes(_docbytes(_OFFICE_PART[target.suffix]))
+            elif target.suffix == ".json":
+                target.write_text("{}", encoding="utf-8")
             else:
                 target.write_text("<html>explorer</html>", encoding="utf-8")
         for name in extra_files:

@@ -47,7 +47,12 @@ def _as_dict(v: Any) -> Dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
 
-def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> None:
+def write_nrfu_docx(
+        output_path: str,
+        snap_dict: Dict[str, Any],
+        label: str,
+        *,
+        protocol_assurance_bundle=None) -> None:
     """Write the NRFU / Acceptance Test Plan to ``output_path`` as a .docx."""
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
@@ -140,11 +145,12 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         ["Customer acceptance", "", "", ""],
     ], widths=[1.8, 2.0, 1.7, 1.0])
     # Shared family cross-reference (imported here, after the engine sys.path bootstrap).
-    from cisco_toolkit.docmeta import add_related_documents
+    from cisco_toolkit.docmeta import add_protocol_assurance_receipt, add_related_documents
     add_related_documents(
         doc, exclude=("nrfu",),
         audience="the test lead and network engineers executing the acceptance tests, and the "
                  "customer signatories accepting the network for production.")
+    add_protocol_assurance_receipt(doc, protocol_assurance_bundle)
 
     # ---- 1. introduction & scope ----
     doc.add_heading("1. Introduction, scope & test approach", level=1)

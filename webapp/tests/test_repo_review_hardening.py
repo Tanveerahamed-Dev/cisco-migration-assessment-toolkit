@@ -279,7 +279,7 @@ def test_bound_snapshot_hashes_exact_persisted_blob_not_semantic_json(tmp_path):
         store.close()
 
 
-def test_pir_recomputes_legacy_stale_success_outcome(tmp_path, monkeypatch):
+def test_api_and_pir_preserve_legacy_persisted_success_outcome(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
     app = create_app(db_path=str(tmp_path / "legacy-pir.db"))
     store = app.state.store
@@ -311,12 +311,41 @@ def test_pir_recomputes_legacy_stale_success_outcome(tmp_path, monkeypatch):
     monkeypatch.setattr(deliverables, "have_docx", lambda: True)
     monkeypatch.setattr(pir_docx, "write_pir_docx", fake_pir)
     with TestClient(app, base_url="http://localhost") as client:
+        api_response = client.get(f"/api/executions/{execution_id}")
         response = client.get(f"/api/executions/{execution_id}/report")
 
+    assert api_response.status_code == 200
+    assert api_response.json()["outcome"] == execution.OUTCOME_SUCCESS
     assert response.status_code == 200
-    assert captured["state"]["outcome"] == execution.OUTCOME_PARTIAL
-    # Recomputing an export view must not rewrite historical storage as a side effect.
+    assert captured["state"]["outcome"] == execution.OUTCOME_SUCCESS
+    # Neither read surface reinterprets or rewrites the historical legacy outcome.
     assert store.get_execution(execution_id)["state"]["outcome"] == execution.OUTCOME_SUCCESS
+
+
+def test_finished_v2_read_view_recomputes_outcome_under_current_evidence_rules():
+    stale_v2 = {
+        "execution_schema": "cutover_execution/2",
+        "comparison_policy": {
+            "schema": "execution_comparison_policy/1",
+            "canonical_gate_required": True,
+            "before_snapshot": {},
+        },
+        "status": "completed",
+        "outcome": execution.OUTCOME_SUCCESS,
+        "plan_summary": {},
+        "waves": [{
+            "group": "Wave A",
+            "steps": [{"status": "pending"}],
+            "checks": [{"result": "pending"}],
+            "closeout": {"decision": "COMPLETE"},
+        }],
+        "events": [],
+    }
+
+    current = execution.with_current_outcome(stale_v2)
+
+    assert current["outcome"] == execution.OUTCOME_PARTIAL
+    assert stale_v2["outcome"] == execution.OUTCOME_SUCCESS
 
 
 def test_unc_ingest_is_rejected_before_allowed_root_or_filesystem_access(monkeypatch):

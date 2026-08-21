@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import CutoverPlanner from "./CutoverPlanner";
 import { api } from "../api";
@@ -188,6 +188,50 @@ describe("CutoverPlanner (render)", () => {
     expect(screen.getByTestId("current-baseline-clear-boundary")).toHaveTextContent(/not cutover authorization/i);
   });
 
+  it("uses producer-owned blocker flags and keeps legacy marker fallback neutral", async () => {
+    const declaredBlocker = {
+      device: "DIST-TYPED", wave: "Access-Pilot", category: "Routing", severity: "High",
+      check: "Typed baseline blocker", command: "show ip ospf neighbor",
+      expect: "Typed producer classification.", evidence_state: "degraded", baseline_state: "degraded",
+      baseline_blocker: true, projection_custody: "current_run_source_bound",
+      source_key: "typed/blocker",
+    };
+    const producerNonBlocker = {
+      category: "Routing", severity: "Medium", check: "Producer-declared ordinary validation",
+      command: "show ip route", expect: "PRE-CUTOVER DEGRADED — BLOCKER: stale display text",
+      evidence_state: "degraded", baseline_state: "degraded", baseline_blocker: false,
+    };
+    const legacyCandidate = {
+      category: "Routing", severity: "Medium", check: "Legacy untyped baseline marker",
+      command: "show ip ospf neighbor", expect: "PRE-CUTOVER REVIEW — BLOCKER: legacy marker",
+      evidence_state: "review", baseline_state: "review",
+    };
+    const mixedVersionPlan = {
+      ...cutover,
+      waves: [{
+        ...cutover.waves[0],
+        validation: [declaredBlocker, producerNonBlocker, legacyCandidate],
+      }],
+    };
+    vi.spyOn(api, "cutover").mockResolvedValue(mixedVersionPlan as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+
+    expect(await screen.findByTestId("current-baseline-verdict")).toHaveTextContent("NOT ASSESSED");
+    expect(screen.getAllByTestId("baseline-blocker")).toHaveLength(1);
+    expect(screen.getByTestId("baseline-blocker")).toHaveTextContent("Typed baseline blocker");
+    expect(screen.getAllByTestId("legacy-baseline-candidate")).toHaveLength(1);
+    expect(screen.getByTestId("legacy-baseline-candidate")).toHaveTextContent("DISPLAY ONLY");
+    expect(screen.getByTestId("legacy-baseline-disclosure")).toHaveTextContent(
+      /do not alter the server-owned gate, counts, or cutover decision/i,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Run-of-show/ }));
+    expect(screen.getByText(/Post-cutover validation \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText("Producer-declared ordinary validation")).toBeInTheDocument();
+  });
+
   it("renders every fleet-level unbound review before the no-waves return", async () => {
     const reviews = Array.from({ length: 12 }, (_, i) => ({
       device: `edge-unbound-${i + 1}`,
@@ -315,6 +359,188 @@ describe("CutoverPlanner (render)", () => {
     await screen.findByText("Cutover plan · run-of-show");
 
     expect(screen.queryByText(/not evidence that no run is open/i)).toBeNull();
+  });
+
+  it("surfaces the latest post-change gate and honest bind state from existing execution receipts", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([
+      {
+        id: 41, snapshot_id: 1, label: "Cutover run 1", status: "in_progress",
+        started_at: "2026-08-20T00:00:00Z", ended_at: null, comparison_required: true,
+      },
+      {
+        id: 42, snapshot_id: 1, label: "Cutover run 2", status: "completed",
+        started_at: "2026-08-20T01:00:00Z", ended_at: "2026-08-20T02:00:00Z",
+        comparison_required: true,
+        latest_comparison: {
+          schema: "execution_latest_comparison/1", receipt_id: 7,
+          receipt_sha256: `sha256:${"a".repeat(64)}`,
+          before_snapshot_id: 1, after_snapshot_id: 9,
+          cutover_gate: { schema: "cutover_gate/1", verdict: "PASS" },
+        },
+      },
+      {
+        id: 43, snapshot_id: 1, label: "Legacy run", status: "completed",
+        started_at: "2026-08-19T01:00:00Z", ended_at: "2026-08-19T02:00:00Z",
+      },
+    ] as never);
+    renderPlanner();
+
+    expect(await screen.findByTestId("cutover-execution-41")).toHaveTextContent(
+      /post-change NOT VERIFIED/,
+    );
+    expect(screen.getByTestId("cutover-execution-42")).toHaveTextContent(
+      /post-change PASS · after snapshot 9/,
+    );
+    expect(screen.getByTestId("cutover-execution-43")).toHaveTextContent(
+      /legacy · no canonical receipt/,
+    );
+  });
+
+  it("binds a same-campaign observed phase set to a live execution and renders the returned canonical receipt", async () => {
+    const sourceBinding = {
+      source: "persisted snapshots.snapshot_json blob",
+      sha256: `sha256:${"1".repeat(64)}`,
+      bytes: 1234,
+      snapshot_id: 1,
+      campaign_id: 73,
+      engagement_id: "eng-east",
+      label: "Baseline",
+      script_version: "3.30.0",
+    };
+    const initialExecution = {
+      id: 41, snapshot_id: 1, label: "Cutover run 1", operator: "", status: "in_progress",
+      outcome: null, started_at: "2026-08-20T00:00:00Z", ended_at: null,
+      execution_schema: "cutover_execution/2",
+      comparison_policy: {
+        schema: "execution_comparison_policy/1",
+        canonical_gate_required: true,
+        before_snapshot: sourceBinding,
+      },
+      comparison_receipts: [],
+    };
+    const comparison = {
+      comparison_schema: "source_bound_cutover_comparison/1",
+      verdict: "CLEAN",
+      cutover_gate: {
+        schema: "cutover_gate/1", verdict: "PASS",
+        note: "Comparison admission: ADMITTED. All canonical inputs pass.",
+        operator_note: "Overall before/after cutover decision: PASS.",
+        delta_verdict: "CLEAN", delta_display: "CLEAN", delta_note: "No new regression.",
+        certificate_verdict: "PASS", certificate_note: "Service paths passed.",
+        protocol_gate: "PASS", protocol_baseline_peers: 2,
+        protocol_regressions: 0, protocol_coverage_gaps: 0,
+        comparison_admission_status: "admitted",
+        comparison_admission_note: "Frozen sources admitted.",
+      },
+    };
+    const updatedExecution = {
+      ...initialExecution,
+      latest_comparison: {
+        schema: "execution_latest_comparison/1", receipt_id: 91,
+        receipt_sha256: `sha256:${"a".repeat(64)}`,
+        before_snapshot_id: 1, after_snapshot_id: 4,
+        cutover_gate: comparison.cutover_gate,
+      },
+      comparison_receipts: [{
+        id: 91, execution_id: 41, before_snapshot_id: 1, after_snapshot_id: 4,
+        receipt_sha256: `sha256:${"a".repeat(64)}`, cutover_verdict: "PASS",
+        created_at: "2026-08-20T01:00:00Z",
+        receipt: {
+          schema: "execution_comparison_receipt/1",
+          before_snapshot_id: 1, after_snapshot_id: 4,
+          comparison, receipt_sha256: `sha256:${"a".repeat(64)}`,
+        },
+      }],
+    };
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([{
+      id: 41, snapshot_id: 1, label: "Cutover run 1", status: "in_progress",
+      started_at: "2026-08-20T00:00:00Z", ended_at: null, comparison_required: true,
+    }] as never);
+    vi.spyOn(api, "getExecution").mockResolvedValue(initialExecution as never);
+    const getCampaign = vi.spyOn(api, "getCampaign").mockResolvedValue({
+      id: 73, name: "DC East", description: "", created_at: "2026-08-19T00:00:00Z",
+      snapshots: [
+        { id: 1, campaign_id: 73, label: "Baseline" },
+        { id: 2, campaign_id: 73, label: "Trial pre" },
+        { id: 3, campaign_id: 73, label: "Trial post" },
+        { id: 4, campaign_id: 73, label: "Recovery" },
+      ],
+    } as never);
+    const compare = vi.spyOn(api, "compareExecution").mockResolvedValue(updatedExecution as never);
+    renderPlanner();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open post-change evidence for Cutover run 1" }));
+    expect(await screen.findByTestId("cutover-execution-gate-missing-41")).toHaveTextContent("NOT VERIFIED");
+    expect(getCampaign).toHaveBeenCalledWith(73);
+    const after = screen.getByLabelText("After snapshot for Cutover run 1");
+    expect(within(after).queryByRole("option", { name: /Baseline/ })).toBeNull();
+    expect(within(after).getByRole("option", { name: /Recovery · snapshot 4/ })).toBeInTheDocument();
+    fireEvent.change(after, { target: { value: "4" } });
+    const intent = {
+      expected_changes: [{
+        family: "fhrp_redundancy_domain", transitions: ["intent_changed"],
+        subjects: [], reason: "planned active role move",
+      }],
+      note: "CAB-1234",
+    };
+    fireEvent.change(screen.getByLabelText("Expected family changes for Cutover run 1"), {
+      target: { value: JSON.stringify(intent) },
+    });
+    fireEvent.click(screen.getByLabelText("cutover-planner-41 include observed local L2 trial"));
+    fireEvent.change(screen.getByLabelText("cutover-planner-41 pre-failure snapshot"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("cutover-planner-41 post-failure snapshot"), {
+      target: { value: "3" },
+    });
+    const witness = '{"schema":"l2_failure_witness/1","subject":"dist1|Po10"}';
+    fireEvent.change(screen.getByLabelText("cutover-planner-41 failure witness JSON"), {
+      target: { files: [new File([witness], "planner-trial.json", { type: "application/json" })] },
+    });
+    expect(await screen.findByText("Witness loaded: planner-trial.json")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Bind and compare Cutover run 1" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(41, 4, intent, {
+      pre_failure_snapshot_id: 2,
+      post_failure_snapshot_id: 3,
+      witness_json_base64: btoa(witness),
+    }));
+    expect(await screen.findByTestId("canonical-cutover-verdict")).toHaveTextContent("PASS");
+    expect(screen.getByTestId("canonical-cutover-operator-note")).toHaveTextContent(
+      "Overall before/after cutover decision: PASS.",
+    );
+    expect(screen.getByText(/appended as an immutable canonical comparison receipt/i)).toBeInTheDocument();
+    expect(screen.getByTestId("cutover-execution-evidence-41")).toHaveTextContent(
+      /1 immutable comparison receipt.*latest receipt 91/i,
+    );
+  });
+
+  it("keeps a legacy planner execution read-only with no comparison backfill control", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([{
+      id: 43, snapshot_id: 1, label: "Legacy run", status: "completed",
+      started_at: "2026-08-19T01:00:00Z", ended_at: "2026-08-19T02:00:00Z",
+    }] as never);
+    vi.spyOn(api, "getExecution").mockResolvedValue({
+      id: 43, snapshot_id: 1, label: "Legacy run", status: "completed",
+      comparison_receipts: [],
+    } as never);
+    const getCampaign = vi.spyOn(api, "getCampaign");
+    const compare = vi.spyOn(api, "compareExecution");
+    renderPlanner();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open post-change evidence for Legacy run" }));
+    expect(await screen.findByTestId("cutover-execution-legacy-43")).toHaveTextContent(
+      /cannot be reinterpreted or backfilled/i,
+    );
+    expect(screen.queryByLabelText("After snapshot for Legacy run")).toBeNull();
+    expect(getCampaign).not.toHaveBeenCalled();
+    expect(compare).not.toHaveBeenCalled();
   });
 
   it("flips aria-expanded on the wave's run-of-show toggle as it opens/closes", async () => {

@@ -1,7 +1,22 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, bandColor, gateColor } from "../api";
-import type { GateRecord, SnapshotVerification } from "../api";
+import type {
+  CampaignTrendResponse,
+  CompareResponse,
+  CutoverChangeIntentInput,
+  CurrentBaselineGate,
+  GateRecord,
+  ProtocolAdjacencyDelta,
+  SnapshotVerification,
+} from "../api";
+import ComparisonDecision from "../components/ComparisonDecision";
+import ObservedL2TrialInput, {
+  EMPTY_OBSERVED_L2_TRIAL,
+  observedL2TrialIsReading,
+  observedL2TrialRequest,
+} from "../components/ObservedL2TrialInput";
+import type { ObservedL2TrialDraft } from "../components/ObservedL2TrialInput";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
 import {
   normalizedVerification,
@@ -154,36 +169,6 @@ export const VERDICT_COLOR: Record<string, string> = {
   CLEAN: "var(--ok)", REVIEW: "var(--watch)", REGRESSED: "var(--crit)", INDETERMINATE: "var(--text-faint)",
 };
 
-type CurrentBaselineBlocker = {
-  device?: string;
-  wave?: string;
-  category?: string;
-  severity?: string;
-  check?: string;
-  evidence_state?: string;
-  expect?: string;
-  projection_custody?: string;
-  source_key?: string;
-};
-
-type CurrentBaselineGate = {
-  schema?: string;
-  verdict?: "BLOCKED" | "INDETERMINATE" | "CLEAR" | "NOT_ASSESSED" | string;
-  assessed?: boolean;
-  note?: string;
-  summary?: {
-    n_items?: number;
-    n_blockers?: number;
-    n_blockers_returned?: number;
-    blockers_capped?: boolean;
-    by_state?: Partial<Record<"degraded" | "review" | "not_verified", number>>;
-    by_wave?: Record<string, number>;
-  };
-  blockers?: CurrentBaselineBlocker[];
-  integrity?: { valid?: boolean; failures?: string[] };
-  limitations?: string[];
-};
-
 const CURRENT_BASELINE_COLOR: Record<string, string> = {
   BLOCKED: "var(--crit)",
   INDETERMINATE: "var(--watch)",
@@ -191,24 +176,146 @@ const CURRENT_BASELINE_COLOR: Record<string, string> = {
   CLEAR: "var(--ok)",
 };
 
+const TREND_PAIR_RENDER_CAP = 3;
+const CANONICAL_GATE_COLOR: Record<string, string> = {
+  PASS: "var(--ok)",
+  CONDITIONAL: "var(--watch)",
+  REVIEW: "var(--watch)",
+  INDETERMINATE: "var(--text-faint)",
+  FAIL: "var(--crit)",
+  REGRESSED: "var(--crit)",
+};
+
+function downloadTrendJson(value: CampaignTrendResponse, campaignId: number) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+  const makeUrl = typeof URL.createObjectURL === "function";
+  const href = makeUrl
+    ? URL.createObjectURL(blob)
+    : `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(value, null, 2))}`;
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = `atlas-campaign-${campaignId}-trend-receipts.json`;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  if (makeUrl) URL.revokeObjectURL(href);
+}
+
+function TrendCanonicalReceipts({ value, campaignId }: {
+  value: CampaignTrendResponse;
+  campaignId: number;
+}) {
+  const rows = Array.isArray(value.adjacent_comparisons) ? value.adjacent_comparisons : [];
+  const status = value.adjacent_comparison_status;
+  const rendered = rows.slice(0, TREND_PAIR_RENDER_CAP);
+  const produced = rows.length;
+  const omitted = Math.max(0, produced - rendered.length);
+  const expected = Math.max(produced, status?.n_pairs_total ?? 0);
+  const statusText = (status?.status || "not_verified").replaceAll("_", " ").toUpperCase();
+  const statusColor = status?.status === "verified"
+    ? "var(--ok)"
+    : status?.status === "not_comparable"
+      ? "var(--crit)"
+      : "var(--text-faint)";
+
+  return (
+    <section aria-label="Adjacent canonical cutover receipts" data-testid="trend-canonical-receipts"
+      style={{ border: "1px solid var(--border-faint)", borderRadius: 9, padding: 10, marginBottom: 12 }}>
+      <div className="spread" style={{ gap: 8, marginBottom: 7 }}>
+        <div>
+          <b>Adjacent canonical cutover receipts</b>
+          <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+            Server-owned cutover_gate/1 decisions from each persisted Cn → Cn+1 source pair
+          </div>
+        </div>
+        <div className="row-flex" style={{ gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span className="chip" data-testid="trend-receipt-status"
+            style={{ color: statusColor, borderColor: statusColor }}>{statusText}</span>
+          <button type="button" className="btn ghost" data-testid="trend-json-export"
+            onClick={() => downloadTrendJson(value, campaignId)} style={{ fontSize: 10.5, padding: "4px 8px" }}>
+            Export Trend JSON
+          </button>
+        </div>
+      </div>
+      <div className="dim" data-testid="trend-receipt-note" style={{ fontSize: 11.5, marginBottom: rows.length ? 7 : 0 }}>
+        {status?.note || "No canonical adjacent comparison status was published. Trend cutover receipt coverage is not verified."}
+      </div>
+      {rendered.map((entry) => {
+        const gate = entry.comparison.cutover_gate;
+        const receipt = entry.comparison.comparison_receipt;
+        const admission = entry.comparison.comparison_admission;
+        const gateVerdict = gate?.verdict || "NOT VERIFIED";
+        const gateTone = CANONICAL_GATE_COLOR[gateVerdict] || "var(--text-faint)";
+        return (
+          <details key={`${entry.index}|${entry.before_snapshot_id}|${entry.after_snapshot_id}`}
+            data-testid="trend-adjacent-comparison"
+            style={{ borderTop: "1px solid var(--border-faint)", padding: "7px 0" }}>
+            <summary style={{ cursor: "pointer" }}>
+              <span className="mono">{entry.from} → {entry.to}</span>{" "}
+              <b>{entry.before_label} → {entry.after_label}</b>{" "}
+              <span className="chip" data-testid="trend-adjacent-gate"
+                style={{ color: gateTone, borderColor: gateTone }}>{gateVerdict}</span>
+            </summary>
+            <div className="faint mono" data-testid="trend-adjacent-receipt"
+              style={{ fontSize: 10, margin: "6px 0", overflowWrap: "anywhere" }}>
+              Snapshots {entry.before_snapshot_id} → {entry.after_snapshot_id} · admission {admission?.status || "not verified"}<br />
+              Receipt: {receipt?.receipt_sha256 || "not published"}
+            </div>
+            {gate?.l2_rehearsal_status && (
+              <div className="dim" data-testid="trend-adjacent-l2-gate-basis"
+                style={{ fontSize: 11, margin: "6px 0", overflowWrap: "anywhere" }}>
+                <b>L2 gate basis · {gate.l2_rehearsal_status.replaceAll("_", " ").toUpperCase()}:</b>{" "}
+                {gate.l2_rehearsal_note || "The canonical gate did not publish an L2 rehearsal basis."}
+                <br />Applicable families: {(gate.l2_rehearsal_applicable_families || []).join(", ") || "none"}
+                {" · "}{gate.l2_rehearsal_current_faults || 0} current fault(s)
+                {" · "}{gate.l2_rehearsal_projected_risks || 0} projected risk(s)
+                {" · "}{gate.l2_rehearsal_not_verified || 0} not verified
+              </div>
+            )}
+            <ComparisonDecision value={entry.comparison}
+              exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}-comparison.json`} />
+          </details>
+        );
+      })}
+      <div className="faint" data-testid="trend-cap-disclosure" style={{ fontSize: 10.5, marginTop: 7 }}>
+        Rendered: {rendered.length} · Total produced: {produced} · Omitted from view: {omitted} · Expected pairs: {expected} · Receipt set complete: {status?.complete === true ? "YES" : "NO"}. Trend JSON export contains every produced receipt; unproduced expected pairs remain NOT VERIFIED.
+      </div>
+    </section>
+  );
+}
+
 function currentBaselineVerdict(value?: CurrentBaselineGate | null) {
   return value && typeof value.verdict === "string" && value.verdict ? value.verdict : "NOT_ASSESSED";
 }
 
-function compareDeltaColor(verdict: string, current?: CurrentBaselineGate | null) {
-  // CLEAN is only a before→after claim. Without a producer-owned CLEAR current-state gate, painting
-  // it green lets an unchanged EXSTART/Idle baseline masquerade as cutover acceptance.
-  if (verdict === "CLEAN" && currentBaselineVerdict(current) !== "CLEAR") return "var(--text-faint)";
+function supportingDeltaColor(verdict: string) {
+  // The legacy before→after delta is supporting evidence beneath the canonical cutover gate. CLEAN
+  // therefore stays neutral on its own terms; presentation never combines it with another receipt
+  // to synthesize a stronger green state.
+  if (verdict === "CLEAN") return "var(--text-faint)";
   return VERDICT_COLOR[verdict] || "var(--text-dim)";
 }
 
-function CurrentBaselineGatePanel({ value }: { value?: CurrentBaselineGate | null }) {
+type CurrentBaselineExport = NonNullable<
+  NonNullable<CompareResponse["operator_evidence"]>["current_baseline_blocker_export"]
+>;
+
+function CurrentBaselineGatePanel({ value, completeExport }: {
+  value?: CurrentBaselineGate | null;
+  completeExport?: CurrentBaselineExport | null;
+}) {
   const verdict = currentBaselineVerdict(value);
   const color = CURRENT_BASELINE_COLOR[verdict] || "var(--text-dim)";
   const summary = value?.summary || {};
   const byState = summary.by_state || {};
   const blockers = Array.isArray(value?.blockers) ? value!.blockers! : [];
   const integrityFailures = Array.isArray(value?.integrity?.failures) ? value!.integrity!.failures! : [];
+  const rendered = typeof summary.n_blockers_returned === "number"
+    ? summary.n_blockers_returned
+    : blockers.length;
+  const total = typeof summary.n_blockers === "number" ? summary.n_blockers : rendered;
+  const omitted = Math.max(0, total - rendered);
   return (
     <section aria-label="Current baseline gate" data-testid="compare-current-baseline"
       style={{ border: `1px solid ${color}`, borderRadius: 9, marginBottom: 12, overflow: "hidden" }}>
@@ -266,26 +373,16 @@ function CurrentBaselineGatePanel({ value }: { value?: CurrentBaselineGate | nul
           </div>
         );
       })}
-      {summary.blockers_capped && (
-        <div className="faint" style={{ fontSize: 10.5, padding: "7px 11px" }}>
-          {summary.n_blockers_returned ?? blockers.length} of {summary.n_blockers ?? "all"} blocker rows were returned; inspect the full Validation-plan deliverable.
-        </div>
-      )}
+      <div className="faint" data-testid="current-baseline-cap-disclosure"
+        style={{ fontSize: 10.5, padding: "7px 11px" }}>
+        Rendered: {rendered} · Total: {total} · Omitted: {omitted}.{" "}
+        {completeExport?.status === "available" && completeExport.summary.complete
+          ? `Complete comparison JSON contains ${completeExport.summary.n_rows_returned} of ${completeExport.summary.n_blockers_total} blocker rows (omitted ${completeExport.summary.omitted}).`
+          : "Complete blocker export is NOT VERIFIED; do not infer omitted rows are clear."}
+      </div>
     </section>
   );
 }
-
-type ProtocolAdjacencyDelta = {
-  gate?: "PASS" | "REVIEW" | "REGRESSED" | "NOT_ASSESSED" | string;
-  assessed?: boolean;
-  projection_custody?: string;
-  summary?: Partial<Record<
-    "n_baseline_peers" | "n_scoped_cells" | "n_comparable_cells" | "n_preserved" |
-    "n_state_regressed" | "n_recovered" | "n_no_longer_observed" | "n_added" | "n_coverage_gaps",
-    number
-  >>;
-  note?: string;
-};
 
 const PROTOCOL_GATE_COLOR: Record<string, string> = {
   PASS: "var(--ok)",
@@ -377,8 +474,17 @@ function Trend({ id }: { id: number }) {
     );
   }
   if (loading || !data) return null;
-  const baselineVerdict = currentBaselineVerdict(data.current_baseline);
-  const trendColor = data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
+  const adjacentRows = Array.isArray(data.adjacent_comparisons)
+    ? data.adjacent_comparisons
+    : [];
+  const latestAdjacent = adjacentRows.length
+    ? adjacentRows[adjacentRows.length - 1]
+    : undefined;
+  const finalBaselineExport = latestAdjacent?.comparison.operator_evidence
+    ?.current_baseline_blocker_export;
+  // Aggregate direction is supporting evidence, not a decision. Keep a favorable direction neutral
+  // without combining it with the final current-baseline receipt; adjacent cutover gates own decisions.
+  const trendColor = data.verdict === "IMPROVING"
     ? "var(--text-faint)"
     : (VERDICT_COLOR[data.verdict] || "var(--text-dim)");
   if (data.verdict === "INSUFFICIENT") {
@@ -386,7 +492,9 @@ function Trend({ id }: { id: number }) {
       <div className="panel">
         <h3>Campaign trajectory</h3>
         <div className="dim" style={{ fontSize: 13, marginBottom: 12 }}>{data.verdict_note}</div>
-        <CurrentBaselineGatePanel value={data.current_baseline} />
+        <TrendCanonicalReceipts value={data} campaignId={id} />
+        <CurrentBaselineGatePanel value={data.current_baseline}
+          completeExport={finalBaselineExport} />
       </div>
     );
   }
@@ -395,14 +503,16 @@ function Trend({ id }: { id: number }) {
       <div className="spread" style={{ marginBottom: 14 }}>
         <h3 style={{ margin: 0 }}>Campaign trajectory</h3>
         <span className="chip" data-testid="trend-verdict" style={{ color: trendColor, borderColor: trendColor }}
-          title={data.verdict === "IMPROVING" && baselineVerdict !== "CLEAR"
-            ? "Trend improved, but the final snapshot current-baseline gate is not CLEAR"
+          title={data.verdict === "IMPROVING"
+            ? "Improving trajectory is supporting evidence; adjacent canonical cutover gates remain authoritative"
             : undefined}>
           <span className="dot" /> {data.verdict}
         </span>
       </div>
       <div className="dim" style={{ fontSize: 13, marginBottom: 14 }}>{data.verdict_note}</div>
-      <CurrentBaselineGatePanel value={data.current_baseline} />
+      <TrendCanonicalReceipts value={data} campaignId={id} />
+      <CurrentBaselineGatePanel value={data.current_baseline}
+        completeExport={finalBaselineExport} />
       <ProtocolAdjacencyGate value={data.protocol_adjacencies} />
       <div className="grid cols-3">
         {data.trajectory.map((t: any) => (
@@ -438,8 +548,28 @@ export default function CampaignPage() {
   const [folderIngesting, setFolderIngesting] = useState(false);
   const [cmpA, setCmpA] = useState<number | "">("");
   const [cmpB, setCmpB] = useState<number | "">("");
-  const [cmp, setCmp] = useState<any>(null);
+  const [changeIntentText, setChangeIntentText] = useState("");
+  const [observedL2Trial, setObservedL2Trial] = useState<ObservedL2TrialDraft>(
+    EMPTY_OBSERVED_L2_TRIAL,
+  );
+  const [cmp, setCmp] = useState<CompareResponse | null>(null);
   const [cmpErr, setCmpErr] = useState<string | null>(null);
+  const [cmpBusy, setCmpBusy] = useState(false);
+  const [cmpContext, setCmpContext] = useState<{
+    before: number;
+    recovery: number;
+    preFailure?: number;
+    postFailure?: number;
+  } | null>(null);
+  const cmpRequestRef = useRef(0);
+
+  function invalidateComparison() {
+    cmpRequestRef.current += 1;
+    setCmp(null);
+    setCmpContext(null);
+    setCmpErr(null);
+    setCmpBusy(false);
+  }
 
   async function upload() {
     const f = fileRef.current?.files?.[0];
@@ -486,9 +616,57 @@ export default function CampaignPage() {
     // newly-selected pair — the reader attributes an old CLEAN/REGRESSED to snapshots it was never
     // computed from. Drop the stale result first and say the run failed where the result would be.
     setCmp(null);
+    setCmpContext(null);
     setCmpErr(null);
-    try { setCmp(await api.compare(Number(cmpA), Number(cmpB))); }
-    catch (e: any) { setCmpErr(e.message || String(e)); toast(e.message); }
+    let changeIntent: CutoverChangeIntentInput | undefined;
+    if (changeIntentText.trim()) {
+      try {
+        const parsed = JSON.parse(changeIntentText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Expected-change intent must be a JSON object.");
+        }
+        changeIntent = parsed as CutoverChangeIntentInput;
+      } catch (e: any) {
+        const message = e?.message || String(e);
+        setCmpErr(`Expected-change intent is not valid JSON: ${message}`);
+        toast("Fix the expected-change intent before comparing.");
+        return;
+      }
+    }
+    const observed = observedL2TrialRequest(observedL2Trial, cmpA, cmpB);
+    if (observed.error) {
+      setCmpErr(observed.error);
+      toast("Fix the observed local L2 trial before comparing.");
+      return;
+    }
+    const requestId = ++cmpRequestRef.current;
+    const submitted = {
+      before: Number(cmpA),
+      recovery: Number(cmpB),
+      ...(observed.input ? {
+        preFailure: observed.input.pre_failure_snapshot_id,
+        postFailure: observed.input.post_failure_snapshot_id,
+      } : {}),
+    };
+    setCmpBusy(true);
+    try {
+      const response = observed.input
+        ? await api.compare(Number(cmpA), Number(cmpB), changeIntent, observed.input)
+        : changeIntent
+          ? await api.compare(Number(cmpA), Number(cmpB), changeIntent)
+          : await api.compare(Number(cmpA), Number(cmpB));
+      if (requestId !== cmpRequestRef.current) return;
+      setCmp(response);
+      setCmpContext(submitted);
+      setObservedL2Trial({ ...EMPTY_OBSERVED_L2_TRIAL });
+    }
+    catch (e: any) {
+      if (requestId !== cmpRequestRef.current) return;
+      setCmpErr(e.message || String(e));
+      toast(e.message);
+    } finally {
+      if (requestId === cmpRequestRef.current) setCmpBusy(false);
+    }
   }
   async function delCampaign() {
     if (!confirm("Delete this campaign and all its snapshots?")) return;
@@ -608,17 +786,54 @@ export default function CampaignPage() {
                     /api/compare with old_id 0, getting back the server's "One or both snapshots not
                     found" 404 instead of the local "Pick two different snapshots." prompt. Keep ""
                     as "" so the unselected state stays distinguishable from a real id. */}
-                <select value={cmpA} onChange={(e) => setCmpA(e.target.value === "" ? "" : Number(e.target.value))}>
+                <select value={cmpA} onChange={(e) => {
+                  invalidateComparison();
+                  setCmpA(e.target.value === "" ? "" : Number(e.target.value));
+                }}>
                   <option value="">from…</option>
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
                 <span className="faint">→</span>
-                <select value={cmpB} onChange={(e) => setCmpB(e.target.value === "" ? "" : Number(e.target.value))}>
+                <select value={cmpB} onChange={(e) => {
+                  invalidateComparison();
+                  setCmpB(e.target.value === "" ? "" : Number(e.target.value));
+                }}>
                   <option value="">to…</option>
                   {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
-              <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}>Compare</button>
+              <details style={{ marginTop: 9 }}>
+                <summary className="faint" style={{ cursor: "pointer", fontSize: 11.5 }}>
+                  Expected family changes (optional, source-bound JSON)
+                </summary>
+                <div className="faint" style={{ fontSize: 10.5, margin: "6px 0" }}>
+                  Supply <span className="mono">expected_changes</span> with family, transition,
+                  optional subjects, and reason. A VTP reset additionally requires exact subjects and
+                  <span className="mono"> intent_kind: revision_reset</span>. Evidence loss or incompatibility can never be authorized.
+                </div>
+                <textarea aria-label="Expected family changes JSON" value={changeIntentText}
+                  onChange={(event) => {
+                    invalidateComparison();
+                    setChangeIntentText(event.target.value);
+                  }} rows={5}
+                  placeholder={'{"expected_changes":[{"family":"vtp_safety","transitions":["intent_changed"],"subjects":["dist-1"],"intent_kind":"revision_reset","reason":"planned revision reset"}],"note":"CAB-1234"}'}
+                  style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 11 }} />
+              </details>
+              <ObservedL2TrialInput
+                idPrefix="campaign-compare"
+                draft={observedL2Trial}
+                onChange={(value) => {
+                  invalidateComparison();
+                  setObservedL2Trial(value);
+                }}
+                snapshots={snaps}
+                beforeSnapshotId={cmpA}
+                recoverySnapshotId={cmpB}
+              />
+              <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}
+                disabled={observedL2TrialIsReading(observedL2Trial)}>
+                {cmpBusy ? "Comparing…" : "Compare"}
+              </button>
               {cmpErr && (
                 <div style={{ marginTop: 12 }}>
                   <ErrorBox msg={cmpErr} />
@@ -629,11 +844,27 @@ export default function CampaignPage() {
               )}
               {cmp && (
                 <div style={{ marginTop: 14, fontSize: 13 }}>
-                  <CurrentBaselineGatePanel value={cmp.current_baseline} />
+                  <ComparisonDecision
+                    value={cmp}
+                    currentBaseline={<CurrentBaselineGatePanel
+                      value={cmp.current_baseline}
+                      completeExport={cmp.operator_evidence?.current_baseline_blocker_export}
+                    />}
+                    exportFilename={`campaign-${cid}-snapshots-${cmpContext?.before ?? "unknown"}-${cmpContext?.recovery ?? "unknown"}-comparison.json`}
+                  />
+                  {cmpContext && (
+                    <div className="faint mono" data-testid="comparison-submitted-context"
+                      style={{ fontSize: 10.5, marginBottom: 8 }}>
+                      Submitted source roles: before {cmpContext.before} · recovery/new {cmpContext.recovery}
+                      {cmpContext.preFailure !== undefined
+                        ? ` · pre-failure ${cmpContext.preFailure} · post-failure ${cmpContext.postFailure}`
+                        : " · no observed local L2 trial"}
+                    </div>
+                  )}
                   <div className="row-flex" style={{ marginBottom: 8 }}>
                     <span className="faint" style={{ fontSize: 11 }}>Before→after change result:</span>
                     <span className="chip" data-testid="compare-delta-verdict"
-                      style={{ color: compareDeltaColor(cmp.verdict, cmp.current_baseline) }}>
+                      style={{ color: supportingDeltaColor(cmp.verdict) }}>
                       <span className="dot" /> {cmp.verdict_display || cmp.verdict}
                     </span>
                   </div>

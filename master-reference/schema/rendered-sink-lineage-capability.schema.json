@@ -15,15 +15,15 @@
       "required": ["kind", "expected_candidates", "in_scope_candidates", "out_of_scope_candidates", "independently_reviewed", "unresolved", "claim_contract_digest", "classification_digest", "source_receipts_digest", "candidate_set_digest"],
       "properties": {
         "kind": {"const": "bounded_curated_content_claim_denominator"},
-        "expected_candidates": {"const": 2136},
-        "in_scope_candidates": {"const": 422},
+        "expected_candidates": {"const": 2140},
+        "in_scope_candidates": {"const": 426},
         "out_of_scope_candidates": {"const": 1714},
         "independently_reviewed": {"const": 0},
-        "unresolved": {"const": 2136},
-        "claim_contract_digest": {"const": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d"},
-        "classification_digest": {"const": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df"},
-        "source_receipts_digest": {"const": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689"},
-        "candidate_set_digest": {"const": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"}
+        "unresolved": {"const": 2140},
+        "claim_contract_digest": {"const": "cf123369749c14ef140a9eb906b63f7183e93fd45a943a25087f5411a17399b6"},
+        "classification_digest": {"const": "594013cefc9f293cb6b224e6f869014e6015dd6f23a4ff708899afbb44c1f19c"},
+        "source_receipts_digest": {"const": "aad6fbb1305ccaddea2b5257cbfa5704ba1548a1855c97bcbaa144ed6d8ecb30"},
+        "candidate_set_digest": {"const": "ed4bb19838118841b5f5cc3a3d7348ee9763d11e8f4ad4f610c5e3853a1f0d31"}
       }
     },
     "source_scope": {
@@ -32,13 +32,13 @@
       "required": ["path", "git_blob_oid", "sha256", "expected_records", "expected_candidates", "expected_safety_inputs", "candidate_digest", "facet_id_set_digest", "candidate_rules", "safety_rules"],
       "properties": {
         "path": {"const": "master-reference/content/capability-catalog.json"},
-        "git_blob_oid": {"const": "19312d959afd79e0ae91330f6b864e0bcfba0456"},
-        "sha256": {"const": "f4c4c5eb652d2ceb6ac60eca299a1a533334034a2d2551910fbbc364ba5c14ef"},
-        "expected_records": {"const": 225},
-        "expected_candidates": {"const": 422},
+        "git_blob_oid": {"const": "bbd5fc3f6ff524299a580bce0925e27b85597f0f"},
+        "sha256": {"const": "b62290c58b7427dd96a38206715bef4cd65a4847c7442112ddd678c573c8774e"},
+        "expected_records": {"const": 227},
+        "expected_candidates": {"const": 426},
         "expected_safety_inputs": {"const": 7},
-        "candidate_digest": {"const": "b92ac8c92f0564c7dd542ffde283633bc8d6e3e5a43aaa77cfef50f65720b18a"},
-        "facet_id_set_digest": {"const": "36d5775d6b2e4c54abfbcb9030b040bab825c221f880d26139690c0cafe4d62f"},
+        "candidate_digest": {"const": "69c1b86c5ca41aca8b6f332e604448e024f3339a4f486b36a1ed4679025cd9ed"},
+        "facet_id_set_digest": {"const": "33488e2d456d874f0d80059e94fc196a0bb927e11deef58a7e274485f91d1f89"},
         "candidate_rules": {
           "type": "array",
           "minItems": 4,
@@ -47,7 +47,7 @@
             {"allOf": [{"$ref": "#/$defs/candidateRule"}, {"properties": {"rule_id": {"const": "capability.root"}, "record_kind": {"const": "capability_catalog"}, "selector": {"const": "root"}, "identity": {"const": "root"}, "expected_records": {"const": 1}, "candidate_fields": {"const": []}}}]},
             {"allOf": [{"$ref": "#/$defs/candidateRule"}, {"properties": {"rule_id": {"const": "capability.entry_contract"}, "record_kind": {"const": "capability_entry_contract"}, "selector": {"const": "entry_contract"}, "identity": {"const": "root"}, "expected_records": {"const": 1}, "candidate_fields": {"const": []}}}]},
             {"allOf": [{"$ref": "#/$defs/candidateRule"}, {"properties": {"rule_id": {"const": "capability.domain"}, "record_kind": {"const": "capability_domain"}, "selector": {"const": "domains"}, "identity": {"const": "id"}, "expected_records": {"const": 12}, "candidate_fields": {"const": []}}}]},
-            {"allOf": [{"$ref": "#/$defs/candidateRule"}, {"properties": {"rule_id": {"const": "capability.entry"}, "record_kind": {"const": "capability_entry"}, "selector": {"const": "entries"}, "identity": {"const": "id"}, "expected_records": {"const": 211}, "candidate_fields": {"const": ["state", "current_scope"]}}}]}
+            {"allOf": [{"$ref": "#/$defs/candidateRule"}, {"properties": {"rule_id": {"const": "capability.entry"}, "record_kind": {"const": "capability_entry"}, "selector": {"const": "entries"}, "identity": {"const": "id"}, "expected_records": {"const": 213}, "candidate_fields": {"const": ["state", "current_scope"]}}}]}
           ],
           "items": false
         },
@@ -79,8 +79,8 @@
       "minItems": 2,
       "maxItems": 2,
       "prefixItems": [
-        {"allOf": [{"$ref": "#/$defs/sink"}, {"properties": {"sink_id": {"const": "pdf.capability-catalog"}, "kind": {"const": "output.pdf"}, "locator": {"const": "master-reference.pdf#closed-capability-catalog"}, "renderer_path": {"const": "master-reference/release/pdf_report.py"}, "renderer_symbol": {"const": "_capabilities"}, "rendered_rules": {"const": [{"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.state", "transform_id": "pdf.capability_heading_state/1"}, {"facet_path": "current_scope", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "pdf.capability_scope_plain_text/1"}], "expected_subjects": 422}]}, "omission_rules": {"const": []}, "safety_mappings": {"const": [{"rule_id": "capability.root", "fields": [{"field": "denominator_rule", "slot_template": "pdf.capabilities.capability.root.@root.denominator_rule", "transform_id": "pdf.capability_support_contract/1"}], "expected_inputs": 1}, {"rule_id": "capability.entry_contract", "fields": [{"field": "current", "slot_template": "pdf.capabilities.capability.entry_contract.@root.current", "transform_id": "pdf.capability_support_contract/1"}, {"field": "partial", "slot_template": "pdf.capabilities.capability.entry_contract.@root.partial", "transform_id": "pdf.capability_support_contract/1"}, {"field": "incomplete", "slot_template": "pdf.capabilities.capability.entry_contract.@root.incomplete", "transform_id": "pdf.capability_support_contract/1"}, {"field": "catalog_presence", "slot_template": "pdf.capabilities.capability.entry_contract.@root.catalog_presence", "transform_id": "pdf.capability_support_contract/1"}], "expected_inputs": 4}, {"rule_id": "capability.entry", "fields": [{"field": "content_role", "slot_template": "pdf.capabilities.capability.entry.cap.engine.training-curriculum.content_role", "transform_id": "pdf.capability_entry_boundary/1"}, {"field": "mutates_assessment_truth", "slot_template": "pdf.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth", "transform_id": "pdf.capability_entry_boundary/1"}], "expected_inputs": 2}]} }}]},
-        {"allOf": [{"$ref": "#/$defs/sink"}, {"properties": {"sink_id": {"const": "web.capabilities.default"}, "kind": {"const": "private_web_route"}, "locator": {"const": "/capabilities"}, "renderer_path": {"const": "master-reference/app/atlas/CapabilityExplorer.tsx"}, "renderer_symbol": {"const": "CapabilityExplorer"}, "rendered_rules": {"const": [{"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_derived", "slot_template": "web.capabilities.capability.entry.{record_identity}.state", "transform_id": "state-mark-label"}, {"facet_path": "current_scope", "disposition": "rendered_identity", "slot_template": "web.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "identity-text"}], "expected_subjects": 422}]}, "omission_rules": {"const": []}, "safety_mappings": {"const": [{"rule_id": "capability.root", "fields": [{"field": "denominator_rule", "slot_template": "web.capabilities.capability.root.@root.denominator_rule", "transform_id": "visible-source-contract-text"}], "expected_inputs": 1}, {"rule_id": "capability.entry_contract", "fields": [{"field": "current", "slot_template": "web.capabilities.capability.entry_contract.@root.current", "transform_id": "visible-source-contract-text"}, {"field": "partial", "slot_template": "web.capabilities.capability.entry_contract.@root.partial", "transform_id": "visible-source-contract-text"}, {"field": "incomplete", "slot_template": "web.capabilities.capability.entry_contract.@root.incomplete", "transform_id": "visible-source-contract-text"}, {"field": "catalog_presence", "slot_template": "web.capabilities.capability.entry_contract.@root.catalog_presence", "transform_id": "visible-source-contract-text"}], "expected_inputs": 4}, {"rule_id": "capability.entry", "fields": [{"field": "content_role", "slot_template": "web.capabilities.capability.entry.cap.engine.training-curriculum.content_role", "transform_id": "visible-source-contract-text"}, {"field": "mutates_assessment_truth", "slot_template": "web.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth", "transform_id": "visible-source-contract-text"}], "expected_inputs": 2}]} }}]}
+        {"allOf": [{"$ref": "#/$defs/sink"}, {"properties": {"sink_id": {"const": "pdf.capability-catalog"}, "kind": {"const": "output.pdf"}, "locator": {"const": "master-reference.pdf#closed-capability-catalog"}, "renderer_path": {"const": "master-reference/release/pdf_report.py"}, "renderer_symbol": {"const": "_capabilities"}, "rendered_rules": {"const": [{"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.state", "transform_id": "pdf.capability_heading_state/1"}, {"facet_path": "current_scope", "disposition": "rendered_labeled", "slot_template": "pdf.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "pdf.capability_scope_plain_text/1"}], "expected_subjects": 426}]}, "omission_rules": {"const": []}, "safety_mappings": {"const": [{"rule_id": "capability.root", "fields": [{"field": "denominator_rule", "slot_template": "pdf.capabilities.capability.root.@root.denominator_rule", "transform_id": "pdf.capability_support_contract/1"}], "expected_inputs": 1}, {"rule_id": "capability.entry_contract", "fields": [{"field": "current", "slot_template": "pdf.capabilities.capability.entry_contract.@root.current", "transform_id": "pdf.capability_support_contract/1"}, {"field": "partial", "slot_template": "pdf.capabilities.capability.entry_contract.@root.partial", "transform_id": "pdf.capability_support_contract/1"}, {"field": "incomplete", "slot_template": "pdf.capabilities.capability.entry_contract.@root.incomplete", "transform_id": "pdf.capability_support_contract/1"}, {"field": "catalog_presence", "slot_template": "pdf.capabilities.capability.entry_contract.@root.catalog_presence", "transform_id": "pdf.capability_support_contract/1"}], "expected_inputs": 4}, {"rule_id": "capability.entry", "fields": [{"field": "content_role", "slot_template": "pdf.capabilities.capability.entry.cap.engine.training-curriculum.content_role", "transform_id": "pdf.capability_entry_boundary/1"}, {"field": "mutates_assessment_truth", "slot_template": "pdf.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth", "transform_id": "pdf.capability_entry_boundary/1"}], "expected_inputs": 2}]} }}]},
+        {"allOf": [{"$ref": "#/$defs/sink"}, {"properties": {"sink_id": {"const": "web.capabilities.default"}, "kind": {"const": "private_web_route"}, "locator": {"const": "/capabilities"}, "renderer_path": {"const": "master-reference/app/atlas/CapabilityExplorer.tsx"}, "renderer_symbol": {"const": "CapabilityExplorer"}, "rendered_rules": {"const": [{"rule_id": "capability.entry", "fields": [{"facet_path": "state", "disposition": "rendered_derived", "slot_template": "web.capabilities.capability.entry.{record_identity}.state", "transform_id": "state-mark-label"}, {"facet_path": "current_scope", "disposition": "rendered_identity", "slot_template": "web.capabilities.capability.entry.{record_identity}.current_scope", "transform_id": "identity-text"}], "expected_subjects": 426}]}, "omission_rules": {"const": []}, "safety_mappings": {"const": [{"rule_id": "capability.root", "fields": [{"field": "denominator_rule", "slot_template": "web.capabilities.capability.root.@root.denominator_rule", "transform_id": "visible-source-contract-text"}], "expected_inputs": 1}, {"rule_id": "capability.entry_contract", "fields": [{"field": "current", "slot_template": "web.capabilities.capability.entry_contract.@root.current", "transform_id": "visible-source-contract-text"}, {"field": "partial", "slot_template": "web.capabilities.capability.entry_contract.@root.partial", "transform_id": "visible-source-contract-text"}, {"field": "incomplete", "slot_template": "web.capabilities.capability.entry_contract.@root.incomplete", "transform_id": "visible-source-contract-text"}, {"field": "catalog_presence", "slot_template": "web.capabilities.capability.entry_contract.@root.catalog_presence", "transform_id": "visible-source-contract-text"}], "expected_inputs": 4}, {"rule_id": "capability.entry", "fields": [{"field": "content_role", "slot_template": "web.capabilities.capability.entry.cap.engine.training-curriculum.content_role", "transform_id": "visible-source-contract-text"}, {"field": "mutates_assessment_truth", "slot_template": "web.capabilities.capability.entry.cap.engine.training-curriculum.mutates_assessment_truth", "transform_id": "visible-source-contract-text"}], "expected_inputs": 2}]} }}]}
       ],
       "items": false
     },
@@ -99,7 +99,7 @@
         "record_kind": {"$ref": "#/$defs/token"},
         "selector": {"$ref": "#/$defs/fieldName"},
         "identity": {"enum": ["root", "id"]},
-        "expected_records": {"type": "integer", "minimum": 1, "maximum": 225},
+        "expected_records": {"type": "integer", "minimum": 1, "maximum": 227},
         "candidate_fields": {"type": "array", "minItems": 0, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["state", "current_scope"]}}
       }
     },
@@ -142,7 +142,7 @@
       "properties": {
         "rule_id": {"const": "capability.entry"},
         "fields": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/renderedField"}},
-        "expected_subjects": {"const": 422}
+        "expected_subjects": {"const": 426}
       }
     },
     "safetyField": {
@@ -175,7 +175,7 @@
         "locator": {"$ref": "#/$defs/nonblank"},
         "renderer_path": {"type": "string", "pattern": "^master-reference/[a-zA-Z0-9._/-]+$"},
         "renderer_symbol": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"},
-        "expected_rendered": {"const": 422},
+        "expected_rendered": {"const": 426},
         "expected_omitted": {"const": 0},
         "rendered_rules": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/$defs/renderedRule"}},
         "omission_rules": {"type": "array", "maxItems": 0},

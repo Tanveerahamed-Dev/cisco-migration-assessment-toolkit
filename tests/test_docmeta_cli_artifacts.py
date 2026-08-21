@@ -43,27 +43,27 @@ ENGINE = ROOT / "COLLECT_PARSE_V3_23_0.py"
 # this to (docx|pptx|html) once made the ratchet blind to exactly the case it exists for — a future
 # writer emitting `_board_brief.pdf` would never be mapped, never expected, and permanently outside
 # the completeness check. `-` and the 8-char bound cost NOTHING (measured: all three shapes match
-# the same 9 literals in the engine today) and cover `_board-brief.docx` (Cisco house naming) and
-# `.drawio`/`.graphml`. The leading `_` is what excludes the engine's own sidecars, which are
-# `.`-joined (`.snapshot.json`, `.run_manifest.json`, `.phase_timings.json`) — the length bound
-# does no exclusion work, so widening it is free.
+# the same literals in the engine today) and cover `_board-brief.docx` (Cisco house naming) and
+# `.drawio`/`.graphml`. The leading `_` excludes ordinary engine sidecars, which are `.`-joined;
+# the one operator deliverable deliberately using that spelling is named in the closed explicit set.
 # NOT widened further: a shape tolerating a leading `{}`/`%s` was measured at 23 matches, sweeping
 # in the sidecars, `command_index.json` and 7 `show_*.txt` collection filenames.
 _SUFFIX_SHAPE = re.compile(r"^_[A-Za-z0-9_-]+\.[A-Za-z0-9]{2,8}$")
+_EXPLICIT_DELIVERABLE_SIDECARS = {".protocol-assurance.json"}
 
 
 def test_canonical_registry_accounts_for_each_artifact_lifecycle_without_conflating_pir():
-    """The acceptance denominator: 10 CLI outputs + 2 web-only pre-cutover + conditional PIR."""
+    """The acceptance denominator: 11 CLI outputs + 2 web-only pre-cutover + conditional PIR."""
     meta = artifact_family_metadata()
     assert meta == {
-        "pre_cutover": 12,
-        "engine_cli": 10,
+        "pre_cutover": 13,
+        "engine_cli": 11,
         "assesshub_only_pre_cutover": 2,
         "conditional_post_execution": 1,
     }
-    assert len(ARTIFACT_SPECS) == 13
-    assert len(PRE_CUTOVER_SPECS) == 12
-    assert len(CLI_ARTIFACT_SUFFIX) == 10
+    assert len(ARTIFACT_SPECS) == 14
+    assert len(PRE_CUTOVER_SPECS) == 13
+    assert len(CLI_ARTIFACT_SUFFIX) == 11
     assert WEB_ONLY_KINDS == {"cutover", "nrfu"}
 
     pir = artifact_spec("pir")
@@ -163,7 +163,8 @@ def _suffixes_in(source: str) -> set:
     when the thing changes. Caught by revert-proof; the fix is this single owner."""
     return {n.value for n in ast.walk(ast.parse(source))
             if isinstance(n, ast.Constant) and isinstance(n.value, str)
-            and _SUFFIX_SHAPE.match(n.value)}
+            and (_SUFFIX_SHAPE.match(n.value)
+                 or n.value in _EXPLICIT_DELIVERABLE_SIDECARS)}
 
 
 def test_every_family_kind_is_classified():
@@ -251,9 +252,11 @@ def test_the_detector_does_not_fire_on_sidecars_or_ordinary_strings():
     """The other edge. A ratchet that flags everything gets suppressed, so the shape has to be
     tight enough to leave the engine's own sidecars and normal strings alone."""
     for code in ('p = stem + ".snapshot.json"', 'p = stem + ".run_manifest.json"',
-                 'p = stem + ".phase_timings.json"', 'x = "_internal"', 'x = "collected_at"',
-                 'x = "a.b"', 'x = "_x.toolongextension"'):
+                  'p = stem + ".phase_timings.json"', 'x = "_internal"', 'x = "collected_at"',
+                  'x = "a.b"', 'x = "_x.toolongextension"'):
         assert not _suffixes_in(code), f"detector over-fires on {code!r}"
+    assert _suffixes_in('p = stem + ".protocol-assurance.json"') == {
+        ".protocol-assurance.json"}
 
 
 def test_over_detection_is_currently_zero():

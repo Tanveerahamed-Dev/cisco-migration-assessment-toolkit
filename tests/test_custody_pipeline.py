@@ -1,8 +1,10 @@
 """Focused regressions for exact current-run custody and fail-closed pipeline inputs."""
+import copy
 import hashlib
 from importlib.resources import as_file, files
 import json
 import logging
+import re
 import sys
 from types import SimpleNamespace
 
@@ -56,6 +58,54 @@ def _finalize_ctx(tmp_path):
         wb=wb,
     )
     return ctx
+
+
+def _receipt_finalize_ctx(tmp_path):
+    ctx = _finalize_ctx(tmp_path)
+    ctx.snap_dict = {
+        "script_version": "custody-receipt-test/1",
+        "collected_at": "2026-01-01T00:00:00",
+        "devices": {"sw1": {}},
+        "interfaces": {"sw1": {}},
+    }
+    ctx.protocol_assurance_receipt_enabled = True
+    ctx.protocol_assurance_export_path = str(
+        tmp_path / "Assessment.protocol-assurance.json")
+    ctx.html_output_path = ""
+    ctx.runbook_output_path = ""
+    ctx.mop_output_path = ""
+    ctx.flow_paths = {}
+    return ctx
+
+
+def _receipt_authority(tmp_path):
+    from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+    from webapp.backend.protocol_portfolio import (
+        build_protocol_single_snapshot_bundle,
+        canonical_export_bytes,
+        emitted_snapshot_binding,
+    )
+
+    cp._start_run_custody(str(tmp_path / "Assessment.xlsx"))
+    snapshot_path = tmp_path / "Assessment.snapshot.json"
+    snapshot_bytes = json.dumps({
+        "script_version": "custody-receipt-test/1",
+        "devices": {"sw1": {}},
+    }, separators=(",", ":")).encode("utf-8")
+    snapshot_path.write_bytes(snapshot_bytes)
+    bound = bind_snapshot_json_bytes(snapshot_bytes)
+    binding = emitted_snapshot_binding(bound, label=snapshot_path.name)
+    bundle = build_protocol_single_snapshot_bundle(bound, binding, subject_cap=1)
+    export_path = tmp_path / "Assessment.protocol-assurance.json"
+    export_path.write_bytes(canonical_export_bytes(bundle["complete_export"]))
+    cp._RUN_CUSTODY["snapshot_authority"] = {
+        "source": binding["source"],
+        "name": snapshot_path.name,
+        "sha256": binding["sha256"],
+        "bytes": binding["bytes"],
+    }
+    cp._ACTIVE_INTEGRITY_SNAPSHOT = None
+    return snapshot_path, export_path, binding, bundle
 
 
 def test_manifest_uses_exact_current_run_registry_and_excludes_stale_siblings(tmp_path):
@@ -216,7 +266,7 @@ def test_supplied_invalid_optional_inputs_fail_closed(tmp_path, field, content):
     ["--compare", "old.json", "new.json"],
     ["--trend", "old.json", "new.json"],
 ])
-def test_traffic_intents_refuse_modes_that_do_not_publish_them(monkeypatch, capsys, mode_args):
+def test_traffic_intents_refuse_compare_trend_path_engine_reruns(monkeypatch, capsys, mode_args):
     monkeypatch.setattr(sys, "argv", [
         "cisco-assess", *mode_args, "--traffic-intents", "must-not-be-read.json",
     ])
@@ -225,7 +275,9 @@ def test_traffic_intents_refuse_modes_that_do_not_publish_them(monkeypatch, caps
         cp.main()
 
     assert exc.value.code == 2
-    assert "do not evaluate or publish Traffic Assurance" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "project any stored traffic_assurance receipt" in error
+    assert "never rerun the path engine with a new intent catalog" in error
 
 
 def test_assert_pack_preserves_and_validates_complete_object_grammar(tmp_path):
@@ -384,6 +436,348 @@ def test_late_phase_failure_updates_active_snapshot_immediately():
     assert "RuntimeError" in snap["assessment_integrity"]["phase_errors"]["Late writer"]
 
 
+def test_normal_finalizer_binds_exact_snapshot_export_and_workbook_bytes(tmp_path):
+    from openpyxl import load_workbook
+    from webapp.backend.protocol_portfolio import canonical_export_bytes
+
+    ctx = _receipt_finalize_ctx(tmp_path)
+    result = cp._stage_finalize(ctx)
+
+    assert result.complete is True
+    snapshot_bytes = (tmp_path / "Assessment.snapshot.json").read_bytes()
+    bundle = ctx.protocol_assurance_bundle
+    source = bundle["receipt"]["source_binding"]
+    assert source["sha256"] == "sha256:" + hashlib.sha256(snapshot_bytes).hexdigest()
+    assert source["bytes"] == len(snapshot_bytes)
+    assert not ({"snapshot_id", "campaign_id", "engagement_id"} & set(source))
+    export_bytes = (tmp_path / "Assessment.protocol-assurance.json").read_bytes()
+    assert export_bytes == canonical_export_bytes(bundle["complete_export"])
+    assert bundle["receipt"]["complete_export"]["sha256"] == (
+        "sha256:" + hashlib.sha256(export_bytes).hexdigest())
+    workbook = load_workbook(tmp_path / "Assessment.xlsx", read_only=True, data_only=True)
+    text = "\n".join(
+        str(cell.value) for row in workbook["Protocol Assurance"].iter_rows()
+        for cell in row if cell.value is not None)
+    workbook.close()
+    assert "BOUND" in text and source["sha256"] in text
+    assert "Assessment.protocol-assurance.json" in text
+    assert "/api/snapshots/" not in text
+
+
+def test_direct_legacy_finalizer_remains_not_verified_and_mints_no_local_receipt(tmp_path):
+    from openpyxl import load_workbook
+
+    ctx = _finalize_ctx(tmp_path)
+    result = cp._stage_finalize(ctx)
+
+    assert result.complete is True
+    assert not (tmp_path / "Assessment.protocol-assurance.json").exists()
+    workbook = load_workbook(tmp_path / "Assessment.xlsx", read_only=True, data_only=True)
+    text = "\n".join(
+        str(cell.value) for row in workbook["Protocol Assurance"].iter_rows()
+        for cell in row if cell.value is not None)
+    workbook.close()
+    assert "NOT VERIFIED" in text
+    assert "This renderer did not hash the parsed snapshot or mint source custody" in text
+
+
+def test_late_optional_bound_refresh_failure_preserves_frozen_snapshot_and_not_verified_artifact(
+        tmp_path, monkeypatch):
+    ctx = _receipt_finalize_ctx(tmp_path)
+    explorer = tmp_path / "Assessment_explorer.html"
+    not_verified = b"<html><body>NOT VERIFIED current-run pre-pass</body></html>"
+    explorer.write_bytes(not_verified)
+    cp._register_artifact(str(explorer), kind="html", source="HTML Explorer pre-pass")
+    ctx.html_output_path = str(explorer)
+
+    def fail_refresh(*_args, **_kwargs):
+        raise RuntimeError("injected late renderer failure")
+
+    monkeypatch.setattr(cp, "write_html_explorer", fail_refresh)
+    result = cp._stage_finalize(ctx)
+
+    assert result.complete is True, "an optional presentation refresh stays fail-soft"
+    snapshot_bytes = (tmp_path / "Assessment.snapshot.json").read_bytes()
+    assert ctx.protocol_assurance_bundle["receipt"]["source_binding"]["sha256"] == (
+        "sha256:" + hashlib.sha256(snapshot_bytes).hexdigest())
+    snapshot = json.loads(snapshot_bytes)
+    assert "HTML Explorer BOUND receipt" not in (
+        (snapshot.get("assessment_integrity") or {}).get("failed_phases") or [])
+    assert explorer.read_bytes() == not_verified
+    run_manifest = json.loads((tmp_path / "Assessment.run_manifest.json").read_text(
+        encoding="utf-8"))
+    assert "HTML Explorer BOUND receipt" in (
+        run_manifest["metadata"]["producer_finalization"]["post_snapshot_failures"])
+    assert explorer.name not in {row["name"] for row in run_manifest["artifacts"]}
+    assert explorer.name in {
+        row["name"] for row in run_manifest["metadata"]["excluded_stale_outputs"]}
+
+
+def test_snapshot_hash_drift_withholds_bound_replacement_and_forces_incomplete(
+        tmp_path, monkeypatch):
+    ctx = _receipt_finalize_ctx(tmp_path)
+    explorer = tmp_path / "Assessment_explorer.html"
+    not_verified = b"<html><body>NOT VERIFIED current-run pre-pass</body></html>"
+    explorer.write_bytes(not_verified)
+    cp._register_artifact(str(explorer), kind="html", source="HTML Explorer pre-pass")
+    ctx.html_output_path = str(explorer)
+
+    def drift_source(staged_path, *_args, **_kwargs):
+        with open(staged_path, "w", encoding="utf-8") as fh:
+            fh.write("<html><body>BOUND staged</body></html>")
+        with open(ctx.snap_path, "w", encoding="utf-8") as fh:
+            json.dump({"script_version": "mutated-after-freeze"}, fh)
+
+    monkeypatch.setattr(cp, "write_html_explorer", drift_source)
+    result = cp._stage_finalize(ctx)
+
+    assert result.complete is False
+    assert explorer.read_bytes() == not_verified
+    assert "Protocol Assurance pre-manifest authority" in result.failed_mandatory
+    assert not any("BOUND staged" in path.read_text(encoding="utf-8", errors="ignore")
+                   for path in tmp_path.glob(".*.receipt-*.tmp.html"))
+
+
+def test_export_byte_drift_is_rechecked_before_bound_replace_and_manifest(
+        tmp_path, monkeypatch):
+    ctx = _receipt_finalize_ctx(tmp_path)
+    explorer = tmp_path / "Assessment_explorer.html"
+    not_verified = b"<html><body>NOT VERIFIED current-run pre-pass</body></html>"
+    explorer.write_bytes(not_verified)
+    cp._register_artifact(str(explorer), kind="html", source="HTML Explorer pre-pass")
+    ctx.html_output_path = str(explorer)
+
+    def drift_export(staged_path, *_args, **_kwargs):
+        with open(staged_path, "w", encoding="utf-8") as fh:
+            fh.write("<html><body>BOUND staged</body></html>")
+        with open(ctx.protocol_assurance_export_path, "wb") as fh:
+            fh.write(b"{}")
+
+    monkeypatch.setattr(cp, "write_html_explorer", drift_export)
+    result = cp._stage_finalize(ctx)
+
+    assert result.complete is False
+    assert explorer.read_bytes() == not_verified
+    assert "Protocol Assurance pre-manifest authority" in result.failed_mandatory
+    assert (tmp_path / "Assessment.protocol-assurance.json").read_bytes() == b"{}"
+
+
+def test_rehashed_family_mutation_is_rejected_against_exact_snapshot_owner(tmp_path):
+    from cisco_toolkit.docmeta import protocol_assurance_receipt_view
+    from cisco_toolkit.protocol_assurance import canonical_sha256
+    from webapp.backend.protocol_portfolio import canonical_export_bytes
+
+    snapshot_path, export_path, binding, bundle = _receipt_authority(tmp_path)
+    forged = copy.deepcopy(bundle)
+    forged["complete_export"]["families"][0]["status_reason"] = "forged but rehashed"
+    forged["receipt"]["families"][0]["status_reason"] = "forged but rehashed"
+    forged["receipt"]["complete_export"]["sha256"] = canonical_sha256(
+        forged["complete_export"])
+    unsigned = dict(forged["receipt"])
+    unsigned.pop("receipt_sha256")
+    forged["receipt"]["receipt_sha256"] = canonical_sha256(unsigned)
+    export_path.write_bytes(canonical_export_bytes(forged["complete_export"]))
+
+    assert protocol_assurance_receipt_view(forged)["valid"] is True, (
+        "precondition: detached hashes and duplicated fields were consistently forged")
+    with pytest.raises(ValueError, match="does not match the exact frozen snapshot"):
+        cp._verify_protocol_receipt_authority(
+            str(snapshot_path), binding, forged, str(export_path))
+
+
+def test_bound_refresh_interrupt_restores_not_verified_artifact_and_cleans_stage(tmp_path):
+    snapshot_path, export_path, binding, bundle = _receipt_authority(tmp_path)
+    explorer = tmp_path / "Assessment_explorer.html"
+    not_verified = b"<html><body>NOT VERIFIED current-run pre-pass</body></html>"
+    explorer.write_bytes(not_verified)
+    cp._register_artifact(str(explorer), kind="html", source="HTML Explorer pre-pass")
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        cp._atomic_receipt_refresh(
+            "HTML Explorer BOUND receipt", str(explorer), "html", interrupt,
+            snapshot_path=str(snapshot_path), source_binding=binding,
+            bundle=bundle, export_path=str(export_path),
+        )
+
+    assert explorer.read_bytes() == not_verified
+    assert not list(tmp_path.glob(".*.receipt-*"))
+    assert cp._RUN_CUSTODY["artifacts"][str(explorer.resolve())]["sha256"] == (
+        hashlib.sha256(not_verified).hexdigest())
+
+
+@pytest.mark.parametrize(
+    "kind,suffix",
+    [("html", ".html"), ("xlsx", ".xlsx"), ("docx", ".docx")],
+)
+def test_structurally_valid_receiptless_writer_cannot_be_registered_as_bound(
+        tmp_path, kind, suffix):
+    snapshot_path, export_path, binding, bundle = _receipt_authority(tmp_path)
+    target = tmp_path / f"receiptless{suffix}"
+
+    def receiptless_writer(staged_path):
+        if kind == "html":
+            with open(staged_path, "w", encoding="utf-8") as fh:
+                fh.write("<html><body>receipt accidentally omitted</body></html>")
+        elif kind == "xlsx":
+            Workbook().save(staged_path)
+        else:
+            from docx import Document
+            Document().save(staged_path)
+
+    assert cp._atomic_receipt_refresh(
+        f"{kind} BOUND receipt", str(target), kind, receiptless_writer,
+        snapshot_path=str(snapshot_path), source_binding=binding,
+        bundle=bundle, export_path=str(export_path),
+    ) is False
+
+    assert not target.exists()
+    assert str(target.resolve()) not in cp._RUN_CUSTODY["artifacts"]
+    assert f"{kind} BOUND receipt" in cp._RUN_CUSTODY["post_snapshot_failures"]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_html_bound_refresh_rejects_commented_or_duplicate_receipt_assignment(
+        tmp_path, duplicate):
+    from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+    from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
+
+    snapshot_path, export_path, binding, bundle = _receipt_authority(tmp_path)
+    target = tmp_path / "decoy.html"
+    surface = protocol_assurance_surface_payload(
+        bundle, complete_export_reference=export_path.name)
+    encoded = json.dumps(surface, ensure_ascii=False, separators=(",", ":"))
+
+    def decoy_writer(staged_path):
+        if duplicate:
+            cp.write_html_explorer(
+                staged_path,
+                bind_snapshot_json_bytes(snapshot_path.read_bytes()),
+                "receipt-test",
+                protocol_assurance_bundle=bundle,
+                complete_export_reference=export_path.name,
+            )
+            with open(staged_path, "a", encoding="utf-8") as fh:
+                fh.write(
+                    "<!-- const EMBEDDED_PROTOCOL_ASSURANCE=" + encoded
+                    + ";\nconst EMBEDDED_SNAPSHOT={}; duplicate -->"
+                )
+        else:
+            with open(staged_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "<html><body>Protocol Assurance receipt NOT VERIFIED</body><!-- "
+                    "const EMBEDDED_PROTOCOL_ASSURANCE=" + encoded
+                    + ";\nconst EMBEDDED_SNAPSHOT={};\n"
+                    "load(EMBEDDED_SNAPSHOT,\"decoy\",true,EMBEDDED_PROTOCOL_ASSURANCE);"
+                    " --></html>"
+                )
+
+    assert cp._atomic_receipt_refresh(
+        "HTML BOUND receipt", str(target), "html", decoy_writer,
+        snapshot_path=str(snapshot_path), source_binding=binding,
+        bundle=bundle, export_path=str(export_path),
+        expected_html_label="receipt-test" if duplicate else "decoy",
+    ) is False
+    assert not target.exists()
+    assert str(target.resolve()) not in cp._RUN_CUSTODY["artifacts"]
+
+
+@pytest.mark.parametrize("mutation", ["wrong_snapshot", "dead_branch", "changed_label"])
+def test_html_bound_refresh_requires_exact_canonical_executable_projection(
+        tmp_path, mutation):
+    from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+
+    snapshot_path, export_path, binding, bundle = _receipt_authority(tmp_path)
+    target = tmp_path / f"{mutation}.html"
+
+    def mutated_writer(staged_path):
+        cp.write_html_explorer(
+            staged_path,
+            bind_snapshot_json_bytes(snapshot_path.read_bytes()),
+            "receipt-test",
+            protocol_assurance_bundle=bundle,
+            complete_export_reference=export_path.name,
+        )
+        document = open(staged_path, encoding="utf-8").read()
+        if mutation == "wrong_snapshot":
+            document = re.sub(
+                r"(?m)^const EMBEDDED_SNAPSHOT=\{[^\r\n]*\};$",
+                "const EMBEDDED_SNAPSHOT={};",
+                document,
+                count=1,
+            )
+        elif mutation == "dead_branch":
+            document = document.replace(
+                "const EMBEDDED_PROTOCOL_ASSURANCE=",
+                "if(false){\nconst EMBEDDED_PROTOCOL_ASSURANCE=",
+                1,
+            ).replace(
+                "load(EMBEDDED_SNAPSHOT,\"receipt-test\",true,"
+                "EMBEDDED_PROTOCOL_ASSURANCE);",
+                "load(EMBEDDED_SNAPSHOT,\"receipt-test\",true,"
+                "EMBEDDED_PROTOCOL_ASSURANCE);\n}",
+                1,
+            )
+        with open(staged_path, "w", encoding="utf-8") as fh:
+            fh.write(document)
+
+    assert cp._atomic_receipt_refresh(
+        "HTML BOUND receipt", str(target), "html", mutated_writer,
+        snapshot_path=str(snapshot_path), source_binding=binding,
+        bundle=bundle, export_path=str(export_path),
+        expected_html_label=("expected-run-label" if mutation == "changed_label"
+                             else "receipt-test"),
+    ) is False
+    assert not target.exists()
+    assert str(target.resolve()) not in cp._RUN_CUSTODY["artifacts"]
+
+
+@pytest.mark.parametrize("kind,suffix", [("xlsx", ".xlsx"), ("docx", ".docx")])
+def test_office_bound_refresh_rejects_not_verified_decoy_token_bag(
+        tmp_path, kind, suffix):
+    from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
+
+    snapshot_path, export_path, binding, bundle = _receipt_authority(tmp_path)
+    target = tmp_path / f"decoy{suffix}"
+    surface = protocol_assurance_surface_payload(
+        bundle, complete_export_reference=export_path.name)
+    tokens = [
+        surface["schema"], "BOUND", binding["sha256"], surface["receipt_sha256"],
+        surface["complete_export"]["sha256"], export_path.name,
+    ]
+
+    def decoy_writer(staged_path):
+        if kind == "xlsx":
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Protocol Assurance"
+            sheet["A1"] = "Protocol Assurance · single-snapshot receipt"
+            sheet["A3"] = "Receipt status"
+            sheet["B3"] = "NOT VERIFIED"
+            for row_number, token in enumerate(tokens, start=20):
+                sheet.cell(row_number, 1, token)
+            workbook.save(staged_path)
+        else:
+            from docx import Document
+
+            document = Document()
+            document.add_heading("Source-bound Protocol Assurance receipt", level=2)
+            document.add_paragraph("Status: NOT VERIFIED; receipt was not rendered.")
+            for token in tokens:
+                document.add_paragraph(token)
+            document.save(staged_path)
+
+    assert cp._atomic_receipt_refresh(
+        f"{kind} BOUND receipt", str(target), kind, decoy_writer,
+        snapshot_path=str(snapshot_path), source_binding=binding,
+        bundle=bundle, export_path=str(export_path),
+    ) is False
+    assert not target.exists()
+    assert str(target.resolve()) not in cp._RUN_CUSTODY["artifacts"]
+
+
 def test_clean_finalization_returns_structured_complete_result_and_clears_old_marker(
         tmp_path):
     marker = tmp_path / "Assessment.incomplete.json"
@@ -530,36 +924,71 @@ def test_no_collect_refuses_absent_evidence_source(
     assert not missing.exists(), "offline mode must not synthesize an empty evidence source"
 
 
-def test_compare_cli_wires_exact_hashes_and_schema_override(tmp_path, monkeypatch):
+def test_compare_cli_wires_exact_file_bindings_and_explicit_identity_context(
+        tmp_path, monkeypatch):
     old = tmp_path / "old.json"
     new = tmp_path / "new.json"
     old.write_text('{"script_version":"V1","devices":{}}', encoding="utf-8")
     new.write_text('{"script_version":"V2","devices":{}}', encoding="utf-8")
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({
+        "schema": "offline_comparison_context/1",
+        "engagement_id": "ENG-CUSTODY",
+        "campaign_id": 9,
+        "before_snapshot_id": 90,
+        "after_snapshot_id": 91,
+        "change_intent": {"expected_changes": [], "note": "custody test"},
+    }), encoding="utf-8")
     captured = {}
 
-    def fake_precert(before, after, **kwargs):
-        captured["precert"] = kwargs
-        return {"verdict": "INDETERMINATE"}
+    fake_comparison = {
+        "precert": {"verdict": "INDETERMINATE"},
+        "cutover_gate": {"verdict": "INDETERMINATE", "note": "schema mismatch"},
+    }
+
+    def fake_compare(before, after, **kwargs):
+        captured["compare"] = kwargs
+        return fake_comparison
 
     def fake_diff(before, after, output, **kwargs):
         captured["diff"] = kwargs
 
-    monkeypatch.setattr(cp, "compute_precert", fake_precert)
+    monkeypatch.setattr(cp, "compare_bound_pair", fake_compare)
     monkeypatch.setattr(cp, "write_diff_workbook", fake_diff)
     monkeypatch.setattr(sys, "argv", [
         "cisco-assess", "--compare", str(old), str(new),
-        "--allow-schema-mismatch", "--output", str(tmp_path / "diff.xlsx"),
+        "--comparison-context", str(context), "--allow-schema-mismatch",
+        "--output", str(tmp_path / "diff.xlsx"),
     ])
 
     cp.main()
 
-    binding = {"before": cp.file_sha256(str(old)), "after": cp.file_sha256(str(new))}
-    assert captured["precert"]["source_hashes"] == binding
-    assert captured["diff"]["source_binding"] == binding
-    for call in captured.values():
-        assert call["schema_status"]["status"] == "mismatch"
-        assert call["schema_status"]["override"] is True
-        assert "DIFFERENT" in call["schema_status"]["message"]
+    before_binding = captured["compare"]["before_binding"]
+    after_binding = captured["compare"]["after_binding"]
+    assert before_binding == {
+        "source": cp.OFFLINE_FILE_SOURCE,
+        "sha256": "sha256:" + cp.file_sha256(str(old)),
+        "bytes": old.stat().st_size,
+        "snapshot_id": 90,
+        "campaign_id": 9,
+        "engagement_id": "ENG-CUSTODY",
+        "label": old.name,
+        "script_version": "V1",
+    }
+    assert after_binding == {
+        "source": cp.OFFLINE_FILE_SOURCE,
+        "sha256": "sha256:" + cp.file_sha256(str(new)),
+        "bytes": new.stat().st_size,
+        "snapshot_id": 91,
+        "campaign_id": 9,
+        "engagement_id": "ENG-CUSTODY",
+        "label": new.name,
+        "script_version": "V2",
+    }
+    assert captured["compare"]["change_intent"] == {
+        "expected_changes": [], "note": "custody test",
+    }
+    assert captured["diff"]["comparison"] is fake_comparison
 
 
 def test_compare_rejects_source_mutation_between_parse_and_publication(

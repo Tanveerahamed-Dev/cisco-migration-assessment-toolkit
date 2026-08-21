@@ -435,6 +435,59 @@ def test_parse_spanning_tree_root_absent(cp):
     assert parse.parse_spanning_tree_root("") == {}
 
 
+def test_parse_spanning_tree_role_rows_preserve_namespace_role_and_state():
+    output = textwrap.dedent("""\
+        VLAN0010
+        Interface        Role Sts Cost      Prio.Nbr Type
+        Gi1/0/1          Desg FWD 4         128.1    P2p
+        Gi1/0/24         Altn BLK 19        128.24   P2p
+        MST0002
+        Interface        Role Sts Cost      Prio.Nbr Type
+        Po10             Root FWD 1         128.4096 P2p
+        Gi1/0/2          Boun BLK 4         128.2    Bound(RSTP)
+    """)
+    assert parse.parse_spanning_tree_role_rows(output) == [
+        {
+            "namespace": "pvst_vlan", "instance": "10", "interface": "Gi1/0/1",
+            "role": "designated", "state": "forwarding",
+        },
+        {
+            "namespace": "pvst_vlan", "instance": "10", "interface": "Gi1/0/24",
+            "role": "alternate", "state": "blocked",
+        },
+        {
+            "namespace": "mst_instance", "instance": "2", "interface": "Po10",
+            "role": "root", "state": "forwarding",
+        },
+        {
+            "namespace": "mst_instance", "instance": "2", "interface": "Gi1/0/2",
+            "role": "boundary", "state": "blocked",
+        },
+    ]
+
+
+def test_parse_spanning_tree_topology_changes_requires_instance_identity():
+    output = textwrap.dedent("""\
+        Number of topology changes 99 last change occurred 00:00:01 ago
+        VLAN0010 is executing the rstp compatible Spanning Tree protocol
+          Number of topology changes 2 last change occurred 00:01:00 ago
+        ###### MST0002 vlans mapped: 20-29
+          Number of topology changes 7 last change occurred 1d02h ago
+    """)
+    assert parse.parse_spanning_tree_topology_changes(output) == [
+        {
+            "namespace": "pvst_vlan", "instance": "10", "count": 2,
+            "last_change": "00:01:00 ago",
+        },
+        {
+            "namespace": "mst_instance", "instance": "2", "count": 7,
+            "last_change": "1d02h ago",
+        },
+    ]
+    assert parse.parse_spanning_tree_topology_changes(
+        "Number of topology changes 3 last change occurred 00:00:01 ago\n") == []
+
+
 def test_parse_redistribution(cp):
     # protocol-to-protocol edges: each 'redistribute' under a 'router X' block; a col-0 line ends the block
     out = textwrap.dedent("""\

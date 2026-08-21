@@ -17,18 +17,18 @@ from typing import Any
 SCHEMA_VERSION = "rendered-sink-lineage-core/1.0.0"
 CONTRACT_SCHEMA_VERSION = "rendered-sink-lineage-core-contract/1.0.0"
 CONTRACT_ID = "atlas.rendered-sink-lineage.core.v1"
-EXPECTED_CONTRACT_DIGEST = "a9968d54eb1b52fdfd1a42fd6c800dbd9d979d3ad3ad9ece09c57d84ef74e3b0"
+EXPECTED_CONTRACT_DIGEST = "5b1fbe15fd30bd6e77af69d169f08cbc3cbb639e2df2e85f41f31bfc0c3e53dd"
 SOURCE_PATH = "master-reference/content/atlas-core.json"
-GLOBAL_CANDIDATES = 2_136
+GLOBAL_CANDIDATES = 2_140
 IN_SCOPE_CANDIDATES = 155
-OUT_OF_SCOPE_CANDIDATES = 1_981
+OUT_OF_SCOPE_CANDIDATES = 1_985
 EXPECTED_SAFETY_INPUTS = 0
 EXPECTED_SEMANTIC_RECORDS = 135
 EXPECTED_GROUNDING_FALLBACK_CANDIDATES = 62
-CLAIM_CONTRACT_DIGEST = "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d"
-CLASSIFICATION_DIGEST = "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df"
-SOURCE_RECEIPTS_DIGEST = "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689"
-CANDIDATE_SET_DIGEST = "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43"
+CLAIM_CONTRACT_DIGEST = "cf123369749c14ef140a9eb906b63f7183e93fd45a943a25087f5411a17399b6"
+CLASSIFICATION_DIGEST = "594013cefc9f293cb6b224e6f869014e6015dd6f23a4ff708899afbb44c1f19c"
+SOURCE_RECEIPTS_DIGEST = "aad6fbb1305ccaddea2b5257cbfa5704ba1548a1855c97bcbaa144ed6d8ecb30"
+CANDIDATE_SET_DIGEST = "ed4bb19838118841b5f5cc3a3d7348ee9763d11e8f4ad4f610c5e3853a1f0d31"
 MAX_CONTRACT_BYTES = 512 * 1024
 MAX_STRING_LENGTH = 16_384
 MAX_VALUES = 100_000
@@ -247,15 +247,15 @@ def _validate_contract(contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]
         source = contract["source_scope"]
         if (
             source["path"] != SOURCE_PATH
-            or source["git_blob_oid"] != "27b7c166a78894d957bd3f35b5f64170dd11afb4"
-            or source["sha256"] != "e6c53929bab88f27eb31f48afd4fe60a8dab80d04d06dd03759347924f110a26"
-            or source["bytes"] != 40_781
+            or source["git_blob_oid"] != "3d2c841f8855596007e45a5e165e2f462a95e260"
+            or source["sha256"] != "3084a31bf02c6e44d41b189e7449e5a4265d18ed9c95765a1526d5d3b29ab6c0"
+            or source["bytes"] != 40_793
             or source["expected_records"] != EXPECTED_SEMANTIC_RECORDS
             or source["expected_candidates"] != IN_SCOPE_CANDIDATES
             or source["expected_safety_inputs"] != EXPECTED_SAFETY_INPUTS
             or source["expected_grounding_fallback_candidates"] != EXPECTED_GROUNDING_FALLBACK_CANDIDATES
             or source["candidate_digest"]
-            != "79253dc74d3c25a49179f38b57ea25c7ff603195eb03ee97c5eb38793d78d894"
+            != "11ed8db087e05999e6401b53d251421aec4777c42fa99cf2a617e7cad54d9ad1"
             or source["facet_id_set_digest"]
             != "7bd48e7f5f587aa500136f7235e9c924ea56ef6d3e499258bfca6db257231119"
             or source["safety_rules"] != []

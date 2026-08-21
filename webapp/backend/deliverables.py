@@ -131,7 +131,7 @@ def catalogue() -> list:
 
 
 def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
-             gate_root: str = ".") -> str:
+             gate_root: str = ".", protocol_assurance_bundle: dict | None = None) -> str:
     """Write the deliverable to a temp file; return its path. Caller streams it and deletes it.
     `gates` is the campaign's recorded gate sign-offs — consumed only by the engagement plan of
     record (its §4.3 as-signed trail); every other writer is a pure snapshot read.
@@ -189,6 +189,16 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
             # The writer treats None and {} identically (its own gr filter), so no `and gates`
             # second branch — one call shape per kind (V3.23.159 review simplification).
             write(path, snap, label, gate_record=gates)
+        elif kind in {"runbook", "mop", "nrfu"}:
+            # The writers are pure renderers and cannot establish exact-byte custody from a parsed
+            # snapshot. AssessHub supplies the separately built portfolio-owner sidecar; direct/CLI
+            # calls leave it absent and the documents state NOT VERIFIED rather than minting one.
+            write(
+                path,
+                snap,
+                label,
+                protocol_assurance_bundle=protocol_assurance_bundle,
+            )
         else:
             write(path, snap, label)
     except Exception:

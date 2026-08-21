@@ -271,7 +271,7 @@ def _capability_fixture() -> dict[str, object]:
         },
     )
     states = ("current", "partial", "missing", "gated", "excluded", "unknown")
-    for index in range(207):
+    for index in range(209):
         state = states[index % len(states)]
         entry: dict[str, object] = {
             "id": f"cap.fixture.{index:03d}",
@@ -558,7 +558,7 @@ def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_
     )
     assert result_a.capability_sink_verification.verdict == "PASS"
     assert result_a.capability_sink_verification.pdf_sha256 == result_a.sha256
-    assert result_a.capability_sink_verification.rendered_observation_count == 422
+    assert result_a.capability_sink_verification.rendered_observation_count == 426
     assert result_a.capability_sink_verification.safety_observation_count == 7
     assert (
         result_a.capability_sink_verification.observation_digest
@@ -1179,7 +1179,7 @@ def test_pdf_capability_sink_observations_are_exact_and_deterministic(tmp_path: 
     second = pdf_capability_sink_observations(copy.deepcopy(content))
     assert first == second
     assert set(first) == {"rendered_observations", "safety_observations"}
-    assert len(first["rendered_observations"]) == 422
+    assert len(first["rendered_observations"]) == 426
     assert len(first["safety_observations"]) == 7
     assert [row["facet_path"] for row in first["rendered_observations"][:4]] == [
         "state",
@@ -1228,7 +1228,7 @@ def test_production_capability_sink_verifier_rejects_stale_visible_projection(tm
     ("mutation", "message"),
     [
         ("duplicate_entry", "entry ids must be unique"),
-        ("missing_entry", "exactly 211 entries"),
+        ("missing_entry", "exactly 213 entries"),
         ("missing_scope", "entry shape mismatch"),
         ("fallback_scope", "requires non-empty current_scope"),
         ("current_gap", "current capability cannot carry gap_refs"),
@@ -1780,7 +1780,7 @@ def test_curated_pdf_keeps_complete_records_together_and_extracts_clean_ascii(tm
     assert result.horizon_sink_verification.rendered_observation_count == 167
     assert result.horizon_sink_verification.safety_observation_count == 53
     assert result.capability_sink_verification.verdict == "PASS"
-    assert result.capability_sink_verification.rendered_observation_count == 422
+    assert result.capability_sink_verification.rendered_observation_count == 426
     assert result.capability_sink_verification.safety_observation_count == 7
     assert result.core_sink_verification.verdict == "PASS"
     assert result.core_sink_verification.rendered_observation_count == 9

@@ -103,7 +103,8 @@ def test_cli_compare_matching_versions_proceeds_silently(tmp_path):
 
 
 @pytest.mark.parametrize("traffic_side", ["before", "after"])
-def test_cli_compare_refuses_persisted_traffic_assurance_without_traffic_intents_flag(tmp_path, traffic_side):
+def test_cli_compare_projects_persisted_traffic_assurance_without_rerunning_intents(
+        tmp_path, traffic_side):
     old = tmp_path / "old.snapshot.json"
     new = tmp_path / "new.snapshot.json"
     traffic = {"traffic_assurance": {"schema": "traffic_assurance_set/1", "results": []}}
@@ -117,9 +118,16 @@ def test_cli_compare_refuses_persisted_traffic_assurance_without_traffic_intents
     )
 
     blob = (proc.stdout + proc.stderr).lower()
-    assert proc.returncode != 0, blob
-    assert "traffic_assurance" in blob and "does not evaluate or publish" in blob
-    assert not out.exists(), "a refused traffic-assurance comparison must not write a workbook"
+    assert proc.returncode == 0, blob
+    assert out.exists()
+    comparison_path = tmp_path / "diff.comparison.json"
+    assert comparison_path.exists()
+    comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+    rehearsal = comparison["operator_evidence"]["rehearsal"]["l2_failure_rehearsal"]
+    assert rehearsal["schema"] == "l2_failure_rehearsal/1"
+    assert rehearsal["status"] == "not_verified"
+    assert comparison["cutover_gate"]["verdict"] != "PASS"
+    assert "does not evaluate or publish" not in blob
 
 
 def test_cli_compare_allows_custody_only_snapshot(tmp_path):
@@ -151,7 +159,7 @@ def test_cli_trend_refuses_on_schema_mismatch(tmp_path):
     assert "schema" in (proc.stdout + proc.stderr).lower()
 
 
-def test_cli_trend_refuses_when_any_loaded_snapshot_contains_traffic_assurance(tmp_path):
+def test_cli_trend_projects_stored_traffic_assurance_without_rerunning_path_engine(tmp_path):
     paths = [tmp_path / f"{name}.snapshot.json" for name in ("a", "b", "c")]
     for index, path in enumerate(paths):
         extra = ({"traffic_assurance": {"schema": "traffic_assurance_set/1", "results": []}}
@@ -164,7 +172,13 @@ def test_cli_trend_refuses_when_any_loaded_snapshot_contains_traffic_assurance(t
         capture_output=True, text=True, timeout=300,
     )
 
-    blob = (proc.stdout + proc.stderr).lower()
-    assert proc.returncode != 0, blob
-    assert "traffic_assurance" in blob and "does not evaluate or publish" in blob
-    assert not out.exists(), "a refused traffic-assurance trend must not write a workbook"
+    blob = proc.stdout + proc.stderr
+    assert proc.returncode == 0, blob
+    assert out.exists(), "stored assurance is projected; Trend does not rerun the path engine"
+    sidecar = tmp_path / "trend.trend-comparisons.json"
+    assert sidecar.exists()
+    receipts = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert receipts["status"] == "not_verified"
+    assert receipts["complete"] is False
+    assert receipts["n_pairs_total"] == 2
+    assert receipts["n_pairs_returned"] == 0

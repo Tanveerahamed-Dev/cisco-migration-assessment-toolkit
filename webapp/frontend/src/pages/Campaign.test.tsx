@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import CampaignPage, { NEXT_DECISION, VERDICT_COLOR } from "./Campaign";
+import {
+  bucketProtocolFamilyRows,
+  protocolFamilySummaryMismatches,
+} from "../components/ComparisonDecision";
 import { api } from "../api";
-import type { Campaign, SnapshotMeta, GateBoardData } from "../api";
+import type {
+  Campaign,
+  CampaignAdjacentComparison,
+  CompareResponse,
+  ProtocolFamilyChangeSet,
+  SnapshotMeta,
+  GateBoardData,
+} from "../api";
 
 // ── pure maps ─────────────────────────────────────────────────────────────
 // The gate cell cycles pending → GO → NO-GO → SLIPPED → pending (a closed 4-state ring).
@@ -43,6 +54,55 @@ describe("VERDICT_COLOR", () => {
   });
 });
 
+describe("protocol-family presentation ownership", () => {
+  const rows = [
+    { family: "vtp_safety", subject: "expected", transition: "intent_changed", expected: true,
+      decision_effect: "none", before_state: {}, after_state: {}, note: "expected" },
+    { family: "vtp_safety", subject: "blocked", transition: "regressed", expected: false,
+      decision_effect: "block", before_state: {}, after_state: {}, note: "blocked" },
+    { family: "vtp_safety", subject: "review", transition: "appeared", expected: false,
+      decision_effect: "review", before_state: {}, after_state: {}, note: "review" },
+    { family: "vtp_safety", subject: "coverage", transition: "not_comparable", expected: false,
+      decision_effect: "not_verified", before_state: {}, after_state: {}, note: "coverage" },
+    { family: "vtp_safety", subject: "neutral", transition: "recovered", expected: false,
+      decision_effect: "none", before_state: {}, after_state: {}, note: "neutral" },
+  ] as const;
+  const summary = {
+    n_subject_changes: 5, n_expected: 1, n_unexpected: 2, n_coverage_lost: 0,
+    n_blocking: 1, n_review: 1, n_not_verified: 1,
+    by_transition: {
+      unchanged_healthy: 0, unchanged_degraded: 0, recovered: 1, regressed: 1,
+      appeared: 1, disappeared: 0, intent_changed: 1, coverage_lost: 0, not_comparable: 1,
+    },
+    by_decision_effect: { block: 1, review: 1, none: 2, not_verified: 1 },
+  };
+  const familySet = {
+    schema: "protocol_family_change_set/1", owner: "reference_only_composition",
+    owns_score: false, owns_verdict: false,
+    summary: { n_families: 1, ...summary },
+    families: [{
+      family: "vtp_safety", owner_schema: "vtp_safety_delta/1",
+      assurance_level: "local_safety_preservation",
+      support_profile: {}, summary, changes: rows, source_receipt: {},
+    }],
+  } as unknown as ProtocolFamilyChangeSet;
+
+  it("buckets only from producer expected/decision_effect and leaves NONE for drilldown", () => {
+    const buckets = bucketProtocolFamilyRows([...rows]);
+    expect(buckets.expected.map((row) => row.subject)).toEqual(["expected"]);
+    expect(buckets.unexpected.map((row) => row.subject)).toEqual(["blocked", "review"]);
+    expect(buckets.coverage.map((row) => row.subject)).toEqual(["coverage"]);
+    expect(buckets.drilldownOnly.map((row) => row.subject)).toEqual(["neutral"]);
+  });
+
+  it("reconciles producer row counters and fails loud on count drift", () => {
+    expect(protocolFamilySummaryMismatches(familySet)).toEqual([]);
+    const drifted = structuredClone(familySet);
+    drifted.summary.n_blocking = 0;
+    expect(protocolFamilySummaryMismatches(drifted)).toContain("summary.n_blocking=0, rows=1");
+  });
+});
+
 // ── page integration ──────────────────────────────────────────────────────
 function campaign(over: Partial<Campaign> = {}): Campaign {
   return {
@@ -65,6 +125,132 @@ function snap(id: number): SnapshotMeta {
     n_devices: 10,
     summary: { bands: { critical: 1, watch: 2, healthy: 7 } } as SnapshotMeta["summary"],
   };
+}
+
+function trendPair(index: number, verdict: "PASS" | "FAIL"): CampaignAdjacentComparison {
+  const beforeId = index + 1;
+  const afterId = index + 2;
+  return {
+    schema: "campaign_adjacent_comparison/1",
+    index,
+    from: `C${index + 1}`,
+    to: `C${index + 2}`,
+    before_snapshot_id: beforeId,
+    after_snapshot_id: afterId,
+    before_label: `Wave ${beforeId}`,
+    after_label: `Wave ${afterId}`,
+    comparison: {
+      // Deliberately CLEAN even for a FAIL gate: Trend must render the server-owned cutover gate,
+      // never derive an overall decision from the legacy delta.
+      verdict: "CLEAN",
+      findings: {},
+      health: {},
+      cabling: { assessed: true, summary: {} },
+      cutover_gate: {
+        schema: "cutover_gate/1",
+        verdict,
+        note: `server basis ${index}`,
+        operator_note: `server operator decision ${index}`,
+        delta_verdict: "CLEAN",
+        delta_display: "CLEAN",
+        delta_note: "legacy delta only",
+        certificate_verdict: verdict === "PASS" ? "PASS" : "FAIL",
+        certificate_note: "server precert",
+        protocol_gate: "PASS",
+        protocol_baseline_peers: 1,
+        protocol_regressions: 0,
+        protocol_coverage_gaps: 0,
+        l2_rehearsal_status: verdict === "PASS" ? "simulation_only" : "projected_risk",
+        l2_rehearsal_note: `server-owned L2 basis ${index}`,
+        l2_rehearsal_applicable_families: ["etherchannel"],
+        l2_rehearsal_current_faults: 0,
+        l2_rehearsal_projected_risks: verdict === "PASS" ? 0 : 1,
+        l2_rehearsal_not_verified: 0,
+      },
+      comparison_receipt: {
+        schema: "protocol_receipt_envelope/1",
+        payload_sha256: `sha256:payload-${index}`,
+        receipt_sha256: `sha256:receipt-${index}`,
+      } as CompareResponse["comparison_receipt"],
+    },
+  };
+}
+
+function observedTrendPair(): CampaignAdjacentComparison {
+  const pair = trendPair(0, "PASS");
+  const phase = (id: number, at: string) => ({
+    source: "persisted snapshots.snapshot_json blob",
+    source_id: `snapshot:${id}`,
+    campaign_id: 3,
+    engagement_id: "eng-east",
+    sha256: `sha256:${String(id).padStart(64, "0")}`,
+    bytes: 4000 + id,
+    collected_at: at,
+    custody_at: at,
+  });
+  pair.comparison.cutover_gate = {
+    ...pair.comparison.cutover_gate!,
+    l2_observed_trial_status: "observed_survival",
+    l2_observed_trial_assurance: "local_safety_preservation",
+    l2_observed_trial_family: "etherchannel",
+    l2_observed_trial_subject: "dist1|Po10",
+    l2_observed_trial_scenario: "single_observed_forwarding_member_loss",
+    l2_observed_trial_matched_projected_risks: 1,
+    l2_observed_trial_note: "Stored adjacent receipt retained exact local evidence.",
+  };
+  pair.comparison.operator_evidence = {
+    schema: "cutover_operator_evidence/1",
+    owner: "reference_only_projection",
+    owns_verdict: false,
+    rehearsal: {
+      status: "local_safety_preservation",
+      assurance_level: "local_safety_preservation",
+      source_owner: "observed_local_l2_failure_trial",
+      n_impacts_total: 0,
+      impacts: [],
+      note: "Exact local scenario only.",
+      observed_l2_failure_evidence: {
+        schema: "observed_l2_failure_evidence/1",
+        owner: "observed_local_l2_failure_trial",
+        owns_score: false,
+        owns_verdict: false,
+        status: "observed_survival",
+        assurance_level: "local_safety_preservation",
+        family: "etherchannel",
+        subject: "dist1|Po10",
+        failure_scenario: "single_observed_forwarding_member_loss",
+        source_binding: {
+          pre_failure: phase(11, "2026-08-20T01:00:00+00:00"),
+          post_failure: phase(12, "2026-08-20T01:01:00+00:00"),
+          recovery: phase(13, "2026-08-20T01:02:00+00:00"),
+          failure_witness: {
+            encoding: "base64", content_base64: "e30=",
+            sha256: `sha256:${"f".repeat(64)}`, bytes: 2,
+            induced_at: "2026-08-20T01:00:30+00:00",
+          },
+        },
+        precondition: { status: "passed", evidence: {} },
+        failure_witness: {
+          status: "witnessed", action: "shut_link", target: { host: "dist1" },
+          induced_at: "2026-08-20T01:00:30+00:00", evidence: {},
+        },
+        post_failure: { status: "survived", evidence: {} },
+        recovery: { status: "recovered", evidence: {} },
+        claims: {
+          local_scenario: "observed_survival", service_path_survival: "not_verified",
+          traffic_continuity: "not_verified", convergence: "not_verified",
+        },
+        failures: [],
+        limitations: ["Exact local scenario only."],
+      },
+    },
+    rollback: {
+      status: "not_verified", assurance_level: "not_verified",
+      source_owner: "migration_scenarios playbook.rollback",
+      n_groups_total: 0, n_plans_total: 0, plans: [], note: "Not verified.",
+    },
+  };
+  return pair;
 }
 
 const emptyGates: GateBoardData = { cadence: [], waves: [], records: [] };
@@ -142,7 +328,7 @@ describe("CampaignPage", () => {
     expect(screen.getByTestId("protocol-gate-custody")).toHaveTextContent("do not independently bind");
   });
 
-  it("lets a blocked final baseline dominate an otherwise IMPROVING campaign trend", async () => {
+  it("keeps an IMPROVING aggregate neutral without combining it with the final baseline receipt", async () => {
     vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
     vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
     vi.spyOn(api, "trend").mockResolvedValue({
@@ -171,11 +357,112 @@ describe("CampaignPage", () => {
     const trend = await screen.findByTestId("trend-verdict");
     expect(trend).toHaveTextContent("IMPROVING");
     expect(trend.style.color).not.toBe("var(--ok)");
-    expect(trend).toHaveAttribute("title", expect.stringContaining("not CLEAR"));
+    expect(trend).toHaveAttribute("title", expect.stringContaining("supporting evidence"));
     const baseline = screen.getByTestId("compare-current-baseline-verdict");
     expect(baseline).toHaveTextContent("BLOCKED");
     expect(baseline.style.color).toBe("var(--crit)");
     expect(screen.getByText("Final OSPF neighbor remains EXSTART")).toBeInTheDocument();
+  });
+
+  it("renders server-owned adjacent gates and receipts with a complete capped Trend export", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "IMPROVING",
+      verdict_note: "Aggregate direction only; adjacent decisions remain authoritative.",
+      trajectory: [],
+      adjacent_comparison_status: {
+        schema: "campaign_adjacent_comparison_set/1",
+        status: "verified",
+        n_pairs_total: 4,
+        n_pairs_returned: 4,
+        complete: true,
+        note: "Four exact-byte adjacent comparisons were published.",
+      },
+      adjacent_comparisons: [
+        trendPair(0, "PASS"),
+        trendPair(1, "FAIL"),
+        trendPair(2, "PASS"),
+        trendPair(3, "FAIL"),
+      ],
+    });
+    renderCampaign();
+
+    expect(await screen.findByTestId("trend-receipt-status")).toHaveTextContent("VERIFIED");
+    expect(screen.getByTestId("trend-receipt-note")).toHaveTextContent(
+      "Four exact-byte adjacent comparisons were published.",
+    );
+    const gates = screen.getAllByTestId("trend-adjacent-gate");
+    expect(gates).toHaveLength(3);
+    expect(gates[0]).toHaveTextContent("PASS");
+    expect(gates[1]).toHaveTextContent("FAIL");
+    expect(screen.getAllByTestId("trend-adjacent-receipt")[1]).toHaveTextContent("sha256:receipt-1");
+    const l2Basis = screen.getAllByTestId("trend-adjacent-l2-gate-basis")[1];
+    expect(l2Basis).toHaveTextContent("PROJECTED RISK");
+    expect(l2Basis).toHaveTextContent("server-owned L2 basis 1");
+    expect(l2Basis).toHaveTextContent("etherchannel · 0 current fault(s) · 1 projected risk(s)");
+    expect(screen.getByTestId("trend-cap-disclosure")).toHaveTextContent(
+      "Rendered: 3 · Total produced: 4 · Omitted from view: 1 · Expected pairs: 4 · Receipt set complete: YES",
+    );
+    expect(screen.getByRole("button", { name: "Export Trend JSON" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("canonical-cutover-verdict")[1]).toHaveTextContent("FAIL");
+    expect(screen.getByText("Aggregate direction only; adjacent decisions remain authoritative.")).toBeInTheDocument();
+  });
+
+  it("preserves and renders observed fields already present in a canonical Trend receipt", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    const trend = vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "IMPROVING",
+      verdict_note: "No per-pair trial is synthesized; this stored canonical field is preserved.",
+      trajectory: [],
+      adjacent_comparison_status: {
+        schema: "campaign_adjacent_comparison_set/1",
+        status: "verified",
+        n_pairs_total: 1,
+        n_pairs_returned: 1,
+        complete: true,
+        note: "One canonical adjacent receipt was published.",
+      },
+      adjacent_comparisons: [observedTrendPair()],
+    });
+    renderCampaign();
+
+    const observed = await screen.findByTestId("comparison-observed-l2-trial");
+    expect(within(observed).getByTestId("comparison-observed-l2-status"))
+      .toHaveTextContent("OBSERVED SURVIVAL");
+    expect(observed).toHaveTextContent("dist1|Po10");
+    expect(observed).toHaveTextContent(/service-path survival: not verified/i);
+    expect(trend).toHaveBeenCalledWith(3);
+    expect(screen.getByRole("button", { name: "Export Trend JSON" })).toBeInTheDocument();
+  });
+
+  it("distinguishes missing adjacent evidence from rows omitted only by the UI cap", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2), snap(3)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockResolvedValue({
+      verdict: "INDETERMINATE",
+      verdict_note: "The ordered receipt set is incomplete.",
+      trajectory: [],
+      adjacent_comparison_status: {
+        schema: "campaign_adjacent_comparison_set/1",
+        status: "not_verified",
+        n_pairs_total: 2,
+        n_pairs_returned: 0,
+        complete: false,
+        note: "A middle source disappeared; no non-adjacent pair was substituted.",
+      },
+      adjacent_comparisons: [],
+    });
+    renderCampaign();
+
+    expect(await screen.findByTestId("trend-receipt-status")).toHaveTextContent("NOT VERIFIED");
+    expect(screen.getByTestId("trend-cap-disclosure")).toHaveTextContent(
+      "Rendered: 0 · Total produced: 0 · Omitted from view: 0 · Expected pairs: 2 · Receipt set complete: NO",
+    );
+    expect(screen.getByTestId("trend-cap-disclosure")).toHaveTextContent(
+      "unproduced expected pairs remain NOT VERIFIED",
+    );
   });
 
   it("surfaces a failed trend fetch as an error panel instead of silently vanishing", async () => {
@@ -360,6 +647,97 @@ describe("CampaignPage · coverage honesty and stale state", () => {
     expect(cell.style.color).toBe("var(--ok)");
   });
 
+  it("binds optional expected-family intent to the exact compare request", async () => {
+    const { container } = mountTwoWaves();
+    const compare = vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+    });
+    const intent = {
+      expected_changes: [{
+        family: "vtp_safety", transitions: ["intent_changed"],
+        subjects: ["dist-1"], reason: "planned reset",
+      }],
+      note: "CAB-1234",
+    };
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Expected family changes JSON"), {
+      target: { value: JSON.stringify(intent) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 2, intent));
+  });
+
+  it("binds the advanced observed L2 phase selectors and exact witness bytes", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({
+      snapshots: [snap(1), snap(2), snap(3), snap(4)],
+    }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockRejectedValue(new Error("no trend"));
+    const compare = vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+    });
+    const { container } = renderCampaign();
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "4" } });
+    fireEvent.click(screen.getByLabelText("campaign-compare include observed local L2 trial"));
+    fireEvent.change(screen.getByLabelText("campaign-compare pre-failure snapshot"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("campaign-compare post-failure snapshot"), {
+      target: { value: "3" },
+    });
+    const witness = '{"schema":"l2_failure_witness/1","subject":"dist1|Po10"}';
+    const file = new File([witness], "trial.json", { type: "application/json" });
+    fireEvent.change(screen.getByLabelText("campaign-compare failure witness JSON"), {
+      target: { files: [file] },
+    });
+    expect(await screen.findByText("Witness loaded: trial.json")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledWith(1, 4, undefined, {
+      pre_failure_snapshot_id: 2,
+      post_failure_snapshot_id: 3,
+      witness_json_base64: btoa(witness),
+    }));
+  });
+
+  it("keeps the newest submitted pair when an older compare resolves late", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({
+      snapshots: [snap(1), snap(2), snap(3)],
+    }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockRejectedValue(new Error("no trend"));
+    let resolveA!: (value: CompareResponse) => void;
+    let resolveB!: (value: CompareResponse) => void;
+    vi.spyOn(api, "compare")
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveB = resolve; }));
+    const { container } = renderCampaign();
+    await screen.findByText("Compare two waves");
+    const selectors = container.querySelectorAll("select");
+    fireEvent.change(selectors[0], { target: { value: "1" } });
+    fireEvent.change(selectors[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    fireEvent.change(selectors[0], { target: { value: "2" } });
+    fireEvent.change(selectors[1], { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    resolveB({ verdict: "REVIEW", findings: {}, health: {}, cabling: { assessed: true } });
+    await waitFor(() => expect(screen.getByTestId("compare-delta-verdict")).toHaveTextContent("REVIEW"));
+    expect(screen.getByTestId("comparison-submitted-context")).toHaveTextContent(
+      "before 2 · recovery/new 3",
+    );
+    resolveA({ verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true } });
+    await waitFor(() => expect(screen.getByTestId("compare-delta-verdict")).toHaveTextContent("REVIEW"));
+    expect(screen.getByTestId("comparison-submitted-context")).toHaveTextContent(
+      "before 2 · recovery/new 3",
+    );
+  });
+
   it("keeps an unchanged OSPF EXSTART baseline red even when the delta itself is CLEAN", async () => {
     const { container } = mountTwoWaves();
     vi.spyOn(api, "compare").mockResolvedValue({
@@ -401,7 +779,7 @@ describe("CampaignPage · coverage honesty and stale state", () => {
     expect(screen.getByText(/routing_neighbors\.DIST-1\.ospf/)).toBeInTheDocument();
   });
 
-  it("states the bounded meaning of CLEAR before showing a green clean delta", async () => {
+  it("keeps a legacy CLEAN delta neutral even beside a producer-owned CLEAR baseline", async () => {
     const { container } = mountTwoWaves();
     vi.spyOn(api, "compare").mockResolvedValue({
       verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: {} },
@@ -419,7 +797,307 @@ describe("CampaignPage · coverage honesty and stale state", () => {
 
     expect(await screen.findByTestId("compare-current-baseline-verdict")).toHaveTextContent("CLEAR");
     expect(screen.getByTestId("compare-current-baseline-clear-boundary")).toHaveTextContent(/not cutover authorization/i);
-    expect(screen.getByTestId("compare-delta-verdict").style.color).toBe("var(--ok)");
+    expect(screen.getByTestId("compare-delta-verdict").style.color).toBe("var(--text-faint)");
+  });
+
+  it("renders the exact server-owned canonical gate first, then blockers and capped family evidence", async () => {
+    const { container } = mountTwoWaves();
+    const operatorNote = "Overall before/after cutover decision: FAIL. Do not proceed until the named current fault is cleared. "
+      + "This complete server note must survive presentation without truncation or page-local reinterpretation.";
+    const basisNote = "Comparison admission: ADMITTED. Delta observation: CLEAN. Current baseline: BLOCKED. Pre-Change Certificate: CONDITIONAL.";
+    const supportProfile = {
+      schema: "protocol_support_profile/1" as const,
+      family: "ipv4_routing_adjacency",
+      owner_schema: "protocol_adjacency_delta/1",
+      implementation_state: "implemented",
+      assurance_level: "observed_state_preservation" as const,
+      evidence_contracts: ["protocol_assessability/1"],
+      runtime_support_claim: "receipt_required_per_device_family_cell",
+      scope: { address_family: "IPv4" },
+      limitations: ["Observed-state preservation only."],
+    };
+    const binding = (snapshot_id: number, sha256: string) => ({
+      source: "persisted snapshots.snapshot_json blob",
+      sha256,
+      bytes: 1234,
+      snapshot_id,
+      campaign_id: 3,
+      engagement_id: "eng-east",
+      label: `Wave ${snapshot_id}`,
+      script_version: "3.30.0",
+    });
+    const admission: NonNullable<CompareResponse["comparison_admission"]> = {
+      schema: "protocol_comparison_admission/1",
+      status: "admitted",
+      decision_eligible: true,
+      assurance_level: "observed_state_preservation",
+      engagement_id: "eng-east",
+      campaign_id: 3,
+      source_binding: {
+        before: binding(1, `sha256:${"1".repeat(64)}`),
+        after: binding(2, `sha256:${"2".repeat(64)}`),
+      },
+      subject_binding: {
+        before: {
+          schema: "protocol_subject_identity_set/1", identity_kind: "local_snapshot_device",
+          n_subjects: 1, subjects: ["DIST-1"], subjects_sha256: `sha256:${"3".repeat(64)}`,
+          valid: true, failures: [],
+        },
+        after: {
+          schema: "protocol_subject_identity_set/1", identity_kind: "local_snapshot_device",
+          n_subjects: 1, subjects: ["DIST-1"], subjects_sha256: `sha256:${"4".repeat(64)}`,
+          valid: true, failures: [],
+        },
+      },
+      owner_versions: { cutover_gate: "cutover_gate/1" },
+      support_profiles: [supportProfile],
+      failures: [],
+      coverage_gaps: [],
+    };
+    const expected = [{
+      family: "ipv4_routing_adjacency", subject: "DIST-1|BGP|10.0.0.2",
+      transition: "recovered" as const, expected: true, before_state: "Idle", after_state: "Established",
+      decision_effect: "none" as const, note: "Expected recovery after maintenance.",
+    }];
+    const expectedBlock = {
+      family: "ipv4_routing_adjacency", subject: "DIST-EXPECTED|OSPF|10.0.0.254",
+      transition: "regressed" as const, expected: true, before_state: "FULL", after_state: "EXSTART",
+      decision_effect: "block" as const,
+      note: "Intent cannot neutralize this producer-owned regression.",
+    };
+    const neutralRecovery = {
+      family: "ipv4_routing_adjacency", subject: "DIST-RECOVERED|BGP|10.0.0.99",
+      transition: "recovered" as const, expected: false, before_state: "Idle", after_state: "Established",
+      decision_effect: "none" as const,
+      note: "Recovered evidence is favorable context, not an unexpected change.",
+    };
+    const unexpected = Array.from({ length: 10 }, (_, index) => ({
+      family: "ipv4_routing_adjacency", subject: `DIST-${index + 1}|OSPF|10.0.0.${index + 1}`,
+      transition: "regressed" as const, expected: false, before_state: "FULL", after_state: "EXSTART",
+      decision_effect: "block" as const, note: `Unexpected adjacency regression ${index + 1}.`,
+    }));
+    const coverage = Array.from({ length: 2 }, (_, index) => ({
+      family: "ipv4_routing_adjacency", subject: `DIST-${index + 20}|BGP|*`,
+      transition: "coverage_lost" as const, expected: false, before_state: "observed", after_state: "",
+      decision_effect: "not_verified" as const, note: `Capture lost ${index + 1}.`,
+    }));
+    const fullBaselineBlockers = Array.from({ length: 55 }, (_, index) => ({
+      device: `DIST-${index + 1}`, wave: "Group 1", category: "Routing", severity: "High",
+      check: `Baseline blocker ${index + 1}`, expect: "Observed state must be healthy.",
+      evidence_state: "degraded", projection_custody: "source_bound",
+      source_key: `validation_plan.items.${index}`,
+    }));
+    vi.spyOn(api, "compare").mockResolvedValue({
+      comparison_schema: "source_bound_cutover_comparison/1",
+      verdict: "CLEAN",
+      verdict_note: "No new topology regression was observed.",
+      findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+      current_baseline: {
+        schema: "current_baseline_gate/1", verdict: "BLOCKED", assessed: true,
+        note: "One current fault remains.",
+        summary: {
+          n_items: 55, n_blockers: 55, n_blockers_returned: 1, blockers_capped: true,
+          by_state: { degraded: 55, review: 0, not_verified: 0 },
+        },
+        blockers: [{
+          device: "DIST-1", wave: "Group 1", category: "Routing", severity: "High",
+          check: "OSPF is still EXSTART", expect: "FULL", evidence_state: "degraded",
+          projection_custody: "source_bound", source_key: "routing_neighbors.DIST-1.ospf",
+        }],
+        integrity: { valid: true, failures: [] },
+      },
+      comparison_admission: admission,
+      protocol_families: {
+        schema: "protocol_family_change_set/1", owner: "reference_only_composition",
+        owns_score: false, owns_verdict: false,
+        summary: {
+          n_families: 1, n_subject_changes: 15, n_expected: 2, n_unexpected: 10,
+          n_coverage_lost: 2, n_blocking: 11, n_review: 0, n_not_verified: 2,
+          by_decision_effect: { block: 11, review: 0, none: 2, not_verified: 2 },
+        },
+        families: [{
+          family: "ipv4_routing_adjacency", owner_schema: "protocol_adjacency_delta/1",
+          assurance_level: "observed_state_preservation", support_profile: supportProfile,
+          summary: {
+            n_subject_changes: 15, n_expected: 2, n_unexpected: 10, n_coverage_lost: 2,
+            n_blocking: 11, n_review: 0, n_not_verified: 2,
+            by_decision_effect: { block: 11, review: 0, none: 2, not_verified: 2 },
+            by_transition: {
+              unchanged_healthy: 0, unchanged_degraded: 0, recovered: 2, regressed: 11,
+              appeared: 0, disappeared: 0, intent_changed: 0, coverage_lost: 2, not_comparable: 0,
+            },
+          },
+          changes: [...expected, expectedBlock, neutralRecovery, ...unexpected, ...coverage],
+          source_receipt: { schema: "protocol_adjacency_delta/1", gate: "REGRESSED" },
+        }],
+      },
+      precert: {
+        schema: "precert/1", verdict: "CONDITIONAL",
+        verdict_note: "The path sample is clean but one named blind spot remains.",
+        flows: { assessed: true, capped: false, subnets_tested: 4, subnets_total: 4, changed: [] },
+        segmentation: [], intents: [], regressions: [], gate_failures: [],
+        blind_spots: ["One application path was not declared."], stamps: {},
+        integrity: { ok: true, failures: [] }, source_binding: admission.source_binding, schema_status: {},
+      },
+      operator_evidence: {
+        schema: "cutover_operator_evidence/1", owner: "reference_only_projection", owns_verdict: false,
+        current_baseline_blocker_export: {
+          schema: "current_baseline_blocker_export/1", owner: "reference_only_projection",
+          owns_verdict: false, status: "available",
+          source_owner: "validation_plan reconciled by current_baseline_gate/1",
+          rows: fullBaselineBlockers,
+          summary: {
+            n_blockers_total: 55, n_rows_returned: 55, omitted: 0, complete: true,
+            rows_sha256: `sha256:${"c".repeat(64)}`,
+          },
+          failures: [], note: "Complete uncapped blocker export.",
+        },
+        rehearsal: {
+          status: "current_fault", assurance_level: "not_verified",
+          source_owner: "failure_impact projection", n_impacts_total: 1,
+          impacts: [{ host: "DIST-1", severity: "High", detail: "three endpoints strand" }],
+          l2_failure_rehearsal: {
+            schema: "l2_failure_rehearsal/1", owner: "reference_only_composition",
+            owns_score: false, owns_verdict: false, status: "current_fault",
+            assurance_level: "not_verified", source_bound: true,
+            applicability: {
+              stp: false, etherchannel: true, multichassis_lag: true,
+            },
+            summary: {
+              n_scenarios: 2, n_current_faults: 1, n_projected_risks: 0, n_not_verified: 1,
+              n_applicable_families: 2,
+              by_disposition: {
+                simulation_only: 0, projected_risk: 0, current_fault: 1, not_verified: 1,
+              },
+            },
+            scenarios: [{
+              family: "etherchannel", subject: "DIST-1|Po1",
+              failure_scenario: "single_observed_forwarding_member_loss",
+              disposition: "current_fault", assurance_level: "not_verified",
+              source_owner: "etherchannel_delta/1", current_fault: true,
+              evidence: { observed_forwarding_capacity_units: 1, remaining_observed_units_after_loss: 0 },
+              note: "Current local bundle degradation remains present; service-path survival is not verified.",
+            }, {
+              family: "multichassis_lag", subject: "multichassis_lag|coverage",
+              failure_scenario: "single_peer_or_local_leg_loss",
+              disposition: "not_verified", assurance_level: "not_verified",
+              source_owner: "multichassis_lag_delta/1", current_fault: false, evidence: {},
+              note: "Reciprocal peer and matching LACP attachment evidence is unavailable.",
+            }],
+            limitations: ["Simulation is not an operator rehearsal."],
+          },
+          note: "Simulation exists, but no source-bound operator rehearsal receipt was supplied.",
+        },
+        rollback: {
+          status: "planned", assurance_level: "not_verified",
+          source_owner: "migration_scenarios playbook.rollback", n_groups_total: 1, n_plans_total: 1,
+          plans: [{ group: "Group 1", recommended_scenario: "phased", rollback: "Re-home the wave to the retained legacy uplinks." }],
+          note: "A rollback plan exists; plan presence is not proof of rehearsal.",
+        },
+      },
+      cutover_gate: {
+        schema: "cutover_gate/1", verdict: "FAIL", note: basisNote, operator_note: operatorNote,
+        delta_verdict: "CLEAN", delta_display: "CLEAN", delta_note: "No new topology regression was observed.",
+        certificate_verdict: "CONDITIONAL", certificate_note: "One named blind spot remains.",
+        protocol_gate: "REGRESSED", protocol_baseline_peers: 11, protocol_regressions: 10,
+        protocol_coverage_gaps: 2, comparison_admission_status: "admitted",
+        comparison_admission_note: "Bound source identities and owner semantics were admitted.",
+        current_baseline_verdict: "BLOCKED", current_baseline_note: "One current fault remains.",
+        current_baseline_blockers: 55, current_baseline_degraded: 55,
+        current_baseline_review: 0, current_baseline_not_verified: 0,
+      },
+      comparison_receipt: {
+        schema: "protocol_receipt_envelope/1", admission,
+        source_binding: admission.source_binding, subject_binding: admission.subject_binding,
+        owner_versions: admission.owner_versions, support_profiles: [supportProfile],
+        payload_sha256: `sha256:${"a".repeat(64)}`, receipt_sha256: `sha256:${"b".repeat(64)}`,
+      },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    const canonical = await screen.findByTestId("canonical-cutover-decision");
+    const baseline = screen.getByTestId("compare-current-baseline");
+    expect(canonical.compareDocumentPosition(baseline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("canonical-cutover-verdict")).toHaveTextContent("FAIL");
+    expect(screen.getByTestId("canonical-cutover-verdict").style.color).toBe("var(--crit)");
+    expect(screen.getByTestId("canonical-cutover-operator-note").textContent).toBe(operatorNote);
+    expect(screen.getByTestId("canonical-cutover-basis").textContent).toBe(basisNote);
+    expect(screen.getByTestId("current-baseline-cap-disclosure")).toHaveTextContent(
+      "Rendered: 1 · Total: 55 · Omitted: 54",
+    );
+    expect(screen.getByTestId("current-baseline-cap-disclosure")).toHaveTextContent(
+      "Complete comparison JSON contains 55 of 55 blocker rows (omitted 0)",
+    );
+    expect(screen.getByTestId("protocol-family-server-summary")).toHaveTextContent("2 expected");
+    expect(screen.getByTestId("protocol-family-server-summary")).toHaveTextContent("10 unexpected");
+    expect(screen.getByTestId("protocol-family-server-summary")).toHaveTextContent("2 coverage lost");
+    expect(screen.getByTestId("protocol-family-summary-reconciliation")).toHaveTextContent("RECONCILED");
+    const expectedSection = screen.getByTestId("family-change-expected-section");
+    const unexpectedSection = screen.getByTestId("family-change-unexpected-section");
+    const coverageSection = screen.getByTestId("family-change-coverage-section");
+    expect(baseline.compareDocumentPosition(expectedSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(expectedSection.compareDocumentPosition(unexpectedSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(unexpectedSection.compareDocumentPosition(coverageSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(expectedSection).getAllByTestId("family-change-expected-row")).toHaveLength(2);
+    const expectedBlockRow = within(expectedSection).getByText(/DIST-EXPECTED/).closest("[data-testid='family-change-expected-row']")!;
+    expect(within(expectedBlockRow).getByTestId("family-change-expected-row-expectation")).toHaveTextContent("EXPECTED");
+    expect(within(expectedBlockRow).getByTestId("family-change-expected-row-effect")).toHaveTextContent("BLOCK");
+    expect(within(expectedBlockRow).getByTestId("family-change-expected-row-effect").style.color).toBe("var(--crit)");
+    expect(within(unexpectedSection).getAllByTestId("family-change-unexpected-row")).toHaveLength(8);
+    expect(within(unexpectedSection).getByText(/Rendered: 8 · Total: 10 · Omitted: 2/)).toBeInTheDocument();
+    expect(within(unexpectedSection).queryByText(/DIST-RECOVERED/)).not.toBeInTheDocument();
+    expect(within(coverageSection).getAllByTestId("family-change-coverage-row")).toHaveLength(2);
+    expect(within(coverageSection).getByText(/Rendered: 2 · Total: 2 · Omitted: 0/)).toBeInTheDocument();
+    expect(screen.getByTestId("protocol-family-drilldown-only")).toHaveTextContent(
+      "1 non-expected producer row(s) have decision effect NONE",
+    );
+    const portfolio = screen.getByTestId("protocol-assurance-portfolio");
+    const familyDrilldown = within(portfolio).getByTestId("protocol-assurance-family");
+    expect(familyDrilldown).toHaveTextContent("ipv4_routing_adjacency");
+    fireEvent.click(familyDrilldown.querySelector("summary")!);
+    expect(within(portfolio).getAllByTestId("protocol-assurance-subject")).toHaveLength(8);
+    expect(within(portfolio).getByText(/Rendered: 8 · Total: 15 · Omitted: 7/)).toBeInTheDocument();
+    expect(within(portfolio).getByText(/DIST-RECOVERED/)).toBeInTheDocument();
+    expect(screen.getByTestId("comparison-admission-status")).toHaveTextContent("ADMITTED");
+    const service = screen.getByTestId("comparison-precert");
+    const rehearsal = screen.getByTestId("comparison-rehearsal");
+    const rollback = screen.getByTestId("comparison-rollback");
+    const custody = screen.getByTestId("comparison-admission");
+    expect(coverageSection.compareDocumentPosition(service) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(service.compareDocumentPosition(rehearsal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rehearsal.compareDocumentPosition(rollback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rollback.compareDocumentPosition(custody) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("comparison-rehearsal-status")).toHaveTextContent("CURRENT FAULT");
+    const l2Rehearsal = screen.getByTestId("comparison-l2-rehearsal");
+    expect(within(l2Rehearsal).getByTestId("comparison-l2-rehearsal-status")).toHaveTextContent("CURRENT FAULT");
+    expect(within(l2Rehearsal).getAllByTestId("comparison-l2-rehearsal-row")).toHaveLength(2);
+    expect(within(l2Rehearsal).getByText(/service-path survival is not verified/i)).toBeInTheDocument();
+    expect(within(l2Rehearsal).getByText(/Rendered: 2 · Total: 2 · Omitted: 0/)).toBeInTheDocument();
+    expect(screen.getByTestId("comparison-rollback-status")).toHaveTextContent("PLANNED");
+    expect(screen.getByTestId("comparison-rollback-row")).toHaveTextContent("retained legacy uplinks");
+    expect(screen.getByTestId("comparison-receipt-digests")).toHaveTextContent(`sha256:${"b".repeat(64)}`);
+    expect(screen.getByRole("button", { name: "Export complete JSON" })).toBeInTheDocument();
+  });
+
+  it("renders a neutral canonical absence before legacy delta evidence", async () => {
+    const { container } = mountTwoWaves();
+    vi.spyOn(api, "compare").mockResolvedValue({
+      verdict: "CLEAN", findings: {}, health: {}, cabling: { assessed: true, summary: {} },
+    });
+    await screen.findByText("Compare two waves");
+    fireEvent.change(container.querySelectorAll("select")[0], { target: { value: "1" } });
+    fireEvent.change(container.querySelectorAll("select")[1], { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
+    const canonical = await screen.findByTestId("canonical-cutover-decision");
+    const delta = screen.getByTestId("compare-delta-verdict");
+    expect(canonical.compareDocumentPosition(delta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("canonical-cutover-verdict")).toHaveTextContent("NOT VERIFIED");
+    expect(screen.getByTestId("canonical-cutover-verdict").style.color).toBe("var(--text-faint)");
+    expect(screen.getByTestId("canonical-cutover-legacy-absence")).toHaveTextContent(/supporting evidence, not cutover authorization/i);
   });
 
   it("projects the receipt-gated protocol adjacency result and its exact compare notes", async () => {

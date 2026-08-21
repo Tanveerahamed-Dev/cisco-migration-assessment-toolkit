@@ -28,6 +28,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 import synthetic_fixtures as fx
+from cisco_toolkit.multichassis_lag import validate_multichassis_lag_domain_baseline
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
@@ -233,6 +234,85 @@ def test_snapshot_matches_golden(golden_run):
     assert set(snap) == set(golden), "snapshot top-level keys changed"
     for key in golden:
         assert snap[key] == golden[key], f"snapshot section '{key}' changed vs golden"
+
+
+def test_stp_topology_owner_and_schema_census_ship_fail_closed(golden_run):
+    """The real pipeline publishes typed STP rows without inventing missing counters."""
+    from cisco_toolkit.stp_topology import validate_stp_topology_baseline
+
+    snap, _xlsx = golden_run
+    observations = snap["stp_topology_observations"]
+    baseline = snap["stp_topology_baseline"]
+
+    assert set(observations) == set(snap["devices"])
+    assert all(
+        row["schema"] == "stp_topology_observation/1"
+        and row["state_capture_state"] == "usable"
+        and row["detail_capture_state"] == "missing"
+        and row["roles"]
+        and {role["namespace"] for role in row["roles"]} == {"pvst_vlan"}
+        and "topology_counter_missing" in row["finding_codes"]
+        for row in observations.values()
+    )
+    assert validate_stp_topology_baseline(
+        baseline,
+        observations=observations,
+        legacy_roots=snap["stp_roots"],
+        devices=snap["devices"],
+    )["valid"] is True
+    assert baseline["verdict"] == "INDETERMINATE"
+    assert all(row["topology_change_count"] is None for row in baseline["rows"])
+    assert all(cell["status"] == "not_verified" for cell in baseline["coverage"])
+
+    census = {row["key"]: row for row in snap["schema_census"]["sections"]}
+    assert census["stp_topology_observations"]["state"] == "published"
+    assert census["stp_topology_baseline"]["state"] == "published"
+
+
+def test_etherchannel_operational_owner_ships_source_bound_and_fail_closed(golden_run):
+    """The pipeline publishes typed depth without upgrading incomplete legacy fixtures."""
+    from cisco_toolkit.etherchannel import validate_etherchannel_operational_evidence
+
+    snap, _xlsx = golden_run
+    evidence = snap["etherchannel_operational_evidence"]
+    view = validate_etherchannel_operational_evidence(evidence)
+
+    assert view["valid"] is True
+    assert evidence["projection_custody"] == "embedded_unverified"
+    assert evidence["verdict"] == "INDETERMINATE"
+    assert {row["switch"] for row in evidence["rows"]} == {"core1", "core2"}
+    assert all(row["status"] in {"review", "not_verified"} for row in evidence["rows"])
+    assert all(
+        row["member_failure_rehearsal"]["service_path_survival"] == "not_verified"
+        for row in evidence["rows"]
+    )
+    census = {row["key"]: row for row in snap["schema_census"]["sections"]}
+    assert census["etherchannel_operational_evidence"]["state"] == "published"
+
+
+def test_multichassis_raw_producer_blocks_ship_fail_closed(golden_run):
+    """The real offline pipeline publishes both audit input and its canonical stored baseline.
+
+    The synthetic EOS fixture has the existing standard ``show mlag`` capture but not the newly
+    required explicit peer-identity/LACP files, so custody is exact while assurance abstains.
+    """
+    snap, _xlsx = golden_run
+    typed = snap["multichassis_lag_typed_observations"]
+    baseline = snap["multichassis_lag_domain_baseline"]
+
+    assert len(typed["observations"]) == 1
+    assert typed["observations"][0]["switch"] == "core2"
+    assert typed["observations"][0]["source"]["capture_status"] == "incomplete"
+    assert typed["observations"][0]["source"]["commands"] == ["show mlag"]
+    assert baseline["projection_custody"] == "current_run_source_bound"
+    assert baseline["reciprocal_peer_pairs"] == []
+    assert baseline["reconciled_attachments"] == []
+    local = baseline["local_observations"][0]
+    assert local["health_state"] == "degraded"  # fixture also has an explicit config-sanity fault
+    assert {finding["code"] for finding in local["findings"]} >= {
+        "source_capture_incomplete", "local_identity_missing", "peer_identity_missing",
+    }
+    assert validate_multichassis_lag_domain_baseline(baseline)["valid"] is True
 
 
 def test_excel_sheet_schema_matches_golden(golden_run):

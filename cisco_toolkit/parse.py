@@ -1931,6 +1931,77 @@ def parse_arista_mlag(output: str) -> dict:
     }
 
 
+def parse_arista_mlag_interfaces(output: str) -> list:
+    """EOS ``show mlag interfaces detail`` -> one local MLAG-leg row per table entry.
+
+    The documented remote port-channel/status columns remain observations; they are never
+    promoted to peer-device identity.  EOS' MLAG system-id is the shared domain MAC, not either
+    peer's chassis identity.
+    """
+    rows = []
+    for line in (output or "").splitlines():
+        # Documented EOS shape:
+        #   4 active-full Po4 Po4 up/up ena/ena 6 days, 1:19:26 ago 5
+        match = re.match(
+            r"^\s*(\d+)\s+(\S+)\s+(Po\d+)\s+(Po\d+|-)\s+"
+            r"(up|down|-)/(up|down|-)\s+(ena|dis|-)/(ena|dis|-)\b",
+            line,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        rows.append({
+            "mlag_id": str(int(match.group(1))),
+            "state": match.group(2).strip().lower(),
+            "local_port_channel": f"Po{int(match.group(3)[2:])}",
+            "remote_port_channel": (
+                f"Po{int(match.group(4)[2:])}"
+                if match.group(4) != "-" else ""
+            ),
+            "local_oper_status": match.group(5).lower(),
+            "remote_oper_status": match.group(6).lower(),
+            "local_config_status": match.group(7).lower(),
+            "remote_config_status": match.group(8).lower(),
+        })
+        if len(rows) >= 4096:
+            break
+    return rows
+
+
+def parse_arista_lacp_peer(output: str) -> list:
+    """EOS ``show lacp peer`` -> explicit partner system/key rows per port-channel."""
+    rows = []
+    port_channel = ""
+    for line in (output or "").splitlines():
+        section = re.match(
+            r"^\s*Port\s+Channel\s+Port-Channel\s*(\d+)\s*\*?\s*:\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if section:
+            port_channel = f"Po{int(section.group(1))}"
+            continue
+        if not port_channel:
+            continue
+        member = re.match(
+            r"^\s*(Et\S+)\s+Bundled\s*\|\s*"
+            r"(?:0x)?[0-9a-f]+\s*,\s*([0-9a-f.:-]{11,17})\s+"
+            r"\S+\s+\S+\s+(0x[0-9a-f]+|\d+)\b",
+            line,
+            re.IGNORECASE,
+        )
+        if member:
+            rows.append({
+                "port_channel": port_channel,
+                "local_member": member.group(1),
+                "partner_system_id": member.group(2),
+                "partner_oper_key": member.group(3),
+            })
+            if len(rows) >= 4096:
+                break
+    return rows
+
+
 def parse_arista_bgp_evpn_summary(output: str) -> list:
     """Arista EOS 'show bgp evpn summary | json' -> [{vrf, peer, state, asn}] per EVPN BGP peer, or [] when no
     BGP-EVPN is configured / not present. This is the overlay CONTROL plane of an Arista BGP-EVPN/VXLAN fabric --
@@ -2828,6 +2899,104 @@ def parse_vlan_brief(output: str) -> Dict[str, Dict[str, object]]:
 _STP_STS_NAME = {"FWD": "Forwarding", "BLK": "Blocked", "BKN": "Blocked",
                  "LIS": "Listening", "LRN": "Learning", "DIS": "Disabled"}
 
+_STP_ROLE_NAME = {
+    "ROOT": "root",
+    "DESG": "designated",
+    "ALTN": "alternate",
+    "BACK": "backup",
+    "BOUN": "boundary",
+    "MSTR": "master",
+}
+
+
+def parse_spanning_tree_role_rows(output: str) -> List[Dict[str, object]]:
+    """Parse namespace-aware STP port roles and states from ``show spanning-tree``.
+
+    This is additive to :func:`parse_spanning_tree_detail`: the legacy helper intentionally
+    retains its historical ``{interface: {state: [id]}}`` shape.  Decision-grade comparison
+    needs the namespace and role that shape discarded, so this owner returns one closed row per
+    ``(namespace, instance, interface)`` without inferring a role from forwarding state.
+    """
+    rows: List[Dict[str, object]] = []
+    if not output:
+        return rows
+    header = re.compile(r"^(VLAN|MST)0*(\d+)\b", re.IGNORECASE)
+    port = re.compile(
+        r"^(\S+)\s+(Root|Desg|Altn|Back|Boun|Mstr)\*?\s+"
+        r"(FWD|BLK|LIS|LRN|DIS|BKN)\b",
+        re.IGNORECASE,
+    )
+    namespace = instance = ""
+    seen: set[tuple[str, str, str]] = set()
+    for raw in output.splitlines():
+        text = raw.strip()
+        if not text:
+            continue
+        match = header.match(text)
+        if match:
+            namespace = "pvst_vlan" if match.group(1).upper() == "VLAN" else "mst_instance"
+            instance = str(int(match.group(2)))
+            continue
+        match = port.match(text)
+        if not match or not namespace or not is_valid_iface(match.group(1)):
+            continue
+        interface = normalize_ifname(match.group(1))
+        key = (namespace, instance, interface)
+        if key in seen:
+            # A duplicate subject is withheld instead of allowing line order to choose a winner.
+            continue
+        seen.add(key)
+        rows.append({
+            "namespace": namespace,
+            "instance": instance,
+            "interface": interface,
+            "role": _STP_ROLE_NAME[match.group(2).upper()],
+            "state": _STP_STS_NAME[match.group(3).upper()].casefold(),
+        })
+    return rows
+
+
+def parse_spanning_tree_topology_changes(output: str) -> List[Dict[str, object]]:
+    """Parse per-PVST-VLAN/MST-instance topology-change counters from detail output.
+
+    A counter is emitted only while an explicit VLAN or MST instance header is in scope.  A
+    headerless aggregate number is intentionally ignored: assigning it to a VLAN/instance would
+    fabricate the subject identity needed by the cutover comparison.
+    """
+    rows: List[Dict[str, object]] = []
+    if not output:
+        return rows
+    header = re.compile(r"^(?:#+\s*)?(VLAN|MST)0*(\d+)\b", re.IGNORECASE)
+    counter = re.compile(
+        r"number\s+of\s+topology\s+changes\s+(\d+)(?:\s+last\s+change\s+occurred\s+(.+?))?\s*$",
+        re.IGNORECASE,
+    )
+    namespace = instance = ""
+    seen: set[tuple[str, str]] = set()
+    for raw in output.splitlines():
+        text = raw.strip()
+        if not text:
+            continue
+        match = header.match(text)
+        if match:
+            namespace = "pvst_vlan" if match.group(1).upper() == "VLAN" else "mst_instance"
+            instance = str(int(match.group(2)))
+            continue
+        match = counter.search(text)
+        if not match or not namespace:
+            continue
+        key = (namespace, instance)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "namespace": namespace,
+            "instance": instance,
+            "count": int(match.group(1)),
+            "last_change": (match.group(2) or "").strip(),
+        })
+    return rows
+
 def parse_spanning_tree_detail(output: str) -> Dict[str, Dict[str, List[str]]]:
     """Parse full 'show spanning-tree' -> {ifname: {state_name: [vlan/instance ids]}}.
 
@@ -2935,6 +3104,141 @@ def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
             rec["bridge_priority"] = r["bridge_priority"]
         out[vlan] = rec
     return out
+
+
+def parse_vpc_role(output: str) -> dict:
+    """NX-OS ``show vpc role`` -> explicit local/peer device system-MAC identities.
+
+    ``vPC system-mac`` is intentionally ignored: it is the shared vPC-domain identity.  Only
+    the separately labelled local and peer system-MAC leaves can participate in reciprocal pair
+    reconciliation.
+    """
+    def _leaf(label: str) -> str:
+        match = re.search(
+            rf"^\s*{label}\s*:\s*([^\s]+)\s*$",
+            output or "",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        return match.group(1).strip() if match else ""
+
+    local = _leaf(r"vPC\s+local\s+system-mac")
+    peer = _leaf(r"vPC\s+peer\s+system-mac")
+    dual_active = _leaf(r"Dual\s+Active\s+Detection\s+Status")
+    if not local and not peer and not dual_active:
+        return {}
+    return {
+        "local_system_mac": local,
+        "peer_system_mac": peer,
+        "dual_active_status": dual_active,
+    }
+
+
+def parse_nxos_lacp_neighbors(output: str) -> list:
+    """NX-OS ``show lacp neighbor`` -> explicit partner system/key rows per port-channel.
+
+    Supports both documented CLI tables and the NX-API JSON body.  A row is emitted only when
+    port-channel, member, partner-system-id, and partner-oper-key are explicit leaves in the
+    command output; no port-channel ID is reused as the partner aggregation identity.
+    """
+    rows = []
+
+    # NX-API JSON: walk only the documented TABLE_interface/ROW_interface leaves.  The envelope
+    # varies (bare body vs ins_api.outputs.output.body), so locate those keys recursively with a
+    # strict depth/row bound rather than accepting arbitrary similarly named scalar guesses.
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        obj = None
+    if isinstance(obj, dict):
+        pending = [(obj, 0)]
+        tables = []
+        seen = 0
+        while pending and seen < 4096:
+            node, depth = pending.pop()
+            seen += 1
+            if depth > 12:
+                continue
+            if isinstance(node, dict):
+                table = node.get("TABLE_interface")
+                if isinstance(table, dict):
+                    tables.append(table)
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        pending.append((value, depth + 1))
+            elif isinstance(node, list):
+                for value in node[:4096]:
+                    if isinstance(value, (dict, list)):
+                        pending.append((value, depth + 1))
+        for table in tables[:32]:
+            interfaces = table.get("ROW_interface")
+            if isinstance(interfaces, dict):
+                interfaces = [interfaces]
+            for interface in interfaces[:4096] if isinstance(interfaces, list) else []:
+                if not isinstance(interface, dict):
+                    continue
+                port_channel = str(interface.get("interface", "") or "")
+                member_table = interface.get("TABLE_member")
+                members = member_table.get("ROW_member") if isinstance(member_table, dict) else None
+                if isinstance(members, dict):
+                    members = [members]
+                for member in members[:4096] if isinstance(members, list) else []:
+                    if not isinstance(member, dict):
+                        continue
+                    system = str(member.get("partner-system-id", "") or "")
+                    if "," in system:
+                        system = system.split(",", 1)[1]
+                    rows.append({
+                        "port_channel": port_channel,
+                        "local_member": str(member.get("port", "") or ""),
+                        "partner_system_id": system,
+                        "partner_oper_key": str(member.get("partner-oper-key", "") or ""),
+                    })
+                    if len(rows) >= 4096:
+                        return rows
+        if rows:
+            return rows
+
+    # Documented CLI tables.  Each member has an explicit System ID row followed by its LACP
+    # Partner Port Priority / Oper Key / Port State row.
+    port_channel = ""
+    pending_member = None
+    for line in (output or "").splitlines():
+        section = re.match(
+            r"^\s*(?:port-channel|Po)\s*(\d+)\s+neighbors?\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if section:
+            port_channel = f"Po{int(section.group(1))}"
+            pending_member = None
+            continue
+        if not port_channel:
+            continue
+        member = re.match(
+            r"^\s*((?:Eth|Ethernet)\S+)\s+"
+            r"(?:0x)?[0-9a-f]+\s*,\s*([0-9a-f.:-]{11,17})",
+            line,
+            re.IGNORECASE,
+        )
+        if member:
+            pending_member = {
+                "port_channel": port_channel,
+                "local_member": member.group(1),
+                "partner_system_id": member.group(2),
+            }
+            continue
+        key = re.match(
+            r"^\s*(?:0x[0-9a-f]+|\d+)\s+(0x[0-9a-f]+|\d+)\s+"
+            r"(?:0x[0-9a-f]+|\d+)\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if key and pending_member is not None:
+            rows.append({**pending_member, "partner_oper_key": key.group(1)})
+            pending_member = None
+            if len(rows) >= 4096:
+                break
+    return rows
 
 
 def parse_vpc(output: str) -> dict:

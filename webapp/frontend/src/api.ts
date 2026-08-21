@@ -183,6 +183,714 @@ export interface CurrentBaselineGate {
   limitations?: string[];
 }
 
+// -- source-bound before/after protocol assurance -------------------------
+// These contracts are projections of the server-owned Release-1 receipts. Presentation code may
+// cap rows, but must never derive an overall verdict from those rendered subsets: cutover_gate/1
+// is the sole before/after decision owner.
+export type SnapshotDeltaVerdict = "CLEAN" | "REVIEW" | "REGRESSED" | "INDETERMINATE";
+export type CutoverGateVerdict = "PASS" | "CONDITIONAL" | "REVIEW" | "INDETERMINATE" | "FAIL" | "REGRESSED";
+export type ProtocolComparisonStatus = "admitted" | "coverage_lost" | "not_comparable";
+export type ProtocolChangeTransition =
+  | "unchanged_healthy"
+  | "unchanged_degraded"
+  | "recovered"
+  | "regressed"
+  | "appeared"
+  | "disappeared"
+  | "intent_changed"
+  | "coverage_lost"
+  | "not_comparable";
+export type ProtocolAssuranceLevel =
+  | "intent_reconciled_survival"
+  | "observed_state_preservation"
+  | "local_safety_preservation"
+  | "not_verified";
+
+export interface ProtocolSourceBinding {
+  source: string;
+  sha256: string;
+  bytes?: number;
+  snapshot_id: number;
+  campaign_id: number;
+  engagement_id: string;
+  label?: string;
+  script_version?: string;
+}
+
+export interface ProtocolSupportProfile {
+  schema: "protocol_support_profile/1";
+  family: string;
+  owner_schema: string;
+  implementation_state: string;
+  assurance_level: ProtocolAssuranceLevel;
+  evidence_contracts?: string[];
+  runtime_support_claim: string;
+  scope?: Record<string, unknown>;
+  variants?: Array<Record<string, unknown>>;
+  limitations: string[];
+}
+
+export type ProtocolEvidenceStatus = "observed" | "partial" | "not_applicable" | "not_verified";
+
+/**
+ * Closed, secret-free subject-detail projection published by protocol_single_snapshot_receipt/1.
+ * Presentation code may render only these producer fields; unknown runtime keys are not evidence.
+ */
+export const PROTOCOL_SUBJECT_DETAIL_FIELDS = [
+  "switch",
+  "protocol",
+  "interface",
+  "peer",
+  "group",
+  "domain_key",
+  "record_type",
+  "attachment_id",
+  "pair_id",
+  "namespace",
+  "instance",
+  "role",
+  "state",
+  "root_address",
+  "is_root",
+  "topology_change_count",
+  "operational_state",
+  "mode",
+  "domain",
+  "version",
+  "revision",
+  "database_identity",
+  "vlan_database_digest",
+  "vlan_count",
+  "pruning_state",
+  "authentication_configured",
+  "configured_members",
+  "runtime_members",
+  "partner",
+  "min_links",
+  "capacity",
+  "hashing",
+  "counter_evidence",
+  "member_failure_rehearsal",
+  "finding_codes",
+] as const;
+
+export type ProtocolSubjectDetailField = typeof PROTOCOL_SUBJECT_DETAIL_FIELDS[number];
+export type ProtocolSubjectDetail = Partial<Record<ProtocolSubjectDetailField, unknown>>;
+
+export interface ProtocolSingleSnapshotSubject {
+  family: string;
+  subject: string;
+  kind: string;
+  evidence_state: string;
+  source_contract: string;
+  detail: ProtocolSubjectDetail;
+}
+
+export interface ProtocolSingleSnapshotFamily {
+  family: string;
+  owner_schema: string;
+  assurance_level: ProtocolAssuranceLevel;
+  evidence_contracts: string[];
+  evidence_status: ProtocolEvidenceStatus;
+  status_reason: string;
+  source_custody: string;
+  producer_summary: Record<string, unknown>;
+  producer_state_counts: Record<string, number>;
+  coverage_state_counts: Record<string, number>;
+  subject_total: number;
+  subjects: {
+    total: number;
+    rendered: number;
+    omitted: number;
+    rows: ProtocolSingleSnapshotSubject[];
+  };
+  limitations: string[];
+}
+
+export interface ProtocolSingleSnapshotReceipt {
+  schema: "protocol_single_snapshot_receipt/1";
+  owner_version: string;
+  owns_score: false;
+  owns_verdict: false;
+  custody_status: "bound" | "not_verified";
+  custody_failures: string[];
+  source_binding: ProtocolSourceBinding & { bytes: number };
+  script_owner: {
+    source: string;
+    snapshot_value: string;
+    stored_value: string;
+    status: "bound" | "not_verified";
+  };
+  support_profiles: ProtocolSupportProfile[];
+  summary: {
+    n_families: number;
+    n_subjects_total: number;
+    by_evidence_status: Record<ProtocolEvidenceStatus, number> | Record<string, number>;
+  };
+  families: ProtocolSingleSnapshotFamily[];
+  render_cap: number;
+  complete_export: {
+    schema: "protocol_single_snapshot_export/1";
+    sha256: string;
+    media_type: "application/json";
+  };
+  custody_note: string;
+  receipt_sha256: string;
+}
+
+export interface ProtocolAssuranceSection {
+  section: "protocol_assurance";
+  data: {
+    receipt: ProtocolSingleSnapshotReceipt;
+    complete_export: ProtocolSingleSnapshotReceipt["complete_export"] & { url: string };
+  };
+}
+
+export interface ProtocolSubjectIdentitySet {
+  schema: "protocol_subject_identity_set/1";
+  identity_kind: string;
+  n_subjects: number;
+  subjects: string[];
+  subjects_sha256: string;
+  valid: boolean;
+  failures: string[];
+}
+
+export interface ExpectedProtocolFamilyChange {
+  family: string;
+  transitions: ProtocolChangeTransition[];
+  subjects: string[];
+  reason: string;
+  /** Explicit specialized intent; revision reset is never inferred from counter movement. */
+  intent_kind?: "" | "revision_reset";
+}
+
+export interface CutoverChangeIntent {
+  schema: "cutover_change_intent/1";
+  status: "invalid" | "reconciled" | "not_supplied";
+  valid: boolean;
+  note: string;
+  binding: {
+    engagement_id: string;
+    campaign_id: number;
+    before_snapshot_id: number;
+    after_snapshot_id: number;
+    before_sha256: string;
+    after_sha256: string;
+  };
+  expected_changes: ExpectedProtocolFamilyChange[];
+  expected_changes_sha256: string;
+  failures: string[];
+}
+
+/** Input form accepted by /api/compare and the execution comparison endpoint. */
+export interface CutoverChangeIntentInput {
+  expected_changes?: Array<{
+    family: string;
+    transitions: ProtocolChangeTransition[];
+    subjects?: string[];
+    reason?: string;
+    intent_kind?: "revision_reset";
+  }>;
+  note?: string;
+}
+
+/** Optional observed local-L2 trial acquisition. Recovery is always the comparison's new/after id. */
+export interface L2FailureTrialInput {
+  pre_failure_snapshot_id: number;
+  post_failure_snapshot_id: number;
+  /** Exact operator witness JSON bytes encoded for transport; the server independently binds them. */
+  witness_json_base64: string;
+}
+
+export interface ProtocolComparisonAdmission {
+  schema: "protocol_comparison_admission/1";
+  status: ProtocolComparisonStatus;
+  decision_eligible: boolean;
+  assurance_level: ProtocolAssuranceLevel;
+  engagement_id: string;
+  campaign_id: number;
+  source_binding: { before: ProtocolSourceBinding; after: ProtocolSourceBinding };
+  subject_binding: { before: ProtocolSubjectIdentitySet; after: ProtocolSubjectIdentitySet };
+  owner_versions: Record<string, string>;
+  support_profiles: ProtocolSupportProfile[];
+  failures: string[];
+  coverage_gaps: string[];
+}
+
+export interface ProtocolFamilyChange {
+  family: string;
+  subject: string;
+  /** Native subject identity class; multichassis keeps local/pair/leg/attachment distinct. */
+  subject_kind?:
+    | "local_observation"
+    | "reciprocal_peer_pair"
+    | "local_leg"
+    | "reconciled_attachment"
+    | string;
+  transition: ProtocolChangeTransition;
+  /** Producer-reconciled intent classification. UI code displays this value; it does not infer it. */
+  expected: boolean;
+  decision_effect: "block" | "review" | "none" | "not_verified";
+  /** Producer-owned observation classification; it is not operator intent. */
+  change_kind?: "configuration_movement" | "revision_decrease_observed" | string;
+  /** Family-native owners publish typed state objects; the IPv4 v1 adapter still publishes strings. */
+  before_state: unknown;
+  after_state: unknown;
+  note: string;
+}
+
+export interface ProtocolFamilyChangeSummary {
+  n_subject_changes: number;
+  n_implicit_unchanged_healthy?: number;
+  n_expected: number;
+  n_unexpected: number;
+  n_coverage_lost: number;
+  n_blocking?: number;
+  n_review?: number;
+  n_not_verified?: number;
+  by_transition: Record<ProtocolChangeTransition, number>;
+  by_decision_effect?: Record<ProtocolFamilyChange["decision_effect"], number>;
+}
+
+export interface ProtocolFamilyChanges {
+  family: string;
+  owner_schema: string;
+  assurance_level: ProtocolAssuranceLevel;
+  support_profile: ProtocolSupportProfile;
+  summary: ProtocolFamilyChangeSummary;
+  changes: ProtocolFamilyChange[];
+  source_receipt: ProtocolAdjacencyDelta | Record<string, unknown>;
+  composition_failures?: string[];
+}
+
+export interface ProtocolFamilyChangeSet {
+  schema: "protocol_family_change_set/1";
+  owner: "reference_only_composition" | string;
+  owns_score: false;
+  owns_verdict: false;
+  summary: {
+    n_families: number;
+    n_subject_changes: number;
+    n_expected: number;
+    n_unexpected: number;
+    n_coverage_lost: number;
+    n_blocking?: number;
+    n_review?: number;
+    n_not_verified?: number;
+    by_transition?: Record<ProtocolChangeTransition, number>;
+    by_decision_effect?: Record<ProtocolFamilyChange["decision_effect"], number>;
+  };
+  families: ProtocolFamilyChanges[];
+}
+
+export interface ProtocolAdjacencyDelta {
+  schema?: "protocol_adjacency_delta/1" | string;
+  gate?: "PASS" | "REVIEW" | "REGRESSED" | "NOT_ASSESSED" | string;
+  assessed?: boolean;
+  scope?: string;
+  projection_custody?: string;
+  summary?: Partial<Record<
+    | "n_baseline_peers"
+    | "n_scoped_cells"
+    | "n_comparable_cells"
+    | "n_preserved"
+    | "n_state_regressed"
+    | "n_recovered"
+    | "n_no_longer_observed"
+    | "n_added"
+    | "n_metadata_changed"
+    | "n_coverage_gaps",
+    number
+  >>;
+  changes?: Array<Record<string, unknown>>;
+  coverage_gaps?: Array<Record<string, unknown>>;
+  note?: string;
+  limitations?: string[];
+}
+
+export interface PrecertReceipt {
+  schema: "precert/1";
+  verdict: "PASS" | "CONDITIONAL" | "FAIL" | "INDETERMINATE";
+  verdict_note: string;
+  flows: Record<string, unknown> & {
+    assessed?: boolean;
+    capped?: boolean;
+    subnets_tested?: number;
+    subnets_total?: number;
+    changed?: Array<Record<string, unknown>>;
+    inconclusive?: Array<Record<string, unknown>>;
+    ecmp_partial_drop?: Array<Record<string, unknown>>;
+  };
+  segmentation: Array<Record<string, unknown>>;
+  intents: Array<Record<string, unknown>>;
+  regressions: string[];
+  gate_failures: string[];
+  blind_spots: string[];
+  stamps: Record<string, unknown>;
+  integrity: { ok: boolean; failures: string[] };
+  source_binding: { before?: ProtocolSourceBinding; after?: ProtocolSourceBinding } | Record<string, unknown>;
+  schema_status: Record<string, unknown>;
+}
+
+export interface CutoverGate {
+  schema: "cutover_gate/1";
+  verdict: CutoverGateVerdict;
+  /** Complete server-owned decision basis; presentation code must not replace or shorten it. */
+  note: string;
+  /** Operator-facing server-owned conclusion and action. */
+  operator_note: string;
+  delta_verdict: SnapshotDeltaVerdict;
+  delta_display: string;
+  delta_note: string;
+  certificate_verdict: PrecertReceipt["verdict"];
+  certificate_note: string;
+  protocol_gate: string;
+  protocol_baseline_peers: number;
+  protocol_regressions: number;
+  protocol_coverage_gaps: number;
+  protocol_family_status?: "not_comparable" | "coverage_lost" | "regressed" | "review" | "clear";
+  protocol_family_note?: string;
+  protocol_family_rows?: number;
+  protocol_family_blocking?: number;
+  protocol_family_review?: number;
+  protocol_family_not_verified?: number;
+  l2_rehearsal_status?:
+    | "not_supplied"
+    | "not_applicable"
+    | "simulation_only"
+    | "projected_risk"
+    | "current_fault"
+    | "observed_failure"
+    | "not_verified";
+  /** Verbatim server-owned basis consumed by cutover_gate/1; never recompute in the UI. */
+  l2_rehearsal_note?: string;
+  l2_rehearsal_applicable_families?: Array<
+    "stp" | "etherchannel" | "multichassis_lag" | "service_path"
+  >;
+  l2_rehearsal_current_faults?: number;
+  l2_rehearsal_projected_risks?: number;
+  l2_rehearsal_not_verified?: number;
+  l2_observed_trial_status?: "observed_survival" | "observed_failure" | "not_verified";
+  l2_observed_trial_assurance?: "local_safety_preservation" | "not_verified";
+  l2_observed_trial_family?: "stp" | "etherchannel" | "multichassis_lag" | "not_verified";
+  l2_observed_trial_subject?: string;
+  l2_observed_trial_scenario?: string;
+  l2_observed_trial_matched_projected_risks?: number;
+  /** Exact server-owned context reconciliation; presentation must not infer a stronger claim. */
+  l2_observed_trial_note?: string;
+  comparison_admission_status?: ProtocolComparisonStatus;
+  comparison_admission_note?: string;
+  current_baseline_verdict?: CurrentBaselineGate["verdict"];
+  current_baseline_note?: string;
+  current_baseline_blockers?: number;
+  current_baseline_degraded?: number;
+  current_baseline_review?: number;
+  current_baseline_not_verified?: number;
+}
+
+export interface ProtocolReceiptEnvelope {
+  schema: "protocol_receipt_envelope/1";
+  admission: ProtocolComparisonAdmission;
+  source_binding: ProtocolComparisonAdmission["source_binding"];
+  subject_binding: ProtocolComparisonAdmission["subject_binding"];
+  owner_versions: Record<string, string>;
+  support_profiles: ProtocolSupportProfile[];
+  payload_sha256: string;
+  receipt_sha256: string;
+}
+
+export type L2FailureRehearsalDisposition =
+  | "simulation_only"
+  | "projected_risk"
+  | "current_fault"
+  | "not_verified";
+
+export interface L2FailureRehearsalScenario {
+  family: "stp" | "etherchannel" | "multichassis_lag" | "service_path" | string;
+  subject: string;
+  failure_scenario: string;
+  disposition: L2FailureRehearsalDisposition;
+  assurance_level: "not_verified";
+  source_owner: string;
+  current_fault: boolean;
+  evidence: Record<string, unknown>;
+  note: string;
+}
+
+export interface L2FailureRehearsal {
+  schema: "l2_failure_rehearsal/1";
+  owner: "reference_only_composition" | string;
+  owns_score: false;
+  owns_verdict: false;
+  status: "simulation_only" | "projected_risk" | "current_fault" | "not_verified";
+  assurance_level: "not_verified";
+  source_bound: boolean;
+  applicability: {
+    stp: boolean;
+    etherchannel: boolean;
+    multichassis_lag: boolean;
+    service_path: boolean;
+  };
+  summary: {
+    n_scenarios: number;
+    n_current_faults: number;
+    n_projected_risks: number;
+    n_not_verified: number;
+    n_applicable_families: number;
+    by_disposition: Record<L2FailureRehearsalDisposition, number>;
+  };
+  scenarios: L2FailureRehearsalScenario[];
+  limitations: string[];
+}
+
+export interface ObservedL2PhaseSourceReceipt {
+  source: string;
+  source_id: string;
+  campaign_id: number;
+  engagement_id: string;
+  sha256: string;
+  bytes: number;
+  collected_at: string;
+  custody_at: string;
+}
+
+export interface ObservedL2FailureEvidence {
+  schema: "observed_l2_failure_evidence/1";
+  owner: "observed_local_l2_failure_trial" | string;
+  owns_score: false;
+  owns_verdict: false;
+  status: "observed_survival" | "observed_failure" | "not_verified";
+  assurance_level: "local_safety_preservation" | "not_verified";
+  family: "stp" | "etherchannel" | "multichassis_lag" | "not_verified";
+  subject: string;
+  failure_scenario: string;
+  source_binding: {
+    pre_failure: ObservedL2PhaseSourceReceipt;
+    post_failure: ObservedL2PhaseSourceReceipt;
+    recovery: ObservedL2PhaseSourceReceipt;
+    failure_witness: {
+      encoding: "base64";
+      content_base64: string;
+      sha256: string;
+      bytes: number;
+      induced_at: string;
+    };
+  };
+  precondition: { status: string; evidence: Record<string, unknown> };
+  failure_witness: {
+    status: string;
+    action: string;
+    target: Record<string, unknown>;
+    induced_at: string;
+    evidence: Record<string, unknown>;
+  };
+  post_failure: { status: string; evidence: Record<string, unknown> };
+  recovery: { status: string; evidence: Record<string, unknown> };
+  claims: {
+    local_scenario: "observed_survival" | "observed_failure" | "not_verified";
+    service_path_survival: "not_verified";
+    traffic_continuity: "not_verified";
+    convergence: "not_verified";
+  };
+  failures: string[];
+  limitations: string[];
+}
+
+export interface CutoverOperatorEvidence {
+  schema: "cutover_operator_evidence/1";
+  owner: "reference_only_projection" | string;
+  owns_verdict: false;
+  current_baseline_blocker_export?: {
+    schema: "current_baseline_blocker_export/1";
+    owner: "reference_only_projection" | string;
+    owns_verdict: false;
+    status: "available" | "not_verified";
+    source_owner: string;
+    rows: CurrentBaselineBlocker[];
+    summary: {
+      n_blockers_total: number;
+      n_rows_returned: number;
+      omitted: number;
+      complete: boolean;
+      rows_sha256: string;
+    };
+    failures: string[];
+    note: string;
+  };
+  rehearsal: {
+    status:
+      | "simulation_only"
+      | "projected_risk"
+      | "current_fault"
+      | "local_safety_preservation"
+      | "observed_failure"
+      | "not_verified";
+    assurance_level: "local_safety_preservation" | "not_verified";
+    source_owner: string;
+    n_impacts_total: number;
+    impacts: Array<Record<string, unknown>>;
+    l2_failure_rehearsal?: L2FailureRehearsal;
+    observed_l2_failure_evidence?: ObservedL2FailureEvidence;
+    note: string;
+  };
+  rollback: {
+    status: "planned" | "coverage_lost" | "not_verified";
+    assurance_level: "not_verified";
+    source_owner: string;
+    n_groups_total: number;
+    n_plans_total: number;
+    plans: Array<{ group: string; recommended_scenario: string; rollback: string }>;
+    note: string;
+  };
+}
+
+/** Additive /api/compare response: all historical delta fields remain top-level. */
+export interface CompareResponse {
+  comparison_schema?: "source_bound_cutover_comparison/1";
+  verdict: SnapshotDeltaVerdict;
+  verdict_display?: string;
+  verdict_note?: string;
+  findings?: { n_opened?: number; n_opened_high?: number; n_resolved?: number } & Record<string, unknown>;
+  health?: { n_regressed?: number; n_improved?: number } & Record<string, unknown>;
+  cabling?: {
+    assessed?: boolean;
+    summary?: { n_added?: number; n_removed?: number; n_went_down?: number } & Record<string, unknown>;
+  } & Record<string, unknown>;
+  protocol_adjacencies?: ProtocolAdjacencyDelta;
+  current_baseline?: CurrentBaselineGate;
+  current_baseline_required?: boolean;
+  provenance?: Record<string, unknown>;
+  schema_compat?: Record<string, unknown>;
+  comparison_admission?: ProtocolComparisonAdmission;
+  change_intent?: CutoverChangeIntent;
+  protocol_families?: ProtocolFamilyChangeSet;
+  precert?: PrecertReceipt;
+  cutover_gate?: CutoverGate;
+  operator_evidence?: CutoverOperatorEvidence;
+  comparison_receipt?: ProtocolReceiptEnvelope;
+}
+
+export type CampaignTrendVerdict =
+  | "IMPROVING"
+  | "REGRESSING"
+  | "MIXED"
+  | "FLAT"
+  | "INSUFFICIENT"
+  | "INDETERMINATE";
+
+export interface CampaignTrendTrajectory {
+  metric: string;
+  first: number;
+  last: number;
+  delta: number;
+  direction: "improving" | "worsening" | "flat" | string;
+}
+
+export interface CampaignAdjacentComparison {
+  schema: "campaign_adjacent_comparison/1";
+  index: number;
+  from: string;
+  to: string;
+  before_snapshot_id: number;
+  after_snapshot_id: number;
+  before_label: string;
+  after_label: string;
+  /** Complete server-owned source_bound_cutover_comparison/1 document for this adjacent pair. */
+  comparison: CompareResponse;
+}
+
+export interface CampaignAdjacentComparisonStatus {
+  schema: "campaign_adjacent_comparison_set/1";
+  status: "verified" | "not_verified" | "not_comparable";
+  n_pairs_total: number;
+  n_pairs_returned: number;
+  complete: boolean;
+  note: string;
+}
+
+/** GET /api/campaigns/{id}/trend. Direction-of-travel remains distinct from every canonical gate. */
+export interface CampaignTrendResponse {
+  verdict: CampaignTrendVerdict;
+  verdict_note: string;
+  trajectory: CampaignTrendTrajectory[];
+  timeline?: Array<Record<string, unknown>>;
+  steps?: Array<Record<string, unknown>>;
+  not_comparable?: {
+    lost: string[];
+    never_measured: string[];
+    disclosure_available?: boolean;
+  };
+  integrity?: Record<string, unknown>;
+  provenance?: Record<string, unknown>;
+  schema_compat?: Record<string, unknown>;
+  protocol_adjacencies?: ProtocolAdjacencyDelta;
+  current_baseline?: CurrentBaselineGate;
+  adjacent_comparisons?: CampaignAdjacentComparison[];
+  adjacent_comparison_status?: CampaignAdjacentComparisonStatus;
+}
+
+export interface ExecutionComparisonReceiptBody {
+  schema: "execution_comparison_receipt/1";
+  before_snapshot_id: number;
+  after_snapshot_id: number;
+  after_collected_at?: string;
+  implementation_binding?: ExecutionLatestComparison["implementation_binding"];
+  comparison: CompareResponse;
+  receipt_sha256: string;
+}
+
+export interface StoredExecutionComparisonReceipt {
+  id: number;
+  execution_id: number;
+  before_snapshot_id: number;
+  after_snapshot_id: number;
+  receipt_sha256: string;
+  cutover_verdict: CutoverGateVerdict;
+  created_at: string;
+  receipt: ExecutionComparisonReceiptBody;
+}
+
+export interface ExecutionLatestComparison {
+  schema: "execution_latest_comparison/1";
+  receipt_id: number;
+  receipt_sha256: string;
+  before_snapshot_id: number;
+  after_snapshot_id: number;
+  after_collected_at?: string;
+  implementation_binding?: {
+    schema: "execution_implementation_binding/1";
+    valid: boolean;
+    n_steps: number;
+    completed_at: string;
+    steps_sha256: string;
+    failures: string[];
+  };
+  cutover_gate: CutoverGate;
+}
+
+export interface ExecutionComparisonPolicy {
+  schema: "execution_comparison_policy/1";
+  canonical_gate_required: true;
+  before_snapshot: ProtocolSourceBinding;
+  /** Highest persisted snapshot id visible when this execution began. */
+  snapshot_id_high_watermark?: number;
+}
+
+export interface ExecutionL2FailureTrialRequirement {
+  schema: "execution_l2_failure_trial_requirement/1";
+  family: "stp" | "etherchannel" | "multichassis_lag" | "not_verified";
+  subject: string;
+  failure_scenario: string;
+  status: "observed_failure" | "not_verified";
+  phase_sources: Record<"pre_failure" | "post_failure" | "recovery", {
+    snapshot_id: number;
+    collected_at: string;
+    uploaded_at: string;
+  }>;
+  latest_receipt_id?: number;
+}
+
 export interface ValidationCheck {
   device?: string;
   wave?: string;
@@ -286,6 +994,11 @@ export interface ExecutionState {
   outcome: string | null;
   started_at: string;
   ended_at: string | null;
+  execution_schema?: "cutover_execution/2";
+  comparison_policy?: ExecutionComparisonPolicy;
+  latest_comparison?: ExecutionLatestComparison;
+  comparison_receipts?: StoredExecutionComparisonReceipt[];
+  l2_failure_trial_requirement?: ExecutionL2FailureTrialRequirement;
   plan_summary: CutoverPlan["summary"];
   /** Full start-snapshot blocker receipt frozen when the execution record is created. */
   baseline_blockers?: CurrentBaselineBlocker[];
@@ -344,6 +1057,8 @@ export interface ExecutionMeta {
   status: string;
   started_at: string;
   ended_at: string | null;
+  comparison_required?: boolean;
+  latest_comparison?: ExecutionLatestComparison;
 }
 
 export interface CutoverPlan {
@@ -689,7 +1404,7 @@ export const api = {
   createCampaign: (name: string, description = "") =>
     post<Campaign>("/api/campaigns", { name, description }),
   deleteCampaign: (id: number) => fetch(`/api/campaigns/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
-  trend: (id: number) => fetch(`/api/campaigns/${id}/trend`).then((r) => j<any>(r)),
+  trend: (id: number) => fetch(`/api/campaigns/${id}/trend`).then((r) => j<CampaignTrendResponse>(r)),
   getGates: (id: number) => fetch(`/api/campaigns/${id}/gates`).then((r) => j<GateBoardData>(r)),
   setGate: (id: number, wave: string, gate: string, decision: string, signed_by = "", note = "") =>
     post<{ records: GateRecord[] }>(`/api/campaigns/${id}/gates`, { wave, gate, decision, signed_by, note }),
@@ -717,6 +1432,10 @@ export const api = {
   getSnapshot: (id: number) => fetch(`/api/snapshots/${id}`).then((r) => j<SnapshotMeta>(r)),
   section: (id: number, name: string) =>
     fetch(`/api/snapshots/${id}/section/${name}`).then((r) => j<{ section: string; data: any }>(r)),
+  protocolAssurance: (id: number) =>
+    fetch(`/api/snapshots/${id}/section/protocol_assurance`).then((r) => j<ProtocolAssuranceSection>(r)),
+  protocolAssuranceExportUrl: (id: number) =>
+    `/api/snapshots/${id}/protocol-assurance/export`,
   deleteSnapshot: (id: number) => fetch(`/api/snapshots/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
   graph: (id: number) =>
     fetch(`/api/snapshots/${id}/graph`).then((r) => j<TopologyGraphData>(r)),
@@ -736,7 +1455,18 @@ export const api = {
   cableMap: (id: number) => fetch(`/api/snapshots/${id}/cable_map`).then((r) => j<CableMap>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
-  compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),
+  compare: (
+    oldId: number,
+    newId: number,
+    changeIntent?: CutoverChangeIntentInput,
+    l2FailureTrial?: L2FailureTrialInput,
+  ) =>
+    post<CompareResponse>("/api/compare", {
+      old_id: oldId,
+      new_id: newId,
+      ...(changeIntent ? { change_intent: changeIntent } : {}),
+      ...(l2FailureTrial ? { l2_failure_trial: l2FailureTrial } : {}),
+    }),
 
   seedDemo: () => fetch("/api/demo/seed", { method: "POST" }).then((r) => j<{ campaign: Campaign; snapshot: SnapshotMeta }>(r)),
 
@@ -746,6 +1476,17 @@ export const api = {
   listExecutions: (snapId: number) =>
     fetch(`/api/snapshots/${snapId}/executions`).then((r) => j<ExecutionMeta[]>(r)),
   getExecution: (id: number) => fetch(`/api/executions/${id}`).then((r) => j<ExecutionState>(r)),
+  compareExecution: (
+    id: number,
+    afterSnapshotId: number,
+    changeIntent?: CutoverChangeIntentInput,
+    l2FailureTrial?: L2FailureTrialInput,
+  ) =>
+    post<ExecutionState>(`/api/executions/${id}/compare`, {
+      after_snapshot_id: afterSnapshotId,
+      ...(changeIntent ? { change_intent: changeIntent } : {}),
+      ...(l2FailureTrial ? { l2_failure_trial: l2FailureTrial } : {}),
+    }),
   execStep: (id: number, wave: string, index: number, status: string, note = "", operator = "") =>
     post<ExecutionState>(`/api/executions/${id}/step`, { wave, index, status, note, operator }),
   execCheck: (id: number, wave: string, index: number, result: string, observed = "", operator = "") =>

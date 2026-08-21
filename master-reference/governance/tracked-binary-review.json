@@ -1,8 +1,8 @@
 {
   "schema_version": "tracked-binary-review/1",
   "receipt_kind": "tracked_repository_binary_privacy_review",
-  "review_basis_commit": "77027472d348670e2f198100e53cf451bfbccbb1",
-  "binary_set_digest": "5969b46395269a67c6e4a353c5fefd02cfed56d1cc8f4777d47f8643046216a7",
+  "review_basis_commit": "55f8a6dc0dbf18250b375a1d768c0b59dd50d257",
+  "binary_set_digest": "a370868de758f4aac80e06c94423238bbf56ec57c2a9ef9db9c608777616b7c1",
   "records": [
     {
       "path": "cisco_toolkit/data/oui_registry.tsv.gz",
@@ -665,9 +665,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner-728.png",
-      "git_blob_oid": "9b985406f798d15bda58bb4dfea87ba881decea0",
-      "raw_sha256": "81702125d19049822f61edd91902da6fdcd792d63de260c1db0b56dfab11d033",
-      "raw_bytes": 153831,
+      "git_blob_oid": "a38623e7fb71842d67a6de197a7013e9221289aa",
+      "raw_sha256": "6ac69cebaeeee461eeae428b8265036eeea676be087a1622d23b6f763cc465bd",
+      "raw_bytes": 156912,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -683,11 +683,11 @@
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 41,
-        "idat_chunk_count": 39,
-        "idat_compressed_bytes": 153318,
+        "chunk_count": 42,
+        "idat_chunk_count": 40,
+        "idat_compressed_bytes": 156387,
         "decoded_scanline_bytes": 3919890,
-        "decoded_scanline_sha256": "6706ba9e86d37791cf358ef64639f4f5c0e3b53ea187e30488001a78b057538c",
+        "decoded_scanline_sha256": "d50d726b3d31294dd46f4025932e4578ceac4c7db31c7aaefc9ac057826f9a77",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -703,7 +703,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:2038623faf24238b85adad54c698ee641f497520e1a211e29a0825dfe9e59574",
+          "decoded-rgba-sha256:5730723baa70be629b53f4c4f9d1b5d52cf63ac1737e963c0caa677c0f9a63d4",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],
@@ -712,9 +712,9 @@
     },
     {
       "path": "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner.png",
-      "git_blob_oid": "c2a9009a736939ba101484cd9a8df40a2568bda1",
-      "raw_sha256": "d15d4667a6a3f4d4279fa09a309af4300627b17d8daefd6e940e983e6c75634f",
-      "raw_bytes": 151867,
+      "git_blob_oid": "fb4b32f4f9e1a9322383952e29f6479feb4f89ab",
+      "raw_sha256": "8ed6c7243d1093b64ccda0605836726867af3edc74cfe2d5608f8843b50c1cc7",
+      "raw_bytes": 154996,
       "media_type": "image/png",
       "format": "png",
       "automated_format_evidence": {
@@ -730,11 +730,11 @@
         "bit_depth": 8,
         "color_type": 2,
         "interlace_method": 0,
-        "chunk_count": 40,
-        "idat_chunk_count": 38,
-        "idat_compressed_bytes": 151366,
+        "chunk_count": 41,
+        "idat_chunk_count": 39,
+        "idat_compressed_bytes": 154483,
         "decoded_scanline_bytes": 4208158,
-        "decoded_scanline_sha256": "d1fce33f7d76db35d7b7a6a453f60a92dd6ede3494df77667c93ccada1a908d4",
+        "decoded_scanline_sha256": "4272d1bf101d85d7d19ba641273312190cb8500fd6894830f37036ad825043c2",
         "risky_metadata_chunk_counts": {
           "eXIf": 0,
           "iCCP": 0,
@@ -750,7 +750,7 @@
         "independent_from_proposer": true,
         "review_scope": "rendered_pixels_and_context",
         "evidence_references": [
-          "decoded-rgba-sha256:a681e4c3a1eb5fff3540caa883a252d38f35f5c3c42171b4eeafde35c1f93a79",
+          "decoded-rgba-sha256:d4b17cb4f03c66ff124c161af627a8f950a3a8eaa92a6e65a075f6c35fc216c6",
           "privacy-scan:forbidden-local-generic-identities",
           "visual-review:exact-rendered-pixels"
         ],

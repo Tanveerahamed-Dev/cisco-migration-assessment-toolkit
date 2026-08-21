@@ -1,0 +1,15 @@
+!Command: show running-config
+!Running configuration last done at: Wed Aug 20 09:05:00 2026
+!Time: Wed Aug 20 09:06:00 2026
+
+version 10.5(2) Bios:version 08.39
+hostname nxos-edge
+vdc nxos-edge id 1
+  limit-resource vlan minimum 16 maximum 4094
+feature lacp
+vtp pruning
+vtp password 7 02050D480809
+
+interface Ethernet1/1
+  description downstream access
+  switchport

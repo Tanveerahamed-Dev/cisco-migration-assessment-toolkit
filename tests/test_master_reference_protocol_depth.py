@@ -101,7 +101,18 @@ def test_protocol_depth_binds_the_exact_baseline_stage_and_capability_denominato
     assert denominator["stage_count"] == len(depth["stages"]) == 8
     assert denominator["cell_count"] == sum(len(family["cells"]) for family in families) == 64
 
-    assert denominator["catalog_cell_count"] == len(protocol_domain["entries"]) == 38
+    assert denominator["catalog_cell_count"] == len(protocol_domain["entries"]) == 39
+    states = [entry["state"] for entry in protocol_domain["entries"]]
+    assert states.count("partial") == 22
+    assert states.count("missing") == 17
+    multichassis = _one(protocol_domain["entries"], "cap.protocol.multichassis-lag")
+    etherchannel = _one(protocol_domain["entries"], "cap.protocol.etherchannel-lacp-pagp")
+    assert multichassis is not etherchannel
+    assert multichassis["state"] == "partial"
+    assert "NX-OS vPC live or offline" in multichassis["current_scope"]
+    assert "EOS MLAG offline import" in multichassis["current_scope"]
+    assert "domain ID" in multichassis["current_scope"]
+    assert "multi-chassis" in etherchannel["current_scope"]
     assert {
         family["health_label"]: family["capability_ref"] for family in families
     } == EXPECTED_CAPABILITY_BY_FAMILY

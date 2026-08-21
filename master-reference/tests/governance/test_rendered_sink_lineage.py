@@ -225,20 +225,20 @@ def test_tracked_contract_schema_and_exact_denominator(live) -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert list(Draft202012Validator(schema).iter_errors(contract)) == []
-    assert _digest(contract) == "50cabd365f01e2a3da30a09d61b34fafc88e83b95aba4ae51f3d82f39ec78451"
+    assert _digest(contract) == "056609f4e2be72a443e3219f02bb8f997f917c4ceede2f79e2ff12e2492011ca"
     assert len(records) == 315
     assert len({row["facet_id"] for row in records}) == 315
     assert contract["global_denominator"] == {
         "kind": "bounded_curated_content_claim_denominator",
-        "expected_candidates": 2136,
+        "expected_candidates": 2140,
         "in_scope_candidates": 315,
-        "out_of_scope_candidates": 1821,
+        "out_of_scope_candidates": 1825,
         "independently_reviewed": 0,
-        "unresolved": 2136,
-        "claim_contract_digest": "4ebd7da5caa6aab63f3ba122d480fef638f46b866c665845087433074f436c8d",
-        "classification_digest": "b5bc4783b8bd6461fc4669b39a555ae061081a278e36712cdb6f70a5e673d1df",
-        "source_receipts_digest": "863f93c7bc0599b1cfe7e5b42eb5b10c8087a704af9de194be18d9bf28008689",
-        "candidate_set_digest": "a768b5a6c9a94390ada8e9c24627c8908f6a7b51e3f06d59b79ac8f1a5ffdd43",
+        "unresolved": 2140,
+        "claim_contract_digest": "cf123369749c14ef140a9eb906b63f7183e93fd45a943a25087f5411a17399b6",
+        "classification_digest": "594013cefc9f293cb6b224e6f869014e6015dd6f23a4ff708899afbb44c1f19c",
+        "source_receipts_digest": "aad6fbb1305ccaddea2b5257cbfa5704ba1548a1855c97bcbaa144ed6d8ecb30",
+        "candidate_set_digest": "ed4bb19838118841b5f5cc3a3d7348ee9763d11e8f4ad4f610c5e3853a1f0d31",
     }
     assert len(horizon["signals"]) == 16
 
@@ -259,7 +259,7 @@ def test_both_sinks_map_315_once_but_global_gate_stays_false(live) -> None:
     assert summary["closes_global_gate"] is False
     assert summary["observed_sink_count"] == 2
     assert summary["global_denominator"]["independently_reviewed"] == 0
-    assert summary["global_denominator"]["unresolved"] == 2136
+    assert summary["global_denominator"]["unresolved"] == 2140
     for receipt in summary["sink_receipts"]:
         assert (receipt["mapped_exactly_once"], receipt["rendered"], receipt["explicitly_omitted"]) == (315, 167, 148)
         assert (receipt["unmapped"], receipt["multiply_mapped"], receipt["fallback_count"]) == (0, 0, 0)
