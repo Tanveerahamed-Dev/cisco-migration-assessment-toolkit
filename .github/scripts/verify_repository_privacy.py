@@ -124,17 +124,17 @@ _SYNTHETIC_VISUAL_BASELINES = {
         "width": 900,
     },
     "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner-728.png": {
-        "bytes": 153_831,
+        "bytes": 156_912,
         "height": 1794,
         "media_type": "image/png",
-        "sha256": "81702125d19049822f61edd91902da6fdcd792d63de260c1db0b56dfab11d033",
+        "sha256": "6ac69cebaeeee461eeae428b8265036eeea676be087a1622d23b6f763cc465bd",
         "width": 728,
     },
     "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/CutoverPlanner.png": {
-        "bytes": 151_867,
+        "bytes": 154_996,
         "height": 1558,
         "media_type": "image/png",
-        "sha256": "d15d4667a6a3f4d4279fa09a309af4300627b17d8daefd6e940e983e6c75634f",
+        "sha256": "8ed6c7243d1093b64ccda0605836726867af3edc74cfe2d5608f8843b50c1cc7",
         "width": 900,
     },
     "webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64/DemoDataProvider-728.png": {
