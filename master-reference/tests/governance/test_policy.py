@@ -318,6 +318,12 @@ def test_protocol_evidence_owners_are_derived_truth() -> None:
         )
     }
     assert protocol_owners == {path: "analysis" for path in protocol_owners}
+    allowed = {tuple(edge) for edge in contract["allowed_edges"]}
+    assert {
+        ("parse_model", "analysis"),
+        ("analysis", "governance"),
+        ("analysis", "deliverables"),
+    }.issubset(allowed)
 
 
 def test_master_reference_ci_fetches_review_basis_history() -> None:
