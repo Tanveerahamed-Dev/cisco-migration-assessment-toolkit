@@ -39,6 +39,10 @@ from tests.test_observed_l2_failure_evidence import (  # noqa: E402
 
 
 _GOLDEN = _REPO / "tests" / "golden" / "snapshot.json"
+_requires_blobopen = pytest.mark.skipif(
+    not hasattr(sqlite3.Connection, "blobopen"),
+    reason="incremental SQLite BLOB tamper injection requires Python 3.11+",
+)
 
 
 @pytest.fixture()
@@ -1123,6 +1127,7 @@ def test_execution_observed_failure_cannot_be_erased_by_omitting_a_retrial(
     assert stored["state"]["latest_comparison"]["cutover_gate"]["verdict"] == "FAIL"
 
 
+@_requires_blobopen
 def test_execution_state_blob_cannot_erase_failure_ratchet_or_mint_success(
         client, tmp_path):
     _campaign_row, failed = _observed_failure_execution(client, tmp_path)
@@ -1190,6 +1195,7 @@ def test_execution_state_blob_cannot_erase_failure_ratchet_or_mint_success(
     assert "already completed" in refused.text.lower()
 
 
+@_requires_blobopen
 def test_no_receipt_v2_policy_blob_removal_cannot_create_legacy_success(client):
     campaign = _campaign(client, "no-receipt authority", "ENG-NO-RECEIPT-AUTH")
     before_id = _upload(client, campaign["id"], "before", _execution_clear_raw())
@@ -1304,6 +1310,7 @@ def test_store_migrates_legacy_execution_authority_markers_once(tmp_path):
     reopened.close()
 
 
+@_requires_blobopen
 def test_store_migrates_valid_exact_receipt_source_authority_once(tmp_path):
     database = tmp_path / "legacy-receipt-authority.db"
     app = create_app(db_path=str(database))
@@ -1358,6 +1365,7 @@ def test_store_migrates_valid_exact_receipt_source_authority_once(tmp_path):
     reopened.close()
 
 
+@_requires_blobopen
 def test_store_refuses_to_seal_invalid_pre_anchor_receipt_history(tmp_path):
     database = tmp_path / "invalid-legacy-receipt.db"
     app = create_app(db_path=str(database))
@@ -1391,6 +1399,7 @@ def test_store_refuses_to_seal_invalid_pre_anchor_receipt_history(tmp_path):
         Store(database)
 
 
+@_requires_blobopen
 def test_corrupted_immutable_receipt_blob_fails_closed_on_every_execution_surface(client):
     before_id, after_id, run = _post_change_pair(client)
     compared = client.post(
@@ -1427,6 +1436,7 @@ def test_corrupted_immutable_receipt_blob_fails_closed_on_every_execution_surfac
         assert "no pass is available" in response.text.lower()
 
 
+@_requires_blobopen
 def test_corrupted_observed_witness_source_blob_invalidates_the_receipt(client, tmp_path):
     _campaign_row, failed = _observed_failure_execution(client, tmp_path)
     receipt_id = failed["comparison_receipts"][-1]["id"]
@@ -1449,6 +1459,7 @@ def test_corrupted_observed_witness_source_blob_invalidates_the_receipt(client, 
     assert "no pass is available" in response.text.lower()
 
 
+@_requires_blobopen
 def test_integer_anchor_rejects_coordinated_comparison_text_blob_rewrites(client):
     before_id, after_id, run = _post_change_pair(client)
     compared = client.post(
@@ -1506,6 +1517,7 @@ def test_integer_anchor_rejects_coordinated_comparison_text_blob_rewrites(client
     assert restored.status_code == 200, restored.text
 
 
+@_requires_blobopen
 def test_integer_anchor_rejects_coordinated_trial_source_blob_rewrites(
         client, tmp_path):
     _campaign_row, failed = _observed_failure_execution(client, tmp_path)
@@ -1550,6 +1562,7 @@ def test_integer_anchor_rejects_coordinated_trial_source_blob_rewrites(
     assert restored.json()["l2_failure_trial_requirement"]["status"] == "observed_failure"
 
 
+@_requires_blobopen
 def test_integer_anchor_rejects_coordinated_snapshot_source_blob_rewrites(client):
     before_id, after_id, run = _post_change_pair(client)
     compared = client.post(

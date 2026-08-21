@@ -271,7 +271,7 @@ def _capability_fixture() -> dict[str, object]:
         },
     )
     states = ("current", "partial", "missing", "gated", "excluded", "unknown")
-    for index in range(208):
+    for index in range(209):
         state = states[index % len(states)]
         entry: dict[str, object] = {
             "id": f"cap.fixture.{index:03d}",
