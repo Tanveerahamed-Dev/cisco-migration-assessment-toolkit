@@ -693,11 +693,13 @@ def test_relation_kinds_within_known_vocabulary():
 def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
     """Audit the report exactly without promoting an external-tool defect.
 
-    Graphifyy 0.9.6 overstates displayed communities when a community contains
-    only synthetic nodes and emits hub names that can collide with exporter
-    filenames.  The report is therefore a derivative, never the graph owner.
-    A future producer fix may make this PASS; until then, only the explicitly
-    reviewed fixed-code residuals are allowed.  Any new category is red.
+    Graphifyy 0.9.47 still overstates displayed communities when a community
+    contains only synthetic nodes. Its plain navigation removes the old
+    exporter-target mismatch, and the refreshed membership-signature sidecar
+    now binds saved labels to the current communities. The report remains a
+    derivative, never the graph owner. A future producer fix may make this PASS;
+    until then, only the explicitly reviewed fixed-code residual is allowed.
+    Any new category is red.
     """
     _graph, path = _load_graph()
     report = Path(path).with_name("GRAPH_REPORT.md")
@@ -705,9 +707,8 @@ def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
 
     result = audit_graph_report(path, report)
 
-    assert "graph_report_label_membership_binding_unavailable" in result.error_codes
     assert result.counts.get("graph_nodes", 0) >= _SUBSTANTIAL_FLOOR, (
-        "the stable graph/report/labels snapshot became degenerate after the initial owner-machine check"
+        "the stable graph/report/labels/signature snapshot became degenerate after the initial owner-machine check"
     )
     assert set(result.error_codes) <= KNOWN_EXTERNAL_REPORT_RESIDUALS, (
         "GRAPH_REPORT.md has an unreviewed integrity failure category; run "
