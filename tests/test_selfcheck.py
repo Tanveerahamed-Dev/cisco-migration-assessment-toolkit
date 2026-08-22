@@ -8,6 +8,8 @@ runtime default path is the pin; here every store is synthetic, under tmp or via
 """
 import json
 import os
+import subprocess
+from datetime import datetime, timezone
 
 from cisco_toolkit import memory_guard as MG
 from cisco_toolkit import selfcheck as SC
@@ -154,30 +156,132 @@ def test_guards_nonvacuous_detects_missing_and_gutted(tmp_path):
     assert SC.check_guards_nonvacuous(root)["status"] == SC.RED
 
 
-def test_graph_fresh_stale_absent(tmp_path):
+def test_graph_fresh_stale_absent(tmp_path, monkeypatch):
     root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    (tmp_path / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "baseline"],
+        cwd=root,
+        check=True,
+    )
     gdir = os.path.join(root, "graphify-out")
     os.makedirs(gdir)
     gpath = os.path.join(gdir, "graph.json")
     open(gpath, "w").close()
     mtime = os.path.getmtime(gpath)
-    assert SC.check_graph_fresh(root, now=mtime + 3600)["status"] == SC.GREEN          # 1h old
-    assert SC.check_graph_fresh(root, now=mtime + 100 * 86400)["status"] == SC.RED     # 100d old
+    unreceipted = SC.check_graph_fresh(root, now=mtime + 3600)
+    assert unreceipted["status"] == SC.UNKNOWN
+    assert "topology-neutral scans" in unreceipted["detail"]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    with open(os.path.join(gdir, ".guarded_refresh.json"), "w", encoding="utf-8") as handle:
+        json.dump({
+            "contract": SC.GRAPHIFY_REFRESH_RECEIPT_CONTRACT,
+            "graph": SC._stable_graph_identity(gpath),
+            "guard": {**SC.GRAPHIFY_GUARD_IDENTITY, "python": "3.12.9"},
+            "head": head,
+            "phase": "complete",
+            "root": os.path.realpath(root),
+            "state": "clean",
+            "updated_at": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
+        }, handle)
+    current = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert current["status"] == SC.GREEN and current["name"] == "graph_refresh_receipt"
+    assert "completed at this clean HEAD; graph bytes still match" in current["detail"]
+
+    other = tmp_path.parent / (tmp_path.name + "-redirect")
+    other.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=other, check=True)
+    (other / "other.txt").write_text("other\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.txt"], cwd=other, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "other"],
+        cwd=other,
+        check=True,
+    )
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    redirected = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert redirected["status"] == SC.GREEN, "ambient Git redirection must not change the checked root"
+
+    with open(gpath, "w", encoding="utf-8") as handle:
+        handle.write('{"replaced":true}\n')
+    replaced = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert replaced["status"] == SC.UNKNOWN
+    assert "identity/state mismatch" in replaced["detail"]
     os.remove(gpath)
     assert SC.check_graph_fresh(root, now=mtime)["status"] == SC.UNKNOWN               # absent -> UNKNOWN, not GREEN
 
 
 def test_graph_commit_verdict_pure():
-    """The pure code-currency decision, exhaustively — no I/O. Lagging is normal (GREEN-with-note);
-    only egregious code-drift past the floor is RED; the unevaluable is UNKNOWN, never fabricated GREEN."""
+    """The topology stamp never fabricates a refresh verdict from repository drift."""
     V = SC._graph_commit_verdict
-    assert V("abc1234", "abc1234ff", None, 0, 30)[0] == SC.GREEN     # prefix match either way -> current
-    assert V("abc1234ff", "abc1234", None, 0, 30)[0] == SC.GREEN
-    assert V("aaa", "bbb", True, 0, 30)[0] == SC.GREEN               # ancestor, no .py change since
-    assert V("aaa", "bbb", True, 5, 30)[0] == SC.GREEN               # small lag is normal
-    assert V("aaa", "bbb", True, 40, 30)[0] == SC.RED                # egregious code-drift -> hook not refreshing
-    assert V("aaa", "bbb", False, 0, 30)[0] == SC.UNKNOWN            # not an ancestor (rebased) -> undeterminable
-    assert V("aaa", "bbb", None, 0, 30)[0] == SC.UNKNOWN             # ancestry unknown -> UNKNOWN
+    assert V("abc1234", "abc1234ff", None, 0)[0] == SC.GREEN     # prefix match either way -> current
+    assert V("abc1234ff", "abc1234", None, 0)[0] == SC.GREEN
+    assert V("aaa", "bbb", True, 0)[0] == SC.GREEN               # ancestor, empty commit
+    drift = V("aaa", "bbb", True, 5)
+    assert drift[0] == SC.UNKNOWN and "topology-neutral" in drift[1]
+    rewritten = V("aaa", "bbb", False, 0)
+    assert rewritten[0] == SC.UNKNOWN and SC.GRAPHIFY_REFRESH_COMMAND in rewritten[1]
+    assert V("aaa", "bbb", None, 0)[0] == SC.UNKNOWN             # ancestry unknown -> UNKNOWN
+    assert V("aaa", "bbb", True, None)[0] == SC.UNKNOWN          # diff denominator unavailable
+
+
+def test_graph_commit_counts_non_python_corpus_changes(tmp_path):
+    """JSON/config drift is graph drift too; the old .py-only denominator falsely read GREEN."""
+    root = str(tmp_path)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    (tmp_path / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+    git("add", "baseline.txt")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "baseline")
+    built = git("rev-parse", "HEAD")
+    (tmp_path / "tsconfig.JSON").write_text('{"required":["not-extends"]}\n', encoding="utf-8")
+    git("add", "tsconfig.JSON")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "config")
+    (tmp_path / "graphify-out").mkdir()
+    (tmp_path / "graphify-out" / "graph.json").write_text(
+        json.dumps({"built_at_commit": built, "nodes": [], "links": []}),
+        encoding="utf-8",
+    )
+
+    result = SC.check_graph_commit_current(root)
+
+    assert result["status"] == SC.UNKNOWN
+    assert "1 tracked path(s)" in result["detail"]
+    assert "topology-neutral" in result["detail"]
+
+
+def test_graph_commit_diff_failure_is_unknown_not_false_green(tmp_path, monkeypatch):
+    (tmp_path / "graphify-out").mkdir()
+    (tmp_path / "graphify-out" / "graph.json").write_text(
+        json.dumps({"built_at_commit": "a" * 40, "nodes": [], "links": []}),
+        encoding="utf-8",
+    )
+
+    def fake_git(_root, *args):
+        if args == ("rev-parse", "HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="b" * 40 + "\n", stderr="")
+        if args[:2] == ("merge-base", "--is-ancestor"):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ("diff", "--name-only"):
+            return subprocess.CompletedProcess(args, 2, stdout="", stderr="denied")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(SC, "_run_git", fake_git)
+
+    result = SC.check_graph_commit_current(str(tmp_path))
+
+    assert result["status"] == SC.UNKNOWN
+    assert "changed-path denominator" in result["detail"]
 
 
 def test_graph_commit_absent_and_invalid(tmp_path):
@@ -450,6 +554,8 @@ def _init_git_with_current_graph(root):
 
 def _healthy_root(tmp_path, now_ref):
     root = _doctrine_root(tmp_path)                 # CLAUDE.md doctrine for the protected reconcile
+    with open(os.path.join(root, ".gitignore"), "w", encoding="utf-8") as handle:
+        handle.write("graphify-out/\nagent-memory/\n")
     q = _quality_dir(root)
     for name in ("scorecard.jsonl", "pir_outcomes.jsonl", "nightly_runs.jsonl"):
         open(os.path.join(q, name), "w").close()
@@ -458,6 +564,21 @@ def _healthy_root(tmp_path, now_ref):
     _write_guards(root)
     os.makedirs(os.path.join(root, "graphify-out"))
     _init_git_with_current_graph(root)              # HEAD + a current graph.json (writes graphify-out/graph.json)
+    gpath = os.path.join(root, "graphify-out", "graph.json")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    with open(os.path.join(root, "graphify-out", ".guarded_refresh.json"), "w", encoding="utf-8") as handle:
+        json.dump({
+            "contract": SC.GRAPHIFY_REFRESH_RECEIPT_CONTRACT,
+            "graph": SC._stable_graph_identity(gpath),
+            "guard": {**SC.GRAPHIFY_GUARD_IDENTITY, "python": "3.12.9"},
+            "head": head,
+            "phase": "complete",
+            "root": os.path.realpath(root),
+            "state": "clean",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, handle)
     return root
 
 

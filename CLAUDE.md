@@ -129,10 +129,11 @@ not supersede this owner. Do not suppress the gate or downgrade the framework as
   directory. Prefer performing authorized actions directly; otherwise provide one command at a time,
   avoid `&&`, and establish the repository with an absolute `cd` or `git -C`.
 - On this host, the Microsoft Store `python` alias can satisfy a PATH probe but cannot import graphify.
-  Repair an existing stale Git hook with graphify hook uninstall then install (install alone is a no-op),
-  pin the real interpreter, and verify a positive rebuild by graph mtime/log rather than the absence of a
-  warning. Use a POSIX-form path in `graphify-out/.graphify_python`; the generated hook's allowlist rejects
-  native Windows backslashes.
+  The tracked Stop hook probes the full guard and may use a POSIX-form path to the real interpreter from
+  `graphify-out/.graphify_python`; verify a positive rebuild by graph mtime/log rather than the absence of a
+  warning. The upstream-generated `.git/hooks/post-commit` imports `graphify.watch` directly and bypasses the
+  tracked guard. Replacing/reactivating that local hook requires a separately authorized one-time action after
+  merge; do not treat a generated hook as guarded merely because its interpreter is pinned.
 
 ## graphify
 
@@ -152,20 +153,28 @@ assert no LLM origin instead) because regenerating the LLM layer needs an LLM ca
 (sole carve-out: a **local** Ollama on 127.0.0.1 is on-host compute, not egress — ADR 0001 Amendment 1;
 `ollama_recall.py` + `ollama_judge.py`. The carve-out licenses local INFERENCE only — it does NOT
 re-authorize `graphify label` or any LLM-derived graph nodes: the graph stays AST-only for
-reproducibility/provenance, a separate invariant from egress. Cloud LLM calls stay forbidden). It fuses
-the code + the repo's markdown (CLAUDE.md, docs/, incl. the deep-research corpus under docs/research/). Use it
-FIRST for codebase questions AND for impact analysis before a change — a scoped subgraph beats grep/file-browsing.
-graphify is NOT on PATH — always invoke as `python -m graphify`, **from the main checkout (repo root),
-never a linked worktree**: `graphify-out/` is untracked AND `.graphifyignore` excludes `.claude/worktrees/`,
-so a worktree carries no `graph.json` — every verb there errors `graph file not found`, and a `graphify
-update .` run from a worktree builds a degenerate PARTIAL graph. (That is the P3-E1 trap: the
+reproducibility/provenance, a separate invariant from egress. Cloud LLM calls stay forbidden). It fuses code with
+the repo's **structural** Markdown layer: page/frontmatter, headings, and links from CLAUDE.md and docs/ (including
+docs/research/). Paragraph bodies are not indexed; retrieve the raw document for body content or semantic freshness.
+Use the graph FIRST for codebase questions AND impact analysis before a change — a scoped subgraph beats broad grep.
+graphify is NOT on PATH. On this owner host, read-only query/navigation verbs use `py -3.12 -m graphify`.
+Source extraction has exactly three guarded forms: `py -3.12 -I -B tools/graphify_guarded.py update <local-path> [--force] [--no-cluster]`,
+`py -3.12 -I -B tools/graphify_guarded.py watch <local-path>`, or
+`py -3.12 -I -B tools/graphify_guarded.py extract <local-path> --code-only [--no-cluster]`, **from the main
+checkout (repo root), never a linked worktree**: `graphify-out/` is untracked AND `.graphifyignore` excludes
+`.claude/worktrees/`, so a worktree carries no owner graph. The guard refuses `update`/`watch` without an
+established `graphify-out/graph.json`, rejects linked worktrees and Git subdirectories, canonicalizes the validated
+root passed to Graphify, and rejects top-level output indirection. Explicit code-only `extract` is the reviewed
+bootstrap/testing surface; use it only in the intended standalone canonical/proof checkout, never to create an
+alternate production graph. An unguarded `graphify update .` from a worktree builds a degenerate PARTIAL graph.
+(That is the P3-E1 trap: the
 "122-node / file-granular / `affected "fn()"` returns No node match" reading came from a worktree run;
 the real main-checkout graph is thousands of nodes and **function-granular** — `affected "parse_qos_config()"`,
-`explain`, `path` all resolve function symbols as advertised. Verified graphify 0.9.6, 2026-07-11.) NB the
+`explain`, `path` all resolve function symbols as advertised. Verified Graphifyy 0.9.47.) NB the
 extractor indexes functions, classes and docstrings, NOT module-level assignments: a constant such as
 `_RACE_RETRIES` is not a node, so `affected` on one returns nothing and that is a scope limit, not a stale graph.
 
-Installed Graphify 0.9.6 also has two separately reviewed corpus/coverage residuals that local ignore syntax cannot
+Installed Graphifyy 0.9.47 also has two separately reviewed corpus/coverage residuals that local ignore syntax cannot
 override. Its special saved-memory scan bypasses `.graphifyignore`/CLI excludes and can re-ingest
 `graphify-out/memory/*.md`; its hard-coded noise pruning skips every directory named `build`, including authored
 `master-reference/build/*.mjs` release owners. These are exact external BLOCK categories
@@ -175,23 +184,42 @@ rebuild can remove a deliberately deleted privacy-offending node and heal increm
 these two producer gaps. Reconcile the residual tests only when upstream makes explicit include/ignore policy
 authoritative over both special scans.
 
+Graphifyy 0.9.47's official JSON extractor also applies its array branch to keys other than `extends`, producing
+false `extends` edges. `tools/graphify_guarded.py` requires the exact distribution version, import path, and
+reviewed extractor SHA-256; applies the one-line key predicate only in memory; verifies the corrected SHA-256;
+and rebinds all five live 0.9.47 extractor aliases before entering the CLI. The official AST-cache namespace
+does not bind extractor bytes, so the launcher preserves but never reads or writes JSON cache entries (including
+mixed-case `.JSON` suffixes). `--probe` attests the exact overlay, isolated `-I` process, `-B` bytecode-write suppression,
+case-fold-safe cache bypass, sanitized ambient `GRAPHIFY_*`/`GIT_*` controls and executable lookup, and one-worker
+boundary. Every producer also holds the same OS-backed output lock; recursive reparse points and regular-file
+hard links under `graphify-out/` are rejected. Any mismatch exits
+before a Graphify command can mutate the graph, and the installed package remains unchanged. Because 0.9.47's
+parallel AST workers reload the on-disk
+module, the launcher fixes `GRAPHIFY_MAX_WORKERS=1` and rejects `--max-workers`; guarded extraction trades cache
+reuse and parallel speed for semantic closure. The command allowlist also rejects generic/semantic `extract`,
+`--allow-partial`, `--no-gitignore`, output/global/live-source indirection, hidden `.graphify_root` reuse, and
+every producer verb not listed above. The Stop receipt is local bookkeeping for wrapper exit 0, matching observed
+HEAD/status endpoints, and the final graph digest. It is not signed source-to-output provenance, producer-warning or
+corpus closure, and cannot exclude a concurrent writer changing and restoring source bytes during extraction. This
+bounds that extractor correction only—it is not verification of the rest of the wheel or its transitive dependencies.
+
 Rules:
-- For codebase questions, run `python -m graphify query "<question>"` first. Use `python -m graphify path "<A>" "<B>"`
-  for relationships and `python -m graphify explain "<concept>"` for a focused node + its neighbors. These return a
+- For codebase questions, run `py -3.12 -m graphify query "<question>"` first. Use `py -3.12 -m graphify path "<A>" "<B>"`
+  for relationships and `py -3.12 -m graphify explain "<concept>"` for a focused node + its neighbors. These return a
   scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep.
 - Use the ADVANCED surface (it is underused — reach for it, don't default to grep sweeps), ALL offline/AST-only:
-  **`python -m graphify affected "<symbol>()"`** is the highest-value verb — reverse blast-radius BEFORE editing a
+  **`py -3.12 -m graphify affected "<symbol>()"`** is the highest-value verb — reverse blast-radius BEFORE editing a
   parser / detector / shared symbol, so every downstream caller + deliverable is shown FIRST (directly attacks the
   recurring parser↔detector / format-fidelity drift bug class). Plus the MCP tools: `god_nodes` (the core
   abstractions before a refactor), `query_graph`/`shortest_path` (enumerate every call/render site before a
   cross-surface change so it isn't applied to only some), `graph_stats` + `diagnose multigraph` (health),
   `benchmark` (the 5–15× token-reduction win).
-- Offline NAVIGATION (replaces the never-existent wiki): `python -m graphify tree` → graphify-out/GRAPH_TREE.html
-  (D3 collapsible tree) and `python -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
+- Offline NAVIGATION (replaces the never-existent wiki): `py -3.12 -m graphify tree` → graphify-out/GRAPH_TREE.html
+  (D3 collapsible tree) and `py -3.12 -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
   broad architecture review; `god_nodes` is the fastest map of the core abstractions. **The report is a
   derivative, not an SSOT:** installed Graphifyy 0.9.47 can still count structural-only communities as “shown”.
   Before using report summary coverage as evidence, run
-  `python -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md`; the current
+  `py -3.12 -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md`; the current
   fixed report-residual BLOCK leaves the separately validated `graph.json` available for query/compiler use but
   withholds the summary-partition claim. An input/graph-invalid receipt establishes no such validity. The verifier is
   deliberately bound to the observed 0.9.47 file/stub predicate; reconcile it explicitly when the external producer
@@ -201,20 +229,23 @@ Rules:
   nodes, breaking the AST-only invariant above, which the local-Ollama carve-out does not license), and the
   MCP `get_pr_impact` / `list_prs` / `triage_prs` (hit live api.github.com — and GitHub is paused). Every other verb (query/path/explain/affected/tree/export/diagnose/
   update/cluster-only) is fully offline.
-- Keeping the graph current: a Stop hook re-extracts incrementally after .py edits (AST-only, no API cost) — this
-  is what keeps graph.json fresh (it also picks up new docs/*.md alongside a code change). A MANUAL
-  `python -m graphify update .` may REFUSE ("fewer nodes than existing — missing chunk files from a previous
+- Keeping the graph current: after any visible repository change, the Stop hook runs a full AST corpus scan/update
+  (cache hits still apply; no API cost), because that is the only rename/removal-safe trigger across Graphify's
+  mixed corpus. A persistent untracked, unsupported artifact can therefore cause a bounded redundant full scan on
+  each Stop until it is ignored or removed. A MANUAL `py -3.12 -I -B tools/graphify_guarded.py update .` may REFUSE
+  ("fewer nodes than existing — missing chunk files from a previous
   session"); that is graphify's SAFETY GUARD, not corruption — do NOT `--force` past an ACCIDENTAL shrink (it
   would drop good nodes). The one legit `--force` is an INTENTIONAL de-pollution: after adding non-source dirs
   to `.graphifyignore` (the tool's own "use after refactors that delete code" case), back up graph.json, run
-  `update . --force`, then verify the only nodes dropped are the excluded paths (precedent: 2026-07-03 cleanup
+  the guarded `update . --force`, then verify the only nodes dropped are the excluded paths (precedent: 2026-07-03 cleanup
   removed ~1.9k scratch/side-engagement nodes; 2026-06-25 removed the `_ref/` copy).
 
   **Known incremental-rebuild limitation (current producer residual, not a claim that the present graph is
   truncated):** Graphify's incremental `changed_paths` rebuild can retain the full node census while evicting
-  cross-file edges for a re-extracted file. `built_at_commit` and node count therefore do not prove edge
+  cross-file edges for a re-extracted file. `built_at_commit` records the last topology write (a successful
+  topology-neutral scan intentionally leaves it unchanged), and it and node count therefore do not prove edge
   completeness. Consumers must report missing declared edges, and a reference/release build must first run a
-  full `python -m graphify update .`, which heals this producer state. Executable evidence:
+  full `py -3.12 -I -B tools/graphify_guarded.py update .`, which heals this producer state. Executable evidence:
   `cisco_toolkit/d10_eval_set.py` and
   `tests/test_d10_eval_set.py::test_verify_multi_hop_edges_reports_on_an_edge_truncated_graph`.
 
@@ -268,8 +299,8 @@ Assess → *(approve)* → Design HLD/LLD → *(peer review)* → MOP + rollback
 - **Universal architecture coverage** (both ingestion channels — see `docs/universal-architecture-coverage.md`): 46 coverage-honest architecture-class detectors across 27 classes (the in-code `_ARCH_COVERAGE_REGISTRY` is the authoritative count — probe-ids across class axes, reconciled by `tests/test_ssot_registry.py`) spanning SSH `show`-text (SD-Access/LISP, TrustSec/CTS, DMVPN, IPsec, BFD, IPv6, SP/MPLS, switch-native, firewall, + multi-vendor Arista/Juniper/FortiGate) **and** JSON controller/mgmt REST (Cisco ACI/APIC, Catalyst SD-WAN/vManage, ISE, FMC, + cloud). Controller evidence: collect through the live `rest_collect.CONTROLLER_COLLECTORS` denominator (`apic|vmanage|ise|fmc`) via `python -m cisco_toolkit.rest_collect <controller> --url https://… --user <ro> --password-env CISCO_REST_PASS --out-dir <dir>` (opt-in, never auto-runs; dedicated read-only RBAC is the hard control; the only non-GET requests are authentication logins), then analyze with `--no-collect`. Coverage map is published as `snap['architecture_coverage']` (read by the explorer ✎Design + webapp); ACI migration move-groups in `design_blueprint.target_state.aci_move_groups`.
 - **Deliverable generators** (`cisco_toolkit/`): design, mop, crd, engagement, archreview, ops, runbook, deck, html (explorer/diff/campaign), excel (workbook). Toggle with `--no-html` (explorer), `--no-docx` (runbook), `--no-pptx` (deck), and `--no-design`/`--no-mop`/`--no-crd`/`--no-engagement`/`--no-opshandbook`/`--no-archreview`; the workbook is always produced (there is no `--no-runbook`/`--no-deck`/`--no-excel`).
 - **Atlas — the portable field app** (`portable/`, ADR-0004; P0–P3 shipped): the whole platform as a one-folder Windows bundle that runs from a USB stick with no Python on the host. `Atlas.exe` is the ONE door — it serves AssessHub *and* is the engine CLI via the `--run-engine <engine argv>` sentinel (there is no separate `cisco-assess.exe` on the stick). Build + smoke: `python portable/build_atlas.py`; lay out/update a stick: `portable/make_stick.ps1 -Dest E:\` (re-running IS the update: everything replaced except `data\`). Field commands: `Atlas.exe --selftest` (fails loud on the silent-degrade assets) and **`Atlas.exe --redact-folder <collection> --out <dir>` [`--redact-collection`] [`--reuse-out`]** — the share-safe deliverable set, synthesizing the template/devices.json the engine requires and *verifying* the result before reporting success. Verification is two-sided: the redaction actually RAN, and the document family is COMPLETE (every engine deliverable writer is fail-soft, so a short set otherwise exits 0 looking whole — `docmeta.py :: ARTIFACT_SPECS` owns the lifecycle and its derived `CLI_ARTIFACT_SUFFIX` view owns what a complete CLI run produces; `cutover`/`nrfu` are AssessHub-rendered and are NOT part of it, while conditional PIR is post-execution only). Exit `0` = complete + verified, `3` = produced but short (safe, just not all of it), `1` = failed, do not send. An `--out` folder that already holds a deliverable set is REFUSED before the engine starts (`--reuse-out` is the explicit escape) — otherwise another job's documents sit under this run's filenames, and redaction keeps hostnames. The store hardens itself at boot (integrity check + rotating backups in `data\backups\`); read `portable/README-FIELD.txt` before changing any of it — it is the engineer's only on-site documentation and is ratchet-tested (`tests/test_readme_field.py`).
-- **Tests:** `python -m pytest -q` (`tests/` + `webapp/tests` are both in the default gate; run collection rather than caching a count). **graphify here:** `python -m graphify query|explain|path|"update ."` (not on PATH — use `python -m`). Bump the release version in `pyproject.toml` only at tag time; never bump the decoupled schema version `cisco_toolkit.__version__`.
+- **Tests:** `python -m pytest -q` (`tests/` + `webapp/tests` are both in the default gate; run collection rather than caching a count). **graphify here:** read with `py -3.12 -m graphify query|explain|path`; source-extract only with guarded `update`, `watch`, or `extract <local-path> --code-only` forms above. Bump the release version in `pyproject.toml` only at tag time; never bump the decoupled schema version `cisco_toolkit.__version__`.
 
-> **Automation already wired in `.claude/` for Claude Code:** a `Stop` hook (`verify-green.sh`) runs `pytest` after `.py` changes and blocks on an observed test failure or timeout; it allows the stop loudly when no working interpreter is available, while unreadable Git state remains a deliberate fail-open path. The graph refresh, session brief, recorder, and status helpers are maintenance/observability hooks and fail open. A second `Stop` hook refreshes graphify after code edits; a `SessionStart` hook prints this engagement's state; a status line shows version/branch/model. Codex does not execute these Claude hooks automatically — root `AGENTS.md` carries the shared bootstrap.
+> **Automation already wired in `.claude/` for Claude Code:** a `Stop` hook (`verify-green.sh`) runs `pytest` after `.py` changes and blocks on an observed test failure or timeout; it allows the stop loudly when no working interpreter is available, while unreadable Git state remains a deliberate fail-open path. The graph refresh, session brief, recorder, and status helpers are maintenance/observability hooks and fail open. A second `Stop` hook probes the tracked producer guard, then refreshes graphify after any visible repository change; a failed probe or unreadable Git status leaves the graph untouched and warns while still allowing the turn to stop. A `SessionStart` hook prints this engagement's state; a status line shows version/branch/model. Codex does not execute these Claude hooks automatically — root `AGENTS.md` carries the shared bootstrap.
 
 > **Trust boundary — "read-only" is a trust model, not a sandbox.** The four analyst agents are constrained by their tool allowlist (no `Edit`/`Write` tools) + interactive permission prompts + their prompt mandate. But any agent holding `Bash` can run arbitrary python, and per Claude Code docs per-command Bash scoping can't be expressed in `tools:` while Bash deny-rules are bypassable — the OS `sandbox` is the only hard enforcement. So **keep the default permission mode (never `bypassPermissions`)** for these agents, so risky Bash (device writes, `git push`) still prompts you. The agents are designed to never attempt those; this is the backstop if one misreads intent.

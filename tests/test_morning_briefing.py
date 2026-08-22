@@ -24,7 +24,24 @@ import subprocess
 
 import pytest
 
-_BASH = shutil.which("bash")
+def _resolve_bash():
+    found = shutil.which("bash")
+    if found or os.name != "nt":
+        return found
+    roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramW6432"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    for root in filter(None, roots):
+        for relative in (("Git", "bin", "bash.exe"), ("Programs", "Git", "bin", "bash.exe")):
+            candidate = os.path.join(root, *relative)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+_BASH = _resolve_bash()
 _GIT = shutil.which("git")
 _ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                        capture_output=True, text=True).stdout.strip() or None

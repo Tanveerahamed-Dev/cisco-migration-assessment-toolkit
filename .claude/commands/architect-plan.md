@@ -42,8 +42,8 @@ Phase 3+). Scope is a P0 interview question — never silently narrow
    file contents. The main thread synthesizes; it does not re-read the
    files itself.
 2. GRAPH-FIRST NAVIGATION. This repo has a knowledge graph (graphify-out/).
-   Subagents index through it first — `python -m graphify query|explain|path`
-   (not on PATH; always `python -m`), the graphify MCP `god_nodes` tool
+   Subagents index through it first — `py -3.12 -m graphify query|explain|path`
+   (not on PATH; use this exact launcher/module form), the graphify MCP `god_nodes` tool
    where exposed (the CLI is the primary interface), GRAPH_REPORT.md —
    then read only the files the graph scopes. Be exhaustive within your
    dimension, but the graph is the index; no grep-sweeps, no
@@ -418,7 +418,7 @@ questions; the human gate is doctrine 7.
    explicitly enumerated, never silently treated as machine-checked.
    Each feature task: one-sentence goal, atomic steps, acceptance
    criteria, human gate, rollback plan, and — when it touches a shared
-   engine symbol — a `python -m graphify affected "<symbol>()"`
+   engine symbol — a `py -3.12 -m graphify affected "<symbol>()"`
    blast-radius note.
 
 6. FROZEN SET
