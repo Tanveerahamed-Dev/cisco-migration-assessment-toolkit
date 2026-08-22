@@ -87,7 +87,28 @@
         "ALWAYS_DURING",
         "NEVER_DURING",
         "EVENTUALLY_WITHIN",
+        "ON_REQUIRE_WITHIN",
+        "HOLD",
+        "UNTIL",
         "SAMPLED_NO_VIOLATION_DURING"
+      ]
+    },
+    "transitionKind": {
+      "enum": ["FORWARD", "ROLLBACK", "RETRY", "SUPERSESSION", "COMPENSATION"]
+    },
+    "predecessorRelation": {
+      "enum": ["PREDECESSOR", "ROLLBACK_OF", "RETRY_OF", "SUPERSEDES", "COMPENSATES"]
+    },
+    "obligationKind": {
+      "enum": [
+        "PRECONDITION",
+        "REQUIRED_CHANGE",
+        "PERMITTED_CHANGE",
+        "FRAME_CONDITION",
+        "INVARIANT",
+        "POSTCONDITION",
+        "TEMPORAL_OBLIGATION",
+        "ROLLBACK_OBLIGATION"
       ]
     },
     "temporalOutcome": {
@@ -119,7 +140,7 @@
       "$comment": "Closed evaluator output vocabulary; not a caller-set TransitionCase authority field."
     },
     "evidenceEffect": {
-      "enum": ["SUPPORT", "COUNTER_EVIDENCE"]
+      "enum": ["SUPPORT", "COUNTER_EVIDENCE", "NO_EFFECT"]
     },
     "evaluatorKind": {
       "enum": [
@@ -542,7 +563,12 @@
         "core_census_method": {
           "const": "PYTHON_COVERAGE_EXECUTABLE_STATEMENTS/1"
         },
-        "pack_census_method": { "const": "DECLARATIVE_RULE_COUNT/1" },
+        "pack_census_method": {
+          "enum": [
+            "DECLARATIVE_RULE_COUNT/1",
+            "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1"
+          ]
+        },
         "core_executable_lines": { "$ref": "#/$defs/positivePortableInteger" },
         "pack_executable_lines": { "$ref": "#/$defs/nonNegativePortableInteger" },
         "dsl_interpreter": { "$ref": "#/$defs/tcbComponent" },
@@ -589,6 +615,9 @@
           "then": {
             "properties": {
               "runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+              "pack_census_method": {
+                "const": "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1"
+              },
               "budget_review_receipt_digest": { "$ref": "#/$defs/digest" },
               "core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
               "pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
@@ -721,18 +750,177 @@
       },
       "$comment": "The Python validator additionally requires distinct before/after digests and exact identity joins."
     },
+    "predecessorEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "edge_id", "relation", "predecessor_transition_id",
+        "predecessor_case_digest", "source_state_id", "target_state_id"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.predecessor-edge/1" },
+        "edge_id": { "$ref": "#/$defs/identifier" },
+        "relation": { "$ref": "#/$defs/predecessorRelation" },
+        "predecessor_transition_id": { "$ref": "#/$defs/identifier" },
+        "predecessor_case_digest": { "$ref": "#/$defs/digest" },
+        "source_state_id": { "$ref": "#/$defs/identifier" },
+        "target_state_id": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "coveredFrameDomain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "claim", "subject_ids", "predicate_ids", "window",
+        "observation_profile_digests", "qualification_denominator_digests"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.covered-frame-domain/1" },
+        "claim": {
+          "const": "NO_OUT_OF_CONTRACT_CHANGE_OBSERVED_WITHIN_DECLARED_COVERAGE_DENOMINATOR"
+        },
+        "subject_ids": { "$ref": "#/$defs/identifierSet" },
+        "predicate_ids": { "$ref": "#/$defs/identifierSet" },
+        "window": { "$ref": "#/$defs/timeInterval" },
+        "observation_profile_digests": { "$ref": "#/$defs/digestSet" },
+        "qualification_denominator_digests": { "$ref": "#/$defs/digestSet" }
+      }
+    },
+    "compensationPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "plan_id", "owner_id", "step_ids", "plan_digest",
+        "executable_state", "qualification_effect"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.compensation-plan/1" },
+        "plan_id": { "$ref": "#/$defs/identifier" },
+        "owner_id": { "$ref": "#/$defs/identifier" },
+        "step_ids": { "$ref": "#/$defs/identifierSet" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "executable_state": {
+          "enum": [
+            "DECLARED_NOT_VERIFIED", "EXECUTABLE", "PARTIALLY_EXECUTABLE",
+            "NOT_EXECUTABLE", "EXECUTED"
+          ]
+        },
+        "qualification_effect": { "const": "NONE" }
+      }
+    },
+    "rollbackHorizon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "state", "opened_at", "closes_when_condition_ids", "closed_at",
+        "closure_decision_receipt_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.rollback-horizon/1" },
+        "state": { "enum": ["OPEN", "CLOSED", "UNKNOWN"] },
+        "opened_at": { "$ref": "#/$defs/timestamp" },
+        "closes_when_condition_ids": { "$ref": "#/$defs/identifierSet" },
+        "closed_at": {
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "closure_decision_receipt_digest": { "$ref": "#/$defs/nullableDigest" }
+      }
+    },
+    "irreversibilityCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "condition_id", "predicate_id", "subject_ids", "effect"],
+      "properties": {
+        "schema": { "const": "atlas.irreversibility-condition/1" },
+        "condition_id": { "$ref": "#/$defs/identifier" },
+        "predicate_id": { "$ref": "#/$defs/identifier" },
+        "subject_ids": { "$ref": "#/$defs/identifierSet" },
+        "effect": { "enum": ["CLOSES_ROLLBACK_HORIZON", "NARROWS_COMPENSATION"] }
+      }
+    },
+    "transitionException": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "exception_id", "obligation_ids", "state", "owner_id",
+        "rationale_digest", "decision_receipt_digest", "expires_at"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-exception/1" },
+        "exception_id": { "$ref": "#/$defs/identifier" },
+        "obligation_ids": { "$ref": "#/$defs/identifierSet" },
+        "state": { "enum": ["PROPOSED", "ACCEPTED", "REJECTED", "EXPIRED", "REVOKED"] },
+        "owner_id": { "$ref": "#/$defs/identifier" },
+        "rationale_digest": { "$ref": "#/$defs/digest" },
+        "decision_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
+        "expires_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "decisionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "receipt_id", "decision", "decided_at", "decider_id",
+        "subject_kind", "subject_id", "subject_digest", "signature_digest",
+        "supersedes_receipt_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-decision-receipt/1" },
+        "receipt_id": { "$ref": "#/$defs/identifier" },
+        "decision": {
+          "enum": [
+            "CONTINUE", "HOLD", "ROLLBACK", "COMMIT", "REJECT",
+            "ACCEPT_EXCEPTION", "REJECT_EXCEPTION", "REVOKE_EXCEPTION",
+            "CLOSE_ROLLBACK_HORIZON"
+          ]
+        },
+        "decided_at": { "$ref": "#/$defs/timestamp" },
+        "decider_id": { "$ref": "#/$defs/identifier" },
+        "subject_kind": {
+          "enum": ["TRANSITION", "TRANSITION_EXCEPTION", "ROLLBACK_HORIZON"]
+        },
+        "subject_id": { "$ref": "#/$defs/identifier" },
+        "subject_digest": { "$ref": "#/$defs/digest" },
+        "signature_digest": { "$ref": "#/$defs/digest" },
+        "supersedes_receipt_digest": { "$ref": "#/$defs/nullableDigest" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "subject_kind": { "const": "TRANSITION" } }, "required": ["subject_kind"] },
+          "then": { "properties": { "decision": { "enum": ["CONTINUE", "HOLD", "ROLLBACK", "COMMIT", "REJECT"] } } }
+        },
+        {
+          "if": { "properties": { "subject_kind": { "const": "TRANSITION_EXCEPTION" } }, "required": ["subject_kind"] },
+          "then": { "properties": { "decision": { "enum": ["ACCEPT_EXCEPTION", "REJECT_EXCEPTION", "REVOKE_EXCEPTION"] } } }
+        },
+        {
+          "if": { "properties": { "subject_kind": { "const": "ROLLBACK_HORIZON" } }, "required": ["subject_kind"] },
+          "then": { "properties": { "decision": { "const": "CLOSE_ROLLBACK_HORIZON" } } }
+        }
+      ]
+    },
     "obligation": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "schema",
         "obligation_id",
+        "obligation_kind",
         "requirement_id",
         "predicate_id",
         "subject_ids",
         "state_ids",
         "temporal_operator",
+        "trigger_id",
+        "minimum_delay_ms",
+        "maximum_delay_ms",
+        "stable_duration_ms",
+        "commit_event_id",
+        "rollback_condition_id",
         "mandatory",
+        "owner_id",
+        "evidence_recipe_digest",
+        "expires_at",
         "window",
         "observation_profile_digest",
         "semantic_profile_digest",
@@ -742,12 +930,22 @@
       "properties": {
         "schema": { "const": "atlas.transition-obligation/1" },
         "obligation_id": { "$ref": "#/$defs/identifier" },
+        "obligation_kind": { "$ref": "#/$defs/obligationKind" },
         "requirement_id": { "$ref": "#/$defs/identifier" },
         "predicate_id": { "$ref": "#/$defs/identifier" },
         "subject_ids": { "$ref": "#/$defs/identifierSet" },
         "state_ids": { "$ref": "#/$defs/identifierSet" },
         "temporal_operator": { "$ref": "#/$defs/temporalOperator" },
+        "trigger_id": { "$ref": "#/$defs/nullableIdentifier" },
+        "minimum_delay_ms": { "$ref": "#/$defs/nullableNonNegativePortableInteger" },
+        "maximum_delay_ms": { "$ref": "#/$defs/nullableNonNegativePortableInteger" },
+        "stable_duration_ms": { "$ref": "#/$defs/nullablePositivePortableInteger" },
+        "commit_event_id": { "$ref": "#/$defs/nullableIdentifier" },
+        "rollback_condition_id": { "$ref": "#/$defs/nullableIdentifier" },
         "mandatory": { "type": "boolean" },
+        "owner_id": { "$ref": "#/$defs/identifier" },
+        "evidence_recipe_digest": { "$ref": "#/$defs/digest" },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
         "window": { "$ref": "#/$defs/timeInterval" },
         "observation_profile_digest": { "$ref": "#/$defs/digest" },
         "semantic_profile_digest": { "$ref": "#/$defs/digest" },
@@ -773,18 +971,37 @@
         "schema",
         "ir_version",
         "transition_identity",
+        "predecessor_edges",
+        "transition_kind",
         "from_state_id",
         "to_state_id",
         "intermediate_state_ids",
         "subject_ids",
         "trigger_ids",
         "obligations",
+        "precondition_obligation_ids",
+        "required_change_obligation_ids",
+        "permitted_change_obligation_ids",
+        "invariant_obligation_ids",
+        "postcondition_obligation_ids",
+        "temporal_obligation_ids",
+        "covered_frame_domain",
+        "compensation_plan",
+        "rollback_horizon",
+        "irreversibility_conditions",
+        "exceptions",
+        "decision_receipts",
         "rollback_dimensions"
       ],
       "properties": {
         "schema": { "const": "atlas.evolution-ir/1" },
         "ir_version": { "const": "1.0.0" },
         "transition_identity": { "$ref": "#/$defs/transitionIdentity" },
+        "predecessor_edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/predecessorEdge" }
+        },
+        "transition_kind": { "$ref": "#/$defs/transitionKind" },
         "from_state_id": { "$ref": "#/$defs/identifier" },
         "to_state_id": { "$ref": "#/$defs/identifier" },
         "intermediate_state_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
@@ -795,6 +1012,28 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/obligation" },
           "$comment": "The Python validator enforces sorted unique obligation IDs, unique requirement IDs, and subject/state scope."
+        },
+        "precondition_obligation_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "required_change_obligation_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "permitted_change_obligation_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "invariant_obligation_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "postcondition_obligation_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "temporal_obligation_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "covered_frame_domain": { "$ref": "#/$defs/coveredFrameDomain" },
+        "compensation_plan": { "$ref": "#/$defs/compensationPlan" },
+        "rollback_horizon": { "$ref": "#/$defs/rollbackHorizon" },
+        "irreversibility_conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/irreversibilityCondition" }
+        },
+        "exceptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/transitionException" }
+        },
+        "decision_receipts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/decisionReceipt" }
         },
         "rollback_dimensions": {
           "type": "array",
@@ -991,6 +1230,18 @@
         }
       ],
       "$comment": "The Python validator closes denominator kind by subject kind and observation mode, requires inspectable event/model preimages, and joins observation/applicability identity, predicates, subjects, platform releases, and time windows."
+    },
+    "qualificationEvidenceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "receipt_digest", "signature_digest", "public_key_digest"],
+      "properties": {
+        "schema": { "const": "atlas.qualification-evidence-binding/1" },
+        "receipt_digest": { "$ref": "#/$defs/digest" },
+        "signature_digest": { "$ref": "#/$defs/digest" },
+        "public_key_digest": { "$ref": "#/$defs/digest" }
+      },
+      "$comment": "The Python validator requires exact coverage of every non-null qualification receipt, canonical receipt ordering, unique signatures, and mandatory replay-content bindings for all three proof objects."
     },
     "transformStep": {
       "type": "object",
@@ -1205,6 +1456,35 @@
             "required": ["evaluator_kind"]
           },
           "then": { "properties": { "certificate_digest": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "effect": { "const": "SUPPORT" } }, "required": ["effect"] },
+          "then": {
+            "properties": {
+              "temporal_outcome": {
+                "enum": [
+                  "SATISFIED_WITHIN_DECLARED_MODEL",
+                  "NO_VIOLATION_OBSERVED_ON_DECLARED_TRACE"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "effect": { "const": "COUNTER_EVIDENCE" } }, "required": ["effect"] },
+          "then": {
+            "properties": {
+              "temporal_outcome": { "const": "VIOLATED" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "effect": { "const": "NO_EFFECT" } }, "required": ["effect"] },
+          "then": {
+            "properties": {
+              "temporal_outcome": { "const": "INCONCLUSIVE" }
+            }
+          }
         }
       ],
       "$comment": "The Python validator joins obligation/evidence IDs, scopes, evidence classes, semantic profiles, temporal semantics, and evaluator digest."
@@ -1218,6 +1498,7 @@
         "role": {
           "enum": [
             "EVIDENCE",
+            "EVIDENCE_RECIPE",
             "SEMANTIC_BUNDLE",
             "PACK_MANIFEST",
             "TCB_MANIFEST",
@@ -1226,10 +1507,29 @@
             "RUNTIME_DEPENDENCY",
             "TRUST_SNAPSHOT",
             "QUALIFICATION_RECEIPT",
+            "QUALIFICATION_SIGNATURE",
+            "QUALIFICATION_PUBLIC_KEY",
             "REPLAY_RECIPE",
             "STATE_SNAPSHOT",
-            "VERIFIER_BOOTSTRAP",
-            "VERIFIER_RECEIPT"
+            "VERIFIER_RECEIPT",
+            "PREDECESSOR_CASE",
+            "COMPENSATION_PLAN",
+            "DECISION_RECEIPT",
+            "DECISION_SIGNATURE",
+            "TRANSFORM_PROFILE",
+            "TRANSFORM_RECEIPT",
+            "LEGACY_SEMANTICS",
+            "EVENT_INVENTORY",
+            "MODEL_BOUND",
+            "ASSUMPTION_SET",
+            "APPLICABILITY_PROFILE",
+            "EXCEPTION_RATIONALE",
+            "RECIPIENT_POLICY",
+            "ENCRYPTION_PROFILE",
+            "REDACTION_PROFILE",
+            "KEY_POLICY",
+            "RETENTION_POLICY",
+            "EVALUATOR_CERTIFICATE"
           ]
         },
         "digest": { "$ref": "#/$defs/digest" },
@@ -1253,6 +1553,7 @@
         "mode",
         "object_bindings",
         "verifier_bootstrap_digest",
+        "historical_trust_snapshot_digest",
         "trust_policy_digest",
         "replay_recipe_digest"
       ],
@@ -1266,6 +1567,7 @@
           "$comment": "The Python validator requires canonical sorting and uniqueness by (role,digest), then checks all evidence, pack, semantic, and qualification bindings."
         },
         "verifier_bootstrap_digest": { "$ref": "#/$defs/digest" },
+        "historical_trust_snapshot_digest": { "$ref": "#/$defs/digest" },
         "trust_policy_digest": { "$ref": "#/$defs/digest" },
         "replay_recipe_digest": { "$ref": "#/$defs/digest" }
       },
@@ -1297,6 +1599,24 @@
                   "allOf": [
                     { "$ref": "#/$defs/objectBinding" },
                     { "properties": { "location": { "const": "PROJECTION" } } }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "REFERENCED" } }, "required": ["mode"] },
+          "then": {
+            "properties": {
+              "object_bindings": {
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/$defs/objectBinding" },
+                    {
+                      "if": { "properties": { "required": { "const": true } }, "required": ["required"] },
+                      "then": { "properties": { "location": { "not": { "const": "PROJECTION" } } } }
+                    }
                   ]
                 }
               }
@@ -1425,6 +1745,7 @@
         "transition_identity",
         "evolution_ir",
         "qualification_denominators",
+        "qualification_evidence_bindings",
         "observation_profiles",
         "evidence_atoms",
         "applicability",
@@ -1447,6 +1768,12 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/qualificationDenominator" },
           "$comment": "The Python validator requires canonical order, unique IDs/digests, exact subject/profile joins, and invalidation dependencies."
+        },
+        "qualification_evidence_bindings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/qualificationEvidenceBinding" },
+          "$comment": "The Python validator requires canonical receipt order and exact equality with the case's non-null qualification-receipt set."
         },
         "observation_profiles": {
           "type": "array",
@@ -1482,6 +1809,18 @@
         {
           "if": { "properties": { "case_mode": { "const": "PROJECTION_ONLY" } }, "required": ["case_mode"] },
           "then": { "properties": { "replay_contract": { "properties": { "mode": { "const": "PROJECTION_ONLY" } } } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "applicability": {
+                "properties": { "kind": { "const": "NOT_APPLICABLE" } },
+                "required": ["kind"]
+              }
+            },
+            "required": ["applicability"]
+          },
+          "then": false
         }
       ],
       "$comment": "All cross-object identity, digest, semantic, temporal, applicability, replay-content, and invalidation joins are fail-closed in cisco_toolkit.transition_contract.validate_transition_case."

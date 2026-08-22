@@ -35,6 +35,8 @@ TOP_KEYS = {
     "baseline_execution",
     "boundary_measurements",
     "hostile_measurements",
+    "supplemental_measurements",
+    "measurement_gaps",
     "reference_environment",
     "review_state",
     "release3_included",
@@ -76,6 +78,24 @@ AUTHORITY = {
     "promotion_eligible": False,
     "execution_state": "CONTRACT_ONLY",
     "qualification_state": "EXPERIMENTAL",
+}
+SUPPLEMENTAL_KEYS = {
+    "case_id",
+    "targets",
+    "raw_program_bytes",
+    "program_digest",
+    "raw_input_bytes",
+    "input_digest",
+    "raw_receipt_bytes",
+    "receipt_digest",
+    "repeat_receipt_digests",
+    "outcome",
+    "error",
+    "result_digest",
+    "result_is_null",
+    "work_units",
+    "authority",
+    "performance_reference",
 }
 
 
@@ -139,6 +159,7 @@ def test_artifact_schema_and_nested_records_are_closed() -> None:
         "receipt_digest",
         "repeat_receipt_digests",
         "source_binding_state",
+        "inner_receipt_digest",
         "inner_outcome",
         "inner_result_digest",
         "inner_work_units",
@@ -153,6 +174,20 @@ def test_artifact_schema_and_nested_records_are_closed() -> None:
                 set(observation) == {"elapsed_ns", "tracemalloc_peak_bytes"}
                 for observation in boundary["performance_reference"]
             )
+    for row in artifact["supplemental_measurements"]:
+        assert set(row) == SUPPLEMENTAL_KEYS
+        assert set(row["authority"]) == set(AUTHORITY)
+
+
+def test_baseline_binds_the_exact_direct_inner_receipt() -> None:
+    artifact = _artifact()
+    program_raw = (ROOT / dsl.DSL_PROTOTYPE_PROGRAM_PATH).read_bytes()
+    input_raw = (ROOT / dsl.DSL_PROTOTYPE_INPUT_PATH).read_bytes()
+    direct_receipt = dsl.run_pack_abi("evaluate", program_raw, input_raw)
+
+    assert artifact["baseline_execution"]["inner_receipt_digest"] == (
+        contract.bytes_digest(direct_receipt)
+    )
 
 
 def test_exact_assets_interpreter_limits_tool_and_denominator_are_digest_bound() -> None:
@@ -311,6 +346,10 @@ def test_hostile_canonical_cases_have_fixed_non_echoing_zero_result_refusals() -
         "FLOAT_LITERAL": "PROGRAM_CANONICAL_INVALID",
         "HOSTILE_KEY_CANARY": "PROGRAM_SCHEMA_INVALID",
         "HOSTILE_PATH_CANARY": "PATH_ROOT_INVALID",
+        "INVALID_UTF8_PROGRAM": "PROGRAM_CANONICAL_INVALID",
+        "INVALID_UTF8_INPUT": "INPUT_CANONICAL_INVALID",
+        "DUPLICATE_INPUT_KEY": "INPUT_CANONICAL_INVALID",
+        "NON_NFC_INPUT_STRING": "INPUT_CANONICAL_INVALID",
     }
     assert {row["case_id"] for row in artifact["hostile_measurements"]} == set(expected)
     for row in artifact["hostile_measurements"]:
@@ -329,6 +368,53 @@ def test_hostile_canonical_cases_have_fixed_non_echoing_zero_result_refusals() -
         assert len(row["performance_reference"]) == measurement.PERFORMANCE_REPEATS
 
 
+def test_supplemental_full_path_and_combined_hostile_pressure_is_measured_honestly() -> None:
+    artifact = _artifact()
+    rows = {row["case_id"]: row for row in artifact["supplemental_measurements"]}
+    assert set(rows) == {
+        "FULL_EXISTING_PATH_N_MINUS_1",
+        "FULL_EXISTING_PATH_N",
+        "FULL_EXISTING_PATH_N_PLUS_1",
+        "COMBINED_EXPRESSION_DEPTH_AND_NODES_AT_N",
+        "COMBINED_FUEL_AND_SET_SCAN_AT_N",
+    }
+    for case_id in ("FULL_EXISTING_PATH_N_MINUS_1", "FULL_EXISTING_PATH_N"):
+        row = rows[case_id]
+        assert row["outcome"] == "EXECUTED_NONAUTHORITATIVE"
+        assert row["error"] is None
+        assert row["result_is_null"] is False
+        assert row["authority"] == AUTHORITY
+    refused = rows["FULL_EXISTING_PATH_N_PLUS_1"]
+    assert refused["outcome"] == "REFUSED_NONAUTHORITATIVE"
+    assert refused["error"] == {"code": "PATH_SEGMENT_LIMIT"}
+    assert refused["result_is_null"] is True
+
+    combined = rows["COMBINED_EXPRESSION_DEPTH_AND_NODES_AT_N"]
+    assert combined["targets"] == {
+        "expression_depth": dsl.DEFAULT_DSL_PROTOTYPE_LIMITS.max_expression_depth,
+        "expression_nodes": dsl.DEFAULT_DSL_PROTOTYPE_LIMITS.max_expression_nodes,
+    }
+    assert combined["work_units"]["expression_nodes"] == (
+        dsl.DEFAULT_DSL_PROTOTYPE_LIMITS.max_expression_nodes
+    )
+    assert combined["outcome"] == "EXECUTED_NONAUTHORITATIVE"
+
+    fuel = rows["COMBINED_FUEL_AND_SET_SCAN_AT_N"]
+    assert fuel["work_units"]["fuel_consumed"] == (
+        dsl.DEFAULT_DSL_PROTOTYPE_LIMITS.max_instruction_fuel
+    )
+    assert fuel["outcome"] == "EXECUTED_NONAUTHORITATIVE"
+    assert artifact["measurement_gaps"] == sorted(set(artifact["measurement_gaps"]))
+    assert "MAX_RECEIPT_CONTAINER_CEILING_NOT_DEFINED" not in artifact["measurement_gaps"]
+    assert (
+        "UNINSTRUMENTED_DEPTH_OPERAND_PATH_STRING_AND_SET_TARGETS_ARE_"
+        "SIGNED_AGGREGATE_CLAIMS_ONLY"
+    ) in artifact["measurement_gaps"]
+    assert "REPRESENTATIVE_FIELD_WORKLOAD_DENOMINATOR_ABSENT" in artifact[
+        "measurement_gaps"
+    ]
+
+
 def test_measurements_cannot_approve_budgets_review_qualification_or_release3() -> None:
     artifact = _artifact()
     assert artifact["authoritative"] is False
@@ -342,7 +428,9 @@ def test_measurements_cannot_approve_budgets_review_qualification_or_release3() 
         "state": "PENDING_INDEPENDENT_NUMERIC_REVIEW_AND_SIGNED_EVIDENCE",
         "blockers": [
             "APPROVED_BUDGET_ABSENT",
+            "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
             "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+            "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
         ],
         "resource_ceiling_effect": "NONE",
         "qualification_effect": "NONE",

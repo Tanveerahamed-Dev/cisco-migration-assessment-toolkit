@@ -97,6 +97,9 @@ def _review_material() -> dict[str, dict[str, Any]]:
         "selected_tree": tree,
         "structural_census_digest": _digest("structural census"),
         "prototype_measurement_digest": _digest("prototype measurements"),
+        "runtime_inventory_digest": _digest("runtime inventory"),
+        "approved_runtime_inventory_state": tr.TCB_BUDGET_REVIEW_RUNTIME_STATE,
+        "budget_proposal_digest": _digest("budget proposal"),
         "dsl_interpreter_digest": _digest("DSL interpreter"),
         "prototype_program_digest": _digest("prototype program"),
         "prototype_pack_manifest_digest": _digest("prototype pack manifest"),
@@ -104,6 +107,9 @@ def _review_material() -> dict[str, dict[str, Any]]:
         "approved_core_sloc_budget": 2_500,
         "approved_pack_sloc_budget": 500,
         "approved_dsl_resource_profile": _resource_profile(),
+        "approved_receipt_container_ceiling": dsl.dsl_receipt_container_ceiling(
+            _resource_profile()
+        ),
         "wasm_review_state": "UNREVIEWED",
         "measurement_denominator_digest": _digest("measurement denominator"),
         "decision": "APPROVED",
@@ -127,9 +133,11 @@ def _review_material() -> dict[str, dict[str, Any]]:
             "reviewer_role": tr.TCB_BUDGET_REVIEWER_ROLE,
             "substrate": tr.TCB_BUDGET_REVIEW_SUBSTRATE,
         }],
-        "allowed_selected_commits": [commit],
-        "allowed_selected_trees": [tree],
-        "allowed_tcb_subject_digests": [receipt["tcb_budget_subject_digest"]],
+        "allowed_source_revisions": [{
+            "selected_commit": commit,
+            "selected_tree": tree,
+            "tcb_budget_subject_digest": receipt["tcb_budget_subject_digest"],
+        }],
         "valid_from": "2026-01-01T00:00:00.000000Z",
         "valid_until": "2027-01-01T00:00:00.000000Z",
     }
@@ -147,7 +155,6 @@ def _review_material() -> dict[str, dict[str, Any]]:
         "schema": tr.TCB_BUDGET_REVIEW_SIGNATURE_SCHEMA,
         "purpose": tr.TCB_BUDGET_REVIEW_PURPOSE,
         "payload_digest": tc.canonical_digest(receipt),
-        "trust_policy_digest": tc.canonical_digest(policy),
         "signer_key_id": reviewer_key_id,
         "algorithm": tr.TCB_BUDGET_REVIEW_SIGNATURE_ALGORITHM,
         "signature_base64": base64.b64encode(b"\x00" * 64).decode("ascii"),
@@ -161,6 +168,9 @@ def _review_material() -> dict[str, dict[str, Any]]:
                 "selected_tree",
                 "structural_census_digest",
                 "prototype_measurement_digest",
+                "runtime_inventory_digest",
+                "approved_runtime_inventory_state",
+                "budget_proposal_digest",
                 "dsl_interpreter_digest",
                 "prototype_program_digest",
                 "prototype_pack_manifest_digest",
@@ -190,6 +200,7 @@ def test_schema_is_valid_and_closed_vocabularies_match_code_owners_exactly() -> 
         "declarativeResult": dsl.DECLARATIVE_RESULT_SCHEMA,
         "innerPrototypeReceipt": dsl.DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA,
         "boundDeclarativePrototypeReceipt": dsl.BOUND_DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA,
+        "reviewedDeclarativeReceipt": dsl.REVIEWED_DECLARATIVE_RECEIPT_SCHEMA,
         "dslResourceProfile": tr.DSL_RESOURCE_PROFILE_SCHEMA,
         "tcbBudgetReviewReceipt": tr.TCB_BUDGET_REVIEW_RECEIPT_SCHEMA,
         "tcbBudgetReviewSignature": tr.TCB_BUDGET_REVIEW_SIGNATURE_SCHEMA,
@@ -197,6 +208,7 @@ def test_schema_is_valid_and_closed_vocabularies_match_code_owners_exactly() -> 
         "tcbBudgetReviewTrustedKey": tr.TCB_BUDGET_REVIEW_TRUSTED_KEY_SCHEMA,
         "tcbBudgetReviewTrustPolicy": tr.TCB_BUDGET_REVIEW_TRUST_POLICY_SCHEMA,
         "tcbBudgetReviewExpectedBindings": tr.TCB_BUDGET_REVIEW_BINDINGS_SCHEMA,
+        "r2TCBBudgetFreeze": tr.R2_TCB_BUDGET_FREEZE_SCHEMA,
     }
     for definition, expected in schema_constants.items():
         assert defs[definition]["properties"]["schema"]["const"] == expected
@@ -218,6 +230,9 @@ def test_schema_is_valid_and_closed_vocabularies_match_code_owners_exactly() -> 
     assert defs["innerPrototypeReceipt"]["properties"]["function"]["oneOf"][0][
         "enum"
     ] == list(dsl.PACK_ABI_FUNCTIONS)
+    assert defs["prototypeError"]["properties"]["code"]["enum"] == list(
+        dsl._PRODUCER_RECEIPT_ERROR_CODES
+    )
     assert defs["declarativeProgram"]["properties"]["abi_version"]["const"] == (
         tc.PACK_ABI_VERSION
     )
@@ -389,6 +404,59 @@ def test_bound_receipt_is_closed_and_cannot_launder_prototype_authority() -> Non
         validator.validate(hostile)
 
 
+def test_reviewed_runtime_receipt_schema_is_closed_and_cannot_mint_authority() -> None:
+    program_raw = _resource_bytes(dsl.DSL_PROTOTYPE_PROGRAM_PATH.removeprefix("cisco_toolkit/"))
+    input_raw = _resource_bytes(dsl.DSL_PROTOTYPE_INPUT_PATH.removeprefix("cisco_toolkit/"))
+    inner_raw = dsl.run_pack_abi("evaluate", program_raw, input_raw)
+    inner = _parsed(inner_raw)
+    receipt = {
+        "schema": dsl.REVIEWED_DECLARATIVE_RECEIPT_SCHEMA,
+        "pack_id": dsl.DSL_PROTOTYPE_PACK_ID,
+        "pack_version": dsl.DSL_PROTOTYPE_PACK_VERSION,
+        "pack_manifest_digest": _digest("reviewed pack"),
+        "tcb_manifest_digest": _digest("reviewed TCB"),
+        "tcb_budget_freeze_digest": _digest("final R2 TCB budget freeze"),
+        "selected_source_commit": "a" * 40,
+        "selected_source_tree": "b" * 40,
+        "budget_review_receipt_digest": _digest("independent budget review"),
+        "runtime_inventory_digest": _digest("complete runtime inventory"),
+        "dsl_interpreter_digest": _digest("selected interpreter bytes"),
+        "program_digest": tc.bytes_digest(program_raw),
+        "limit_profile_source": "VERIFIED_FINAL_R2_TCB_BUDGET_FREEZE",
+        "limit_profile_digest": tc.canonical_digest({
+            field: getattr(dsl.DEFAULT_DSL_PROTOTYPE_LIMITS, field)
+            for field in dsl.DSL_PROTOTYPE_LIMIT_FIELDS
+        }),
+        "inner_receipt_digest": tc.bytes_digest(inner_raw),
+        "inner_receipt": inner,
+        "authoritative": False,
+        "supplies_obligation_support": False,
+        "qualification_effect": "NONE",
+        "authoritative_gate": None,
+        "promotion_eligible": False,
+    }
+    validator = _validator_for("reviewedDeclarativeReceipt")
+    validator.validate(receipt)
+
+    for field, hostile_value in (
+        ("authoritative", True),
+        ("supplies_obligation_support", True),
+        ("qualification_effect", "QUALIFIES"),
+        ("authoritative_gate", "ELIGIBLE_FOR_HUMAN_DECISION"),
+        ("promotion_eligible", True),
+        ("limit_profile_source", "CALLER_OVERRIDE"),
+    ):
+        hostile = deepcopy(receipt)
+        hostile[field] = hostile_value
+        with pytest.raises(ValidationError):
+            validator.validate(hostile)
+
+    hostile = deepcopy(receipt)
+    hostile["self_reviewed"] = True
+    with pytest.raises(ValidationError):
+        validator.validate(hostile)
+
+
 def test_review_structures_match_code_validators_without_bundled_authority() -> None:
     material = _review_material()
     validators = {
@@ -412,6 +480,68 @@ def test_review_structures_match_code_validators_without_bundled_authority() -> 
     rejected["decision"] = "REJECTED"
     tr.validate_tcb_budget_review_receipt(rejected)
     _validator_for("tcbBudgetReviewReceipt").validate(rejected)
+
+
+def test_detached_freeze_schema_keeps_qcp_experimental_and_release3_out() -> None:
+    material = _review_material()
+    receipt = material["receipt"]
+    freeze = {
+        "schema": tr.R2_TCB_BUDGET_FREEZE_SCHEMA,
+        "purpose": tr.R2_TCB_BUDGET_FREEZE_PURPOSE,
+        "source_freeze_state": tr.R2_TCB_BUDGET_FREEZE_SOURCE_STATE,
+        "selected_source_commit": receipt["selected_commit"],
+        "selected_source_tree": receipt["selected_tree"],
+        **{
+            field: receipt[field]
+            for field in tr.R2_TCB_BUDGET_FREEZE_EVIDENCE_FIELDS
+        },
+        "approved_runtime_inventory_state": receipt["approved_runtime_inventory_state"],
+        "tcb_budget_subject_digest": receipt["tcb_budget_subject_digest"],
+        "final_pack_manifest_digest": _digest("final pack manifest"),
+        "final_tcb_manifest_digest": _digest("final frozen TCB"),
+        "review_receipt_digest": tc.canonical_digest(receipt),
+        "review_signature_digest": tc.canonical_digest(material["signature"]),
+        "review_trust_policy_digest": tc.canonical_digest(material["policy"]),
+        "review_public_key_digest": material["trusted_key"]["public_key_digest"],
+        "core_sloc_budget": receipt["approved_core_sloc_budget"],
+        "pack_sloc_budget": receipt["approved_pack_sloc_budget"],
+        "dsl_resource_profile": receipt["approved_dsl_resource_profile"],
+        "receipt_container_ceiling": receipt["approved_receipt_container_ceiling"],
+        "wasm_review_state": "UNREVIEWED",
+        "qcp_001": {
+            "schema": tr.R2_TCB_BUDGET_FREEZE_QCP_SCHEMA,
+            "pack_id": "QCP-001",
+            "pack_version": "0.1.0-experimental",
+            "qualification_state": "EXPERIMENTAL",
+            "execution_state": "CONTRACT_ONLY",
+            "qualification_effect": "NONE",
+            "promotion_eligible": False,
+        },
+        "qualification_effect": "NONE",
+        "promotion_eligible": False,
+        "release3_included": False,
+    }
+    tr.validate_r2_tcb_budget_freeze(freeze)
+    validator = _validator_for("r2TCBBudgetFreeze")
+    validator.validate(freeze)
+
+    for path, hostile_value in (
+        (("qcp_001", "qualification_state"), "QUALIFIED"),
+        (("qcp_001", "execution_state"), "ACTIVATABLE"),
+        (("qcp_001", "promotion_eligible"), True),
+        (("promotion_eligible",), True),
+        (("release3_included",), True),
+        (("wasm_review_state",), "REVIEWED"),
+    ):
+        hostile = deepcopy(freeze)
+        target = hostile
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = hostile_value
+        with pytest.raises(tc.TransitionContractError):
+            tr.validate_r2_tcb_budget_freeze(hostile)
+        with pytest.raises(ValidationError):
+            validator.validate(hostile)
 
 
 @pytest.mark.parametrize(

@@ -24,6 +24,7 @@ from coverage.parser import PythonParser  # noqa: E402
 from cisco_toolkit import transition_contract as contract  # noqa: E402
 from cisco_toolkit import transition_dsl as dsl  # noqa: E402
 from cisco_toolkit import transition_pack as pack  # noqa: E402
+from cisco_toolkit import transition_runtime_inventory as runtime_inventory  # noqa: E402
 
 
 ASSET_PATHS = (
@@ -38,8 +39,14 @@ CORE_SOURCE_ROSTER = (
      "cisco_toolkit/transition_contract.py"),
     ("atlas.transition-dsl", "DECLARATIVE_DSL_INTERPRETER",
      "cisco_toolkit/transition_dsl.py"),
-    ("atlas.transition-pack", "PACK_ABI_AND_TCB_BOUNDARY",
+    ("atlas.transition-pack", "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY",
      "cisco_toolkit/transition_pack.py"),
+    ("atlas.transition-runtime-inventory", "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR",
+     "cisco_toolkit/transition_runtime_inventory.py"),
+    ("atlas.transition-tcb-review", "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY",
+     "cisco_toolkit/transition_tcb_review.py"),
+    ("atlas.transition-verifier", "STRUCTURAL_VERIFIER_AND_GATE_MAPPING",
+     "cisco_toolkit/transition_verifier.py"),
 )
 
 
@@ -266,17 +273,37 @@ def _build() -> dict[str, bytes]:
     core_sources.sort(key=lambda item: (item["artifact_id"], item["path"]))
     pack_raw_by_path = {
         dsl.DSL_PROTOTYPE_DENOMINATOR_PATH: denominator_raw,
-        dsl.DSL_PROTOTYPE_INPUT_PATH: input_raw,
         dsl.DSL_PROTOTYPE_PROGRAM_PATH: program_raw,
     }
     pack_sources = [
-        _artifact("atlas.prototype-denominator", "PROTOTYPE_DENOMINATOR",
+        _artifact("atlas.prototype-denominator", pack.SUPPORTED_DENOMINATOR_SOURCE_ROLE,
                   dsl.DSL_PROTOTYPE_DENOMINATOR_PATH, denominator_raw),
-        _artifact("atlas.prototype-input", "PROTOTYPE_TYPED_INPUT",
-                  dsl.DSL_PROTOTYPE_INPUT_PATH, input_raw),
-        _artifact("atlas.prototype-program", "DECLARATIVE_RULE_PROGRAM",
+        _artifact("atlas.prototype-program", pack.DECLARATIVE_PROGRAM_SOURCE_ROLE,
                   dsl.DSL_PROTOTYPE_PROGRAM_PATH, program_raw),
     ]
+    runtime_raw = (ROOT / runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH).read_bytes()
+    runtime_value = contract.parse_canonical_json_bytes(runtime_raw, require_canonical=True)
+    runtime_inventory.validate_runtime_inventory(runtime_value)
+    if (
+            runtime_value["profile"]["prototype"]["program_digest"]
+            != contract.bytes_digest(program_raw)
+            or runtime_value["profile"]["prototype"]["input_digest"]
+            != contract.bytes_digest(input_raw)
+    ):
+        raise RuntimeError(
+            "reference runtime inventory must be regenerated for the current prototype bytes"
+        )
+    transitive_dependencies = [
+        {
+            "component_id": row["file_id"],
+            "component_version": "REFERENCE_FILE/1",
+            "content_digest": row["digest"],
+        }
+        for row in runtime_value["runtime_files"]
+    ]
+    transitive_dependencies.sort(key=lambda item: (
+        item["component_id"], item["component_version"], item["content_digest"]
+    ))
     executable = Path(sys.executable).resolve().read_bytes()
     tcb = {
         "schema": pack.TCB_MANIFEST_SCHEMA,
@@ -284,7 +311,7 @@ def _build() -> dict[str, bytes]:
         "substrate": pack.PackSubstrate.DECLARATIVE_DSL_ONLY.value,
         "core_sources": core_sources,
         "pack_sources": pack_sources,
-        "transitive_dependencies": [],
+        "transitive_dependencies": transitive_dependencies,
         "runtime_inventory_state": (
             pack.TCBRuntimeInventoryState.PARTIAL_NONPORTABLE_PROTOTYPE.value
         ),
@@ -294,7 +321,7 @@ def _build() -> dict[str, bytes]:
             _statement_count(ROOT / relative)
             for _, _, relative in CORE_SOURCE_ROSTER
         ),
-        "pack_executable_lines": len(program["rules"]),
+        "pack_executable_lines": dsl.declarative_program_semantic_statements(program),
         "dsl_interpreter": {
             "component_id": "atlas.transition-dsl",
             "component_version": dsl.DECLARATIVE_INTERPRETER_SEMANTICS_VERSION,

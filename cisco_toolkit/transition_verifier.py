@@ -47,6 +47,7 @@ from .transition_pack import (
     require_verified_qualification,
     validate_pack_tcb_pair,
 )
+from .transition_tcb_review import require_bound_r2_tcb_budget_freeze
 
 
 VERIFIER_RECEIPT_SCHEMA = "atlas.transition-verifier-receipt/1"
@@ -56,6 +57,10 @@ VERIFIER_VERSION = "ATLAS_STRUCTURAL_VERIFIER/1"
 VERIFIER_CLAIM_BOUNDARY = (
     "Machine eligibility is not human approval. Atlas never emits autonomous GO. R2.0 does not "
     "establish qualified pack execution, sealed-portable replay, or confidentiality enforcement."
+)
+INVALIDATION_CLAIM_BOUNDARY = (
+    "Reference-only deterministic dependency comparison; not an authoritative verifier receipt, "
+    "qualification decision, or promotion signal."
 )
 
 # First-prototype safety limits, not independently reviewed qualification budgets.
@@ -272,6 +277,8 @@ def _qualification_for(
         value: VerifiedQualification | None,
         *,
         receipt_digest: str,
+        signature_digest: str,
+        public_key_digest: str,
         subject_kind: str,
         subject_id: str,
         subject_version: str,
@@ -289,6 +296,8 @@ def _qualification_for(
     reasons: list[str] = []
     expected = (
         (value.receipt_digest, receipt_digest, "QUALIFICATION_RECEIPT_DIGEST_MISMATCH"),
+        (value.signature_digest, signature_digest, "QUALIFICATION_SIGNATURE_DIGEST_MISMATCH"),
+        (value.public_key_digest, public_key_digest, "QUALIFICATION_PUBLIC_KEY_DIGEST_MISMATCH"),
         (value.subject_kind, subject_kind, "QUALIFICATION_SUBJECT_KIND_MISMATCH"),
         (value.subject_id, subject_id, "QUALIFICATION_SUBJECT_ID_MISMATCH"),
         (value.subject_version, subject_version, "QUALIFICATION_SUBJECT_VERSION_MISMATCH"),
@@ -345,13 +354,18 @@ def _profile_qualification(
         profile: Mapping[str, Any],
         profile_digest: str,
         value: VerifiedQualification | None,
-        trust_policy_digest: str | None) -> tuple[str | None, list[str]]:
+        trust_policy_digest: str | None,
+        qualification_evidence_by_receipt: Mapping[str, Mapping[str, Any]],
+) -> tuple[str | None, list[str]]:
     receipt_digest = profile["qualification_receipt_digest"]
     if receipt_digest is None:
         return None, ["OBSERVATION_PROFILE_UNQUALIFIED"]
+    evidence_binding = qualification_evidence_by_receipt[receipt_digest]
     return _qualification_for(
         value,
         receipt_digest=receipt_digest,
+        signature_digest=evidence_binding["signature_digest"],
+        public_key_digest=evidence_binding["public_key_digest"],
         subject_kind=QualificationSubjectKind.OBSERVATION_PROFILE.value,
         subject_id=profile["profile_id"],
         subject_version="1",
@@ -392,6 +406,10 @@ def monitor_temporal_obligation(
     profile_digest = obligation["observation_profile_digest"]
     profiles = {canonical_digest(item): item for item in value["observation_profiles"]}
     profile = profiles[profile_digest]
+    qualification_evidence_by_receipt = {
+        item["receipt_digest"]: item
+        for item in value["qualification_evidence_bindings"]
+    }
     exact_content = _empty_content_set() if content is None else require_bound_content_set(content)
     external_policy_digest: str | None = None
     qualification_reasons: list[str] = []
@@ -408,6 +426,7 @@ def monitor_temporal_obligation(
         profile_digest,
         profile_qualification,
         external_policy_digest,
+        qualification_evidence_by_receipt,
     )
     qualification_reasons.extend(profile_qualification_reasons)
     atoms = [
@@ -442,9 +461,17 @@ def monitor_temporal_obligation(
     operator = TemporalOperator(obligation["temporal_operator"])
     if profile["coverage_mode"] == ObservationMode.SAMPLED.value:
         reasons.add("TEMPORAL_SAMPLED_TRACE_ONLY_R2_0")
-        if operator in (TemporalOperator.ALWAYS_DURING, TemporalOperator.NEVER_DURING):
+        if operator in (
+                TemporalOperator.ALWAYS_DURING,
+                TemporalOperator.NEVER_DURING,
+                TemporalOperator.HOLD,
+                TemporalOperator.UNTIL,
+        ):
             reasons.add("SAMPLED_EVIDENCE_OFFERED_FOR_CONTINUOUS_CLAIM")
-        elif operator is TemporalOperator.EVENTUALLY_WITHIN:
+        elif operator in (
+                TemporalOperator.EVENTUALLY_WITHIN,
+                TemporalOperator.ON_REQUIRE_WITHIN,
+        ):
             reasons.add("SAMPLED_EVENTUAL_INTERVAL_RECEIPT_REQUIRED")
         elif operator is TemporalOperator.AT_SAMPLE:
             reasons.add("AT_SAMPLE_TARGET_SELECTOR_REQUIRED")
@@ -493,14 +520,21 @@ def _derivation_axes(
             reasons.add("EVIDENCE_BYTES_UNAVAILABLE")
         if (
                 profile["coverage_mode"] == ObservationMode.SAMPLED.value
-                and obligation["temporal_operator"] in (
-                    TemporalOperator.ALWAYS_DURING.value,
-                    TemporalOperator.NEVER_DURING.value,
-                )
                 and derivation["temporal_outcome"]
                 == TemporalOutcome.NO_VIOLATION_OBSERVED_ON_DECLARED_TRACE.value
         ):
-            reasons.add("SAMPLED_EVIDENCE_OFFERED_FOR_CONTINUOUS_CLAIM")
+            if obligation["temporal_operator"] in (
+                    TemporalOperator.EVENTUALLY_WITHIN.value,
+                    TemporalOperator.ON_REQUIRE_WITHIN.value,
+            ):
+                reasons.add("SAMPLED_EVENTUAL_INTERVAL_RECEIPT_REQUIRED")
+            elif obligation["temporal_operator"] in (
+                    TemporalOperator.ALWAYS_DURING.value,
+                    TemporalOperator.NEVER_DURING.value,
+                    TemporalOperator.HOLD.value,
+                    TemporalOperator.UNTIL.value,
+            ):
+                reasons.add("SAMPLED_EVIDENCE_OFFERED_FOR_CONTINUOUS_CLAIM")
         if (
                 derivation["effect"] == "SUPPORT"
                 and derivation["evaluator_kind"] == "UNCERTIFIED_SEARCH_EXHAUSTED"
@@ -533,10 +567,12 @@ def verify_transition_case(
         content: BoundContentSet | None = None,
         tcb_manifest: Any = None,
         tcb_budget_review: Any = None,
+        tcb_budget_freeze: Any = None,
         applicability_qualification: VerifiedQualification | None = None,
         pack_qualification: VerifiedQualification | None = None,
         observation_profile_qualifications: Mapping[str, VerifiedQualification] | None = None,
-        trust_policy: BoundTrustPolicy | None = None) -> BoundVerifierReceipt:
+        trust_policy: BoundTrustPolicy | None = None,
+        verifier_bootstrap_raw: bytes | None = None) -> BoundVerifierReceipt:
     """Recompute the structural R2 receipt without trusting a producer or projection."""
 
     bound_case = require_bound_transition_case(case)
@@ -545,7 +581,19 @@ def verify_transition_case(
     profile_qualifications = dict(observation_profile_qualifications or {})
 
     value = dict(bound_case)
+    qualification_evidence_by_receipt = {
+        item["receipt_digest"]: item
+        for item in value["qualification_evidence_bindings"]
+    }
     reasons: set[str] = set()
+    if verifier_bootstrap_raw is None:
+        reasons.add("EXTERNAL_VERIFIER_BOOTSTRAP_REQUIRED")
+    elif type(verifier_bootstrap_raw) is not bytes:
+        reasons.add("EXTERNAL_VERIFIER_BOOTSTRAP_BYTES_REQUIRED")
+    elif bytes_digest(verifier_bootstrap_raw) != value["replay_contract"][
+        "verifier_bootstrap_digest"
+    ]:
+        reasons.add("EXTERNAL_VERIFIER_BOOTSTRAP_MISMATCH")
     pack_binding = value["pack_binding"]
     pack_denominator = next(
         item for item in value["qualification_denominators"]
@@ -584,9 +632,14 @@ def verify_transition_case(
     applicability = value["applicability"]
     applicability_state: str | None = None
     if applicability["kind"] == ApplicabilityKind.APPLICABLE.value:
+        applicability_evidence = qualification_evidence_by_receipt[
+            applicability["qualification_receipt_digest"]
+        ]
         applicability_state, qualification_reasons = _qualification_for(
             applicability_qualification,
             receipt_digest=applicability["qualification_receipt_digest"],
+            signature_digest=applicability_evidence["signature_digest"],
+            public_key_digest=applicability_evidence["public_key_digest"],
             subject_kind=QualificationSubjectKind.APPLICABILITY_PROFILE.value,
             subject_id=applicability["profile_id"],
             subject_version="1",
@@ -598,24 +651,37 @@ def verify_transition_case(
 
     bound_tcb = None
     tcb_pair_verified = False
+    if tcb_budget_review is not None:
+        reasons.add("DIRECT_TCB_BUDGET_REVIEW_CANNOT_ACTIVATE")
     if tcb_manifest is not None:
         try:
             bound_tcb = require_bound_tcb_manifest(tcb_manifest)
-            validate_pack_tcb_pair(
-                bound_pack,
-                bound_tcb,
-                budget_review=tcb_budget_review,
-            )
+            if tcb_budget_freeze is None:
+                raise ValueError("bound final TCB budget freeze required")
+            budget_freeze = require_bound_r2_tcb_budget_freeze(tcb_budget_freeze)
+            if (
+                    budget_freeze["final_pack_manifest_digest"] != bound_pack.digest
+                    or budget_freeze["final_tcb_manifest_digest"] != bound_tcb.digest
+            ):
+                raise ValueError("final pack or TCB does not match budget freeze")
+            validate_pack_tcb_pair(bound_pack, bound_tcb, budget_review=budget_freeze.budget_review)
             tcb_pair_verified = True
         except (TypeError, ValueError):
             reasons.add("PACK_TCB_NOT_VERIFIED")
+            if tcb_budget_freeze is None:
+                reasons.add("PACK_TCB_FREEZE_REQUIRED")
 
     pack_state = bound_pack["qualification_state"]
     if pack_state == QualificationState.QUALIFIED.value and tcb_pair_verified:
         assert bound_tcb is not None
+        pack_evidence = qualification_evidence_by_receipt[
+            pack_binding["pack_qualification_receipt_digest"]
+        ]
         verified_pack_state, qualification_reasons = _qualification_for(
             pack_qualification,
             receipt_digest=pack_binding["pack_qualification_receipt_digest"],
+            signature_digest=pack_evidence["signature_digest"],
+            public_key_digest=pack_evidence["public_key_digest"],
             subject_kind=QualificationSubjectKind.BEHAVIOR_PACK.value,
             subject_id=pack_binding["pack_id"],
             subject_version=pack_binding["pack_version"],
@@ -654,6 +720,7 @@ def verify_transition_case(
             digest,
             profile_qualifications.get(digest),
             trust_policy_digest,
+            qualification_evidence_by_receipt,
         )
         profile_states[digest] = profile_state
         reasons.update(profile_reasons)
@@ -835,6 +902,9 @@ def compute_invalidation_receipt(
         "invalidation_reasons": invalidation_reasons,
         "migration_policy": "REFERENCE_NOT_REWRITE",
         "historical_case_rewritten": False,
+        "authoritative": False,
+        "promotion_effect": "NONE",
+        "claim_boundary": INVALIDATION_CLAIM_BOUNDARY,
     }
     canonical_json_bytes(receipt)
     return receipt
@@ -844,6 +914,7 @@ __all__ = [
     "BoundContentSet",
     "BoundVerifierReceipt",
     "GateDisposition",
+    "INVALIDATION_CLAIM_BOUNDARY",
     "INVALIDATION_RECEIPT_SCHEMA",
     "ReplayStatus",
     "SecurityStatus",

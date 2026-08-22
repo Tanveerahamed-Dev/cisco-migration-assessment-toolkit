@@ -48,6 +48,12 @@ def _content_binding(
     }
 
 
+def _add_required_binding(case: dict[str, Any], role: str, digest: str) -> None:
+    bindings = case["replay_contract"]["object_bindings"]
+    bindings.append(_content_binding(role, digest, case["case_mode"], len(bindings)))
+    bindings.sort(key=lambda item: (item["role"], item["digest"]))
+
+
 def _case(mode: str = tc.CaseMode.REFERENCED.value) -> dict[str, Any]:
     identity = {
         "schema": tc.TRANSITION_IDENTITY_SCHEMA,
@@ -138,12 +144,22 @@ def _case(mode: str = tc.CaseMode.REFERENCED.value) -> dict[str, Any]:
     obligation = {
         "schema": tc.OBLIGATION_SCHEMA,
         "obligation_id": "obligation.1",
+        "obligation_kind": tc.ObligationKind.TEMPORAL_OBLIGATION.value,
         "requirement_id": "requirement.1",
         "predicate_id": "gateway.owner",
         "subject_ids": ["vlan.10"],
         "state_ids": ["state.target"],
         "temporal_operator": tc.TemporalOperator.SAMPLED_NO_VIOLATION_DURING.value,
+        "trigger_id": None,
+        "minimum_delay_ms": None,
+        "maximum_delay_ms": None,
+        "stable_duration_ms": None,
+        "commit_event_id": None,
+        "rollback_condition_id": None,
         "mandatory": True,
+        "owner_id": "owner.change-authority",
+        "evidence_recipe_digest": _digest("gateway owner evidence recipe"),
+        "expires_at": "2026-08-22T00:02:00.000000Z",
         "window": deepcopy(window),
         "observation_profile_digest": observation_profile_digest,
         "semantic_profile_digest": semantic_digest,
@@ -186,19 +202,29 @@ def _case(mode: str = tc.CaseMode.REFERENCED.value) -> dict[str, Any]:
     tcb_manifest = _digest("experimental tcb manifest")
     verifier_bootstrap = _digest("independent verifier bootstrap")
     trust_policy = _digest("external trust policy")
+    historical_trust_snapshot = _digest("decision-time trust policy snapshot")
     replay_recipe = _digest("replay recipe")
+    applicability_profile = _digest("qcp-001 experimental profile")
+    qualification_signature = _digest("qcp-001 experimental signature")
+    qualification_public_key = _digest("qcp-001 experimental public key")
+    retention_policy = _digest("retention policy")
     binding_specs = sorted(
         [
+            ("APPLICABILITY_PROFILE", applicability_profile),
             ("EVIDENCE", evidence_digest),
+            ("EVIDENCE_RECIPE", obligation["evidence_recipe_digest"]),
+            ("COMPENSATION_PLAN", _digest("gateway compensation plan")),
             ("PACK_MANIFEST", pack_manifest),
             ("QUALIFICATION_RECEIPT", applicability_receipt),
+            ("QUALIFICATION_PUBLIC_KEY", qualification_public_key),
+            ("QUALIFICATION_SIGNATURE", qualification_signature),
             ("REPLAY_RECIPE", replay_recipe),
+            ("RETENTION_POLICY", retention_policy),
             ("SEMANTIC_BUNDLE", semantic_digest),
             ("STATE_SNAPSHOT", identity["after_snapshot_digest"]),
             ("STATE_SNAPSHOT", identity["before_snapshot_digest"]),
             ("TCB_MANIFEST", tcb_manifest),
-            ("TRUST_SNAPSHOT", trust_policy),
-            ("VERIFIER_BOOTSTRAP", verifier_bootstrap),
+            ("TRUST_SNAPSHOT", historical_trust_snapshot),
         ]
     )
     bindings = [
@@ -215,23 +241,74 @@ def _case(mode: str = tc.CaseMode.REFERENCED.value) -> dict[str, Any]:
             "schema": tc.EVOLUTION_IR_SCHEMA,
             "ir_version": tc.EVOLUTION_IR_VERSION,
             "transition_identity": deepcopy(identity),
+            "predecessor_edges": [],
+            "transition_kind": tc.TransitionKind.FORWARD.value,
             "from_state_id": "state.current",
             "to_state_id": "state.target",
             "intermediate_state_ids": [],
             "subject_ids": ["vlan.10"],
             "trigger_ids": ["change.1"],
             "obligations": [obligation],
+            "precondition_obligation_ids": [],
+            "required_change_obligation_ids": [],
+            "permitted_change_obligation_ids": [],
+            "invariant_obligation_ids": [],
+            "postcondition_obligation_ids": [],
+            "temporal_obligation_ids": ["obligation.1"],
+            "covered_frame_domain": {
+                "schema": tc.FRAME_DOMAIN_SCHEMA,
+                "claim": "NO_OUT_OF_CONTRACT_CHANGE_OBSERVED_WITHIN_DECLARED_COVERAGE_DENOMINATOR",
+                "subject_ids": ["vlan.10"],
+                "predicate_ids": ["gateway.owner"],
+                "window": deepcopy(window),
+                "observation_profile_digests": [observation_profile_digest],
+                "qualification_denominator_digests": [
+                    denominator_digests["OBSERVATION_PROFILE"]
+                ],
+            },
+            "compensation_plan": {
+                "schema": tc.COMPENSATION_PLAN_SCHEMA,
+                "plan_id": "compensation.gateway-handoff",
+                "owner_id": "owner.change-authority",
+                "step_ids": ["step.restore-legacy"],
+                "plan_digest": _digest("gateway compensation plan"),
+                "executable_state": "DECLARED_NOT_VERIFIED",
+                "qualification_effect": "NONE",
+            },
+            "rollback_horizon": {
+                "schema": tc.ROLLBACK_HORIZON_SCHEMA,
+                "state": "OPEN",
+                "opened_at": "2026-08-22T00:00:00.000000Z",
+                "closes_when_condition_ids": ["condition.legacy-link-retired"],
+                "closed_at": None,
+                "closure_decision_receipt_digest": None,
+            },
+            "irreversibility_conditions": [{
+                "schema": tc.IRREVERSIBILITY_CONDITION_SCHEMA,
+                "condition_id": "condition.legacy-link-retired",
+                "predicate_id": "legacy.link.retired",
+                "subject_ids": ["vlan.10"],
+                "effect": "CLOSES_ROLLBACK_HORIZON",
+            }],
+            "exceptions": [],
+            "decision_receipts": [],
             "rollback_dimensions": list(tc.ROLLBACK_DIMENSIONS),
         },
-        "observation_profiles": [observation_profile],
         "qualification_denominators": qualification_denominators,
+        "qualification_evidence_bindings": [{
+            "schema": tc.QUALIFICATION_EVIDENCE_BINDING_SCHEMA,
+            "receipt_digest": applicability_receipt,
+            "signature_digest": qualification_signature,
+            "public_key_digest": qualification_public_key,
+        }],
+        "observation_profiles": [observation_profile],
         "evidence_atoms": [evidence],
         "applicability": {
             "schema": tc.APPLICABILITY_SCHEMA,
             "kind": tc.ApplicabilityKind.APPLICABLE.value,
             "reason_codes": [],
             "profile_id": "qcp-001",
-            "profile_digest": _digest("qcp-001 experimental profile"),
+            "profile_digest": applicability_profile,
             "supported_denominator_digest": denominator_digests["APPLICABILITY_PROFILE"],
             "qualification_receipt_digest": applicability_receipt,
         },
@@ -264,6 +341,7 @@ def _case(mode: str = tc.CaseMode.REFERENCED.value) -> dict[str, Any]:
             "mode": mode,
             "object_bindings": bindings,
             "verifier_bootstrap_digest": verifier_bootstrap,
+            "historical_trust_snapshot_digest": historical_trust_snapshot,
             "trust_policy_digest": trust_policy,
             "replay_recipe_digest": replay_recipe,
         },
@@ -275,7 +353,7 @@ def _case(mode: str = tc.CaseMode.REFERENCED.value) -> dict[str, Any]:
             "encryption_profile_digest": None,
             "redaction_profile_digest": None,
             "key_policy_digest": None,
-            "retention_policy_digest": _digest("retention policy"),
+            "retention_policy_digest": retention_policy,
         },
         "version_contract": {
             "schema": tc.VERSION_CONTRACT_SCHEMA,
@@ -340,6 +418,9 @@ def _assign(root: Any, path: tuple[str | int, ...], value: Any) -> None:
 def _rebind_observation_profile(case: dict[str, Any]) -> None:
     profile_digest = tc.canonical_digest(case["observation_profiles"][0])
     case["evolution_ir"]["obligations"][0]["observation_profile_digest"] = profile_digest
+    case["evolution_ir"]["covered_frame_domain"]["observation_profile_digests"] = [
+        profile_digest
+    ]
     case["evidence_atoms"][0]["observation_profile_digest"] = profile_digest
 
 
@@ -350,6 +431,9 @@ def _rebind_observation_denominator(case: dict[str, Any]) -> None:
     )
     denominator_digest = tc.canonical_digest(denominator)
     case["observation_profiles"][0]["qualification_denominator_digest"] = denominator_digest
+    case["evolution_ir"]["covered_frame_domain"][
+        "qualification_denominator_digests"
+    ] = [denominator_digest]
     for dependency in case["version_contract"]["dependency_digests"]:
         if (
                 dependency["kind"] == "QUALIFICATION_DENOMINATOR"
@@ -497,6 +581,7 @@ def test_sampled_profile_represents_continuous_obligation_only_as_inconclusive()
         tc.TemporalOperator.ALWAYS_DURING.value
     )
     case["derivations"][0]["temporal_outcome"] = tc.TemporalOutcome.INCONCLUSIVE.value
+    case["derivations"][0]["effect"] = tc.EvidenceEffect.NO_EFFECT.value
     case["derivations"][0]["reason_codes"] = ["sampled.continuous.inconclusive"]
 
     checked = tc.validate_transition_case(case)
@@ -530,7 +615,43 @@ def test_transform_chain_accepts_an_honest_remint() -> None:
             "removed_predicate_ids": ["private.detail"],
         }
     ]
+    step = atom["transform_chain"][0]
+    _add_required_binding(case, "EVIDENCE", step["input_digest"])
+    _add_required_binding(case, "TRANSFORM_PROFILE", step["transform_profile_digest"])
+    _add_required_binding(case, "TRANSFORM_RECEIPT", step["transform_receipt_digest"])
 
+    assert tc.validate_transition_case(case) == case
+
+
+def test_transform_lineage_requires_every_exact_replay_input() -> None:
+    case = _case()
+    atom = case["evidence_atoms"][0]
+    step = {
+        "schema": tc.TRANSFORM_STEP_SCHEMA,
+        "input_digest": _digest("transform source evidence"),
+        "output_digest": atom["artifact_digest"],
+        "transform_profile_digest": _digest("transform profile bytes"),
+        "transform_receipt_digest": _digest("transform receipt bytes"),
+        "coverage_effect": "UNCHANGED",
+        "removed_predicate_ids": [],
+    }
+    atom["transform_chain"] = [step]
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "TRANSFORM_EVIDENCE_CONTENT_BINDING_MISSING")
+
+    _add_required_binding(case, "EVIDENCE", step["input_digest"])
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "TRANSFORM_PROFILE_CONTENT_BINDING_MISSING")
+
+    _add_required_binding(case, "TRANSFORM_PROFILE", step["transform_profile_digest"])
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "TRANSFORM_RECEIPT_CONTENT_BINDING_MISSING")
+
+    _add_required_binding(case, "TRANSFORM_RECEIPT", step["transform_receipt_digest"])
     assert tc.validate_transition_case(case) == case
 
 
@@ -642,6 +763,16 @@ def test_sealed_mode_refuses_external_required_content() -> None:
     _assert_error(error, "SEALED_REQUIRED_CONTENT_NOT_EMBEDDED")
 
 
+def test_referenced_mode_refuses_projection_substitution_for_required_content() -> None:
+    case = _case(tc.CaseMode.REFERENCED.value)
+    binding = case["replay_contract"]["object_bindings"][0]
+    binding["location"] = "PROJECTION"
+    binding["resolver_id"] = None
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "REFERENCED_REQUIRED_CONTENT_CANNOT_BE_PROJECTION")
+
+
 def test_projection_mode_refuses_embedded_or_external_authority() -> None:
     case = _case(tc.CaseMode.PROJECTION_ONLY.value)
     binding = case["replay_contract"]["object_bindings"][0]
@@ -649,6 +780,81 @@ def test_projection_mode_refuses_embedded_or_external_authority() -> None:
     with pytest.raises(tc.TransitionContractError) as error:
         tc.validate_transition_case(case)
     _assert_error(error, "PROJECTION_CONTENT_LOCATION_REQUIRED")
+
+
+@pytest.mark.parametrize(
+    ("role", "code"),
+    [
+        ("APPLICABILITY_PROFILE", "APPLICABILITY_PROFILE_CONTENT_BINDING_MISSING"),
+        ("QUALIFICATION_SIGNATURE", "QUALIFICATION_SIGNATURE_CONTENT_BINDING_MISSING"),
+        ("QUALIFICATION_PUBLIC_KEY", "QUALIFICATION_PUBLIC_KEY_CONTENT_BINDING_MISSING"),
+        ("RETENTION_POLICY", "RETENTION_POLICY_CONTENT_BINDING_MISSING"),
+    ],
+)
+@pytest.mark.parametrize("mutation", ("remove", "optional"))
+def test_required_proof_objects_cannot_be_removed_or_downgraded(
+    role: str,
+    code: str,
+    mutation: str,
+) -> None:
+    case = _case(tc.CaseMode.SEALED_PORTABLE.value)
+    binding = next(
+        item for item in case["replay_contract"]["object_bindings"]
+        if item["role"] == role
+    )
+    if mutation == "remove":
+        case["replay_contract"]["object_bindings"].remove(binding)
+    else:
+        binding["required"] = False
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, code)
+
+
+def test_qualification_proof_set_must_exactly_cover_referenced_receipts() -> None:
+    case = _case()
+    case["qualification_evidence_bindings"] = []
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "QUALIFICATION_EVIDENCE_RECEIPT_SET_MISMATCH")
+
+
+@pytest.mark.parametrize(
+    ("field", "role", "code"),
+    [
+        ("recipient_policy_digest", "RECIPIENT_POLICY", "RECIPIENT_POLICY_CONTENT_BINDING_MISSING"),
+        ("encryption_profile_digest", "ENCRYPTION_PROFILE", "ENCRYPTION_PROFILE_CONTENT_BINDING_MISSING"),
+        ("redaction_profile_digest", "REDACTION_PROFILE", "REDACTION_PROFILE_CONTENT_BINDING_MISSING"),
+        ("key_policy_digest", "KEY_POLICY", "KEY_POLICY_CONTENT_BINDING_MISSING"),
+    ],
+)
+def test_security_policy_digest_cannot_exist_without_exact_replay_content(
+    field: str,
+    role: str,
+    code: str,
+) -> None:
+    case = _case(tc.CaseMode.SEALED_PORTABLE.value)
+    digest = _digest(f"{field} exact bytes")
+    case["security_contract"][field] = digest
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, code)
+
+    _add_required_binding(case, role, digest)
+    assert tc.validate_transition_case(case) == case
+
+
+def test_evaluator_certificate_digest_requires_exact_certificate_content() -> None:
+    case = _case(tc.CaseMode.SEALED_PORTABLE.value)
+    derivation = case["derivations"][0]
+    derivation["evaluator_kind"] = tc.EvaluatorKind.QUALIFIED_DECLARATIVE_PACK.value
+    derivation["certificate_digest"] = _digest("evaluator certificate exact bytes")
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EVALUATOR_CERTIFICATE_CONTENT_BINDING_MISSING")
+
+    _add_required_binding(case, "EVALUATOR_CERTIFICATE", derivation["certificate_digest"])
+    assert tc.validate_transition_case(case) == case
 
 
 def test_detached_or_mutated_case_cannot_acquire_replay_authority() -> None:
@@ -740,7 +946,7 @@ def test_derivation_cannot_use_same_predicate_evidence_from_another_obligation_s
 
     with pytest.raises(tc.TransitionContractError) as error:
         tc.validate_transition_case(case)
-    _assert_error(error, "OBLIGATION_QUALIFICATION_DENOMINATOR_SCOPE_MISMATCH")
+    _assert_error(error, "FRAME_DOMAIN_SCOPE_DENOMINATOR_MISMATCH")
 
 
 def test_derivation_cannot_use_same_predicate_evidence_from_another_obligation_state() -> None:
@@ -750,6 +956,62 @@ def test_derivation_cannot_use_same_predicate_evidence_from_another_obligation_s
     with pytest.raises(tc.TransitionContractError) as error:
         tc.validate_transition_case(case)
     _assert_error(error, "DERIVATION_EVIDENCE_STATE_MISMATCH")
+
+
+def test_sampled_evidence_cannot_teleport_into_complete_profile_derivation() -> None:
+    case = _case()
+    complete_profile = deepcopy(case["observation_profiles"][0])
+    complete_profile.update({
+        "profile_id": "QCP-001.EXPERIMENTAL.complete-profile",
+        "source_kind": "fixture.complete-event-stream",
+        "coverage_mode": tc.ObservationMode.EVENT_COMPLETE.value,
+        "planned_cadence_ms": None,
+        "observed_maximum_gap_ms": None,
+        "collection_completeness": "COMPLETE",
+        "detection_latency_bound_ms": 50,
+        "qualification_receipt_digest": case["applicability"][
+            "qualification_receipt_digest"
+        ],
+    })
+    complete_denominator = deepcopy(case["qualification_denominators"][1])
+    complete_denominator.update({
+        "denominator_id": "denominator.QCP-001.complete-observation",
+        "subject_id": complete_profile["profile_id"],
+        "denominator_kind": "EXACT_EVENTS",
+        "event_inventory_digest": _digest("complete event inventory"),
+    })
+    complete_denominator_digest = tc.canonical_digest(complete_denominator)
+    complete_profile["qualification_denominator_digest"] = complete_denominator_digest
+    complete_profile_digest = tc.canonical_digest(complete_profile)
+
+    case["qualification_denominators"].append(complete_denominator)
+    case["qualification_denominators"].sort(key=lambda item: item["denominator_id"])
+    case["observation_profiles"].append(complete_profile)
+    case["observation_profiles"].sort(key=lambda item: item["profile_id"])
+    obligation = case["evolution_ir"]["obligations"][0]
+    obligation["observation_profile_digest"] = complete_profile_digest
+    frame = case["evolution_ir"]["covered_frame_domain"]
+    frame["observation_profile_digests"] = [complete_profile_digest]
+    frame["qualification_denominator_digests"] = [complete_denominator_digest]
+    case["derivations"][0]["temporal_outcome"] = (
+        tc.TemporalOutcome.SATISFIED_WITHIN_DECLARED_MODEL.value
+    )
+    case["version_contract"]["dependency_digests"].append({
+        "kind": "QUALIFICATION_DENOMINATOR",
+        "identifier": complete_denominator["denominator_id"],
+        "digest": complete_denominator_digest,
+    })
+    case["version_contract"]["dependency_digests"].sort(
+        key=lambda item: (item["kind"], item["identifier"])
+    )
+    assert (
+        case["evidence_atoms"][0]["observation_profile_digest"]
+        != obligation["observation_profile_digest"]
+    )
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "DERIVATION_OBSERVATION_PROFILE_MISMATCH")
 
 
 def test_observation_mode_is_bound_to_exact_denominator_kind() -> None:
@@ -782,7 +1044,7 @@ def test_observation_mode_is_bound_to_exact_denominator_kind() -> None:
         (
             "subject_ids",
             ["vlan.20"],
-            "OBLIGATION_QUALIFICATION_DENOMINATOR_SCOPE_MISMATCH",
+            "FRAME_DOMAIN_SCOPE_DENOMINATOR_MISMATCH",
         ),
     ),
 )
@@ -852,9 +1114,10 @@ def test_semantic_profile_cannot_teleport_as_a_paired_atom_and_obligation_mutati
         ("SEMANTIC_BUNDLE", "AUTHORITY_CONTENT_BINDING_MISSING"),
         ("QUALIFICATION_RECEIPT", "AUTHORITY_CONTENT_BINDING_MISSING"),
         ("STATE_SNAPSHOT", "STATE_SNAPSHOT_CONTENT_BINDING_MISSING"),
-        ("VERIFIER_BOOTSTRAP", "VERIFIER_BOOTSTRAP_CONTENT_BINDING_MISSING"),
-        ("TRUST_SNAPSHOT", "TRUST_POLICY_CONTENT_BINDING_MISSING"),
+        ("TRUST_SNAPSHOT", "HISTORICAL_TRUST_SNAPSHOT_CONTENT_BINDING_MISSING"),
         ("REPLAY_RECIPE", "REPLAY_RECIPE_CONTENT_BINDING_MISSING"),
+        ("COMPENSATION_PLAN", "COMPENSATION_PLAN_CONTENT_BINDING_MISSING"),
+        ("EVIDENCE_RECIPE", "EVIDENCE_RECIPE_CONTENT_BINDING_MISSING"),
     ),
 )
 def test_semantic_mandatory_content_binding_cannot_be_downgraded_to_optional_external(
@@ -872,3 +1135,451 @@ def test_semantic_mandatory_content_binding_cannot_be_downgraded_to_optional_ext
     with pytest.raises(tc.TransitionContractError) as error:
         tc.validate_transition_case(case)
     _assert_error(error, code)
+
+
+def test_frame_domain_cannot_substitute_a_pack_denominator() -> None:
+    case = _case()
+    pack_denominator = next(
+        item
+        for item in case["qualification_denominators"]
+        if item["subject_kind"] == "BEHAVIOR_PACK"
+    )
+    case["evolution_ir"]["covered_frame_domain"][
+        "qualification_denominator_digests"
+    ] = [tc.canonical_digest(pack_denominator)]
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "FRAME_DOMAIN_QUALIFICATION_DENOMINATOR_MISMATCH")
+
+
+def test_sampled_evidence_cannot_claim_complete_coverage() -> None:
+    case = _case()
+    case["evidence_atoms"][0]["coverage_scope"]["complete"] = True
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EVIDENCE_COVERAGE_COMPLETENESS_PROFILE_MISMATCH")
+
+
+def test_redacted_evidence_cannot_retain_a_removed_predicate_claim() -> None:
+    case = _case()
+    atom = case["evidence_atoms"][0]
+    atom["transform_chain"] = [{
+        "schema": tc.TRANSFORM_STEP_SCHEMA,
+        "input_digest": _digest("unredacted gateway evidence"),
+        "output_digest": atom["artifact_digest"],
+        "transform_profile_digest": _digest("gateway redaction profile"),
+        "transform_receipt_digest": _digest("gateway redaction receipt"),
+        "coverage_effect": "NARROWED",
+        "removed_predicate_ids": [atom["predicate_id"]],
+    }]
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "TRANSFORM_REMOVED_PREDICATE_STILL_CLAIMED")
+
+
+def test_case_creation_time_cannot_precede_sealed_evidence() -> None:
+    case = _case()
+    case["created_at"] = "2026-08-22T00:00:04.000000Z"
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EVIDENCE_SEALED_AFTER_CASE_CREATION")
+
+
+def test_case_cannot_be_created_with_an_already_expired_obligation() -> None:
+    case = _case()
+    case["created_at"] = "2026-08-22T00:02:01.000000Z"
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "OBLIGATION_EXPIRED_BEFORE_CASE_CREATION")
+
+
+def test_horizon_closure_requires_an_exact_joined_decision_subject() -> None:
+    case = _case()
+    case["created_at"] = "2026-08-22T00:00:32.000000Z"
+    identity = case["transition_identity"]
+    horizon = case["evolution_ir"]["rollback_horizon"]
+    horizon["state"] = "CLOSED"
+    horizon["closed_at"] = "2026-08-22T00:00:30.000000Z"
+    subject = dict(horizon)
+    subject["closure_decision_receipt_digest"] = None
+    receipt = {
+        "schema": tc.DECISION_RECEIPT_SCHEMA,
+        "receipt_id": "decision.rollback-horizon.001",
+        "decision": tc.DecisionAction.CLOSE_ROLLBACK_HORIZON.value,
+        "decided_at": "2026-08-22T00:00:31.000000Z",
+        "decider_id": "owner.change-authority",
+        "subject_kind": tc.DecisionSubjectKind.ROLLBACK_HORIZON.value,
+        "subject_id": identity["transition_id"],
+        "subject_digest": tc.decision_subject_digest(
+            identity,
+            tc.DecisionSubjectKind.ROLLBACK_HORIZON.value,
+            identity["transition_id"],
+            subject,
+        ),
+        "signature_digest": _digest("rollback horizon signature bytes"),
+        "supersedes_receipt_digest": None,
+    }
+    receipt_digest = tc.canonical_digest(receipt)
+    horizon["closure_decision_receipt_digest"] = receipt_digest
+    case["evolution_ir"]["decision_receipts"] = [receipt]
+    _add_required_binding(case, "DECISION_RECEIPT", receipt_digest)
+    _add_required_binding(case, "DECISION_SIGNATURE", receipt["signature_digest"])
+
+    assert tc.validate_transition_case(case) == case
+
+    case["created_at"] = "2026-08-22T00:00:30.000000Z"
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "DECISION_AFTER_CASE_CREATION")
+    case["created_at"] = "2026-08-22T00:00:32.000000Z"
+
+    decision_binding = next(
+        item
+        for item in case["replay_contract"]["object_bindings"]
+        if item["role"] == "DECISION_RECEIPT"
+    )
+    receipt["decided_at"] = "2026-08-22T00:00:29.000000Z"
+    early_receipt_digest = tc.canonical_digest(receipt)
+    horizon["closure_decision_receipt_digest"] = early_receipt_digest
+    decision_binding["digest"] = early_receipt_digest
+    case["replay_contract"]["object_bindings"].sort(
+        key=lambda item: (item["role"], item["digest"])
+    )
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "ROLLBACK_HORIZON_DECISION_TIME_MISMATCH")
+    receipt["decided_at"] = "2026-08-22T00:00:31.000000Z"
+    horizon["closure_decision_receipt_digest"] = receipt_digest
+    decision_binding["digest"] = receipt_digest
+    case["replay_contract"]["object_bindings"].sort(
+        key=lambda item: (item["role"], item["digest"])
+    )
+
+    signature_binding = next(
+        item
+        for item in case["replay_contract"]["object_bindings"]
+        if item["role"] == "DECISION_SIGNATURE"
+    )
+    case["replay_contract"]["object_bindings"].remove(signature_binding)
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "DECISION_SIGNATURE_CONTENT_BINDING_MISSING")
+    case["replay_contract"]["object_bindings"].append(signature_binding)
+    case["replay_contract"]["object_bindings"].sort(
+        key=lambda item: (item["role"], item["digest"])
+    )
+
+    horizon["closure_decision_receipt_digest"] = _digest("detached closure decision")
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "ROLLBACK_HORIZON_DECISION_RECEIPT_UNKNOWN")
+
+
+def test_exception_state_requires_matching_action_and_exact_subject() -> None:
+    case = _case()
+    case["created_at"] = "2026-08-22T00:00:21.000000Z"
+    identity = case["transition_identity"]
+    exception = {
+        "schema": tc.TRANSITION_EXCEPTION_SCHEMA,
+        "exception_id": "exception.gateway-owner.001",
+        "obligation_ids": ["obligation.1"],
+        "state": "ACCEPTED",
+        "owner_id": "owner.change-authority",
+        "rationale_digest": _digest("temporary gateway exception rationale"),
+        "decision_receipt_digest": None,
+        "expires_at": "2026-08-22T00:01:30.000000Z",
+    }
+    receipt = {
+        "schema": tc.DECISION_RECEIPT_SCHEMA,
+        "receipt_id": "decision.exception.001",
+        "decision": tc.DecisionAction.REJECT_EXCEPTION.value,
+        "decided_at": "2026-08-22T00:00:20.000000Z",
+        "decider_id": "owner.change-authority",
+        "subject_kind": tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+        "subject_id": exception["exception_id"],
+        "subject_digest": tc.decision_subject_digest(
+            identity,
+            tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+            exception["exception_id"],
+            exception,
+        ),
+        "signature_digest": _digest("exception decision signature"),
+        "supersedes_receipt_digest": None,
+    }
+    receipt_digest = tc.canonical_digest(receipt)
+    exception["decision_receipt_digest"] = receipt_digest
+    case["evolution_ir"]["exceptions"] = [exception]
+    case["evolution_ir"]["decision_receipts"] = [receipt]
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EXCEPTION_DECISION_SUBJECT_MISMATCH")
+
+
+def test_exception_decision_cannot_arrive_after_its_expiry() -> None:
+    case = _case()
+    case["created_at"] = "2026-08-22T00:02:01.000000Z"
+    identity = case["transition_identity"]
+    exception = {
+        "schema": tc.TRANSITION_EXCEPTION_SCHEMA,
+        "exception_id": "exception.gateway-owner.001",
+        "obligation_ids": ["obligation.1"],
+        "state": "ACCEPTED",
+        "owner_id": "owner.change-authority",
+        "rationale_digest": _digest("expired exception rationale"),
+        "decision_receipt_digest": None,
+        "expires_at": "2026-08-22T00:01:30.000000Z",
+    }
+    receipt = {
+        "schema": tc.DECISION_RECEIPT_SCHEMA,
+        "receipt_id": "decision.exception.accept.001",
+        "decision": tc.DecisionAction.ACCEPT_EXCEPTION.value,
+        "decided_at": "2026-08-22T00:02:00.000000Z",
+        "decider_id": "owner.change-authority",
+        "subject_kind": tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+        "subject_id": exception["exception_id"],
+        "subject_digest": tc.decision_subject_digest(
+            identity,
+            tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+            exception["exception_id"],
+            exception,
+        ),
+        "signature_digest": _digest("expired exception decision signature"),
+        "supersedes_receipt_digest": None,
+    }
+    receipt_digest = tc.canonical_digest(receipt)
+    exception["decision_receipt_digest"] = receipt_digest
+    case["evolution_ir"]["exceptions"] = [exception]
+    case["evolution_ir"]["decision_receipts"] = [receipt]
+    _add_required_binding(case, "DECISION_RECEIPT", receipt_digest)
+    _add_required_binding(case, "DECISION_SIGNATURE", receipt["signature_digest"])
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EXCEPTION_DECISION_AFTER_EXPIRY")
+
+
+def test_exception_revocation_requires_and_accepts_exact_prior_accept_lineage() -> None:
+    case = _case()
+    case["created_at"] = "2026-08-22T00:00:21.000000Z"
+    identity = case["transition_identity"]
+    exception = {
+        "schema": tc.TRANSITION_EXCEPTION_SCHEMA,
+        "exception_id": "exception.gateway-owner.001",
+        "obligation_ids": ["obligation.1"],
+        "state": "REVOKED",
+        "owner_id": "owner.change-authority",
+        "rationale_digest": _digest("revoked exception rationale"),
+        "decision_receipt_digest": None,
+        "expires_at": "2026-08-22T00:01:30.000000Z",
+    }
+    accepted_subject = deepcopy(exception)
+    accepted_subject["state"] = "ACCEPTED"
+    accept_receipt = {
+        "schema": tc.DECISION_RECEIPT_SCHEMA,
+        "receipt_id": "decision.exception.accept.001",
+        "decision": tc.DecisionAction.ACCEPT_EXCEPTION.value,
+        "decided_at": "2026-08-22T00:00:10.000000Z",
+        "decider_id": "owner.change-authority",
+        "subject_kind": tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+        "subject_id": exception["exception_id"],
+        "subject_digest": tc.decision_subject_digest(
+            identity,
+            tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+            exception["exception_id"],
+            accepted_subject,
+        ),
+        "signature_digest": _digest("exception accept signature"),
+        "supersedes_receipt_digest": None,
+    }
+    accept_digest = tc.canonical_digest(accept_receipt)
+    revoke_receipt = {
+        "schema": tc.DECISION_RECEIPT_SCHEMA,
+        "receipt_id": "decision.exception.revoke.001",
+        "decision": tc.DecisionAction.REVOKE_EXCEPTION.value,
+        "decided_at": "2026-08-22T00:00:20.000000Z",
+        "decider_id": "owner.change-authority",
+        "subject_kind": tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+        "subject_id": exception["exception_id"],
+        "subject_digest": tc.decision_subject_digest(
+            identity,
+            tc.DecisionSubjectKind.TRANSITION_EXCEPTION.value,
+            exception["exception_id"],
+            exception,
+        ),
+        "signature_digest": _digest("exception revoke signature"),
+        "supersedes_receipt_digest": None,
+    }
+    revoke_digest = tc.canonical_digest(revoke_receipt)
+    exception["decision_receipt_digest"] = revoke_digest
+    case["evolution_ir"]["exceptions"] = [exception]
+    case["evolution_ir"]["decision_receipts"] = [accept_receipt, revoke_receipt]
+    for receipt, digest in (
+        (accept_receipt, accept_digest),
+        (revoke_receipt, revoke_digest),
+    ):
+        _add_required_binding(case, "DECISION_RECEIPT", digest)
+        _add_required_binding(case, "DECISION_SIGNATURE", receipt["signature_digest"])
+    _add_required_binding(case, "EXCEPTION_RATIONALE", exception["rationale_digest"])
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EXCEPTION_REVOKE_ACCEPT_LINEAGE_REQUIRED")
+
+    revoke_binding = next(
+        item
+        for item in case["replay_contract"]["object_bindings"]
+        if item["role"] == "DECISION_RECEIPT" and item["digest"] == revoke_digest
+    )
+    revoke_receipt["supersedes_receipt_digest"] = accept_digest
+    joined_revoke_digest = tc.canonical_digest(revoke_receipt)
+    exception["decision_receipt_digest"] = joined_revoke_digest
+    revoke_binding["digest"] = joined_revoke_digest
+    case["replay_contract"]["object_bindings"].sort(
+        key=lambda item: (item["role"], item["digest"])
+    )
+
+    assert tc.validate_transition_case(case) == case
+
+    rationale_binding = next(
+        item for item in case["replay_contract"]["object_bindings"]
+        if item["role"] == "EXCEPTION_RATIONALE"
+    )
+    case["replay_contract"]["object_bindings"].remove(rationale_binding)
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "EXCEPTION_RATIONALE_CONTENT_BINDING_MISSING")
+
+
+def test_transition_kind_rejects_another_kinds_predecessor_relation() -> None:
+    case = _case()
+    case["evolution_ir"]["predecessor_edges"] = [{
+        "schema": tc.PREDECESSOR_EDGE_SCHEMA,
+        "edge_id": "edge.rollback.001",
+        "relation": tc.PredecessorRelation.ROLLBACK_OF.value,
+        "predecessor_transition_id": "transition.previous",
+        "predecessor_case_digest": _digest("predecessor case"),
+        "source_state_id": "state.previous",
+        "target_state_id": "state.current",
+    }]
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "TRANSITION_KIND_PREDECESSOR_RELATION_FORBIDDEN")
+
+
+def test_predecessor_case_bytes_are_mandatory_replay_content() -> None:
+    case = _case()
+    predecessor_digest = _digest("exact predecessor case bytes")
+    case["evolution_ir"]["predecessor_edges"] = [{
+        "schema": tc.PREDECESSOR_EDGE_SCHEMA,
+        "edge_id": "edge.predecessor.001",
+        "relation": tc.PredecessorRelation.PREDECESSOR.value,
+        "predecessor_transition_id": "transition.previous",
+        "predecessor_case_digest": predecessor_digest,
+        "source_state_id": "state.previous",
+        "target_state_id": "state.current",
+    }]
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "PREDECESSOR_CASE_CONTENT_BINDING_MISSING")
+
+    _add_required_binding(case, "PREDECESSOR_CASE", predecessor_digest)
+    assert tc.validate_transition_case(case) == case
+
+
+def test_only_closing_irreversibility_conditions_can_close_horizon() -> None:
+    case = _case()
+    case["evolution_ir"]["irreversibility_conditions"][0]["effect"] = (
+        "NARROWS_COMPENSATION"
+    )
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "ROLLBACK_HORIZON_CONDITION_SET_MISMATCH")
+
+
+def test_until_operator_requires_a_declared_rollback_condition() -> None:
+    case = _case()
+    obligation = case["evolution_ir"]["obligations"][0]
+    obligation["temporal_operator"] = tc.TemporalOperator.UNTIL.value
+    obligation["commit_event_id"] = "change.1"
+    obligation["rollback_condition_id"] = "condition.not-declared"
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "OBLIGATION_ROLLBACK_CONDITION_UNKNOWN")
+
+
+def test_support_effect_cannot_carry_a_violated_temporal_outcome() -> None:
+    case = _case()
+    case["derivations"][0]["temporal_outcome"] = tc.TemporalOutcome.VIOLATED.value
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "DERIVATION_EFFECT_TEMPORAL_OUTCOME_MISMATCH")
+
+
+def test_not_applicable_is_a_no_case_outcome() -> None:
+    case = _case()
+    applicability = case["applicability"]
+    applicability.update({
+        "kind": tc.ApplicabilityKind.NOT_APPLICABLE.value,
+        "reason_codes": ["platform.unsupported"],
+        "profile_id": None,
+        "profile_digest": None,
+        "supported_denominator_digest": None,
+        "qualification_receipt_digest": None,
+    })
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "NOT_APPLICABLE_CANNOT_CONSTRUCT_TRANSITION_CASE")
+
+
+def test_legacy_semantics_requires_invalidation_and_replay_content_bindings() -> None:
+    case = _case()
+    digest = _digest("pinned release-1 semantics")
+    case["version_contract"]["legacy_semantics_digest"] = digest
+
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "LEGACY_SEMANTICS_DEPENDENCY_MISSING")
+
+    case["version_contract"]["dependency_digests"].append({
+        "kind": "LEGACY_SEMANTICS",
+        "identifier": "ATLAS_RELEASE_1",
+        "digest": digest,
+    })
+    case["version_contract"]["dependency_digests"].sort(
+        key=lambda item: (item["kind"], item["identifier"])
+    )
+    with pytest.raises(tc.TransitionContractError) as error:
+        tc.validate_transition_case(case)
+    _assert_error(error, "LEGACY_SEMANTICS_CONTENT_BINDING_MISSING")
+
+    _add_required_binding(case, "LEGACY_SEMANTICS", digest)
+    assert tc.validate_transition_case(case) == case
+
+
+def test_historical_and_current_trust_and_bootstrap_boundaries_are_distinct() -> None:
+    case = _case(tc.CaseMode.SEALED_PORTABLE.value)
+    replay = case["replay_contract"]
+    bound_digests = {
+        (item["role"], item["digest"])
+        for item in replay["object_bindings"]
+    }
+
+    assert (
+        "TRUST_SNAPSHOT",
+        replay["historical_trust_snapshot_digest"],
+    ) in bound_digests
+    assert replay["trust_policy_digest"] != replay["historical_trust_snapshot_digest"]
+    assert ("TRUST_SNAPSHOT", replay["trust_policy_digest"]) not in bound_digests
+    assert all(role != "VERIFIER_BOOTSTRAP" for role, _digest_value in bound_digests)

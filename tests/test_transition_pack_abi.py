@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
+import json
+from importlib import resources
 from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_pack as tp
@@ -81,9 +85,10 @@ def _artifact(
         path: str,
         role: str,
         *,
-        digest: str | None = None) -> dict[str, Any]:
+        digest: str | None = None,
+        artifact_id: str | None = None) -> dict[str, Any]:
     return {
-        "artifact_id": f"artifact.{label}",
+        "artifact_id": artifact_id or f"artifact.{label}",
         "artifact_version": "1.0.0",
         "path": path,
         "role": role,
@@ -97,9 +102,12 @@ def _tcb_manifest(
         frozen: bool = False,
         qualification_receipt_digest: str | None = None,
         denominator_digest: str | None = None,
-        wasm_runtime_digest: str | None = None) -> dict[str, Any]:
+        wasm_runtime_digest: str | None = None,
+        wasm_modules: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     interpreter = _component("dsl-interpreter")
     wasm = wasm_runtime_digest is not None
+    denominator = denominator_digest or _digest("supported denominator")
+    program_digest = _digest("fixture declarative program")
     if wasm:
         wasm_runtime = {
             "component_id": "component.wasm-runtime",
@@ -108,6 +116,33 @@ def _tcb_manifest(
         }
     else:
         wasm_runtime = None
+    module_source_roles = {
+        "PARSER": tp.WASM_PARSER_MODULE_SOURCE_ROLE,
+        "NORMALIZER": tp.WASM_NORMALIZER_MODULE_SOURCE_ROLE,
+    }
+    pack_sources = [
+        _artifact(
+            "declarative-program",
+            "cisco_toolkit/data/fixture-program.json",
+            tp.DECLARATIVE_PROGRAM_SOURCE_ROLE,
+            digest=program_digest,
+        ),
+        _artifact(
+            "supported-denominator",
+            "cisco_toolkit/data/fixture-denominator.json",
+            tp.SUPPORTED_DENOMINATOR_SOURCE_ROLE,
+            digest=denominator,
+        ),
+    ]
+    for module in wasm_modules or []:
+        pack_sources.append(_artifact(
+            module["module_id"],
+            f"cisco_toolkit/data/{module['module_id']}.wasm",
+            module_source_roles[module["role"]],
+            digest=module["digest"],
+            artifact_id=module["module_id"],
+        ))
+    pack_sources.sort(key=lambda item: (item["artifact_id"], item["path"]))
     return {
         "schema": tp.TCB_MANIFEST_SCHEMA,
         "manifest_id": "tcb.fixture.001",
@@ -124,10 +159,8 @@ def _tcb_manifest(
                 digest=interpreter["content_digest"],
             ),
         ],
-        "pack_sources": [
-            _artifact("pack-source", "cisco_toolkit/data/fixture.json", "PACK_RULES"),
-        ],
-        "transitive_dependencies": [],
+        "pack_sources": pack_sources,
+        "transitive_dependencies": [_component("runtime-dependency")] if frozen else [],
         "runtime_inventory_state": (
             tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
         ),
@@ -140,7 +173,7 @@ def _tcb_manifest(
         "toolchains": [_component("python-toolchain")],
         "abi_version": tc.PACK_ABI_VERSION,
         "qualification_receipt_digest": qualification_receipt_digest,
-        "supported_denominator_digest": denominator_digest or _digest("supported denominator"),
+        "supported_denominator_digest": denominator,
         "budget_review_receipt_digest": _digest("budget review") if frozen else None,
         "budget_state": (
             tp.TCBBudgetState.FROZEN.value
@@ -166,6 +199,16 @@ def _pack_manifest(
         denominator_digest: str | None = None) -> dict[str, Any]:
     checked_tcb = tcb or _tcb_manifest()
     denominator = denominator_digest or checked_tcb["supported_denominator_digest"]
+    program_sources = [
+        source
+        for source in checked_tcb.get("pack_sources", [])
+        if source.get("role") == tp.DECLARATIVE_PROGRAM_SOURCE_ROLE
+    ]
+    program_digest = (
+        program_sources[0]["digest"]
+        if len(program_sources) == 1
+        else _digest(f"{pack_id} semantic bundle")
+    )
     is_qcp_001 = pack_id == tp.QCP_001_ID
     return {
         "schema": tp.PACK_MANIFEST_SCHEMA,
@@ -177,8 +220,8 @@ def _pack_manifest(
         "qualification_receipt_digest": qualification_receipt_digest,
         "execution_state": execution_state,
         "substrate": substrate,
-        "semantic_bundle_digest": _digest(f"{pack_id} semantic bundle"),
-        "declarative_rules_digest": _digest(f"{pack_id} declarative rules"),
+        "semantic_bundle_digest": program_digest,
+        "declarative_rules_digest": program_digest,
         "declarative_operators": list(tp.DECLARATIVE_DSL_OPERATORS),
         "supported_denominator_digest": denominator,
         "applicability_profile_ids": [f"{pack_id}.profile.001"],
@@ -358,6 +401,75 @@ def test_pending_tcb_budgets_remain_null_until_prototype_review() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    (
+        ("pack_artifact_id", "DUPLICATE_TCB_ARTIFACT_ID"),
+        ("pack_path", "DUPLICATE_TCB_ARTIFACT_PATH"),
+        ("pack_path_case_alias", "DUPLICATE_TCB_ARTIFACT_PATH"),
+        ("core_pack_artifact_id", "DUPLICATE_TCB_ARTIFACT_ID"),
+        ("core_pack_path", "DUPLICATE_TCB_ARTIFACT_PATH"),
+    ),
+)
+def test_tcb_source_roster_rejects_individually_aliased_ids_and_paths(
+        alias: str,
+        expected: str) -> None:
+    tcb = _tcb_manifest()
+    program, denominator = tcb["pack_sources"]
+    if alias == "pack_artifact_id":
+        denominator["artifact_id"] = program["artifact_id"]
+    elif alias == "pack_path":
+        denominator["path"] = program["path"]
+    elif alias == "pack_path_case_alias":
+        denominator["path"] = program["path"].upper()
+    elif alias == "core_pack_artifact_id":
+        denominator["artifact_id"] = tcb["core_sources"][0]["artifact_id"]
+    else:
+        denominator["path"] = tcb["core_sources"][0]["path"]
+    tcb["pack_sources"].sort(key=lambda item: (item["artifact_id"], item["path"]))
+
+    _assert_transition_refusal(lambda: tp.validate_tcb_manifest(tcb), expected)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "cisco_toolkit/data/trailing-dot./fixture.json",
+        "cisco_toolkit/data/trailing-space /fixture.json",
+        "cisco_toolkit/data/NUL.json",
+        "cisco_toolkit/data/control-\u0001.json",
+        "cisco_toolkit/data/wildcard*.json",
+    ),
+)
+def test_tcb_source_paths_are_portable_across_supported_filesystems(path: str) -> None:
+    tcb = _tcb_manifest()
+    tcb["pack_sources"][0]["path"] = path
+    tcb["pack_sources"].sort(key=lambda item: (item["artifact_id"], item["path"]))
+
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(tcb),
+        "TCB_ARTIFACT_PATH_NOT_PORTABLE",
+    )
+
+
+def test_tcb_component_identity_cannot_alias_multiple_digests() -> None:
+    tcb = _tcb_manifest()
+    first = _component("runtime-dependency")
+    second = deepcopy(first)
+    second["content_digest"] = _digest("substituted runtime dependency")
+    tcb["transitive_dependencies"] = sorted(
+        [first, second],
+        key=lambda item: (
+            item["component_id"], item["component_version"], item["content_digest"]
+        ),
+    )
+
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(tcb),
+        "DUPLICATE_TCB_COMPONENT_ID_VERSION",
+    )
+
+
 def test_frozen_tcb_requires_complete_ceilings_and_enforces_sloc_budgets() -> None:
     frozen = _tcb_manifest(frozen=True)
     assert tp.validate_tcb_manifest(frozen) == frozen
@@ -391,6 +503,42 @@ def test_frozen_tcb_requires_complete_ceilings_and_enforces_sloc_budgets() -> No
         lambda: tp.validate_tcb_manifest(partial_runtime),
         "FROZEN_TCB_REQUIRES_COMPLETE_RUNTIME_INVENTORY",
     )
+
+    legacy_count = deepcopy(frozen)
+    legacy_count["pack_census_method"] = tp.LEGACY_TCB_PACK_CENSUS_METHOD
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(legacy_count),
+        "FROZEN_TCB_REQUIRES_CURRENT_PACK_CENSUS_METHOD",
+    )
+    schema = json.loads(
+        resources.files("cisco_toolkit").joinpath(
+            "schemas",
+            "atlas-transition-contract-v1.schema.json",
+        ).read_bytes()
+    )
+    validator = Draft202012Validator({
+        "$schema": schema["$schema"],
+        "$defs": schema["$defs"],
+        "$ref": "#/$defs/tcbManifestV2",
+    })
+    with pytest.raises(ValidationError):
+        validator.validate(legacy_count)
+
+
+def test_frozen_complete_runtime_closure_requires_nonempty_dependency_roster() -> None:
+    frozen = _tcb_manifest(frozen=True)
+    frozen["transitive_dependencies"] = []
+
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(frozen),
+        "FROZEN_TCB_REQUIRES_RUNTIME_DEPENDENCIES",
+    )
+
+
+def test_legacy_rule_count_census_is_pending_read_compatible_only() -> None:
+    pending = _tcb_manifest()
+    pending["pack_census_method"] = tp.LEGACY_TCB_PACK_CENSUS_METHOD
+    assert tp.validate_tcb_manifest(pending) == pending
 
 
 def test_activatable_pack_requires_frozen_tcb_and_matching_qualification() -> None:
@@ -432,7 +580,7 @@ def test_activatable_pack_requires_frozen_tcb_and_matching_qualification() -> No
     )
     _assert_transition_refusal(
         lambda: tp.validate_pack_tcb_pair(wrong_receipt_pack, wrong_receipt_tcb),
-        "ACTIVATABLE_PACK_REQUIRES_VERIFIED_TCB_BUDGET_REVIEW",
+        "PACK_TCB_QUALIFICATION_MISMATCH",
     )
 
 
@@ -523,6 +671,8 @@ def test_pack_manifest_binding_requires_exact_canonical_unchanged_bytes() -> Non
 def test_pack_to_tcb_binding_rejects_digest_and_denominator_substitution() -> None:
     tcb = _tcb_manifest()
     pack = _pack_manifest(tcb=tcb)
+    assert pack["qualification_receipt_digest"] is None
+    assert tcb["qualification_receipt_digest"] is None
     tp.validate_pack_tcb_pair(pack, tcb)
 
     mutated_tcb = deepcopy(tcb)
@@ -542,10 +692,149 @@ def test_pack_to_tcb_binding_rejects_digest_and_denominator_substitution() -> No
     )
 
 
+def test_pack_tcb_receipts_must_match_for_qualified_contract_only_pair() -> None:
+    tcb_receipt = _digest("qualified TCB receipt")
+    pack_receipt = _digest("different qualified pack receipt")
+    tcb = _tcb_manifest(qualification_receipt_digest=tcb_receipt)
+    pack = _pack_manifest(
+        tcb=tcb,
+        pack_id="pack.fixture",
+        qualification_state=tc.QualificationState.QUALIFIED.value,
+        qualification_receipt_digest=pack_receipt,
+        execution_state=tp.PackExecutionState.CONTRACT_ONLY.value,
+    )
+
+    _assert_transition_refusal(
+        lambda: tp.validate_pack_tcb_pair(pack, tcb),
+        "PACK_TCB_QUALIFICATION_MISMATCH",
+    )
+
+
+@pytest.mark.parametrize(
+    ("attack", "expected"),
+    (
+        ("unrelated_source", "PACK_TCB_SOURCE_ROLE_UNSUPPORTED"),
+        ("unrelated_allowed_role", "PACK_TCB_SOURCE_SET_MISMATCH"),
+        ("missing_program", "PACK_TCB_DECLARATIVE_PROGRAM_SOURCE_MISMATCH"),
+        ("duplicate_program", "PACK_TCB_DECLARATIVE_PROGRAM_SOURCE_MISMATCH"),
+        ("program_digest_substitution", "PACK_TCB_DECLARATIVE_PROGRAM_DIGEST_MISMATCH"),
+        ("denominator_digest_substitution", "PACK_TCB_DENOMINATOR_SOURCE_MISMATCH"),
+        ("legacy_rule_census", "PACK_TCB_SEMANTIC_CENSUS_MISMATCH"),
+        ("zero_semantic_census", "PACK_TCB_SEMANTIC_CENSUS_MISMATCH"),
+    ),
+)
+def test_pack_tcb_pair_rejects_unjoined_or_substituted_pack_sources(
+        attack: str,
+        expected: str) -> None:
+    tcb = _tcb_manifest()
+    pack = _pack_manifest(tcb=tcb)
+    candidate = deepcopy(tcb)
+
+    program_index = next(
+        index
+        for index, source in enumerate(candidate["pack_sources"])
+        if source["role"] == tp.DECLARATIVE_PROGRAM_SOURCE_ROLE
+    )
+    denominator_index = next(
+        index
+        for index, source in enumerate(candidate["pack_sources"])
+        if source["role"] == tp.SUPPORTED_DENOMINATOR_SOURCE_ROLE
+    )
+    if attack == "unrelated_source":
+        candidate["pack_sources"].append(_artifact(
+            "unrelated",
+            "cisco_toolkit/data/unrelated-workload.json",
+            "PROTOTYPE_TYPED_INPUT",
+        ))
+    elif attack == "unrelated_allowed_role":
+        candidate["pack_sources"].append(_artifact(
+            "unrelated-module",
+            "cisco_toolkit/data/unrelated-module.wasm",
+            tp.WASM_PARSER_MODULE_SOURCE_ROLE,
+        ))
+    elif attack == "missing_program":
+        candidate["pack_sources"].pop(program_index)
+    elif attack == "duplicate_program":
+        candidate["pack_sources"].append(_artifact(
+            "duplicate-program",
+            "cisco_toolkit/data/duplicate-program.json",
+            tp.DECLARATIVE_PROGRAM_SOURCE_ROLE,
+            digest=pack["declarative_rules_digest"],
+        ))
+    elif attack == "program_digest_substitution":
+        candidate["pack_sources"][program_index]["digest"] = _digest(
+            "unrelated declarative program"
+        )
+    elif attack == "denominator_digest_substitution":
+        candidate["pack_sources"][denominator_index]["digest"] = _digest(
+            "unrelated denominator"
+        )
+    elif attack == "legacy_rule_census":
+        candidate["pack_census_method"] = tp.LEGACY_TCB_PACK_CENSUS_METHOD
+    else:
+        candidate["pack_executable_lines"] = 0
+    candidate["pack_sources"].sort(
+        key=lambda item: (item["artifact_id"], item["path"])
+    )
+    pack["tcb_manifest_digest"] = tc.canonical_digest(candidate)
+
+    _assert_transition_refusal(
+        lambda: tp.validate_pack_tcb_pair(pack, candidate),
+        expected,
+    )
+
+
+def test_wasm_capable_pair_requires_exact_module_role_and_digest_join() -> None:
+    module = _wasm_module()
+    tcb = _tcb_manifest(
+        wasm_runtime_digest=_digest("metered Wasm runtime"),
+        wasm_modules=[module],
+    )
+    pack = _pack_manifest(
+        tcb=tcb,
+        pack_id="pack.fixture",
+        substrate=tp.PackSubstrate.DECLARATIVE_DSL_AND_METERED_WASM_NO_WASI.value,
+        wasm_modules=[module],
+    )
+    tp.validate_pack_tcb_pair(pack, tcb)
+
+    for attack in ("digest", "role", "artifact_id", "missing"):
+        candidate = deepcopy(tcb)
+        module_index = next(
+            index
+            for index, source in enumerate(candidate["pack_sources"])
+            if source["role"] == tp.WASM_PARSER_MODULE_SOURCE_ROLE
+        )
+        if attack == "digest":
+            candidate["pack_sources"][module_index]["digest"] = _digest(
+                "substituted Wasm module"
+            )
+        elif attack == "role":
+            candidate["pack_sources"][module_index]["role"] = (
+                tp.WASM_NORMALIZER_MODULE_SOURCE_ROLE
+            )
+        elif attack == "artifact_id":
+            candidate["pack_sources"][module_index]["artifact_id"] = "module.parser.other"
+        else:
+            candidate["pack_sources"].pop(module_index)
+        candidate["pack_sources"].sort(
+            key=lambda item: (item["artifact_id"], item["path"])
+        )
+        hostile_pack = deepcopy(pack)
+        hostile_pack["tcb_manifest_digest"] = tc.canonical_digest(candidate)
+
+        _assert_transition_refusal(
+            lambda hostile_pack=hostile_pack, candidate=candidate: (
+                tp.validate_pack_tcb_pair(hostile_pack, candidate)
+            ),
+            "PACK_TCB_WASM_MODULE_SOURCE_MISMATCH",
+        )
+
+
 def _public_key_bytes(private_key: Ed25519PrivateKey) -> bytes:
     return private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
     )
 
 
@@ -658,6 +947,10 @@ def test_ed25519_qualification_binds_exact_receipt_policy_key_and_subject() -> N
     policy_raw = tc.canonical_json_bytes(material["policy"])
 
     assert verified.receipt_digest == tc.bytes_digest(receipt_raw)
+    assert verified.signature_digest == tc.bytes_digest(
+        tc.canonical_json_bytes(material["signature"])
+    )
+    assert verified.public_key_digest == tc.bytes_digest(material["public_key_raw"])
     assert verified.policy_digest == tc.bytes_digest(policy_raw)
     assert verified.subject_kind == "BEHAVIOR_PACK"
     assert verified.subject_id == "pack.fixture"
@@ -757,6 +1050,14 @@ def test_qualification_time_range_and_key_time_fail_closed() -> None:
     malformed_receipt["receipt"]["issued_at"] = "2026-08-22T00:00:00.000001Z"
     _resign(malformed_receipt)
     _assert_pack_refusal(lambda: _verify(malformed_receipt), "qualification_evidence_malformed")
+
+    invalid_issuance_time = _qualification_material()
+    invalid_issuance_time["receipt"]["issued_at"] = "2025-12-31T23:59:59.999999Z"
+    _resign(invalid_issuance_time)
+    _assert_pack_refusal(
+        lambda: _verify(invalid_issuance_time),
+        "qualification_key_not_valid_at_receipt_issuance",
+    )
 
     invalid_key_time = _qualification_material()
     invalid_key_time["policy"]["evaluated_at"] = "2027-01-01T00:00:00.000001Z"

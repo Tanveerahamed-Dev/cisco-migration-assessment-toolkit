@@ -162,7 +162,11 @@ cisco_toolkit = [
     "data/atlas-r2-dsl-prototype-program.v1.json",
     "data/atlas-r2-dsl-prototype-tcb.v2.json",
     "data/atlas-r2-dsl-prototype-measurements.v1.json",
+    "data/atlas-r2-runtime-inventory.reference.v1.json",
+    "data/atlas-r2-tcb-budget-proposal.v1.json",
     "schemas/atlas-r2-execution-evidence-v1.schema.json",
+    "schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+    "schemas/atlas-transition-runtime-inventory-v1.schema.json",
     "schemas/*.json",
     "blast_radius_explorer.html",
 ]

@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from cisco_toolkit import transition_dsl as dsl  # noqa: E402
+from cisco_toolkit import transition_runtime_inventory as runtime_inventory  # noqa: E402
 
 
 SCHEMA = "atlas.structural-tcb-census/1"
@@ -39,6 +40,7 @@ CORE_SOURCES = (
     ("cisco_toolkit/transition_contract.py", "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC"),
     ("cisco_toolkit/transition_dsl.py", "DECLARATIVE_DSL_INTERPRETER"),
     ("cisco_toolkit/transition_pack.py", "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY"),
+    ("cisco_toolkit/transition_runtime_inventory.py", "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR"),
     ("cisco_toolkit/transition_tcb_review.py", "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY"),
     ("cisco_toolkit/transition_verifier.py", "STRUCTURAL_VERIFIER_AND_GATE_MAPPING"),
 )
@@ -46,6 +48,7 @@ LEGACY_SOURCE = ("cisco_toolkit/transition_legacy.py", "CONDITIONAL_RELEASE1_REP
 REFERENCE_DISTRIBUTIONS = ("coverage", "cryptography", "cffi", "pycparser")
 MEASUREMENT_RESOURCE = "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json"
 MEASUREMENT_TOOL = "tools/measure_transition_dsl_prototype.py"
+RUNTIME_INVENTORY_TOOL = "tools/build_transition_runtime_inventory.py"
 PROTOTYPE_ASSETS = (
     (dsl.DSL_PROTOTYPE_PACK_MANIFEST_PATH, "EXPERIMENTAL_PACK_MANIFEST"),
     (dsl.DSL_PROTOTYPE_TCB_MANIFEST_PATH, "RECEIPT_SPECIFIC_TCB_MANIFEST"),
@@ -53,6 +56,7 @@ PROTOTYPE_ASSETS = (
     (dsl.DSL_PROTOTYPE_INPUT_PATH, "TYPED_SYNTHETIC_INPUT"),
     (dsl.DSL_PROTOTYPE_DENOMINATOR_PATH, "SYNTHETIC_SUPPORTED_DENOMINATOR"),
     (MEASUREMENT_RESOURCE, "REFERENCE_BOUNDARY_MEASUREMENTS"),
+    (runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH, "REFERENCE_RUNTIME_INVENTORY"),
 )
 
 
@@ -151,6 +155,9 @@ def _prototype_evidence(repository: Path) -> dict[str, Any]:
         receipt = json.loads(receipt_raw)
         measurement_raw = raw_by_path[MEASUREMENT_RESOURCE]
         measurement = json.loads(measurement_raw)
+        runtime_inventory_raw = raw_by_path[runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH]
+        runtime_inventory_value = json.loads(runtime_inventory_raw)
+        runtime_inventory.validate_runtime_inventory(runtime_inventory_value)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
         raise RuntimeError("executable DSL prototype evidence is invalid") from None
     if receipt_raw != repeat_raw or _canonical(receipt) != receipt_raw:
@@ -179,6 +186,7 @@ def _prototype_evidence(repository: Path) -> dict[str, Any]:
     }
     bindings = measurement.get("bindings")
     boundary_rows = measurement.get("boundary_measurements")
+    baseline = measurement.get("baseline_execution")
     if (
             _canonical(measurement) != measurement_raw
             or measurement.get("schema") != "atlas.dsl-prototype-measurements/1"
@@ -190,6 +198,8 @@ def _prototype_evidence(repository: Path) -> dict[str, Any]:
             or measurement.get("release3_included") is not False
             or measurement.get("wasm_execution_state") != "UNIMPLEMENTED_UNREVIEWED"
             or type(bindings) is not dict
+            or type(baseline) is not dict
+            or baseline.get("inner_receipt_digest") != _digest(_canonical(inner))
             or bindings.get("default_limit_profile", {}).get("value") != limits
             or type(boundary_rows) is not list
             or [row.get("dimension") for row in boundary_rows]
@@ -203,7 +213,9 @@ def _prototype_evidence(repository: Path) -> dict[str, Any]:
             or measurement.get("review_state") != {
                 "blockers": [
                     "APPROVED_BUDGET_ABSENT",
+                    "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
                     "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+                    "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
                 ],
                 "promotion_effect": "NONE",
                 "qualification_effect": "NONE",
@@ -223,6 +235,22 @@ def _prototype_evidence(repository: Path) -> dict[str, Any]:
             != "NONE_PENDING_INDEPENDENT_REVIEW"
     ):
         raise RuntimeError("DSL prototype limit correction evidence is missing")
+    runtime_profile = runtime_inventory_value["profile"]["prototype"]
+    runtime_coverage = runtime_inventory_value["coverage"]
+    runtime_closure = runtime_inventory_value["closure"]
+    if (
+            _canonical(runtime_inventory_value) != runtime_inventory_raw
+            or runtime_profile["program_digest"] != _digest(program_raw)
+            or runtime_profile["input_digest"] != _digest(input_raw)
+            or runtime_profile["receipt_digest"]
+            != baseline.get("inner_receipt_digest")
+            or runtime_profile["authoritative"] is not False
+            or runtime_profile["promotion_eligible"] is not False
+            or runtime_closure["state"]
+            != runtime_inventory.RUNTIME_INVENTORY_CLOSURE_STATE
+            or runtime_closure["complete_exact_runtime_closure"] is not False
+    ):
+        raise RuntimeError("reference runtime inventory crossed its claim boundary")
 
     return {
         "asset_bindings": [
@@ -241,6 +269,26 @@ def _prototype_evidence(repository: Path) -> dict[str, Any]:
             repository,
             MEASUREMENT_TOOL,
             "REFERENCE_MEASUREMENT_PRODUCER",
+        ),
+        "runtime_inventory": {
+            "asset_digest": _digest(runtime_inventory_raw),
+            "blind_spot_count": len(runtime_closure["blind_spots"]),
+            "claim_boundary": runtime_closure["claim_boundary"],
+            "complete_exact_runtime_closure": False,
+            "native_dependency_edge_count": runtime_coverage[
+                "native_dependency_edge_count"
+            ],
+            "python_module_count": runtime_coverage["python_module_count"],
+            "runtime_file_count": runtime_coverage["runtime_file_count"],
+            "state": runtime_closure["state"],
+            "unresolved_native_dependency_edge_count": runtime_coverage[
+                "unresolved_native_dependency_edge_count"
+            ],
+        },
+        "runtime_inventory_tool": _file_binding(
+            repository,
+            RUNTIME_INVENTORY_TOOL,
+            "REFERENCE_RUNTIME_INVENTORY_PRODUCER",
         ),
         "pack_id": dsl.DSL_PROTOTYPE_PACK_ID,
         "pack_version": dsl.DSL_PROTOTYPE_PACK_VERSION,

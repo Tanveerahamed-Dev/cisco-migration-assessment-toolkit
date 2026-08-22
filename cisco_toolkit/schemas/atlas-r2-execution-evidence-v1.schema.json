@@ -363,7 +363,49 @@
       "additionalProperties": false,
       "required": ["code"],
       "properties": {
-        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+        "code": {
+          "enum": [
+            "ABI_FUNCTION_UNSUPPORTED",
+            "EXPRESSION_DEPTH_LIMIT",
+            "EXPRESSION_EVALUATION_INVALID",
+            "EXPRESSION_INVALID",
+            "EXPRESSION_NODE_LIMIT",
+            "EXPRESSION_SCHEMA_INVALID",
+            "INPUT_BINDING_DIGEST_MISMATCH",
+            "INPUT_BINDING_INVALID",
+            "INPUT_BYTE_LIMIT",
+            "INPUT_CANONICAL_INVALID",
+            "INPUT_FACTS_INVALID",
+            "INPUT_NODE_LIMIT",
+            "INPUT_SCHEMA_INVALID",
+            "INSTRUCTION_FUEL_LIMIT",
+            "OPERAND_CANONICAL_INVALID",
+            "OPERATOR_OPERAND_LIMIT",
+            "OPERATOR_OPERANDS_INVALID",
+            "OPERATOR_UNSUPPORTED",
+            "OUTPUT_BYTE_LIMIT",
+            "PATH_INVALID",
+            "PATH_ROOT_INVALID",
+            "PATH_SEGMENT_LIMIT",
+            "PRODUCER_AUTHORITY_FIELD_FORBIDDEN",
+            "PRODUCER_KEY_INVALID",
+            "PROGRAM_BYTE_LIMIT",
+            "PROGRAM_CANONICAL_INVALID",
+            "PROGRAM_IDENTIFIER_INVALID",
+            "PROGRAM_RULES_INVALID",
+            "PROGRAM_SCHEMA_INVALID",
+            "REPLAY_WITNESS_UNSUPPORTED_R2_0",
+            "RESULT_CANONICAL_INVALID",
+            "RULE_FUNCTION_UNSUPPORTED",
+            "RULE_LIMIT",
+            "RULE_SCHEMA_INVALID",
+            "RULE_SORTED_UNIQUE_REQUIRED",
+            "SET_INVALID",
+            "SET_ITEM_LIMIT",
+            "SET_SORTED_UNIQUE_REQUIRED",
+            "STRING_BYTE_LIMIT"
+          ]
+        }
       }
     },
     "innerPrototypeReceipt": {
@@ -511,6 +553,57 @@
         "promotion_eligible": { "const": false }
       }
     },
+    "reviewedDeclarativeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "This wrapper can be minted only from an intact final R2 TCB budget freeze, not a detached review. R2.0 currently lacks the complete runtime and external authority needed to mint that freeze, so reviewed execution remains fail-closed unavailable.",
+      "required": [
+        "schema",
+        "pack_id",
+        "pack_version",
+        "pack_manifest_digest",
+        "tcb_manifest_digest",
+        "tcb_budget_freeze_digest",
+        "selected_source_commit",
+        "selected_source_tree",
+        "budget_review_receipt_digest",
+        "runtime_inventory_digest",
+        "dsl_interpreter_digest",
+        "program_digest",
+        "limit_profile_source",
+        "limit_profile_digest",
+        "inner_receipt_digest",
+        "inner_receipt",
+        "authoritative",
+        "supplies_obligation_support",
+        "qualification_effect",
+        "authoritative_gate",
+        "promotion_eligible"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.reviewed-declarative-receipt/1" },
+        "pack_id": { "$ref": "#/$defs/identifier" },
+        "pack_version": { "$ref": "#/$defs/identifier" },
+        "pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_budget_freeze_digest": { "$ref": "#/$defs/digest" },
+        "selected_source_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_source_tree": { "$ref": "#/$defs/gitObject" },
+        "budget_review_receipt_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "program_digest": { "$ref": "#/$defs/digest" },
+        "limit_profile_source": { "const": "VERIFIED_FINAL_R2_TCB_BUDGET_FREEZE" },
+        "limit_profile_digest": { "$ref": "#/$defs/digest" },
+        "inner_receipt_digest": { "$ref": "#/$defs/digest" },
+        "inner_receipt": { "$ref": "#/$defs/innerPrototypeReceipt" },
+        "authoritative": { "const": false },
+        "supplies_obligation_support": { "const": false },
+        "qualification_effect": { "const": "NONE" },
+        "authoritative_gate": { "type": "null" },
+        "promotion_eligible": { "const": false }
+      }
+    },
     "dslResourceProfile": {
       "type": "object",
       "additionalProperties": false,
@@ -548,6 +641,23 @@
         "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" }
       }
     },
+    "receiptContainerCeiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "formula", "interpreter_semantics_version", "max_output_bytes", "inner_envelope_overhead_bytes", "bound_wrapper_overhead_bytes", "reviewed_wrapper_overhead_bytes", "inner_receipt_ceiling_bytes", "bound_receipt_ceiling_bytes", "reviewed_receipt_ceiling_bytes"],
+      "properties": {
+        "schema": { "const": "atlas.dsl-receipt-container-ceiling/1" },
+        "formula": { "const": "MAX_OUTPUT_BYTES_PLUS_PROFILE_SPECIALIZED_CLOSED_CANONICAL_ENVELOPE_OVERHEAD/1" },
+        "interpreter_semantics_version": { "const": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "inner_envelope_overhead_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "bound_wrapper_overhead_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "reviewed_wrapper_overhead_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "inner_receipt_ceiling_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "bound_receipt_ceiling_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "reviewed_receipt_ceiling_bytes": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
     "tcbBudgetReviewDecision": {
       "enum": ["APPROVED", "REJECTED"]
     },
@@ -562,6 +672,9 @@
         "selected_tree",
         "structural_census_digest",
         "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "approved_runtime_inventory_state",
+        "budget_proposal_digest",
         "dsl_interpreter_digest",
         "prototype_program_digest",
         "prototype_pack_manifest_digest",
@@ -569,6 +682,7 @@
         "approved_core_sloc_budget",
         "approved_pack_sloc_budget",
         "approved_dsl_resource_profile",
+        "approved_receipt_container_ceiling",
         "wasm_review_state",
         "measurement_denominator_digest",
         "decision",
@@ -578,13 +692,16 @@
         "reviewer_key_id"
       ],
       "properties": {
-        "schema": { "const": "atlas.tcb-budget-review-receipt/1" },
+        "schema": { "const": "atlas.tcb-budget-review-receipt/2" },
         "receipt_id": { "$ref": "#/$defs/identifier" },
         "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
         "selected_commit": { "$ref": "#/$defs/gitObject" },
         "selected_tree": { "$ref": "#/$defs/gitObject" },
         "structural_census_digest": { "$ref": "#/$defs/digest" },
         "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "approved_runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+        "budget_proposal_digest": { "$ref": "#/$defs/digest" },
         "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
         "prototype_program_digest": { "$ref": "#/$defs/digest" },
         "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
@@ -592,6 +709,7 @@
         "approved_core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
         "approved_pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
         "approved_dsl_resource_profile": { "$ref": "#/$defs/dslResourceProfile" },
+        "approved_receipt_container_ceiling": { "$ref": "#/$defs/receiptContainerCeiling" },
         "wasm_review_state": { "const": "UNREVIEWED" },
         "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
         "decision": { "$ref": "#/$defs/tcbBudgetReviewDecision" },
@@ -604,12 +722,11 @@
     "tcbBudgetReviewSignature": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "purpose", "payload_digest", "trust_policy_digest", "signer_key_id", "algorithm", "signature_base64"],
+      "required": ["schema", "purpose", "payload_digest", "signer_key_id", "algorithm", "signature_base64"],
       "properties": {
-        "schema": { "const": "atlas.tcb-budget-review-signature/1" },
+        "schema": { "const": "atlas.tcb-budget-review-signature/2" },
         "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
         "payload_digest": { "$ref": "#/$defs/digest" },
-        "trust_policy_digest": { "$ref": "#/$defs/digest" },
         "signer_key_id": { "$ref": "#/$defs/identifier" },
         "algorithm": { "const": "Ed25519" },
         "signature_base64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
@@ -618,9 +735,9 @@
     "tcbBudgetReviewTrustedKey": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "key_id", "public_key_digest", "reviewer_kind", "independent_from_budget_proposer", "independent_from_prototype_and_measurement_producer", "independent_from_release_builder", "authorizations", "allowed_selected_commits", "allowed_selected_trees", "allowed_tcb_subject_digests", "valid_from", "valid_until"],
+      "required": ["schema", "key_id", "public_key_digest", "reviewer_kind", "independent_from_budget_proposer", "independent_from_prototype_and_measurement_producer", "independent_from_release_builder", "authorizations", "allowed_source_revisions", "valid_from", "valid_until"],
       "properties": {
-        "schema": { "const": "atlas.tcb-budget-review-trusted-key/1" },
+        "schema": { "const": "atlas.tcb-budget-review-trusted-key/2" },
         "key_id": { "$ref": "#/$defs/identifier" },
         "public_key_digest": { "$ref": "#/$defs/digest" },
         "reviewer_kind": { "const": "INDEPENDENT_REVIEWER" },
@@ -633,23 +750,20 @@
           "maxItems": 1,
           "items": { "$ref": "#/$defs/tcbBudgetReviewAuthorization" }
         },
-        "allowed_selected_commits": {
+        "allowed_source_revisions": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/gitObject" }
-        },
-        "allowed_selected_trees": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/gitObject" }
-        },
-        "allowed_tcb_subject_digests": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/digest" }
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["selected_commit", "selected_tree", "tcb_budget_subject_digest"],
+            "properties": {
+              "selected_commit": { "$ref": "#/$defs/gitObject" },
+              "selected_tree": { "$ref": "#/$defs/gitObject" },
+              "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
         },
         "valid_from": { "$ref": "#/$defs/timestamp" },
         "valid_until": { "$ref": "#/$defs/timestamp" }
@@ -661,9 +775,9 @@
       "additionalProperties": false,
       "required": ["schema", "purpose", "target_schema_version", "reviewer_role", "substrate"],
       "properties": {
-        "schema": { "const": "atlas.tcb-budget-review-authorization/1" },
+        "schema": { "const": "atlas.tcb-budget-review-authorization/2" },
         "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
-        "target_schema_version": { "const": "atlas.tcb-budget-review-receipt/1" },
+        "target_schema_version": { "const": "atlas.tcb-budget-review-receipt/2" },
         "reviewer_role": { "const": "TCB_BUDGET_AND_RESOURCE_CEILING_REVIEWER" },
         "substrate": { "const": "DECLARATIVE_DSL_ONLY" }
       }
@@ -673,7 +787,7 @@
       "additionalProperties": false,
       "required": ["schema", "policy_kind", "policy_id", "policy_version", "purpose", "evaluated_at", "trusted_keys", "revoked_receipt_digests"],
       "properties": {
-        "schema": { "const": "atlas.tcb-budget-review-trust-policy/1" },
+        "schema": { "const": "atlas.tcb-budget-review-trust-policy/2" },
         "policy_kind": { "const": "EXTERNAL_INDEPENDENT_TCB_BUDGET_REVIEW_KEY_ALLOWLIST" },
         "policy_id": { "$ref": "#/$defs/identifier" },
         "policy_version": { "$ref": "#/$defs/identifier" },
@@ -695,18 +809,103 @@
     "tcbBudgetReviewExpectedBindings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "selected_commit", "selected_tree", "structural_census_digest", "prototype_measurement_digest", "dsl_interpreter_digest", "prototype_program_digest", "prototype_pack_manifest_digest", "tcb_budget_subject_digest", "measurement_denominator_digest"],
+      "required": ["schema", "selected_commit", "selected_tree", "structural_census_digest", "prototype_measurement_digest", "runtime_inventory_digest", "approved_runtime_inventory_state", "budget_proposal_digest", "dsl_interpreter_digest", "prototype_program_digest", "prototype_pack_manifest_digest", "tcb_budget_subject_digest", "measurement_denominator_digest"],
       "properties": {
-        "schema": { "const": "atlas.tcb-budget-review-bindings/1" },
+        "schema": { "const": "atlas.tcb-budget-review-bindings/2" },
         "selected_commit": { "$ref": "#/$defs/gitObject" },
         "selected_tree": { "$ref": "#/$defs/gitObject" },
         "structural_census_digest": { "$ref": "#/$defs/digest" },
         "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "approved_runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+        "budget_proposal_digest": { "$ref": "#/$defs/digest" },
         "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
         "prototype_program_digest": { "$ref": "#/$defs/digest" },
         "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
         "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" },
         "measurement_denominator_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "r2TCBBudgetFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "Detached post-source-commit evidence only. The Python binder additionally requires exact evidence bytes, an intact independently verified review, and an exact final contract-only pack/frozen complete-runtime TCB pair. The final pack is derived from the reviewed prototype pack by changing only its TCB digest, avoiding a review/TCB/pack hash cycle. This object never qualifies QCP-001 or includes Release 3.",
+      "required": [
+        "schema",
+        "purpose",
+        "source_freeze_state",
+        "selected_source_commit",
+        "selected_source_tree",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "approved_runtime_inventory_state",
+        "budget_proposal_digest",
+        "measurement_denominator_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_pack_manifest_digest",
+        "tcb_budget_subject_digest",
+        "final_pack_manifest_digest",
+        "final_tcb_manifest_digest",
+        "review_receipt_digest",
+        "review_signature_digest",
+        "review_trust_policy_digest",
+        "review_public_key_digest",
+        "core_sloc_budget",
+        "pack_sloc_budget",
+        "dsl_resource_profile",
+        "receipt_container_ceiling",
+        "wasm_review_state",
+        "qcp_001",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.r2-tcb-budget-freeze/1" },
+        "purpose": { "const": "ATLAS_R2_TCB_BUDGET_FREEZE" },
+        "source_freeze_state": { "const": "DETACHED_POST_SOURCE_COMMIT_EVIDENCE" },
+        "selected_source_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_source_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "approved_runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+        "budget_proposal_digest": { "$ref": "#/$defs/digest" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" },
+        "final_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "final_tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+        "review_receipt_digest": { "$ref": "#/$defs/digest" },
+        "review_signature_digest": { "$ref": "#/$defs/digest" },
+        "review_trust_policy_digest": { "$ref": "#/$defs/digest" },
+        "review_public_key_digest": { "$ref": "#/$defs/digest" },
+        "core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+        "pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+        "dsl_resource_profile": { "$ref": "#/$defs/dslResourceProfile" },
+        "receipt_container_ceiling": { "$ref": "#/$defs/receiptContainerCeiling" },
+        "wasm_review_state": { "const": "UNREVIEWED" },
+        "qcp_001": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "pack_id", "pack_version", "qualification_state", "execution_state", "qualification_effect", "promotion_eligible"],
+          "properties": {
+            "schema": { "const": "atlas.r2-qcp-001-freeze-status/1" },
+            "pack_id": { "const": "QCP-001" },
+            "pack_version": { "const": "0.1.0-experimental" },
+            "qualification_state": { "const": "EXPERIMENTAL" },
+            "execution_state": { "const": "CONTRACT_ONLY" },
+            "qualification_effect": { "const": "NONE" },
+            "promotion_eligible": { "const": false }
+          }
+        },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false },
+        "release3_included": { "const": false }
       }
     }
   }

@@ -39,8 +39,13 @@ def minimal_transition_case() -> dict:
     semantic_bundle_digest = _digest("qcp-001-experimental-semantic-bundle")
     verifier_bootstrap_digest = _digest("independently-obtained-verifier-bootstrap")
     trust_policy_digest = _digest("external-experimental-trust-policy")
+    historical_trust_snapshot_digest = _digest("decision-time-trust-policy-snapshot")
     replay_recipe_digest = _digest("qcp-001-experimental-replay-recipe")
     qualification_receipt_digest = tc.canonical_digest(EXPERIMENTAL_QCP_001_QUALIFICATION)
+    qualification_signature_digest = _digest("qcp-001-experimental-signature-bytes")
+    qualification_public_key_digest = _digest("qcp-001-experimental-public-key-bytes")
+    applicability_profile_digest = _digest("qcp-001-experimental-applicability-profile")
+    retention_policy_digest = _digest("fixture-retention-policy")
 
     identity = {
         "schema": tc.TRANSITION_IDENTITY_SCHEMA,
@@ -132,12 +137,22 @@ def minimal_transition_case() -> dict:
     obligation = {
         "schema": tc.OBLIGATION_SCHEMA,
         "obligation_id": "obligation.fhrp.single-owner",
+        "obligation_kind": tc.ObligationKind.TEMPORAL_OBLIGATION.value,
         "requirement_id": "requirement.fhrp.single-owner",
         "predicate_id": "predicate.fhrp.single-owner",
         "subject_ids": ["subject.gateway-pair"],
         "state_ids": ["state.after"],
         "temporal_operator": tc.TemporalOperator.SAMPLED_NO_VIOLATION_DURING.value,
+        "trigger_id": None,
+        "minimum_delay_ms": None,
+        "maximum_delay_ms": None,
+        "stable_duration_ms": None,
+        "commit_event_id": None,
+        "rollback_condition_id": None,
         "mandatory": True,
+        "owner_id": "owner.change-authority",
+        "evidence_recipe_digest": _digest("fhrp-single-owner-evidence-recipe"),
+        "expires_at": "2026-08-22T00:11:00.000000Z",
         "window": deepcopy(WINDOW),
         "observation_profile_digest": observation_profile_digest,
         "semantic_profile_digest": semantic_bundle_digest,
@@ -201,15 +216,20 @@ def minimal_transition_case() -> dict:
         for role, digest in sorted(
             (
                 ("EVIDENCE", artifact_digest),
+                ("EVIDENCE_RECIPE", obligation["evidence_recipe_digest"]),
+                ("APPLICABILITY_PROFILE", applicability_profile_digest),
+                ("COMPENSATION_PLAN", _digest("gateway-handoff-compensation-plan")),
                 ("PACK_MANIFEST", pack_manifest_digest),
                 ("TCB_MANIFEST", tcb_manifest_digest),
                 ("QUALIFICATION_RECEIPT", qualification_receipt_digest),
+                ("QUALIFICATION_PUBLIC_KEY", qualification_public_key_digest),
+                ("QUALIFICATION_SIGNATURE", qualification_signature_digest),
                 ("REPLAY_RECIPE", replay_recipe_digest),
+                ("RETENTION_POLICY", retention_policy_digest),
                 ("SEMANTIC_BUNDLE", semantic_bundle_digest),
                 ("STATE_SNAPSHOT", after_digest),
                 ("STATE_SNAPSHOT", before_digest),
-                ("TRUST_SNAPSHOT", trust_policy_digest),
-                ("VERIFIER_BOOTSTRAP", verifier_bootstrap_digest),
+                ("TRUST_SNAPSHOT", historical_trust_snapshot_digest),
             )
         )
     ]
@@ -262,15 +282,66 @@ def minimal_transition_case() -> dict:
             "schema": tc.EVOLUTION_IR_SCHEMA,
             "ir_version": tc.EVOLUTION_IR_VERSION,
             "transition_identity": deepcopy(identity),
+            "predecessor_edges": [],
+            "transition_kind": tc.TransitionKind.FORWARD.value,
             "from_state_id": "state.before",
             "to_state_id": "state.after",
             "intermediate_state_ids": [],
             "subject_ids": ["subject.gateway-pair"],
             "trigger_ids": ["trigger.gateway-handoff"],
             "obligations": [obligation],
+            "precondition_obligation_ids": [],
+            "required_change_obligation_ids": [],
+            "permitted_change_obligation_ids": [],
+            "invariant_obligation_ids": [],
+            "postcondition_obligation_ids": [],
+            "temporal_obligation_ids": ["obligation.fhrp.single-owner"],
+            "covered_frame_domain": {
+                "schema": tc.FRAME_DOMAIN_SCHEMA,
+                "claim": "NO_OUT_OF_CONTRACT_CHANGE_OBSERVED_WITHIN_DECLARED_COVERAGE_DENOMINATOR",
+                "subject_ids": ["subject.gateway-pair"],
+                "predicate_ids": ["predicate.fhrp.single-owner"],
+                "window": deepcopy(WINDOW),
+                "observation_profile_digests": [observation_profile_digest],
+                "qualification_denominator_digests": [
+                    denominator_digests["OBSERVATION_PROFILE"]
+                ],
+            },
+            "compensation_plan": {
+                "schema": tc.COMPENSATION_PLAN_SCHEMA,
+                "plan_id": "compensation.gateway-handoff",
+                "owner_id": "owner.change-authority",
+                "step_ids": ["step.restore-legacy-gateway"],
+                "plan_digest": _digest("gateway-handoff-compensation-plan"),
+                "executable_state": "DECLARED_NOT_VERIFIED",
+                "qualification_effect": "NONE",
+            },
+            "rollback_horizon": {
+                "schema": tc.ROLLBACK_HORIZON_SCHEMA,
+                "state": "OPEN",
+                "opened_at": "2026-08-22T00:00:00.000000Z",
+                "closes_when_condition_ids": ["condition.legacy-interconnect-retired"],
+                "closed_at": None,
+                "closure_decision_receipt_digest": None,
+            },
+            "irreversibility_conditions": [{
+                "schema": tc.IRREVERSIBILITY_CONDITION_SCHEMA,
+                "condition_id": "condition.legacy-interconnect-retired",
+                "predicate_id": "predicate.legacy-interconnect-retired",
+                "subject_ids": ["subject.gateway-pair"],
+                "effect": "CLOSES_ROLLBACK_HORIZON",
+            }],
+            "exceptions": [],
+            "decision_receipts": [],
             "rollback_dimensions": list(tc.ROLLBACK_DIMENSIONS),
         },
         "qualification_denominators": qualification_denominators,
+        "qualification_evidence_bindings": [{
+            "schema": tc.QUALIFICATION_EVIDENCE_BINDING_SCHEMA,
+            "receipt_digest": qualification_receipt_digest,
+            "signature_digest": qualification_signature_digest,
+            "public_key_digest": qualification_public_key_digest,
+        }],
         "observation_profiles": [observation_profile],
         "evidence_atoms": [evidence_atom],
         "applicability": {
@@ -278,7 +349,7 @@ def minimal_transition_case() -> dict:
             "kind": tc.ApplicabilityKind.APPLICABLE.value,
             "reason_codes": [],
             "profile_id": "QCP-001.EXPERIMENTAL.applicability",
-            "profile_digest": _digest("qcp-001-experimental-applicability-profile"),
+            "profile_digest": applicability_profile_digest,
             "supported_denominator_digest": denominator_digests["APPLICABILITY_PROFILE"],
             "qualification_receipt_digest": qualification_receipt_digest,
         },
@@ -298,6 +369,7 @@ def minimal_transition_case() -> dict:
             "mode": tc.CaseMode.SEALED_PORTABLE.value,
             "object_bindings": object_bindings,
             "verifier_bootstrap_digest": verifier_bootstrap_digest,
+            "historical_trust_snapshot_digest": historical_trust_snapshot_digest,
             "trust_policy_digest": trust_policy_digest,
             "replay_recipe_digest": replay_recipe_digest,
         },
@@ -309,7 +381,7 @@ def minimal_transition_case() -> dict:
             "encryption_profile_digest": None,
             "redaction_profile_digest": None,
             "key_policy_digest": None,
-            "retention_policy_digest": _digest("fixture-retention-policy"),
+            "retention_policy_digest": retention_policy_digest,
         },
         "version_contract": {
             "schema": tc.VERSION_CONTRACT_SCHEMA,

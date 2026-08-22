@@ -47,6 +47,7 @@ DECLARATIVE_BINDING_SCHEMA = "atlas.declarative-binding/1"
 DECLARATIVE_RESULT_SCHEMA = "atlas.declarative-result/1"
 DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA = "atlas.declarative-prototype-receipt/1"
 BOUND_DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA = "atlas.bound-declarative-prototype-receipt/1"
+REVIEWED_DECLARATIVE_RECEIPT_SCHEMA = "atlas.reviewed-declarative-receipt/1"
 
 DSL_PROTOTYPE_PACK_ID = "ATLAS-R2-DSL-CONFORMANCE"
 DSL_PROTOTYPE_PACK_VERSION = "0.1.0-experimental"
@@ -68,6 +69,10 @@ DSL_PROTOTYPE_TCB_MANIFEST_PATH = (
 DSL_INTERPRETER_SOURCE_PATH = "cisco_toolkit/transition_dsl.py"
 DSL_PROTOTYPE_SOURCE_BINDING_STATE = "SAME_CHECKOUT_SELF_CHECK_ONLY"
 DECLARATIVE_INTERPRETER_SEMANTICS_VERSION = "ATLAS_DECLARATIVE_DSL_SEMANTICS/1"
+DSL_RECEIPT_CONTAINER_CEILING_SCHEMA = "atlas.dsl-receipt-container-ceiling/1"
+DSL_RECEIPT_CONTAINER_CEILING_FORMULA = (
+    "MAX_OUTPUT_BYTES_PLUS_PROFILE_SPECIALIZED_CLOSED_CANONICAL_ENVELOPE_OVERHEAD/1"
+)
 FUEL_CANONICAL_BYTE_QUANTUM = 64
 
 TRUTH_TRUE = "TRUE"
@@ -100,6 +105,48 @@ _AUTHORITY_FIELDS = frozenset(
 _ROOTS = frozenset({"facts", "identity", "scope", "time"})
 _RULE_FUNCTIONS = PACK_ABI_FUNCTIONS[:-1]
 _BOUND_PROTOTYPE_AUTHORITY = object()
+_MAX_PORTABLE_INTEGER = 9_007_199_254_740_991
+_PRODUCER_RECEIPT_ERROR_CODES = (
+    "ABI_FUNCTION_UNSUPPORTED",
+    "EXPRESSION_DEPTH_LIMIT",
+    "EXPRESSION_EVALUATION_INVALID",
+    "EXPRESSION_INVALID",
+    "EXPRESSION_NODE_LIMIT",
+    "EXPRESSION_SCHEMA_INVALID",
+    "INPUT_BINDING_DIGEST_MISMATCH",
+    "INPUT_BINDING_INVALID",
+    "INPUT_BYTE_LIMIT",
+    "INPUT_CANONICAL_INVALID",
+    "INPUT_FACTS_INVALID",
+    "INPUT_NODE_LIMIT",
+    "INPUT_SCHEMA_INVALID",
+    "INSTRUCTION_FUEL_LIMIT",
+    "OPERAND_CANONICAL_INVALID",
+    "OPERATOR_OPERAND_LIMIT",
+    "OPERATOR_OPERANDS_INVALID",
+    "OPERATOR_UNSUPPORTED",
+    "OUTPUT_BYTE_LIMIT",
+    "PATH_INVALID",
+    "PATH_ROOT_INVALID",
+    "PATH_SEGMENT_LIMIT",
+    "PRODUCER_AUTHORITY_FIELD_FORBIDDEN",
+    "PRODUCER_KEY_INVALID",
+    "PROGRAM_BYTE_LIMIT",
+    "PROGRAM_CANONICAL_INVALID",
+    "PROGRAM_IDENTIFIER_INVALID",
+    "PROGRAM_RULES_INVALID",
+    "PROGRAM_SCHEMA_INVALID",
+    "REPLAY_WITNESS_UNSUPPORTED_R2_0",
+    "RESULT_CANONICAL_INVALID",
+    "RULE_FUNCTION_UNSUPPORTED",
+    "RULE_LIMIT",
+    "RULE_SCHEMA_INVALID",
+    "RULE_SORTED_UNIQUE_REQUIRED",
+    "SET_INVALID",
+    "SET_ITEM_LIMIT",
+    "SET_SORTED_UNIQUE_REQUIRED",
+    "STRING_BYTE_LIMIT",
+)
 DSL_PROTOTYPE_LIMIT_FIELDS = (
     "max_program_bytes",
     "max_input_bytes",
@@ -151,11 +198,203 @@ class DSLPrototypeLimits:
     def __post_init__(self) -> None:
         for field_name in DSL_PROTOTYPE_LIMIT_FIELDS:
             value = getattr(self, field_name)
-            if type(value) is not int or value < 1:
+            if type(value) is not int or not 1 <= value <= _MAX_PORTABLE_INTEGER:
                 raise DSLPrototypeError("LIMIT_PROFILE_INVALID")
 
 
 DEFAULT_DSL_PROTOTYPE_LIMITS = DSLPrototypeLimits()
+
+
+_INNER_RECEIPT_FIELDS = (
+    "schema",
+    "interpreter_semantics_version",
+    "limit_profile",
+    "limit_profile_digest",
+    "outcome",
+    "authoritative",
+    "supplies_obligation_support",
+    "qualification_effect",
+    "authoritative_gate",
+    "promotion_eligible",
+    "execution_state",
+    "qualification_state",
+    "program_digest",
+    "input_digest",
+    "binding_digests",
+    "function",
+    "work_units",
+    "result",
+    "result_digest",
+    "error",
+)
+_WORK_UNIT_FIELDS = (
+    "program_bytes",
+    "input_bytes",
+    "input_nodes",
+    "rules",
+    "expression_nodes",
+    "fuel_consumed",
+    "result_bytes",
+    "result_records",
+)
+
+
+def _digest_shape(value: Any) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def _validate_limit_profile(value: Any) -> dict[str, int]:
+    if type(value) is not dict or set(value) != set(DSL_PROTOTYPE_LIMIT_FIELDS):
+        _fail("INNER_RECEIPT_LIMIT_PROFILE_INVALID")
+    checked: dict[str, int] = {}
+    for field in DSL_PROTOTYPE_LIMIT_FIELDS:
+        item = value[field]
+        if type(item) is not int or not 1 <= item <= _MAX_PORTABLE_INTEGER:
+            _fail("INNER_RECEIPT_LIMIT_PROFILE_INVALID")
+        checked[field] = item
+    try:
+        DSLPrototypeLimits(**checked)
+    except (DSLPrototypeError, TypeError, ValueError):
+        _fail("INNER_RECEIPT_LIMIT_PROFILE_INVALID")
+    return checked
+
+
+def validate_declarative_prototype_receipt(
+        value: Any,
+        *,
+        expected_program_digest: str | None = None,
+        expected_limit_profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Validate closed shape and every self-contained inner-receipt relationship.
+
+    JSON Schema closes the shape, but it cannot prove that a digest describes the sibling value
+    beside it.  Wrappers call this validator and defensively invoke the same deterministic producer
+    a second time for the exact program/input before minting outer custody.  This detects substituted
+    public-return bytes; it is not an independent implementation, process, or code attestation.
+    """
+
+    if type(value) is not dict or set(value) != set(_INNER_RECEIPT_FIELDS):
+        _fail("INNER_RECEIPT_SHAPE_INVALID")
+    if (
+            value["schema"] != DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA
+            or value["interpreter_semantics_version"]
+            != DECLARATIVE_INTERPRETER_SEMANTICS_VERSION
+            or value["authoritative"] is not False
+            or value["supplies_obligation_support"] is not False
+            or value["qualification_effect"] != "NONE"
+            or value["authoritative_gate"] is not None
+            or value["promotion_eligible"] is not False
+            or value["execution_state"] != "CONTRACT_ONLY"
+            or value["qualification_state"] != "EXPERIMENTAL"
+    ):
+        _fail("INNER_RECEIPT_AUTHORITY_INVALID")
+    profile = _validate_limit_profile(value["limit_profile"])
+    if not _digest_shape(value["limit_profile_digest"]):
+        _fail("INNER_RECEIPT_LIMIT_PROFILE_INVALID")
+    if value["limit_profile_digest"] != canonical_digest(profile):
+        _fail("INNER_RECEIPT_LIMIT_PROFILE_DIGEST_MISMATCH")
+    if expected_limit_profile is not None and profile != dict(expected_limit_profile):
+        _fail("INNER_RECEIPT_LIMIT_PROFILE_BINDING_MISMATCH")
+    if expected_program_digest is not None:
+        if not _digest_shape(expected_program_digest):
+            _fail("INNER_RECEIPT_PROGRAM_BINDING_MISMATCH")
+        if value["program_digest"] != expected_program_digest:
+            _fail("INNER_RECEIPT_PROGRAM_BINDING_MISMATCH")
+
+    for field in ("program_digest", "input_digest", "result_digest"):
+        item = value[field]
+        if item is not None and not _digest_shape(item):
+            _fail("INNER_RECEIPT_DIGEST_INVALID")
+    binding_digests = value["binding_digests"]
+    if binding_digests is not None:
+        if type(binding_digests) is not dict or set(binding_digests) != {
+                "identity", "scope", "time"}:
+            _fail("INNER_RECEIPT_BINDING_DIGESTS_INVALID")
+        if any(not _digest_shape(binding_digests[key]) for key in binding_digests):
+            _fail("INNER_RECEIPT_BINDING_DIGESTS_INVALID")
+
+    work_units = value["work_units"]
+    if type(work_units) is not dict or set(work_units) != set(_WORK_UNIT_FIELDS):
+        _fail("INNER_RECEIPT_WORK_UNITS_INVALID")
+    if any(
+            type(work_units[field]) is not int
+            or not 0 <= work_units[field] <= _MAX_PORTABLE_INTEGER
+            for field in _WORK_UNIT_FIELDS
+    ):
+        _fail("INNER_RECEIPT_WORK_UNITS_INVALID")
+    if value["function"] is not None and value["function"] not in PACK_ABI_FUNCTIONS:
+        _fail("INNER_RECEIPT_FUNCTION_INVALID")
+
+    outcome = value["outcome"]
+    if outcome == _EXECUTED:
+        if (
+                not _digest_shape(value["program_digest"])
+                or not _digest_shape(value["input_digest"])
+                or binding_digests is None
+                or value["function"] not in _RULE_FUNCTIONS
+                or value["error"] is not None
+        ):
+            _fail("INNER_RECEIPT_EXECUTED_RELATIONSHIP_INVALID")
+        result = value["result"]
+        if type(result) is not dict or set(result) != {"schema", "entries"}:
+            _fail("INNER_RECEIPT_RESULT_INVALID")
+        if result["schema"] != DECLARATIVE_RESULT_SCHEMA or type(result["entries"]) is not list:
+            _fail("INNER_RECEIPT_RESULT_INVALID")
+        for entry in result["entries"]:
+            if type(entry) is not dict or set(entry) != {"rule_id", "truth", "value"}:
+                _fail("INNER_RECEIPT_RESULT_INVALID")
+            try:
+                _identifier(entry["rule_id"])
+            except TransitionContractError:
+                _fail("INNER_RECEIPT_RESULT_INVALID")
+            if entry["truth"] not in TRUTH_VALUES:
+                _fail("INNER_RECEIPT_RESULT_INVALID")
+            if entry["truth"] != TRUTH_TRUE and entry["value"] is not None:
+                _fail("INNER_RECEIPT_RESULT_INVALID")
+        try:
+            result_raw = canonical_json_bytes(result)
+        except (TransitionContractError, TypeError, ValueError, MemoryError, RecursionError):
+            _fail("INNER_RECEIPT_RESULT_INVALID")
+        if value["result_digest"] != bytes_digest(result_raw):
+            _fail("INNER_RECEIPT_RESULT_DIGEST_MISMATCH")
+        if (
+                work_units["result_bytes"] != len(result_raw)
+                or work_units["result_records"] != len(result["entries"])
+        ):
+            _fail("INNER_RECEIPT_RESULT_WORK_MISMATCH")
+    elif outcome == _REFUSED:
+        error = value["error"]
+        if (
+                value["result"] is not None
+                or value["result_digest"] is not None
+                or type(error) is not dict
+                or set(error) != {"code"}
+                or type(error["code"]) is not str
+                or not error["code"]
+                or error["code"][0] not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for character in error["code"])
+                or error["code"] not in _PRODUCER_RECEIPT_ERROR_CODES
+        ):
+            _fail("INNER_RECEIPT_REFUSAL_RELATIONSHIP_INVALID")
+        if (
+                error["code"] == "OUTPUT_BYTE_LIMIT"
+                and work_units["result_bytes"] <= profile["max_output_bytes"]
+        ):
+            _fail("INNER_RECEIPT_RESULT_WORK_MISMATCH")
+        if error["code"] != "OUTPUT_BYTE_LIMIT" and work_units["result_bytes"] != 0:
+            _fail("INNER_RECEIPT_RESULT_WORK_MISMATCH")
+    else:
+        _fail("INNER_RECEIPT_OUTCOME_INVALID")
+    if (
+            len(canonical_json_bytes(value))
+            > dsl_receipt_container_ceiling(profile)["inner_receipt_ceiling_bytes"]
+    ):
+        _fail("INNER_RECEIPT_CONTAINER_LIMIT")
+    return dict(value)
 
 
 class BoundPackagedDSLPrototype:
@@ -526,6 +765,19 @@ def _compile_program(value: Any, limits: DSLPrototypeLimits) -> _CompiledProgram
     return _CompiledProgram(tuple(compiled), node_counter[0])
 
 
+def declarative_program_semantic_statements(value: Any) -> int:
+    """Count closed executable DSL semantics, independent of JSON formatting.
+
+    Each rule record contributes one dispatch-and-emission statement; every expression operator
+    contributes one predicate statement. Operand/list/byte growth is governed
+    separately by the resource profile. This prevents a one-rule pack from hiding an arbitrarily
+    large expression tree behind a rule-count budget.
+    """
+
+    compiled = _compile_program(value, DEFAULT_DSL_PROTOTYPE_LIMITS)
+    return len(compiled.rules) + compiled.expression_nodes
+
+
 def _consume(work: _Work, amount: int, limits: DSLPrototypeLimits) -> None:
     work.fuel_consumed += amount
     if work.fuel_consumed > limits.max_instruction_fuel:
@@ -675,13 +927,161 @@ def _authority_envelope(
     }
 
 
-def run_pack_abi(
+def dsl_receipt_container_ceiling(value: Mapping[str, Any] | DSLPrototypeLimits) -> dict[str, Any]:
+    """Derive closed inner/bound/reviewed receipt ceilings for one exact DSL profile.
+
+    Canonical JSON embeds a nested result/inner receipt byte-for-byte.  The fixed overheads below
+    are therefore derived from maximal closed envelope witnesses and added to ``max_output_bytes``;
+    refusal is covered by subtracting the minimum positive output byte from its maximal envelope.
+    The outer witnesses are deliberately specific to the exact R2.0 prototype pack identity that
+    the final-freeze binder enforces.  No performance observation or historical maximum is treated
+    as a proof of this bound or as a reusable future-pack ceiling.
+    """
+
+    if type(value) is DSLPrototypeLimits:
+        limits = value
+    elif isinstance(value, Mapping):
+        keys = set(value)
+        plain_keys = set(DSL_PROTOTYPE_LIMIT_FIELDS)
+        reviewed_keys = {"schema", "substrate", *DSL_PROTOTYPE_LIMIT_FIELDS}
+        if keys not in (plain_keys, reviewed_keys):
+            _fail("RECEIPT_CONTAINER_PROFILE_INVALID")
+        if keys == reviewed_keys and (
+                value["schema"] != "atlas.dsl-only-resource-profile/1"
+                or value["substrate"] != "DECLARATIVE_DSL_ONLY"
+        ):
+            _fail("RECEIPT_CONTAINER_PROFILE_INVALID")
+        try:
+            limits = DSLPrototypeLimits(**{
+                field: value[field]
+                for field in DSL_PROTOTYPE_LIMIT_FIELDS
+            })
+        except (KeyError, DSLPrototypeError, TypeError, ValueError):
+            _fail("RECEIPT_CONTAINER_PROFILE_INVALID")
+    else:
+        _fail("RECEIPT_CONTAINER_PROFILE_INVALID")
+    digest = "sha256:" + "f" * 64
+    binding_digests = {"identity": digest, "scope": digest, "time": digest}
+    maximal_work = _Work(
+        program_bytes=_MAX_PORTABLE_INTEGER,
+        input_bytes=_MAX_PORTABLE_INTEGER,
+        input_nodes=_MAX_PORTABLE_INTEGER,
+        rules=_MAX_PORTABLE_INTEGER,
+        expression_nodes=_MAX_PORTABLE_INTEGER,
+        fuel_consumed=_MAX_PORTABLE_INTEGER,
+        result_records=_MAX_PORTABLE_INTEGER,
+        result_bytes=_MAX_PORTABLE_INTEGER,
+    )
+    result = {"schema": DECLARATIVE_RESULT_SCHEMA, "entries": []}
+    result_raw = canonical_json_bytes(result)
+    success = _authority_envelope(
+        outcome=_EXECUTED,
+        function=max(_RULE_FUNCTIONS, key=len),
+        program_digest=digest,
+        input_digest=digest,
+        binding_digests=binding_digests,
+        limits=limits,
+        work=maximal_work,
+        result=result,
+        result_digest=digest,
+        error=None,
+    )
+    success_raw = canonical_json_bytes(success)
+    success_overhead = len(success_raw) - len(result_raw)
+    refusal = _authority_envelope(
+        outcome=_REFUSED,
+        function=max(PACK_ABI_FUNCTIONS, key=len),
+        program_digest=digest,
+        input_digest=digest,
+        binding_digests=binding_digests,
+        limits=limits,
+        work=maximal_work,
+        result=None,
+        result_digest=None,
+        error=max(_PRODUCER_RECEIPT_ERROR_CODES, key=len),
+    )
+    refusal_bytes = len(canonical_json_bytes(refusal))
+    inner_overhead = max(success_overhead, refusal_bytes - 1)
+
+    bound_outer = {
+        "schema": BOUND_DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA,
+        "source_binding_state": DSL_PROTOTYPE_SOURCE_BINDING_STATE,
+        "pack_id": DSL_PROTOTYPE_PACK_ID,
+        "pack_version": DSL_PROTOTYPE_PACK_VERSION,
+        "pack_manifest_digest": digest,
+        "tcb_manifest_digest": digest,
+        "program_digest": digest,
+        "supported_denominator_digest": digest,
+        "interpreter_digest": digest,
+        "inner_receipt_digest": digest,
+        "inner_receipt": success,
+        "authoritative": False,
+        "supplies_obligation_support": False,
+        "qualification_effect": "NONE",
+        "authoritative_gate": None,
+        "promotion_eligible": False,
+    }
+    bound_wrapper_overhead = len(canonical_json_bytes(bound_outer)) - len(success_raw)
+    reviewed_outer = {
+        "schema": REVIEWED_DECLARATIVE_RECEIPT_SCHEMA,
+        "pack_id": DSL_PROTOTYPE_PACK_ID,
+        "pack_version": DSL_PROTOTYPE_PACK_VERSION,
+        "pack_manifest_digest": digest,
+        "tcb_manifest_digest": digest,
+        "tcb_budget_freeze_digest": digest,
+        "selected_source_commit": "f" * 40,
+        "selected_source_tree": "f" * 40,
+        "budget_review_receipt_digest": digest,
+        "runtime_inventory_digest": digest,
+        "dsl_interpreter_digest": digest,
+        "program_digest": digest,
+        "limit_profile_source": "VERIFIED_FINAL_R2_TCB_BUDGET_FREEZE",
+        "limit_profile_digest": digest,
+        "inner_receipt_digest": digest,
+        "inner_receipt": success,
+        "authoritative": False,
+        "supplies_obligation_support": False,
+        "qualification_effect": "NONE",
+        "authoritative_gate": None,
+        "promotion_eligible": False,
+    }
+    reviewed_wrapper_overhead = len(canonical_json_bytes(reviewed_outer)) - len(success_raw)
+    inner_ceiling = limits.max_output_bytes + inner_overhead
+    bound_ceiling = inner_ceiling + bound_wrapper_overhead
+    reviewed_ceiling = inner_ceiling + reviewed_wrapper_overhead
+    if any(
+            type(item) is not int or not 1 <= item <= _MAX_PORTABLE_INTEGER
+            for item in (
+                inner_overhead,
+                bound_wrapper_overhead,
+                reviewed_wrapper_overhead,
+                inner_ceiling,
+                bound_ceiling,
+                reviewed_ceiling,
+            )
+    ):
+        _fail("RECEIPT_CONTAINER_CEILING_OVERFLOW")
+    return {
+        "schema": DSL_RECEIPT_CONTAINER_CEILING_SCHEMA,
+        "formula": DSL_RECEIPT_CONTAINER_CEILING_FORMULA,
+        "interpreter_semantics_version": DECLARATIVE_INTERPRETER_SEMANTICS_VERSION,
+        "max_output_bytes": limits.max_output_bytes,
+        "inner_envelope_overhead_bytes": inner_overhead,
+        "bound_wrapper_overhead_bytes": bound_wrapper_overhead,
+        "reviewed_wrapper_overhead_bytes": reviewed_wrapper_overhead,
+        "inner_receipt_ceiling_bytes": inner_ceiling,
+        "bound_receipt_ceiling_bytes": bound_ceiling,
+        "reviewed_receipt_ceiling_bytes": reviewed_ceiling,
+    }
+
+
+def _run_pack_abi_bytes(
         function: str,
         program_raw: bytes,
         input_raw: bytes,
         *,
         limits: DSLPrototypeLimits = DEFAULT_DSL_PROTOTYPE_LIMITS) -> bytes:
-    """Execute one closed ABI call and return a deterministic, non-authoritative receipt.
+    """Private producer used for a second same-process deterministic wrapper recomputation.
 
     Known producer and resource failures are receipts, not partially returned results.  A non-bytes
     argument cannot carry an exact digest and therefore raises a fixed ``DSLPrototypeError`` before
@@ -752,6 +1152,8 @@ def run_pack_abi(
             error=None,
         )
     except DSLPrototypeError as exc:
+        if exc.code not in _PRODUCER_RECEIPT_ERROR_CODES:
+            _fail("UNREGISTERED_PRODUCER_REFUSAL")
         receipt = _authority_envelope(
             outcome=_REFUSED,
             function=safe_function,
@@ -764,7 +1166,24 @@ def run_pack_abi(
             result_digest=None,
             error=exc.code,
         )
-    return canonical_json_bytes(receipt)
+    receipt_raw = canonical_json_bytes(receipt)
+    if (
+            len(receipt_raw)
+            > dsl_receipt_container_ceiling(limits)["inner_receipt_ceiling_bytes"]
+    ):
+        _fail("RECEIPT_CONTAINER_LIMIT")
+    return receipt_raw
+
+
+def run_pack_abi(
+        function: str,
+        program_raw: bytes,
+        input_raw: bytes,
+        *,
+        limits: DSLPrototypeLimits = DEFAULT_DSL_PROTOTYPE_LIMITS) -> bytes:
+    """Execute one closed ABI call and return a deterministic, non-authoritative receipt."""
+
+    return _run_pack_abi_bytes(function, program_raw, input_raw, limits=limits)
 
 
 def bind_packaged_dsl_prototype_bytes(
@@ -812,6 +1231,14 @@ def bind_packaged_dsl_prototype_bytes(
             program=True,
         )
         _compile_program(program_value, DEFAULT_DSL_PROTOTYPE_LIMITS)
+        if tcb["pack_census_method"] == "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1":
+            expected_pack_statements = declarative_program_semantic_statements(program_value)
+        elif tcb["pack_census_method"] == "DECLARATIVE_RULE_COUNT/1":
+            expected_pack_statements = len(program_value["rules"])
+        else:
+            _fail("PROTOTYPE_PACK_CENSUS_METHOD_UNSUPPORTED")
+        if tcb["pack_executable_lines"] != expected_pack_statements:
+            _fail("PROTOTYPE_PACK_CENSUS_MISMATCH")
         if (
                 program_value["pack_id"] != pack["pack_id"]
                 or program_value["pack_version"] != pack["pack_version"]
@@ -889,15 +1316,39 @@ def require_bound_packaged_dsl_prototype(value: Any) -> BoundPackagedDSLPrototyp
 def run_bound_pack_abi(
         prototype: BoundPackagedDSLPrototype,
         function: str,
-        input_raw: bytes,
-        *,
-        limits: DSLPrototypeLimits = DEFAULT_DSL_PROTOTYPE_LIMITS) -> bytes:
+        input_raw: bytes) -> bytes:
     """Run the pure interpreter and wrap its receipt in exact non-authoritative TCB custody."""
 
     bound = require_bound_packaged_dsl_prototype(prototype)
-    inner_raw = run_pack_abi(function, bound._program_raw, input_raw, limits=limits)
+    inner_raw = run_pack_abi(
+        function,
+        bound._program_raw,
+        input_raw,
+        limits=DEFAULT_DSL_PROTOTYPE_LIMITS,
+    )
+    expected_inner_raw = _run_pack_abi_bytes(
+        function,
+        bound._program_raw,
+        input_raw,
+        limits=DEFAULT_DSL_PROTOTYPE_LIMITS,
+    )
     try:
         inner = parse_canonical_json_bytes(inner_raw, require_canonical=True)
+        expected_profile = {
+            field: getattr(DEFAULT_DSL_PROTOTYPE_LIMITS, field)
+            for field in DSL_PROTOTYPE_LIMIT_FIELDS
+        }
+        inner = validate_declarative_prototype_receipt(
+            inner,
+            expected_program_digest=bound._program_digest,
+            expected_limit_profile=expected_profile,
+        )
+        if bytes_digest(canonical_json_bytes(inner)) != bytes_digest(inner_raw):
+            _fail("PROTOTYPE_INNER_RECEIPT_DIGEST_MISMATCH")
+        if inner_raw != expected_inner_raw:
+            _fail("PROTOTYPE_INNER_RECEIPT_RECOMPUTATION_MISMATCH")
+    except DSLPrototypeError:
+        raise
     except (TransitionContractError, TypeError, ValueError):
         _fail("PROTOTYPE_INNER_RECEIPT_INVALID")
     outer = {
@@ -918,7 +1369,145 @@ def run_bound_pack_abi(
         "authoritative_gate": None,
         "promotion_eligible": False,
     }
-    return canonical_json_bytes(outer)
+    outer_raw = canonical_json_bytes(outer)
+    if (
+            len(outer_raw)
+            > dsl_receipt_container_ceiling(DEFAULT_DSL_PROTOTYPE_LIMITS)[
+                "bound_receipt_ceiling_bytes"
+            ]
+    ):
+        _fail("BOUND_RECEIPT_CONTAINER_LIMIT")
+    return outer_raw
+
+
+def run_reviewed_dsl_pack_abi(
+        pack_manifest: BoundPackManifest,
+        tcb_manifest: BoundTCBManifest,
+        budget_freeze: Any,
+        function: str,
+        program_raw: bytes,
+        input_raw: bytes) -> bytes:
+    """Execute only through exact final-freeze custody; callers cannot cite a direct review.
+
+    No current R2.0 evidence can mint the required freeze because runtime closure and external
+    authority are absent.  Keeping this boundary executable-but-unavailable is intentional: a
+    direct review, a fictional interpreter digest, or a manifest pair detached from final source
+    custody must not become a reviewed execution receipt.
+    """
+
+    try:
+        from .transition_tcb_review import require_bound_r2_tcb_budget_freeze
+
+        freeze = require_bound_r2_tcb_budget_freeze(budget_freeze)
+        pack = require_bound_pack_manifest(pack_manifest)
+        tcb = require_bound_tcb_manifest(tcb_manifest)
+        review = freeze._budget_review
+        if (
+                tcb.digest != freeze["final_tcb_manifest_digest"]
+                or tcb.digest != freeze._tcb_manifest.digest
+                or pack.digest != freeze["final_pack_manifest_digest"]
+                or pack.digest != freeze._pack_manifest.digest
+                or bytes_digest(program_raw) != freeze["prototype_program_digest"]
+                or tcb["dsl_interpreter"]["content_digest"]
+                != freeze["dsl_interpreter_digest"]
+                or freeze["runtime_inventory_digest"] is None
+        ):
+            _fail("REVIEWED_DSL_FINAL_FREEZE_BINDING_MISMATCH")
+        validate_pack_tcb_pair(pack, tcb, budget_review=review)
+        if (
+                pack["execution_state"] != PackExecutionState.CONTRACT_ONLY.value
+                or pack["qualification_state"] != QualificationState.EXPERIMENTAL.value
+                or pack["qualification_receipt_digest"] is not None
+                or pack["substrate"] != PackSubstrate.DECLARATIVE_DSL_ONLY.value
+                or tcb["pack_census_method"] != "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1"
+        ):
+            _fail("REVIEWED_DSL_EXECUTION_BOUNDARY_INVALID")
+        profile = tcb["resource_ceilings"]["dsl"]
+        if type(profile) is not dict or set(profile) != set(DSL_PROTOTYPE_LIMIT_FIELDS):
+            _fail("REVIEWED_DSL_LIMIT_PROFILE_INVALID")
+        freeze_profile = {
+            field: freeze["dsl_resource_profile"][field]
+            for field in DSL_PROTOTYPE_LIMIT_FIELDS
+        }
+        if profile != freeze_profile:
+            _fail("REVIEWED_DSL_FINAL_FREEZE_PROFILE_MISMATCH")
+        limits = DSLPrototypeLimits(**profile)
+        receipt_ceiling = dsl_receipt_container_ceiling(limits)
+        if freeze["receipt_container_ceiling"] != receipt_ceiling:
+            _fail("REVIEWED_DSL_RECEIPT_CONTAINER_FREEZE_MISMATCH")
+        program = _parse_document(program_raw, limits.max_program_bytes, program=True)
+        compiled = _compile_program(program, limits)
+        if (
+                program["pack_id"] != pack["pack_id"]
+                or program["pack_version"] != pack["pack_version"]
+                or bytes_digest(program_raw) != pack["declarative_rules_digest"]
+                or bytes_digest(program_raw) != pack["semantic_bundle_digest"]
+                or tcb["pack_executable_lines"]
+                != len(compiled.rules) + compiled.expression_nodes
+        ):
+            _fail("REVIEWED_DSL_PROGRAM_BINDING_MISMATCH")
+        source_matches = [
+            item for item in tcb["pack_sources"]
+            if item["role"] == "DECLARATIVE_RULE_PROGRAM"
+            and item["bytes"] == len(program_raw)
+            and item["digest"] == bytes_digest(program_raw)
+        ]
+        if len(source_matches) != 1:
+            _fail("REVIEWED_DSL_PROGRAM_SOURCE_BINDING_MISMATCH")
+    except DSLPrototypeError:
+        raise
+    except (ImportError, KeyError, PackContractError, TransitionContractError, TypeError, ValueError):
+        _fail("REVIEWED_DSL_CUSTODY_INVALID")
+
+    inner_raw = run_pack_abi(function, program_raw, input_raw, limits=limits)
+    expected_inner_raw = _run_pack_abi_bytes(
+        function,
+        program_raw,
+        input_raw,
+        limits=limits,
+    )
+    try:
+        inner = parse_canonical_json_bytes(inner_raw, require_canonical=True)
+        inner = validate_declarative_prototype_receipt(
+            inner,
+            expected_program_digest=bytes_digest(program_raw),
+            expected_limit_profile=profile,
+        )
+        if bytes_digest(canonical_json_bytes(inner)) != bytes_digest(inner_raw):
+            _fail("REVIEWED_DSL_INNER_RECEIPT_DIGEST_MISMATCH")
+        if inner_raw != expected_inner_raw:
+            _fail("REVIEWED_DSL_INNER_RECEIPT_RECOMPUTATION_MISMATCH")
+    except DSLPrototypeError:
+        raise
+    except (TransitionContractError, TypeError, ValueError):
+        _fail("REVIEWED_DSL_INNER_RECEIPT_INVALID")
+    outer = {
+        "schema": REVIEWED_DECLARATIVE_RECEIPT_SCHEMA,
+        "pack_id": pack["pack_id"],
+        "pack_version": pack["pack_version"],
+        "pack_manifest_digest": pack.digest,
+        "tcb_manifest_digest": tcb.digest,
+        "tcb_budget_freeze_digest": freeze.digest,
+        "selected_source_commit": freeze["selected_source_commit"],
+        "selected_source_tree": freeze["selected_source_tree"],
+        "budget_review_receipt_digest": freeze["review_receipt_digest"],
+        "runtime_inventory_digest": freeze["runtime_inventory_digest"],
+        "dsl_interpreter_digest": freeze["dsl_interpreter_digest"],
+        "program_digest": bytes_digest(program_raw),
+        "limit_profile_source": "VERIFIED_FINAL_R2_TCB_BUDGET_FREEZE",
+        "limit_profile_digest": canonical_digest(profile),
+        "inner_receipt_digest": bytes_digest(inner_raw),
+        "inner_receipt": inner,
+        "authoritative": False,
+        "supplies_obligation_support": False,
+        "qualification_effect": "NONE",
+        "authoritative_gate": None,
+        "promotion_eligible": False,
+    }
+    outer_raw = canonical_json_bytes(outer)
+    if len(outer_raw) > receipt_ceiling["reviewed_receipt_ceiling_bytes"]:
+        _fail("REVIEWED_DSL_RECEIPT_CONTAINER_LIMIT")
+    return outer_raw
 
 
 __all__ = [
@@ -929,6 +1518,9 @@ __all__ = [
     "DECLARATIVE_PROGRAM_SCHEMA",
     "DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA",
     "DECLARATIVE_RESULT_SCHEMA",
+    "DSL_RECEIPT_CONTAINER_CEILING_FORMULA",
+    "DSL_RECEIPT_CONTAINER_CEILING_SCHEMA",
+    "REVIEWED_DECLARATIVE_RECEIPT_SCHEMA",
     "DSL_INTERPRETER_SOURCE_PATH",
     "DSL_PROTOTYPE_CLAIM_BOUNDARY",
     "DSL_PROTOTYPE_DENOMINATOR_PATH",
@@ -950,7 +1542,11 @@ __all__ = [
     "TRUTH_TRUE",
     "TRUTH_VALUES",
     "bind_packaged_dsl_prototype_bytes",
+    "declarative_program_semantic_statements",
+    "dsl_receipt_container_ceiling",
     "require_bound_packaged_dsl_prototype",
     "run_bound_pack_abi",
+    "run_reviewed_dsl_pack_abi",
     "run_pack_abi",
+    "validate_declarative_prototype_receipt",
 ]

@@ -116,6 +116,9 @@ def _bind_qcp_fixture(
         tc.canonical_json_bytes({"fixture": "sampled-observation-bytes"}),
         tc.canonical_json_bytes({"fixture": "before-snapshot"}),
         tc.canonical_json_bytes({"fixture": "after-snapshot"}),
+        tc.canonical_json_bytes({"fixture": "fhrp-single-owner-evidence-recipe"}),
+        tc.canonical_json_bytes({"fixture": "gateway-handoff-compensation-plan"}),
+        tc.canonical_json_bytes({"fixture": "decision-time-trust-policy-snapshot"}),
         tc.canonical_json_bytes({"fixture": "independently-obtained-verifier-bootstrap"}),
         tc.canonical_json_bytes({"fixture": "external-experimental-trust-policy"}),
         tc.canonical_json_bytes({"fixture": "qcp-001-experimental-replay-recipe"}),
@@ -331,6 +334,34 @@ def test_verifier_receipt_is_deterministic_across_content_input_order() -> None:
     assert tc.bytes_digest(tv.verifier_receipt_bytes(first)) == tc.canonical_digest(dict(first))
 
 
+def test_verifier_bootstrap_is_an_independent_exact_byte_input() -> None:
+    case, pack, content_objects = _bind_qcp_fixture()
+    content = tv.bind_content_objects(content_objects)
+    exact_bootstrap = tc.canonical_json_bytes({
+        "fixture": "independently-obtained-verifier-bootstrap"
+    })
+
+    missing = tv.verify_transition_case(case, pack, content=content)
+    exact = tv.verify_transition_case(
+        case,
+        pack,
+        content=content,
+        verifier_bootstrap_raw=exact_bootstrap,
+    )
+    mismatched = tv.verify_transition_case(
+        case,
+        pack,
+        content=content,
+        verifier_bootstrap_raw=b"case-supplied substitute",
+    )
+
+    assert "EXTERNAL_VERIFIER_BOOTSTRAP_REQUIRED" in missing["reason_codes"]
+    assert "EXTERNAL_VERIFIER_BOOTSTRAP_REQUIRED" not in exact["reason_codes"]
+    assert "EXTERNAL_VERIFIER_BOOTSTRAP_MISMATCH" not in exact["reason_codes"]
+    assert "EXTERNAL_VERIFIER_BOOTSTRAP_MISMATCH" in mismatched["reason_codes"]
+    assert exact["replay_authority_established"] is False
+
+
 def test_only_unchanged_verifier_minted_receipts_can_be_serialized() -> None:
     case, pack, content_objects = _bind_qcp_fixture()
     receipt = tv.verify_transition_case(
@@ -384,7 +415,7 @@ def test_qcp_001_is_experimental_and_cannot_emit_a_promoting_gate() -> None:
     )
 
 
-def test_producer_carried_not_applicable_cannot_suppress_a_case() -> None:
+def test_producer_carried_not_applicable_cannot_construct_a_case() -> None:
     value = minimal_transition_case()
     value["applicability"] = {
         "schema": tc.APPLICABILITY_SCHEMA,
@@ -395,21 +426,9 @@ def test_producer_carried_not_applicable_cannot_suppress_a_case() -> None:
         "supported_denominator_digest": None,
         "qualification_receipt_digest": None,
     }
-    case, pack, content_objects = _bind_qcp_fixture(case=value)
-
-    receipt = tv.verify_transition_case(
-        case,
-        pack,
-        content=tv.bind_content_objects(content_objects),
-    )
-
-    assert receipt["applicability_kind"] == tc.ApplicabilityKind.NOT_APPLICABLE.value
-    assert receipt["effective_applicability_kind"] == (
-        tc.ApplicabilityKind.APPLICABILITY_EVIDENCE_REQUIRED.value
-    )
-    assert receipt["disposition"] == tv.GateDisposition.NO_AUTHORITATIVE_GATE.value
-    assert receipt["authoritative_gate"] is None
-    assert "NOT_APPLICABLE_RESULT_NOT_RECOMPUTED_R2_0" in receipt["reason_codes"]
+    with pytest.raises(tc.TransitionContractError) as error:
+        _bind_qcp_fixture(case=value)
+    assert error.value.code == "NOT_APPLICABLE_CANNOT_CONSTRUCT_TRANSITION_CASE"
 
 
 def test_pack_manifest_must_name_the_case_applicability_profile() -> None:
@@ -477,6 +496,9 @@ def test_dependency_digest_change_emits_deterministic_reference_only_invalidatio
     ]
     assert invalidated["migration_policy"] == "REFERENCE_NOT_REWRITE"
     assert invalidated["historical_case_rewritten"] is False
+    assert invalidated["authoritative"] is False
+    assert invalidated["promotion_effect"] == "NONE"
+    assert invalidated["claim_boundary"] == tv.INVALIDATION_CLAIM_BOUNDARY
     assert tc.canonical_json_bytes(invalidated) == tc.canonical_json_bytes(
         tv.compute_invalidation_receipt(previous, current)
     )

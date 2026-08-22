@@ -167,6 +167,26 @@ def test_all_closed_operators_execute_with_three_valued_results() -> None:
     assert set(tp.DECLARATIVE_DSL_OPERATORS) == {expression["op"] for expression in expressions}
 
 
+def test_pack_census_counts_rule_dispatch_emission_and_every_expression_operator() -> None:
+    shallow = _program([_rule("rule.001", {"op": "EXISTS", "path": ["facts", "enabled"]})])
+    nested = _program([_rule("rule.001", {
+        "op": "ALL_OF",
+        "args": [
+            {"op": "EXISTS", "path": ["facts", "enabled"]},
+            {"op": "NOT", "arg": {"op": "EXISTS", "path": ["facts", "forbidden"]}},
+        ],
+    })])
+    op_shaped_literal = _program([_rule("rule.001", {
+        "op": "EQUALS",
+        "path": ["facts", "metadata"],
+        "value": {"op": "EXISTS", "path": ["literal", "not", "grammar"]},
+    })])
+
+    assert dsl.declarative_program_semantic_statements(shallow) == 2
+    assert dsl.declarative_program_semantic_statements(nested) == 5
+    assert dsl.declarative_program_semantic_statements(op_shaped_literal) == 2
+
+
 @pytest.mark.parametrize(
     ("expression", "expected"),
     (
@@ -232,6 +252,9 @@ def test_packaged_prototype_binds_exact_program_tcb_denominator_and_sources() ->
     first_raw = dsl.run_bound_pack_abi(prototype, "evaluate", input_raw)
     second_raw = dsl.run_bound_pack_abi(prototype, "evaluate", input_raw)
     assert first_raw == second_raw
+    assert len(first_raw) <= dsl.dsl_receipt_container_ceiling(
+        dsl.DEFAULT_DSL_PROTOTYPE_LIMITS
+    )["bound_receipt_ceiling_bytes"]
     receipt = tc.parse_canonical_json_bytes(first_raw, require_canonical=True)
     assert receipt["schema"] == dsl.BOUND_DECLARATIVE_PROTOTYPE_RECEIPT_SCHEMA
     assert receipt["source_binding_state"] == "SAME_CHECKOUT_SELF_CHECK_ONLY"
@@ -270,6 +293,131 @@ def test_packaged_prototype_binds_exact_program_tcb_denominator_and_sources() ->
         "code": "REPLAY_WITNESS_UNSUPPORTED_R2_0",
     }
     assert replay["authoritative"] is False
+
+    with pytest.raises(TypeError):
+        dsl.run_bound_pack_abi(
+            prototype,
+            "evaluate",
+            input_raw,
+            limits=_limits(max_rules=1),  # type: ignore[call-arg]
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        ("result", "INNER_RECEIPT_RESULT_DIGEST_MISMATCH"),
+        ("result_digest", "INNER_RECEIPT_RESULT_DIGEST_MISMATCH"),
+        ("result_work", "INNER_RECEIPT_RESULT_WORK_MISMATCH"),
+        ("limit_profile", "INNER_RECEIPT_LIMIT_PROFILE_DIGEST_MISMATCH"),
+        ("limit_profile_digest", "INNER_RECEIPT_LIMIT_PROFILE_DIGEST_MISMATCH"),
+        ("program_digest", "INNER_RECEIPT_PROGRAM_BINDING_MISMATCH"),
+    ),
+)
+def test_inner_receipt_validator_recomputes_every_sibling_and_outer_join(
+        mutation: str,
+        expected_code: str) -> None:
+    program_raw = _raw(_program())
+    inner = _receipt(program=_program())
+    expected_profile = dict(inner["limit_profile"])
+    if mutation == "result":
+        inner["result"]["entries"][0]["value"] = "substituted"
+    elif mutation == "result_digest":
+        inner["result_digest"] = tc.canonical_digest({"substituted": True})
+    elif mutation == "result_work":
+        inner["work_units"]["result_bytes"] += 1
+    elif mutation == "limit_profile":
+        inner["limit_profile"]["max_rules"] += 1
+    elif mutation == "limit_profile_digest":
+        inner["limit_profile_digest"] = tc.canonical_digest({"substituted": True})
+    else:
+        inner["program_digest"] = tc.canonical_digest({"substituted": True})
+
+    with pytest.raises(dsl.DSLPrototypeError) as caught:
+        dsl.validate_declarative_prototype_receipt(
+            inner,
+            expected_program_digest=tc.bytes_digest(program_raw),
+            expected_limit_profile=expected_profile,
+        )
+    assert caught.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "result",
+        "result_rechained",
+        "profile",
+        "program",
+        "input",
+        "bindings",
+        "function",
+        "work",
+    ),
+)
+def test_bound_wrapper_rejects_rechained_tampered_inner_receipts(
+        monkeypatch: pytest.MonkeyPatch,
+        mutation: str) -> None:
+    prototype = _packaged_prototype()
+    input_raw = (ROOT / dsl.DSL_PROTOTYPE_INPUT_PATH).read_bytes()
+    real_run = dsl.run_pack_abi
+
+    def hostile_run(*args: Any, **kwargs: Any) -> bytes:
+        receipt = tc.parse_canonical_json_bytes(real_run(*args, **kwargs), require_canonical=True)
+        if mutation == "result":
+            receipt["result"]["entries"][0]["value"] = "substituted"
+        elif mutation == "result_rechained":
+            receipt["result"]["entries"][0]["value"] = "substituted"
+            result_raw = tc.canonical_json_bytes(receipt["result"])
+            receipt["result_digest"] = tc.bytes_digest(result_raw)
+            receipt["work_units"]["result_bytes"] = len(result_raw)
+        elif mutation == "profile":
+            receipt["limit_profile"]["max_rules"] += 1
+            receipt["limit_profile_digest"] = tc.canonical_digest(receipt["limit_profile"])
+        elif mutation == "program":
+            receipt["program_digest"] = tc.canonical_digest({"substituted": True})
+        elif mutation == "input":
+            receipt["input_digest"] = tc.canonical_digest({"substituted": True})
+        elif mutation == "bindings":
+            receipt["binding_digests"] = {
+                field: tc.canonical_digest({"substituted": field})
+                for field in ("identity", "scope", "time")
+            }
+        elif mutation == "function":
+            receipt["function"] = "manifest"
+        else:
+            for field in (
+                    "program_bytes",
+                    "input_bytes",
+                    "input_nodes",
+                    "rules",
+                    "expression_nodes",
+                    "fuel_consumed"):
+                receipt["work_units"][field] = 0
+        return tc.canonical_json_bytes(receipt)
+
+    monkeypatch.setattr(dsl, "run_pack_abi", hostile_run)
+    with pytest.raises(dsl.DSLPrototypeError) as caught:
+        dsl.run_bound_pack_abi(prototype, "evaluate", input_raw)
+    assert caught.value.code in {
+        "INNER_RECEIPT_RESULT_DIGEST_MISMATCH",
+        "INNER_RECEIPT_LIMIT_PROFILE_BINDING_MISMATCH",
+        "INNER_RECEIPT_PROGRAM_BINDING_MISMATCH",
+        "PROTOTYPE_INNER_RECEIPT_RECOMPUTATION_MISMATCH",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (("function", "fiction"), ("error", {"code": "1"}), ("error", {"code": "_"})),
+)
+def test_inner_receipt_validator_matches_schema_function_and_error_tokens(
+        field: str,
+        replacement: Any) -> None:
+    receipt = _receipt("replay_witness")
+    receipt[field] = replacement
+    with pytest.raises(dsl.DSLPrototypeError):
+        dsl.validate_declarative_prototype_receipt(receipt)
 
 
 def test_packaged_prototype_rejects_detached_or_mutated_custody() -> None:
@@ -527,6 +675,89 @@ def test_output_byte_limit_has_n_minus_1_n_n_plus_1_behavior_and_no_partial_resu
     _assert_refusal(refused, "OUTPUT_BYTE_LIMIT")
     assert refused["work_units"]["result_bytes"] == sizes[1] + 1
     assert refused["work_units"]["result_records"] == 1
+    assert dsl.validate_declarative_prototype_receipt(
+        refused,
+        expected_program_digest=tc.bytes_digest(_raw(programs[2])),
+        expected_limit_profile=refused["limit_profile"],
+    ) == refused
+
+
+def test_receipt_container_formula_bounds_near_max_success_and_refusal_shapes(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    limits = dsl.DEFAULT_DSL_PROTOTYPE_LIMITS
+    ceiling = dsl.dsl_receipt_container_ceiling(limits)
+    seed = _program([
+        _rule("rule.001", {"op": "EXISTS", "path": ["facts", "enabled"]}, emit=""),
+        _rule("rule.002", {"op": "EXISTS", "path": ["facts", "enabled"]}, emit=""),
+    ])
+    seed_receipt = _receipt(program=seed, limits=limits)
+    emit_bytes = limits.max_output_bytes - seed_receipt["work_units"]["result_bytes"]
+    first_emit_bytes = min(limits.max_string_bytes, emit_bytes)
+    near_max = _program([
+        _rule(
+            "rule.001",
+            {"op": "EXISTS", "path": ["facts", "enabled"]},
+            emit="x" * first_emit_bytes,
+        ),
+        _rule(
+            "rule.002",
+            {"op": "EXISTS", "path": ["facts", "enabled"]},
+            emit="x" * (emit_bytes - first_emit_bytes),
+        ),
+    ])
+    success_raw = dsl.run_pack_abi("evaluate", _raw(near_max), _raw(_input()), limits=limits)
+    success = tc.parse_canonical_json_bytes(success_raw, require_canonical=True)
+    assert success["work_units"]["result_bytes"] == limits.max_output_bytes
+    assert len(success_raw) <= ceiling["inner_receipt_ceiling_bytes"]
+
+    refusal_calls = (
+        lambda: dsl.run_pack_abi("fiction", _raw(_program()), _raw(_input()), limits=limits),
+        lambda: dsl.run_pack_abi("evaluate", b"x" * (limits.max_program_bytes + 1), _raw(_input()), limits=limits),
+        lambda: dsl.run_pack_abi("evaluate", _raw(_program()), b"x" * (limits.max_input_bytes + 1), limits=limits),
+        lambda: dsl.run_pack_abi("replay_witness", _raw(_program()), _raw(_input()), limits=limits),
+        lambda: dsl.run_pack_abi(
+            "evaluate",
+            _raw(_program([_rule("rule.001", {"op": "EXISTS", "path": ["facts", "enabled"]}, emit="xx")])),
+            _raw(_input()),
+            limits=_limits(max_output_bytes=1),
+        ),
+    )
+    for call in refusal_calls:
+        raw = call()
+        receipt = tc.parse_canonical_json_bytes(raw, require_canonical=True)
+        assert receipt["outcome"] == "REFUSED_NONAUTHORITATIVE"
+        profile_ceiling = dsl.dsl_receipt_container_ceiling(receipt["limit_profile"])
+        assert len(raw) <= profile_ceiling["inner_receipt_ceiling_bytes"]
+
+    original_compile = dsl._compile_program
+    for registered_code in dsl._PRODUCER_RECEIPT_ERROR_CODES:
+        def registered_refusal(
+                *_args: Any,
+                code: str = registered_code,
+                **_kwargs: Any) -> Any:
+            raise dsl.DSLPrototypeError(code)
+
+        monkeypatch.setattr(dsl, "_compile_program", registered_refusal)
+        raw = dsl.run_pack_abi("evaluate", _raw(_program()), _raw(_input()))
+        receipt = tc.parse_canonical_json_bytes(raw, require_canonical=True)
+        assert receipt["error"] == {"code": registered_code}
+        assert len(raw) <= ceiling["inner_receipt_ceiling_bytes"]
+    monkeypatch.setattr(dsl, "_compile_program", original_compile)
+
+    with pytest.raises(dsl.DSLPrototypeError) as extra_profile:
+        dsl.dsl_receipt_container_ceiling({
+            **{field: getattr(limits, field) for field in dsl.DSL_PROTOTYPE_LIMIT_FIELDS},
+            "fiction": 1,
+        })
+    assert extra_profile.value.code == "RECEIPT_CONTAINER_PROFILE_INVALID"
+
+    def unregistered(*_args: Any, **_kwargs: Any) -> Any:
+        raise dsl.DSLPrototypeError("UNREGISTERED_EXTREMELY_LONG_PRODUCER_REFUSAL_CODE")
+
+    monkeypatch.setattr(dsl, "_compile_program", unregistered)
+    with pytest.raises(dsl.DSLPrototypeError) as unregistered_refusal:
+        dsl.run_pack_abi("evaluate", _raw(_program()), _raw(_input()))
+    assert unregistered_refusal.value.code == "UNREGISTERED_PRODUCER_REFUSAL"
 
 
 def test_rule_limit_has_n_minus_1_n_n_plus_1_behavior() -> None:

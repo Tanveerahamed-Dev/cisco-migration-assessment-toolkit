@@ -41,16 +41,21 @@ _REQUIRED_RUNTIME_MEMBERS = frozenset(
         "cisco_toolkit/data/atlas-r2-dsl-prototype-program.v1.json",
         "cisco_toolkit/data/atlas-r2-dsl-prototype-tcb.v2.json",
         "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
+        "cisco_toolkit/data/atlas-r2-runtime-inventory.reference.v1.json",
+        "cisco_toolkit/data/atlas-r2-tcb-budget-proposal.v1.json",
         "cisco_toolkit/data/traffic-intents.example.json",
         "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
         "cisco_toolkit/transition_contract.py",
         "cisco_toolkit/transition_pack.py",
         "cisco_toolkit/transition_verifier.py",
         "cisco_toolkit/transition_legacy.py",
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_runtime_inventory.py",
     }
 )
 _REQUIRED_SDIST_MEMBERS = _REQUIRED_RUNTIME_MEMBERS | {"pyproject.toml"}

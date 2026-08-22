@@ -622,11 +622,32 @@ def _hostile_raw_cases() -> list[tuple[str, bytes, bytes, str]]:
     hostile_path = _program([
         _rule("rule.001", {"op": "EXISTS", "path": ["environment", CANARY]})
     ])
+    duplicate_input = input_raw.replace(
+        b'{"facts":',
+        b'{"request_id":"measure-001","facts":',
+        1,
+    )
+    non_nfc_input = _input(facts={"payload": "e\u0301"})
     return [
         ("DUPLICATE_KEY", duplicate, input_raw, "PROGRAM_CANONICAL_INVALID"),
         ("FLOAT_LITERAL", float_raw, input_raw, "PROGRAM_CANONICAL_INVALID"),
         ("HOSTILE_KEY_CANARY", _raw(hostile_key), input_raw, "PROGRAM_SCHEMA_INVALID"),
         ("HOSTILE_PATH_CANARY", _raw(hostile_path), input_raw, "PATH_ROOT_INVALID"),
+        ("INVALID_UTF8_PROGRAM", baseline + b"\xff", input_raw, "PROGRAM_CANONICAL_INVALID"),
+        ("INVALID_UTF8_INPUT", baseline, input_raw + b"\xff", "INPUT_CANONICAL_INVALID"),
+        ("DUPLICATE_INPUT_KEY", baseline, duplicate_input, "INPUT_CANONICAL_INVALID"),
+        (
+            "NON_NFC_INPUT_STRING",
+            baseline,
+            json.dumps(
+                non_nfc_input,
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8"),
+            "INPUT_CANONICAL_INVALID",
+        ),
     ]
 
 
@@ -669,6 +690,100 @@ def _hostile_measurements(reference: Mapping[str, Any] | None) -> list[dict[str,
     return rows
 
 
+def _nested_path_case(path_segments: int) -> tuple[bytes, bytes]:
+    path = ["facts"] + ["nested"] * (path_segments - 1)
+    nested: Any = True
+    for _index in range(path_segments - 1):
+        nested = {"nested": nested}
+    program_raw = _raw(_program([_rule("rule.001", {"op": "EXISTS", "path": path})]))
+    input_raw = _raw(_input(facts=nested if type(nested) is dict else {"value": nested}))
+    return program_raw, input_raw
+
+
+def _combined_depth_and_nodes_case() -> tuple[bytes, bytes]:
+    limits = dsl.DEFAULT_DSL_PROTOTYPE_LIMITS
+    base_depth = 3
+    wrappers = limits.max_expression_depth - base_depth
+    expression = _expression_with_nodes(limits.max_expression_nodes - wrappers)
+    for _index in range(wrappers):
+        expression = {"op": "NOT", "arg": expression}
+    return _raw(_program([_rule("rule.001", expression)])), _raw(_input())
+
+
+def _supplemental_raw_cases() -> list[tuple[str, bytes, bytes, str | None, dict[str, int]]]:
+    limits = dsl.DEFAULT_DSL_PROTOTYPE_LIMITS
+    result: list[tuple[str, bytes, bytes, str | None, dict[str, int]]] = []
+    for label, target in zip(
+            BOUNDARY_LABELS,
+            (limits.max_path_segments - 1, limits.max_path_segments,
+             limits.max_path_segments + 1)):
+        program_raw, input_raw = _nested_path_case(target)
+        result.append((
+            f"FULL_EXISTING_PATH_{label}",
+            program_raw,
+            input_raw,
+            "PATH_SEGMENT_LIMIT" if label == "N_PLUS_1" else None,
+            {"path_segments": target},
+        ))
+    program_raw, input_raw = _combined_depth_and_nodes_case()
+    result.append((
+        "COMBINED_EXPRESSION_DEPTH_AND_NODES_AT_N",
+        program_raw,
+        input_raw,
+        None,
+        {
+            "expression_depth": limits.max_expression_depth,
+            "expression_nodes": limits.max_expression_nodes,
+        },
+    ))
+    result.append((
+        "COMBINED_FUEL_AND_SET_SCAN_AT_N",
+        _fuel_program(limits.max_instruction_fuel),
+        _raw(_input()),
+        None,
+        {
+            "instruction_fuel": limits.max_instruction_fuel,
+            "set_items_per_full_rule": limits.max_set_items,
+        },
+    ))
+    return result
+
+
+def _supplemental_measurements(reference: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for case_id, program_raw, input_raw, expected_error, targets in _supplemental_raw_cases():
+        receipt_raw, receipt, repeats = _run_twice(program_raw, input_raw)
+        actual_error = receipt["error"]["code"] if receipt["error"] is not None else None
+        if actual_error != expected_error:
+            raise RuntimeError(f"{case_id} expected {expected_error}, got {actual_error}")
+        if expected_error is not None and receipt["result"] is not None:
+            raise RuntimeError(f"{case_id} returned a result after refusal")
+        rows.append({
+            "case_id": case_id,
+            "targets": targets,
+            "raw_program_bytes": len(program_raw),
+            "program_digest": contract.bytes_digest(program_raw),
+            "raw_input_bytes": len(input_raw),
+            "input_digest": contract.bytes_digest(input_raw),
+            "raw_receipt_bytes": len(receipt_raw),
+            "receipt_digest": contract.bytes_digest(receipt_raw),
+            "repeat_receipt_digests": repeats,
+            "outcome": receipt["outcome"],
+            "error": receipt["error"],
+            "result_digest": receipt["result_digest"],
+            "result_is_null": receipt["result"] is None,
+            "work_units": receipt["work_units"],
+            "authority": _authority(receipt),
+            "performance_reference": _performance(
+                lambda p=program_raw, i=input_raw: dsl.run_pack_abi("evaluate", p, i),
+                reference,
+                "supplemental_measurements",
+                case_id,
+            ),
+        })
+    return rows
+
+
 def _baseline_execution(
         repository: Path,
         pack_raw: bytes,
@@ -701,6 +816,7 @@ def _baseline_execution(
         "receipt_digest": contract.bytes_digest(receipts[0]),
         "repeat_receipt_digests": [contract.bytes_digest(raw) for raw in receipts],
         "source_binding_state": receipt["source_binding_state"],
+        "inner_receipt_digest": contract.canonical_digest(inner),
         "inner_outcome": inner["outcome"],
         "inner_result_digest": inner["result_digest"],
         "inner_work_units": inner["work_units"],
@@ -767,6 +883,7 @@ def _build(repository: Path, *, reference: Mapping[str, Any] | None = None) -> b
         "semantic_receipt_repeats": SEMANTIC_REPEATS,
         "reference_performance_repeats": PERFORMANCE_REPEATS,
         "hostile_case_ids": [item[0] for item in _hostile_raw_cases()],
+        "supplemental_case_ids": [item[0] for item in _supplemental_raw_cases()],
         "injected_boundary_test_owners": [TEST_OWNERS[field] for field in dsl.DSL_PROTOTYPE_LIMIT_FIELDS],
         "claim_scope": "REFERENCE_MEASUREMENT_ONLY_NO_BUDGET_OR_QUALIFICATION_EFFECT",
     }
@@ -834,12 +951,28 @@ def _build(repository: Path, *, reference: Mapping[str, Any] | None = None) -> b
         ),
         "boundary_measurements": _boundary_measurements(reference),
         "hostile_measurements": _hostile_measurements(reference),
+        "supplemental_measurements": _supplemental_measurements(reference),
+        "measurement_gaps": sorted({
+            "HOST_DEADLINE_CANCELLATION_CONCURRENCY_AND_THROUGHPUT_NOT_MEASURED",
+            "PAIRWISE_INPUT_BYTES_NODES_DEPTH_AND_STRING_PRESSURE_NOT_MEASURED",
+            "PAIRWISE_PROGRAM_BYTES_RULES_NODES_DEPTH_AND_SETS_NOT_EXHAUSTIVE",
+            "PROCESS_RSS_AND_NATIVE_ALLOCATIONS_NOT_MEASURED",
+            "REFERENCE_DENOMINATOR_IS_ONE_WINDOWS_CPYTHON_HOST",
+            "REPRESENTATIVE_FIELD_WORKLOAD_DENOMINATOR_ABSENT",
+            "RUNTIME_CLOSURE_REMAINS_PARTIAL_NONPORTABLE_PROTOTYPE",
+            (
+                "UNINSTRUMENTED_DEPTH_OPERAND_PATH_STRING_AND_SET_TARGETS_ARE_"
+                "SIGNED_AGGREGATE_CLAIMS_ONLY"
+            ),
+        }),
         "reference_environment": environment,
         "review_state": {
             "state": "PENDING_INDEPENDENT_NUMERIC_REVIEW_AND_SIGNED_EVIDENCE",
             "blockers": [
                 "APPROVED_BUDGET_ABSENT",
+                "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
                 "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+                "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
             ],
             "resource_ceiling_effect": "NONE",
             "qualification_effect": "NONE",

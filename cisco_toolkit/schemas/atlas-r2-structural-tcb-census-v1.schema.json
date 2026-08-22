@@ -26,7 +26,12 @@
       "additionalProperties": false,
       "required": ["budget_state", "core_sloc_budget", "pack_resource_ceilings", "pack_sloc_budget", "promotion_effect", "reason"],
       "properties": {
-        "budget_state": { "const": "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW" },
+        "budget_state": {
+          "enum": [
+            "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW",
+            "PROTOTYPE_MEASURED_COMPLETE_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW"
+          ]
+        },
         "core_sloc_budget": { "type": "null" },
         "pack_resource_ceilings": { "type": "null" },
         "pack_sloc_budget": { "type": "null" },
@@ -75,7 +80,9 @@
         "promotion_eligible",
         "qcp_001_executed",
         "qualification_effect",
+        "runtime_inventory",
         "runtime_inventory_state",
+        "runtime_inventory_tool",
         "source_binding_state",
         "substrate",
         "wasm_execution_state"
@@ -83,8 +90,8 @@
       "properties": {
         "asset_bindings": {
           "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
+          "minItems": 7,
+          "maxItems": 7,
           "items": { "$ref": "#/$defs/fileBinding" }
         },
         "baseline_receipt_digest": { "$ref": "#/$defs/digest" },
@@ -97,7 +104,14 @@
         "promotion_eligible": { "const": false },
         "qcp_001_executed": { "const": false },
         "qualification_effect": { "const": "NONE" },
-        "runtime_inventory_state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" },
+        "runtime_inventory": { "$ref": "#/$defs/runtimeInventorySummary" },
+        "runtime_inventory_state": {
+          "enum": [
+            "PARTIAL_NONPORTABLE_PROTOTYPE",
+            "COMPLETE_EXACT_RUNTIME_CLOSURE"
+          ]
+        },
+        "runtime_inventory_tool": { "$ref": "#/$defs/fileBinding" },
         "source_binding_state": { "const": "SAME_CHECKOUT_SELF_CHECK_ONLY" },
         "substrate": { "const": "DECLARATIVE_DSL_ONLY" },
         "wasm_execution_state": { "const": "UNIMPLEMENTED_UNREVIEWED" }
@@ -172,6 +186,104 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "executable_prototype": {
+            "properties": {
+              "runtime_inventory_state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" }
+            },
+            "required": ["runtime_inventory_state"]
+          }
+        },
+        "required": ["executable_prototype"]
+      },
+      "then": {
+        "properties": {
+          "budget_gate": {
+            "properties": {
+              "budget_state": { "const": "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW" }
+            },
+            "required": ["budget_state"]
+          },
+          "executable_prototype": {
+            "properties": {
+              "runtime_inventory": {
+                "properties": {
+                  "blind_spot_count": { "minimum": 1 },
+                  "claim_boundary": { "const": "Exact-byte inventory of the observed isolated reference process and bounded static PE resolutions only; not portable closure, all-branch coverage, qualification, or promotion authority." },
+                  "complete_exact_runtime_closure": { "const": false },
+                  "state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" }
+                }
+              }
+            }
+          },
+          "independent_review": {
+            "properties": {
+              "required_next_evidence": {
+                "const": [
+                  "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
+                  "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+                  "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
+                  "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
+                  "SELECTED_COMMIT_BINDING"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "executable_prototype": {
+            "properties": {
+              "runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" }
+            },
+            "required": ["runtime_inventory_state"]
+          }
+        },
+        "required": ["executable_prototype"]
+      },
+      "then": {
+        "properties": {
+          "budget_gate": {
+            "properties": {
+              "budget_state": { "const": "PROTOTYPE_MEASURED_COMPLETE_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW" }
+            },
+            "required": ["budget_state"]
+          },
+          "executable_prototype": {
+            "properties": {
+              "runtime_inventory": {
+                "properties": {
+                  "blind_spot_count": { "const": 0 },
+                  "claim_boundary": { "const": "Structurally complete exact-runtime closure review subject with no declared blind spots or unresolved native dependencies; these inventory bytes alone carry no closure, qualification, or promotion authority and require an independently verified review bound to their digest." },
+                  "complete_exact_runtime_closure": { "const": true },
+                  "state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+                  "unresolved_native_dependency_edge_count": { "const": 0 }
+                }
+              }
+            }
+          },
+          "independent_review": {
+            "properties": {
+              "required_next_evidence": {
+                "const": [
+                  "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+                  "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
+                  "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
+                  "SELECTED_COMMIT_BINDING"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
@@ -268,6 +380,38 @@
         "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$" },
         "version": { "type": "string", "minLength": 1 }
       }
-    }
+    },
+    "runtimeInventorySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_digest",
+        "blind_spot_count",
+        "claim_boundary",
+        "complete_exact_runtime_closure",
+        "native_dependency_edge_count",
+        "python_module_count",
+        "runtime_file_count",
+        "state",
+        "unresolved_native_dependency_edge_count"
+      ],
+      "properties": {
+        "asset_digest": { "$ref": "#/$defs/digest" },
+        "blind_spot_count": { "$ref": "#/$defs/nonnegativeInteger" },
+        "claim_boundary": { "type": "string", "minLength": 1 },
+        "complete_exact_runtime_closure": { "type": "boolean" },
+        "native_dependency_edge_count": { "$ref": "#/$defs/positiveInteger" },
+        "python_module_count": { "$ref": "#/$defs/positiveInteger" },
+        "runtime_file_count": { "$ref": "#/$defs/positiveInteger" },
+        "state": {
+          "enum": [
+            "PARTIAL_NONPORTABLE_PROTOTYPE",
+            "COMPLETE_EXACT_RUNTIME_CLOSURE"
+          ]
+        },
+        "unresolved_native_dependency_edge_count": { "$ref": "#/$defs/nonnegativeInteger" }
+      }
+    },
+    "nonnegativeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
   }
 }

@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from cisco_toolkit import transition_contract as tc
+from cisco_toolkit import transition_dsl as dsl
 from cisco_toolkit import transition_pack as tp
 from cisco_toolkit import transition_tcb_review as tr
 from cisco_toolkit import transition_verifier as tv
@@ -30,8 +31,8 @@ def _digest(label: str) -> str:
 
 def _public_key_bytes(private_key: Ed25519PrivateKey) -> bytes:
     return private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
     )
 
 
@@ -74,7 +75,7 @@ def _verified_qualification(
         subject_version: str,
         subject_digest: str,
         denominator_digest: str | None = None,
-) -> tuple[tp.VerifiedQualification, bytes]:
+) -> tuple[tp.VerifiedQualification, bytes, bytes]:
     receipt = {
         "schema": tp.QUALIFICATION_RECEIPT_SCHEMA,
         "receipt_id": receipt_id,
@@ -101,13 +102,14 @@ def _verified_qualification(
             private_key.sign(_SIGNATURE_DOMAIN + receipt_raw)
         ).decode("ascii"),
     }
+    signature_raw = tc.canonical_json_bytes(signature)
     verified = tp.verify_qualification_evidence(
         receipt_raw,
-        tc.canonical_json_bytes(signature),
+        signature_raw,
         policy,
         public_key_raw,
     )
-    return verified, receipt_raw
+    return verified, receipt_raw, signature_raw
 
 
 def _qualified_pack_manifest(case: dict[str, Any]) -> dict[str, Any]:
@@ -126,7 +128,7 @@ def _qualified_pack_manifest(case: dict[str, Any]) -> dict[str, Any]:
         "execution_state": tp.PackExecutionState.ACTIVATABLE.value,
         "substrate": tp.PackSubstrate.DECLARATIVE_DSL_ONLY.value,
         "semantic_bundle_digest": case["pack_binding"]["semantic_bundle_digest"],
-        "declarative_rules_digest": _digest("qualified declarative rules"),
+        "declarative_rules_digest": case["pack_binding"]["semantic_bundle_digest"],
         "declarative_operators": list(tp.DECLARATIVE_DSL_OPERATORS),
         "supported_denominator_digest": tc.canonical_digest(pack_denominator),
         "applicability_profile_ids": [case["applicability"]["profile_id"]],
@@ -140,6 +142,7 @@ def _qualified_pack_manifest(case: dict[str, Any]) -> dict[str, Any]:
 def _frozen_tcb_manifest(
         *,
         denominator_digest: str,
+        program_digest: str,
         qualification_receipt_digest: str | None = None) -> dict[str, Any]:
     interpreter_digest = _digest("temporal fixture DSL interpreter")
     return {
@@ -158,15 +161,29 @@ def _frozen_tcb_manifest(
         ],
         "pack_sources": [
             {
+                "artifact_id": "atlas.temporal-denominator",
+                "artifact_version": "1.0.0",
+                "path": "tests/fixtures/temporal-denominator.json",
+                "role": tp.SUPPORTED_DENOMINATOR_SOURCE_ROLE,
+                "bytes": 100,
+                "digest": denominator_digest,
+            },
+            {
                 "artifact_id": "atlas.temporal-pack",
                 "artifact_version": "1.0.0",
                 "path": "tests/fixtures/temporal-pack.json",
-                "role": "DECLARATIVE_RULE_PROGRAM",
+                "role": tp.DECLARATIVE_PROGRAM_SOURCE_ROLE,
                 "bytes": 100,
-                "digest": _digest("temporal fixture pack source"),
+                "digest": program_digest,
             },
         ],
-        "transitive_dependencies": [],
+        "transitive_dependencies": [
+            {
+                "component_id": "runtime-dependency.temporal",
+                "component_version": "1.0.0",
+                "content_digest": _digest("temporal runtime dependency"),
+            },
+        ],
         "runtime_inventory_state": (
             tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
         ),
@@ -231,6 +248,11 @@ def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
         "selected_tree": "b" * 40,
         "structural_census_digest": _digest("temporal structural census"),
         "prototype_measurement_digest": _digest("temporal prototype measurements"),
+        "runtime_inventory_digest": _digest("temporal runtime inventory"),
+        "approved_runtime_inventory_state": (
+            tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
+        ),
+        "budget_proposal_digest": _digest("temporal budget proposal"),
         "prototype_pack_manifest_digest": _digest("temporal prototype pack manifest"),
         "dsl_interpreter_digest": tcb["dsl_interpreter"]["content_digest"],
         "prototype_program_digest": _digest("temporal prototype program"),
@@ -238,6 +260,7 @@ def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
         "approved_core_sloc_budget": tcb["core_sloc_budget"],
         "approved_pack_sloc_budget": tcb["pack_sloc_budget"],
         "approved_dsl_resource_profile": profile,
+        "approved_receipt_container_ceiling": dsl.dsl_receipt_container_ceiling(profile),
         "wasm_review_state": "UNREVIEWED",
         "measurement_denominator_digest": _digest("temporal measurement denominator"),
         "decision": tr.TCBBudgetReviewDecision.APPROVED.value,
@@ -269,9 +292,11 @@ def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
                     "reviewer_role": tr.TCB_BUDGET_REVIEWER_ROLE,
                     "substrate": tr.TCB_BUDGET_REVIEW_SUBSTRATE,
                 }],
-                "allowed_selected_commits": [receipt["selected_commit"]],
-                "allowed_selected_trees": [receipt["selected_tree"]],
-                "allowed_tcb_subject_digests": [subject_digest],
+                "allowed_source_revisions": [{
+                    "selected_commit": receipt["selected_commit"],
+                    "selected_tree": receipt["selected_tree"],
+                    "tcb_budget_subject_digest": subject_digest,
+                }],
                 "valid_from": "2026-01-01T00:00:00.000000Z",
                 "valid_until": "2027-01-01T00:00:00.000000Z",
             },
@@ -284,7 +309,6 @@ def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
         "schema": tr.TCB_BUDGET_REVIEW_SIGNATURE_SCHEMA,
         "purpose": tr.TCB_BUDGET_REVIEW_PURPOSE,
         "payload_digest": tc.bytes_digest(receipt_raw),
-        "trust_policy_digest": tc.bytes_digest(policy_raw),
         "signer_key_id": receipt["reviewer_key_id"],
         "algorithm": tr.TCB_BUDGET_REVIEW_SIGNATURE_ALGORITHM,
         "signature_base64": base64.b64encode(
@@ -300,6 +324,9 @@ def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
                 "selected_tree",
                 "structural_census_digest",
                 "prototype_measurement_digest",
+                "runtime_inventory_digest",
+                "approved_runtime_inventory_state",
+                "budget_proposal_digest",
                 "prototype_pack_manifest_digest",
                 "dsl_interpreter_digest",
                 "prototype_program_digest",
@@ -372,6 +399,7 @@ def _qualified_fixture(
     manifest = _qualified_pack_manifest(value)
     tcb = _frozen_tcb_manifest(
         denominator_digest=manifest["supported_denominator_digest"],
+        program_digest=manifest["declarative_rules_digest"],
     )
     budget_review = _verified_budget_review(tcb)
     tcb["budget_review_receipt_digest"] = budget_review.review_digest
@@ -391,7 +419,11 @@ def _qualified_fixture(
     policy_raw = tc.canonical_json_bytes(policy)
     bound_policy = tp.bind_external_trust_policy_bytes(policy_raw)
 
-    applicability_qualification, applicability_receipt_raw = _verified_qualification(
+    (
+        applicability_qualification,
+        applicability_receipt_raw,
+        applicability_signature_raw,
+    ) = _verified_qualification(
         private_key=private_key,
         public_key_raw=public_key_raw,
         policy=bound_policy,
@@ -402,7 +434,7 @@ def _qualified_fixture(
         subject_digest=value["applicability"]["profile_digest"],
         denominator_digest=value["applicability"]["supported_denominator_digest"],
     )
-    profile_qualification, profile_receipt_raw = _verified_qualification(
+    profile_qualification, profile_receipt_raw, profile_signature_raw = _verified_qualification(
         private_key=private_key,
         public_key_raw=public_key_raw,
         policy=bound_policy,
@@ -416,7 +448,7 @@ def _qualified_fixture(
         ),
         denominator_digest=profile["qualification_denominator_digest"],
     )
-    pack_qualification, pack_receipt_raw = _verified_qualification(
+    pack_qualification, pack_receipt_raw, pack_signature_raw = _verified_qualification(
         private_key=private_key,
         public_key_raw=public_key_raw,
         policy=bound_policy,
@@ -437,6 +469,12 @@ def _qualified_fixture(
     profile["qualification_receipt_digest"] = profile_qualification.receipt_digest
     profile_digest = tc.canonical_digest(profile)
     value["evolution_ir"]["obligations"][0]["observation_profile_digest"] = profile_digest
+    value["evolution_ir"]["covered_frame_domain"]["observation_profile_digests"] = [
+        profile_digest
+    ]
+    value["evolution_ir"]["covered_frame_domain"][
+        "qualification_denominator_digests"
+    ] = [profile["qualification_denominator_digest"]]
     value["evidence_atoms"][0]["observation_profile_digest"] = profile_digest
 
     tcb["qualification_receipt_digest"] = pack_qualification.receipt_digest
@@ -460,12 +498,32 @@ def _qualified_fixture(
         "pack_qualification_receipt_digest": pack_qualification.receipt_digest,
     })
     value["replay_contract"]["trust_policy_digest"] = tc.bytes_digest(policy_raw)
+    value["qualification_evidence_bindings"] = sorted(
+        [
+            {
+                "schema": tc.QUALIFICATION_EVIDENCE_BINDING_SCHEMA,
+                "receipt_digest": qualification.receipt_digest,
+                "signature_digest": qualification.signature_digest,
+                "public_key_digest": qualification.public_key_digest,
+            }
+            for qualification in (
+                applicability_qualification,
+                profile_qualification,
+                pack_qualification,
+            )
+        ],
+        key=lambda item: item["receipt_digest"],
+    )
 
     retained_bindings = [
         binding
         for binding in value["replay_contract"]["object_bindings"]
         if binding["role"] not in {
-            "PACK_MANIFEST", "TCB_MANIFEST", "QUALIFICATION_RECEIPT", "TRUST_SNAPSHOT"
+            "PACK_MANIFEST",
+            "TCB_MANIFEST",
+            "QUALIFICATION_RECEIPT",
+            "QUALIFICATION_SIGNATURE",
+            "QUALIFICATION_PUBLIC_KEY",
         }
     ]
     retained_bindings.extend([
@@ -474,7 +532,10 @@ def _qualified_fixture(
         _content_binding("QUALIFICATION_RECEIPT", applicability_qualification.receipt_digest),
         _content_binding("QUALIFICATION_RECEIPT", pack_qualification.receipt_digest),
         _content_binding("QUALIFICATION_RECEIPT", profile_qualification.receipt_digest),
-        _content_binding("TRUST_SNAPSHOT", tc.bytes_digest(policy_raw)),
+        _content_binding("QUALIFICATION_SIGNATURE", applicability_qualification.signature_digest),
+        _content_binding("QUALIFICATION_SIGNATURE", pack_qualification.signature_digest),
+        _content_binding("QUALIFICATION_SIGNATURE", profile_qualification.signature_digest),
+        _content_binding("QUALIFICATION_PUBLIC_KEY", tc.bytes_digest(public_key_raw)),
     ])
     value["replay_contract"]["object_bindings"] = sorted(
         retained_bindings,
@@ -524,14 +585,23 @@ def _qualified_fixture(
         tc.canonical_json_bytes({"fixture": "sampled-observation-bytes"}),
         tc.canonical_json_bytes({"fixture": "before-snapshot"}),
         tc.canonical_json_bytes({"fixture": "after-snapshot"}),
+        tc.canonical_json_bytes({"fixture": "fhrp-single-owner-evidence-recipe"}),
+        tc.canonical_json_bytes({"fixture": "gateway-handoff-compensation-plan"}),
+        tc.canonical_json_bytes({"fixture": "decision-time-trust-policy-snapshot"}),
         tc.canonical_json_bytes({"fixture": "independently-obtained-verifier-bootstrap"}),
         tc.canonical_json_bytes({"fixture": "qcp-001-experimental-replay-recipe"}),
+        tc.canonical_json_bytes({"fixture": "qcp-001-experimental-applicability-profile"}),
+        tc.canonical_json_bytes({"fixture": "fixture-retention-policy"}),
         pack_raw,
         tcb_raw,
         tc.canonical_json_bytes({"fixture": "qcp-001-experimental-semantic-bundle"}),
         applicability_receipt_raw,
+        applicability_signature_raw,
         pack_receipt_raw,
+        pack_signature_raw,
         profile_receipt_raw,
+        profile_signature_raw,
+        public_key_raw,
         policy_raw,
     ])
     return (
@@ -569,6 +639,9 @@ def _verify_qualified_fixture(case: dict[str, Any] | None = None) -> dict[str, A
         applicability_qualification=applicability,
         pack_qualification=pack_qualification,
         observation_profile_qualifications=profiles,
+        verifier_bootstrap_raw=tc.canonical_json_bytes({
+            "fixture": "independently-obtained-verifier-bootstrap"
+        }),
     )
 
 
@@ -580,8 +653,34 @@ def _temporal_mode_case(mode: str, operator: str) -> dict[str, Any]:
         if item["subject_kind"] == tp.QualificationSubjectKind.OBSERVATION_PROFILE.value
     )
     profile["coverage_mode"] = mode
-    value["evolution_ir"]["obligations"][0]["temporal_operator"] = operator
+    obligation = value["evolution_ir"]["obligations"][0]
+    obligation.update({
+        "temporal_operator": operator,
+        "trigger_id": None,
+        "minimum_delay_ms": None,
+        "maximum_delay_ms": None,
+        "stable_duration_ms": None,
+        "commit_event_id": None,
+        "rollback_condition_id": None,
+    })
+    if operator in (
+            tc.TemporalOperator.EVENTUALLY_WITHIN.value,
+            tc.TemporalOperator.ON_REQUIRE_WITHIN.value,
+    ):
+        obligation.update({
+            "trigger_id": "trigger.gateway-handoff",
+            "minimum_delay_ms": 0,
+            "maximum_delay_ms": 30_000,
+        })
+    elif operator == tc.TemporalOperator.HOLD.value:
+        obligation["stable_duration_ms"] = 30_000
+    elif operator == tc.TemporalOperator.UNTIL.value:
+        obligation.update({
+            "commit_event_id": "trigger.gateway-handoff",
+            "rollback_condition_id": "condition.legacy-interconnect-retired",
+        })
     value["derivations"][0]["temporal_outcome"] = tc.TemporalOutcome.INCONCLUSIVE.value
+    value["derivations"][0]["effect"] = tc.EvidenceEffect.NO_EFFECT.value
     if mode == tc.ObservationMode.SAMPLED.value:
         denominator.update({
             "denominator_kind": "EXACT_SUBJECTS",
@@ -607,6 +706,9 @@ def _temporal_mode_case(mode: str, operator: str) -> dict[str, Any]:
             "model_bound_digest": None,
             "assumption_set_digest": None,
         })
+        value["replay_contract"]["object_bindings"].append(
+            _content_binding("EVENT_INVENTORY", denominator["event_inventory_digest"])
+        )
         value["evidence_atoms"][0]["coverage_scope"].update({
             "denominator_kind": "EXACT_EVENTS",
             "complete": True,
@@ -625,6 +727,10 @@ def _temporal_mode_case(mode: str, operator: str) -> dict[str, Any]:
             "model_bound_digest": _digest("qualified bounded model"),
             "assumption_set_digest": _digest("qualified bounded assumptions"),
         })
+        value["replay_contract"]["object_bindings"].extend([
+            _content_binding("MODEL_BOUND", denominator["model_bound_digest"]),
+            _content_binding("ASSUMPTION_SET", denominator["assumption_set_digest"]),
+        ])
         value["evidence_atoms"][0]["coverage_scope"].update({
             "denominator_kind": "EXACT_MODEL_BOUND",
             "complete": True,
@@ -639,8 +745,123 @@ def _temporal_mode_case(mode: str, operator: str) -> dict[str, Any]:
             dependency["digest"] = denominator_digest
     profile_digest = tc.canonical_digest(profile)
     value["evolution_ir"]["obligations"][0]["observation_profile_digest"] = profile_digest
+    value["evolution_ir"]["covered_frame_domain"]["observation_profile_digests"] = [
+        profile_digest
+    ]
+    value["evolution_ir"]["covered_frame_domain"][
+        "qualification_denominator_digests"
+    ] = [denominator_digest]
     value["evidence_atoms"][0]["observation_profile_digest"] = profile_digest
+    value["replay_contract"]["object_bindings"].sort(
+        key=lambda item: (item["role"], item["digest"])
+    )
     return value
+
+
+@pytest.mark.parametrize(
+    ("mode", "roles", "code"),
+    [
+        (
+            tc.ObservationMode.EVENT_COMPLETE.value,
+            ("EVENT_INVENTORY",),
+            "EVENT_INVENTORY_CONTENT_BINDING_MISSING",
+        ),
+        (
+            tc.ObservationMode.BOUNDED_MODEL.value,
+            ("MODEL_BOUND",),
+            "MODEL_BOUND_CONTENT_BINDING_MISSING",
+        ),
+        (
+            tc.ObservationMode.BOUNDED_MODEL.value,
+            ("ASSUMPTION_SET",),
+            "ASSUMPTION_SET_CONTENT_BINDING_MISSING",
+        ),
+    ],
+)
+def test_complete_temporal_denominator_preimages_require_exact_content(
+    mode: str,
+    roles: tuple[str, ...],
+    code: str,
+) -> None:
+    case = _temporal_mode_case(mode, tc.TemporalOperator.AT_SAMPLE.value)
+    bound, *_rest = _qualified_fixture(case)
+    hostile = deepcopy(dict(bound))
+    hostile["replay_contract"]["object_bindings"] = [
+        item for item in hostile["replay_contract"]["object_bindings"]
+        if item["role"] not in roles
+    ]
+    with pytest.raises(tc.TransitionContractError, match=code):
+        tc.bind_transition_case_bytes(tc.canonical_json_bytes(hostile))
+
+
+@pytest.mark.parametrize(
+    ("digest_field", "role", "code"),
+    [
+        (
+            "signature_digest",
+            "QUALIFICATION_SIGNATURE",
+            "QUALIFICATION_SIGNATURE_DIGEST_MISMATCH",
+        ),
+        (
+            "public_key_digest",
+            "QUALIFICATION_PUBLIC_KEY",
+            "QUALIFICATION_PUBLIC_KEY_DIGEST_MISMATCH",
+        ),
+    ],
+)
+def test_verified_qualification_must_match_case_signature_and_public_key_custody(
+    digest_field: str,
+    role: str,
+    code: str,
+) -> None:
+    (
+        bound_case,
+        pack,
+        tcb,
+        policy,
+        content,
+        applicability,
+        pack_qualification,
+        profiles,
+        budget_review,
+    ) = _qualified_fixture()
+    hostile = deepcopy(dict(bound_case))
+    evidence_binding = next(
+        item for item in hostile["qualification_evidence_bindings"]
+        if item["receipt_digest"] == applicability.receipt_digest
+    )
+    old_digest = evidence_binding[digest_field]
+    new_digest = _digest(f"detached qualification {digest_field}")
+    evidence_binding[digest_field] = new_digest
+    replay_binding = next(
+        item for item in hostile["replay_contract"]["object_bindings"]
+        if item["role"] == role and item["digest"] == old_digest
+    )
+    replay_binding["digest"] = new_digest
+    if digest_field == "public_key_digest":
+        hostile["replay_contract"]["object_bindings"].append(
+            _content_binding(role, old_digest)
+        )
+    hostile["replay_contract"]["object_bindings"].sort(
+        key=lambda item: (item["role"], item["digest"])
+    )
+    rebound = tc.bind_transition_case_bytes(tc.canonical_json_bytes(hostile))
+
+    receipt = tv.verify_transition_case(
+        rebound,
+        pack,
+        content=content,
+        tcb_manifest=tcb,
+        tcb_budget_review=budget_review,
+        trust_policy=policy,
+        applicability_qualification=applicability,
+        pack_qualification=pack_qualification,
+        observation_profile_qualifications=profiles,
+        verifier_bootstrap_raw=tc.canonical_json_bytes({
+            "fixture": "independently-obtained-verifier-bootstrap"
+        }),
+    )
+    assert code in receipt["reason_codes"]
 
 
 @pytest.mark.parametrize(
@@ -730,6 +951,9 @@ def test_signed_but_unapproved_qualification_policy_cannot_reach_positive_state(
     assert receipt["applicability_qualification_state"] is None
     assert receipt["pack_qualification_state"] == tc.QualificationState.EXPERIMENTAL.value
     assert "QUALIFICATION_POLICY_NOT_APPROVED_R2_0" in receipt["reason_codes"]
+    assert "DIRECT_TCB_BUDGET_REVIEW_CANNOT_ACTIVATE" in receipt["reason_codes"]
+    assert "PACK_TCB_FREEZE_REQUIRED" in receipt["reason_codes"]
+    assert receipt["tcb_pair_verified"] is False
     assert receipt["obligations"][0]["evidence_status"] == tc.EvidenceStatus.UNKNOWN.value
     assert receipt["obligations"][0]["valid_support_derivation_ids"] == []
     assert "PACK_DERIVATION_NOT_RECOMPUTED_R2_0" in (
@@ -806,20 +1030,35 @@ def test_expired_signed_qualification_diagnostic_is_not_masked_by_unapproved_reg
 
 @pytest.mark.parametrize(
     "operator",
-    (
-        tc.TemporalOperator.ALWAYS_DURING.value,
-        tc.TemporalOperator.NEVER_DURING.value,
-    ),
-)
+        (
+            tc.TemporalOperator.ALWAYS_DURING.value,
+            tc.TemporalOperator.NEVER_DURING.value,
+            tc.TemporalOperator.EVENTUALLY_WITHIN.value,
+            tc.TemporalOperator.ON_REQUIRE_WITHIN.value,
+            tc.TemporalOperator.HOLD.value,
+            tc.TemporalOperator.UNTIL.value,
+        ),
+    )
 def test_sampled_no_violation_for_continuous_claim_maps_to_incomplete(operator: str) -> None:
-    case = minimal_transition_case()
-    case["evolution_ir"]["obligations"][0]["temporal_operator"] = operator
+    case = _temporal_mode_case(tc.ObservationMode.SAMPLED.value, operator)
+    case["derivations"][0]["temporal_outcome"] = (
+        tc.TemporalOutcome.NO_VIOLATION_OBSERVED_ON_DECLARED_TRACE.value
+    )
+    case["derivations"][0]["effect"] = tc.EvidenceEffect.SUPPORT.value
     receipt = _verify_qualified_fixture(case)
     obligation = receipt["obligations"][0]
 
     assert obligation["evidence_status"] == tc.EvidenceStatus.UNKNOWN.value
     assert obligation["valid_support_derivation_ids"] == []
-    assert "SAMPLED_EVIDENCE_OFFERED_FOR_CONTINUOUS_CLAIM" in (
+    expected_reason = (
+        "SAMPLED_EVENTUAL_INTERVAL_RECEIPT_REQUIRED"
+        if operator in (
+            tc.TemporalOperator.EVENTUALLY_WITHIN.value,
+            tc.TemporalOperator.ON_REQUIRE_WITHIN.value,
+        )
+        else "SAMPLED_EVIDENCE_OFFERED_FOR_CONTINUOUS_CLAIM"
+    )
+    assert expected_reason in (
         obligation["temporal_outcomes_and_reasons"]
     )
     assert receipt["authoritative_gate"] == tc.AuthoritativeGate.EVIDENCE_INCOMPLETE.value

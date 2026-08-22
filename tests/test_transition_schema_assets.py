@@ -17,6 +17,7 @@ from jsonschema.exceptions import ValidationError
 
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_pack as tp
+from cisco_toolkit import transition_runtime_inventory as ri
 from tests.transition_fixtures import minimal_transition_case
 
 
@@ -25,7 +26,7 @@ _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:5a8d5e46076ed2899995f8cbc968cd116eeba9507192c505ee8823781e966446"
+_TCB_CENSUS_DIGEST = "sha256:58d5937099e70a4d889acf300df5f19da9681684757be6a57d497faf582e2c6c"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -83,6 +84,10 @@ def test_schema_closed_vocabularies_match_code_owners_exactly() -> None:
     for definition, values in expected.items():
         assert set(defs[definition]["enum"]) == values
 
+    assert set(defs["objectBinding"]["properties"]["role"]["enum"]) == (
+        tc.OBJECT_BINDING_ROLES
+    )
+
     pack = defs["packManifest"]["properties"]
     assert [item["const"] for item in pack["functions"]["prefixItems"]] == list(
         tp.PACK_ABI_FUNCTIONS
@@ -138,7 +143,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(value)
     assert tp.r2_structural_tcb_census() == value
-    assert value["structural_core"]["executable_statements"] == 2791
+    assert value["structural_core"]["executable_statements"] == 5338
     assert value["census_method"]["measurement_scope"] == (
         "REFERENCE_ENVIRONMENT_OBSERVATION_WITH_PORTABLE_SOURCE_DIGEST_CHECK"
     )
@@ -172,6 +177,24 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     )
     assert value["executable_prototype"]["runtime_inventory_state"] == (
         "PARTIAL_NONPORTABLE_PROTOTYPE"
+    )
+    assert value["executable_prototype"]["runtime_inventory"] == {
+        "asset_digest": "sha256:949556c994f7097e221d75f249a63ccf84c1e01f63656fbd285574bdf5517ee6",
+        "blind_spot_count": 9,
+        "claim_boundary": (
+            "Exact-byte inventory of the observed isolated reference process and bounded "
+            "static PE resolutions only; not portable closure, all-branch coverage, "
+            "qualification, or promotion authority."
+        ),
+        "complete_exact_runtime_closure": False,
+        "native_dependency_edge_count": 10062,
+        "python_module_count": 148,
+        "runtime_file_count": 339,
+        "state": "PARTIAL_NONPORTABLE_PROTOTYPE",
+        "unresolved_native_dependency_edge_count": 8194,
+    }
+    assert value["executable_prototype"]["runtime_inventory_tool"]["path"] == (
+        "tools/build_transition_runtime_inventory.py"
     )
     assert value["executable_prototype"]["wasm_execution_state"] == (
         "UNIMPLEMENTED_UNREVIEWED"
@@ -209,6 +232,47 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
         "source_basis_parent_sha": "935213e8babc6fde555627eaa434749397a1617d",
         "state": "EXACT_INPUT_DIGESTS_AWAIT_EXTERNAL_SELECTED_COMMIT_BINDING",
     }
+
+
+def test_structural_tcb_census_schema_represents_only_joined_runtime_closure_states() -> None:
+    value = json.loads(_resource_bytes(_TCB_CENSUS_RESOURCE))
+    schema = json.loads(_resource_bytes(_TCB_CENSUS_SCHEMA_RESOURCE))
+    validator = Draft202012Validator(schema)
+    complete = deepcopy(value)
+    complete["budget_gate"]["budget_state"] = (
+        "PROTOTYPE_MEASURED_COMPLETE_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW"
+    )
+    complete["executable_prototype"]["runtime_inventory_state"] = (
+        tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
+    )
+    complete["executable_prototype"]["runtime_inventory"].update({
+        "blind_spot_count": 0,
+        "claim_boundary": ri.RUNTIME_INVENTORY_COMPLETE_CLAIM_BOUNDARY,
+        "complete_exact_runtime_closure": True,
+        "state": ri.RUNTIME_INVENTORY_COMPLETE_CLOSURE_STATE,
+        "unresolved_native_dependency_edge_count": 0,
+    })
+    complete["independent_review"]["required_next_evidence"] = [
+        "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+        "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
+        "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
+        "SELECTED_COMMIT_BINDING",
+    ]
+
+    validator.validate(complete)
+
+    mismatched = deepcopy(value)
+    mismatched["executable_prototype"]["runtime_inventory_state"] = (
+        tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
+    )
+    with pytest.raises(ValidationError):
+        validator.validate(mismatched)
+
+    complete["independent_review"]["required_next_evidence"].insert(
+        0, "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY"
+    )
+    with pytest.raises(ValidationError):
+        validator.validate(complete)
 
 
 def test_structural_tcb_census_default_command_is_a_portable_read_only_drift_check() -> None:

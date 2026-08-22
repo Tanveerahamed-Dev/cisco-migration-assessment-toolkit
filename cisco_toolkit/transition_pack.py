@@ -47,7 +47,19 @@ TRUSTED_KEY_SCHEMA = "atlas.transition-trusted-key/1"
 STRUCTURAL_TCB_CENSUS_SCHEMA = "atlas.structural-tcb-census/1"
 STRUCTURAL_TCB_CENSUS_RESOURCE = "atlas-r2-structural-tcb-census.v1.json"
 TCB_CORE_CENSUS_METHOD = "PYTHON_COVERAGE_EXECUTABLE_STATEMENTS/1"
-TCB_PACK_CENSUS_METHOD = "DECLARATIVE_RULE_COUNT/1"
+LEGACY_TCB_PACK_CENSUS_METHOD = "DECLARATIVE_RULE_COUNT/1"
+TCB_PACK_CENSUS_METHOD = "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1"
+
+DECLARATIVE_PROGRAM_SOURCE_ROLE = "DECLARATIVE_RULE_PROGRAM"
+SUPPORTED_DENOMINATOR_SOURCE_ROLE = "SUPPORTED_DENOMINATOR"
+WASM_PARSER_MODULE_SOURCE_ROLE = "WASM_PARSER_MODULE"
+WASM_NORMALIZER_MODULE_SOURCE_ROLE = "WASM_NORMALIZER_MODULE"
+
+_WINDOWS_RESERVED_PATH_NAMES = frozenset({
+    "aux", "con", "nul", "prn",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+})
 
 QUALIFICATION_PURPOSE = "ATLAS_TRANSITION_QUALIFICATION"
 QUALIFICATION_SIGNATURE_ALGORITHM = "Ed25519"
@@ -248,6 +260,8 @@ class VerifiedQualification:
 
     __slots__ = (
         "receipt_digest",
+        "signature_digest",
+        "public_key_digest",
         "subject_kind",
         "subject_id",
         "subject_version",
@@ -268,6 +282,8 @@ class VerifiedQualification:
             self,
             *,
             receipt_digest: str,
+            signature_digest: str,
+            public_key_digest: str,
             subject_kind: str,
             subject_id: str,
             subject_version: str,
@@ -282,6 +298,8 @@ class VerifiedQualification:
             raise TypeError("VerifiedQualification requires signature and trust-policy verification")
         object.__setattr__(self, "_sealed", False)
         self.receipt_digest = receipt_digest
+        self.signature_digest = signature_digest
+        self.public_key_digest = public_key_digest
         self.subject_kind = subject_kind
         self.subject_id = subject_id
         self.subject_version = subject_version
@@ -305,6 +323,8 @@ class VerifiedQualification:
     def _compute_integrity_digest(self) -> str:
         return canonical_digest({
             "receipt_digest": self.receipt_digest,
+            "signature_digest": self.signature_digest,
+            "public_key_digest": self.public_key_digest,
             "subject_kind": self.subject_kind,
             "subject_id": self.subject_id,
             "subject_version": self.subject_version,
@@ -383,6 +403,9 @@ def r2_structural_tcb_census() -> dict[str, Any]:
         "cisco_toolkit/transition_contract.py": "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC",
         "cisco_toolkit/transition_dsl.py": "DECLARATIVE_DSL_INTERPRETER",
         "cisco_toolkit/transition_pack.py": "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY",
+        "cisco_toolkit/transition_runtime_inventory.py": (
+            "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR"
+        ),
         "cisco_toolkit/transition_tcb_review.py": "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY",
         "cisco_toolkit/transition_verifier.py": "STRUCTURAL_VERIFIER_AND_GATE_MAPPING",
     }
@@ -456,6 +479,7 @@ def r2_structural_tcb_census() -> dict[str, Any]:
         dsl.DSL_PROTOTYPE_INPUT_PATH,
         dsl.DSL_PROTOTYPE_DENOMINATOR_PATH,
         "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
+        "cisco_toolkit/data/atlas-r2-runtime-inventory.reference.v1.json",
     }
     if type(asset_rows) is not list or len(asset_rows) != len(expected_asset_paths):
         _pack_reject("structural_tcb_prototype_assets_invalid")
@@ -538,7 +562,9 @@ def r2_structural_tcb_census() -> dict[str, Any]:
             or review_state != {
                 "blockers": [
                     "APPROVED_BUDGET_ABSENT",
+                    "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
                     "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+                    "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
                 ],
                 "promotion_effect": "NONE",
                 "qualification_effect": "NONE",
@@ -554,6 +580,50 @@ def r2_structural_tcb_census() -> dict[str, Any]:
             != "NONE_PENDING_INDEPENDENT_REVIEW"
     ):
         _pack_reject("structural_tcb_measurements_invalid")
+
+    try:
+        from . import transition_runtime_inventory as runtime_inventory
+
+        runtime_raw = asset_raw[runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH]
+        runtime_value = parse_canonical_json_bytes(runtime_raw, require_canonical=True)
+        runtime_inventory.validate_runtime_inventory(runtime_value)
+        runtime_summary = prototype["runtime_inventory"]
+        runtime_tool = prototype["runtime_inventory_tool"]
+        runtime_coverage = runtime_value["coverage"]
+        runtime_closure = runtime_value["closure"]
+    except (
+            ImportError,
+            KeyError,
+            RuntimeError,
+            TransitionContractError,
+            TypeError,
+            ValueError,
+    ):
+        _pack_reject("structural_tcb_runtime_inventory_invalid")
+    if (
+            type(runtime_summary) is not dict
+            or runtime_summary != {
+                "asset_digest": bytes_digest(runtime_raw),
+                "blind_spot_count": len(runtime_closure["blind_spots"]),
+                "claim_boundary": runtime_closure["claim_boundary"],
+                "complete_exact_runtime_closure": False,
+                "native_dependency_edge_count": runtime_coverage[
+                    "native_dependency_edge_count"
+                ],
+                "python_module_count": runtime_coverage["python_module_count"],
+                "runtime_file_count": runtime_coverage["runtime_file_count"],
+                "state": runtime_closure["state"],
+                "unresolved_native_dependency_edge_count": runtime_coverage[
+                    "unresolved_native_dependency_edge_count"
+                ],
+            }
+            or type(runtime_tool) is not dict
+            or runtime_tool.get("path") != "tools/build_transition_runtime_inventory.py"
+            or runtime_closure["state"]
+            != TCBRuntimeInventoryState.PARTIAL_NONPORTABLE_PROTOTYPE.value
+            or runtime_closure["complete_exact_runtime_closure"] is not False
+    ):
+        _pack_reject("structural_tcb_runtime_inventory_invalid")
 
     try:
         tcb = parse_canonical_json_bytes(
@@ -885,6 +955,8 @@ def _validate_tcb_artifacts(
         raise TransitionContractError("TCB_ARTIFACT_REQUIRED", path)
     checked: list[dict[str, Any]] = []
     sort_keys: list[tuple[str, str]] = []
+    artifact_ids: list[str] = []
+    portable_path_keys: list[str] = []
     for index, value_item in enumerate(items):
         item_path = f"{path}[{index}]"
         item = _mapping(value_item, item_path)
@@ -896,20 +968,39 @@ def _validate_tcb_artifacts(
         artifact_id = _identifier(item["artifact_id"], f"{item_path}.artifact_id")
         _identifier(item["artifact_version"], f"{item_path}.artifact_version")
         relative = _text(item["path"], f"{item_path}.path")
+        path_parts = relative.split("/")
         if (
                 relative.startswith(("/", "\\"))
                 or "\\" in relative
                 or ":" in relative
-                or any(part in ("", ".", "..") for part in relative.split("/"))
+                or any(part in ("", ".", "..") for part in path_parts)
         ):
             raise TransitionContractError("TCB_ARTIFACT_PATH_NOT_REPOSITORY_RELATIVE", item_path)
+        if any(
+                part.endswith((" ", "."))
+                or part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_PATH_NAMES
+                or any(
+                    ord(char) < 0x20
+                    or ord(char) == 0x7F
+                    or char in '<>"|?*'
+                    for char in part
+                )
+                for part in path_parts
+        ):
+            raise TransitionContractError("TCB_ARTIFACT_PATH_NOT_PORTABLE", item_path)
         _identifier(item["role"], f"{item_path}.role")
         _integer(item["bytes"], f"{item_path}.bytes", positive=True)
         _digest(item["digest"], f"{item_path}.digest")
         checked.append(dict(item))
         sort_keys.append((artifact_id, relative))
+        artifact_ids.append(artifact_id)
+        portable_path_keys.append(relative.casefold())
     if sort_keys != sorted(set(sort_keys)):
         raise TransitionContractError("SORTED_UNIQUE_TCB_ARTIFACTS_REQUIRED", path)
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise TransitionContractError("DUPLICATE_TCB_ARTIFACT_ID", path)
+    if len(portable_path_keys) != len(set(portable_path_keys)):
+        raise TransitionContractError("DUPLICATE_TCB_ARTIFACT_PATH", path)
     return checked
 
 
@@ -940,6 +1031,12 @@ def _validate_tcb_components(
     ]
     if sort_keys != sorted(set(sort_keys)):
         raise TransitionContractError("SORTED_UNIQUE_TCB_COMPONENTS_REQUIRED", path)
+    identities = [
+        (item["component_id"], item["component_version"])
+        for item in checked
+    ]
+    if len(identities) != len(set(identities)):
+        raise TransitionContractError("DUPLICATE_TCB_COMPONENT_ID_VERSION", path)
     return checked
 
 
@@ -1007,8 +1104,14 @@ def _validate_tcb_manifest_v2(value: Mapping[str, Any]) -> dict[str, Any]:
     except (ValueError, TypeError):
         raise TransitionContractError("UNKNOWN_ENUM_VALUE", "$.substrate") from None
     core_sources = _validate_tcb_artifacts(obj["core_sources"], "$.core_sources")
-    _validate_tcb_artifacts(obj["pack_sources"], "$.pack_sources")
-    _validate_tcb_components(
+    pack_sources = _validate_tcb_artifacts(obj["pack_sources"], "$.pack_sources")
+    all_source_ids = [item["artifact_id"] for item in (*core_sources, *pack_sources)]
+    all_source_paths = [item["path"].casefold() for item in (*core_sources, *pack_sources)]
+    if len(all_source_ids) != len(set(all_source_ids)):
+        raise TransitionContractError("DUPLICATE_TCB_ARTIFACT_ID", "$")
+    if len(all_source_paths) != len(set(all_source_paths)):
+        raise TransitionContractError("DUPLICATE_TCB_ARTIFACT_PATH", "$")
+    transitive_dependencies = _validate_tcb_components(
         obj["transitive_dependencies"],
         "$.transitive_dependencies",
         allow_empty=True,
@@ -1022,7 +1125,10 @@ def _validate_tcb_manifest_v2(value: Mapping[str, Any]) -> dict[str, Any]:
         ) from None
     if obj["core_census_method"] != TCB_CORE_CENSUS_METHOD:
         raise TransitionContractError("TCB_CORE_CENSUS_METHOD_UNSUPPORTED", "$.core_census_method")
-    if obj["pack_census_method"] != TCB_PACK_CENSUS_METHOD:
+    if obj["pack_census_method"] not in {
+            LEGACY_TCB_PACK_CENSUS_METHOD,
+            TCB_PACK_CENSUS_METHOD,
+    }:
         raise TransitionContractError("TCB_PACK_CENSUS_METHOD_UNSUPPORTED", "$.pack_census_method")
     core_lines = _integer(
         obj["core_executable_lines"],
@@ -1059,10 +1165,20 @@ def _validate_tcb_manifest_v2(value: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise TransitionContractError("PENDING_TCB_BUDGETS_MUST_BE_NULL", "$")
     elif budget_state is TCBBudgetState.FROZEN:
+        if obj["pack_census_method"] != TCB_PACK_CENSUS_METHOD:
+            raise TransitionContractError(
+                "FROZEN_TCB_REQUIRES_CURRENT_PACK_CENSUS_METHOD",
+                "$.pack_census_method",
+            )
         if runtime_inventory_state is not TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE:
             raise TransitionContractError(
                 "FROZEN_TCB_REQUIRES_COMPLETE_RUNTIME_INVENTORY",
                 "$.runtime_inventory_state",
+            )
+        if not transitive_dependencies:
+            raise TransitionContractError(
+                "FROZEN_TCB_REQUIRES_RUNTIME_DEPENDENCIES",
+                "$.transitive_dependencies",
             )
         if review_digest is None:
             raise TransitionContractError(
@@ -1114,6 +1230,108 @@ def require_bound_tcb_manifest(value: Any) -> BoundTCBManifest:
     return value
 
 
+def _validate_pack_tcb_source_bindings(
+        pack: Mapping[str, Any],
+        tcb: Mapping[str, Any]) -> None:
+    """Join every pack-owned semantic input to one exact TCB source row.
+
+    The pair boundary has manifests, not source bytes, so it can prove the closed role/digest
+    roster and bind the declared semantic-statement census into the TCB digest.  Recomputing that
+    census from exact program bytes remains the responsibility of the executable DSL binders.
+    Measurement inputs and qualification workloads are evidence about a pack, not activated pack
+    semantics, and therefore cannot be smuggled into this source roster.
+    """
+
+    if tcb["schema"] != TCB_MANIFEST_SCHEMA:
+        raise TransitionContractError("PACK_TCB_V2_SOURCE_BINDING_REQUIRED", "$")
+    if (
+            tcb["pack_census_method"] != TCB_PACK_CENSUS_METHOD
+            or tcb["pack_executable_lines"] <= 0
+    ):
+        raise TransitionContractError("PACK_TCB_SEMANTIC_CENSUS_MISMATCH", "$")
+
+    sources = tcb["pack_sources"]
+    allowed_roles = {
+        DECLARATIVE_PROGRAM_SOURCE_ROLE,
+        SUPPORTED_DENOMINATOR_SOURCE_ROLE,
+    }
+    module_source_roles = {
+        "PARSER": WASM_PARSER_MODULE_SOURCE_ROLE,
+        "NORMALIZER": WASM_NORMALIZER_MODULE_SOURCE_ROLE,
+    }
+    allowed_roles.update(module_source_roles.values())
+    if any(source["role"] not in allowed_roles for source in sources):
+        raise TransitionContractError("PACK_TCB_SOURCE_ROLE_UNSUPPORTED", "$.pack_sources")
+
+    matched_indices: set[int] = set()
+    program_indices = [
+        index
+        for index, source in enumerate(sources)
+        if source["role"] == DECLARATIVE_PROGRAM_SOURCE_ROLE
+    ]
+    if len(program_indices) != 1:
+        raise TransitionContractError(
+            "PACK_TCB_DECLARATIVE_PROGRAM_SOURCE_MISMATCH",
+            "$.pack_sources",
+        )
+    program_index = program_indices[0]
+    program_digest = sources[program_index]["digest"]
+    if (
+            program_digest != pack["declarative_rules_digest"]
+            or program_digest != pack["semantic_bundle_digest"]
+    ):
+        raise TransitionContractError(
+            "PACK_TCB_DECLARATIVE_PROGRAM_DIGEST_MISMATCH",
+            "$.pack_sources",
+        )
+    matched_indices.add(program_index)
+
+    denominator_indices = [
+        index
+        for index, source in enumerate(sources)
+        if source["role"] == SUPPORTED_DENOMINATOR_SOURCE_ROLE
+    ]
+    if len(denominator_indices) != 1:
+        raise TransitionContractError(
+            "PACK_TCB_DENOMINATOR_SOURCE_MISMATCH",
+            "$.pack_sources",
+        )
+    denominator_index = denominator_indices[0]
+    if sources[denominator_index]["digest"] != pack["supported_denominator_digest"]:
+        raise TransitionContractError(
+            "PACK_TCB_DENOMINATOR_SOURCE_MISMATCH",
+            "$.pack_sources",
+        )
+    matched_indices.add(denominator_index)
+
+    modules = pack["wasm_modules"]
+    for module in modules:
+        expected_role = module_source_roles[module["role"]]
+        module_indices = [
+            index
+            for index, source in enumerate(sources)
+            if (
+                source["role"] == expected_role
+                and source["artifact_id"] == module["module_id"]
+            )
+        ]
+        if len(module_indices) != 1:
+            raise TransitionContractError(
+                "PACK_TCB_WASM_MODULE_SOURCE_MISMATCH",
+                "$.pack_sources",
+            )
+        module_index = module_indices[0]
+        if sources[module_index]["digest"] != module["digest"]:
+            raise TransitionContractError(
+                "PACK_TCB_WASM_MODULE_SOURCE_MISMATCH",
+                "$.pack_sources",
+            )
+        matched_indices.add(module_index)
+
+    if matched_indices != set(range(len(sources))):
+        raise TransitionContractError("PACK_TCB_SOURCE_SET_MISMATCH", "$.pack_sources")
+
+
 def validate_pack_tcb_pair(
         pack: Mapping[str, Any],
         tcb: Mapping[str, Any],
@@ -1121,6 +1339,8 @@ def validate_pack_tcb_pair(
         budget_review: Any = None) -> None:
     checked_pack = validate_pack_manifest(dict(pack))
     checked_tcb = validate_tcb_manifest(dict(tcb))
+    if checked_tcb["qualification_receipt_digest"] != checked_pack["qualification_receipt_digest"]:
+        raise TransitionContractError("PACK_TCB_QUALIFICATION_MISMATCH", "$")
     if canonical_digest(checked_tcb) != checked_pack["tcb_manifest_digest"]:
         raise TransitionContractError("PACK_TCB_DIGEST_MISMATCH", "$")
     if checked_tcb["abi_version"] != checked_pack["abi_version"]:
@@ -1132,6 +1352,7 @@ def validate_pack_tcb_pair(
             and checked_tcb["substrate"] != checked_pack["substrate"]
     ):
         raise TransitionContractError("PACK_TCB_SUBSTRATE_MISMATCH", "$")
+    _validate_pack_tcb_source_bindings(checked_pack, checked_tcb)
     if checked_pack["execution_state"] == PackExecutionState.ACTIVATABLE.value:
         if checked_tcb["schema"] != TCB_MANIFEST_SCHEMA:
             raise TransitionContractError("ACTIVATABLE_PACK_REQUIRES_TCB_V2", "$")
@@ -1166,8 +1387,6 @@ def validate_pack_tcb_pair(
                 != checked_tcb["resource_ceilings"]["dsl"]
         ):
             raise TransitionContractError("TCB_BUDGET_REVIEW_BINDING_MISMATCH", "$")
-        if checked_tcb["qualification_receipt_digest"] != checked_pack["qualification_receipt_digest"]:
-            raise TransitionContractError("PACK_TCB_QUALIFICATION_MISMATCH", "$")
         if (
                 checked_pack["substrate"]
                 == PackSubstrate.DECLARATIVE_DSL_AND_METERED_WASM_NO_WASI.value
@@ -1344,7 +1563,7 @@ def verify_qualification_evidence(
     except (TransitionContractError, TypeError):
         _pack_reject("qualification_evidence_malformed")
     policy = require_bound_trust_policy(trust_policy)
-    if type(trusted_public_key_raw) is not bytes or not trusted_public_key_raw:
+    if type(trusted_public_key_raw) is not bytes or len(trusted_public_key_raw) != 32:
         _pack_reject("qualification_public_key_malformed")
 
     receipt_digest = bytes_digest(receipt_raw)
@@ -1367,18 +1586,18 @@ def verify_qualification_evidence(
         _pack_reject("qualification_subject_not_authorized")
 
     evaluated_at = _timestamp(policy["evaluated_at"], "$.evaluated_at")
+    issued_at = _timestamp(receipt["issued_at"], "$.issued_at")
     key_from = _timestamp(trusted_key["valid_from"], "$.trusted_keys[].valid_from")
     key_until = _timestamp(trusted_key["valid_until"], "$.trusted_keys[].valid_until")
+    if not key_from <= issued_at <= key_until:
+        _pack_reject("qualification_key_not_valid_at_receipt_issuance")
     if not key_from <= evaluated_at <= key_until:
         _pack_reject("qualification_key_not_valid_at_policy_time")
 
     try:
-        from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-        public_key = serialization.load_pem_public_key(trusted_public_key_raw)
-        if not isinstance(public_key, Ed25519PublicKey):
-            _pack_reject("qualification_public_key_malformed")
+        public_key = Ed25519PublicKey.from_public_bytes(trusted_public_key_raw)
         raw_signature = base64.b64decode(signature["signature_base64"], validate=True)
         public_key.verify(raw_signature, _SIGNATURE_DOMAIN + receipt_raw)
     except PackContractError:
@@ -1398,6 +1617,8 @@ def verify_qualification_evidence(
         state = QualificationState(receipt["qualification_state"]).value
     return VerifiedQualification(
         receipt_digest=receipt_digest,
+        signature_digest=bytes_digest(signature_raw),
+        public_key_digest=bytes_digest(trusted_public_key_raw),
         subject_kind=receipt["subject_kind"],
         subject_id=receipt["subject_id"],
         subject_version=receipt["subject_version"],
@@ -1431,9 +1652,11 @@ def qcp_001_must_remain_experimental(pack: Mapping[str, Any]) -> None:
 
 
 __all__ = [
+    "DECLARATIVE_PROGRAM_SOURCE_ROLE",
     "DECLARATIVE_DSL_OPERATORS",
     "DSL_RESOURCE_CEILING_KEYS",
     "LEGACY_TCB_MANIFEST_SCHEMA",
+    "LEGACY_TCB_PACK_CENSUS_METHOD",
     "PACK_ABI_FUNCTIONS",
     "PACK_HOST_IMPORTS",
     "PACK_MANIFEST_SCHEMA",
@@ -1451,12 +1674,15 @@ __all__ = [
     "QualificationSubjectKind",
     "STRUCTURAL_TCB_CENSUS_RESOURCE",
     "STRUCTURAL_TCB_CENSUS_SCHEMA",
+    "SUPPORTED_DENOMINATOR_SOURCE_ROLE",
     "TCBBudgetState",
     "TCBRuntimeInventoryState",
     "TCB_CORE_CENSUS_METHOD",
     "TCB_MANIFEST_SCHEMA",
     "TCB_PACK_CENSUS_METHOD",
     "VerifiedQualification",
+    "WASM_NORMALIZER_MODULE_SOURCE_ROLE",
+    "WASM_PARSER_MODULE_SOURCE_ROLE",
     "WASM_RESOURCE_CEILING_KEYS",
     "bind_pack_manifest_bytes",
     "bind_external_trust_policy_bytes",

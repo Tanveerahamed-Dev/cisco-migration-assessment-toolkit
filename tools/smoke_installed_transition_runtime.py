@@ -19,6 +19,7 @@ from cisco_toolkit import transition_contract as contract
 from cisco_toolkit import transition_dsl as dsl
 from cisco_toolkit import transition_legacy as legacy
 from cisco_toolkit import transition_pack as pack
+from cisco_toolkit import transition_runtime_inventory as runtime_inventory
 from cisco_toolkit import transition_verifier as verifier
 
 
@@ -145,7 +146,9 @@ def main() -> int:
         or measurements["review_state"]["blockers"]
         != [
             "APPROVED_BUDGET_ABSENT",
+            "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
             "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+            "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
         ]
     ):
         raise RuntimeError("installed prototype measurements invented authority")
@@ -173,6 +176,28 @@ def main() -> int:
             "digest": contract.bytes_digest(raw),
         }:
             raise RuntimeError("installed prototype measurement binding drifted")
+
+    runtime_raw = _package_bytes(
+        package_root,
+        runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH,
+    )
+    runtime_value = _parsed(runtime_raw)
+    runtime_inventory.validate_runtime_inventory(runtime_value)
+    runtime_profile = runtime_value["profile"]["prototype"]
+    if (
+        runtime_profile["program_digest"] != contract.bytes_digest(prototype_program_raw)
+        or runtime_profile["input_digest"] != contract.bytes_digest(prototype_input_raw)
+        or runtime_value["closure"]["state"] != "PARTIAL_NONPORTABLE_PROTOTYPE"
+        or runtime_value["closure"]["complete_exact_runtime_closure"] is not False
+    ):
+        raise RuntimeError("installed runtime inventory crossed its partial evidence boundary")
+    try:
+        runtime_inventory.require_complete_runtime_closure(runtime_value)
+    except runtime_inventory.RuntimeInventoryError as exc:
+        if exc.code != "COMPLETE_EXACT_RUNTIME_CLOSURE_NOT_ESTABLISHED":
+            raise RuntimeError("installed runtime closure failed with an unstable reason") from exc
+    else:
+        raise RuntimeError("installed partial inventory claimed complete runtime closure")
 
     census = pack.r2_structural_tcb_census()
     if census["budget_gate"]["promotion_effect"] != "BLOCKS_R2_0_COMPLETION":
@@ -261,6 +286,8 @@ def main() -> int:
         "r2_promotion_eligible": first["r2_promotion_eligible"],
         "replay_state": first["replay_state"],
         "replayed_payload_digest": first["replayed_payload_digest"],
+        "runtime_inventory_digest": contract.bytes_digest(runtime_raw),
+        "runtime_inventory_file_count": runtime_value["coverage"]["runtime_file_count"],
         "runtime_matches_reference": bundle.runtime_matches_reference,
         "runtime_profile_digest": bundle.runtime_profile_digest,
         "semantic_bundle_digest": bundle.digest,

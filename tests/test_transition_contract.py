@@ -87,6 +87,17 @@ def test_authoritative_contract_enums_are_exact_closed_sets() -> None:
     assert {item.value for item in tc.ObservationMode} == {
         "SAMPLED", "EVENT_COMPLETE", "BOUNDED_MODEL",
     }
+    assert {item.value for item in tc.TransitionKind} == {
+        "FORWARD", "ROLLBACK", "RETRY", "SUPERSESSION", "COMPENSATION",
+    }
+    assert {item.value for item in tc.ObligationKind} == {
+        "PRECONDITION", "REQUIRED_CHANGE", "PERMITTED_CHANGE", "FRAME_CONDITION",
+        "INVARIANT", "POSTCONDITION", "TEMPORAL_OBLIGATION", "ROLLBACK_OBLIGATION",
+    }
+    assert {item.value for item in tc.TemporalOperator} == {
+        "AT_SAMPLE", "ALWAYS_DURING", "NEVER_DURING", "EVENTUALLY_WITHIN",
+        "ON_REQUIRE_WITHIN", "HOLD", "UNTIL", "SAMPLED_NO_VIOLATION_DURING",
+    }
     assert {item.value for item in tc.TemporalOutcome} == {
         "SATISFIED_WITHIN_DECLARED_MODEL",
         "NO_VIOLATION_OBSERVED_ON_DECLARED_TRACE",
@@ -116,6 +127,8 @@ def test_authoritative_contract_enums_are_exact_closed_sets() -> None:
     (
         (("case_mode",), "PORTABLE"),
         (("evolution_ir", "obligations", 0, "temporal_operator"), "EVENTUALLY"),
+        (("evolution_ir", "obligations", 0, "obligation_kind"), "OPTIONAL_HINT"),
+        (("evolution_ir", "transition_kind"), "REORDERED_UPLOAD"),
         (("observation_profiles", 0, "coverage_mode"), "CONTINUOUS"),
         (("evidence_atoms", 0, "evidence_class"), "inferred"),
         (("applicability", "kind"), "DRAFT"),
@@ -148,6 +161,71 @@ def test_unknown_fields_fail_closed(path: tuple[str | int, ...]) -> None:
 
     refusal = _assert_refused(case, "CLOSED_SCHEMA_KEYS")
     assert "future_authority" not in str(refusal)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "predecessor_edges",
+        "transition_kind",
+        "precondition_obligation_ids",
+        "required_change_obligation_ids",
+        "permitted_change_obligation_ids",
+        "invariant_obligation_ids",
+        "postcondition_obligation_ids",
+        "temporal_obligation_ids",
+        "covered_frame_domain",
+        "compensation_plan",
+        "rollback_horizon",
+        "irreversibility_conditions",
+        "exceptions",
+        "decision_receipts",
+    ),
+)
+def test_canonical_transition_tuple_fields_cannot_be_omitted(field: str) -> None:
+    case = minimal_transition_case()
+    case["evolution_ir"].pop(field)
+    _assert_refused(case, "CLOSED_SCHEMA_KEYS")
+
+
+def test_frame_claim_cannot_expand_to_nothing_else_changed() -> None:
+    case = minimal_transition_case()
+    case["evolution_ir"]["covered_frame_domain"]["claim"] = "NOTHING_ELSE_CHANGED"
+    _assert_refused(case, "FRAME_CLAIM_WORDING_REQUIRED")
+
+
+def test_contract_index_must_exactly_partition_typed_obligations() -> None:
+    case = minimal_transition_case()
+    case["evolution_ir"]["temporal_obligation_ids"] = []
+    _assert_refused(case, "CONTRACT_INDEX_MUST_PARTITION_OBLIGATIONS")
+
+
+def test_nonforward_transition_requires_the_matching_predecessor_relation() -> None:
+    case = minimal_transition_case()
+    case["evolution_ir"]["transition_kind"] = tc.TransitionKind.RETRY.value
+    _assert_refused(case, "TRANSITION_KIND_PREDECESSOR_RELATION_REQUIRED")
+
+
+@pytest.mark.parametrize(
+    ("operator", "updates", "code"),
+    (
+        (tc.TemporalOperator.ON_REQUIRE_WITHIN.value, {}, "TRIGGERED_WITHIN_BOUNDS_REQUIRED"),
+        (tc.TemporalOperator.HOLD.value, {}, "HOLD_STABLE_DURATION_REQUIRED"),
+        (tc.TemporalOperator.UNTIL.value, {}, "UNTIL_EVENT_AND_ROLLBACK_CONDITION_REQUIRED"),
+        (
+            tc.TemporalOperator.AT_SAMPLE.value,
+            {"stable_duration_ms": 1},
+            "TEMPORAL_OPERATOR_PARAMETERS_FORBIDDEN",
+        ),
+    ),
+)
+def test_temporal_operator_parameters_fail_closed(
+        operator: str, updates: dict[str, object], code: str) -> None:
+    case = minimal_transition_case()
+    obligation = case["evolution_ir"]["obligations"][0]
+    obligation["temporal_operator"] = operator
+    obligation.update(updates)
+    _assert_refused(case, code)
 
 
 def test_caller_cannot_supply_or_forge_qualification_state() -> None:
