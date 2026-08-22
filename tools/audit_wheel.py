@@ -28,7 +28,20 @@ _REQUIRED_RUNTIME_MEMBERS = frozenset(
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/qcp-001.experimental.json",
+        "cisco_toolkit/data/atlas-r1-executable-bundle.json",
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-after.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-before.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-comparison.json",
+        "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
         "cisco_toolkit/data/traffic-intents.example.json",
+        "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_legacy.py",
     }
 )
 _REQUIRED_SDIST_MEMBERS = _REQUIRED_RUNTIME_MEMBERS | {"pyproject.toml"}

@@ -52,6 +52,9 @@ dependencies = [
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.27,<1",
     "python-multipart>=0.0.9,<1",
+    # Atlas R2 qualification receipts verify Ed25519 signatures directly.  Keep this an explicit
+    # dependency rather than relying on netmiko/paramiko to provide a security boundary transitively.
+    "cryptography>=49,<50",
 ]
 
 [project.optional-dependencies]
@@ -137,14 +140,23 @@ include-package-data = false
 include = ["cisco_toolkit*", "webapp", "webapp.backend"]
 
 [tool.setuptools.package-data]
-# Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load, and the
-# single-file explorer template, verified registry manifest, complete AssessHub SPA, and synthetic
-# demo snapshot. Every installed entry point is usable from an isolated wheel.
+# Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load,
+# transition schemas/QCP/census/pinned R1 replay resources, the single-file explorer template,
+# verified registry manifest, complete AssessHub SPA, and synthetic demo snapshot. Every installed
+# entry point and the R2.0 structural/replay library boundary is usable from an isolated wheel.
 cisco_toolkit = [
     "data/*.tsv.gz",
     "data/registry_manifest.json",
     "data/eol-bulletins.json",
     "data/traffic-intents.example.json",
+    "data/qcp-001.experimental.json",
+    "data/atlas-r1-executable-bundle.json",
+    "data/atlas-r1-source-bundle.json",
+    "data/atlas-r1-retrospective-after.json",
+    "data/atlas-r1-retrospective-before.json",
+    "data/atlas-r1-retrospective-comparison.json",
+    "data/atlas-r2-structural-tcb-census.v1.json",
+    "schemas/*.json",
     "blast_radius_explorer.html",
 ]
 webapp = ["frontend/dist/index.html", "frontend/dist/assets/*", "sample_data/*.json"]

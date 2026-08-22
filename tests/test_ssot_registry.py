@@ -59,6 +59,11 @@ def test_registry_owner_files_all_exist():
         "tests/test_unknown_evidence.py",
         "tests/test_traffic_assurance.py",
         "tests/test_traffic_assurance_excel.py",
+        # Release 2.0 proof-carrying transition structural-contract owners.
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_legacy.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
@@ -96,6 +101,72 @@ def test_registry_owner_symbols_are_real():
     assert isinstance(getattr(cisco_toolkit, "__version__", None), str), "schema __version__ owner is gone"
     # manifest.py is the hash-chained chain-of-custody ledger the registry cites for run provenance.
     assert hasattr(manifest, "GENESIS"), "manifest.py no longer exposes the hash-chain GENESIS"
+
+
+def test_registry_transition_contract_owners_are_real_and_bounded():
+    """The R2.0 row resolves to its owners and retains its non-promotion boundaries."""
+    from cisco_toolkit import transition_contract, transition_legacy, transition_pack, transition_verifier
+
+    expected = {
+        transition_contract: (
+            "bind_transition_case_bytes",
+            "validate_transition_case",
+            "validate_qualification_denominator",
+        ),
+        transition_pack: (
+            "bind_pack_manifest_bytes",
+            "bind_tcb_manifest_bytes",
+            "verify_qualification_evidence",
+            "qcp_001_must_remain_experimental",
+        ),
+        transition_verifier: (
+            "verify_transition_case",
+            "map_authoritative_gate",
+            "compute_invalidation_receipt",
+        ),
+        transition_legacy: (
+            "verify_release1_semantic_bundle",
+            "adapt_release1_comparison_bytes",
+            "replay_release1_comparison_bytes",
+        ),
+    }
+    for module, names in expected.items():
+        for name in names:
+            assert callable(getattr(module, name, None)), f"{module.__name__}.{name} owner is missing"
+
+    row = next(
+        line
+        for line in _registry_text().splitlines()
+        if "Proof-carrying transition structural contract" in line
+    )
+    assets = (
+        "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
+        "cisco_toolkit/data/qcp-001.experimental.json",
+        "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
+        "cisco_toolkit/data/atlas-r1-executable-bundle.json",
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-before.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-after.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-comparison.json",
+    )
+    for relative in assets:
+        assert (ROOT / relative).is_file(), f"R2.0 SSOT asset is missing: {relative}"
+        assert relative.rsplit("/", 1)[-1] in row, f"R2.0 SSOT row does not cite {relative}"
+
+    for boundary in (
+        "closed three-state vocabularies",
+        "closed four-state vocabularies",
+        "EXPERIMENTAL",
+        "CONTRACT_ONLY",
+        "REFERENCE_NOT_REWRITE",
+        "AUDIT_ONLY",
+        "null Release 2 gate",
+        "no authenticated historical fixture",
+        "does not yet supply an executable sandbox",
+        "no Release 3 capability",
+    ):
+        assert boundary in row, f"R2.0 SSOT row lost boundary {boundary!r}"
 
 
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():

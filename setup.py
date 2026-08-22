@@ -11,10 +11,23 @@ _REQUIRED_RUNTIME_ASSETS = (
     _ROOT / "webapp" / "frontend" / "dist" / "index.html",
     _ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json",
     _ROOT / "cisco_toolkit" / "data" / "registry_manifest.json",
+    _ROOT / "cisco_toolkit" / "data" / "qcp-001.experimental.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-executable-bundle.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-source-bundle.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-retrospective-after.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-retrospective-before.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-retrospective-comparison.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-structural-tcb-census.v1.json",
     _ROOT / "cisco_toolkit" / "data" / "oui_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "port_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json",
     _ROOT / "cisco_toolkit" / "data" / "traffic-intents.example.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-transition-contract-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-structural-tcb-census-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "transition_contract.py",
+    _ROOT / "cisco_toolkit" / "transition_pack.py",
+    _ROOT / "cisco_toolkit" / "transition_verifier.py",
+    _ROOT / "cisco_toolkit" / "transition_legacy.py",
     _ROOT / "reference-data" / "official-sources" / "cisco" / "eol-bulletins.json",
 )
 _missing = [str(path.relative_to(_ROOT)) for path in _REQUIRED_RUNTIME_ASSETS if not path.is_file()]
@@ -41,7 +54,7 @@ if _missing:
     raise RuntimeError(
         "refusing to build an incomplete distribution; missing runtime assets: "
         + ", ".join(_missing)
-        + ". Build the AssessHub frontend before packaging."
+        + ". Restore or generate every listed runtime asset before packaging."
     )
 
 _runtime_eol_evidence = _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json"

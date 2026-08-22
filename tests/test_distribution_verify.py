@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import inspect
 import io
@@ -140,6 +141,72 @@ def test_setup_guard_behaviorally_rejects_missing_traffic_intents_example(
     native_relative = str(Path("cisco_toolkit") / "data" / "traffic-intents.example.json")
     with pytest.raises(RuntimeError, match=re.escape(native_relative)):
         runpy.run_path(str(ROOT / "setup.py"), run_name="__main__")
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_legacy.py",
+        "cisco_toolkit/data/qcp-001.experimental.json",
+        "cisco_toolkit/data/atlas-r1-executable-bundle.json",
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-after.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-before.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-comparison.json",
+        "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
+        "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
+    ),
+)
+def test_transition_runtime_members_are_fixed_and_setup_required(
+        relative: str,
+        monkeypatch) -> None:
+    assert _expected_runtime_inventory(ROOT)[relative] == _PROVENANCE_REQUIRED
+    assert relative in _REQUIRED_RUNTIME_MEMBERS
+    assert relative in _REQUIRED_SDIST_MEMBERS
+
+    missing = (ROOT / relative).resolve()
+    original_is_file = Path.is_file
+
+    def is_file_except_transition_member(path: Path) -> bool:
+        if path.resolve() == missing:
+            return False
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", is_file_except_transition_member)
+    import setuptools
+
+    monkeypatch.setattr(setuptools, "setup", lambda **_kwargs: None)
+    with pytest.raises(RuntimeError, match=re.escape(str(Path(relative)))):
+        runpy.run_path(str(ROOT / "setup.py"), run_name="__main__")
+
+
+def test_transition_runtime_data_assets_are_explicit_package_data_and_required() -> None:
+    assets = {
+        "data/qcp-001.experimental.json",
+        "data/atlas-r1-executable-bundle.json",
+        "data/atlas-r1-source-bundle.json",
+        "data/atlas-r1-retrospective-after.json",
+        "data/atlas-r1-retrospective-before.json",
+        "data/atlas-r1-retrospective-comparison.json",
+        "data/atlas-r2-structural-tcb-census.v1.json",
+    }
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = set(project["tool"]["setuptools"]["package-data"]["cisco_toolkit"])
+    assert assets <= package_data
+    for asset in assets:
+        relative = f"cisco_toolkit/{asset}"
+        assert _expected_runtime_inventory(ROOT)[relative] == _PROVENANCE_REQUIRED
+        assert relative in _REQUIRED_RUNTIME_MEMBERS
+        assert relative in _REQUIRED_SDIST_MEMBERS
+
+
+def test_transition_qualification_crypto_is_an_explicit_base_dependency() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "cryptography>=49,<50" in project["project"]["dependencies"]
 
 
 def test_privacy_boundary_rejects_tests_office_files_and_non_sample_snapshots():
@@ -379,6 +446,91 @@ def test_archive_content_scanner_checks_payload_not_only_name():
     assert scanned is True
 
 
+def test_archive_content_scanner_decodes_release1_source_bundle_payloads():
+    marker = ("# " + "Al " + "Jazeera" + " fleet\n").encode()
+    nested_path = "cisco_toolkit/innocent.py"
+    bundle = json.dumps(
+        {
+            "approved_head": "0" * 40,
+            "chunk_encoding": "BASE64_RFC4648_512_KIB_RAW_CHUNKS",
+            "files": [
+                {
+                    "bytes": len(marker),
+                    "content_base64_chunks": [base64.b64encode(marker).decode("ascii")],
+                    "path": nested_path,
+                    "sha256": "sha256:" + hashlib.sha256(marker).hexdigest(),
+                }
+            ],
+            "schema": "atlas.release1-source-bundle/1",
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+
+    errors, scanned = _content_privacy_errors(
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        bundle,
+        set(),
+    )
+    assert scanned is True
+    assert errors == [
+        "known client marker appears in archive content: "
+        "cisco_toolkit/data/atlas-r1-source-bundle.json!cisco_toolkit/innocent.py"
+    ]
+
+
+def test_archive_content_scanner_decompresses_nested_release1_registry_payloads():
+    marker = ("# " + "Al " + "Jazeera" + " fleet\n").encode()
+    compressed = gzip.compress(marker, mtime=0)
+    nested_path = "cisco_toolkit/data/oui_registry.tsv.gz"
+    bundle = json.dumps(
+        {
+            "approved_head": "0" * 40,
+            "chunk_encoding": "BASE64_RFC4648_512_KIB_RAW_CHUNKS",
+            "files": [
+                {
+                    "bytes": len(compressed),
+                    "content_base64_chunks": [
+                        base64.b64encode(compressed).decode("ascii")
+                    ],
+                    "path": nested_path,
+                    "sha256": "sha256:" + hashlib.sha256(compressed).hexdigest(),
+                }
+            ],
+            "schema": "atlas.release1-source-bundle/1",
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+
+    errors, scanned = _content_privacy_errors(
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        bundle,
+        set(),
+    )
+    assert scanned is True
+    assert errors == [
+        "known client marker appears in archive content: "
+        "cisco_toolkit/data/atlas-r1-source-bundle.json!"
+        "cisco_toolkit/data/oui_registry.tsv.gz"
+    ]
+
+
+def test_archive_content_scanner_refuses_malformed_release1_source_bundle():
+    errors, scanned = _content_privacy_errors(
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        b"{}",
+        set(),
+    )
+    assert scanned is True
+    assert errors == [
+        "embedded Release 1 source bundle is invalid: "
+        "cisco_toolkit/data/atlas-r1-source-bundle.json"
+    ]
+
+
 def test_archive_content_scanner_reports_exempt_members_as_not_scanned():
     """An exempt member's bytes are never read; it must not count as scanned.
 
@@ -516,6 +668,7 @@ def test_wheel_record_measurement_names_its_own_structural_exemption(tmp_path):
 
 def _lay_out_probe_project(project: Path) -> None:
     (project / "cisco_toolkit" / "data").mkdir(parents=True)
+    (project / "cisco_toolkit" / "schemas").mkdir(parents=True)
     (project / "webapp" / "backend").mkdir(parents=True)
     (project / "webapp" / "frontend" / "dist" / "assets").mkdir(parents=True)
     (project / "webapp" / "sample_data").mkdir(parents=True)
@@ -526,7 +679,20 @@ def _lay_out_probe_project(project: Path) -> None:
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/qcp-001.experimental.json",
+        "cisco_toolkit/data/atlas-r1-executable-bundle.json",
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-after.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-before.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-comparison.json",
+        "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
         "cisco_toolkit/data/traffic-intents.example.json",
+        "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_legacy.py",
         "cisco_toolkit/blast_radius_explorer.html",
         "webapp/__init__.py",
         "webapp/backend/app.py",
@@ -2177,6 +2343,43 @@ def test_a_client_marker_planted_in_an_archived_member_flips_the_verdict(
     assert errors["wheel_content_privacy_errors"] == [
         f"known client marker appears in archive content: {target}"
     ]
+
+
+def test_a_client_marker_hidden_in_release1_base64_source_flips_the_verdict(
+    release_rig,
+    accepted_release,
+):
+    """The executable source envelope is scanned semantically, not as base64 text."""
+    target = "cisco_toolkit/data/atlas-r1-source-bundle.json"
+    marker = ("\n# " + "Al " + "Jazeera" + " core switch\n").encode("utf-8")
+    nested_path: str | None = None
+
+    def plant(payloads: dict) -> dict:
+        nonlocal nested_path
+        bundle = json.loads(payloads[target])
+        entry = next(item for item in bundle["files"] if item["path"].endswith(".py"))
+        nested_path = entry["path"]
+        content = b"".join(
+            base64.b64decode(chunk, validate=True)
+            for chunk in entry["content_base64_chunks"]
+        ) + marker
+        entry["bytes"] = len(content)
+        entry["content_base64_chunks"] = [base64.b64encode(content).decode("ascii")]
+        entry["sha256"] = "sha256:" + hashlib.sha256(content).hexdigest()
+        payloads[target] = json.dumps(
+            bundle,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return payloads
+
+    errors = release_rig.refusal(release_rig.build(mutate=plant))
+    expected = (
+        "known client marker appears in archive content: "
+        f"{target}!{nested_path}"
+    )
+    assert errors["wheel_content_privacy_errors"] == [expected]
 
 
 def test_the_wheel_must_carry_the_license_and_top_level_it_declares(

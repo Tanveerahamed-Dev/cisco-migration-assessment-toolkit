@@ -1,0 +1,1277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:transition-contract:1",
+  "title": "Atlas TransitionCase structural contract v1",
+  "description": "Closed R2.0 structural schema. cisco_toolkit.transition_contract remains authoritative for canonical-byte, ordering, digest, identity, temporal, scope, and replay joins that JSON Schema cannot express.",
+  "$comment": "Qualification state is deliberately absent from applicability. Qualification authority is derived from independently supplied, digest-bound receipts under the evaluation-time trust policy.",
+  "$ref": "#/$defs/transitionCase",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,191}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "nullableIdentifier": {
+      "oneOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "portableInteger": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "nonNegativePortableInteger": {
+      "allOf": [
+        { "$ref": "#/$defs/portableInteger" },
+        { "minimum": 0 }
+      ]
+    },
+    "positivePortableInteger": {
+      "allOf": [
+        { "$ref": "#/$defs/portableInteger" },
+        { "minimum": 1 }
+      ]
+    },
+    "nullableNonNegativePortableInteger": {
+      "oneOf": [
+        { "$ref": "#/$defs/nonNegativePortableInteger" },
+        { "type": "null" }
+      ]
+    },
+    "nullablePositivePortableInteger": {
+      "oneOf": [
+        { "$ref": "#/$defs/positivePortableInteger" },
+        { "type": "null" }
+      ]
+    },
+    "identifierSet": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" },
+      "$comment": "The Python validator additionally requires lexicographic canonical order."
+    },
+    "possiblyEmptyIdentifierSet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" },
+      "$comment": "The Python validator additionally requires lexicographic canonical order."
+    },
+    "caseMode": {
+      "enum": ["SEALED_PORTABLE", "REFERENCED", "PROJECTION_ONLY"]
+    },
+    "evidenceClass": {
+      "enum": ["observed", "declared", "derived", "simulated", "assumed", "human-accepted"]
+    },
+    "observationMode": {
+      "enum": ["SAMPLED", "EVENT_COMPLETE", "BOUNDED_MODEL"]
+    },
+    "temporalOperator": {
+      "enum": [
+        "AT_SAMPLE",
+        "ALWAYS_DURING",
+        "NEVER_DURING",
+        "EVENTUALLY_WITHIN",
+        "SAMPLED_NO_VIOLATION_DURING"
+      ]
+    },
+    "temporalOutcome": {
+      "enum": [
+        "SATISFIED_WITHIN_DECLARED_MODEL",
+        "NO_VIOLATION_OBSERVED_ON_DECLARED_TRACE",
+        "VIOLATED",
+        "INCONCLUSIVE"
+      ]
+    },
+    "evidenceStatus": {
+      "enum": ["SUPPORTED", "REFUTED", "CONFLICTING", "UNKNOWN"],
+      "$comment": "Closed evaluator vocabulary; not a caller-set TransitionCase authority field."
+    },
+    "applicabilityKind": {
+      "enum": ["NOT_APPLICABLE", "APPLICABILITY_EVIDENCE_REQUIRED", "APPLICABLE"]
+    },
+    "qualificationState": {
+      "enum": ["EXPERIMENTAL", "QUALIFIED", "EXPIRED", "REVOKED"],
+      "$comment": "For independently supplied qualification receipts or pack manifests only; never an applicability input."
+    },
+    "authoritativeGate": {
+      "enum": [
+        "OBSERVED_BREACH",
+        "CONFLICT_REQUIRES_RESOLUTION",
+        "EVIDENCE_INCOMPLETE",
+        "ELIGIBLE_FOR_HUMAN_DECISION"
+      ],
+      "$comment": "Closed evaluator output vocabulary; not a caller-set TransitionCase authority field."
+    },
+    "evidenceEffect": {
+      "enum": ["SUPPORT", "COUNTER_EVIDENCE"]
+    },
+    "evaluatorKind": {
+      "enum": [
+        "STRUCTURAL_DECLARATIVE",
+        "QUALIFIED_DECLARATIVE_PACK",
+        "CERTIFIED_WASM_PACK",
+        "UNCERTIFIED_SEARCH_EXHAUSTED"
+      ]
+    },
+    "rollbackDimension": {
+      "enum": [
+        "INVERSE_PLANNED",
+        "COMPENSATION_EXECUTABLE",
+        "CONFIGURATION_EQUIVALENCE_OBSERVED",
+        "PROTOCOL_EQUIVALENCE_OBSERVED",
+        "SERVICE_EQUIVALENCE_OBSERVED",
+        "RESIDUAL_EFFECTS_PRESENT_OR_UNKNOWN"
+      ]
+    },
+    "packExecutionState": {
+      "enum": ["CONTRACT_ONLY", "ACTIVATABLE"]
+    },
+    "packSubstrate": {
+      "enum": ["DECLARATIVE_DSL_ONLY", "DECLARATIVE_DSL_AND_METERED_WASM_NO_WASI"]
+    },
+    "tcbBudgetState": {
+      "enum": ["PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW", "FROZEN"]
+    },
+    "qualificationSubjectKind": {
+      "enum": ["APPLICABILITY_PROFILE", "BEHAVIOR_PACK", "OBSERVATION_PROFILE"]
+    },
+    "digestSet": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" },
+      "$comment": "The Python validator additionally requires lexicographic canonical order."
+    },
+    "possiblyEmptyDigestSet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" },
+      "$comment": "The Python validator additionally requires lexicographic canonical order."
+    },
+    "packWasmModule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "module_id",
+        "role",
+        "digest",
+        "signature_digest",
+        "imports",
+        "wasi_imports",
+        "native_fallback",
+        "metering_profile_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.pack-wasm-module/1" },
+        "module_id": { "$ref": "#/$defs/identifier" },
+        "role": { "enum": ["PARSER", "NORMALIZER"] },
+        "digest": { "$ref": "#/$defs/digest" },
+        "signature_digest": { "$ref": "#/$defs/digest" },
+        "imports": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "atlas.host.emit_canonical_json",
+              "atlas.host.read_content_bytes",
+              "atlas.host.sha256"
+            ]
+          },
+          "$comment": "The Python validator additionally requires lexicographic canonical order."
+        },
+        "wasi_imports": { "type": "array", "maxItems": 0 },
+        "native_fallback": { "const": false },
+        "metering_profile_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "packManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "pack_id",
+        "pack_version",
+        "abi_version",
+        "behavior_kind",
+        "qualification_state",
+        "qualification_receipt_digest",
+        "execution_state",
+        "substrate",
+        "semantic_bundle_digest",
+        "declarative_rules_digest",
+        "declarative_operators",
+        "supported_denominator_digest",
+        "applicability_profile_ids",
+        "functions",
+        "wasm_modules",
+        "tcb_manifest_digest",
+        "claim_boundary"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.pack-manifest/1" },
+        "pack_id": { "$ref": "#/$defs/identifier" },
+        "pack_version": { "$ref": "#/$defs/identifier" },
+        "abi_version": { "const": "ATLAS_PACK_ABI/1" },
+        "behavior_kind": { "const": "BEHAVIOR_PACK" },
+        "qualification_state": { "$ref": "#/$defs/qualificationState" },
+        "qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
+        "execution_state": { "$ref": "#/$defs/packExecutionState" },
+        "substrate": { "$ref": "#/$defs/packSubstrate" },
+        "semantic_bundle_digest": { "$ref": "#/$defs/nullableDigest" },
+        "declarative_rules_digest": { "$ref": "#/$defs/nullableDigest" },
+        "declarative_operators": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "prefixItems": [
+            { "const": "ALL_OF" },
+            { "const": "ANY_OF" },
+            { "const": "EQUALS" },
+            { "const": "EXISTS" },
+            { "const": "IN_SET" },
+            { "const": "MATCH_SCOPE" },
+            { "const": "NOT" },
+            { "const": "NOT_EQUALS" },
+            { "const": "TEMPORAL_MONITOR" }
+          ],
+          "items": false
+        },
+        "supported_denominator_digest": { "$ref": "#/$defs/nullableDigest" },
+        "applicability_profile_ids": { "$ref": "#/$defs/identifierSet" },
+        "functions": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            { "const": "manifest" },
+            { "const": "resolve_applicability" },
+            { "const": "extract_atoms" },
+            { "const": "compile_obligations" },
+            { "const": "evaluate" },
+            { "const": "replay_witness" }
+          ],
+          "items": false
+        },
+        "wasm_modules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/packWasmModule" },
+          "$comment": "The Python validator additionally requires canonical ordering and uniqueness by module_id."
+        },
+        "tcb_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "claim_boundary": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "execution_state": { "const": "ACTIVATABLE" } },
+            "required": ["execution_state"]
+          },
+          "then": {
+            "properties": {
+              "semantic_bundle_digest": { "$ref": "#/$defs/digest" },
+              "declarative_rules_digest": { "$ref": "#/$defs/digest" },
+              "supported_denominator_digest": { "$ref": "#/$defs/digest" },
+              "tcb_manifest_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "qualification_state": { "const": "QUALIFIED" } },
+            "required": ["qualification_state"]
+          },
+          "then": {
+            "properties": {
+              "qualification_receipt_digest": { "$ref": "#/$defs/digest" },
+              "semantic_bundle_digest": { "$ref": "#/$defs/digest" },
+              "declarative_rules_digest": { "$ref": "#/$defs/digest" },
+              "supported_denominator_digest": { "$ref": "#/$defs/digest" },
+              "tcb_manifest_digest": { "$ref": "#/$defs/digest" }
+            }
+          },
+          "else": {
+            "properties": {
+              "qualification_receipt_digest": { "type": "null" },
+              "execution_state": { "const": "CONTRACT_ONLY" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "substrate": { "const": "DECLARATIVE_DSL_ONLY" } },
+            "required": ["substrate"]
+          },
+          "then": { "properties": { "wasm_modules": { "maxItems": 0 } } },
+          "else": { "properties": { "wasm_modules": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "pack_id": { "const": "QCP-001" } }, "required": ["pack_id"] },
+          "then": {
+            "properties": {
+              "pack_version": { "const": "0.1.0-experimental" },
+              "qualification_state": { "const": "EXPERIMENTAL" },
+              "qualification_receipt_digest": { "type": "null" },
+              "execution_state": { "const": "CONTRACT_ONLY" },
+              "claim_boundary": {
+                "const": "EXPERIMENTAL draft for contract, fixture, and replay work only; never qualified, GA, authoritative, portable, or promotion-eligible before R2.6"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tcbResourceCeilings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_memory_pages",
+        "max_call_depth",
+        "max_instruction_fuel",
+        "max_host_deadline_ms"
+      ],
+      "properties": {
+        "max_input_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_memory_pages": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_call_depth": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_host_deadline_ms": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "tcbManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "manifest_id",
+        "core_source_digests",
+        "pack_source_digests",
+        "transitive_dependency_digests",
+        "core_executable_lines",
+        "pack_executable_lines",
+        "dsl_interpreter_digest",
+        "wasm_runtime_digest",
+        "toolchain_digests",
+        "abi_version",
+        "qualification_receipt_digest",
+        "supported_denominator_digest",
+        "budget_state",
+        "core_sloc_budget",
+        "pack_sloc_budget",
+        "resource_ceilings"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.tcb-manifest/1" },
+        "manifest_id": { "$ref": "#/$defs/identifier" },
+        "core_source_digests": { "$ref": "#/$defs/digestSet" },
+        "pack_source_digests": { "$ref": "#/$defs/possiblyEmptyDigestSet" },
+        "transitive_dependency_digests": { "$ref": "#/$defs/possiblyEmptyDigestSet" },
+        "core_executable_lines": { "$ref": "#/$defs/positivePortableInteger" },
+        "pack_executable_lines": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "wasm_runtime_digest": { "$ref": "#/$defs/nullableDigest" },
+        "toolchain_digests": { "$ref": "#/$defs/digestSet" },
+        "abi_version": { "const": "ATLAS_PACK_ABI/1" },
+        "qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
+        "supported_denominator_digest": { "$ref": "#/$defs/digest" },
+        "budget_state": { "$ref": "#/$defs/tcbBudgetState" },
+        "core_sloc_budget": {
+          "oneOf": [{ "$ref": "#/$defs/positivePortableInteger" }, { "type": "null" }]
+        },
+        "pack_sloc_budget": {
+          "oneOf": [{ "$ref": "#/$defs/positivePortableInteger" }, { "type": "null" }]
+        },
+        "resource_ceilings": {
+          "oneOf": [{ "$ref": "#/$defs/tcbResourceCeilings" }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "budget_state": { "const": "PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW" }
+            },
+            "required": ["budget_state"]
+          },
+          "then": {
+            "properties": {
+              "core_sloc_budget": { "type": "null" },
+              "pack_sloc_budget": { "type": "null" },
+              "resource_ceilings": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+              "pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+              "resource_ceilings": { "$ref": "#/$defs/tcbResourceCeilings" }
+            }
+          }
+        }
+      ],
+      "$comment": "The Python validator additionally enforces measured executable-line counts against frozen budgets and Pack/TCB digest, ABI, denominator, runtime, and qualification joins."
+    },
+    "qualificationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "receipt_id",
+        "purpose",
+        "subject_kind",
+        "subject_id",
+        "subject_version",
+        "subject_digest",
+        "qualification_state",
+        "denominator_digest",
+        "issued_at",
+        "valid_from",
+        "valid_until",
+        "issuer_key_id"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.qualification-receipt/1" },
+        "receipt_id": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_TRANSITION_QUALIFICATION" },
+        "subject_kind": { "$ref": "#/$defs/qualificationSubjectKind" },
+        "subject_id": { "$ref": "#/$defs/identifier" },
+        "subject_version": { "$ref": "#/$defs/identifier" },
+        "subject_digest": { "$ref": "#/$defs/digest" },
+        "qualification_state": { "$ref": "#/$defs/qualificationState" },
+        "denominator_digest": { "$ref": "#/$defs/digest" },
+        "issued_at": { "$ref": "#/$defs/timestamp" },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_until": { "$ref": "#/$defs/timestamp" },
+        "issuer_key_id": { "$ref": "#/$defs/identifier" }
+      },
+      "$comment": "The Python validator proves issued_at <= valid_from < valid_until. Effective EXPIRED or REVOKED state is derived from independently supplied evaluation-time trust policy."
+    },
+    "timeInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_inclusive", "end_inclusive"],
+      "properties": {
+        "start_inclusive": { "$ref": "#/$defs/timestamp" },
+        "end_inclusive": { "$ref": "#/$defs/timestamp" }
+      },
+      "$comment": "The Python validator additionally proves start_inclusive <= end_inclusive."
+    },
+    "transitionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "engagement_id",
+        "campaign_id",
+        "pair_id",
+        "before_snapshot_digest",
+        "after_snapshot_digest",
+        "protocol_id",
+        "direction",
+        "scenario_id",
+        "wave_id",
+        "transition_id",
+        "trial_attempt_id"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-identity/1" },
+        "engagement_id": { "$ref": "#/$defs/identifier" },
+        "campaign_id": { "$ref": "#/$defs/identifier" },
+        "pair_id": { "$ref": "#/$defs/identifier" },
+        "before_snapshot_digest": { "$ref": "#/$defs/digest" },
+        "after_snapshot_digest": { "$ref": "#/$defs/digest" },
+        "protocol_id": { "$ref": "#/$defs/identifier" },
+        "direction": { "$ref": "#/$defs/identifier" },
+        "scenario_id": { "$ref": "#/$defs/identifier" },
+        "wave_id": { "$ref": "#/$defs/identifier" },
+        "transition_id": { "$ref": "#/$defs/identifier" },
+        "trial_attempt_id": { "$ref": "#/$defs/identifier" }
+      },
+      "$comment": "The Python validator additionally requires distinct before/after digests and exact identity joins."
+    },
+    "obligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "obligation_id",
+        "requirement_id",
+        "predicate_id",
+        "subject_ids",
+        "state_ids",
+        "temporal_operator",
+        "mandatory",
+        "window",
+        "observation_profile_digest",
+        "semantic_profile_digest",
+        "accepted_evidence_classes",
+        "rollback_dimension"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-obligation/1" },
+        "obligation_id": { "$ref": "#/$defs/identifier" },
+        "requirement_id": { "$ref": "#/$defs/identifier" },
+        "predicate_id": { "$ref": "#/$defs/identifier" },
+        "subject_ids": { "$ref": "#/$defs/identifierSet" },
+        "state_ids": { "$ref": "#/$defs/identifierSet" },
+        "temporal_operator": { "$ref": "#/$defs/temporalOperator" },
+        "mandatory": { "type": "boolean" },
+        "window": { "$ref": "#/$defs/timeInterval" },
+        "observation_profile_digest": { "$ref": "#/$defs/digest" },
+        "semantic_profile_digest": { "$ref": "#/$defs/digest" },
+        "accepted_evidence_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/evidenceClass" },
+          "$comment": "The Python validator additionally requires canonical order."
+        },
+        "rollback_dimension": {
+          "oneOf": [
+            { "$ref": "#/$defs/rollbackDimension" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "evolutionIr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "ir_version",
+        "transition_identity",
+        "from_state_id",
+        "to_state_id",
+        "intermediate_state_ids",
+        "subject_ids",
+        "trigger_ids",
+        "obligations",
+        "rollback_dimensions"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.evolution-ir/1" },
+        "ir_version": { "const": "1.0.0" },
+        "transition_identity": { "$ref": "#/$defs/transitionIdentity" },
+        "from_state_id": { "$ref": "#/$defs/identifier" },
+        "to_state_id": { "$ref": "#/$defs/identifier" },
+        "intermediate_state_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "subject_ids": { "$ref": "#/$defs/identifierSet" },
+        "trigger_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "obligations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/obligation" },
+          "$comment": "The Python validator enforces sorted unique obligation IDs, unique requirement IDs, and subject/state scope."
+        },
+        "rollback_dimensions": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            { "const": "INVERSE_PLANNED" },
+            { "const": "COMPENSATION_EXECUTABLE" },
+            { "const": "CONFIGURATION_EQUIVALENCE_OBSERVED" },
+            { "const": "PROTOCOL_EQUIVALENCE_OBSERVED" },
+            { "const": "SERVICE_EQUIVALENCE_OBSERVED" },
+            { "const": "RESIDUAL_EFFECTS_PRESENT_OR_UNKNOWN" }
+          ],
+          "items": false
+        }
+      },
+      "$comment": "The Python validator additionally requires different from/to states, no intermediate collision, and root identity equality."
+    },
+    "observationProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "profile_id",
+        "source_kind",
+        "coverage_mode",
+        "predicate_ids",
+        "window",
+        "planned_cadence_ms",
+        "observed_maximum_gap_ms",
+        "clock_error_bound_ms",
+        "collection_completeness",
+        "detection_latency_bound_ms",
+        "cross_device_overlap_rule",
+        "start_end_coverage",
+        "missing_sample_policy",
+        "qualification_denominator_digest",
+        "qualification_receipt_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.observation-profile/1" },
+        "profile_id": { "$ref": "#/$defs/identifier" },
+        "source_kind": { "$ref": "#/$defs/identifier" },
+        "coverage_mode": { "$ref": "#/$defs/observationMode" },
+        "predicate_ids": { "$ref": "#/$defs/identifierSet" },
+        "window": { "$ref": "#/$defs/timeInterval" },
+        "planned_cadence_ms": { "$ref": "#/$defs/nullablePositivePortableInteger" },
+        "observed_maximum_gap_ms": { "$ref": "#/$defs/nullablePositivePortableInteger" },
+        "clock_error_bound_ms": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "collection_completeness": { "enum": ["COMPLETE", "INCOMPLETE", "UNKNOWN"] },
+        "detection_latency_bound_ms": { "$ref": "#/$defs/nullableNonNegativePortableInteger" },
+        "cross_device_overlap_rule": {
+          "enum": ["NOT_APPLICABLE", "REQUIRE_OVERLAP_WITHIN_CLOCK_ERROR"]
+        },
+        "start_end_coverage": { "enum": ["BOTH", "START_ONLY", "END_ONLY", "NEITHER"] },
+        "missing_sample_policy": { "const": "INCONCLUSIVE" },
+        "qualification_denominator_digest": { "$ref": "#/$defs/digest" },
+        "qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "coverage_mode": { "const": "SAMPLED" } }, "required": ["coverage_mode"] },
+          "then": {
+            "properties": {
+              "planned_cadence_ms": { "$ref": "#/$defs/positivePortableInteger" },
+              "observed_maximum_gap_ms": { "$ref": "#/$defs/positivePortableInteger" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "coverage_mode": { "const": "EVENT_COMPLETE" } }, "required": ["coverage_mode"] },
+          "then": {
+            "properties": {
+              "collection_completeness": { "const": "COMPLETE" },
+              "detection_latency_bound_ms": { "$ref": "#/$defs/nonNegativePortableInteger" },
+              "start_end_coverage": { "const": "BOTH" },
+              "qualification_receipt_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "coverage_mode": { "const": "BOUNDED_MODEL" } }, "required": ["coverage_mode"] },
+          "then": {
+            "properties": {
+              "planned_cadence_ms": { "type": "null" },
+              "observed_maximum_gap_ms": { "type": "null" },
+              "collection_completeness": { "const": "COMPLETE" },
+              "start_end_coverage": { "const": "BOTH" },
+              "qualification_receipt_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        }
+      ]
+    },
+    "coverageScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "denominator_kind", "subject_ids", "predicate_ids", "window", "complete"],
+      "properties": {
+        "schema": { "const": "atlas.coverage-scope/1" },
+        "denominator_kind": { "enum": ["EXACT_SUBJECTS", "EXACT_EVENTS", "EXACT_MODEL_BOUND"] },
+        "subject_ids": { "$ref": "#/$defs/identifierSet" },
+        "predicate_ids": { "$ref": "#/$defs/identifierSet" },
+        "window": { "$ref": "#/$defs/timeInterval" },
+        "complete": { "type": "boolean" }
+      }
+    },
+    "qualificationDenominator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "denominator_id",
+        "subject_kind",
+        "subject_id",
+        "subject_version",
+        "denominator_kind",
+        "subject_ids",
+        "predicate_ids",
+        "window",
+        "platform_release_ids",
+        "event_inventory_digest",
+        "model_bound_digest",
+        "assumption_set_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.qualification-denominator/1" },
+        "denominator_id": { "$ref": "#/$defs/identifier" },
+        "subject_kind": { "$ref": "#/$defs/qualificationSubjectKind" },
+        "subject_id": { "$ref": "#/$defs/identifier" },
+        "subject_version": { "$ref": "#/$defs/identifier" },
+        "denominator_kind": {
+          "enum": [
+            "APPLICABILITY_SCOPE",
+            "EXACT_EVENTS",
+            "EXACT_MODEL_BOUND",
+            "EXACT_SUBJECTS",
+            "PACK_SUPPORTED_SCOPE"
+          ]
+        },
+        "subject_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "predicate_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "window": {
+          "oneOf": [{ "$ref": "#/$defs/timeInterval" }, { "type": "null" }]
+        },
+        "platform_release_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "event_inventory_digest": { "$ref": "#/$defs/nullableDigest" },
+        "model_bound_digest": { "$ref": "#/$defs/nullableDigest" },
+        "assumption_set_digest": { "$ref": "#/$defs/nullableDigest" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "denominator_kind": { "const": "EXACT_EVENTS" } },
+            "required": ["denominator_kind"]
+          },
+          "then": {
+            "properties": {
+              "event_inventory_digest": { "$ref": "#/$defs/digest" },
+              "model_bound_digest": { "type": "null" },
+              "assumption_set_digest": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "denominator_kind": { "const": "EXACT_MODEL_BOUND" } },
+            "required": ["denominator_kind"]
+          },
+          "then": {
+            "properties": {
+              "event_inventory_digest": { "type": "null" },
+              "model_bound_digest": { "$ref": "#/$defs/digest" },
+              "assumption_set_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "denominator_kind": {
+                "enum": ["APPLICABILITY_SCOPE", "EXACT_SUBJECTS", "PACK_SUPPORTED_SCOPE"]
+              }
+            },
+            "required": ["denominator_kind"]
+          },
+          "then": {
+            "properties": {
+              "event_inventory_digest": { "type": "null" },
+              "model_bound_digest": { "type": "null" },
+              "assumption_set_digest": { "type": "null" }
+            }
+          }
+        }
+      ],
+      "$comment": "The Python validator closes denominator kind by subject kind and observation mode, requires inspectable event/model preimages, and joins observation/applicability identity, predicates, subjects, platform releases, and time windows."
+    },
+    "transformStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "input_digest",
+        "output_digest",
+        "transform_profile_digest",
+        "transform_receipt_digest",
+        "coverage_effect",
+        "removed_predicate_ids"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.evidence-transform/1" },
+        "input_digest": { "$ref": "#/$defs/digest" },
+        "output_digest": { "$ref": "#/$defs/digest" },
+        "transform_profile_digest": { "$ref": "#/$defs/digest" },
+        "transform_receipt_digest": { "$ref": "#/$defs/digest" },
+        "coverage_effect": { "enum": ["UNCHANGED", "NARROWED"] },
+        "removed_predicate_ids": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "coverage_effect": { "const": "UNCHANGED" } }, "required": ["coverage_effect"] },
+          "then": { "properties": { "removed_predicate_ids": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "coverage_effect": { "const": "NARROWED" } }, "required": ["coverage_effect"] },
+          "then": { "properties": { "removed_predicate_ids": { "minItems": 1 } } }
+        }
+      ],
+      "$comment": "The Python validator additionally requires reminted bytes and transform-chain digest continuity."
+    },
+    "canonicalValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "$ref": "#/$defs/portableInteger" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/canonicalValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/canonicalValue" }
+        }
+      ],
+      "$comment": "Floats are forbidden. The Python canonical encoder additionally enforces NFC, UTF-8 byte limits, depth/node guards, unique object keys, and sorted canonical object encoding."
+    },
+    "evidenceAtom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "evidence_id",
+        "artifact_digest",
+        "transition_identity",
+        "subject_id",
+        "state_id",
+        "predicate_id",
+        "value",
+        "observed_time_interval",
+        "collected_at",
+        "received_at",
+        "sealed_at",
+        "evidence_class",
+        "acquisition_method",
+        "observation_profile_digest",
+        "semantic_profile_digest",
+        "coverage_scope",
+        "transform_chain"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.evidence-atom/1" },
+        "evidence_id": { "$ref": "#/$defs/identifier" },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "transition_identity": { "$ref": "#/$defs/transitionIdentity" },
+        "subject_id": { "$ref": "#/$defs/identifier" },
+        "state_id": { "$ref": "#/$defs/identifier" },
+        "predicate_id": { "$ref": "#/$defs/identifier" },
+        "value": { "$ref": "#/$defs/canonicalValue" },
+        "observed_time_interval": { "$ref": "#/$defs/timeInterval" },
+        "collected_at": { "$ref": "#/$defs/timestamp" },
+        "received_at": { "$ref": "#/$defs/timestamp" },
+        "sealed_at": { "$ref": "#/$defs/timestamp" },
+        "evidence_class": { "$ref": "#/$defs/evidenceClass" },
+        "acquisition_method": { "$ref": "#/$defs/identifier" },
+        "observation_profile_digest": { "$ref": "#/$defs/digest" },
+        "semantic_profile_digest": { "$ref": "#/$defs/digest" },
+        "coverage_scope": { "$ref": "#/$defs/coverageScope" },
+        "transform_chain": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/transformStep" }
+        }
+      },
+      "$comment": "The Python validator proves exact transition identity, subject/state/profile scope, evidence time order, window containment, predicate joins, and transform continuity."
+    },
+    "applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "reason_codes",
+        "profile_id",
+        "profile_digest",
+        "supported_denominator_digest",
+        "qualification_receipt_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.applicability/1" },
+        "kind": { "$ref": "#/$defs/applicabilityKind" },
+        "reason_codes": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" },
+        "profile_id": { "$ref": "#/$defs/nullableIdentifier" },
+        "profile_digest": { "$ref": "#/$defs/nullableDigest" },
+        "supported_denominator_digest": { "$ref": "#/$defs/nullableDigest" },
+        "qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "APPLICABLE" } }, "required": ["kind"] },
+          "then": {
+            "properties": {
+              "reason_codes": { "maxItems": 0 },
+              "profile_id": { "$ref": "#/$defs/identifier" },
+              "profile_digest": { "$ref": "#/$defs/digest" },
+              "supported_denominator_digest": { "$ref": "#/$defs/digest" },
+              "qualification_receipt_digest": { "$ref": "#/$defs/digest" }
+            }
+          },
+          "else": {
+            "properties": {
+              "reason_codes": { "minItems": 1 },
+              "profile_id": { "type": "null" },
+              "profile_digest": { "type": "null" },
+              "supported_denominator_digest": { "type": "null" },
+              "qualification_receipt_digest": { "type": "null" }
+            }
+          }
+        }
+      ],
+      "$comment": "There is intentionally no qualification_state property; additionalProperties=false rejects caller-injected authority."
+    },
+    "packBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "pack_id",
+        "pack_version",
+        "pack_manifest_digest",
+        "tcb_manifest_digest",
+        "semantic_bundle_digest",
+        "pack_qualification_receipt_digest",
+        "abi_version"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.pack-binding/1" },
+        "pack_id": { "$ref": "#/$defs/identifier" },
+        "pack_version": { "$ref": "#/$defs/identifier" },
+        "pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+        "semantic_bundle_digest": { "$ref": "#/$defs/digest" },
+        "pack_qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
+        "abi_version": { "const": "ATLAS_PACK_ABI/1" }
+      }
+    },
+    "derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "derivation_id",
+        "obligation_id",
+        "evidence_ids",
+        "effect",
+        "temporal_outcome",
+        "evaluator_kind",
+        "evaluator_digest",
+        "certificate_digest",
+        "reason_codes"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.derivation/1" },
+        "derivation_id": { "$ref": "#/$defs/identifier" },
+        "obligation_id": { "$ref": "#/$defs/identifier" },
+        "evidence_ids": { "$ref": "#/$defs/identifierSet" },
+        "effect": { "$ref": "#/$defs/evidenceEffect" },
+        "temporal_outcome": { "$ref": "#/$defs/temporalOutcome" },
+        "evaluator_kind": { "$ref": "#/$defs/evaluatorKind" },
+        "evaluator_digest": { "$ref": "#/$defs/digest" },
+        "certificate_digest": { "$ref": "#/$defs/nullableDigest" },
+        "reason_codes": { "$ref": "#/$defs/possiblyEmptyIdentifierSet" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "evaluator_kind": {
+                "enum": ["QUALIFIED_DECLARATIVE_PACK", "CERTIFIED_WASM_PACK"]
+              }
+            },
+            "required": ["evaluator_kind"]
+          },
+          "then": { "properties": { "certificate_digest": { "$ref": "#/$defs/digest" } } }
+        },
+        {
+          "if": {
+            "properties": { "evaluator_kind": { "const": "UNCERTIFIED_SEARCH_EXHAUSTED" } },
+            "required": ["evaluator_kind"]
+          },
+          "then": { "properties": { "certificate_digest": { "type": "null" } } }
+        }
+      ],
+      "$comment": "The Python validator joins obligation/evidence IDs, scopes, evidence classes, semantic profiles, temporal semantics, and evaluator digest."
+    },
+    "objectBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "role", "digest", "location", "resolver_id", "required"],
+      "properties": {
+        "schema": { "const": "atlas.content-binding/1" },
+        "role": {
+          "enum": [
+            "EVIDENCE",
+            "SEMANTIC_BUNDLE",
+            "PACK_MANIFEST",
+            "TCB_MANIFEST",
+            "PARSER",
+            "NORMALIZER",
+            "RUNTIME_DEPENDENCY",
+            "TRUST_SNAPSHOT",
+            "QUALIFICATION_RECEIPT",
+            "REPLAY_RECIPE",
+            "STATE_SNAPSHOT",
+            "VERIFIER_BOOTSTRAP",
+            "VERIFIER_RECEIPT"
+          ]
+        },
+        "digest": { "$ref": "#/$defs/digest" },
+        "location": { "enum": ["EMBEDDED", "EXTERNAL", "PROJECTION"] },
+        "resolver_id": { "$ref": "#/$defs/nullableIdentifier" },
+        "required": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "location": { "const": "EXTERNAL" } }, "required": ["location"] },
+          "then": { "properties": { "resolver_id": { "$ref": "#/$defs/identifier" } } },
+          "else": { "properties": { "resolver_id": { "type": "null" } } }
+        }
+      ]
+    },
+    "replayContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "mode",
+        "object_bindings",
+        "verifier_bootstrap_digest",
+        "trust_policy_digest",
+        "replay_recipe_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.replay-contract/1" },
+        "mode": { "$ref": "#/$defs/caseMode" },
+        "object_bindings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/objectBinding" },
+          "$comment": "The Python validator requires canonical sorting and uniqueness by (role,digest), then checks all evidence, pack, semantic, and qualification bindings."
+        },
+        "verifier_bootstrap_digest": { "$ref": "#/$defs/digest" },
+        "trust_policy_digest": { "$ref": "#/$defs/digest" },
+        "replay_recipe_digest": { "$ref": "#/$defs/digest" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "SEALED_PORTABLE" } }, "required": ["mode"] },
+          "then": {
+            "properties": {
+              "object_bindings": {
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/$defs/objectBinding" },
+                    {
+                      "if": { "properties": { "required": { "const": true } }, "required": ["required"] },
+                      "then": { "properties": { "location": { "const": "EMBEDDED" } } }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "PROJECTION_ONLY" } }, "required": ["mode"] },
+          "then": {
+            "properties": {
+              "object_bindings": {
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/$defs/objectBinding" },
+                    { "properties": { "location": { "const": "PROJECTION" } } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "securityContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "classification",
+        "evidence_protection",
+        "recipient_policy_digest",
+        "encryption_profile_digest",
+        "redaction_profile_digest",
+        "key_policy_digest",
+        "retention_policy_digest"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.security-contract/1" },
+        "classification": { "enum": ["PUBLIC", "INTERNAL", "RESTRICTED"] },
+        "evidence_protection": {
+          "enum": ["PLAINTEXT_POLICY_APPROVED", "AEAD_ENCRYPTED", "REDACTED_DERIVATIVE", "CONTRACT_ONLY"]
+        },
+        "recipient_policy_digest": { "$ref": "#/$defs/nullableDigest" },
+        "encryption_profile_digest": { "$ref": "#/$defs/nullableDigest" },
+        "redaction_profile_digest": { "$ref": "#/$defs/nullableDigest" },
+        "key_policy_digest": { "$ref": "#/$defs/nullableDigest" },
+        "retention_policy_digest": { "$ref": "#/$defs/digest" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "evidence_protection": { "const": "AEAD_ENCRYPTED" } }, "required": ["evidence_protection"] },
+          "then": {
+            "properties": {
+              "recipient_policy_digest": { "$ref": "#/$defs/digest" },
+              "encryption_profile_digest": { "$ref": "#/$defs/digest" },
+              "key_policy_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "evidence_protection": { "const": "REDACTED_DERIVATIVE" } }, "required": ["evidence_protection"] },
+          "then": { "properties": { "redaction_profile_digest": { "$ref": "#/$defs/digest" } } }
+        },
+        {
+          "if": { "properties": { "classification": { "const": "RESTRICTED" } }, "required": ["classification"] },
+          "then": { "properties": { "evidence_protection": { "enum": ["AEAD_ENCRYPTED", "CONTRACT_ONLY"] } } }
+        }
+      ]
+    },
+    "dependencyDigest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identifier", "digest"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "CONTRACT",
+            "SEMANTIC_PROFILE",
+            "OBSERVATION_PROFILE",
+            "PACK",
+            "TCB",
+            "PARSER",
+            "NORMALIZER",
+            "QUALIFICATION",
+            "QUALIFICATION_DENOMINATOR",
+            "TRUST_POLICY",
+            "WORDING_POLICY",
+            "LEGACY_SEMANTICS"
+          ]
+        },
+        "identifier": { "$ref": "#/$defs/identifier" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "versionContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "contract_version",
+        "canonical_encoding",
+        "semantic_version",
+        "pack_abi_version",
+        "wording_policy_version",
+        "migration_policy",
+        "invalidation_policy",
+        "replay_policy",
+        "qualification_policy",
+        "legacy_semantics_digest",
+        "dependency_digests"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.version-contract/1" },
+        "contract_version": { "const": "1.0.0" },
+        "canonical_encoding": { "const": "ATLAS_CANONICAL_JSON/1" },
+        "semantic_version": { "const": "ATLAS_TRANSITION_SEMANTICS/1" },
+        "pack_abi_version": { "const": "ATLAS_PACK_ABI/1" },
+        "wording_policy_version": { "const": "ATLAS_ASSURANCE_WORDING/1" },
+        "migration_policy": { "const": "REFERENCE_NOT_REWRITE" },
+        "invalidation_policy": { "const": "DIGEST_CHANGE_INVALIDATES_DEPENDENTS" },
+        "replay_policy": { "const": "PINNED_SEMANTICS_EXACT_BYTES" },
+        "qualification_policy": { "const": "EXTERNAL_TRUST_POLICY_AT_EVALUATION_TIME" },
+        "legacy_semantics_digest": { "$ref": "#/$defs/nullableDigest" },
+        "dependency_digests": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/dependencyDigest" },
+          "$comment": "The Python validator requires canonical order/uniqueness by (kind,identifier) and exact mandatory PACK, SEMANTIC_PROFILE, and WORDING_POLICY joins."
+        }
+      }
+    },
+    "transitionCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "case_id",
+        "case_mode",
+        "created_at",
+        "transition_identity",
+        "evolution_ir",
+        "qualification_denominators",
+        "observation_profiles",
+        "evidence_atoms",
+        "applicability",
+        "pack_binding",
+        "derivations",
+        "replay_contract",
+        "security_contract",
+        "version_contract"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-case/1" },
+        "case_id": { "$ref": "#/$defs/identifier" },
+        "case_mode": { "$ref": "#/$defs/caseMode" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "transition_identity": { "$ref": "#/$defs/transitionIdentity" },
+        "evolution_ir": { "$ref": "#/$defs/evolutionIr" },
+        "qualification_denominators": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/qualificationDenominator" },
+          "$comment": "The Python validator requires canonical order, unique IDs/digests, exact subject/profile joins, and invalidation dependencies."
+        },
+        "observation_profiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/observationProfile" },
+          "$comment": "The Python validator requires canonical ordering and uniqueness by profile_id and canonical digest."
+        },
+        "evidence_atoms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceAtom" },
+          "$comment": "The Python validator requires canonical ordering and uniqueness by evidence_id."
+        },
+        "applicability": { "$ref": "#/$defs/applicability" },
+        "pack_binding": { "$ref": "#/$defs/packBinding" },
+        "derivations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/derivation" },
+          "$comment": "The Python validator requires canonical ordering and uniqueness by derivation_id."
+        },
+        "replay_contract": { "$ref": "#/$defs/replayContract" },
+        "security_contract": { "$ref": "#/$defs/securityContract" },
+        "version_contract": { "$ref": "#/$defs/versionContract" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "case_mode": { "const": "SEALED_PORTABLE" } }, "required": ["case_mode"] },
+          "then": { "properties": { "replay_contract": { "properties": { "mode": { "const": "SEALED_PORTABLE" } } } } }
+        },
+        {
+          "if": { "properties": { "case_mode": { "const": "REFERENCED" } }, "required": ["case_mode"] },
+          "then": { "properties": { "replay_contract": { "properties": { "mode": { "const": "REFERENCED" } } } } }
+        },
+        {
+          "if": { "properties": { "case_mode": { "const": "PROJECTION_ONLY" } }, "required": ["case_mode"] },
+          "then": { "properties": { "replay_contract": { "properties": { "mode": { "const": "PROJECTION_ONLY" } } } } }
+        }
+      ],
+      "$comment": "All cross-object identity, digest, semantic, temporal, applicability, replay-content, and invalidation joins are fail-closed in cisco_toolkit.transition_contract.validate_transition_case."
+    }
+  }
+}
