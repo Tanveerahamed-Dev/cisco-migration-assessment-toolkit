@@ -737,10 +737,24 @@ def test_graph_refresh_is_inert_without_a_graph_or_with_a_current_clean_receipt(
         "ran the updater with no graphify-out/graph.json to update"
 
     repo2 = _graph_refresh_repo(tmp_path, "gr_clean")
-    _complete_graph_refresh_receipt(repo2)
-    p2 = _run_hook("graph-refresh.sh", cwd=repo2)
+    receipt = _complete_graph_refresh_receipt(repo2)
+    receipt_before = receipt.read_bytes()
+    fake = _fake_graphify_python(tmp_path, "current-clean")
+    log = tmp_path / "graphify-argv-current-clean.log"
+    (repo2 / "graphify-out" / ".graphify_python").write_text(
+        fake.as_posix(), encoding="utf-8"
+    )
+    p2 = _run_hook("graph-refresh.sh", cwd=repo2, env=_env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    ))
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
     assert p2.returncode == 0 and "graph-refresh:" not in p2.stderr, \
         "a current clean receipt triggered a redundant graph rebuild"
+    assert sum(_is_guard_probe(call) for call in calls) == 1
+    assert all(not _is_any_update(call) for call in calls)
+    assert receipt.read_bytes() == receipt_before
 
 
 # --------------------------------------------------------------------- scorecard-append.sh
