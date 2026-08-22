@@ -48,6 +48,7 @@ _REQUIRED_RUNTIME_MEMBERS = frozenset(
         "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
         "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
         "cisco_toolkit/transition_contract.py",
@@ -56,6 +57,7 @@ _REQUIRED_RUNTIME_MEMBERS = frozenset(
         "cisco_toolkit/transition_legacy.py",
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_runtime_closure.py",
         "cisco_toolkit/transition_runtime_inventory.py",
         "cisco_toolkit/transition_workload_review.py",
     }

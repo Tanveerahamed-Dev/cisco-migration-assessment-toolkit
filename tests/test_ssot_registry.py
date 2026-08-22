@@ -66,6 +66,7 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/transition_legacy.py",
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_runtime_closure.py",
         "cisco_toolkit/transition_workload_review.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
@@ -113,6 +114,7 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         transition_dsl,
         transition_legacy,
         transition_pack,
+        transition_runtime_closure,
         transition_tcb_review,
         transition_verifier,
         transition_workload_review,
@@ -129,6 +131,12 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
             "bind_tcb_manifest_bytes",
             "verify_qualification_evidence",
             "qcp_001_must_remain_experimental",
+        ),
+        transition_runtime_closure: (
+            "validate_transition_runtime_closure_evidence",
+            "bind_transition_runtime_closure_evidence_bytes",
+            "verify_transition_runtime_closure_review",
+            "require_verified_transition_runtime_closure_review",
         ),
         transition_verifier: (
             "verify_transition_case",
@@ -174,6 +182,7 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "cisco_toolkit/data/atlas-r2-dsl-prototype-tcb.v2.json",
         "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
         "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
         "cisco_toolkit/data/atlas-r1-executable-bundle.json",
         "cisco_toolkit/data/atlas-r1-source-bundle.json",
@@ -200,6 +209,10 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "sandbox claim",
         "PARTIAL_NONPORTABLE_PROTOTYPE",
         "COMPLETE_EXACT_RUNTIME_CLOSURE",
+        "runtime-closure `/2` module and schema are protocol structure only",
+        "no runtime-closure evidence, capture corpus, trust policy, reviewer key, signature, or signed closure-review receipt is bundled",
+        "do not change the runtime-inventory `/1` roster",
+        "freeze `/1` remains unchanged and blocked",
         "Representative-workload evidence is non-authoritative",
         "evidence state is never `ADEQUATE`",
         "No representative-workload corpus, reviewer key, trust policy, or signed review receipt is bundled",
@@ -211,6 +224,28 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "No R2.1+ or Release 3 capability",
     ):
         assert boundary in row, f"R2.0 SSOT row lost boundary {boundary!r}"
+
+    registry = " ".join(
+        line.lstrip("> ").strip() for line in _registry_text().splitlines()
+    )
+    for runtime_closure_authority_boundary in (
+        "review signature authenticates the canonical receipt, not its trust policy",
+        "Every authority use must obtain the current canonical policy bytes",
+        "digest argument proves only exact equality to the caller's selection",
+        "cannot establish external selection",
+        "policy issuer/namespace/succession",
+        "reviewer-key identity/custody",
+        "trusted time",
+        "global freshness or anti-rollback",
+        "artifact semantic truth",
+        "real-world capture completeness",
+        "Any authority gate must consume only that fresh return value",
+        "independently compare and bind its `bindings_digest`, `policy_digest`, and `evaluated_at`",
+        "gate-selected commit/tree, evidence digest and states, and mapped evidence digests",
+        "a retained `.complete` value is historical state, not authority",
+        "No such current policy, key, signature, or receipt is bundled",
+    ):
+        assert runtime_closure_authority_boundary in registry
 
 
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():

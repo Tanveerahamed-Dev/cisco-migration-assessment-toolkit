@@ -41,6 +41,8 @@ CORE_SOURCE_ROSTER = (
      "cisco_toolkit/transition_dsl.py"),
     ("atlas.transition-pack", "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY",
      "cisco_toolkit/transition_pack.py"),
+    ("atlas.transition-runtime-closure", "RUNTIME_CLOSURE_REVIEW_AUTHORITY_BOUNDARY",
+     "cisco_toolkit/transition_runtime_closure.py"),
     ("atlas.transition-runtime-inventory", "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR",
      "cisco_toolkit/transition_runtime_inventory.py"),
     ("atlas.transition-tcb-review", "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY",

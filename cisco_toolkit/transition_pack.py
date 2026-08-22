@@ -53,6 +53,10 @@ _STRUCTURAL_TCB_CORE_SOURCE_ROLES = (
     ("cisco_toolkit/transition_contract.py", "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC"),
     ("cisco_toolkit/transition_dsl.py", "DECLARATIVE_DSL_INTERPRETER"),
     ("cisco_toolkit/transition_pack.py", "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY"),
+    (
+        "cisco_toolkit/transition_runtime_closure.py",
+        "RUNTIME_CLOSURE_REVIEW_AUTHORITY_BOUNDARY",
+    ),
     ("cisco_toolkit/transition_runtime_inventory.py", "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR"),
     ("cisco_toolkit/transition_tcb_review.py", "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY"),
     ("cisco_toolkit/transition_verifier.py", "STRUCTURAL_VERIFIER_AND_GATE_MAPPING"),

@@ -249,10 +249,11 @@ _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER = (
     ("cisco_toolkit.transition_tcb_review", "cisco_toolkit/transition_tcb_review.py"),
     ("cisco_toolkit.transition_verifier", "cisco_toolkit/transition_verifier.py"),
 )
-_STRUCTURAL_CORE_SOURCE_PATH_ROSTER = (
+_STRUCTURAL_CORE_SOURCE_PATH_ROSTER = tuple(sorted((
     *(path for _module, path in _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER),
+    "cisco_toolkit/transition_runtime_closure.py",
     "cisco_toolkit/transition_workload_review.py",
-)
+)))
 _CENSUS_PROTOTYPE_FIELDS = (
     "asset_bindings",
     "baseline_receipt_digest",
