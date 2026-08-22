@@ -668,7 +668,7 @@ def test_detached_freeze_joins_exact_evidence_source_commit_review_and_frozen_tc
             evidence_raw,
             supported_denominator_raw=supported_denominator_raw,
         ),
-        "r2_tcb_budget_freeze_prerequisite_not_met",
+        "r2_tcb_budget_freeze_representative_workload_adequacy_evidence_absent",
     )
 
     detached_source = deepcopy(freeze)
@@ -783,7 +783,7 @@ def test_reviewed_execution_rejects_a_direct_review_without_final_freeze() -> No
     assert caught.value.code == "REVIEWED_DSL_CUSTODY_INVALID"
 
 
-def test_partial_runtime_v1_cannot_mint_a_reviewed_execution_freeze() -> None:
+def test_representative_workload_absence_interlock_precedes_runtime_freeze() -> None:
     (
         freeze,
         bound_pack,
@@ -792,6 +792,26 @@ def test_partial_runtime_v1_cannot_mint_a_reviewed_execution_freeze() -> None:
         evidence_raw,
         supported_denominator_raw,
     ) = _current_freeze_candidate()
+    measurements = tc.parse_canonical_json_bytes(
+        evidence_raw["prototype_measurement_digest"],
+        require_canonical=True,
+    )
+    proposal = tc.parse_canonical_json_bytes(
+        evidence_raw["budget_proposal_digest"],
+        require_canonical=True,
+    )
+    assert (
+        "REPRESENTATIVE_FIELD_WORKLOAD_DENOMINATOR_ABSENT"
+        in measurements["measurement_gaps"]
+    )
+    assert (
+        "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT"
+        in measurements["review_state"]["blockers"]
+    )
+    assert (
+        "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT"
+        in proposal["approval"]["blockers"]
+    )
     _assert_refusal(
         lambda: tr.bind_r2_tcb_budget_freeze_bytes(
             tc.canonical_json_bytes(freeze),
@@ -801,7 +821,7 @@ def test_partial_runtime_v1_cannot_mint_a_reviewed_execution_freeze() -> None:
             evidence_raw,
             supported_denominator_raw=supported_denominator_raw,
         ),
-        "r2_tcb_budget_freeze_prerequisite_not_met",
+        "r2_tcb_budget_freeze_representative_workload_adequacy_evidence_absent",
     )
 
 

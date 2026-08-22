@@ -26,7 +26,7 @@ _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:58d5937099e70a4d889acf300df5f19da9681684757be6a57d497faf582e2c6c"
+_TCB_CENSUS_DIGEST = "sha256:8d961fd0a611f788b7f256e76a3fee82f8d391ddf0b951c64181f7e551b61d8c"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -143,7 +143,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(value)
     assert tp.r2_structural_tcb_census() == value
-    assert value["structural_core"]["executable_statements"] == 5338
+    assert value["structural_core"]["executable_statements"] == 5773
     assert value["census_method"]["measurement_scope"] == (
         "REFERENCE_ENVIRONMENT_OBSERVATION_WITH_PORTABLE_SOURCE_DIGEST_CHECK"
     )
@@ -179,7 +179,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
         "PARTIAL_NONPORTABLE_PROTOTYPE"
     )
     assert value["executable_prototype"]["runtime_inventory"] == {
-        "asset_digest": "sha256:949556c994f7097e221d75f249a63ccf84c1e01f63656fbd285574bdf5517ee6",
+        "asset_digest": "sha256:8bd9081e710e94a5020f8c8698cd327bce2b6f18bfaf98dd9f074edd500045f2",
         "blind_spot_count": 9,
         "claim_boundary": (
             "Exact-byte inventory of the observed isolated reference process and bounded "
@@ -223,6 +223,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     assert value["independent_review"]["required_next_evidence"] == [
         "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
         "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+        "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE",
         "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
         "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
         "SELECTED_COMMIT_BINDING",
@@ -254,6 +255,7 @@ def test_structural_tcb_census_schema_represents_only_joined_runtime_closure_sta
     })
     complete["independent_review"]["required_next_evidence"] = [
         "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+        "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE",
         "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
         "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
         "SELECTED_COMMIT_BINDING",

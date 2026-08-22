@@ -66,6 +66,7 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/transition_legacy.py",
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_workload_review.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
@@ -114,6 +115,7 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         transition_pack,
         transition_tcb_review,
         transition_verifier,
+        transition_workload_review,
     )
 
     expected = {
@@ -145,6 +147,11 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         transition_tcb_review: (
             "verify_tcb_budget_review_evidence",
         ),
+        transition_workload_review: (
+            "bind_transition_workload_evidence_bytes",
+            "verify_transition_workload_review",
+            "require_verified_transition_workload_review",
+        ),
     }
     for module, names in expected.items():
         for name in names:
@@ -167,6 +174,7 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "cisco_toolkit/data/atlas-r2-dsl-prototype-tcb.v2.json",
         "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
         "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
         "cisco_toolkit/data/atlas-r1-executable-bundle.json",
         "cisco_toolkit/data/atlas-r1-source-bundle.json",
         "cisco_toolkit/data/atlas-r1-retrospective-before.json",
@@ -192,6 +200,13 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "sandbox claim",
         "PARTIAL_NONPORTABLE_PROTOTYPE",
         "COMPLETE_EXACT_RUNTIME_CLOSURE",
+        "Representative-workload evidence is non-authoritative",
+        "evidence state is never `ADEQUATE`",
+        "No representative-workload corpus, reviewer key, trust policy, or signed review receipt is bundled",
+        "existing freeze `/1` remains explicitly blocked",
+        "does not make runtime inventory `COMPLETE`",
+        "qualify a pack",
+        "authorize promotion",
         "budgets, reviewed resource ceilings, independent review evidence, and selected commit remain pending/null",
         "No R2.1+ or Release 3 capability",
     ):

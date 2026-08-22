@@ -16,9 +16,29 @@ from jsonschema.exceptions import ValidationError
 
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_pack as tp
+from cisco_toolkit import transition_runtime_inventory as runtime_inventory
+from tools import build_transition_dsl_prototype_assets as prototype_assets
+from tools import census_transition_tcb as tcb_census
 
 
 _SIGNATURE_DOMAIN = b"ATLAS-TRANSITION-QUALIFICATION\x00v1\x00"
+
+
+def test_workload_review_is_structural_tcb_authority_not_runtime_inventory_v1() -> None:
+    relative = "cisco_toolkit/transition_workload_review.py"
+    role = "REPRESENTATIVE_WORKLOAD_REVIEW_AUTHORITY_BOUNDARY"
+
+    assert dict(tcb_census.CORE_SOURCES)[relative] == role
+    assert {
+        path: source_role
+        for _artifact_id, source_role, path in prototype_assets.CORE_SOURCE_ROSTER
+    }[relative] == role
+    assert dict(tp._STRUCTURAL_TCB_CORE_SOURCE_ROLES)[relative] == role
+
+    module_name = "cisco_toolkit.transition_workload_review"
+    assert module_name not in runtime_inventory._REQUIRED_STRUCTURAL_MODULE_LOAD_PHASES
+    assert module_name not in runtime_inventory._REQUIRED_STRUCTURAL_MODULE_PATH_TOKENS
+    assert module_name not in runtime_inventory._STRUCTURAL_CORE_VALIDATOR_MODULES
 
 
 def _digest(label: str) -> str:

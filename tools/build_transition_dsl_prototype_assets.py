@@ -47,6 +47,8 @@ CORE_SOURCE_ROSTER = (
      "cisco_toolkit/transition_tcb_review.py"),
     ("atlas.transition-verifier", "STRUCTURAL_VERIFIER_AND_GATE_MAPPING",
      "cisco_toolkit/transition_verifier.py"),
+    ("atlas.transition-workload-review", "REPRESENTATIVE_WORKLOAD_REVIEW_AUTHORITY_BOUNDARY",
+     "cisco_toolkit/transition_workload_review.py"),
 )
 
 

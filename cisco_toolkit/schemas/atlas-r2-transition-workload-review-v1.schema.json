@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-transition-workload-review:1",
+  "title": "Atlas R2 non-authoritative workload evidence and external adequacy review v1",
+  "description": "Closed structural schema for a non-authoritative workload-evidence envelope and independently supplied detached review material. Python validators remain authoritative for canonical bytes, ordering, times, signatures, trust, and cross-document joins.",
+  "$comment": "This package includes only protocol structure. It includes no workload corpus, key, trust policy, signature, budget approval, runtime closure, qualification, promotion, or Release 3 authority.",
+  "$ref": "#/$defs/workloadEvidence",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,191}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "positivePortableInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "evidenceState": {
+      "enum": ["ABSENT", "READY_FOR_EXTERNAL_REVIEW"]
+    },
+    "authorityBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative",
+        "adequacy_decision",
+        "approved_budget",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "authoritative": { "const": false },
+        "adequacy_decision": { "type": "null" },
+        "approved_budget": { "type": "null" },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false },
+        "release3_included": { "const": false }
+      }
+    },
+    "workloadArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "role", "digest", "raw_bytes"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/identifier" },
+        "role": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        },
+        "digest": { "$ref": "#/$defs/digest" },
+        "raw_bytes": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "workloadEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "evidence_id",
+        "purpose",
+        "state",
+        "producer_id",
+        "selected_commit",
+        "selected_tree",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_input_digest",
+        "measurement_denominator_digest",
+        "artifacts",
+        "known_gaps",
+        "claim_boundary",
+        "authority"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-evidence/1" },
+        "evidence_id": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_REPRESENTATIVE_WORKLOAD_ADEQUACY_REVIEW" },
+        "state": { "$ref": "#/$defs/evidenceState" },
+        "producer_id": { "$ref": "#/$defs/identifier" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_input_digest": { "$ref": "#/$defs/digest" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/workloadArtifact" }
+        },
+        "known_gaps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "claim_boundary": {
+          "const": "Exact non-authoritative workload material for external R2.0 adequacy review only; the envelope cannot establish representativeness, approve budgets, qualify a pack, authorize execution, enable promotion, or include Release 3."
+        },
+        "authority": { "$ref": "#/$defs/authorityBoundary" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "ABSENT" } } },
+          "then": {
+            "properties": {
+              "artifacts": { "maxItems": 0 },
+              "known_gaps": { "minItems": 1 }
+            }
+          },
+          "else": { "properties": { "artifacts": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "reviewBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "selected_commit",
+        "selected_tree",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_input_digest",
+        "measurement_denominator_digest",
+        "workload_evidence_digest",
+        "workload_evidence_state"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-review-bindings/1" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_input_digest": { "$ref": "#/$defs/digest" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
+        "workload_evidence_digest": { "$ref": "#/$defs/digest" },
+        "workload_evidence_state": { "$ref": "#/$defs/evidenceState" }
+      }
+    },
+    "reviewReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "receipt_id",
+        "purpose",
+        "selected_commit",
+        "selected_tree",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_input_digest",
+        "measurement_denominator_digest",
+        "workload_evidence_digest",
+        "workload_evidence_state",
+        "decision",
+        "issued_at",
+        "valid_from",
+        "valid_until",
+        "reviewer_key_id"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-review-receipt/1" },
+        "receipt_id": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_REPRESENTATIVE_WORKLOAD_ADEQUACY_REVIEW" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_input_digest": { "$ref": "#/$defs/digest" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
+        "workload_evidence_digest": { "$ref": "#/$defs/digest" },
+        "workload_evidence_state": { "$ref": "#/$defs/evidenceState" },
+        "decision": { "enum": ["ADEQUATE", "INADEQUATE"] },
+        "issued_at": { "$ref": "#/$defs/timestamp" },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_until": { "$ref": "#/$defs/timestamp" },
+        "reviewer_key_id": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "reviewSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "purpose",
+        "payload_digest",
+        "signer_key_id",
+        "algorithm",
+        "signature_base64"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-review-signature/1" },
+        "purpose": { "const": "ATLAS_R2_REPRESENTATIVE_WORKLOAD_ADEQUACY_REVIEW" },
+        "payload_digest": { "$ref": "#/$defs/digest" },
+        "signer_key_id": { "$ref": "#/$defs/identifier" },
+        "algorithm": { "const": "Ed25519" },
+        "signature_base64": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{86}==$"
+        }
+      }
+    },
+    "reviewAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "purpose", "target_schema_version", "reviewer_role", "substrate"],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-review-authorization/1" },
+        "purpose": { "const": "ATLAS_R2_REPRESENTATIVE_WORKLOAD_ADEQUACY_REVIEW" },
+        "target_schema_version": { "const": "atlas.transition-workload-review-receipt/1" },
+        "reviewer_role": { "const": "REPRESENTATIVE_WORKLOAD_ADEQUACY_REVIEWER" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" }
+      }
+    },
+    "allowedSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected_commit", "selected_tree", "workload_evidence_digest"],
+      "properties": {
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "workload_evidence_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "trustedKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "key_id",
+        "public_key_digest",
+        "reviewer_kind",
+        "independent_from_workload_producer",
+        "independent_from_measurement_producer",
+        "independent_from_budget_proposer",
+        "independent_from_release_builder",
+        "authorizations",
+        "allowed_subjects",
+        "valid_from",
+        "valid_until"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-review-trusted-key/1" },
+        "key_id": { "$ref": "#/$defs/identifier" },
+        "public_key_digest": { "$ref": "#/$defs/digest" },
+        "reviewer_kind": { "const": "INDEPENDENT_REVIEWER" },
+        "independent_from_workload_producer": { "const": true },
+        "independent_from_measurement_producer": { "const": true },
+        "independent_from_budget_proposer": { "const": true },
+        "independent_from_release_builder": { "const": true },
+        "authorizations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/reviewAuthorization" }
+        },
+        "allowed_subjects": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/allowedSubject" }
+        },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_until": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "trustPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "policy_kind",
+        "policy_id",
+        "policy_version",
+        "purpose",
+        "evaluated_at",
+        "trusted_keys",
+        "revoked_receipt_digests"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-workload-review-trust-policy/1" },
+        "policy_kind": { "const": "EXTERNAL_INDEPENDENT_WORKLOAD_REVIEW_KEY_ALLOWLIST" },
+        "policy_id": { "$ref": "#/$defs/identifier" },
+        "policy_version": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_REPRESENTATIVE_WORKLOAD_ADEQUACY_REVIEW" },
+        "evaluated_at": { "$ref": "#/$defs/timestamp" },
+        "trusted_keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/trustedKey" }
+        },
+        "revoked_receipt_digests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        }
+      }
+    }
+  }
+}

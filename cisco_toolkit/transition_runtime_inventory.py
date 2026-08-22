@@ -208,12 +208,14 @@ _PE_SCAN_ERROR_CODES = frozenset({
     "PE_DELAY_IMPORT_COUNT_EXCEEDED",
     "PE_DELAY_IMPORT_NAME_INVALID",
     "PE_DELAY_IMPORT_TABLE_UNTERMINATED",
+    "PE_DIRECTORY_TABLE_TRUNCATED",
     "PE_IMPORT_COUNT_EXCEEDED",
     "PE_IMPORT_NAME_INVALID",
     "PE_IMPORT_NAME_NOT_ASCII",
     "PE_IMPORT_NAME_OUT_OF_BOUNDS",
     "PE_IMPORT_NAME_UNTERMINATED",
     "PE_IMPORT_TABLE_UNTERMINATED",
+    "PE_OPTIONAL_HEADER_TRUNCATED",
     "PE_OPTIONAL_HEADER_UNSUPPORTED",
     "PE_RVA_UNMAPPED",
     "PE_SECTION_TABLE_INVALID",
@@ -346,9 +348,23 @@ def _runtime_file_id(path_token: str, digest: str) -> str:
 _CHILD_PROBE = r'''
 import json
 import os
+import stat
 import sys
 
-project_root, program_path, input_path, crypto_root, expected_pycache_prefix = sys.argv[1:6]
+(
+    project_root,
+    program_path,
+    input_path,
+    crypto_root,
+    expected_pycache_prefix,
+    max_file_bytes_raw,
+) = sys.argv[1:7]
+try:
+    max_file_bytes = int(max_file_bytes_raw)
+except ValueError:
+    raise SystemExit(83) from None
+if max_file_bytes < 1:
+    raise SystemExit(83)
 if (
     not sys.dont_write_bytecode
     or not sys.pycache_prefix
@@ -368,8 +384,30 @@ structural_core_modules = set(sys.modules)
 from cisco_toolkit import transition_dsl as dsl
 from cisco_toolkit import transition_tcb_review as tcb_review
 
-program_raw = open(program_path, "rb").read()
-input_raw = open(input_path, "rb").read()
+def read_bounded_asset(path):
+    chunks = []
+    total = 0
+    with open(path, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size < 0 or before.st_size > max_file_bytes:
+            raise SystemExit(83)
+        while True:
+            chunk = handle.read(min(1024 * 1024, max_file_bytes - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_file_bytes:
+                raise SystemExit(83)
+            chunks.append(chunk)
+        after = os.fstat(handle.fileno())
+    before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if before_identity != after_identity or total != before.st_size:
+        raise SystemExit(83)
+    return b"".join(chunks)
+
+program_raw = read_bounded_asset(program_path)
+input_raw = read_bounded_asset(input_path)
 receipt_raw = dsl.run_pack_abi("evaluate", program_raw, input_raw)
 receipt = contract.parse_canonical_json_bytes(receipt_raw, require_canonical=True)
 if (
@@ -564,19 +602,32 @@ def parse_pe_imports(raw: bytes, *, max_imports: int = DEFAULT_MAX_IMPORTS_PER_F
         optional_size = _u16(raw, pe_offset + 20)
         optional = pe_offset + 24
         section_table = optional + optional_size
-        if section_count < 1 or section_count > 1024 or section_table + section_count * 40 > len(raw):
+        if (
+                section_count < 1
+                or section_count > 1024
+                or optional_size < 2
+                or section_table + section_count * 40 > len(raw)
+        ):
             raise RuntimeInventoryError("PE_SECTION_TABLE_INVALID")
         magic = _u16(raw, optional)
         if magic == 0x10B:
+            directory_base_size = 96
             directory_offset = optional + 96
-            directory_count = _u32(raw, optional + 92)
-            image_base = _u32(raw, optional + 28)
         elif magic == 0x20B:
+            directory_base_size = 112
             directory_offset = optional + 112
-            directory_count = _u32(raw, optional + 108)
-            image_base = _u64(raw, optional + 24)
         else:
             raise RuntimeInventoryError("PE_OPTIONAL_HEADER_UNSUPPORTED")
+        if optional_size < directory_base_size:
+            raise RuntimeInventoryError("PE_OPTIONAL_HEADER_TRUNCATED")
+        if magic == 0x10B:
+            directory_count = _u32(raw, optional + 92)
+            image_base = _u32(raw, optional + 28)
+        else:
+            directory_count = _u32(raw, optional + 108)
+            image_base = _u64(raw, optional + 24)
+        if directory_count > (optional_size - directory_base_size) // 8:
+            raise RuntimeInventoryError("PE_DIRECTORY_TABLE_TRUNCATED")
         size_of_headers = _u32(raw, optional + 60)
         sections: list[tuple[int, int, int, int]] = []
         for index in range(section_count):
@@ -606,6 +657,8 @@ def parse_pe_imports(raw: bytes, *, max_imports: int = DEFAULT_MAX_IMPORTS_PER_F
 
         imports: list[str] = []
         import_rva, import_size = directory(1)
+        if bool(import_rva) != bool(import_size):
+            raise RuntimeInventoryError("PE_IMPORT_TABLE_UNTERMINATED")
         if import_rva and import_size:
             cursor = rva_offset(import_rva)
             limit = min(len(raw), cursor + import_size)
@@ -622,6 +675,8 @@ def parse_pe_imports(raw: bytes, *, max_imports: int = DEFAULT_MAX_IMPORTS_PER_F
 
         delay_imports: list[str] = []
         delay_rva, delay_size = directory(13)
+        if bool(delay_rva) != bool(delay_size):
+            raise RuntimeInventoryError("PE_DELAY_IMPORT_TABLE_UNTERMINATED")
         if delay_rva and delay_size:
             cursor = rva_offset(delay_rva)
             limit = min(len(raw), cursor + delay_size)
@@ -913,7 +968,8 @@ def _probe_child_with_cache(
         distribution_import_root: Path,
         pycache_prefix: Path,
         *,
-        timeout_seconds: int) -> tuple[dict[str, Any], list[Path], list[str], str]:
+        timeout_seconds: int,
+        max_file_bytes: int) -> tuple[dict[str, Any], list[Path], list[str], str]:
     command = [
         str(python_executable),
         "-I",
@@ -928,6 +984,7 @@ def _probe_child_with_cache(
         str(input_path),
         str(distribution_import_root),
         str(pycache_prefix),
+        str(max_file_bytes),
     ]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
@@ -987,7 +1044,8 @@ def _probe_child(
         python_executable: Path,
         distribution_import_root: Path,
         *,
-        timeout_seconds: int) -> tuple[dict[str, Any], list[Path], list[str], str]:
+        timeout_seconds: int,
+        max_file_bytes: int) -> tuple[dict[str, Any], list[Path], list[str], str]:
     """Exclude preexisting source-cache pyc lookup and disable bytecode writes.
 
     A legacy sourceless ``module.pyc`` directly on an allowed import root remains discoverable,
@@ -1008,6 +1066,7 @@ def _probe_child(
                 distribution_import_root,
                 pycache_prefix,
                 timeout_seconds=timeout_seconds,
+                max_file_bytes=max_file_bytes,
             )
             if any(pycache_prefix.iterdir()):
                 raise RuntimeInventoryError("REFERENCE_PROBE_PYCACHE_WRITE_DETECTED")
@@ -1226,6 +1285,8 @@ def build_reference_runtime_inventory(
         raise RuntimeInventoryError("REFERENCE_ASSET_MISSING") from None
     if not _path_is_within(program_path, root) or not _path_is_within(input_path, root):
         raise RuntimeInventoryError("REFERENCE_ASSET_ESCAPES_ROOT")
+    program_preflight = _read_stable_file(program_path, max_bytes=max_file_bytes)
+    input_preflight = _read_stable_file(input_path, max_bytes=max_file_bytes)
     distribution_import_root = _find_distribution_import_root("cryptography")
     payload, native_paths, native_blind_spots, snapshot_method = _probe_child(
         root,
@@ -1234,6 +1295,7 @@ def build_reference_runtime_inventory(
         executable,
         distribution_import_root,
         timeout_seconds=timeout_seconds,
+        max_file_bytes=max_file_bytes,
     )
     _validate_probe_payload(payload)
     python_root = Path(payload["python"]["base_prefix"]).resolve(strict=True)
@@ -1260,7 +1322,9 @@ def build_reference_runtime_inventory(
     program_file = add_file(program_path, "PROTOTYPE_DECLARATIVE_PROGRAM")
     input_file = add_file(input_path, "PROTOTYPE_TYPED_INPUT")
     if (
-            program_file.digest != payload["prototype"].get("program_digest")
+            (program_file.resolved, program_file.byte_count, program_file.digest) != program_preflight
+            or (input_file.resolved, input_file.byte_count, input_file.digest) != input_preflight
+            or program_file.digest != payload["prototype"].get("program_digest")
             or input_file.digest != payload["prototype"].get("input_digest")
     ):
         raise RuntimeInventoryError("REFERENCE_PROBE_ASSET_BINDING_MISMATCH")

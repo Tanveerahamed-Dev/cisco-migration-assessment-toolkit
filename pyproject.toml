@@ -166,6 +166,7 @@ cisco_toolkit = [
     "data/atlas-r2-tcb-budget-proposal.v1.json",
     "schemas/atlas-r2-execution-evidence-v1.schema.json",
     "schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+    "schemas/atlas-r2-transition-workload-review-v1.schema.json",
     "schemas/atlas-transition-runtime-inventory-v1.schema.json",
     "schemas/*.json",
     "blast_radius_explorer.html",

@@ -194,19 +194,28 @@ _SUPPLEMENTAL_MEASUREMENT_CASES = (
     "COMBINED_EXPRESSION_DEPTH_AND_NODES_AT_N",
     "COMBINED_FUEL_AND_SET_SCAN_AT_N",
 )
+_REPRESENTATIVE_WORKLOAD_REQUIRED_EVIDENCE = (
+    "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE"
+)
+_REPRESENTATIVE_WORKLOAD_DENOMINATOR_ABSENCE_MARKER = (
+    "REPRESENTATIVE_FIELD_WORKLOAD_DENOMINATOR_ABSENT"
+)
+_REPRESENTATIVE_WORKLOAD_ADEQUACY_ABSENCE_BLOCKER = (
+    "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT"
+)
 _BASE_MEASUREMENT_GAPS = (
     "HOST_DEADLINE_CANCELLATION_CONCURRENCY_AND_THROUGHPUT_NOT_MEASURED",
     "PAIRWISE_INPUT_BYTES_NODES_DEPTH_AND_STRING_PRESSURE_NOT_MEASURED",
     "PAIRWISE_PROGRAM_BYTES_RULES_NODES_DEPTH_AND_SETS_NOT_EXHAUSTIVE",
     "PROCESS_RSS_AND_NATIVE_ALLOCATIONS_NOT_MEASURED",
     "REFERENCE_DENOMINATOR_IS_ONE_WINDOWS_CPYTHON_HOST",
-    "REPRESENTATIVE_FIELD_WORKLOAD_DENOMINATOR_ABSENT",
+    _REPRESENTATIVE_WORKLOAD_DENOMINATOR_ABSENCE_MARKER,
     "UNINSTRUMENTED_DEPTH_OPERAND_PATH_STRING_AND_SET_TARGETS_ARE_SIGNED_AGGREGATE_CLAIMS_ONLY",
 )
 _MEASUREMENT_REVIEW_BLOCKERS = (
     "APPROVED_BUDGET_ABSENT",
     "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
-    "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
+    _REPRESENTATIVE_WORKLOAD_ADEQUACY_ABSENCE_BLOCKER,
 )
 _MEASUREMENT_CLAIM_BOUNDARY = (
     "Executable reference measurements for the synthetic R2.0 DSL prototype only; not an "
@@ -239,6 +248,10 @@ _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER = (
     ),
     ("cisco_toolkit.transition_tcb_review", "cisco_toolkit/transition_tcb_review.py"),
     ("cisco_toolkit.transition_verifier", "cisco_toolkit/transition_verifier.py"),
+)
+_STRUCTURAL_CORE_SOURCE_PATH_ROSTER = (
+    *(path for _module, path in _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER),
+    "cisco_toolkit/transition_workload_review.py",
 )
 _CENSUS_PROTOTYPE_FIELDS = (
     "asset_bindings",
@@ -292,6 +305,7 @@ _CENSUS_PROTOTYPE_ASSET_ROSTER = (
 _PARTIAL_CENSUS_REQUIRED_NEXT_EVIDENCE = (
     "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
     "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+    _REPRESENTATIVE_WORKLOAD_REQUIRED_EVIDENCE,
     "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
     "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
     "SELECTED_COMMIT_BINDING",
@@ -304,7 +318,7 @@ _COMPLETE_CENSUS_REQUIRED_NEXT_EVIDENCE = tuple(
 _PARTIAL_PROPOSAL_APPROVAL_BLOCKERS = (
     "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
     "EXTERNAL_INDEPENDENT_NUMERIC_APPROVAL_ABSENT",
-    "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
+    _REPRESENTATIVE_WORKLOAD_ADEQUACY_ABSENCE_BLOCKER,
     "SELECTED_SOURCE_COMMIT_AND_TREE_BINDING_ABSENT",
     "SIGNED_REVIEW_RECEIPT_AND_TRUST_POLICY_ABSENT",
 )
@@ -1870,7 +1884,10 @@ def _validate_structural_census_evidence(
     if actual_core != expected_core:
         raise TransitionContractError("STRUCTURAL_CENSUS_TCB_SOURCE_MISMATCH", "$.structural_census.structural_core")
 
-    expected_core_paths = [path for _module, path in _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER]
+    expected_core_paths = list(_STRUCTURAL_CORE_SOURCE_PATH_ROSTER)
+    expected_runtime_modules = [
+        module for module, _path in _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER
+    ]
     structural_core_probe = _mapping(
         runtime_profile.get("structural_core_probe"),
         "$.runtime.profile.structural_core_probe",
@@ -1880,7 +1897,7 @@ def _validate_structural_census_evidence(
     if (
             [row[0] for row in source_rows] != expected_core_paths
             or structural_core_probe.get("required_module_roster")
-            != [module for module, _path in _STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER]
+            != expected_runtime_modules
     ):
         raise TransitionContractError(
             "RUNTIME_STRUCTURAL_CORE_SOURCE_MISMATCH",
@@ -3345,6 +3362,26 @@ def bind_r2_tcb_budget_freeze_bytes(
         ):
             _reject("r2_tcb_budget_freeze_pack_binding_mismatch")
         validate_pack_tcb_pair(final_pack, tcb, budget_review=review)
+
+        # The current /1 measurements and proposal cannot authorize a freeze while either owner
+        # still declares representative field-workload coverage absent.  Keep this after every
+        # custody/join check so the interlock cannot mask a malformed or substituted input.
+        measurement_review_state = _mapping(
+            measurements["review_state"],
+            "$.measurements.review_state",
+        )
+        proposal_approval = _mapping(proposal["approval"], "$.proposal.approval")
+        if (
+                _REPRESENTATIVE_WORKLOAD_DENOMINATOR_ABSENCE_MARKER
+                in measurements["measurement_gaps"]
+                or _REPRESENTATIVE_WORKLOAD_ADEQUACY_ABSENCE_BLOCKER
+                in measurement_review_state["blockers"]
+                or _REPRESENTATIVE_WORKLOAD_ADEQUACY_ABSENCE_BLOCKER
+                in proposal_approval["blockers"]
+        ):
+            _reject(
+                "r2_tcb_budget_freeze_representative_workload_adequacy_evidence_absent"
+            )
 
         closure = _mapping(runtime["closure"], "$.runtime.closure")
         if (

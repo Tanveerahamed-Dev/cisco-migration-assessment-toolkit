@@ -78,6 +78,57 @@ def test_pe_import_parser_is_bounded_and_non_echoing() -> None:
     assert inventory.parse_pe_imports(b"not-pe").status == "NOT_PE"
 
 
+@pytest.mark.parametrize(
+    ("directory_index", "rva", "size", "error_code"),
+    [
+        (1, 0x1100, 0, "PE_IMPORT_TABLE_UNTERMINATED"),
+        (1, 0, 40, "PE_IMPORT_TABLE_UNTERMINATED"),
+        (13, 0x1140, 0, "PE_DELAY_IMPORT_TABLE_UNTERMINATED"),
+        (13, 0, 64, "PE_DELAY_IMPORT_TABLE_UNTERMINATED"),
+    ],
+)
+def test_pe_import_parser_refuses_inconsistent_directory_pair(
+        directory_index: int,
+        rva: int,
+        size: int,
+        error_code: str) -> None:
+    raw = bytearray(_minimal_pe())
+    optional = 0x80 + 24
+    struct.pack_into("<II", raw, optional + 112 + directory_index * 8, rva, size)
+
+    result = inventory.parse_pe_imports(bytes(raw))
+
+    assert result.status == "MALFORMED"
+    assert result.imports == ()
+    assert result.delay_imports == ()
+    assert result.error_code == error_code
+
+
+def test_pe_import_parser_refuses_declared_optional_header_truncation() -> None:
+    raw = bytearray(_minimal_pe())
+    struct.pack_into("<H", raw, 0x80 + 20, 2)
+
+    result = inventory.parse_pe_imports(bytes(raw))
+
+    assert result.status == "MALFORMED"
+    assert result.imports == ()
+    assert result.delay_imports == ()
+    assert result.error_code == "PE_OPTIONAL_HEADER_TRUNCATED"
+
+
+def test_pe_import_parser_refuses_directory_count_beyond_declared_header() -> None:
+    raw = bytearray(_minimal_pe())
+    optional = 0x80 + 24
+    struct.pack_into("<I", raw, optional + 108, 17)
+
+    result = inventory.parse_pe_imports(bytes(raw))
+
+    assert result.status == "MALFORMED"
+    assert result.imports == ()
+    assert result.delay_imports == ()
+    assert result.error_code == "PE_DIRECTORY_TABLE_TRUNCATED"
+
+
 def test_runtime_path_tokens_do_not_disclose_absolute_roots(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -1191,3 +1242,50 @@ def test_file_read_detects_ceiling_before_hashing(tmp_path: Path, monkeypatch) -
     with pytest.raises(inventory.RuntimeInventoryError, match="RUNTIME_FILE_SIZE_LIMIT_EXCEEDED"):
         inventory._read_stable_file(target, max_bytes=16)
     assert called is False
+
+
+def test_reference_assets_exceeding_ceiling_are_refused_before_child_start(
+        monkeypatch) -> None:
+    called = False
+
+    def forbidden_probe(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("probe child must not start")
+
+    monkeypatch.setattr(inventory, "_probe_child", forbidden_probe)
+    program = ROOT / dsl.DSL_PROTOTYPE_PROGRAM_PATH
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="RUNTIME_FILE_SIZE_LIMIT_EXCEEDED"):
+        inventory.build_reference_runtime_inventory(
+            ROOT,
+            dsl.DSL_PROTOTYPE_PROGRAM_PATH,
+            dsl.DSL_PROTOTYPE_INPUT_PATH,
+            max_file_bytes=program.stat().st_size - 1,
+        )
+    assert called is False
+
+
+def test_probe_child_enforces_asset_ceiling_during_read(tmp_path: Path) -> None:
+    program = ROOT / dsl.DSL_PROTOTYPE_PROGRAM_PATH
+    input_path = ROOT / dsl.DSL_PROTOTYPE_INPUT_PATH
+    pycache_prefix = tmp_path / "pycache"
+    pycache_prefix.mkdir()
+    max_file_bytes = program.stat().st_size - 1
+    assert max_file_bytes > 0
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_HANDSHAKE_INVALID"):
+        inventory._probe_child_with_cache(
+            ROOT,
+            program,
+            input_path,
+            Path(sys.executable).resolve(strict=True),
+            inventory._find_distribution_import_root("cryptography"),
+            pycache_prefix,
+            timeout_seconds=inventory.DEFAULT_PROBE_TIMEOUT_SECONDS,
+            max_file_bytes=max_file_bytes,
+        )
+    assert not any(pycache_prefix.iterdir())

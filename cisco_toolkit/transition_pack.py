@@ -49,6 +49,18 @@ STRUCTURAL_TCB_CENSUS_RESOURCE = "atlas-r2-structural-tcb-census.v1.json"
 TCB_CORE_CENSUS_METHOD = "PYTHON_COVERAGE_EXECUTABLE_STATEMENTS/1"
 LEGACY_TCB_PACK_CENSUS_METHOD = "DECLARATIVE_RULE_COUNT/1"
 TCB_PACK_CENSUS_METHOD = "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1"
+_STRUCTURAL_TCB_CORE_SOURCE_ROLES = (
+    ("cisco_toolkit/transition_contract.py", "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC"),
+    ("cisco_toolkit/transition_dsl.py", "DECLARATIVE_DSL_INTERPRETER"),
+    ("cisco_toolkit/transition_pack.py", "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY"),
+    ("cisco_toolkit/transition_runtime_inventory.py", "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR"),
+    ("cisco_toolkit/transition_tcb_review.py", "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY"),
+    ("cisco_toolkit/transition_verifier.py", "STRUCTURAL_VERIFIER_AND_GATE_MAPPING"),
+    (
+        "cisco_toolkit/transition_workload_review.py",
+        "REPRESENTATIVE_WORKLOAD_REVIEW_AUTHORITY_BOUNDARY",
+    ),
+)
 
 DECLARATIVE_PROGRAM_SOURCE_ROLE = "DECLARATIVE_RULE_PROGRAM"
 SUPPORTED_DENOMINATOR_SOURCE_ROLE = "SUPPORTED_DENOMINATOR"
@@ -380,6 +392,7 @@ def r2_structural_tcb_census() -> dict[str, Any]:
             or independent_review.get("required_next_evidence") != [
                 "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
                 "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+                "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE",
                 "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
                 "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
                 "SELECTED_COMMIT_BINDING",
@@ -399,16 +412,6 @@ def r2_structural_tcb_census() -> dict[str, Any]:
         _pack_reject("structural_tcb_census_invalid")
     measured = 0
     package_root = resources.files("cisco_toolkit")
-    expected_core_roles = {
-        "cisco_toolkit/transition_contract.py": "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC",
-        "cisco_toolkit/transition_dsl.py": "DECLARATIVE_DSL_INTERPRETER",
-        "cisco_toolkit/transition_pack.py": "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY",
-        "cisco_toolkit/transition_runtime_inventory.py": (
-            "RUNTIME_DEPENDENCY_INVENTORY_VALIDATOR"
-        ),
-        "cisco_toolkit/transition_tcb_review.py": "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY",
-        "cisco_toolkit/transition_verifier.py": "STRUCTURAL_VERIFIER_AND_GATE_MAPPING",
-    }
     observed_core_roles: dict[str, str] = {}
     for entry in structural["sources"]:
         if type(entry) is not dict or type(entry.get("path")) is not str:
@@ -433,7 +436,7 @@ def r2_structural_tcb_census() -> dict[str, Any]:
         measured += entry["executable_statements"]
     if (
             measured != structural.get("executable_statements")
-            or observed_core_roles != expected_core_roles
+            or observed_core_roles != dict(_STRUCTURAL_TCB_CORE_SOURCE_ROLES)
     ):
         _pack_reject("structural_tcb_census_invalid")
 

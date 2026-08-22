@@ -37,6 +37,7 @@ _REQUIRED = {
     "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json": "{}\n",
     "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json": "{}\n",
     "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json": "{}\n",
+    "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json": "{}\n",
     "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json": "{}\n",
     "cisco_toolkit/transition_contract.py": "\n",
     "cisco_toolkit/transition_pack.py": "\n",
@@ -45,6 +46,7 @@ _REQUIRED = {
     "cisco_toolkit/transition_dsl.py": "\n",
     "cisco_toolkit/transition_tcb_review.py": "\n",
     "cisco_toolkit/transition_runtime_inventory.py": "\n",
+    "cisco_toolkit/transition_workload_review.py": "\n",
     "webapp/backend/__init__.py": "\n",
     "cisco_migration_assessment_toolkit-3.31.0.dist-info/METADATA": "Name: test\n",
     "cisco_migration_assessment_toolkit-3.31.0.dist-info/WHEEL": "Wheel-Version: 1.0\n",
@@ -131,6 +133,7 @@ def test_client_generated_or_unexpected_members_are_rejected(tmp_path: Path, mem
         "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
         "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
         "cisco_toolkit/transition_contract.py",
         "cisco_toolkit/transition_pack.py",
@@ -139,6 +142,7 @@ def test_client_generated_or_unexpected_members_are_rejected(tmp_path: Path, mem
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
         "cisco_toolkit/transition_runtime_inventory.py",
+        "cisco_toolkit/transition_workload_review.py",
     ),
 )
 def test_required_runtime_assets_cannot_silently_disappear(tmp_path: Path, required: str) -> None:

@@ -34,6 +34,7 @@ _REQUIRED_RUNTIME_ASSETS = (
     _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-structural-tcb-census-v1.schema.json",
     _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-execution-evidence-v1.schema.json",
     _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-tcb-budget-proposal-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-transition-workload-review-v1.schema.json",
     _ROOT / "cisco_toolkit" / "schemas" / "atlas-transition-runtime-inventory-v1.schema.json",
     _ROOT / "cisco_toolkit" / "transition_contract.py",
     _ROOT / "cisco_toolkit" / "transition_pack.py",
@@ -42,6 +43,7 @@ _REQUIRED_RUNTIME_ASSETS = (
     _ROOT / "cisco_toolkit" / "transition_dsl.py",
     _ROOT / "cisco_toolkit" / "transition_tcb_review.py",
     _ROOT / "cisco_toolkit" / "transition_runtime_inventory.py",
+    _ROOT / "cisco_toolkit" / "transition_workload_review.py",
     _ROOT / "reference-data" / "official-sources" / "cisco" / "eol-bulletins.json",
 )
 _missing = [str(path.relative_to(_ROOT)) for path in _REQUIRED_RUNTIME_ASSETS if not path.is_file()]

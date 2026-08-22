@@ -39,6 +39,7 @@ _REQUIRED = {
     "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json": b"{}\n",
     "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json": b"{}\n",
     "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json": b"{}\n",
+    "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json": b"{}\n",
     "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json": b"{}\n",
     "cisco_toolkit/transition_contract.py": b"\n",
     "cisco_toolkit/transition_pack.py": b"\n",
@@ -47,6 +48,7 @@ _REQUIRED = {
     "cisco_toolkit/transition_dsl.py": b"\n",
     "cisco_toolkit/transition_tcb_review.py": b"\n",
     "cisco_toolkit/transition_runtime_inventory.py": b"\n",
+    "cisco_toolkit/transition_workload_review.py": b"\n",
     "tests/fixtures/show_version.txt": b"synthetic fixture only\n",
     "tests/fixtures/device_info.json": b'{"synthetic": true}\n',
 }
@@ -132,6 +134,7 @@ def test_client_or_generated_source_members_are_rejected(tmp_path: Path, member:
         "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
         "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
         "cisco_toolkit/transition_contract.py",
         "cisco_toolkit/transition_pack.py",
@@ -140,6 +143,7 @@ def test_client_or_generated_source_members_are_rejected(tmp_path: Path, member:
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
         "cisco_toolkit/transition_runtime_inventory.py",
+        "cisco_toolkit/transition_workload_review.py",
     ),
 )
 def test_required_source_inputs_cannot_silently_disappear(
