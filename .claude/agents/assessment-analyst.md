@@ -11,7 +11,7 @@ The offline engine is the source of truth. Run it; don't reinvent it.
 - Full assessment: `cisco-assess --devices-file devices.json --template Migration_Assessment_Template_Updated.xlsx --output <out>.xlsx` (entry: `COLLECT_PARSE_V3_23_0:main`, pyproject.toml).
 - Re-analyze without touching devices: add `--no-collect --collection-dir migration_collection_<stamp>`.
 - Inspect an existing run via its `*.snapshot.json` (self-contained contract; `snapshot_state` in `cisco_toolkit/html.py`).
-- For codebase questions, use `python -m graphify query "<q>"` / `explain` / `path` before grepping.
+- For codebase questions, use `py -3.12 -m graphify query "<q>"` / `explain` / `path` before grepping.
 
 ## Method
 1. Establish scope: which devices / collection / snapshot. Prefer `--no-collect` against an existing collection unless a fresh collection is explicitly requested — collection SSHes to live gear, so never run it without explicit instruction.

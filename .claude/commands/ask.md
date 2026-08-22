@@ -15,6 +15,6 @@ the question on logging.
 
 Answer grounded in evidence, not recall:
 - For network/state questions, ground in the latest `*.snapshot.json` / collection and the relevant engine axis; cite the field or evidence line.
-- For codebase questions, use `python -m graphify query "<q>"` / `explain` / `path` first.
+- For codebase questions, use `py -3.12 -m graphify query "<q>"` / `explain` / `path` first.
 - Route deep questions to the right read-only specialist subagent (assessment-analyst, config-security-auditor, topology-reachability-analyst, nrfu-validator) rather than guessing.
 - Be coverage-honest: if the evidence wasn't collected, say so — don't infer device state. Lead with the answer, rank by severity, recommend rather than survey.

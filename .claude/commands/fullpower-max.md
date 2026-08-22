@@ -45,7 +45,7 @@ autonomous act-verify-iterate), not a single pass:
 5. VERIFY BY REFUTATION — never grade your own work. A fresh pass (a
    verification subagent or a clean re-read of ground truth) must actively try
    to DISPROVE each claim before you report it. Run the real tests / build /
-   golden / `graphify update .` and show the ACTUAL output. Where the proof is
+   golden / from the main checkout root `py -3.12 -I -B tools/graphify_guarded.py update .` and show the ACTUAL output. Where the proof is
    runtime behaviour, run it — don't infer.
 
 6. EVALUATE -> REFINE — check against the step-1 criteria. If any fails, feed
