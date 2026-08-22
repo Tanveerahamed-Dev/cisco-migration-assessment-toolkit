@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from jsonschema import Draft202012Validator
 
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_dsl as dsl
@@ -222,16 +224,35 @@ def _resign(material: dict[str, Any], *, signing_material: bytes | None = None) 
 
 
 def _verify(material: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
-    policy = tr.bind_external_tcb_budget_review_trust_policy_bytes(
-        tc.canonical_json_bytes(material["policy"])
-    )
+    policy_raw = tc.canonical_json_bytes(material["policy"])
+    policy = tr.bind_external_tcb_budget_review_trust_policy_bytes(policy_raw)
     return tr.verify_tcb_budget_review_evidence(
         tc.canonical_json_bytes(material["receipt"]),
         tc.canonical_json_bytes(material["signature"]),
         policy,
         material["public_key_raw"],
         material["bindings"],
+        tc.bytes_digest(policy_raw),
     )
+
+
+def _require_current(
+        material: dict[str, Any],
+        verified: tr.VerifiedTCBBudgetReview,
+        ) -> tr.VerifiedTCBBudgetReview:
+    policy_raw = tc.canonical_json_bytes(material["policy"])
+    return tr.require_verified_tcb_budget_review(
+        verified,
+        tr.bind_external_tcb_budget_review_trust_policy_bytes(policy_raw),
+        tc.bytes_digest(policy_raw),
+    )
+
+
+def _bound_policy(
+        policy: dict[str, Any],
+        ) -> tuple[tr.BoundTCBBudgetReviewTrustPolicy, str]:
+    raw = tc.canonical_json_bytes(policy)
+    return tr.bind_external_tcb_budget_review_trust_policy_bytes(raw), tc.bytes_digest(raw)
 
 
 def _assert_refusal(call: Any, code: str) -> tr.TCBBudgetReviewError:
@@ -643,11 +664,228 @@ def test_signed_approved_review_binds_candidate_budgets_profile_and_exact_bytes(
     assert verified.pack_sloc_budget == 500
     assert verified.dsl_resource_profile == _resource_profile()
     assert verified.wasm_review_state == "UNREVIEWED"
-    assert tr.require_verified_tcb_budget_review(verified) is verified
+    assert verified.bindings_digest == tc.canonical_digest(material["bindings"])
+    current = _require_current(material, verified)
+    assert current is not verified
+    assert current.approved is True
+    assert current.policy_digest == verified.policy_digest
+    assert current.bindings_digest == verified.bindings_digest
 
     detached_profile = verified.dsl_resource_profile
     detached_profile["max_rules"] = 1
     assert verified.dsl_resource_profile["max_rules"] == 128
+
+
+def test_review_policy_digest_pin_is_mandatory_and_exact() -> None:
+    material = _material()
+    receipt_raw = tc.canonical_json_bytes(material["receipt"])
+    signature_raw = tc.canonical_json_bytes(material["signature"])
+    policy, policy_digest = _bound_policy(material["policy"])
+
+    verified = tr.verify_tcb_budget_review_evidence(
+        receipt_raw,
+        signature_raw,
+        policy,
+        material["public_key_raw"],
+        material["bindings"],
+        policy_digest,
+    )
+    assert verified.externally_selected_trust_policy_digest == policy_digest
+
+    _assert_refusal(
+        lambda: tr.verify_tcb_budget_review_evidence(
+            receipt_raw,
+            signature_raw,
+            policy,
+            material["public_key_raw"],
+            material["bindings"],
+            "not-a-digest",
+        ),
+        "tcb_budget_review_policy_pin_malformed",
+    )
+    _assert_refusal(
+        lambda: tr.verify_tcb_budget_review_evidence(
+            receipt_raw,
+            signature_raw,
+            policy,
+            material["public_key_raw"],
+            material["bindings"],
+            _digest("different externally selected policy"),
+        ),
+        "tcb_budget_review_policy_pin_mismatch",
+    )
+
+
+def test_current_policy_is_rechecked_across_successors_revocation_and_deny_all() -> None:
+    material = _material()
+    historical = _verify(material)
+
+    successor_policy = deepcopy(material["policy"])
+    successor_policy.update({
+        "policy_version": "1.0.1",
+        "evaluated_at": "2026-08-24T00:00:00.000000Z",
+    })
+    successor, successor_digest = _bound_policy(successor_policy)
+    refreshed = tr.require_verified_tcb_budget_review(
+        historical,
+        successor,
+        successor_digest,
+    )
+    assert refreshed is not historical
+    assert refreshed.policy_digest == successor_digest
+    assert refreshed.evaluated_at == successor_policy["evaluated_at"]
+    assert refreshed.bindings_digest == historical.bindings_digest
+
+    next_policy = deepcopy(successor_policy)
+    next_policy.update({
+        "policy_version": "1.0.2",
+        "evaluated_at": "2026-08-25T00:00:00.000000Z",
+    })
+    next_bound, next_digest = _bound_policy(next_policy)
+    refreshed_again = tr.require_verified_tcb_budget_review(
+        refreshed,
+        next_bound,
+        next_digest,
+    )
+    assert refreshed_again is not refreshed
+    assert refreshed_again.policy_digest == next_digest
+    assert refreshed_again.evaluated_at == next_policy["evaluated_at"]
+    assert refreshed_again.review_digest == historical.review_digest
+
+    original_policy, original_digest = _bound_policy(material["policy"])
+    _assert_refusal(
+        lambda: tr.require_verified_tcb_budget_review(
+            refreshed_again,
+            original_policy,
+            original_digest,
+        ),
+        "tcb_budget_review_policy_rollback",
+    )
+
+    revoked_policy = deepcopy(next_policy)
+    revoked_policy.update({
+        "policy_version": "1.0.3",
+        "evaluated_at": next_policy["evaluated_at"],
+        "revoked_receipt_digests": [historical.review_digest],
+    })
+    revoked_bound, revoked_digest = _bound_policy(revoked_policy)
+    _assert_refusal(
+        lambda: tr.require_verified_tcb_budget_review(
+            refreshed_again,
+            revoked_bound,
+            revoked_digest,
+        ),
+        "tcb_budget_review_receipt_revoked",
+    )
+
+    detached_subject_policy = deepcopy(next_policy)
+    detached_subject_policy.update({
+        "policy_version": "1.0.3-subject-change",
+        "evaluated_at": "2026-08-26T00:00:00.000000Z",
+    })
+    detached_subject_policy["trusted_keys"][0]["allowed_source_revisions"] = [{
+        "selected_commit": _COMMIT,
+        "selected_tree": _TREE,
+        "tcb_budget_subject_digest": _digest("different current subject"),
+    }]
+    detached_subject, detached_subject_digest = _bound_policy(detached_subject_policy)
+    _assert_refusal(
+        lambda: tr.require_verified_tcb_budget_review(
+            refreshed_again,
+            detached_subject,
+            detached_subject_digest,
+        ),
+        "tcb_budget_review_subject_not_authorized",
+    )
+
+    deny_all_policy = deepcopy(next_policy)
+    deny_all_policy.update({
+        "policy_version": "1.0.3-deny-all",
+        "evaluated_at": next_policy["evaluated_at"],
+        "trusted_keys": [],
+    })
+    schema = json.loads(
+        (ROOT / "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json")
+        .read_text(encoding="utf-8")
+    )
+    policy_validator = Draft202012Validator({
+        "$schema": schema["$schema"],
+        "$defs": schema["$defs"],
+        "$ref": "#/$defs/tcbBudgetReviewTrustPolicy",
+    })
+    policy_validator.validate(deny_all_policy)
+    deny_all, deny_all_digest = _bound_policy(deny_all_policy)
+    _assert_refusal(
+        lambda: tr.require_verified_tcb_budget_review(
+            refreshed_again,
+            deny_all,
+            deny_all_digest,
+        ),
+        "tcb_budget_review_key_not_trusted",
+    )
+
+    expired_policy = deepcopy(next_policy)
+    expired_policy.update({
+        "policy_version": "1.0.3-expired-receipt",
+        "evaluated_at": "2026-10-01T00:00:00.000000Z",
+    })
+    expired, expired_digest = _bound_policy(expired_policy)
+    _assert_refusal(
+        lambda: tr.require_verified_tcb_budget_review(
+            refreshed_again,
+            expired,
+            expired_digest,
+        ),
+        "tcb_budget_review_receipt_not_current",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "bindings_digest",
+        "expected_bindings_raw",
+        "historical_policy_raw",
+        "externally_selected_policy_digest",
+    ),
+)
+def test_current_recheck_rejects_review_binding_and_historical_state_mutation(
+        mutation: str) -> None:
+    material = _material()
+    verified = _verify(material)
+    if mutation == "bindings_digest":
+        object.__setattr__(verified, "bindings_digest", _digest("mutated bindings"))
+    elif mutation == "expected_bindings_raw":
+        hostile_bindings = deepcopy(material["bindings"])
+        hostile_bindings["tcb_budget_subject_digest"] = _digest("mutated subject")
+        object.__setattr__(
+            verified,
+            "_expected_bindings_raw",
+            tc.canonical_json_bytes(hostile_bindings),
+        )
+    elif mutation == "historical_policy_raw":
+        hostile_policy = deepcopy(material["policy"])
+        hostile_policy.update({
+            "policy_version": "hostile-policy-replacement",
+            "evaluated_at": "2026-08-24T00:00:00.000000Z",
+        })
+        object.__setattr__(
+            verified,
+            "_trust_policy_raw",
+            tc.canonical_json_bytes(hostile_policy),
+        )
+    else:
+        object.__setattr__(
+            verified,
+            "externally_selected_trust_policy_digest",
+            _digest("mutated external pin"),
+        )
+    object.__setattr__(verified, "_integrity_digest", verified._compute_integrity_digest())
+
+    _assert_refusal(
+        lambda: _require_current(material, verified),
+        "verified_tcb_budget_review_mutated",
+    )
 
 
 def test_detached_freeze_joins_exact_evidence_source_commit_review_and_frozen_tcb() -> None:
@@ -887,36 +1125,56 @@ def test_rechained_review_still_rejects_fictional_or_incoherent_evidence(
 
 
 def test_signed_rejected_review_is_verified_but_never_approved() -> None:
-    verified = _verify(_material(decision="REJECTED"))
+    material = _material(decision="REJECTED")
+    verified = _verify(material)
 
     assert verified.decision == "REJECTED"
     assert verified.approved is False
-    assert tr.require_verified_tcb_budget_review(verified) is verified
+    assert _require_current(material, verified).approved is False
 
 
 def test_review_object_is_sealed_and_detached_values_never_acquire_authority() -> None:
-    verified = _verify(_material())
+    material = _material()
+    verified = _verify(material)
+    policy_raw = tc.canonical_json_bytes(material["policy"])
+    current_policy = tr.bind_external_tcb_budget_review_trust_policy_bytes(policy_raw)
 
     with pytest.raises(AttributeError, match="immutable"):
         verified.approved = False
     _assert_refusal(
-        lambda: tr.require_verified_tcb_budget_review({}),
+        lambda: tr.require_verified_tcb_budget_review(
+            {},
+            current_policy,
+            tc.bytes_digest(policy_raw),
+        ),
         "detached_or_unverified_tcb_budget_review",
     )
 
     object.__setattr__(verified, "core_sloc_budget", 1)
     _assert_refusal(
-        lambda: tr.require_verified_tcb_budget_review(verified),
+        lambda: tr.require_verified_tcb_budget_review(
+            verified,
+            current_policy,
+            tc.bytes_digest(policy_raw),
+        ),
         "verified_tcb_budget_review_mutated",
     )
 
-    rejected = _verify(_material(decision="REJECTED"))
+    rejected_material = _material(decision="REJECTED")
+    rejected = _verify(rejected_material)
+    rejected_policy_raw = tc.canonical_json_bytes(rejected_material["policy"])
     object.__setattr__(rejected, "decision", "APPROVED")
     object.__setattr__(rejected, "approved", True)
     object.__setattr__(rejected, "core_sloc_budget", 1)
     object.__setattr__(rejected, "_integrity_digest", rejected._compute_integrity_digest())
     _assert_refusal(
-        lambda: tr.require_verified_tcb_budget_review(rejected),
+        lambda: tr.require_verified_tcb_budget_review(
+            rejected,
+            tr.bind_external_tcb_budget_review_trust_policy_bytes(
+                rejected_policy_raw
+            ),
+            tc.bytes_digest(rejected_policy_raw),
+        ),
         "verified_tcb_budget_review_mutated",
     )
 
@@ -933,6 +1191,7 @@ def test_policy_requires_the_separate_exact_byte_channel_and_detects_mutation() 
             material["policy"],  # type: ignore[arg-type]
             material["public_key_raw"],
             material["bindings"],
+            tc.bytes_digest(tc.canonical_json_bytes(material["policy"])),
         ),
         "external_tcb_budget_review_trust_policy_required",
     )
@@ -1223,6 +1482,7 @@ def test_noncanonical_duplicate_and_hostile_values_are_remapped_without_echo() -
             policy,
             material["public_key_raw"],
             material["bindings"],
+            tc.bytes_digest(tc.canonical_json_bytes(material["policy"])),
         ),
         "tcb_budget_review_evidence_malformed",
     )

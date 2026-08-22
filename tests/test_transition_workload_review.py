@@ -195,6 +195,21 @@ def _verify(material: dict[str, Any]) -> wr.VerifiedTransitionWorkloadReview:
         wr.bind_external_workload_review_trust_policy_bytes(material["policy_raw"]),
         material["public_key_raw"],
         material["bindings"],
+        tc.bytes_digest(material["policy_raw"]),
+    )
+
+
+def _require_current(
+        material: dict[str, Any],
+        verified: wr.VerifiedTransitionWorkloadReview,
+        ) -> wr.VerifiedTransitionWorkloadReview:
+    policy = wr.bind_external_workload_review_trust_policy_bytes(
+        material["policy_raw"]
+    )
+    return wr.require_verified_transition_workload_review(
+        verified,
+        policy,
+        tc.bytes_digest(material["policy_raw"]),
     )
 
 
@@ -249,8 +264,13 @@ def test_ready_evidence_can_receive_separate_signed_adequacy_decision() -> None:
     assert verified.adequate is True
     assert verified.evidence_state == wr.WORKLOAD_EVIDENCE_READY
     assert verified.evidence_digest == material["evidence"].digest
+    assert verified.bindings_digest == tc.canonical_digest(material["bindings"])
     assert verified.selected_commit == _COMMIT
-    assert wr.require_verified_transition_workload_review(verified) is verified
+    current = _require_current(material, verified)
+    assert current is not verified
+    assert current.adequate is True
+    assert current.policy_digest == tc.bytes_digest(material["policy_raw"])
+    assert current.bindings_digest == verified.bindings_digest
     with pytest.raises(AttributeError):
         verified.decision = wr.WORKLOAD_REVIEW_INADEQUATE
 
@@ -285,6 +305,7 @@ def test_candidate_binding_and_detached_signature_mutations_are_refused() -> Non
             wr.bind_external_workload_review_trust_policy_bytes(material["policy_raw"]),
             material["public_key_raw"],
             hostile_bindings,
+            tc.bytes_digest(material["policy_raw"]),
         ),
         "workload_review_candidate_binding_mismatch",
     )
@@ -323,9 +344,239 @@ def test_revocation_and_producer_reviewer_identity_are_refused() -> None:
     _refuses(lambda: _verify(material), "workload_reviewer_producer_identity_conflict")
 
 
-def test_verified_review_cannot_be_forged_by_constructor_or_plain_mapping() -> None:
+def test_external_policy_digest_pin_is_required_and_exact() -> None:
+    material = _material()
+    policy = wr.bind_external_workload_review_trust_policy_bytes(material["policy_raw"])
+
     _refuses(
-        lambda: wr.require_verified_transition_workload_review({"decision": "ADEQUATE"}),
+        lambda: wr.verify_transition_workload_review(
+            material["evidence"],
+            material["receipt_raw"],
+            material["signature_raw"],
+            policy,
+            material["public_key_raw"],
+            material["bindings"],
+            "sha256:" + "0" * 64,
+        ),
+        "workload_review_policy_pin_mismatch",
+    )
+    _refuses(
+        lambda: wr.verify_transition_workload_review(
+            material["evidence"],
+            material["receipt_raw"],
+            material["signature_raw"],
+            policy,
+            material["public_key_raw"],
+            material["bindings"],
+            "not-a-digest",
+        ),
+        "workload_review_policy_pin_malformed",
+    )
+
+
+def test_signature_covers_receipt_while_current_policy_remains_live_authority() -> None:
+    material = _material()
+    original_signing_material = wr.workload_review_signing_material(
+        material["receipt_raw"], material["policy_raw"]
+    )
+    original_signature = material["signature"]["signature_base64"]
+    verified = _verify(material)
+
+    successor = deepcopy(material["policy"])
+    successor["policy_version"] = "1.0.1"
+    successor["evaluated_at"] = "2026-08-24T00:00:00.000000Z"
+    successor_raw = tc.canonical_json_bytes(successor)
+    assert wr.workload_review_signing_material(
+        material["receipt_raw"], successor_raw
+    ) == original_signing_material
+    assert base64.b64encode(
+        material["private_key"].sign(original_signing_material)
+    ).decode("ascii") == original_signature
+
+    fresh = wr.require_verified_transition_workload_review(
+        verified,
+        wr.bind_external_workload_review_trust_policy_bytes(successor_raw),
+        tc.bytes_digest(successor_raw),
+    )
+    assert fresh.signature_digest == verified.signature_digest
+    assert fresh.policy_digest == tc.bytes_digest(successor_raw)
+    assert fresh.evaluated_at == successor["evaluated_at"]
+
+    revoked = deepcopy(successor)
+    revoked["revoked_receipt_digests"] = [tc.bytes_digest(material["receipt_raw"])]
+    revoked_raw = tc.canonical_json_bytes(revoked)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            fresh,
+            wr.bind_external_workload_review_trust_policy_bytes(revoked_raw),
+            tc.bytes_digest(revoked_raw),
+        ),
+        "workload_review_receipt_revoked",
+    )
+
+
+def test_every_use_rechecks_current_policy_and_rejects_rollback() -> None:
+    material = _material()
+    verified = _verify(material)
+
+    successor = deepcopy(material["policy"])
+    successor["policy_version"] = "1.0.1"
+    successor["evaluated_at"] = "2026-08-24T00:00:00.000000Z"
+    successor_raw = tc.canonical_json_bytes(successor)
+    fresh = wr.require_verified_transition_workload_review(
+        verified,
+        wr.bind_external_workload_review_trust_policy_bytes(successor_raw),
+        tc.bytes_digest(successor_raw),
+    )
+    assert fresh is not verified
+    assert fresh.adequate is True
+    assert fresh.policy_digest == tc.bytes_digest(successor_raw)
+
+    revoked = deepcopy(successor)
+    revoked["revoked_receipt_digests"] = [tc.bytes_digest(material["receipt_raw"])]
+    revoked_raw = tc.canonical_json_bytes(revoked)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            verified,
+            wr.bind_external_workload_review_trust_policy_bytes(revoked_raw),
+            tc.bytes_digest(revoked_raw),
+        ),
+        "workload_review_receipt_revoked",
+    )
+
+    deny_all = deepcopy(successor)
+    deny_all["policy_version"] = "1.0.2"
+    deny_all["trusted_keys"] = []
+    deny_all_raw = tc.canonical_json_bytes(deny_all)
+    assert wr.validate_workload_review_trust_policy(deny_all) == deny_all
+    _schema_validator("trustPolicy").validate(deny_all)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            verified,
+            wr.bind_external_workload_review_trust_policy_bytes(deny_all_raw),
+            tc.bytes_digest(deny_all_raw),
+        ),
+        "workload_review_key_not_trusted",
+    )
+
+    rollback = deepcopy(material["policy"])
+    rollback["policy_version"] = "0.9.0"
+    rollback["evaluated_at"] = "2026-08-22T12:00:00.000000Z"
+    rollback_raw = tc.canonical_json_bytes(rollback)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            fresh,
+            wr.bind_external_workload_review_trust_policy_bytes(rollback_raw),
+            tc.bytes_digest(rollback_raw),
+        ),
+        "workload_review_policy_rollback",
+    )
+
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            verified,
+            wr.bind_external_workload_review_trust_policy_bytes(successor_raw),
+            tc.bytes_digest(material["policy_raw"]),
+        ),
+        "workload_review_policy_pin_mismatch",
+    )
+
+    subject_removed = deepcopy(successor)
+    subject_removed["trusted_keys"][0]["allowed_subjects"][0]["selected_tree"] = (
+        "c" * 40
+    )
+    subject_removed_raw = tc.canonical_json_bytes(subject_removed)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            verified,
+            wr.bind_external_workload_review_trust_policy_bytes(subject_removed_raw),
+            tc.bytes_digest(subject_removed_raw),
+        ),
+        "workload_review_subject_not_authorized",
+    )
+
+    key_changed = deepcopy(successor)
+    key_changed["trusted_keys"][0]["public_key_digest"] = "sha256:" + "0" * 64
+    key_changed_raw = tc.canonical_json_bytes(key_changed)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            verified,
+            wr.bind_external_workload_review_trust_policy_bytes(key_changed_raw),
+            tc.bytes_digest(key_changed_raw),
+        ),
+        "workload_review_key_not_trusted",
+    )
+
+    expired = deepcopy(successor)
+    expired["policy_version"] = "1.0.3"
+    expired["evaluated_at"] = "2026-10-01T00:00:00.000000Z"
+    expired_raw = tc.canonical_json_bytes(expired)
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            verified,
+            wr.bind_external_workload_review_trust_policy_bytes(expired_raw),
+            tc.bytes_digest(expired_raw),
+        ),
+        "workload_review_receipt_not_current",
+    )
+
+
+def test_verified_review_subject_and_policy_bindings_cannot_be_mutated() -> None:
+    material = _material()
+    verified = _verify(material)
+    object.__setattr__(verified, "bindings_digest", "sha256:" + "0" * 64)
+    _refuses(
+        lambda: _require_current(material, verified),
+        "verified_transition_workload_review_mutated",
+    )
+
+    verified = _verify(material)
+    hostile_historical_policy = deepcopy(material["policy"])
+    hostile_historical_policy["policy_version"] = "1.0.1"
+    object.__setattr__(
+        verified,
+        "_trust_policy_raw",
+        tc.canonical_json_bytes(hostile_historical_policy),
+    )
+    _refuses(
+        lambda: _require_current(material, verified),
+        "verified_transition_workload_review_mutated",
+    )
+
+    verified = _verify(material)
+    hostile_bindings = deepcopy(material["bindings"])
+    hostile_bindings["selected_tree"] = "c" * 40
+    object.__setattr__(
+        verified,
+        "_expected_bindings_raw",
+        tc.canonical_json_bytes(hostile_bindings),
+    )
+    _refuses(
+        lambda: _require_current(material, verified),
+        "verified_transition_workload_review_mutated",
+    )
+
+    verified = _verify(material)
+    object.__setattr__(
+        verified,
+        "externally_selected_trust_policy_digest",
+        "sha256:" + "0" * 64,
+    )
+    _refuses(
+        lambda: _require_current(material, verified),
+        "verified_transition_workload_review_mutated",
+    )
+
+
+def test_verified_review_cannot_be_forged_by_constructor_or_plain_mapping() -> None:
+    material = _material()
+    policy = wr.bind_external_workload_review_trust_policy_bytes(material["policy_raw"])
+    _refuses(
+        lambda: wr.require_verified_transition_workload_review(
+            {"decision": "ADEQUATE"},
+            policy,
+            tc.bytes_digest(material["policy_raw"]),
+        ),
         "detached_or_unverified_transition_workload_review",
     )
     with pytest.raises(TypeError):
@@ -337,6 +588,7 @@ def test_verified_review_cannot_be_forged_by_constructor_or_plain_mapping() -> N
             policy=object(),
             public_key_raw=b"\x00" * 32,
             expected_bindings={},
+            externally_selected_trust_policy_digest="sha256:" + "0" * 64,
             _authority=object(),
         )
 

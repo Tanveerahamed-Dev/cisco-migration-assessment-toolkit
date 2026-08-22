@@ -105,6 +105,33 @@ guard is a latent drift bug (this is Law 1 of the Deliverable Excellence Standar
 > `.complete` value is historical state, not authority. No such current policy, key, signature, or
 > receipt is bundled.
 
+> **Representative-workload authority consumption rule:** the workload-review `/1` signature
+> authenticates the canonical receipt, not its replaceable trust policy. Every authority use must
+> obtain the current canonical workload-policy bytes and exact digest from authenticated external
+> custody, then call `require_verified_transition_workload_review` again. The verifier rejects an
+> evaluation-time rollback and fully rechecks current key authorization, subject authorization,
+> receipt lifetime, and revocation, but it cannot authenticate policy selection, succession,
+> custody, trusted time, global anti-rollback, revocation-history completeness, or organizational
+> independence. A consuming gate must use only the fresh return value and independently bind its
+> `bindings_digest`, `policy_digest`, and `evaluated_at` to the selected candidate. Retained
+> `.adequate` is historical state, not authority. No current workload policy, key, signature,
+> receipt, or representative-workload corpus is bundled.
+
+> **TCB-budget authority consumption rule:** the budget-review `/2` signature authenticates its
+> canonical receipt, not the replaceable trust policy, and does not by itself make the signed
+> budget decision current authority. Every authority use
+> must obtain the current canonical TCB-budget policy bytes and exact digest from authenticated
+> external custody, then call `require_verified_tcb_budget_review` again. The verifier rejects an
+> evaluation-time rollback and fully rechecks current key authorization, source-subject
+> authorization, receipt lifetime, and revocation, but it cannot authenticate policy selection,
+> namespace or succession, custody, trusted time, global anti-rollback, revocation-history
+> completeness, reviewer independence, or the truth of reviewed evidence. A consuming gate must
+> use only the fresh return value and independently bind its `bindings_digest`, `policy_digest`,
+> and `evaluated_at` to the selected candidate. A serialized freeze retains the decision-time
+> `review_trust_policy_digest`; its separately held current review is ephemeral authorization and
+> must never rewrite those historical bytes. No current TCB-budget policy, key, signature, receipt,
+> independently approved budget, or positive freeze is bundled.
+
 > **Snapshot-vintage note (coverage-honest):** the three newest evidence blocks — `cable_map`,
 > `architecture_coverage`, `coverage_matrix` — are published by the *current* engine
 > (`COLLECT_PARSE_V3_23_0.py:2485/2624/2629`) but are **absent from the on-disk 20260613 snapshot**,

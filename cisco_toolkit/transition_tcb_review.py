@@ -1,13 +1,17 @@
 """External review boundary for Atlas R2 TCB budgets.
 
-This module verifies one exact, purpose-bound Ed25519 review receipt against a separately supplied
-trust policy and exact 32-byte raw public key.  A verified review approves only the named complete-runtime
-inventory state, numeric TCB budgets, and DSL-only resource profile.  It is not pack qualification and does not make a
-pack executable or promotion-eligible, and has no bundled trust roots or signing path.  The closed
-independence fields are assertions made by that external policy; Atlas validates and binds them but
-cannot prove the reviewer's real-world organizational independence from bytes alone.  The sealed policy
-is the historical policy evaluated for the review decision.  Any future authority-bearing activation
-must also apply a separately supplied current policy and revocation state at use time.
+This module verifies one exact, purpose-bound Ed25519 review receipt against separately supplied
+trust-policy bytes, an externally selected exact policy digest, and an exact 32-byte raw public key.
+A verified review approves only the named complete-runtime inventory state, numeric TCB budgets,
+and DSL-only resource profile. It is not pack qualification and does not make a pack executable or
+promotion-eligible, and has no bundled trust roots or signing path. The closed independence fields
+are assertions made by that external policy; Atlas validates and binds them but cannot prove the
+reviewer's real-world organizational independence from bytes alone.
+
+A freeze preserves the historical policy evaluated when its signed review was joined. Every later
+use must separately supply and exactly pin current policy, re-evaluate revocation and freshness, and
+bind the fresh review subject. Current policy is deliberately not rewritten into historical freeze
+bytes.
 """
 
 from __future__ import annotations
@@ -395,16 +399,19 @@ class BoundTCBBudgetReviewTrustPolicy(MappingABC[str, Any]):
 class BoundR2TCBBudgetFreeze(MappingABC[str, Any]):
     """Canonical detached, non-activating freeze evidence joined to a review and frozen TCB.
 
-    The object seals the decision-time policy snapshot.  R2.0 execution remains CONTRACT_ONLY; a
-    later authority-bearing consumer must independently enforce current policy and revocations.
+    The object seals the decision-time policy snapshot. R2.0 execution remains CONTRACT_ONLY. A
+    consumer must call ``require_bound_r2_tcb_budget_freeze`` with externally selected current
+    policy before ``budget_review`` exposes a fresh current-policy review.
     """
 
     __slots__ = (
+        "_authorization_state_digest",
         "_bound_digest",
         "_bound_raw",
         "_bound_source_bytes",
-        "_budget_review",
+        "_current_budget_review",
         "_evidence_raw_items",
+        "_historical_budget_review",
         "_pack_manifest",
         "_sealed",
         "_supported_denominator_raw",
@@ -417,7 +424,8 @@ class BoundR2TCBBudgetFreeze(MappingABC[str, Any]):
             *,
             digest: str,
             source_bytes: int,
-            budget_review: VerifiedTCBBudgetReview,
+            historical_budget_review: VerifiedTCBBudgetReview,
+            current_budget_review: VerifiedTCBBudgetReview | None,
             evidence_raw_by_digest_field: Mapping[str, bytes],
             pack_manifest: Any,
             supported_denominator_raw: bytes,
@@ -429,7 +437,8 @@ class BoundR2TCBBudgetFreeze(MappingABC[str, Any]):
         object.__setattr__(self, "_bound_raw", canonical_json_bytes(dict(value)))
         object.__setattr__(self, "_bound_digest", digest)
         object.__setattr__(self, "_bound_source_bytes", source_bytes)
-        object.__setattr__(self, "_budget_review", budget_review)
+        object.__setattr__(self, "_historical_budget_review", historical_budget_review)
+        object.__setattr__(self, "_current_budget_review", current_budget_review)
         object.__setattr__(
             self,
             "_evidence_raw_items",
@@ -438,6 +447,11 @@ class BoundR2TCBBudgetFreeze(MappingABC[str, Any]):
         object.__setattr__(self, "_pack_manifest", pack_manifest)
         object.__setattr__(self, "_supported_denominator_raw", supported_denominator_raw)
         object.__setattr__(self, "_tcb_manifest", tcb_manifest)
+        object.__setattr__(
+            self,
+            "_authorization_state_digest",
+            self._compute_authorization_state_digest(),
+        )
         object.__setattr__(self, "_sealed", True)
 
     def _decoded(self) -> dict[str, Any]:
@@ -460,15 +474,44 @@ class BoundR2TCBBudgetFreeze(MappingABC[str, Any]):
             raise AttributeError("BoundR2TCBBudgetFreeze is immutable")
         object.__setattr__(self, name, value)
 
+    @staticmethod
+    def _review_authorization_state(
+            review: VerifiedTCBBudgetReview | None) -> dict[str, Any] | None:
+        if review is None:
+            return None
+        return {
+            "integrity_digest": review._integrity_digest,
+            "review_digest": review.review_digest,
+            "policy_digest": review.policy_digest,
+            "externally_selected_trust_policy_digest": (
+                review.externally_selected_trust_policy_digest
+            ),
+            "bindings_digest": review.bindings_digest,
+            "evaluated_at": review.evaluated_at,
+        }
+
+    def _compute_authorization_state_digest(self) -> str:
+        return canonical_digest({
+            "freeze_digest": self._bound_digest,
+            "historical_review": self._review_authorization_state(
+                self._historical_budget_review
+            ),
+            "current_review": self._review_authorization_state(
+                self._current_budget_review
+            ),
+        })
+
     @property
     def digest(self) -> str:
         return self._bound_digest
 
     @property
     def budget_review(self) -> VerifiedTCBBudgetReview:
-        """Return the immutable verified review sealed into this final freeze."""
+        """Return only a fresh review evaluated under caller-supplied current policy."""
 
-        return self._budget_review
+        if self._current_budget_review is None:
+            _reject("r2_tcb_budget_freeze_current_policy_required")
+        return self._current_budget_review
 
     @property
     def source_bytes(self) -> int:
@@ -476,13 +519,21 @@ class BoundR2TCBBudgetFreeze(MappingABC[str, Any]):
 
 
 class VerifiedTCBBudgetReview:
-    """Sealed result of signature, trust, time, subject, and candidate verification."""
+    """Sealed result of one exact policy evaluation.
+
+    A retained result is historical. Before any authority use, call
+    ``require_verified_tcb_budget_review`` with externally obtained current policy and its exact
+    selected digest, then bind the fresh result's ``bindings_digest``, policy digest, and
+    evaluation time to the independently selected candidate.
+    """
 
     __slots__ = (
         "review_digest",
         "signature_digest",
         "policy_digest",
+        "externally_selected_trust_policy_digest",
         "trusted_public_key_digest",
+        "bindings_digest",
         "selected_commit",
         "selected_tree",
         "structural_census_digest",
@@ -522,6 +573,7 @@ class VerifiedTCBBudgetReview:
             review_digest: str,
             signature_digest: str,
             policy_digest: str,
+            externally_selected_trust_policy_digest: str,
             trusted_public_key_digest: str,
             receipt: Mapping[str, Any],
             evaluated_at: str,
@@ -537,7 +589,11 @@ class VerifiedTCBBudgetReview:
         self.review_digest = review_digest
         self.signature_digest = signature_digest
         self.policy_digest = policy_digest
+        self.externally_selected_trust_policy_digest = (
+            externally_selected_trust_policy_digest
+        )
         self.trusted_public_key_digest = trusted_public_key_digest
+        self.bindings_digest = canonical_digest(dict(expected_bindings))
         self.selected_commit = receipt["selected_commit"]
         self.selected_tree = receipt["selected_tree"]
         self.structural_census_digest = receipt["structural_census_digest"]
@@ -601,7 +657,11 @@ class VerifiedTCBBudgetReview:
             "review_digest": self.review_digest,
             "signature_digest": self.signature_digest,
             "policy_digest": self.policy_digest,
+            "externally_selected_trust_policy_digest": (
+                self.externally_selected_trust_policy_digest
+            ),
             "trusted_public_key_digest": self.trusted_public_key_digest,
+            "bindings_digest": self.bindings_digest,
             "selected_commit": self.selected_commit,
             "selected_tree": self.selected_tree,
             "structural_census_digest": self.structural_census_digest,
@@ -1209,8 +1269,6 @@ def validate_tcb_budget_review_trust_policy(value: Any) -> dict[str, Any]:
         raise TransitionContractError("TCB_BUDGET_REVIEW_PURPOSE_MISMATCH", "$.purpose")
     _timestamp(obj["evaluated_at"], "$.evaluated_at")
     trusted_keys = _array(obj["trusted_keys"], "$.trusted_keys")
-    if not trusted_keys:
-        raise TransitionContractError("TCB_BUDGET_REVIEW_TRUST_KEY_REQUIRED", "$.trusted_keys")
     key_ids: list[str] = []
     for index, value_item in enumerate(trusted_keys):
         path = f"$.trusted_keys[{index}]"
@@ -1397,8 +1455,10 @@ def verify_tcb_budget_review_evidence(
         signature_raw: bytes,
         trust_policy: BoundTCBBudgetReviewTrustPolicy,
         trusted_public_key_raw: bytes,
-        expected_bindings: Mapping[str, Any]) -> VerifiedTCBBudgetReview:
-    """Verify exact review evidence and bind it to the caller's current candidate/evidence set."""
+        expected_bindings: Mapping[str, Any],
+        externally_selected_trust_policy_digest: str,
+        ) -> VerifiedTCBBudgetReview:
+    """Verify exact review evidence against an externally selected policy digest."""
 
     try:
         receipt = validate_tcb_budget_review_receipt(
@@ -1419,6 +1479,15 @@ def verify_tcb_budget_review_evidence(
         bindings = validate_tcb_budget_review_bindings(dict(expected_bindings))
     except (TransitionContractError, TypeError, ValueError):
         _reject("tcb_budget_review_expected_bindings_malformed")
+    try:
+        selected_policy_digest = _digest(
+            externally_selected_trust_policy_digest,
+            "$.externally_selected_trust_policy_digest",
+        )
+    except (TransitionContractError, TypeError, ValueError):
+        _reject("tcb_budget_review_policy_pin_malformed")
+    if selected_policy_digest != policy.digest:
+        _reject("tcb_budget_review_policy_pin_mismatch")
     if (
             type(trusted_public_key_raw) is not bytes
             or len(trusted_public_key_raw) != _ED25519_PUBLIC_KEY_BYTES
@@ -1497,6 +1566,7 @@ def verify_tcb_budget_review_evidence(
         review_digest=review_digest,
         signature_digest=bytes_digest(signature_raw),
         policy_digest=policy.digest,
+        externally_selected_trust_policy_digest=selected_policy_digest,
         trusted_public_key_digest=bytes_digest(trusted_public_key_raw),
         receipt=receipt,
         evaluated_at=policy["evaluated_at"],
@@ -1509,8 +1579,9 @@ def verify_tcb_budget_review_evidence(
     )
 
 
-def require_verified_tcb_budget_review(value: Any) -> VerifiedTCBBudgetReview:
-    """Require an intact object minted by :func:`verify_tcb_budget_review_evidence`."""
+def _require_intact_historical_tcb_budget_review(
+        value: Any) -> VerifiedTCBBudgetReview:
+    """Reverify retained decision-time bytes without treating them as current authority."""
 
     if type(value) is not VerifiedTCBBudgetReview:
         _reject("detached_or_unverified_tcb_budget_review")
@@ -1522,27 +1593,62 @@ def require_verified_tcb_budget_review(value: Any) -> VerifiedTCBBudgetReview:
             value._expected_bindings_raw,
             require_canonical=True,
         )
-        fresh = verify_tcb_budget_review_evidence(
+        historical = verify_tcb_budget_review_evidence(
             value._receipt_raw,
             value._signature_raw,
             rebound_policy,
             value._trusted_public_key_raw,
             expected_bindings,
+            value.externally_selected_trust_policy_digest,
         )
         intact = (
-            fresh._compute_integrity_digest() == value._compute_integrity_digest()
-            and fresh._integrity_digest == value._integrity_digest
-            and fresh._receipt_raw == value._receipt_raw
-            and fresh._signature_raw == value._signature_raw
-            and fresh._trust_policy_raw == value._trust_policy_raw
-            and fresh._trusted_public_key_raw == value._trusted_public_key_raw
-            and fresh._expected_bindings_raw == value._expected_bindings_raw
+            historical._compute_integrity_digest() == value._compute_integrity_digest()
+            and historical._integrity_digest == value._integrity_digest
+            and historical._receipt_raw == value._receipt_raw
+            and historical._signature_raw == value._signature_raw
+            and historical._trust_policy_raw == value._trust_policy_raw
+            and historical._trusted_public_key_raw == value._trusted_public_key_raw
+            and historical._expected_bindings_raw == value._expected_bindings_raw
         )
     except (TransitionContractError, TCBBudgetReviewError, TypeError, AttributeError):
         intact = False
     if not intact:
         _reject("verified_tcb_budget_review_mutated")
     return value
+
+
+def require_verified_tcb_budget_review(
+        value: Any,
+        current_trust_policy: BoundTCBBudgetReviewTrustPolicy,
+        externally_selected_current_trust_policy_digest: str,
+        ) -> VerifiedTCBBudgetReview:
+    """Reverify retained bytes under caller-selected current policy and return fresh authority.
+
+    The selected digest makes the application trust-anchor input explicit. It does not prove
+    policy authenticity, issuer succession, trusted time, key custody, or real-world reviewer
+    independence; those remain external responsibilities.
+    """
+
+    historical = _require_intact_historical_tcb_budget_review(value)
+    current_policy = require_bound_tcb_budget_review_trust_policy(current_trust_policy)
+    current_evaluated_at = _timestamp(current_policy["evaluated_at"], "$.evaluated_at")
+    historical_evaluated_at = _timestamp(
+        historical.evaluated_at,
+        "$.historical_evaluated_at",
+    )
+    if current_evaluated_at < historical_evaluated_at:
+        _reject("tcb_budget_review_policy_rollback")
+    return verify_tcb_budget_review_evidence(
+        historical._receipt_raw,
+        historical._signature_raw,
+        current_policy,
+        historical._trusted_public_key_raw,
+        parse_canonical_json_bytes(
+            historical._expected_bindings_raw,
+            require_canonical=True,
+        ),
+        externally_selected_current_trust_policy_digest,
+    )
 
 
 def _canonical_evidence_object(raw: Any, path: str) -> dict[str, Any]:
@@ -3203,7 +3309,9 @@ def bind_r2_tcb_budget_freeze_bytes(
     try:
         value = parse_canonical_json_bytes(raw, require_canonical=True)
         checked = validate_r2_tcb_budget_freeze(value)
-        review = require_verified_tcb_budget_review(budget_review)
+        # Freeze construction binds the exact decision-time review and policy snapshot. It is
+        # deliberately not a current-policy authorization event.
+        review = _require_intact_historical_tcb_budget_review(budget_review)
         from .transition_pack import (
             TCBBudgetState,
             TCBRuntimeInventoryState,
@@ -3362,7 +3470,7 @@ def bind_r2_tcb_budget_freeze_bytes(
                 or checked["final_pack_manifest_digest"] != final_pack.digest
         ):
             _reject("r2_tcb_budget_freeze_pack_binding_mismatch")
-        validate_pack_tcb_pair(final_pack, tcb, budget_review=review)
+        validate_pack_tcb_pair(final_pack, tcb)
 
         # The current /1 measurements and proposal cannot authorize a freeze while either owner
         # still declares representative field-workload coverage absent.  Keep this after every
@@ -3409,7 +3517,8 @@ def bind_r2_tcb_budget_freeze_bytes(
         checked,
         digest=digest,
         source_bytes=len(raw),
-        budget_review=review,
+        historical_budget_review=review,
+        current_budget_review=None,
         evidence_raw_by_digest_field=evidence_raw_by_digest_field,
         pack_manifest=final_pack,
         supported_denominator_raw=supported_denominator_raw,
@@ -3418,30 +3527,100 @@ def bind_r2_tcb_budget_freeze_bytes(
     )
 
 
-def require_bound_r2_tcb_budget_freeze(value: Any) -> BoundR2TCBBudgetFreeze:
-    """Require intact freeze evidence minted by :func:`bind_r2_tcb_budget_freeze_bytes`."""
+def require_bound_r2_tcb_budget_freeze(
+        value: Any,
+        current_trust_policy: BoundTCBBudgetReviewTrustPolicy,
+        externally_selected_current_trust_policy_digest: str,
+        ) -> BoundR2TCBBudgetFreeze:
+    """Return an intact freeze carrying a freshly current-authorized review.
+
+    Serialized ``review_trust_policy_digest`` remains the historical decision-time policy
+    binding. The supplied current policy and digest are ephemeral authorization inputs and are
+    never rewritten into the freeze bytes.
+    """
 
     if type(value) is not BoundR2TCBBudgetFreeze:
         _reject("bound_r2_tcb_budget_freeze_required")
     try:
+        authorization_state_intact = (
+            value._authorization_state_digest
+            == value._compute_authorization_state_digest()
+        )
         rebound = bind_r2_tcb_budget_freeze_bytes(
             value._bound_raw,
             value._pack_manifest,
             value._tcb_manifest,
-            value._budget_review,
+            value._historical_budget_review,
             dict(value._evidence_raw_items),
             supported_denominator_raw=value._supported_denominator_raw,
         )
         intact = (
-            rebound.digest == value.digest
+            authorization_state_intact
+            and rebound.digest == value.digest
             and rebound.source_bytes == value.source_bytes
             and rebound._bound_raw == value._bound_raw
+            and rebound._historical_budget_review is value._historical_budget_review
+            and rebound._evidence_raw_items == value._evidence_raw_items
+            and rebound._pack_manifest is value._pack_manifest
+            and rebound._supported_denominator_raw == value._supported_denominator_raw
+            and rebound._tcb_manifest is value._tcb_manifest
         )
-    except (AttributeError, ImportError, TransitionContractError, TypeError, ValueError):
+    except (
+            AttributeError,
+            ImportError,
+            TransitionContractError,
+            TypeError,
+            ValueError,
+    ):
         intact = False
     if not intact:
         _reject("bound_r2_tcb_budget_freeze_mutated")
-    return value
+    # Historical review custody is always used to integrity-rebind the serialized freeze above.
+    # A refreshed wrapper separately advances the ephemeral current-policy baseline so a later
+    # call cannot roll policy time back while still preserving the original signed-policy join.
+    authorization_baseline = (
+        value._current_budget_review
+        if value._current_budget_review is not None
+        else value._historical_budget_review
+    )
+    current_review = require_verified_tcb_budget_review(
+        authorization_baseline,
+        current_trust_policy,
+        externally_selected_current_trust_policy_digest,
+    )
+    expected_bindings = {
+        "schema": TCB_BUDGET_REVIEW_BINDINGS_SCHEMA,
+        "selected_commit": rebound["selected_source_commit"],
+        "selected_tree": rebound["selected_source_tree"],
+        **{
+            field: rebound[field]
+            for field in R2_TCB_BUDGET_FREEZE_EVIDENCE_FIELDS
+        },
+        "approved_runtime_inventory_state": rebound[
+            "approved_runtime_inventory_state"
+        ],
+        "tcb_budget_subject_digest": rebound["tcb_budget_subject_digest"],
+    }
+    if (
+            current_review.bindings_digest != canonical_digest(expected_bindings)
+            or current_review.review_digest != rebound["review_receipt_digest"]
+            or current_review.signature_digest != rebound["review_signature_digest"]
+            or current_review.trusted_public_key_digest
+            != rebound["review_public_key_digest"]
+    ):
+        _reject("r2_tcb_budget_freeze_current_review_binding_mismatch")
+    return BoundR2TCBBudgetFreeze(
+        dict(rebound),
+        digest=rebound.digest,
+        source_bytes=rebound.source_bytes,
+        historical_budget_review=value._historical_budget_review,
+        current_budget_review=current_review,
+        evidence_raw_by_digest_field=dict(value._evidence_raw_items),
+        pack_manifest=value._pack_manifest,
+        supported_denominator_raw=value._supported_denominator_raw,
+        tcb_manifest=value._tcb_manifest,
+        _authority=_R2_TCB_BUDGET_FREEZE_AUTHORITY,
+    )
 
 
 __all__ = [

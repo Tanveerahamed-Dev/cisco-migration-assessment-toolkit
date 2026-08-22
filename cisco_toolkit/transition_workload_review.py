@@ -1,11 +1,16 @@
 """Non-authoritative R2.0 workload evidence and independent adequacy review.
 
-The evidence envelope can say only that exact workload material is absent or ready for an
-external reviewer. It cannot call itself representative or adequate. Adequacy is a detached,
-purpose-bound Ed25519 decision authorized by a separately supplied trust policy. This module
-ships no evidence corpus, trust root, policy, key, signature, qualification, or promotion path.
-The policy's independence fields are assertions that Atlas binds; bytes cannot prove real-world
-organizational independence.
+The evidence envelope can say only that an exact workload-evidence manifest is absent or ready
+for an external reviewer. It cannot call itself representative or adequate. Adequacy is a
+detached, purpose-bound Ed25519 decision verified relative to separately supplied current
+trust-policy bytes and an externally selected exact policy digest. Every authority use must
+re-evaluate the retained evidence and receipt under caller-supplied current policy; a retained
+historical result is not current authority.
+
+This module ships no evidence corpus, trust root, policy, key, signature, qualification, or
+promotion path. The selected digest makes the trust-anchor input explicit but cannot authenticate
+policy selection, succession, custody, or time. The policy's independence fields are assertions
+that Atlas binds; bytes cannot prove real-world organizational independence.
 """
 
 from __future__ import annotations
@@ -373,8 +378,6 @@ def validate_workload_review_trust_policy(value: Any) -> dict[str, Any]:
         raise TransitionContractError("WORKLOAD_REVIEW_PURPOSE_MISMATCH", "$.purpose")
     _timestamp(obj["evaluated_at"], "$.evaluated_at")
     trusted_keys = _array(obj["trusted_keys"], "$.trusted_keys")
-    if not trusted_keys:
-        raise TransitionContractError("WORKLOAD_REVIEW_TRUST_KEY_REQUIRED", "$.trusted_keys")
     key_ids: list[str] = []
     for index, item_value in enumerate(trusted_keys):
         path = f"$.trusted_keys[{index}]"
@@ -535,7 +538,12 @@ def _signed_material(receipt_raw: bytes) -> bytes:
 
 
 def workload_review_signing_material(receipt_raw: bytes, trust_policy_raw: bytes) -> bytes:
-    """Validate both inputs and return the domain-separated receipt signing bytes."""
+    """Return receipt-only signing material after validating both supplied documents.
+
+    Policy is a replaceable external authorization and revocation input. It is deliberately
+    excluded from the signature so every verifier use can select, exactly pin, and re-evaluate
+    current policy without asking the reviewer to re-sign an unchanged receipt.
+    """
 
     try:
         receipt = validate_workload_review_receipt(
@@ -554,12 +562,21 @@ def workload_review_signing_material(receipt_raw: bytes, trust_policy_raw: bytes
 
 
 class VerifiedTransitionWorkloadReview:
-    """Opaque immutable result of exact evidence, policy, and signature verification."""
+    """Opaque immutable result of one exact workload-policy evaluation.
+
+    Before using the result as authority, a consumer must call
+    ``require_verified_transition_workload_review`` with externally obtained current policy and
+    its exact selected digest, then independently compare and bind the fresh result's
+    ``bindings_digest``, policy digest, and evaluation time to the gate's selected subject. A
+    retained ``adequate`` property is historical state, not current authority.
+    """
 
     __slots__ = (
-        "review_digest", "signature_digest", "policy_digest", "trusted_public_key_digest",
-        "evidence_digest", "evidence_state", "selected_commit", "selected_tree", "decision",
-        "reviewer_key_id", "issued_at", "valid_from", "valid_until", "evaluated_at", "adequate",
+        "review_digest", "signature_digest", "policy_digest",
+        "externally_selected_trust_policy_digest", "trusted_public_key_digest",
+        "bindings_digest", "evidence_digest", "evidence_state", "selected_commit",
+        "selected_tree", "decision", "reviewer_key_id", "issued_at", "valid_from",
+        "valid_until", "evaluated_at", "adequate",
         "_evidence_raw", "_receipt_raw", "_signature_raw", "_trust_policy_raw",
         "_trusted_public_key_raw", "_expected_bindings_raw", "_integrity_digest", "_sealed",
     )
@@ -574,6 +591,7 @@ class VerifiedTransitionWorkloadReview:
             policy: BoundExternalWorkloadReviewTrustPolicy,
             public_key_raw: bytes,
             expected_bindings: Mapping[str, Any],
+            externally_selected_trust_policy_digest: str,
             _authority: object) -> None:
         if _authority is not _VERIFIED_AUTHORITY:
             raise TypeError("VerifiedTransitionWorkloadReview requires external verification")
@@ -581,7 +599,11 @@ class VerifiedTransitionWorkloadReview:
         self.review_digest = bytes_digest(receipt_raw)
         self.signature_digest = bytes_digest(signature_raw)
         self.policy_digest = policy.digest
+        self.externally_selected_trust_policy_digest = (
+            externally_selected_trust_policy_digest
+        )
         self.trusted_public_key_digest = bytes_digest(public_key_raw)
+        self.bindings_digest = canonical_digest(dict(expected_bindings))
         self.evidence_digest = evidence.digest
         self.evidence_state = evidence["state"]
         self.selected_commit = receipt["selected_commit"]
@@ -616,7 +638,11 @@ class VerifiedTransitionWorkloadReview:
             "review_digest": self.review_digest,
             "signature_digest": self.signature_digest,
             "policy_digest": self.policy_digest,
+            "externally_selected_trust_policy_digest": (
+                self.externally_selected_trust_policy_digest
+            ),
             "trusted_public_key_digest": self.trusted_public_key_digest,
+            "bindings_digest": self.bindings_digest,
             "evidence_digest": self.evidence_digest,
             "evidence_state": self.evidence_state,
             "selected_commit": self.selected_commit,
@@ -637,8 +663,10 @@ def verify_transition_workload_review(
         signature_raw: bytes,
         trust_policy: BoundExternalWorkloadReviewTrustPolicy,
         trusted_public_key_raw: bytes,
-        expected_bindings: Mapping[str, Any]) -> VerifiedTransitionWorkloadReview:
-    """Verify exact evidence, review authority, time, signature, and candidate bindings."""
+        expected_bindings: Mapping[str, Any],
+        externally_selected_trust_policy_digest: str,
+        ) -> VerifiedTransitionWorkloadReview:
+    """Verify exact evidence and receipt bytes against an externally selected policy digest."""
 
     try:
         bound_evidence = require_bound_transition_workload_evidence(evidence)
@@ -657,6 +685,15 @@ def verify_transition_workload_review(
         bindings = validate_workload_review_bindings(dict(expected_bindings))
     except (TransitionContractError, TypeError, ValueError):
         _reject("workload_review_expected_bindings_malformed")
+    try:
+        selected_policy_digest = _digest(
+            externally_selected_trust_policy_digest,
+            "$.externally_selected_trust_policy_digest",
+        )
+    except (TransitionContractError, TypeError, ValueError):
+        _reject("workload_review_policy_pin_malformed")
+    if selected_policy_digest != policy.digest:
+        _reject("workload_review_policy_pin_mismatch")
     if (
             type(trusted_public_key_raw) is not bytes
             or len(trusted_public_key_raw) != _ED25519_PUBLIC_KEY_BYTES
@@ -742,39 +779,64 @@ def verify_transition_workload_review(
         policy=policy,
         public_key_raw=trusted_public_key_raw,
         expected_bindings=bindings,
+        externally_selected_trust_policy_digest=selected_policy_digest,
         _authority=_VERIFIED_AUTHORITY,
     )
 
 
-def require_verified_transition_workload_review(value: Any) -> VerifiedTransitionWorkloadReview:
-    """Reverify every retained byte and reject forged or mutated verified objects."""
+def require_verified_transition_workload_review(
+        value: Any,
+        current_trust_policy: BoundExternalWorkloadReviewTrustPolicy,
+        externally_selected_current_trust_policy_digest: str,
+        ) -> VerifiedTransitionWorkloadReview:
+    """Reverify retained bytes under caller-selected current policy and return fresh authority.
+
+    The selected digest is an explicit application trust-anchor input, not proof of policy
+    authenticity, succession, or organizational independence. Every authority consumer must
+    obtain current policy and its digest from authenticated external custody and compare the
+    returned token's ``bindings_digest`` to its independently selected candidate subject.
+    """
 
     if type(value) is not VerifiedTransitionWorkloadReview:
         _reject("detached_or_unverified_transition_workload_review")
     try:
-        fresh = verify_transition_workload_review(
+        historical = verify_transition_workload_review(
             bind_transition_workload_evidence_bytes(value._evidence_raw),
             value._receipt_raw,
             value._signature_raw,
             bind_external_workload_review_trust_policy_bytes(value._trust_policy_raw),
             value._trusted_public_key_raw,
             parse_canonical_json_bytes(value._expected_bindings_raw, require_canonical=True),
+            value.externally_selected_trust_policy_digest,
         )
         intact = (
-            fresh._compute_integrity_digest() == value._compute_integrity_digest()
-            and fresh._integrity_digest == value._integrity_digest
-            and fresh._evidence_raw == value._evidence_raw
-            and fresh._receipt_raw == value._receipt_raw
-            and fresh._signature_raw == value._signature_raw
-            and fresh._trust_policy_raw == value._trust_policy_raw
-            and fresh._trusted_public_key_raw == value._trusted_public_key_raw
-            and fresh._expected_bindings_raw == value._expected_bindings_raw
+            historical._compute_integrity_digest() == value._compute_integrity_digest()
+            and historical._integrity_digest == value._integrity_digest
+            and historical._evidence_raw == value._evidence_raw
+            and historical._receipt_raw == value._receipt_raw
+            and historical._signature_raw == value._signature_raw
+            and historical._trust_policy_raw == value._trust_policy_raw
+            and historical._trusted_public_key_raw == value._trusted_public_key_raw
+            and historical._expected_bindings_raw == value._expected_bindings_raw
         )
     except (AttributeError, TransitionContractError, TypeError, ValueError, WorkloadReviewError):
         intact = False
     if not intact:
         _reject("verified_transition_workload_review_mutated")
-    return value
+    current_policy = require_bound_workload_review_trust_policy(current_trust_policy)
+    current_evaluated_at = _timestamp(current_policy["evaluated_at"], "$.evaluated_at")
+    historical_evaluated_at = _timestamp(value.evaluated_at, "$.historical_evaluated_at")
+    if current_evaluated_at < historical_evaluated_at:
+        _reject("workload_review_policy_rollback")
+    return verify_transition_workload_review(
+        bind_transition_workload_evidence_bytes(value._evidence_raw),
+        value._receipt_raw,
+        value._signature_raw,
+        current_policy,
+        value._trusted_public_key_raw,
+        parse_canonical_json_bytes(value._expected_bindings_raw, require_canonical=True),
+        externally_selected_current_trust_policy_digest,
+    )
 
 
 __all__ = [

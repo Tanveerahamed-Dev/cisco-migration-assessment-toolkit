@@ -231,7 +231,13 @@ def _frozen_tcb_manifest(
     }
 
 
-def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
+def _verified_budget_review(
+        tcb: dict[str, Any],
+        ) -> tuple[
+            tr.VerifiedTCBBudgetReview,
+            tr.BoundTCBBudgetReviewTrustPolicy,
+            str,
+        ]:
     private_key = Ed25519PrivateKey.generate()
     public_key_raw = _public_key_bytes(private_key)
     subject_digest = tr.tcb_budget_review_subject_digest(tcb)
@@ -335,13 +341,45 @@ def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
             )
         },
     }
-    return tr.verify_tcb_budget_review_evidence(
+    bound_policy = tr.bind_external_tcb_budget_review_trust_policy_bytes(policy_raw)
+    policy_digest = tc.bytes_digest(policy_raw)
+    review = tr.verify_tcb_budget_review_evidence(
         receipt_raw,
         tc.canonical_json_bytes(signature),
-        tr.bind_external_tcb_budget_review_trust_policy_bytes(policy_raw),
+        bound_policy,
         public_key_raw,
         bindings,
+        policy_digest,
     )
+    return review, bound_policy, policy_digest
+
+
+def _activatable_pair_with_budget_review() -> tuple[
+        tp.BoundPackManifest,
+        tp.BoundTCBManifest,
+        tr.VerifiedTCBBudgetReview,
+        tr.BoundTCBBudgetReviewTrustPolicy,
+        str,
+        ]:
+    case = minimal_transition_case()
+    manifest = _qualified_pack_manifest(case)
+    tcb = _frozen_tcb_manifest(
+        denominator_digest=manifest["supported_denominator_digest"],
+        program_digest=manifest["declarative_rules_digest"],
+    )
+    review, policy, policy_digest = _verified_budget_review(tcb)
+    qualification_digest = _digest("activatable pair qualification receipt")
+    tcb.update({
+        "budget_review_receipt_digest": review.review_digest,
+        "qualification_receipt_digest": qualification_digest,
+    })
+    bound_tcb = tp.bind_tcb_manifest_bytes(tc.canonical_json_bytes(tcb))
+    manifest.update({
+        "qualification_receipt_digest": qualification_digest,
+        "tcb_manifest_digest": bound_tcb.digest,
+    })
+    bound_pack = tp.bind_pack_manifest_bytes(tc.canonical_json_bytes(manifest))
+    return bound_pack, bound_tcb, review, policy, policy_digest
 
 
 def _content_binding(role: str, digest: str) -> dict[str, Any]:
@@ -401,7 +439,9 @@ def _qualified_fixture(
         denominator_digest=manifest["supported_denominator_digest"],
         program_digest=manifest["declarative_rules_digest"],
     )
-    budget_review = _verified_budget_review(tcb)
+    budget_review, budget_review_policy, budget_review_policy_digest = (
+        _verified_budget_review(tcb)
+    )
     tcb["budget_review_receipt_digest"] = budget_review.review_digest
     manifest["tcb_manifest_digest"] = tc.canonical_digest(tcb)
     private_key = Ed25519PrivateKey.generate()
@@ -488,6 +528,10 @@ def _qualified_fixture(
         bound_pack,
         bound_tcb,
         budget_review=budget_review,
+        current_budget_review_trust_policy=budget_review_policy,
+        externally_selected_current_budget_review_policy_digest=(
+            budget_review_policy_digest
+        ),
     )
     value["pack_binding"].update({
         "pack_id": bound_pack["pack_id"],
@@ -756,6 +800,81 @@ def _temporal_mode_case(mode: str, operator: str) -> dict[str, Any]:
         key=lambda item: (item["role"], item["digest"])
     )
     return value
+
+
+def test_activatable_pack_pair_requires_and_rechecks_exact_current_budget_policy() -> None:
+    pack, tcb, review, policy, policy_digest = _activatable_pair_with_budget_review()
+    tp.validate_pack_tcb_pair(
+        pack,
+        tcb,
+        budget_review=review,
+        current_budget_review_trust_policy=policy,
+        externally_selected_current_budget_review_policy_digest=policy_digest,
+    )
+
+    with pytest.raises(tc.TransitionContractError) as missing:
+        tp.validate_pack_tcb_pair(pack, tcb, budget_review=review)
+    assert missing.value.code == (
+        "ACTIVATABLE_PACK_REQUIRES_CURRENT_TCB_BUDGET_REVIEW_POLICY"
+    )
+
+    with pytest.raises(tc.TransitionContractError) as wrong_pin:
+        tp.validate_pack_tcb_pair(
+            pack,
+            tcb,
+            budget_review=review,
+            current_budget_review_trust_policy=policy,
+            externally_selected_current_budget_review_policy_digest=_digest(
+                "wrong current budget policy"
+            ),
+        )
+    assert wrong_pin.value.code == "TCB_BUDGET_REVIEW_NOT_VERIFIED"
+
+    revoked_policy = deepcopy(dict(policy))
+    revoked_policy.update({
+        "policy_version": "1.0.1-revoked",
+        "evaluated_at": "2026-08-24T00:00:00.000000Z",
+        "revoked_receipt_digests": [review.review_digest],
+    })
+    revoked_raw = tc.canonical_json_bytes(revoked_policy)
+    with pytest.raises(tc.TransitionContractError) as revoked:
+        tp.validate_pack_tcb_pair(
+            pack,
+            tcb,
+            budget_review=review,
+            current_budget_review_trust_policy=(
+                tr.bind_external_tcb_budget_review_trust_policy_bytes(revoked_raw)
+            ),
+            externally_selected_current_budget_review_policy_digest=(
+                tc.bytes_digest(revoked_raw)
+            ),
+        )
+    assert revoked.value.code == "TCB_BUDGET_REVIEW_NOT_VERIFIED"
+
+    detached_subject_policy = deepcopy(dict(policy))
+    detached_subject_policy.update({
+        "policy_version": "1.0.1-detached-subject",
+        "evaluated_at": "2026-08-24T00:00:00.000000Z",
+    })
+    detached_subject_policy["trusted_keys"][0]["allowed_source_revisions"][0][
+        "tcb_budget_subject_digest"
+    ] = _digest("detached current TCB subject")
+    detached_subject_raw = tc.canonical_json_bytes(detached_subject_policy)
+    with pytest.raises(tc.TransitionContractError) as detached_subject:
+        tp.validate_pack_tcb_pair(
+            pack,
+            tcb,
+            budget_review=review,
+            current_budget_review_trust_policy=(
+                tr.bind_external_tcb_budget_review_trust_policy_bytes(
+                    detached_subject_raw
+                )
+            ),
+            externally_selected_current_budget_review_policy_digest=(
+                tc.bytes_digest(detached_subject_raw)
+            ),
+        )
+    assert detached_subject.value.code == "TCB_BUDGET_REVIEW_NOT_VERIFIED"
 
 
 @pytest.mark.parametrize(

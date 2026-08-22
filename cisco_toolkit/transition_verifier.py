@@ -568,6 +568,8 @@ def verify_transition_case(
         tcb_manifest: Any = None,
         tcb_budget_review: Any = None,
         tcb_budget_freeze: Any = None,
+        current_tcb_budget_review_trust_policy: Any = None,
+        externally_selected_current_tcb_budget_review_policy_digest: str | None = None,
         applicability_qualification: VerifiedQualification | None = None,
         pack_qualification: VerifiedQualification | None = None,
         observation_profile_qualifications: Mapping[str, VerifiedQualification] | None = None,
@@ -658,13 +660,27 @@ def verify_transition_case(
             bound_tcb = require_bound_tcb_manifest(tcb_manifest)
             if tcb_budget_freeze is None:
                 raise ValueError("bound final TCB budget freeze required")
-            budget_freeze = require_bound_r2_tcb_budget_freeze(tcb_budget_freeze)
+            budget_freeze = require_bound_r2_tcb_budget_freeze(
+                tcb_budget_freeze,
+                current_tcb_budget_review_trust_policy,
+                externally_selected_current_tcb_budget_review_policy_digest,
+            )
             if (
                     budget_freeze["final_pack_manifest_digest"] != bound_pack.digest
                     or budget_freeze["final_tcb_manifest_digest"] != bound_tcb.digest
             ):
                 raise ValueError("final pack or TCB does not match budget freeze")
-            validate_pack_tcb_pair(bound_pack, bound_tcb, budget_review=budget_freeze.budget_review)
+            validate_pack_tcb_pair(
+                bound_pack,
+                bound_tcb,
+                budget_review=budget_freeze.budget_review,
+                current_budget_review_trust_policy=(
+                    current_tcb_budget_review_trust_policy
+                ),
+                externally_selected_current_budget_review_policy_digest=(
+                    externally_selected_current_tcb_budget_review_policy_digest
+                ),
+            )
             tcb_pair_verified = True
         except (TypeError, ValueError):
             reasons.add("PACK_TCB_NOT_VERIFIED")

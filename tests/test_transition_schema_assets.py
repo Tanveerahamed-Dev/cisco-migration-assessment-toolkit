@@ -26,7 +26,7 @@ _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:e567480471d2d4b7f654cb9381bbae9ae78f657390bb2fa920329a38a9ce7553"
+_TCB_CENSUS_DIGEST = "sha256:f71abe7ea2d733eec30eaa7a1b4eba962a4bb4074758a1ec7335aa28c40f0d5b"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -143,7 +143,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(value)
     assert tp.r2_structural_tcb_census() == value
-    assert value["structural_core"]["executable_statements"] == 6292
+    assert value["structural_core"]["executable_statements"] == 6335
     assert value["census_method"]["measurement_scope"] == (
         "REFERENCE_ENVIRONMENT_OBSERVATION_WITH_PORTABLE_SOURCE_DIGEST_CHECK"
     )
@@ -179,7 +179,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
         "PARTIAL_NONPORTABLE_PROTOTYPE"
     )
     assert value["executable_prototype"]["runtime_inventory"] == {
-        "asset_digest": "sha256:46889931e62e3cffd6fa579ab214a16ceca4b7d0f6b3122953d630e7f50af0eb",
+        "asset_digest": "sha256:199742e733aaa1009ffc59f605019fc3cc0aee73cd85d444bfe70de8c8c89229",
         "blind_spot_count": 9,
         "claim_boundary": (
             "Exact-byte inventory of the observed isolated reference process and bounded "

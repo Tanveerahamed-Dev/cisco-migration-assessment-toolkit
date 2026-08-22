@@ -1386,7 +1386,11 @@ def run_reviewed_dsl_pack_abi(
         budget_freeze: Any,
         function: str,
         program_raw: bytes,
-        input_raw: bytes) -> bytes:
+        input_raw: bytes,
+        *,
+        current_budget_review_trust_policy: Any = None,
+        externally_selected_current_budget_review_policy_digest: str | None = None,
+        ) -> bytes:
     """Execute only through exact final-freeze custody; callers cannot cite a direct review.
 
     No current R2.0 evidence can mint the required freeze because runtime closure and external
@@ -1398,10 +1402,13 @@ def run_reviewed_dsl_pack_abi(
     try:
         from .transition_tcb_review import require_bound_r2_tcb_budget_freeze
 
-        freeze = require_bound_r2_tcb_budget_freeze(budget_freeze)
+        freeze = require_bound_r2_tcb_budget_freeze(
+            budget_freeze,
+            current_budget_review_trust_policy,
+            externally_selected_current_budget_review_policy_digest,
+        )
         pack = require_bound_pack_manifest(pack_manifest)
         tcb = require_bound_tcb_manifest(tcb_manifest)
-        review = freeze._budget_review
         if (
                 tcb.digest != freeze["final_tcb_manifest_digest"]
                 or tcb.digest != freeze._tcb_manifest.digest
@@ -1413,7 +1420,9 @@ def run_reviewed_dsl_pack_abi(
                 or freeze["runtime_inventory_digest"] is None
         ):
             _fail("REVIEWED_DSL_FINAL_FREEZE_BINDING_MISMATCH")
-        validate_pack_tcb_pair(pack, tcb, budget_review=review)
+        # The reviewed R2.0 path is deliberately CONTRACT_ONLY. Current budget-review
+        # authorization has already been refreshed by the freeze requirement above.
+        validate_pack_tcb_pair(pack, tcb)
         if (
                 pack["execution_state"] != PackExecutionState.CONTRACT_ONLY.value
                 or pack["qualification_state"] != QualificationState.EXPERIMENTAL.value

@@ -247,6 +247,35 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
     ):
         assert runtime_closure_authority_boundary in registry
 
+    for workload_authority_boundary in (
+        "workload-review `/1` signature authenticates the canonical receipt, not its replaceable trust policy",
+        "current canonical workload-policy bytes and exact digest",
+        "call `require_verified_transition_workload_review` again",
+        "rejects an evaluation-time rollback",
+        "current key authorization, subject authorization, receipt lifetime, and revocation",
+        "cannot authenticate policy selection, succession, custody, trusted time, global anti-rollback",
+        "must use only the fresh return value",
+        "Retained `.adequate` is historical state, not authority",
+        "No current workload policy, key, signature, receipt, or representative-workload corpus is bundled",
+    ):
+        assert workload_authority_boundary in registry
+
+    for tcb_budget_authority_boundary in (
+        "budget-review `/2` signature authenticates its canonical receipt, not the replaceable trust policy",
+        "does not by itself make the signed budget decision current authority",
+        "current canonical TCB-budget policy bytes and exact digest",
+        "call `require_verified_tcb_budget_review` again",
+        "rejects an evaluation-time rollback",
+        "current key authorization, source-subject authorization, receipt lifetime, and revocation",
+        "cannot authenticate policy selection, namespace or succession, custody, trusted time, global anti-rollback",
+        "must use only the fresh return value",
+        "serialized freeze retains the decision-time `review_trust_policy_digest`",
+        "separately held current review is ephemeral authorization",
+        "must never rewrite those historical bytes",
+        "No current TCB-budget policy, key, signature, receipt, independently approved budget, or positive freeze is bundled",
+    ):
+        assert tcb_budget_authority_boundary in registry
+
 
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():
     """The snapshot blocks the registry names as owners must be assigned by the engine source.

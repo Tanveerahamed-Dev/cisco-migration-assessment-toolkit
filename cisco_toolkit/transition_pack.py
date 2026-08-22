@@ -1343,7 +1343,10 @@ def validate_pack_tcb_pair(
         pack: Mapping[str, Any],
         tcb: Mapping[str, Any],
         *,
-        budget_review: Any = None) -> None:
+        budget_review: Any = None,
+        current_budget_review_trust_policy: Any = None,
+        externally_selected_current_budget_review_policy_digest: str | None = None,
+        ) -> None:
     checked_pack = validate_pack_manifest(dict(pack))
     checked_tcb = validate_tcb_manifest(dict(tcb))
     if checked_tcb["qualification_receipt_digest"] != checked_pack["qualification_receipt_digest"]:
@@ -1370,13 +1373,25 @@ def validate_pack_tcb_pair(
                 "ACTIVATABLE_PACK_REQUIRES_VERIFIED_TCB_BUDGET_REVIEW",
                 "$",
             )
+        if (
+                current_budget_review_trust_policy is None
+                or externally_selected_current_budget_review_policy_digest is None
+        ):
+            raise TransitionContractError(
+                "ACTIVATABLE_PACK_REQUIRES_CURRENT_TCB_BUDGET_REVIEW_POLICY",
+                "$",
+            )
         try:
             from .transition_tcb_review import (
                 require_verified_tcb_budget_review,
                 tcb_budget_review_subject_digest,
             )
 
-            verified_review = require_verified_tcb_budget_review(budget_review)
+            verified_review = require_verified_tcb_budget_review(
+                budget_review,
+                current_budget_review_trust_policy,
+                externally_selected_current_budget_review_policy_digest,
+            )
         except (ImportError, TypeError, ValueError):
             raise TransitionContractError("TCB_BUDGET_REVIEW_NOT_VERIFIED", "$") from None
         if (

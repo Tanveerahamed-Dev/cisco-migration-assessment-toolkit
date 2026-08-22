@@ -795,7 +795,6 @@
         "evaluated_at": { "$ref": "#/$defs/timestamp" },
         "trusted_keys": {
           "type": "array",
-          "minItems": 1,
           "items": { "$ref": "#/$defs/tcbBudgetReviewTrustedKey" }
         },
         "revoked_receipt_digests": {
