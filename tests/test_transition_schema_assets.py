@@ -25,7 +25,7 @@ _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:6c7f1795152d3bdc2a5583d8976523ec03d5a20ec6a40b589c4951bb709eccf9"
+_TCB_CENSUS_DIGEST = "sha256:5a8d5e46076ed2899995f8cbc968cd116eeba9507192c505ee8823781e966446"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -77,6 +77,7 @@ def test_schema_closed_vocabularies_match_code_owners_exactly() -> None:
         "packExecutionState": _enum_values(tp.PackExecutionState),
         "packSubstrate": _enum_values(tp.PackSubstrate),
         "tcbBudgetState": _enum_values(tp.TCBBudgetState),
+        "tcbRuntimeInventoryState": _enum_values(tp.TCBRuntimeInventoryState),
         "qualificationSubjectKind": _enum_values(tp.QualificationSubjectKind),
     }
     for definition, values in expected.items():
@@ -137,7 +138,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(value)
     assert tp.r2_structural_tcb_census() == value
-    assert value["structural_core"]["executable_statements"] == 1753
+    assert value["structural_core"]["executable_statements"] == 2791
     assert value["census_method"]["measurement_scope"] == (
         "REFERENCE_ENVIRONMENT_OBSERVATION_WITH_PORTABLE_SOURCE_DIGEST_CHECK"
     )
@@ -148,21 +149,61 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
         "executable_statements"
     ] == 82
     assert value["budget_gate"] == {
-        "budget_state": "PENDING_EXECUTABLE_PACK_PROTOTYPE_AND_INDEPENDENT_REVIEW",
+        "budget_state": (
+            "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW"
+        ),
         "core_sloc_budget": None,
         "pack_resource_ceilings": None,
         "pack_sloc_budget": None,
         "promotion_effect": "BLOCKS_R2_0_COMPLETION",
         "reason": (
-            "QCP-001 is CONTRACT_ONLY and no executable DSL/Wasm prototype exists; numeric pack "
-            "budgets or enforcement ceilings would be invented rather than measured."
+            "The executable DSL-only prototype has measured provisional guards, but its "
+            "runtime dependency inventory remains partial and nonportable; numeric core/pack "
+            "budgets and resource ceilings also lack independent approval and a signed review "
+            "receipt bound to a selected commit, tree, census, and measurements."
         ),
+    }
+    assert value["executable_prototype"]["execution_state"] == (
+        "DSL_ONLY_EXECUTABLE_NONAUTHORITATIVE"
+    )
+    assert value["executable_prototype"]["qcp_001_executed"] is False
+    assert value["executable_prototype"]["source_binding_state"] == (
+        "SAME_CHECKOUT_SELF_CHECK_ONLY"
+    )
+    assert value["executable_prototype"]["runtime_inventory_state"] == (
+        "PARTIAL_NONPORTABLE_PROTOTYPE"
+    )
+    assert value["executable_prototype"]["wasm_execution_state"] == (
+        "UNIMPLEMENTED_UNREVIEWED"
+    )
+    assert value["implemented_guard_constants"]["dsl_prototype"] == {
+        "max_expression_depth": 32,
+        "max_expression_nodes": 4096,
+        "max_input_bytes": 1048576,
+        "max_input_nodes": 16384,
+        "max_instruction_fuel": 32768,
+        "max_operator_operands": 256,
+        "max_output_bytes": 131072,
+        "max_path_segments": 32,
+        "max_program_bytes": 262144,
+        "max_rules": 1024,
+        "max_set_items": 1024,
+        "max_string_bytes": 65536,
+        "profile": "DEFAULT_DSL_PROTOTYPE_LIMITS",
+        "state": "PROVISIONAL_MEASURED_NOT_REVIEWED_BUDGET",
     }
     assert value["release3_included"] is False
     assert value["independent_review"]["result"] == (
         "PENDING_BOUND_INDEPENDENT_REVIEW_EVIDENCE"
     )
     assert value["independent_review"]["review_evidence"] is None
+    assert value["independent_review"]["required_next_evidence"] == [
+        "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
+        "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+        "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
+        "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
+        "SELECTED_COMMIT_BINDING",
+    ]
     assert value["repository_basis"] == {
         "selected_commit": None,
         "source_basis_parent_sha": "935213e8babc6fde555627eaa434749397a1617d",

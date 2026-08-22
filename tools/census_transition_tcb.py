@@ -1,11 +1,12 @@
 """Check or rebuild the machine-generated Atlas R2 structural TCB census.
 
-This census measures the implemented structural prototype. It deliberately does not fabricate the
-pack SLOC budget or DSL/Wasm resource ceilings that require a real executable pack prototype and
-independent review under the governing Release 2 strategy.  The default check is portable: it
-reuses the committed reference environment's statement counts and dependency/toolchain observations
-while recomputing every source byte count and digest. ``--reference-check`` recomputes the complete
-measurement and is expected to pass only in the exact recorded reference environment.
+This census measures the implemented structural prototype and exact executable DSL evidence.  The
+measured guard values remain provisional observations: it deliberately does not convert them into
+approved core/pack budgets or resource ceilings without independent signed review.  The default
+check is portable: it reuses the committed reference environment's statement counts and
+dependency/toolchain observations while recomputing every source and evidence byte count and
+digest. ``--reference-check`` recomputes the complete measurement and is expected to pass only in
+the exact recorded reference environment.
 """
 
 from __future__ import annotations
@@ -24,16 +25,35 @@ from typing import Any
 import coverage
 
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from cisco_toolkit import transition_dsl as dsl  # noqa: E402
+
+
 SCHEMA = "atlas.structural-tcb-census/1"
 RESOURCE = "atlas-r2-structural-tcb-census.v1.json"
 SOURCE_BASIS_PARENT_SHA = "935213e8babc6fde555627eaa434749397a1617d"
 CORE_SOURCES = (
     ("cisco_toolkit/transition_contract.py", "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC"),
+    ("cisco_toolkit/transition_dsl.py", "DECLARATIVE_DSL_INTERPRETER"),
     ("cisco_toolkit/transition_pack.py", "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY"),
+    ("cisco_toolkit/transition_tcb_review.py", "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY"),
     ("cisco_toolkit/transition_verifier.py", "STRUCTURAL_VERIFIER_AND_GATE_MAPPING"),
 )
 LEGACY_SOURCE = ("cisco_toolkit/transition_legacy.py", "CONDITIONAL_RELEASE1_REPLAY_ADAPTER")
 REFERENCE_DISTRIBUTIONS = ("coverage", "cryptography", "cffi", "pycparser")
+MEASUREMENT_RESOURCE = "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json"
+MEASUREMENT_TOOL = "tools/measure_transition_dsl_prototype.py"
+PROTOTYPE_ASSETS = (
+    (dsl.DSL_PROTOTYPE_PACK_MANIFEST_PATH, "EXPERIMENTAL_PACK_MANIFEST"),
+    (dsl.DSL_PROTOTYPE_TCB_MANIFEST_PATH, "RECEIPT_SPECIFIC_TCB_MANIFEST"),
+    (dsl.DSL_PROTOTYPE_PROGRAM_PATH, "DECLARATIVE_PROGRAM"),
+    (dsl.DSL_PROTOTYPE_INPUT_PATH, "TYPED_SYNTHETIC_INPUT"),
+    (dsl.DSL_PROTOTYPE_DENOMINATOR_PATH, "SYNTHETIC_SUPPORTED_DENOMINATOR"),
+    (MEASUREMENT_RESOURCE, "REFERENCE_BOUNDARY_MEASUREMENTS"),
+)
 
 
 def _canonical(value: Any) -> bytes:
@@ -89,6 +109,148 @@ def _source_entry(
         "path": relative,
         "role": role,
         "sha256": _digest(raw),
+    }
+
+
+def _file_binding(repository: Path, relative: str, role: str) -> dict[str, Any]:
+    raw = (repository / relative).read_bytes()
+    return {
+        "bytes": len(raw),
+        "path": relative,
+        "role": role,
+        "sha256": _digest(raw),
+    }
+
+
+def _prototype_evidence(repository: Path) -> dict[str, Any]:
+    raw_by_path = {
+        path: (repository / path).read_bytes()
+        for path, _role in PROTOTYPE_ASSETS
+    }
+    pack_raw = raw_by_path[dsl.DSL_PROTOTYPE_PACK_MANIFEST_PATH]
+    tcb_raw = raw_by_path[dsl.DSL_PROTOTYPE_TCB_MANIFEST_PATH]
+    program_raw = raw_by_path[dsl.DSL_PROTOTYPE_PROGRAM_PATH]
+    input_raw = raw_by_path[dsl.DSL_PROTOTYPE_INPUT_PATH]
+    denominator_raw = raw_by_path[dsl.DSL_PROTOTYPE_DENOMINATOR_PATH]
+    try:
+        tcb = json.loads(tcb_raw)
+        source_rows = [*tcb["core_sources"], *tcb["pack_sources"]]
+        source_bytes = {
+            row["path"]: (repository / row["path"]).read_bytes()
+            for row in source_rows
+        }
+        bound = dsl.bind_packaged_dsl_prototype_bytes(
+            pack_raw,
+            tcb_raw,
+            program_raw,
+            denominator_raw,
+            source_bytes,
+        )
+        receipt_raw = dsl.run_bound_pack_abi(bound, "evaluate", input_raw)
+        repeat_raw = dsl.run_bound_pack_abi(bound, "evaluate", input_raw)
+        receipt = json.loads(receipt_raw)
+        measurement_raw = raw_by_path[MEASUREMENT_RESOURCE]
+        measurement = json.loads(measurement_raw)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
+        raise RuntimeError("executable DSL prototype evidence is invalid") from None
+    if receipt_raw != repeat_raw or _canonical(receipt) != receipt_raw:
+        raise RuntimeError("executable DSL prototype replay is not deterministic")
+    if (
+            tcb.get("runtime_inventory_state")
+            != "PARTIAL_NONPORTABLE_PROTOTYPE"
+    ):
+        raise RuntimeError("prototype TCB did not disclose its partial runtime inventory")
+    inner = receipt.get("inner_receipt")
+    if (
+            type(inner) is not dict
+            or receipt.get("source_binding_state") != dsl.DSL_PROTOTYPE_SOURCE_BINDING_STATE
+            or inner.get("outcome") != "EXECUTED_NONAUTHORITATIVE"
+            or inner.get("authoritative") is not False
+            or inner.get("authoritative_gate") is not None
+            or inner.get("promotion_eligible") is not False
+            or inner.get("qualification_effect") != "NONE"
+            or inner.get("supplies_obligation_support") is not False
+    ):
+        raise RuntimeError("executable DSL prototype crossed its non-authority boundary")
+
+    limits = {
+        field: getattr(dsl.DEFAULT_DSL_PROTOTYPE_LIMITS, field)
+        for field in dsl.DSL_PROTOTYPE_LIMIT_FIELDS
+    }
+    bindings = measurement.get("bindings")
+    boundary_rows = measurement.get("boundary_measurements")
+    if (
+            _canonical(measurement) != measurement_raw
+            or measurement.get("schema") != "atlas.dsl-prototype-measurements/1"
+            or measurement.get("authoritative") is not False
+            or measurement.get("approved_budget") is not None
+            or measurement.get("review_evidence") is not None
+            or measurement.get("qualification_effect") != "NONE"
+            or measurement.get("promotion_eligible") is not False
+            or measurement.get("release3_included") is not False
+            or measurement.get("wasm_execution_state") != "UNIMPLEMENTED_UNREVIEWED"
+            or type(bindings) is not dict
+            or bindings.get("default_limit_profile", {}).get("value") != limits
+            or type(boundary_rows) is not list
+            or [row.get("dimension") for row in boundary_rows]
+            != list(dsl.DSL_PROTOTYPE_LIMIT_FIELDS)
+            or any(
+                row.get("shipped_default_limit") != limits[row.get("dimension")]
+                or row.get("reachability") != "REACHABLE_AT_SHIPPED_DEFAULT"
+                or row.get("review_blocker") is not None
+                for row in boundary_rows
+            )
+            or measurement.get("review_state") != {
+                "blockers": [
+                    "APPROVED_BUDGET_ABSENT",
+                    "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+                ],
+                "promotion_effect": "NONE",
+                "qualification_effect": "NONE",
+                "resource_ceiling_effect": "NONE",
+                "state": "PENDING_INDEPENDENT_NUMERIC_REVIEW_AND_SIGNED_EVIDENCE",
+            }
+    ):
+        raise RuntimeError("DSL prototype measurements are not honest pending-review evidence")
+    corrections = measurement.get("design_corrections")
+    if (
+            type(corrections) is not list
+            or len(corrections) != 1
+            or corrections[0].get("dimension") != "max_output_bytes"
+            or corrections[0].get("prior_provisional_value") != 262_144
+            or corrections[0].get("corrected_provisional_value") != 131_072
+            or corrections[0].get("authority_effect")
+            != "NONE_PENDING_INDEPENDENT_REVIEW"
+    ):
+        raise RuntimeError("DSL prototype limit correction evidence is missing")
+
+    return {
+        "asset_bindings": [
+            _file_binding(repository, path, role)
+            for path, role in PROTOTYPE_ASSETS
+        ],
+        "baseline_receipt_digest": _digest(receipt_raw),
+        "claim_boundary": dsl.DSL_PROTOTYPE_CLAIM_BOUNDARY,
+        "execution_state": "DSL_ONLY_EXECUTABLE_NONAUTHORITATIVE",
+        "interpreter_source": _file_binding(
+            repository,
+            dsl.DSL_INTERPRETER_SOURCE_PATH,
+            "DECLARATIVE_DSL_INTERPRETER",
+        ),
+        "measurement_tool": _file_binding(
+            repository,
+            MEASUREMENT_TOOL,
+            "REFERENCE_MEASUREMENT_PRODUCER",
+        ),
+        "pack_id": dsl.DSL_PROTOTYPE_PACK_ID,
+        "pack_version": dsl.DSL_PROTOTYPE_PACK_VERSION,
+        "promotion_eligible": False,
+        "qcp_001_executed": False,
+        "qualification_effect": "NONE",
+        "runtime_inventory_state": "PARTIAL_NONPORTABLE_PROTOTYPE",
+        "source_binding_state": dsl.DSL_PROTOTYPE_SOURCE_BINDING_STATE,
+        "substrate": "DECLARATIVE_DSL_ONLY",
+        "wasm_execution_state": "UNIMPLEMENTED_UNREVIEWED",
     }
 
 
@@ -214,16 +376,21 @@ def _build(repository: Path, *, reference: dict[str, Any] | None = None) -> byte
     r1_manifest = json.loads(
         (repository / "cisco_toolkit/data/atlas-r1-executable-bundle.json").read_bytes()
     )
+    prototype = _prototype_evidence(repository)
     return _canonical({
         "budget_gate": {
-            "budget_state": "PENDING_EXECUTABLE_PACK_PROTOTYPE_AND_INDEPENDENT_REVIEW",
+            "budget_state": (
+                "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW"
+            ),
             "core_sloc_budget": None,
             "pack_resource_ceilings": None,
             "pack_sloc_budget": None,
             "promotion_effect": "BLOCKS_R2_0_COMPLETION",
             "reason": (
-                "QCP-001 is CONTRACT_ONLY and no executable DSL/Wasm prototype exists; numeric "
-                "pack budgets or enforcement ceilings would be invented rather than measured."
+                "The executable DSL-only prototype has measured provisional guards, but its "
+                "runtime dependency inventory remains partial and nonportable; numeric core/pack "
+                "budgets and resource ceilings also lack independent approval and a signed review "
+                "receipt bound to a selected commit, tree, census, and measurements."
             ),
         },
         "census_method": {
@@ -244,6 +411,7 @@ def _build(repository: Path, *, reference: dict[str, Any] | None = None) -> byte
             "source_bundle_path": "cisco_toolkit/data/atlas-r1-source-bundle.json",
             "source_bundle_sha256": _digest(r1_bundle.read_bytes()),
         },
+        "executable_prototype": prototype,
         "implemented_guard_constants": {
             "canonical_json": {
                 "max_bytes": 8 * 1024 * 1024,
@@ -258,6 +426,14 @@ def _build(repository: Path, *, reference: dict[str, Any] | None = None) -> byte
                 "max_total_bytes": 256 * 1024 * 1024,
                 "state": "PROVISIONAL_NOT_PACK_QUALIFICATION_BUDGET",
             },
+            "dsl_prototype": {
+                **{
+                    field: getattr(dsl.DEFAULT_DSL_PROTOTYPE_LIMITS, field)
+                    for field in dsl.DSL_PROTOTYPE_LIMIT_FIELDS
+                },
+                "profile": "DEFAULT_DSL_PROTOTYPE_LIMITS",
+                "state": "PROVISIONAL_MEASURED_NOT_REVIEWED_BUDGET",
+            },
             "legacy_replay": {
                 "max_json_bytes": 64 * 1024 * 1024,
                 "max_request_bytes": 192 * 1024 * 1024,
@@ -270,10 +446,11 @@ def _build(repository: Path, *, reference: dict[str, Any] | None = None) -> byte
             "result": "PENDING_BOUND_INDEPENDENT_REVIEW_EVIDENCE",
             "review_evidence": None,
             "required_next_evidence": [
-                "EXECUTABLE_DSL_OR_WASM_PROTOTYPE",
-                "MEASURED_N_MINUS_1_N_N_PLUS_1_RESOURCE_LIMIT_TESTS",
+                "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
                 "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
-                "SIGNED_REVIEW_RECEIPT_BOUND_TO_THIS_CENSUS_DIGEST",
+                "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
+                "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
+                "SELECTED_COMMIT_BINDING",
             ],
         },
         "reference_runtime_dependencies": runtime_dependencies,

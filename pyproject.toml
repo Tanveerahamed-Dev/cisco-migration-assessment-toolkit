@@ -141,7 +141,7 @@ include = ["cisco_toolkit*", "webapp", "webapp.backend"]
 
 [tool.setuptools.package-data]
 # Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load,
-# transition schemas/QCP/census/pinned R1 replay resources, the single-file explorer template,
+# transition schemas/QCP/census/DSL-prototype/pinned R1 replay resources, the single-file explorer template,
 # verified registry manifest, complete AssessHub SPA, and synthetic demo snapshot. Every installed
 # entry point and the R2.0 structural/replay library boundary is usable from an isolated wheel.
 cisco_toolkit = [
@@ -156,6 +156,13 @@ cisco_toolkit = [
     "data/atlas-r1-retrospective-before.json",
     "data/atlas-r1-retrospective-comparison.json",
     "data/atlas-r2-structural-tcb-census.v1.json",
+    "data/atlas-r2-dsl-prototype-denominator.v1.json",
+    "data/atlas-r2-dsl-prototype-input.v1.json",
+    "data/atlas-r2-dsl-prototype-pack.experimental.json",
+    "data/atlas-r2-dsl-prototype-program.v1.json",
+    "data/atlas-r2-dsl-prototype-tcb.v2.json",
+    "data/atlas-r2-dsl-prototype-measurements.v1.json",
+    "schemas/atlas-r2-execution-evidence-v1.schema.json",
     "schemas/*.json",
     "blast_radius_explorer.html",
 ]

@@ -9,6 +9,7 @@
     "budget_gate",
     "census_method",
     "conditional_legacy_replay_tcb",
+    "executable_prototype",
     "implemented_guard_constants",
     "independent_review",
     "reference_runtime_dependencies",
@@ -25,7 +26,7 @@
       "additionalProperties": false,
       "required": ["budget_state", "core_sloc_budget", "pack_resource_ceilings", "pack_sloc_budget", "promotion_effect", "reason"],
       "properties": {
-        "budget_state": { "const": "PENDING_EXECUTABLE_PACK_PROTOTYPE_AND_INDEPENDENT_REVIEW" },
+        "budget_state": { "const": "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW" },
         "core_sloc_budget": { "type": "null" },
         "pack_resource_ceilings": { "type": "null" },
         "pack_sloc_budget": { "type": "null" },
@@ -59,13 +60,57 @@
         "source_bundle_sha256": { "$ref": "#/$defs/digest" }
       }
     },
+    "executable_prototype": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_bindings",
+        "baseline_receipt_digest",
+        "claim_boundary",
+        "execution_state",
+        "interpreter_source",
+        "measurement_tool",
+        "pack_id",
+        "pack_version",
+        "promotion_eligible",
+        "qcp_001_executed",
+        "qualification_effect",
+        "runtime_inventory_state",
+        "source_binding_state",
+        "substrate",
+        "wasm_execution_state"
+      ],
+      "properties": {
+        "asset_bindings": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/fileBinding" }
+        },
+        "baseline_receipt_digest": { "$ref": "#/$defs/digest" },
+        "claim_boundary": { "const": "Synthetic R2.0 executable conformance evidence only; not QCP-001, qualified, authoritative, portable, sandboxed, or promotion-eligible." },
+        "execution_state": { "const": "DSL_ONLY_EXECUTABLE_NONAUTHORITATIVE" },
+        "interpreter_source": { "$ref": "#/$defs/fileBinding" },
+        "measurement_tool": { "$ref": "#/$defs/fileBinding" },
+        "pack_id": { "const": "ATLAS-R2-DSL-CONFORMANCE" },
+        "pack_version": { "const": "0.1.0-experimental" },
+        "promotion_eligible": { "const": false },
+        "qcp_001_executed": { "const": false },
+        "qualification_effect": { "const": "NONE" },
+        "runtime_inventory_state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" },
+        "source_binding_state": { "const": "SAME_CHECKOUT_SELF_CHECK_ONLY" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" },
+        "wasm_execution_state": { "const": "UNIMPLEMENTED_UNREVIEWED" }
+      }
+    },
     "implemented_guard_constants": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["canonical_json", "content_set", "legacy_replay"],
+      "required": ["canonical_json", "content_set", "dsl_prototype", "legacy_replay"],
       "properties": {
         "canonical_json": { "$ref": "#/$defs/guardSet" },
         "content_set": { "$ref": "#/$defs/guardSet" },
+        "dsl_prototype": { "$ref": "#/$defs/dslGuardSet" },
         "legacy_replay": { "$ref": "#/$defs/guardSet" }
       }
     },
@@ -165,6 +210,53 @@
         ]
       },
       "required": ["state"]
+    },
+    "dslGuardSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_program_bytes",
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_rules",
+        "max_expression_depth",
+        "max_expression_nodes",
+        "max_operator_operands",
+        "max_path_segments",
+        "max_string_bytes",
+        "max_set_items",
+        "max_input_nodes",
+        "max_instruction_fuel",
+        "profile",
+        "state"
+      ],
+      "properties": {
+        "max_program_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_input_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_rules": { "$ref": "#/$defs/positiveInteger" },
+        "max_expression_depth": { "$ref": "#/$defs/positiveInteger" },
+        "max_expression_nodes": { "$ref": "#/$defs/positiveInteger" },
+        "max_operator_operands": { "$ref": "#/$defs/positiveInteger" },
+        "max_path_segments": { "$ref": "#/$defs/positiveInteger" },
+        "max_string_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_set_items": { "$ref": "#/$defs/positiveInteger" },
+        "max_input_nodes": { "$ref": "#/$defs/positiveInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positiveInteger" },
+        "profile": { "const": "DEFAULT_DSL_PROTOTYPE_LIMITS" },
+        "state": { "const": "PROVISIONAL_MEASURED_NOT_REVIEWED_BUDGET" }
+      }
+    },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "path", "role", "sha256"],
+      "properties": {
+        "bytes": { "$ref": "#/$defs/positiveInteger" },
+        "path": { "type": "string", "pattern": "^(cisco_toolkit|tools)/[A-Za-z0-9_./-]+$" },
+        "role": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
     },
     "distribution": {
       "type": "object",

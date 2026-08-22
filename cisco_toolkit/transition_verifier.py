@@ -532,6 +532,7 @@ def verify_transition_case(
         *,
         content: BoundContentSet | None = None,
         tcb_manifest: Any = None,
+        tcb_budget_review: Any = None,
         applicability_qualification: VerifiedQualification | None = None,
         pack_qualification: VerifiedQualification | None = None,
         observation_profile_qualifications: Mapping[str, VerifiedQualification] | None = None,
@@ -600,7 +601,11 @@ def verify_transition_case(
     if tcb_manifest is not None:
         try:
             bound_tcb = require_bound_tcb_manifest(tcb_manifest)
-            validate_pack_tcb_pair(bound_pack, bound_tcb)
+            validate_pack_tcb_pair(
+                bound_pack,
+                bound_tcb,
+                budget_review=tcb_budget_review,
+            )
             tcb_pair_verified = True
         except (TypeError, ValueError):
             reasons.add("PACK_TCB_NOT_VERIFIED")

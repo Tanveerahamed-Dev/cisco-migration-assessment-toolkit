@@ -146,7 +146,17 @@
       "enum": ["DECLARATIVE_DSL_ONLY", "DECLARATIVE_DSL_AND_METERED_WASM_NO_WASI"]
     },
     "tcbBudgetState": {
-      "enum": ["PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW", "FROZEN"]
+      "enum": [
+        "PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW",
+        "PENDING_INDEPENDENT_REVIEW",
+        "FROZEN"
+      ]
+    },
+    "tcbRuntimeInventoryState": {
+      "enum": [
+        "PARTIAL_NONPORTABLE_PROTOTYPE",
+        "COMPLETE_EXACT_RUNTIME_CLOSURE"
+      ]
     },
     "qualificationSubjectKind": {
       "enum": ["APPLICABILITY_PROFILE", "BEHAVIOR_PACK", "OBSERVATION_PROFILE"]
@@ -337,27 +347,107 @@
         }
       ]
     },
-    "tcbResourceCeilings": {
+    "tcbArtifact": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "artifact_id",
+        "artifact_version",
+        "path",
+        "role",
+        "bytes",
+        "digest"
+      ],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/identifier" },
+        "artifact_version": { "$ref": "#/$defs/identifier" },
+        "path": { "type": "string", "minLength": 1 },
+        "role": { "$ref": "#/$defs/identifier" },
+        "bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "tcbComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component_id", "component_version", "content_digest"],
+      "properties": {
+        "component_id": { "$ref": "#/$defs/identifier" },
+        "component_version": { "$ref": "#/$defs/identifier" },
+        "content_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "dslResourceCeilings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_program_bytes",
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_rules",
+        "max_expression_depth",
+        "max_expression_nodes",
+        "max_operator_operands",
+        "max_path_segments",
+        "max_string_bytes",
+        "max_set_items",
+        "max_input_nodes",
+        "max_instruction_fuel"
+      ],
+      "properties": {
+        "max_program_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_rules": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_depth": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_operator_operands": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_path_segments": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_string_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_set_items": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "wasmResourceCeilings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_module_bytes",
         "max_input_bytes",
         "max_output_bytes",
         "max_memory_pages",
+        "max_table_elements",
         "max_call_depth",
         "max_instruction_fuel",
         "max_host_deadline_ms"
       ],
       "properties": {
+        "max_module_bytes": { "$ref": "#/$defs/positivePortableInteger" },
         "max_input_bytes": { "$ref": "#/$defs/positivePortableInteger" },
         "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
         "max_memory_pages": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_table_elements": { "$ref": "#/$defs/positivePortableInteger" },
         "max_call_depth": { "$ref": "#/$defs/positivePortableInteger" },
         "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" },
         "max_host_deadline_ms": { "$ref": "#/$defs/positivePortableInteger" }
       }
     },
-    "tcbManifest": {
+    "tcbResourceCeilingsV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dsl", "wasm"],
+      "properties": {
+        "dsl": { "$ref": "#/$defs/dslResourceCeilings" },
+        "wasm": {
+          "oneOf": [
+            { "$ref": "#/$defs/wasmResourceCeilings" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "tcbManifestV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -393,42 +483,165 @@
         "abi_version": { "const": "ATLAS_PACK_ABI/1" },
         "qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
         "supported_denominator_digest": { "$ref": "#/$defs/digest" },
-        "budget_state": { "$ref": "#/$defs/tcbBudgetState" },
-        "core_sloc_budget": {
-          "oneOf": [{ "$ref": "#/$defs/positivePortableInteger" }, { "type": "null" }]
+        "budget_state": { "const": "PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW" },
+        "core_sloc_budget": { "type": "null" },
+        "pack_sloc_budget": { "type": "null" },
+        "resource_ceilings": { "type": "null" }
+      },
+      "$comment": "Migration-read-only v1 manifests cannot freeze budgets or activate packs."
+    },
+    "tcbManifestV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "manifest_id",
+        "substrate",
+        "core_sources",
+        "pack_sources",
+        "transitive_dependencies",
+        "runtime_inventory_state",
+        "core_census_method",
+        "pack_census_method",
+        "core_executable_lines",
+        "pack_executable_lines",
+        "dsl_interpreter",
+        "wasm_runtime",
+        "toolchains",
+        "abi_version",
+        "qualification_receipt_digest",
+        "supported_denominator_digest",
+        "budget_review_receipt_digest",
+        "budget_state",
+        "core_sloc_budget",
+        "pack_sloc_budget",
+        "resource_ceilings"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.tcb-manifest/2" },
+        "manifest_id": { "$ref": "#/$defs/identifier" },
+        "substrate": { "$ref": "#/$defs/packSubstrate" },
+        "core_sources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/tcbArtifact" }
         },
-        "pack_sloc_budget": {
-          "oneOf": [{ "$ref": "#/$defs/positivePortableInteger" }, { "type": "null" }]
+        "pack_sources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/tcbArtifact" }
         },
+        "transitive_dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/tcbComponent" }
+        },
+        "runtime_inventory_state": { "$ref": "#/$defs/tcbRuntimeInventoryState" },
+        "core_census_method": {
+          "const": "PYTHON_COVERAGE_EXECUTABLE_STATEMENTS/1"
+        },
+        "pack_census_method": { "const": "DECLARATIVE_RULE_COUNT/1" },
+        "core_executable_lines": { "$ref": "#/$defs/positivePortableInteger" },
+        "pack_executable_lines": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "dsl_interpreter": { "$ref": "#/$defs/tcbComponent" },
+        "wasm_runtime": {
+          "oneOf": [{ "$ref": "#/$defs/tcbComponent" }, { "type": "null" }]
+        },
+        "toolchains": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/tcbComponent" }
+        },
+        "abi_version": { "const": "ATLAS_PACK_ABI/1" },
+        "qualification_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
+        "supported_denominator_digest": { "$ref": "#/$defs/digest" },
+        "budget_review_receipt_digest": { "$ref": "#/$defs/nullableDigest" },
+        "budget_state": { "enum": ["PENDING_INDEPENDENT_REVIEW", "FROZEN"] },
+        "core_sloc_budget": { "$ref": "#/$defs/nullablePositivePortableInteger" },
+        "pack_sloc_budget": { "$ref": "#/$defs/nullablePositivePortableInteger" },
         "resource_ceilings": {
-          "oneOf": [{ "$ref": "#/$defs/tcbResourceCeilings" }, { "type": "null" }]
+          "oneOf": [{ "$ref": "#/$defs/tcbResourceCeilingsV2" }, { "type": "null" }]
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": {
-              "budget_state": { "const": "PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW" }
-            },
+            "properties": { "budget_state": { "const": "PENDING_INDEPENDENT_REVIEW" } },
             "required": ["budget_state"]
           },
           "then": {
             "properties": {
+              "budget_review_receipt_digest": { "type": "null" },
               "core_sloc_budget": { "type": "null" },
               "pack_sloc_budget": { "type": "null" },
               "resource_ceilings": { "type": "null" }
             }
+          }
+        },
+        {
+          "if": {
+            "properties": { "budget_state": { "const": "FROZEN" } },
+            "required": ["budget_state"]
+          },
+          "then": {
+            "properties": {
+              "runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+              "budget_review_receipt_digest": { "$ref": "#/$defs/digest" },
+              "core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+              "pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+              "resource_ceilings": { "$ref": "#/$defs/tcbResourceCeilingsV2" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "substrate": { "const": "DECLARATIVE_DSL_ONLY" } },
+            "required": ["substrate"]
+          },
+          "then": {
+            "properties": {
+              "wasm_runtime": { "type": "null" },
+              "resource_ceilings": {
+                "oneOf": [
+                  { "type": "null" },
+                  {
+                    "allOf": [
+                      { "$ref": "#/$defs/tcbResourceCeilingsV2" },
+                      { "properties": { "wasm": { "type": "null" } } }
+                    ]
+                  }
+                ]
+              }
+            }
           },
           "else": {
             "properties": {
-              "core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
-              "pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
-              "resource_ceilings": { "$ref": "#/$defs/tcbResourceCeilings" }
+              "wasm_runtime": { "$ref": "#/$defs/tcbComponent" },
+              "resource_ceilings": {
+                "oneOf": [
+                  { "type": "null" },
+                  {
+                    "allOf": [
+                      { "$ref": "#/$defs/tcbResourceCeilingsV2" },
+                      { "properties": { "wasm": { "$ref": "#/$defs/wasmResourceCeilings" } } }
+                    ]
+                  }
+                ]
+              }
             }
           }
         }
       ],
-      "$comment": "The Python validator additionally enforces measured executable-line counts against frozen budgets and Pack/TCB digest, ABI, denominator, runtime, and qualification joins."
+      "$comment": "The Python validator additionally enforces ordering, source/interpreter joins, measured executable-line counts, and externally verified budget-review bindings."
+    },
+    "tcbManifest": {
+      "oneOf": [
+        { "$ref": "#/$defs/tcbManifestV1" },
+        { "$ref": "#/$defs/tcbManifestV2" }
+      ]
     },
     "qualificationReceipt": {
       "type": "object",

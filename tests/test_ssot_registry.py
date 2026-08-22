@@ -64,6 +64,8 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/transition_pack.py",
         "cisco_toolkit/transition_verifier.py",
         "cisco_toolkit/transition_legacy.py",
+        "cisco_toolkit/transition_dsl.py",
+        "cisco_toolkit/transition_tcb_review.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
@@ -105,7 +107,14 @@ def test_registry_owner_symbols_are_real():
 
 def test_registry_transition_contract_owners_are_real_and_bounded():
     """The R2.0 row resolves to its owners and retains its non-promotion boundaries."""
-    from cisco_toolkit import transition_contract, transition_legacy, transition_pack, transition_verifier
+    from cisco_toolkit import (
+        transition_contract,
+        transition_dsl,
+        transition_legacy,
+        transition_pack,
+        transition_tcb_review,
+        transition_verifier,
+    )
 
     expected = {
         transition_contract: (
@@ -129,6 +138,13 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
             "adapt_release1_comparison_bytes",
             "replay_release1_comparison_bytes",
         ),
+        transition_dsl: (
+            "bind_packaged_dsl_prototype_bytes",
+            "run_bound_pack_abi",
+        ),
+        transition_tcb_review: (
+            "verify_tcb_budget_review_evidence",
+        ),
     }
     for module, names in expected.items():
         for name in names:
@@ -144,6 +160,13 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
         "cisco_toolkit/data/qcp-001.experimental.json",
         "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-denominator.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-input.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-pack.experimental.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-program.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-tcb.v2.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
+        "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
         "cisco_toolkit/data/atlas-r1-executable-bundle.json",
         "cisco_toolkit/data/atlas-r1-source-bundle.json",
         "cisco_toolkit/data/atlas-r1-retrospective-before.json",
@@ -163,8 +186,14 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "AUDIT_ONLY",
         "null Release 2 gate",
         "no authenticated historical fixture",
-        "does not yet supply an executable sandbox",
-        "no Release 3 capability",
+        "same-checkout self-check only",
+        "cannot execute QCP-001",
+        "not a Wasm runtime",
+        "sandbox claim",
+        "PARTIAL_NONPORTABLE_PROTOTYPE",
+        "COMPLETE_EXACT_RUNTIME_CLOSURE",
+        "budgets, reviewed resource ceilings, independent review evidence, and selected commit remain pending/null",
+        "No R2.1+ or Release 3 capability",
     ):
         assert boundary in row, f"R2.0 SSOT row lost boundary {boundary!r}"
 

@@ -35,14 +35,60 @@ def _wasm_module() -> dict[str, Any]:
     }
 
 
-def _resource_ceilings() -> dict[str, int]:
+def _dsl_resource_profile() -> dict[str, int]:
     return {
-        "max_input_bytes": 1_000_000,
-        "max_output_bytes": 1_000_000,
-        "max_memory_pages": 64,
-        "max_call_depth": 32,
-        "max_instruction_fuel": 10_000_000,
-        "max_host_deadline_ms": 5_000,
+        "max_program_bytes": 65_536,
+        "max_input_bytes": 65_536,
+        "max_output_bytes": 65_536,
+        "max_rules": 32,
+        "max_expression_depth": 16,
+        "max_expression_nodes": 256,
+        "max_operator_operands": 32,
+        "max_path_segments": 16,
+        "max_string_bytes": 4_096,
+        "max_set_items": 64,
+        "max_input_nodes": 512,
+        "max_instruction_fuel": 4_096,
+    }
+
+
+def _resource_ceilings(*, wasm: bool = False) -> dict[str, Any]:
+    wasm_profile = None
+    if wasm:
+        wasm_profile = {
+            "max_module_bytes": 1_000_000,
+            "max_input_bytes": 1_000_000,
+            "max_output_bytes": 1_000_000,
+            "max_memory_pages": 64,
+            "max_table_elements": 128,
+            "max_call_depth": 32,
+            "max_instruction_fuel": 10_000_000,
+            "max_host_deadline_ms": 5_000,
+        }
+    return {"dsl": _dsl_resource_profile(), "wasm": wasm_profile}
+
+
+def _component(label: str) -> dict[str, str]:
+    return {
+        "component_id": f"component.{label}",
+        "component_version": "1.0.0",
+        "content_digest": _digest(label),
+    }
+
+
+def _artifact(
+        label: str,
+        path: str,
+        role: str,
+        *,
+        digest: str | None = None) -> dict[str, Any]:
+    return {
+        "artifact_id": f"artifact.{label}",
+        "artifact_version": "1.0.0",
+        "path": path,
+        "role": role,
+        "bytes": 100,
+        "digest": digest or _digest(label),
     }
 
 
@@ -52,28 +98,58 @@ def _tcb_manifest(
         qualification_receipt_digest: str | None = None,
         denominator_digest: str | None = None,
         wasm_runtime_digest: str | None = None) -> dict[str, Any]:
+    interpreter = _component("dsl-interpreter")
+    wasm = wasm_runtime_digest is not None
+    if wasm:
+        wasm_runtime = {
+            "component_id": "component.wasm-runtime",
+            "component_version": "1.0.0",
+            "content_digest": wasm_runtime_digest,
+        }
+    else:
+        wasm_runtime = None
     return {
         "schema": tp.TCB_MANIFEST_SCHEMA,
         "manifest_id": "tcb.fixture.001",
-        "core_source_digests": [_digest("structural core source")],
-        "pack_source_digests": [_digest("pack source")],
-        "transitive_dependency_digests": [],
+        "substrate": (
+            tp.PackSubstrate.DECLARATIVE_DSL_AND_METERED_WASM_NO_WASI.value
+            if wasm
+            else tp.PackSubstrate.DECLARATIVE_DSL_ONLY.value
+        ),
+        "core_sources": [
+            _artifact(
+                "dsl-interpreter",
+                "cisco_toolkit/transition_dsl.py",
+                "DSL_INTERPRETER",
+                digest=interpreter["content_digest"],
+            ),
+        ],
+        "pack_sources": [
+            _artifact("pack-source", "cisco_toolkit/data/fixture.json", "PACK_RULES"),
+        ],
+        "transitive_dependencies": [],
+        "runtime_inventory_state": (
+            tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
+        ),
+        "core_census_method": tp.TCB_CORE_CENSUS_METHOD,
+        "pack_census_method": tp.TCB_PACK_CENSUS_METHOD,
         "core_executable_lines": 100,
         "pack_executable_lines": 20,
-        "dsl_interpreter_digest": _digest("dsl interpreter"),
-        "wasm_runtime_digest": wasm_runtime_digest,
-        "toolchain_digests": [_digest("python toolchain")],
+        "dsl_interpreter": interpreter,
+        "wasm_runtime": wasm_runtime,
+        "toolchains": [_component("python-toolchain")],
         "abi_version": tc.PACK_ABI_VERSION,
         "qualification_receipt_digest": qualification_receipt_digest,
         "supported_denominator_digest": denominator_digest or _digest("supported denominator"),
+        "budget_review_receipt_digest": _digest("budget review") if frozen else None,
         "budget_state": (
             tp.TCBBudgetState.FROZEN.value
             if frozen
-            else tp.TCBBudgetState.PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW.value
+            else tp.TCBBudgetState.PENDING_INDEPENDENT_REVIEW.value
         ),
         "core_sloc_budget": 120 if frozen else None,
         "pack_sloc_budget": 30 if frozen else None,
-        "resource_ceilings": _resource_ceilings() if frozen else None,
+        "resource_ceilings": _resource_ceilings(wasm=wasm) if frozen else None,
     }
 
 
@@ -287,7 +363,7 @@ def test_frozen_tcb_requires_complete_ceilings_and_enforces_sloc_budgets() -> No
     assert tp.validate_tcb_manifest(frozen) == frozen
 
     missing_ceiling = deepcopy(frozen)
-    missing_ceiling["resource_ceilings"].pop("max_instruction_fuel")
+    missing_ceiling["resource_ceilings"]["dsl"].pop("max_instruction_fuel")
     _assert_transition_refusal(
         lambda: tp.validate_tcb_manifest(missing_ceiling),
         "CLOSED_SCHEMA_KEYS",
@@ -305,6 +381,15 @@ def test_frozen_tcb_requires_complete_ceilings_and_enforces_sloc_budgets() -> No
     _assert_transition_refusal(
         lambda: tp.validate_tcb_manifest(pack_exceeded),
         "PACK_SLOC_BUDGET_EXCEEDED",
+    )
+
+    partial_runtime = deepcopy(frozen)
+    partial_runtime["runtime_inventory_state"] = (
+        tp.TCBRuntimeInventoryState.PARTIAL_NONPORTABLE_PROTOTYPE.value
+    )
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(partial_runtime),
+        "FROZEN_TCB_REQUIRES_COMPLETE_RUNTIME_INVENTORY",
     )
 
 
@@ -331,7 +416,10 @@ def test_activatable_pack_requires_frozen_tcb_and_matching_qualification() -> No
         qualification_receipt_digest=receipt_digest,
         execution_state="ACTIVATABLE",
     )
-    tp.validate_pack_tcb_pair(frozen_pack, frozen)
+    _assert_transition_refusal(
+        lambda: tp.validate_pack_tcb_pair(frozen_pack, frozen),
+        "ACTIVATABLE_PACK_REQUIRES_VERIFIED_TCB_BUDGET_REVIEW",
+    )
 
     wrong_receipt_tcb = deepcopy(frozen)
     wrong_receipt_tcb["qualification_receipt_digest"] = _digest("different receipt")
@@ -344,7 +432,72 @@ def test_activatable_pack_requires_frozen_tcb_and_matching_qualification() -> No
     )
     _assert_transition_refusal(
         lambda: tp.validate_pack_tcb_pair(wrong_receipt_pack, wrong_receipt_tcb),
-        "PACK_TCB_QUALIFICATION_MISMATCH",
+        "ACTIVATABLE_PACK_REQUIRES_VERIFIED_TCB_BUDGET_REVIEW",
+    )
+
+
+def test_tcb_v1_is_readable_pending_only_and_never_activatable() -> None:
+    legacy = {
+        "schema": tp.LEGACY_TCB_MANIFEST_SCHEMA,
+        "manifest_id": "tcb.legacy.fixture.001",
+        "core_source_digests": [_digest("legacy structural core")],
+        "pack_source_digests": [_digest("legacy pack source")],
+        "transitive_dependency_digests": [],
+        "core_executable_lines": 100,
+        "pack_executable_lines": 20,
+        "dsl_interpreter_digest": _digest("legacy interpreter"),
+        "wasm_runtime_digest": None,
+        "toolchain_digests": [_digest("legacy toolchain")],
+        "abi_version": tc.PACK_ABI_VERSION,
+        "qualification_receipt_digest": None,
+        "supported_denominator_digest": _digest("legacy denominator"),
+        "budget_state": (
+            tp.TCBBudgetState.PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW.value
+        ),
+        "core_sloc_budget": None,
+        "pack_sloc_budget": None,
+        "resource_ceilings": None,
+    }
+    assert tp.validate_tcb_manifest(legacy) == legacy
+
+    frozen = deepcopy(legacy)
+    frozen["budget_state"] = tp.TCBBudgetState.FROZEN.value
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(frozen),
+        "LEGACY_TCB_MANIFEST_CANNOT_FREEZE",
+    )
+
+
+def test_tcb_v2_requires_named_versioned_sources_and_substrate_specific_limits() -> None:
+    pending = _tcb_manifest()
+    anonymous = deepcopy(pending)
+    anonymous["core_sources"][0].pop("artifact_version")
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(anonymous),
+        "CLOSED_SCHEMA_KEYS",
+    )
+
+    wrong_interpreter = deepcopy(pending)
+    wrong_interpreter["dsl_interpreter"]["content_digest"] = _digest("substituted")
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(wrong_interpreter),
+        "DSL_INTERPRETER_SOURCE_NOT_IN_TCB_CORE",
+    )
+
+    frozen = _tcb_manifest(frozen=True)
+    frozen["resource_ceilings"]["wasm"] = {
+        "max_module_bytes": 1,
+        "max_input_bytes": 1,
+        "max_output_bytes": 1,
+        "max_memory_pages": 1,
+        "max_table_elements": 1,
+        "max_call_depth": 1,
+        "max_instruction_fuel": 1,
+        "max_host_deadline_ms": 1,
+    }
+    _assert_transition_refusal(
+        lambda: tp.validate_tcb_manifest(frozen),
+        "DSL_ONLY_TCB_FORBIDS_WASM_CEILINGS",
     )
 
 

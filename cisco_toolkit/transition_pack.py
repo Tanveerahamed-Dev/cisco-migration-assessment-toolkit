@@ -2,8 +2,9 @@
 
 The Pack ABI is a closed boundary, not a Python plugin convention.  Authoritative semantic rules
 are declarative; source-specific executable adapters are signed, metered WebAssembly with no WASI
-or ambient host access.  R2.0 validates these declarations and qualification evidence.  It does not
-ship a Wasm runtime or claim that ``CONTRACT_ONLY`` packs are isolated executable sandboxes.
+or ambient host access.  R2.0 includes one synthetic, non-authoritative declarative conformance
+prototype and validates qualification/review evidence.  It does not ship a Wasm runtime, execute
+QCP-001, or claim that ``CONTRACT_ONLY`` packs are isolated executable sandboxes.
 """
 
 from __future__ import annotations
@@ -37,13 +38,16 @@ from .transition_contract import (
 
 PACK_MANIFEST_SCHEMA = "atlas.pack-manifest/1"
 PACK_WASM_MODULE_SCHEMA = "atlas.pack-wasm-module/1"
-TCB_MANIFEST_SCHEMA = "atlas.tcb-manifest/1"
+LEGACY_TCB_MANIFEST_SCHEMA = "atlas.tcb-manifest/1"
+TCB_MANIFEST_SCHEMA = "atlas.tcb-manifest/2"
 QUALIFICATION_RECEIPT_SCHEMA = "atlas.qualification-receipt/1"
 QUALIFICATION_SIGNATURE_SCHEMA = "atlas.qualification-signature/1"
 TRUST_POLICY_SCHEMA = "atlas.transition-trust-policy/1"
 TRUSTED_KEY_SCHEMA = "atlas.transition-trusted-key/1"
 STRUCTURAL_TCB_CENSUS_SCHEMA = "atlas.structural-tcb-census/1"
 STRUCTURAL_TCB_CENSUS_RESOURCE = "atlas-r2-structural-tcb-census.v1.json"
+TCB_CORE_CENSUS_METHOD = "PYTHON_COVERAGE_EXECUTABLE_STATEMENTS/1"
+TCB_PACK_CENSUS_METHOD = "DECLARATIVE_RULE_COUNT/1"
 
 QUALIFICATION_PURPOSE = "ATLAS_TRANSITION_QUALIFICATION"
 QUALIFICATION_SIGNATURE_ALGORITHM = "Ed25519"
@@ -84,6 +88,32 @@ PACK_HOST_IMPORTS = (
     "atlas.host.sha256",
 )
 
+DSL_RESOURCE_CEILING_KEYS = (
+    "max_program_bytes",
+    "max_input_bytes",
+    "max_output_bytes",
+    "max_rules",
+    "max_expression_depth",
+    "max_expression_nodes",
+    "max_operator_operands",
+    "max_path_segments",
+    "max_string_bytes",
+    "max_set_items",
+    "max_input_nodes",
+    "max_instruction_fuel",
+)
+
+WASM_RESOURCE_CEILING_KEYS = (
+    "max_module_bytes",
+    "max_input_bytes",
+    "max_output_bytes",
+    "max_memory_pages",
+    "max_table_elements",
+    "max_call_depth",
+    "max_instruction_fuel",
+    "max_host_deadline_ms",
+)
+
 _PACK_MANIFEST_AUTHORITY = object()
 _TCB_MANIFEST_AUTHORITY = object()
 _TRUST_POLICY_AUTHORITY = object()
@@ -103,7 +133,13 @@ class PackSubstrate(str, Enum):
 
 class TCBBudgetState(str, Enum):
     PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW = "PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW"
+    PENDING_INDEPENDENT_REVIEW = "PENDING_INDEPENDENT_REVIEW"
     FROZEN = "FROZEN"
+
+
+class TCBRuntimeInventoryState(str, Enum):
+    PARTIAL_NONPORTABLE_PROTOTYPE = "PARTIAL_NONPORTABLE_PROTOTYPE"
+    COMPLETE_EXACT_RUNTIME_CLOSURE = "COMPLETE_EXACT_RUNTIME_CLOSURE"
 
 
 class QualificationSubjectKind(str, Enum):
@@ -289,7 +325,7 @@ def _pack_reject(code: str) -> None:
 
 
 def r2_structural_tcb_census() -> dict[str, Any]:
-    """Load the exact structural census while keeping unmeasured pack budgets fail-closed."""
+    """Load the exact measured prototype census while keeping unapproved budgets fail-closed."""
 
     try:
         raw = resources.files("cisco_toolkit").joinpath(
@@ -308,24 +344,59 @@ def r2_structural_tcb_census() -> dict[str, Any]:
     if (
             type(budget) is not dict
             or budget.get("budget_state")
-            != "PENDING_EXECUTABLE_PACK_PROTOTYPE_AND_INDEPENDENT_REVIEW"
+            != "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW"
             or budget.get("core_sloc_budget") is not None
             or budget.get("pack_sloc_budget") is not None
             or budget.get("pack_resource_ceilings") is not None
             or budget.get("promotion_effect") != "BLOCKS_R2_0_COMPLETION"
     ):
         _pack_reject("structural_tcb_budget_gate_invalid")
+    independent_review = value.get("independent_review")
+    if (
+            type(independent_review) is not dict
+            or independent_review.get("result")
+            != "PENDING_BOUND_INDEPENDENT_REVIEW_EVIDENCE"
+            or independent_review.get("review_evidence") is not None
+            or independent_review.get("required_next_evidence") != [
+                "COMPLETE_EXACT_RUNTIME_DEPENDENCY_INVENTORY",
+                "INDEPENDENT_NUMERIC_BUDGET_APPROVAL",
+                "APPROVED_REVIEW_POLICY_AND_TRUSTED_KEY_CUSTODY",
+                "SIGNED_REVIEW_RECEIPT_BOUND_TO_SELECTED_COMMIT_TREE_CENSUS_AND_MEASUREMENTS",
+                "SELECTED_COMMIT_BINDING",
+            ]
+    ):
+        _pack_reject("structural_tcb_independent_review_invalid")
+    repository_basis = value.get("repository_basis")
+    if (
+            type(repository_basis) is not dict
+            or repository_basis.get("selected_commit") is not None
+            or repository_basis.get("state")
+            != "EXACT_INPUT_DIGESTS_AWAIT_EXTERNAL_SELECTED_COMMIT_BINDING"
+    ):
+        _pack_reject("structural_tcb_repository_basis_invalid")
     structural = value.get("structural_core")
     if type(structural) is not dict or type(structural.get("sources")) is not list:
         _pack_reject("structural_tcb_census_invalid")
     measured = 0
     package_root = resources.files("cisco_toolkit")
+    expected_core_roles = {
+        "cisco_toolkit/transition_contract.py": "STRUCTURAL_CONTRACT_AND_CANONICAL_CODEC",
+        "cisco_toolkit/transition_dsl.py": "DECLARATIVE_DSL_INTERPRETER",
+        "cisco_toolkit/transition_pack.py": "PACK_ABI_TCB_AND_QUALIFICATION_BOUNDARY",
+        "cisco_toolkit/transition_tcb_review.py": "EXTERNAL_SIGNED_TCB_BUDGET_REVIEW_BOUNDARY",
+        "cisco_toolkit/transition_verifier.py": "STRUCTURAL_VERIFIER_AND_GATE_MAPPING",
+    }
+    observed_core_roles: dict[str, str] = {}
     for entry in structural["sources"]:
         if type(entry) is not dict or type(entry.get("path")) is not str:
             _pack_reject("structural_tcb_census_invalid")
         relative = entry["path"]
+        role = entry.get("role")
         if not relative.startswith("cisco_toolkit/") or ".." in relative.split("/"):
             _pack_reject("structural_tcb_census_invalid")
+        if type(role) is not str or relative in observed_core_roles:
+            _pack_reject("structural_tcb_census_invalid")
+        observed_core_roles[relative] = role
         try:
             source_raw = package_root.joinpath(
                 *relative.removeprefix("cisco_toolkit/").split("/")
@@ -337,8 +408,213 @@ def r2_structural_tcb_census() -> dict[str, Any]:
         if type(entry.get("executable_statements")) is not int:
             _pack_reject("structural_tcb_census_invalid")
         measured += entry["executable_statements"]
-    if measured != structural.get("executable_statements"):
+    if (
+            measured != structural.get("executable_statements")
+            or observed_core_roles != expected_core_roles
+    ):
         _pack_reject("structural_tcb_census_invalid")
+
+    # Lazy import avoids a module-import cycle: transition_dsl itself imports this Pack boundary.
+    from . import transition_dsl as dsl
+
+    limits = {
+        field: getattr(dsl.DEFAULT_DSL_PROTOTYPE_LIMITS, field)
+        for field in dsl.DSL_PROTOTYPE_LIMIT_FIELDS
+    }
+    guards = value.get("implemented_guard_constants")
+    expected_dsl_guards = {
+        **limits,
+        "profile": "DEFAULT_DSL_PROTOTYPE_LIMITS",
+        "state": "PROVISIONAL_MEASURED_NOT_REVIEWED_BUDGET",
+    }
+    if type(guards) is not dict or guards.get("dsl_prototype") != expected_dsl_guards:
+        _pack_reject("structural_tcb_provisional_guards_invalid")
+
+    prototype = value.get("executable_prototype")
+    if (
+            type(prototype) is not dict
+            or prototype.get("claim_boundary") != dsl.DSL_PROTOTYPE_CLAIM_BOUNDARY
+            or prototype.get("execution_state") != "DSL_ONLY_EXECUTABLE_NONAUTHORITATIVE"
+            or prototype.get("pack_id") != dsl.DSL_PROTOTYPE_PACK_ID
+            or prototype.get("pack_version") != dsl.DSL_PROTOTYPE_PACK_VERSION
+            or prototype.get("promotion_eligible") is not False
+            or prototype.get("qcp_001_executed") is not False
+            or prototype.get("qualification_effect") != "NONE"
+            or prototype.get("runtime_inventory_state")
+            != TCBRuntimeInventoryState.PARTIAL_NONPORTABLE_PROTOTYPE.value
+            or prototype.get("source_binding_state")
+            != dsl.DSL_PROTOTYPE_SOURCE_BINDING_STATE
+            or prototype.get("substrate") != PackSubstrate.DECLARATIVE_DSL_ONLY.value
+            or prototype.get("wasm_execution_state") != "UNIMPLEMENTED_UNREVIEWED"
+    ):
+        _pack_reject("structural_tcb_prototype_boundary_invalid")
+    asset_rows = prototype.get("asset_bindings")
+    expected_asset_paths = {
+        dsl.DSL_PROTOTYPE_PACK_MANIFEST_PATH,
+        dsl.DSL_PROTOTYPE_TCB_MANIFEST_PATH,
+        dsl.DSL_PROTOTYPE_PROGRAM_PATH,
+        dsl.DSL_PROTOTYPE_INPUT_PATH,
+        dsl.DSL_PROTOTYPE_DENOMINATOR_PATH,
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
+    }
+    if type(asset_rows) is not list or len(asset_rows) != len(expected_asset_paths):
+        _pack_reject("structural_tcb_prototype_assets_invalid")
+    asset_raw: dict[str, bytes] = {}
+    for entry in asset_rows:
+        if type(entry) is not dict or type(entry.get("path")) is not str:
+            _pack_reject("structural_tcb_prototype_assets_invalid")
+        relative = entry["path"]
+        if relative not in expected_asset_paths or relative in asset_raw:
+            _pack_reject("structural_tcb_prototype_assets_invalid")
+        try:
+            bound_raw = package_root.joinpath(
+                *relative.removeprefix("cisco_toolkit/").split("/")
+            ).read_bytes()
+        except (FileNotFoundError, OSError):
+            _pack_reject("structural_tcb_prototype_asset_unavailable")
+        if entry.get("bytes") != len(bound_raw) or entry.get("sha256") != bytes_digest(bound_raw):
+            _pack_reject("structural_tcb_prototype_asset_digest_mismatch")
+        asset_raw[relative] = bound_raw
+    if set(asset_raw) != expected_asset_paths:
+        _pack_reject("structural_tcb_prototype_assets_invalid")
+    interpreter = prototype.get("interpreter_source")
+    if (
+            type(interpreter) is not dict
+            or interpreter.get("path") != dsl.DSL_INTERPRETER_SOURCE_PATH
+    ):
+        _pack_reject("structural_tcb_prototype_interpreter_invalid")
+    try:
+        interpreter_raw = package_root.joinpath("transition_dsl.py").read_bytes()
+    except (FileNotFoundError, OSError):
+        _pack_reject("structural_tcb_prototype_interpreter_invalid")
+    if (
+            interpreter.get("bytes") != len(interpreter_raw)
+            or interpreter.get("sha256") != bytes_digest(interpreter_raw)
+    ):
+        _pack_reject("structural_tcb_prototype_interpreter_invalid")
+
+    try:
+        measurement_raw = asset_raw[
+            "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json"
+        ]
+        measurement = parse_canonical_json_bytes(measurement_raw, require_canonical=True)
+        bindings = measurement["bindings"]
+        boundary_rows = measurement["boundary_measurements"]
+        corrections = measurement["design_corrections"]
+        review_state = measurement["review_state"]
+    except (KeyError, TypeError, TransitionContractError):
+        _pack_reject("structural_tcb_measurements_invalid")
+    default_profile = (
+        bindings.get("default_limit_profile")
+        if type(bindings) is dict
+        else None
+    )
+    invalid_boundary_rows = (
+        type(boundary_rows) is not list
+        or any(
+            type(row) is not dict
+            or row.get("dimension") not in limits
+            or row.get("shipped_default_limit") != limits[row["dimension"]]
+            or row.get("reachability") != "REACHABLE_AT_SHIPPED_DEFAULT"
+            or row.get("review_blocker") is not None
+            for row in boundary_rows
+        )
+    )
+    if (
+            measurement.get("schema") != "atlas.dsl-prototype-measurements/1"
+            or measurement.get("authoritative") is not False
+            or measurement.get("approved_budget") is not None
+            or measurement.get("review_evidence") is not None
+            or measurement.get("qualification_effect") != "NONE"
+            or measurement.get("promotion_eligible") is not False
+            or measurement.get("release3_included") is not False
+            or measurement.get("wasm_execution_state") != "UNIMPLEMENTED_UNREVIEWED"
+            or type(bindings) is not dict
+            or type(default_profile) is not dict
+            or default_profile.get("value") != limits
+            or invalid_boundary_rows
+            or [row.get("dimension") for row in boundary_rows]
+            != list(dsl.DSL_PROTOTYPE_LIMIT_FIELDS)
+            or review_state != {
+                "blockers": [
+                    "APPROVED_BUDGET_ABSENT",
+                    "INDEPENDENT_SIGNED_REVIEW_EVIDENCE_ABSENT",
+                ],
+                "promotion_effect": "NONE",
+                "qualification_effect": "NONE",
+                "resource_ceiling_effect": "NONE",
+                "state": "PENDING_INDEPENDENT_NUMERIC_REVIEW_AND_SIGNED_EVIDENCE",
+            }
+            or type(corrections) is not list
+            or len(corrections) != 1
+            or corrections[0].get("dimension") != "max_output_bytes"
+            or corrections[0].get("prior_provisional_value") != 262_144
+            or corrections[0].get("corrected_provisional_value") != 131_072
+            or corrections[0].get("authority_effect")
+            != "NONE_PENDING_INDEPENDENT_REVIEW"
+    ):
+        _pack_reject("structural_tcb_measurements_invalid")
+
+    try:
+        tcb = parse_canonical_json_bytes(
+            asset_raw[dsl.DSL_PROTOTYPE_TCB_MANIFEST_PATH],
+            require_canonical=True,
+        )
+        roster = [*tcb["core_sources"], *tcb["pack_sources"]]
+        if (
+                tcb["runtime_inventory_state"]
+                != TCBRuntimeInventoryState.PARTIAL_NONPORTABLE_PROTOTYPE.value
+        ):
+            raise TransitionContractError("PROTOTYPE_RUNTIME_INVENTORY_STATE_INVALID", "$")
+        source_bytes = {
+            row["path"]: package_root.joinpath(
+                *row["path"].removeprefix("cisco_toolkit/").split("/")
+            ).read_bytes()
+            for row in roster
+        }
+        bound = dsl.bind_packaged_dsl_prototype_bytes(
+            asset_raw[dsl.DSL_PROTOTYPE_PACK_MANIFEST_PATH],
+            asset_raw[dsl.DSL_PROTOTYPE_TCB_MANIFEST_PATH],
+            asset_raw[dsl.DSL_PROTOTYPE_PROGRAM_PATH],
+            asset_raw[dsl.DSL_PROTOTYPE_DENOMINATOR_PATH],
+            source_bytes,
+        )
+        baseline_raw = dsl.run_bound_pack_abi(
+            bound,
+            "evaluate",
+            asset_raw[dsl.DSL_PROTOTYPE_INPUT_PATH],
+        )
+        baseline_repeat = dsl.run_bound_pack_abi(
+            bound,
+            "evaluate",
+            asset_raw[dsl.DSL_PROTOTYPE_INPUT_PATH],
+        )
+        baseline = parse_canonical_json_bytes(baseline_raw, require_canonical=True)
+        inner = baseline["inner_receipt"]
+    except (
+            AttributeError,
+            KeyError,
+            OSError,
+            PackContractError,
+            TransitionContractError,
+            TypeError,
+            ValueError,
+    ):
+        _pack_reject("structural_tcb_prototype_replay_invalid")
+    if (
+            baseline_raw != baseline_repeat
+            or prototype.get("baseline_receipt_digest") != bytes_digest(baseline_raw)
+            or baseline.get("source_binding_state")
+            != dsl.DSL_PROTOTYPE_SOURCE_BINDING_STATE
+            or type(inner) is not dict
+            or inner.get("outcome") != "EXECUTED_NONAUTHORITATIVE"
+            or inner.get("authoritative") is not False
+            or inner.get("authoritative_gate") is not None
+            or inner.get("promotion_eligible") is not False
+            or inner.get("qualification_effect") != "NONE"
+            or inner.get("supplies_obligation_support") is not False
+    ):
+        _pack_reject("structural_tcb_prototype_replay_invalid")
     return dict(value)
 
 
@@ -538,7 +814,15 @@ def require_bound_pack_manifest(value: Any) -> BoundPackManifest:
     return value
 
 
-def validate_tcb_manifest(value: Any) -> dict[str, Any]:
+def _validate_legacy_tcb_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the v1 declaration for migration, but never accept a v1 budget freeze.
+
+    Version 1 used anonymous digest arrays and a Wasm-shaped flat ceiling object even for
+    declarative-only packs.  No repository asset was issued under that schema.  Keeping its pending
+    shape readable protects test/fixture migration while refusing to turn those gaps into activation
+    authority.
+    """
+
     obj = _mapping(value, "$")
     keys = (
         "schema",
@@ -560,15 +844,17 @@ def validate_tcb_manifest(value: Any) -> dict[str, Any]:
         "resource_ceilings",
     )
     _exact_keys(obj, keys, "$")
-    _schema(obj, TCB_MANIFEST_SCHEMA, "$")
+    _schema(obj, LEGACY_TCB_MANIFEST_SCHEMA, "$")
     _identifier(obj["manifest_id"], "$.manifest_id")
     _sorted_unique_digests(obj["core_source_digests"], "$.core_source_digests")
     _sorted_unique_digests(obj["pack_source_digests"], "$.pack_source_digests", allow_empty=True)
     _sorted_unique_digests(
-        obj["transitive_dependency_digests"], "$.transitive_dependency_digests", allow_empty=True
+        obj["transitive_dependency_digests"],
+        "$.transitive_dependency_digests",
+        allow_empty=True,
     )
-    core_lines = _integer(obj["core_executable_lines"], "$.core_executable_lines", positive=True)
-    pack_lines = _integer(obj["pack_executable_lines"], "$.pack_executable_lines")
+    _integer(obj["core_executable_lines"], "$.core_executable_lines", positive=True)
+    _integer(obj["pack_executable_lines"], "$.pack_executable_lines")
     _digest(obj["dsl_interpreter_digest"], "$.dsl_interpreter_digest")
     _digest(obj["wasm_runtime_digest"], "$.wasm_runtime_digest", optional=True)
     _sorted_unique_digests(obj["toolchain_digests"], "$.toolchain_digests")
@@ -576,34 +862,233 @@ def validate_tcb_manifest(value: Any) -> dict[str, Any]:
         raise TransitionContractError("UNSUPPORTED_PACK_ABI", "$.abi_version")
     _digest(obj["qualification_receipt_digest"], "$.qualification_receipt_digest", optional=True)
     _digest(obj["supported_denominator_digest"], "$.supported_denominator_digest")
+    if (
+            obj["budget_state"]
+            != TCBBudgetState.PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW.value
+    ):
+        raise TransitionContractError("LEGACY_TCB_MANIFEST_CANNOT_FREEZE", "$.budget_state")
+    if any(
+            obj[key] is not None
+            for key in ("core_sloc_budget", "pack_sloc_budget", "resource_ceilings")
+    ):
+        raise TransitionContractError("PENDING_TCB_BUDGETS_MUST_BE_NULL", "$")
+    return dict(obj)
+
+
+def _validate_tcb_artifacts(
+        value: Any,
+        path: str,
+        *,
+        allow_empty: bool = False) -> list[dict[str, Any]]:
+    items = _array(value, path)
+    if not items and not allow_empty:
+        raise TransitionContractError("TCB_ARTIFACT_REQUIRED", path)
+    checked: list[dict[str, Any]] = []
+    sort_keys: list[tuple[str, str]] = []
+    for index, value_item in enumerate(items):
+        item_path = f"{path}[{index}]"
+        item = _mapping(value_item, item_path)
+        _exact_keys(
+            item,
+            ("artifact_id", "artifact_version", "path", "role", "bytes", "digest"),
+            item_path,
+        )
+        artifact_id = _identifier(item["artifact_id"], f"{item_path}.artifact_id")
+        _identifier(item["artifact_version"], f"{item_path}.artifact_version")
+        relative = _text(item["path"], f"{item_path}.path")
+        if (
+                relative.startswith(("/", "\\"))
+                or "\\" in relative
+                or ":" in relative
+                or any(part in ("", ".", "..") for part in relative.split("/"))
+        ):
+            raise TransitionContractError("TCB_ARTIFACT_PATH_NOT_REPOSITORY_RELATIVE", item_path)
+        _identifier(item["role"], f"{item_path}.role")
+        _integer(item["bytes"], f"{item_path}.bytes", positive=True)
+        _digest(item["digest"], f"{item_path}.digest")
+        checked.append(dict(item))
+        sort_keys.append((artifact_id, relative))
+    if sort_keys != sorted(set(sort_keys)):
+        raise TransitionContractError("SORTED_UNIQUE_TCB_ARTIFACTS_REQUIRED", path)
+    return checked
+
+
+def _validate_tcb_component(value: Any, path: str) -> dict[str, Any]:
+    item = _mapping(value, path)
+    _exact_keys(item, ("component_id", "component_version", "content_digest"), path)
+    _identifier(item["component_id"], f"{path}.component_id")
+    _identifier(item["component_version"], f"{path}.component_version")
+    _digest(item["content_digest"], f"{path}.content_digest")
+    return dict(item)
+
+
+def _validate_tcb_components(
+        value: Any,
+        path: str,
+        *,
+        allow_empty: bool = False) -> list[dict[str, Any]]:
+    items = _array(value, path)
+    if not items and not allow_empty:
+        raise TransitionContractError("TCB_COMPONENT_REQUIRED", path)
+    checked = [
+        _validate_tcb_component(item, f"{path}[{index}]")
+        for index, item in enumerate(items)
+    ]
+    sort_keys = [
+        (item["component_id"], item["component_version"], item["content_digest"])
+        for item in checked
+    ]
+    if sort_keys != sorted(set(sort_keys)):
+        raise TransitionContractError("SORTED_UNIQUE_TCB_COMPONENTS_REQUIRED", path)
+    return checked
+
+
+def _validate_resource_profile(
+        value: Any,
+        path: str,
+        keys: tuple[str, ...]) -> dict[str, Any]:
+    profile = _mapping(value, path)
+    _exact_keys(profile, keys, path)
+    for key in keys:
+        _integer(profile[key], f"{path}.{key}", positive=True)
+    return dict(profile)
+
+
+def _validate_resource_ceilings(
+        value: Any,
+        substrate: PackSubstrate,
+        path: str = "$.resource_ceilings") -> dict[str, Any]:
+    ceilings = _mapping(value, path)
+    _exact_keys(ceilings, ("dsl", "wasm"), path)
+    _validate_resource_profile(ceilings["dsl"], f"{path}.dsl", DSL_RESOURCE_CEILING_KEYS)
+    if substrate is PackSubstrate.DECLARATIVE_DSL_ONLY:
+        if ceilings["wasm"] is not None:
+            raise TransitionContractError("DSL_ONLY_TCB_FORBIDS_WASM_CEILINGS", f"{path}.wasm")
+    else:
+        _validate_resource_profile(
+            ceilings["wasm"],
+            f"{path}.wasm",
+            WASM_RESOURCE_CEILING_KEYS,
+        )
+    return dict(ceilings)
+
+
+def _validate_tcb_manifest_v2(value: Mapping[str, Any]) -> dict[str, Any]:
+    obj = _mapping(value, "$")
+    keys = (
+        "schema",
+        "manifest_id",
+        "substrate",
+        "core_sources",
+        "pack_sources",
+        "transitive_dependencies",
+        "runtime_inventory_state",
+        "core_census_method",
+        "pack_census_method",
+        "core_executable_lines",
+        "pack_executable_lines",
+        "dsl_interpreter",
+        "wasm_runtime",
+        "toolchains",
+        "abi_version",
+        "qualification_receipt_digest",
+        "supported_denominator_digest",
+        "budget_review_receipt_digest",
+        "budget_state",
+        "core_sloc_budget",
+        "pack_sloc_budget",
+        "resource_ceilings",
+    )
+    _exact_keys(obj, keys, "$")
+    _schema(obj, TCB_MANIFEST_SCHEMA, "$")
+    _identifier(obj["manifest_id"], "$.manifest_id")
+    try:
+        substrate = PackSubstrate(obj["substrate"])
+    except (ValueError, TypeError):
+        raise TransitionContractError("UNKNOWN_ENUM_VALUE", "$.substrate") from None
+    core_sources = _validate_tcb_artifacts(obj["core_sources"], "$.core_sources")
+    _validate_tcb_artifacts(obj["pack_sources"], "$.pack_sources")
+    _validate_tcb_components(
+        obj["transitive_dependencies"],
+        "$.transitive_dependencies",
+        allow_empty=True,
+    )
+    try:
+        runtime_inventory_state = TCBRuntimeInventoryState(obj["runtime_inventory_state"])
+    except (ValueError, TypeError):
+        raise TransitionContractError(
+            "UNKNOWN_ENUM_VALUE",
+            "$.runtime_inventory_state",
+        ) from None
+    if obj["core_census_method"] != TCB_CORE_CENSUS_METHOD:
+        raise TransitionContractError("TCB_CORE_CENSUS_METHOD_UNSUPPORTED", "$.core_census_method")
+    if obj["pack_census_method"] != TCB_PACK_CENSUS_METHOD:
+        raise TransitionContractError("TCB_PACK_CENSUS_METHOD_UNSUPPORTED", "$.pack_census_method")
+    core_lines = _integer(
+        obj["core_executable_lines"],
+        "$.core_executable_lines",
+        positive=True,
+    )
+    pack_lines = _integer(obj["pack_executable_lines"], "$.pack_executable_lines")
+    interpreter = _validate_tcb_component(obj["dsl_interpreter"], "$.dsl_interpreter")
+    if interpreter["content_digest"] not in {item["digest"] for item in core_sources}:
+        raise TransitionContractError("DSL_INTERPRETER_SOURCE_NOT_IN_TCB_CORE", "$.dsl_interpreter")
+    if substrate is PackSubstrate.DECLARATIVE_DSL_ONLY:
+        if obj["wasm_runtime"] is not None:
+            raise TransitionContractError("DSL_ONLY_TCB_FORBIDS_WASM_RUNTIME", "$.wasm_runtime")
+    else:
+        _validate_tcb_component(obj["wasm_runtime"], "$.wasm_runtime")
+    _validate_tcb_components(obj["toolchains"], "$.toolchains")
+    if obj["abi_version"] != PACK_ABI_VERSION:
+        raise TransitionContractError("UNSUPPORTED_PACK_ABI", "$.abi_version")
+    _digest(obj["qualification_receipt_digest"], "$.qualification_receipt_digest", optional=True)
+    _digest(obj["supported_denominator_digest"], "$.supported_denominator_digest")
+    review_digest = _digest(
+        obj["budget_review_receipt_digest"],
+        "$.budget_review_receipt_digest",
+        optional=True,
+    )
     try:
         budget_state = TCBBudgetState(obj["budget_state"])
     except (ValueError, TypeError):
         raise TransitionContractError("UNKNOWN_ENUM_VALUE", "$.budget_state") from None
-    if budget_state is TCBBudgetState.PENDING_PROTOTYPE_CENSUS_AND_INDEPENDENT_REVIEW:
-        if any(obj[key] is not None for key in (
-                "core_sloc_budget", "pack_sloc_budget", "resource_ceilings")):
+    if budget_state is TCBBudgetState.PENDING_INDEPENDENT_REVIEW:
+        if review_digest is not None or any(
+                obj[key] is not None
+                for key in ("core_sloc_budget", "pack_sloc_budget", "resource_ceilings")
+        ):
             raise TransitionContractError("PENDING_TCB_BUDGETS_MUST_BE_NULL", "$")
-    else:
+    elif budget_state is TCBBudgetState.FROZEN:
+        if runtime_inventory_state is not TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE:
+            raise TransitionContractError(
+                "FROZEN_TCB_REQUIRES_COMPLETE_RUNTIME_INVENTORY",
+                "$.runtime_inventory_state",
+            )
+        if review_digest is None:
+            raise TransitionContractError(
+                "FROZEN_TCB_BUDGET_REVIEW_RECEIPT_REQUIRED",
+                "$.budget_review_receipt_digest",
+            )
         core_budget = _integer(obj["core_sloc_budget"], "$.core_sloc_budget", positive=True)
         pack_budget = _integer(obj["pack_sloc_budget"], "$.pack_sloc_budget", positive=True)
+        _validate_resource_ceilings(obj["resource_ceilings"], substrate)
         if core_lines is not None and core_budget is not None and core_lines > core_budget:
             raise TransitionContractError("CORE_SLOC_BUDGET_EXCEEDED", "$.core_executable_lines")
         if pack_lines is not None and pack_budget is not None and pack_lines > pack_budget:
             raise TransitionContractError("PACK_SLOC_BUDGET_EXCEEDED", "$.pack_executable_lines")
-        ceilings = _mapping(obj["resource_ceilings"], "$.resource_ceilings")
-        ceiling_keys = (
-            "max_input_bytes",
-            "max_output_bytes",
-            "max_memory_pages",
-            "max_call_depth",
-            "max_instruction_fuel",
-            "max_host_deadline_ms",
-        )
-        _exact_keys(ceilings, ceiling_keys, "$.resource_ceilings")
-        for key in ceiling_keys:
-            _integer(ceilings[key], f"$.resource_ceilings.{key}", positive=True)
+    else:
+        raise TransitionContractError("TCB_V2_LEGACY_PENDING_STATE_FORBIDDEN", "$.budget_state")
     return dict(obj)
+
+
+def validate_tcb_manifest(value: Any) -> dict[str, Any]:
+    obj = _mapping(value, "$")
+    schema = obj.get("schema")
+    if schema == LEGACY_TCB_MANIFEST_SCHEMA:
+        return _validate_legacy_tcb_manifest(obj)
+    if schema == TCB_MANIFEST_SCHEMA:
+        return _validate_tcb_manifest_v2(obj)
+    raise TransitionContractError("UNKNOWN_SCHEMA", "$.schema")
 
 
 def bind_tcb_manifest_bytes(raw: bytes) -> BoundTCBManifest:
@@ -629,7 +1114,11 @@ def require_bound_tcb_manifest(value: Any) -> BoundTCBManifest:
     return value
 
 
-def validate_pack_tcb_pair(pack: Mapping[str, Any], tcb: Mapping[str, Any]) -> None:
+def validate_pack_tcb_pair(
+        pack: Mapping[str, Any],
+        tcb: Mapping[str, Any],
+        *,
+        budget_review: Any = None) -> None:
     checked_pack = validate_pack_manifest(dict(pack))
     checked_tcb = validate_tcb_manifest(dict(tcb))
     if canonical_digest(checked_tcb) != checked_pack["tcb_manifest_digest"]:
@@ -638,17 +1127,52 @@ def validate_pack_tcb_pair(pack: Mapping[str, Any], tcb: Mapping[str, Any]) -> N
         raise TransitionContractError("PACK_TCB_ABI_MISMATCH", "$")
     if checked_tcb["supported_denominator_digest"] != checked_pack["supported_denominator_digest"]:
         raise TransitionContractError("PACK_TCB_DENOMINATOR_MISMATCH", "$")
+    if (
+            checked_tcb["schema"] == TCB_MANIFEST_SCHEMA
+            and checked_tcb["substrate"] != checked_pack["substrate"]
+    ):
+        raise TransitionContractError("PACK_TCB_SUBSTRATE_MISMATCH", "$")
     if checked_pack["execution_state"] == PackExecutionState.ACTIVATABLE.value:
+        if checked_tcb["schema"] != TCB_MANIFEST_SCHEMA:
+            raise TransitionContractError("ACTIVATABLE_PACK_REQUIRES_TCB_V2", "$")
         if checked_tcb["budget_state"] != TCBBudgetState.FROZEN.value:
             raise TransitionContractError("ACTIVATABLE_PACK_REQUIRES_FROZEN_TCB_BUDGET", "$")
+        if budget_review is None:
+            raise TransitionContractError(
+                "ACTIVATABLE_PACK_REQUIRES_VERIFIED_TCB_BUDGET_REVIEW",
+                "$",
+            )
+        try:
+            from .transition_tcb_review import (
+                require_verified_tcb_budget_review,
+                tcb_budget_review_subject_digest,
+            )
+
+            verified_review = require_verified_tcb_budget_review(budget_review)
+        except (ImportError, TypeError, ValueError):
+            raise TransitionContractError("TCB_BUDGET_REVIEW_NOT_VERIFIED", "$") from None
+        if (
+                not verified_review.approved
+                or verified_review.review_digest
+                != checked_tcb["budget_review_receipt_digest"]
+                or verified_review.tcb_subject_digest
+                != tcb_budget_review_subject_digest(checked_tcb)
+                or verified_review.core_sloc_budget != checked_tcb["core_sloc_budget"]
+                or verified_review.pack_sloc_budget != checked_tcb["pack_sloc_budget"]
+                or {
+                    key: verified_review.dsl_resource_profile[key]
+                    for key in DSL_RESOURCE_CEILING_KEYS
+                }
+                != checked_tcb["resource_ceilings"]["dsl"]
+        ):
+            raise TransitionContractError("TCB_BUDGET_REVIEW_BINDING_MISMATCH", "$")
         if checked_tcb["qualification_receipt_digest"] != checked_pack["qualification_receipt_digest"]:
             raise TransitionContractError("PACK_TCB_QUALIFICATION_MISMATCH", "$")
         if (
                 checked_pack["substrate"]
                 == PackSubstrate.DECLARATIVE_DSL_AND_METERED_WASM_NO_WASI.value
-                and checked_tcb["wasm_runtime_digest"] is None
         ):
-            raise TransitionContractError("ACTIVATABLE_WASM_PACK_REQUIRES_RUNTIME", "$")
+            raise TransitionContractError("WASM_EXECUTION_NOT_IMPLEMENTED_R2_0", "$")
 
 
 def validate_qualification_receipt(value: Any) -> dict[str, Any]:
@@ -908,6 +1432,8 @@ def qcp_001_must_remain_experimental(pack: Mapping[str, Any]) -> None:
 
 __all__ = [
     "DECLARATIVE_DSL_OPERATORS",
+    "DSL_RESOURCE_CEILING_KEYS",
+    "LEGACY_TCB_MANIFEST_SCHEMA",
     "PACK_ABI_FUNCTIONS",
     "PACK_HOST_IMPORTS",
     "PACK_MANIFEST_SCHEMA",
@@ -926,7 +1452,12 @@ __all__ = [
     "STRUCTURAL_TCB_CENSUS_RESOURCE",
     "STRUCTURAL_TCB_CENSUS_SCHEMA",
     "TCBBudgetState",
+    "TCBRuntimeInventoryState",
+    "TCB_CORE_CENSUS_METHOD",
+    "TCB_MANIFEST_SCHEMA",
+    "TCB_PACK_CENSUS_METHOD",
     "VerifiedQualification",
+    "WASM_RESOURCE_CEILING_KEYS",
     "bind_pack_manifest_bytes",
     "bind_external_trust_policy_bytes",
     "bind_tcb_manifest_bytes",

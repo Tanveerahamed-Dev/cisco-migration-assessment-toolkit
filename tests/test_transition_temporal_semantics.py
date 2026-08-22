@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_pack as tp
+from cisco_toolkit import transition_tcb_review as tr
 from cisco_toolkit import transition_verifier as tv
 from tests.transition_fixtures import minimal_transition_case
 
@@ -140,32 +141,180 @@ def _frozen_tcb_manifest(
         *,
         denominator_digest: str,
         qualification_receipt_digest: str | None = None) -> dict[str, Any]:
+    interpreter_digest = _digest("temporal fixture DSL interpreter")
     return {
         "schema": tp.TCB_MANIFEST_SCHEMA,
         "manifest_id": "tcb.temporal.fixture.001",
-        "core_source_digests": [_digest("temporal structural verifier source")],
-        "pack_source_digests": [_digest("temporal fixture pack source")],
-        "transitive_dependency_digests": [],
+        "substrate": tp.PackSubstrate.DECLARATIVE_DSL_ONLY.value,
+        "core_sources": [
+            {
+                "artifact_id": "atlas.temporal-interpreter",
+                "artifact_version": "1.0.0",
+                "path": "cisco_toolkit/transition_dsl.py",
+                "role": "DSL_INTERPRETER",
+                "bytes": 100,
+                "digest": interpreter_digest,
+            },
+        ],
+        "pack_sources": [
+            {
+                "artifact_id": "atlas.temporal-pack",
+                "artifact_version": "1.0.0",
+                "path": "tests/fixtures/temporal-pack.json",
+                "role": "DECLARATIVE_RULE_PROGRAM",
+                "bytes": 100,
+                "digest": _digest("temporal fixture pack source"),
+            },
+        ],
+        "transitive_dependencies": [],
+        "runtime_inventory_state": (
+            tp.TCBRuntimeInventoryState.COMPLETE_EXACT_RUNTIME_CLOSURE.value
+        ),
+        "core_census_method": tp.TCB_CORE_CENSUS_METHOD,
+        "pack_census_method": tp.TCB_PACK_CENSUS_METHOD,
         "core_executable_lines": 100,
         "pack_executable_lines": 20,
-        "dsl_interpreter_digest": _digest("temporal fixture DSL interpreter"),
-        "wasm_runtime_digest": None,
-        "toolchain_digests": [_digest("temporal fixture toolchain")],
+        "dsl_interpreter": {
+            "component_id": "atlas.temporal-interpreter",
+            "component_version": "1.0.0",
+            "content_digest": interpreter_digest,
+        },
+        "wasm_runtime": None,
+        "toolchains": [
+            {
+                "component_id": "CPython",
+                "component_version": "3.12.10",
+                "content_digest": _digest("temporal fixture toolchain"),
+            },
+        ],
         "abi_version": tc.PACK_ABI_VERSION,
         "qualification_receipt_digest": qualification_receipt_digest,
         "supported_denominator_digest": denominator_digest,
+        "budget_review_receipt_digest": None,
         "budget_state": tp.TCBBudgetState.FROZEN.value,
         "core_sloc_budget": 120,
         "pack_sloc_budget": 30,
         "resource_ceilings": {
-            "max_input_bytes": 1_000_000,
-            "max_output_bytes": 1_000_000,
-            "max_memory_pages": 64,
-            "max_call_depth": 32,
-            "max_instruction_fuel": 10_000_000,
-            "max_host_deadline_ms": 5_000,
+            "dsl": {
+                "max_program_bytes": 65_536,
+                "max_input_bytes": 131_072,
+                "max_output_bytes": 65_536,
+                "max_rules": 128,
+                "max_expression_depth": 16,
+                "max_expression_nodes": 2_048,
+                "max_operator_operands": 64,
+                "max_path_segments": 16,
+                "max_string_bytes": 8_192,
+                "max_set_items": 256,
+                "max_input_nodes": 8_192,
+                "max_instruction_fuel": 32_768,
+            },
+            "wasm": None,
         },
     }
+
+
+def _verified_budget_review(tcb: dict[str, Any]) -> tr.VerifiedTCBBudgetReview:
+    private_key = Ed25519PrivateKey.generate()
+    public_key_raw = _public_key_bytes(private_key)
+    subject_digest = tr.tcb_budget_review_subject_digest(tcb)
+    profile = {
+        "schema": tr.DSL_RESOURCE_PROFILE_SCHEMA,
+        "substrate": tp.PackSubstrate.DECLARATIVE_DSL_ONLY.value,
+        **tcb["resource_ceilings"]["dsl"],
+    }
+    receipt = {
+        "schema": tr.TCB_BUDGET_REVIEW_RECEIPT_SCHEMA,
+        "receipt_id": "tcb-budget-review.temporal.001",
+        "purpose": tr.TCB_BUDGET_REVIEW_PURPOSE,
+        "selected_commit": "a" * 40,
+        "selected_tree": "b" * 40,
+        "structural_census_digest": _digest("temporal structural census"),
+        "prototype_measurement_digest": _digest("temporal prototype measurements"),
+        "prototype_pack_manifest_digest": _digest("temporal prototype pack manifest"),
+        "dsl_interpreter_digest": tcb["dsl_interpreter"]["content_digest"],
+        "prototype_program_digest": _digest("temporal prototype program"),
+        "tcb_budget_subject_digest": subject_digest,
+        "approved_core_sloc_budget": tcb["core_sloc_budget"],
+        "approved_pack_sloc_budget": tcb["pack_sloc_budget"],
+        "approved_dsl_resource_profile": profile,
+        "wasm_review_state": "UNREVIEWED",
+        "measurement_denominator_digest": _digest("temporal measurement denominator"),
+        "decision": tr.TCBBudgetReviewDecision.APPROVED.value,
+        "issued_at": "2026-08-22T00:00:00.000000Z",
+        "valid_from": "2026-08-22T00:00:00.000000Z",
+        "valid_until": "2026-09-22T00:00:00.000000Z",
+        "reviewer_key_id": "tcb-reviewer.temporal",
+    }
+    policy = {
+        "schema": tr.TCB_BUDGET_REVIEW_TRUST_POLICY_SCHEMA,
+        "policy_kind": tr.TCB_BUDGET_REVIEW_POLICY_KIND,
+        "policy_id": "tcb-budget-review-policy.temporal",
+        "policy_version": "1.0.0",
+        "purpose": tr.TCB_BUDGET_REVIEW_PURPOSE,
+        "evaluated_at": "2026-08-23T00:00:00.000000Z",
+        "trusted_keys": [
+            {
+                "schema": tr.TCB_BUDGET_REVIEW_TRUSTED_KEY_SCHEMA,
+                "key_id": receipt["reviewer_key_id"],
+                "public_key_digest": tc.bytes_digest(public_key_raw),
+                "reviewer_kind": tr.TCB_BUDGET_REVIEWER_KIND,
+                "independent_from_budget_proposer": True,
+                "independent_from_prototype_and_measurement_producer": True,
+                "independent_from_release_builder": True,
+                "authorizations": [{
+                    "schema": tr.TCB_BUDGET_REVIEW_AUTHORIZATION_SCHEMA,
+                    "purpose": tr.TCB_BUDGET_REVIEW_PURPOSE,
+                    "target_schema_version": tr.TCB_BUDGET_REVIEW_RECEIPT_SCHEMA,
+                    "reviewer_role": tr.TCB_BUDGET_REVIEWER_ROLE,
+                    "substrate": tr.TCB_BUDGET_REVIEW_SUBSTRATE,
+                }],
+                "allowed_selected_commits": [receipt["selected_commit"]],
+                "allowed_selected_trees": [receipt["selected_tree"]],
+                "allowed_tcb_subject_digests": [subject_digest],
+                "valid_from": "2026-01-01T00:00:00.000000Z",
+                "valid_until": "2027-01-01T00:00:00.000000Z",
+            },
+        ],
+        "revoked_receipt_digests": [],
+    }
+    receipt_raw = tc.canonical_json_bytes(receipt)
+    policy_raw = tc.canonical_json_bytes(policy)
+    signature = {
+        "schema": tr.TCB_BUDGET_REVIEW_SIGNATURE_SCHEMA,
+        "purpose": tr.TCB_BUDGET_REVIEW_PURPOSE,
+        "payload_digest": tc.bytes_digest(receipt_raw),
+        "trust_policy_digest": tc.bytes_digest(policy_raw),
+        "signer_key_id": receipt["reviewer_key_id"],
+        "algorithm": tr.TCB_BUDGET_REVIEW_SIGNATURE_ALGORITHM,
+        "signature_base64": base64.b64encode(
+            private_key.sign(tr.tcb_budget_review_signing_material(receipt_raw, policy_raw))
+        ).decode("ascii"),
+    }
+    bindings = {
+        "schema": tr.TCB_BUDGET_REVIEW_BINDINGS_SCHEMA,
+        **{
+            key: receipt[key]
+            for key in (
+                "selected_commit",
+                "selected_tree",
+                "structural_census_digest",
+                "prototype_measurement_digest",
+                "prototype_pack_manifest_digest",
+                "dsl_interpreter_digest",
+                "prototype_program_digest",
+                "tcb_budget_subject_digest",
+                "measurement_denominator_digest",
+            )
+        },
+    }
+    return tr.verify_tcb_budget_review_evidence(
+        receipt_raw,
+        tc.canonical_json_bytes(signature),
+        tr.bind_external_tcb_budget_review_trust_policy_bytes(policy_raw),
+        public_key_raw,
+        bindings,
+    )
 
 
 def _content_binding(role: str, digest: str) -> dict[str, Any]:
@@ -192,6 +341,7 @@ def _qualified_fixture(
         tp.VerifiedQualification,
         tp.VerifiedQualification,
         dict[str, tp.VerifiedQualification],
+        tr.VerifiedTCBBudgetReview,
 ]:
     value = deepcopy(case or minimal_transition_case())
     profile = value["observation_profiles"][0]
@@ -223,6 +373,8 @@ def _qualified_fixture(
     tcb = _frozen_tcb_manifest(
         denominator_digest=manifest["supported_denominator_digest"],
     )
+    budget_review = _verified_budget_review(tcb)
+    tcb["budget_review_receipt_digest"] = budget_review.review_digest
     manifest["tcb_manifest_digest"] = tc.canonical_digest(tcb)
     private_key = Ed25519PrivateKey.generate()
     public_key_raw = _public_key_bytes(private_key)
@@ -294,7 +446,11 @@ def _qualified_fixture(
     manifest["tcb_manifest_digest"] = bound_tcb.digest
     pack_raw = tc.canonical_json_bytes(manifest)
     bound_pack = tp.bind_pack_manifest_bytes(pack_raw)
-    tp.validate_pack_tcb_pair(bound_pack, bound_tcb)
+    tp.validate_pack_tcb_pair(
+        bound_pack,
+        bound_tcb,
+        budget_review=budget_review,
+    )
     value["pack_binding"].update({
         "pack_id": bound_pack["pack_id"],
         "pack_version": bound_pack["pack_version"],
@@ -387,18 +543,28 @@ def _qualified_fixture(
         applicability_qualification,
         pack_qualification,
         {profile_digest: profile_qualification},
+        budget_review,
     )
 
 
 def _verify_qualified_fixture(case: dict[str, Any] | None = None) -> dict[str, Any]:
-    bound_case, pack, tcb, policy, content, applicability, pack_qualification, profiles = (
-        _qualified_fixture(case)
-    )
+    (
+        bound_case,
+        pack,
+        tcb,
+        policy,
+        content,
+        applicability,
+        pack_qualification,
+        profiles,
+        budget_review,
+    ) = _qualified_fixture(case)
     return tv.verify_transition_case(
         bound_case,
         pack,
         content=content,
         tcb_manifest=tcb,
+        tcb_budget_review=budget_review,
         trust_policy=policy,
         applicability_qualification=applicability,
         pack_qualification=pack_qualification,
@@ -489,7 +655,7 @@ def test_r2_0_temporal_monitor_is_uniformly_inconclusive_until_r2_2_activation(
         mode: str,
         operator: str) -> None:
     case = _temporal_mode_case(mode, operator)
-    bound, _pack, _tcb, policy, content, _app, _pack_qualification, profiles = (
+    bound, _pack, _tcb, policy, content, _app, _pack_qualification, profiles, _review = (
         _qualified_fixture(case)
     )
     obligation = bound["evolution_ir"]["obligations"][0]
@@ -513,7 +679,7 @@ def test_r2_0_temporal_monitor_is_uniformly_inconclusive_until_r2_2_activation(
 
 
 def test_temporal_monitor_discloses_missing_exact_evidence_bytes_without_promotion() -> None:
-    bound, _pack, _tcb, policy, _content, _app, _pack_qualification, profiles = (
+    bound, _pack, _tcb, policy, _content, _app, _pack_qualification, profiles, _review = (
         _qualified_fixture()
     )
     obligation = bound["evolution_ir"]["obligations"][0]
@@ -578,9 +744,17 @@ def test_signed_but_unapproved_qualification_policy_cannot_reach_positive_state(
 
 
 def test_signed_wrong_denominator_is_reported_even_when_registry_is_unapproved() -> None:
-    bound, pack, tcb, policy, content, _applicability, pack_qualification, profiles = (
-        _qualified_fixture()
-    )
+    (
+        bound,
+        pack,
+        tcb,
+        policy,
+        content,
+        _applicability,
+        pack_qualification,
+        profiles,
+        budget_review,
+    ) = _qualified_fixture()
     wrong_qualification = next(iter(profiles.values()))
 
     receipt = tv.verify_transition_case(
@@ -588,6 +762,7 @@ def test_signed_wrong_denominator_is_reported_even_when_registry_is_unapproved()
         pack,
         content=content,
         tcb_manifest=tcb,
+        tcb_budget_review=budget_review,
         trust_policy=policy,
         applicability_qualification=wrong_qualification,
         pack_qualification=pack_qualification,
@@ -601,14 +776,23 @@ def test_signed_wrong_denominator_is_reported_even_when_registry_is_unapproved()
 
 
 def test_expired_signed_qualification_diagnostic_is_not_masked_by_unapproved_registry() -> None:
-    bound, pack, tcb, policy, content, applicability, pack_qualification, profiles = (
-        _qualified_fixture(policy_evaluated_at="2026-10-01T00:00:00.000000Z")
-    )
+    (
+        bound,
+        pack,
+        tcb,
+        policy,
+        content,
+        applicability,
+        pack_qualification,
+        profiles,
+        budget_review,
+    ) = _qualified_fixture(policy_evaluated_at="2026-10-01T00:00:00.000000Z")
     receipt = tv.verify_transition_case(
         bound,
         pack,
         content=content,
         tcb_manifest=tcb,
+        tcb_budget_review=budget_review,
         trust_policy=policy,
         applicability_qualification=applicability,
         pack_qualification=pack_qualification,
