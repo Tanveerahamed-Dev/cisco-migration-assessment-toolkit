@@ -68,6 +68,7 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/transition_tcb_review.py",
         "cisco_toolkit/transition_runtime_closure.py",
         "cisco_toolkit/transition_runtime_discovery.py",
+        "cisco_toolkit/_transition_runtime_debug.py",
         "cisco_toolkit/transition_workload_review.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
@@ -111,6 +112,7 @@ def test_registry_owner_symbols_are_real():
 def test_registry_transition_contract_owners_are_real_and_bounded():
     """The R2.0 row resolves to its owners and retains its non-promotion boundaries."""
     from cisco_toolkit import (
+        _transition_runtime_debug,
         transition_contract,
         transition_dsl,
         transition_legacy,
@@ -144,7 +146,15 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
             "RuntimeClosureDiscoverySubject",
             "CapturedIncompleteRuntimeClosureEvidence",
             "validate_windows_runtime_discovery_trace",
+            "validate_windows_debug_runtime_discovery_trace",
+            "validate_windows_debug_execution_environment_manifest",
             "capture_windows_runtime_closure_incomplete",
+            "capture_windows_debug_runtime_closure_incomplete",
+        ),
+        _transition_runtime_debug: (
+            "DebugEventCapture",
+            "DebugEventRecord",
+            "WindowsDebugEventSession",
         ),
         transition_verifier: (
             "verify_transition_case",

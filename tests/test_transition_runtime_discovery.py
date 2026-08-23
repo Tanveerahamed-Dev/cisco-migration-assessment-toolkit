@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import ctypes
 from dataclasses import FrozenInstanceError, fields
 import inspect
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import re
 import sys
+import time
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -30,6 +33,16 @@ _TRACE_ARTIFACT_IDS = {
 }
 _ENVIRONMENT_ARTIFACT_ID = "windows-execution-environment-manifest.atlas-r2.v1"
 _DYNAMIC_ARTIFACT_IDS = {*_TRACE_ARTIFACT_IDS, _ENVIRONMENT_ARTIFACT_ID}
+_DEBUG_TRACE_ARTIFACT_IDS = {
+    "windows-debug-process-trace.atlas-r2.v2",
+    "windows-debug-image-trace.atlas-r2.v2",
+    "windows-debug-loss-reconciliation.atlas-r2.v2",
+}
+_DEBUG_ENVIRONMENT_ARTIFACT_ID = "windows-execution-environment-manifest.atlas-r2.v2"
+_DEBUG_DYNAMIC_ARTIFACT_IDS = {
+    *_DEBUG_TRACE_ARTIFACT_IDS,
+    _DEBUG_ENVIRONMENT_ARTIFACT_ID,
+}
 _CRYPTO_PROVIDER_PATH_DIGEST = contract.bytes_digest(b"normalized crypto path")
 _AUTHORITY = {
     "authoritative": False,
@@ -462,22 +475,56 @@ def _git(*arguments: str) -> str:
     )
 
 
+def _watch_spawning_parent_for_test() -> None:
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        os._exit(2)
+    discovery._debug_helper_parent_watchdog(parent.sentinel)
+
+
+def _spawn_watchdog_child_for_test(report_sender: Any) -> None:
+    context = multiprocessing.get_context("spawn")
+    helper = context.Process(
+        target=_watch_spawning_parent_for_test,
+        daemon=False,
+    )
+    helper.start()
+    report_sender.send_bytes(str(helper.pid).encode("ascii"))
+    report_sender.close()
+    time.sleep(1)
+    os._exit(0)
+
+
 def test_public_surface_is_incomplete_only_and_has_no_claim_injection() -> None:
     assert discovery.__all__ == [
         "CapturedIncompleteRuntimeClosureEvidence",
         "RuntimeClosureDiscoverySubject",
         "RuntimeDiscoveryError",
+        "capture_windows_debug_runtime_closure_incomplete",
         "capture_windows_runtime_closure_incomplete",
+        "validate_windows_debug_execution_environment_manifest",
+        "validate_windows_debug_runtime_discovery_trace",
         "validate_windows_execution_environment_manifest",
         "validate_windows_runtime_discovery_trace",
     ]
-    signature = inspect.signature(discovery.capture_windows_runtime_closure_incomplete)
-    assert tuple(signature.parameters) == ("subject", "project_root")
-    assert all(
-        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        and parameter.default is inspect.Parameter.empty
-        for parameter in signature.parameters.values()
-    )
+    for capture in (
+        discovery.capture_windows_debug_runtime_closure_incomplete,
+        discovery.capture_windows_runtime_closure_incomplete,
+    ):
+        signature = inspect.signature(capture)
+        assert tuple(signature.parameters) == ("subject", "project_root")
+        assert all(
+            parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            and parameter.default is inspect.Parameter.empty
+            for parameter in signature.parameters.values()
+        )
+    for validator in (
+        discovery.validate_windows_debug_execution_environment_manifest,
+        discovery.validate_windows_debug_runtime_discovery_trace,
+        discovery.validate_windows_execution_environment_manifest,
+        discovery.validate_windows_runtime_discovery_trace,
+    ):
+        assert tuple(inspect.signature(validator).parameters) == ("value",)
     assert [field.name for field in fields(discovery.RuntimeClosureDiscoverySubject)] == [
         "producer_id",
         "runtime_collector_id",
@@ -490,6 +537,10 @@ def test_public_surface_is_incomplete_only_and_has_no_claim_injection() -> None:
     ]
     with pytest.raises(TypeError):
         discovery.capture_windows_runtime_closure_incomplete(
+            _subject(), ROOT, state=closure.RUNTIME_CLOSURE_EVIDENCE_READY  # type: ignore[call-arg]
+        )
+    with pytest.raises(TypeError):
+        discovery.capture_windows_debug_runtime_closure_incomplete(
             _subject(), ROOT, state=closure.RUNTIME_CLOSURE_EVIDENCE_READY  # type: ignore[call-arg]
         )
     with pytest.raises(TypeError):
@@ -1814,6 +1865,343 @@ def test_exact_blob_reader_and_private_materialization_fail_closed(
         discovery._materialize_commit_inputs(tmp_path, {"fixed/input.bin": b"exact"})
 
 
+def test_debug_helper_protocol_accepts_only_closed_canonical_unions() -> None:
+    success = {
+        "helper_protocol": discovery._DEBUG_HELPER_PROTOCOL,
+        "status": "SUCCESS",
+        "documents": {
+            "process_trace": {},
+            "image_trace": {},
+            "loss_trace": {},
+            "environment_manifest": {},
+        },
+    }
+    raw = contract.canonical_json_bytes(success)
+    assert discovery._decode_debug_helper_response(raw) == (
+        "SUCCESS", success["documents"]
+    )
+    error = discovery._debug_helper_error_response("WINDOWS_DEBUG_TEST_FAILED")
+    assert discovery._decode_debug_helper_response(
+        contract.canonical_json_bytes(error)
+    ) == ("ERROR", "WINDOWS_DEBUG_TEST_FAILED")
+
+    malformed = [
+        raw + b" ",
+        contract.canonical_json_bytes({**success, "extra": None}),
+        contract.canonical_json_bytes({**success, "helper_protocol": "wrong"}),
+        contract.canonical_json_bytes({**success, "status": "UNKNOWN"}),
+        contract.canonical_json_bytes({
+            "helper_protocol": discovery._DEBUG_HELPER_PROTOCOL,
+            "status": "ERROR",
+            "error_code": "path and exception text",
+        }),
+        b"x" * (contract.PROVISIONAL_MAX_CANONICAL_BYTES + 1),
+    ]
+    for candidate in malformed:
+        with pytest.raises(
+                discovery.RuntimeDiscoveryError,
+                match="^WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID$"):
+            discovery._decode_debug_helper_response(candidate)
+
+
+@pytest.mark.parametrize(
+    ("ready_sequence", "messages", "exitcode", "error_code"),
+    [
+        ([], [], 0, "WINDOWS_DEBUG_HELPER_TIMEOUT"),
+        (["receiver", "receiver"], [b"first", b"extra"], 0,
+         "WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID"),
+        (["receiver", "sentinel"], [b"first", EOFError()], 1,
+         "WINDOWS_DEBUG_HELPER_PROCESS_FAILED"),
+    ],
+)
+def test_debug_helper_receive_rejects_missing_extra_and_nonzero_exit(
+        monkeypatch: pytest.MonkeyPatch,
+        ready_sequence: list[str],
+        messages: list[bytes | EOFError],
+        exitcode: int,
+        error_code: str,
+        ) -> None:
+    sentinel = object()
+
+    class Receiver:
+        def recv_bytes(self, maxlength: int) -> bytes:
+            assert maxlength == contract.PROVISIONAL_MAX_CANONICAL_BYTES
+            value = messages.pop(0)
+            if isinstance(value, EOFError):
+                raise value
+            return value
+
+    class Helper:
+        def __init__(self) -> None:
+            self.sentinel = sentinel
+            self.exitcode = exitcode
+
+        def join(self, timeout: float) -> None:
+            assert timeout == 0
+
+    receiver = Receiver()
+
+    def wait(objects: list[Any], deadline_ns: int) -> list[Any]:
+        assert deadline_ns > 0
+        if not ready_sequence:
+            return []
+        ready = ready_sequence.pop(0)
+        return [receiver if ready == "receiver" else sentinel]
+
+    monkeypatch.setattr(discovery, "_wait_for_debug_helper", wait)
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$"):
+        discovery._receive_debug_helper_frame(  # type: ignore[arg-type]
+            Helper(), receiver, time.monotonic_ns() + 1_000_000_000
+        )
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="spawn pipe transport regression is Windows-specific",
+)
+def test_debug_helper_transport_drains_large_frame_before_join() -> None:
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    payload = b"x" * (1024 * 1024)
+    helper = context.Process(
+        target=type(sender).send_bytes,
+        args=(sender, payload),
+        daemon=False,
+    )
+    try:
+        helper.start()
+        sender.close()
+        helper.join(0.1)
+        assert helper.is_alive()
+        frame = discovery._receive_debug_helper_frame(
+            helper,
+            receiver,
+            time.monotonic_ns() + 10_000_000_000,
+        )
+        assert frame == payload
+        assert helper.exitcode == 0
+    finally:
+        receiver.close()
+        sender.close()
+        assert discovery._dispose_debug_helper_process(helper) is True
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="spawn helper ownership regression is Windows-specific",
+)
+@pytest.mark.parametrize(
+    ("send_go", "expected_code"),
+    [
+        (False, "WINDOWS_DEBUG_HELPER_GATE_INVALID"),
+        (True, "WINDOWS_DEBUG_HELPER_REQUEST_INVALID"),
+    ],
+)
+def test_debug_helper_spawn_requires_parent_go_before_request(
+        send_go: bool,
+        expected_code: str,
+        ) -> None:
+    context = multiprocessing.get_context("spawn")
+    gate_receiver, gate_sender = context.Pipe(duplex=False)
+    result_receiver, result_sender = context.Pipe(duplex=False)
+    deadline_ns = time.monotonic_ns() + 10_000_000_000
+    helper = context.Process(
+        target=discovery._debug_capture_helper_main,
+        args=(
+            gate_receiver,
+            result_sender,
+            str(Path(sys.executable).resolve()),
+            str(ROOT),
+            [],
+            contract.bytes_digest(b"program"),
+            contract.bytes_digest(b"input"),
+            _COMMIT,
+            _TREE,
+            str(ROOT.parent),
+            str(ROOT),
+            deadline_ns,
+        ),
+        daemon=False,
+    )
+    try:
+        helper.start()
+        gate_receiver.close()
+        result_sender.close()
+        if send_go:
+            gate_sender.send_bytes(discovery._DEBUG_HELPER_GO)
+        gate_sender.close()
+        frame = discovery._receive_debug_helper_frame(
+            helper, result_receiver, deadline_ns
+        )
+        assert discovery._decode_debug_helper_response(frame) == (
+            "ERROR", expected_code
+        )
+        assert helper.exitcode == 0
+    finally:
+        gate_receiver.close()
+        gate_sender.close()
+        result_receiver.close()
+        result_sender.close()
+        assert discovery._dispose_debug_helper_process(helper) is True
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="spawn helper ownership regression is Windows-specific",
+)
+def test_debug_helper_gate_wait_expires_while_parent_endpoint_remains_open() -> None:
+    context = multiprocessing.get_context("spawn")
+    gate_receiver, gate_sender = context.Pipe(duplex=False)
+    result_receiver, result_sender = context.Pipe(duplex=False)
+    helper_deadline_ns = time.monotonic_ns() + 250_000_000
+    helper = context.Process(
+        target=discovery._debug_capture_helper_main,
+        args=(
+            gate_receiver,
+            result_sender,
+            str(Path(sys.executable).resolve()),
+            str(ROOT),
+            [],
+            contract.bytes_digest(b"program"),
+            contract.bytes_digest(b"input"),
+            _COMMIT,
+            _TREE,
+            str(ROOT.parent),
+            str(ROOT),
+            helper_deadline_ns,
+        ),
+        daemon=False,
+    )
+    try:
+        helper.start()
+        gate_receiver.close()
+        result_sender.close()
+        frame = discovery._receive_debug_helper_frame(
+            helper,
+            result_receiver,
+            time.monotonic_ns() + 5_000_000_000,
+        )
+        assert discovery._decode_debug_helper_response(frame) == (
+            "ERROR", "WINDOWS_DEBUG_HELPER_GATE_INVALID"
+        )
+        assert helper.exitcode == 0
+    finally:
+        gate_receiver.close()
+        gate_sender.close()
+        result_receiver.close()
+        result_sender.close()
+        assert discovery._dispose_debug_helper_process(helper) is True
+
+
+def test_debug_helper_disposal_hard_terminates_then_closes() -> None:
+    class Helper:
+        def __init__(self) -> None:
+            self.pid = 123
+            self.alive = True
+            self.events: list[Any] = []
+
+        def is_alive(self) -> bool:
+            self.events.append("is_alive")
+            return self.alive
+
+        def terminate(self) -> None:
+            self.events.append("terminate")
+
+        def kill(self) -> None:
+            self.events.append("kill")
+            self.alive = False
+
+        def join(self, timeout: float) -> None:
+            self.events.append(("join", timeout))
+
+        def close(self) -> None:
+            assert self.alive is False
+            self.events.append("close")
+
+    helper = Helper()
+    assert discovery._dispose_debug_helper_process(helper) is True
+    assert helper.events == [
+        "is_alive",
+        "terminate",
+        ("join", discovery._DEBUG_HELPER_CLEANUP_SECONDS),
+        "is_alive",
+        "kill",
+        ("join", discovery._DEBUG_HELPER_CLEANUP_SECONDS),
+        "is_alive",
+        ("join", 0),
+        "close",
+    ]
+
+
+def test_debug_helper_parent_watchdog_exits_after_parent_signal(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel = object()
+    waited: list[list[Any]] = []
+
+    class WatchdogExit(BaseException):
+        pass
+
+    monkeypatch.setattr(
+        discovery,
+        "_multiprocessing_wait",
+        lambda objects: waited.append(objects),
+    )
+    monkeypatch.setattr(
+        discovery.os,
+        "_exit",
+        lambda code: (_ for _ in ()).throw(WatchdogExit(code)),
+    )
+    with pytest.raises(WatchdogExit):
+        discovery._debug_helper_parent_watchdog(sentinel)  # type: ignore[arg-type]
+    assert waited == [[sentinel]]
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="parent process sentinel containment is Windows-specific",
+)
+def test_debug_helper_parent_watchdog_contains_abrupt_parent_death() -> None:
+    context = multiprocessing.get_context("spawn")
+    report_receiver, report_sender = context.Pipe(duplex=False)
+    parent = context.Process(
+        target=_spawn_watchdog_child_for_test,
+        args=(report_sender,),
+        daemon=False,
+    )
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+    kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel32.TerminateProcess.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+    kernel32.TerminateProcess.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    helper_handle: int | None = None
+    try:
+        parent.start()
+        report_sender.close()
+        assert report_receiver.poll(5)
+        helper_pid = int(report_receiver.recv_bytes(32).decode("ascii"))
+        helper_handle = int(kernel32.OpenProcess(0x00100001, 0, helper_pid) or 0)
+        assert helper_handle != 0
+        parent.join(5)
+        assert parent.exitcode == 0
+        assert kernel32.WaitForSingleObject(helper_handle, 5_000) == 0
+    finally:
+        report_receiver.close()
+        report_sender.close()
+        if parent.is_alive():
+            parent.terminate()
+            parent.join(5)
+        if helper_handle is not None:
+            if kernel32.WaitForSingleObject(helper_handle, 0) != 0:
+                kernel32.TerminateProcess(helper_handle, 1)
+                kernel32.WaitForSingleObject(helper_handle, 5_000)
+            kernel32.CloseHandle(helper_handle)
+        parent.close()
+
+
 @pytest.mark.skipif(
     os.name != "nt" or sys.platform != "win32",
     reason="live discovery is intentionally Windows-only",
@@ -1923,3 +2311,101 @@ def test_real_windows_capture_runs_only_from_a_tracked_clean_committed_checkout(
         "complete_exact_runtime_closure": False,
         "state": "PARTIAL_NONPORTABLE_PROTOTYPE",
     }
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="live DEBUG_PROCESS discovery is intentionally Windows-only",
+)
+def test_real_windows_debug_capture_runs_only_from_a_tracked_clean_committed_checkout() -> None:
+    tracked_status = _git("status", "--porcelain=v1", "--untracked-files=no")
+    if tracked_status:
+        pytest.skip("live DEBUG_PROCESS discovery requires a tracked-clean checkout")
+    required_tracked = (
+        "cisco_toolkit/_transition_runtime_debug.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v2.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v2.schema.json",
+        "tests/test_transition_runtime_debug.py",
+        "tests/test_transition_runtime_discovery.py",
+    )
+    for relative in required_tracked:
+        if _git("ls-files", "--", relative) != relative:
+            pytest.skip("live DEBUG_PROCESS discovery requires the v2 collector in HEAD")
+
+    commit = _git("rev-parse", "HEAD^{commit}")
+    tree = _git("rev-parse", "HEAD^{tree}")
+    result = discovery.capture_windows_debug_runtime_closure_incomplete(
+        _subject(commit=commit, tree=tree), ROOT
+    )
+    evidence = result.bound_evidence
+    assert evidence["selected_commit"] == commit
+    assert evidence["selected_tree"] == tree
+    assert evidence["state"] == closure.RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE
+    assert evidence["coverage"]["state"] == closure.RUNTIME_CLOSURE_COVERAGE_INCOMPLETE
+    assert evidence["authority"] == _AUTHORITY
+    assert evidence["known_gaps"] == closure.expected_runtime_closure_gaps(evidence)
+    positive_coverage = {
+        "process_tree_captured_before_first_instruction_through_final_descendant",
+        "execution_environment_argv_cwd_and_inputs_bound",
+    }
+    assert all(
+        evidence["coverage"][field] is (field in positive_coverage)
+        for field in closure.RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS
+    )
+
+    artifact_raw = result.artifact_raw_by_id()
+    assert len(artifact_raw) == 12
+    documents: dict[str, dict[str, Any]] = {}
+    for artifact_id in _DEBUG_TRACE_ARTIFACT_IDS:
+        raw = artifact_raw[artifact_id]
+        value = contract.parse_canonical_json_bytes(raw, require_canonical=True)
+        assert discovery.validate_windows_debug_runtime_discovery_trace(value) == value
+        assert value["authority"] == _AUTHORITY
+        assert re.search(rb"[A-Za-z]:[\\/]", raw) is None
+        documents[value["schema"]] = value
+    environment_raw = artifact_raw[_DEBUG_ENVIRONMENT_ARTIFACT_ID]
+    environment_manifest = contract.parse_canonical_json_bytes(
+        environment_raw, require_canonical=True
+    )
+    assert discovery.validate_windows_debug_execution_environment_manifest(
+        environment_manifest
+    ) == environment_manifest
+    assert environment_manifest["authority"] == _AUTHORITY
+    assert re.search(rb"[A-Za-z]:[\\/]", environment_raw) is None
+    assert set(_DEBUG_DYNAMIC_ARTIFACT_IDS) <= set(artifact_raw)
+
+    process = documents[discovery._fixed_debug_process_trace_schema()]
+    image = documents[discovery._fixed_debug_image_trace_schema()]
+    loss = documents[discovery._fixed_debug_loss_trace_schema()]
+    assert process["target_process_token"] == image["target_process_token"]
+    assert process["target_process_token"] == loss["target_process_token"]
+    assert process["target_process_token"] == environment_manifest["target_process_token"]
+    job_rows = process["job"]["events"]
+    assert [row["sequence"] for row in job_rows] == list(range(len(job_rows)))
+    assert job_rows[-1] == {
+        "sequence": len(job_rows) - 1,
+        "event": "ACTIVE_PROCESS_ZERO",
+        "process_token": None,
+        "job_message_id": 4,
+    }
+    assert {
+        row["process_token"] for row in job_rows if row["event"] == "NEW_PROCESS"
+    } == {
+        row["process_token"] for row in process["events"]
+        if row["event"] == "CREATE_PROCESS"
+    }
+    assert {
+        row["process_token"] for row in job_rows if row["event"] == "EXIT_PROCESS"
+    } == {
+        row["process_token"] for row in process["events"]
+        if row["event"] == "EXIT_PROCESS"
+    }
+    assert process["job"]["assignment_completed_before_first_debug_event_pump"] is True
+    assert process["job"]["debug_created_process_set_matches_job"] is True
+    assert process["job"]["debug_exited_process_set_matches_job"] is True
+    assert discovery._validate_debug_image_projection(process, image) is None
+    sealed = discovery._validate_sealed_debug_dynamic_profile(
+        artifact_raw, process["target"]["crypto_provider_path_digest"]
+    )
+    assert sealed == (process, image, loss, environment_manifest)

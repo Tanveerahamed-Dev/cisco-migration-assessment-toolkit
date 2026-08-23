@@ -1,10 +1,19 @@
 """Windows-only R2.0 runtime discovery that can emit incomplete evidence only.
 
-The producer runs the fixed synthetic DSL reference target inside a kill-on-close Windows Job
+The `/1` producer runs the fixed synthetic DSL reference target inside a kill-on-close Windows Job
 Object associated with an I/O completion port.  Job messages provide bounded process-membership
 observations and K32 polling provides bounded executable-mapping checkpoints.  Neither mechanism
-is a sandbox, a lossless event source, loaded-byte identity, or load/unload history.  Successful
-capture therefore always returns ``COLLECTED_INCOMPLETE`` evidence; failures return no evidence.
+is a sandbox, a lossless event source, loaded-byte identity, or load/unload history.
+
+The parallel `/2` producer puts the creator thread in a spawned, deadline-owned helper process.  A
+parent ``GO`` gate prevents a late launch, and helper exit retains the Job kill-on-close and debugger
+kill-on-exit backstops.  The helper starts the same target with ``DEBUG_PROCESS``, assigns the stopped
+root to a non-breakaway Job before the first debug-event continuation, and reconciles the complete
+debugged process lifetime against canonical Job events.  This containment is not a sandbox.  Debug
+image events add exact lifecycles for the events the debugger received, but they still cannot
+establish manual/anonymous mapping absence, mapped bytes, persistent file identity, loader closure,
+or operating-system losslessness.  Both successful captures therefore return
+``COLLECTED_INCOMPLETE`` evidence; failures return none.
 
 The fixed target also reports a digest-only observation of its exact argv, working directory,
 environment, selected Python executable path and separately read file bytes, reported interpreter
@@ -23,6 +32,8 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import multiprocessing
+from multiprocessing.connection import Connection, wait as _multiprocessing_wait
 import os
 import re
 import stat
@@ -39,6 +50,13 @@ from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from . import transition_dsl, transition_pack
+from ._transition_runtime_debug import (
+    DEBUG_PROCESS_CREATION_FLAG,
+    DebugEventCapture,
+    DebugEventEngineError,
+    DebugEventRecord,
+    WindowsDebugEventSession,
+)
 from .transition_contract import (
     PROVISIONAL_MAX_CANONICAL_BYTES,
     bytes_digest,
@@ -75,6 +93,15 @@ WINDOWS_DISCOVERY_LOSS_RECONCILIATION_SCHEMA = (
 WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
     "atlas.windows-execution-environment-manifest/1"
 )
+WINDOWS_DEBUG_RUNTIME_DISCOVERY_CAPTURE_PROTOCOL = "WINDOWS_DEBUG_PROCESS_DISCOVERY/2"
+WINDOWS_DEBUG_PROCESS_TRACE_SCHEMA = "atlas.windows-debug-process-trace/2"
+WINDOWS_DEBUG_IMAGE_TRACE_SCHEMA = "atlas.windows-debug-image-trace/2"
+WINDOWS_DEBUG_LOSS_RECONCILIATION_SCHEMA = (
+    "atlas.windows-debug-loss-reconciliation/2"
+)
+WINDOWS_DEBUG_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
+    "atlas.windows-execution-environment-manifest/2"
+)
 WINDOWS_RUNTIME_DISCOVERY_CLAIM_BOUNDARY = (
     "Windows Job Object process messages and K32 polling checkpoints for one R2.0 prototype "
     "execution only; incomplete and non-authoritative, with no exact runtime-closure, budget, "
@@ -87,6 +114,13 @@ WINDOWS_EXECUTION_ENVIRONMENT_CLAIM_BOUNDARY = (
     "only; this does not establish mapped or loaded executable bytes, persistent file identity, "
     "loader policy, interpreter or runtime dependency closure, platform or boot state, authority, "
     "qualification, promotion, or Release 3 readiness."
+)
+WINDOWS_DEBUG_RUNTIME_DISCOVERY_CLAIM_BOUNDARY = (
+    "Windows DEBUG_PROCESS process and image events cross-checked against one non-breakaway "
+    "Job Object for one R2.0 prototype execution only; process lifetime coverage is bounded to "
+    "that fixed execution, while image events remain incomplete for mapped-byte identity, "
+    "manual or anonymous executable mappings, loader closure, losslessness, exact runtime "
+    "closure, budget, qualification, promotion, or Release 3 authority."
 )
 
 
@@ -128,6 +162,36 @@ def _fixed_environment_claim_boundary() -> str:
         "authority, qualification, promotion, or Release 3 readiness."
     )
 
+
+def _fixed_debug_capture_protocol() -> str:
+    return "WINDOWS_DEBUG_PROCESS_DISCOVERY/2"
+
+
+def _fixed_debug_process_trace_schema() -> str:
+    return "atlas.windows-debug-process-trace/2"
+
+
+def _fixed_debug_image_trace_schema() -> str:
+    return "atlas.windows-debug-image-trace/2"
+
+
+def _fixed_debug_loss_trace_schema() -> str:
+    return "atlas.windows-debug-loss-reconciliation/2"
+
+
+def _fixed_debug_environment_manifest_schema() -> str:
+    return "atlas.windows-execution-environment-manifest/2"
+
+
+def _fixed_debug_claim_boundary() -> str:
+    return (
+        "Windows DEBUG_PROCESS process and image events cross-checked against one non-breakaway "
+        "Job Object for one R2.0 prototype execution only; process lifetime coverage is bounded "
+        "to that fixed execution, while image events remain incomplete for mapped-byte identity, "
+        "manual or anonymous executable mappings, loader closure, losslessness, exact runtime "
+        "closure, budget, qualification, promotion, or Release 3 authority."
+    )
+
 # Protective collection guards only.  They are not approved R2 budgets or qualification limits.
 _MAX_RUNTIME_SECONDS = 30
 _MAX_PROCESS_EVENTS = 4096
@@ -136,6 +200,14 @@ _MAX_MAPPINGS_PER_SNAPSHOT = 4096
 _POLL_INTERVAL_MILLISECONDS = 25
 _MAX_CONTROL_LINE_BYTES = 1024 * 1024
 _PORTABLE_INT_MAX = 9_007_199_254_740_991
+_MAX_DEBUG_EVENTS = 16_384
+_MAX_DEBUG_PROCESSES = 256
+_MAX_DEBUG_THREADS = 4_096
+_MAX_DEBUG_IMAGE_MAPPINGS = 16_384
+_DEBUG_HELPER_PROTOCOL = "ATLAS_WINDOWS_DEBUG_CAPTURE_HELPER/1"
+_DEBUG_HELPER_GO = b"ATLAS_WINDOWS_DEBUG_CAPTURE_GO/1"
+_DEBUG_HELPER_OUTER_SECONDS = _MAX_RUNTIME_SECONDS + 15
+_DEBUG_HELPER_CLEANUP_SECONDS = 5
 
 # Exact digests for the single fixed R2.0 synthetic execution lane.  These are content bindings,
 # not qualification inputs or approved budgets.  Pinning the complete receipt prevents a helper
@@ -244,6 +316,29 @@ _ENVIRONMENT_ARTIFACT = (
     "execution_environment_manifest_digest",
     "atlas.windows-execution-environment-manifest/1",
 )
+_DEBUG_DYNAMIC_ARTIFACTS = (
+    (
+        "windows-debug-process-trace.atlas-r2.v2",
+        "PROCESS_TREE_LIFETIME_TRACE",
+        "atlas.windows-debug-process-trace/2",
+    ),
+    (
+        "windows-debug-image-trace.atlas-r2.v2",
+        "EXECUTABLE_MAPPING_LOAD_UNLOAD_TRACE",
+        "atlas.windows-debug-image-trace/2",
+    ),
+    (
+        "windows-debug-loss-reconciliation.atlas-r2.v2",
+        "COLLECTOR_LOSS_AND_RECONCILIATION",
+        "atlas.windows-debug-loss-reconciliation/2",
+    ),
+)
+_DEBUG_ENVIRONMENT_ARTIFACT = (
+    "windows-execution-environment-manifest.atlas-r2.v2",
+    "EXECUTION_ENVIRONMENT_MANIFEST",
+    "execution_environment_manifest_digest",
+    "atlas.windows-execution-environment-manifest/2",
+)
 
 _AUTHORITY = {
     "authoritative": False,
@@ -298,6 +393,17 @@ def _fixed_limits() -> dict[str, int]:
     }
 
 
+def _fixed_debug_limits() -> dict[str, int]:
+    return {
+        "max_runtime_seconds": 30,
+        "max_debug_events": 16_384,
+        "max_processes": 256,
+        "max_threads": 4_096,
+        "max_image_mappings": 16_384,
+        "wait_interval_milliseconds": 25,
+    }
+
+
 def _fixed_limitations() -> tuple[str, ...]:
     return (
         "JOB_OBJECT_NOT_A_SANDBOX_OR_DENY_BY_DEFAULT_EXECUTION_POLICY",
@@ -305,6 +411,17 @@ def _fixed_limitations() -> tuple[str, ...]:
         "K32_POLLING_CHECKPOINTS_DO_NOT_PROVE_LOAD_OR_UNLOAD_HISTORY",
         "UNKNOWN_LOSS_COUNTERS_PREVENT_CONTINUOUS_CAPTURE_OR_EXACT_CLOSURE",
         "NO_FILE_IDENTITY_HANDLE_OR_LOADER_RESOLUTION_TRACE",
+        "NO_PLATFORM_BOOT_ATTESTATION_OR_EXECUTABLE_ALLOW_SET",
+    )
+
+
+def _fixed_debug_limitations() -> tuple[str, ...]:
+    return (
+        "DEBUG_PROCESS_AND_JOB_OBJECT_ARE_NOT_A_SANDBOX_OR_EXECUTION_POLICY",
+        "COLLECTOR_SEQUENCE_IS_NOT_AN_OPERATING_SYSTEM_LOSS_COUNTER",
+        "DEBUG_IMAGE_EVENTS_DO_NOT_PROVE_MANUAL_OR_ANONYMOUS_MAPPING_ABSENCE",
+        "DEBUG_IMAGE_FILE_HANDLES_DO_NOT_PROVE_MAPPED_OR_LOADED_BYTES",
+        "NO_STATIC_TRANSITIVE_LOADER_OR_CRYPTO_PROVIDER_CLOSURE",
         "NO_PLATFORM_BOOT_ATTESTATION_OR_EXECUTABLE_ALLOW_SET",
     )
 
@@ -332,9 +449,20 @@ def _has_fixed_limits(value: Any) -> bool:
         and value == expected
     )
 
+
+def _has_fixed_debug_limits(value: Any) -> bool:
+    expected = _fixed_debug_limits()
+    return (
+        type(value) is dict
+        and set(value) == set(expected)
+        and all(type(value[field]) is int for field in expected)
+        and value == expected
+    )
+
 _GIT_OBJECT_RE = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,191}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DEBUG_HELPER_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$")
 _FORBIDDEN_IDENTITY_PARTS = ("fixture", "placeholder", "unknown", "unset")
 
@@ -1507,6 +1635,139 @@ def _mapping_snapshot(
     }
 
 
+def _debug_mapping_token(process_token: str, base: int, sequence: int) -> str:
+    raw = f"{process_token}\0{base:016x}\0{sequence}".encode("ascii")
+    return "mapping." + hashlib.sha256(raw).hexdigest()
+
+
+def _tokenize_debug_capture(
+        capture: DebugEventCapture,
+        process_tokens: Mapping[int, str],
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if (
+            type(capture) is not DebugEventCapture
+            or type(process_tokens) is not dict
+            or set(process_tokens) != set(capture.created_process_ids)
+            or capture.created_process_ids != capture.exited_process_ids
+            or capture.created_process_ids != capture.initial_breakpoint_process_ids
+    ):
+        _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+    thread_tokens: dict[int, str] = {}
+    thread_owners: dict[int, int] = {}
+    seen_threads: set[int] = set()
+    active_mappings: dict[tuple[int, int], tuple[str, str]] = {}
+    process_rows: list[dict[str, Any]] = []
+    image_rows: list[dict[str, Any]] = []
+    for record in capture.records:
+        if type(record) is not DebugEventRecord or record.process_id not in process_tokens:
+            _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+        process_token = process_tokens[record.process_id]
+        if record.event in {"CREATE_PROCESS", "CREATE_THREAD"}:
+            if record.thread_id in seen_threads:
+                _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+            seen_threads.add(record.thread_id)
+            thread_tokens[record.thread_id] = f"thread.{len(seen_threads):012d}"
+            thread_owners[record.thread_id] = record.process_id
+        thread_token = thread_tokens.get(record.thread_id)
+        if thread_token is None or thread_owners.get(record.thread_id) != record.process_id:
+            _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+        mapping_token: str | None = None
+        if record.event in {"CREATE_PROCESS", "LOAD_DLL"}:
+            if record.mapping_base is None or record.mapping_kind is None:
+                _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+            key = (record.process_id, record.mapping_base)
+            if key in active_mappings:
+                _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+            mapping_token = _debug_mapping_token(
+                process_token, record.mapping_base, record.sequence
+            )
+            active_mappings[key] = (mapping_token, record.mapping_kind)
+            image_rows.append({
+                "sequence": len(image_rows),
+                "source_debug_sequence": record.sequence,
+                "event": "LOAD_IMAGE",
+                "process_token": process_token,
+                "mapping_token": mapping_token,
+                "mapping_kind": record.mapping_kind,
+                "file_handle_present": record.file_handle_present,
+            })
+        elif record.event == "UNLOAD_DLL":
+            if record.mapping_base is None:
+                _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+            key = (record.process_id, record.mapping_base)
+            active = active_mappings.pop(key, None)
+            if active is None or active[1] != "DLL_IMAGE":
+                _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+            mapping_token = active[0]
+            image_rows.append({
+                "sequence": len(image_rows),
+                "source_debug_sequence": record.sequence,
+                "event": "UNLOAD_IMAGE",
+                "process_token": process_token,
+                "mapping_token": mapping_token,
+                "mapping_kind": "DLL_IMAGE",
+                "file_handle_present": None,
+            })
+        implicit_count = 0
+        if record.event == "EXIT_PROCESS":
+            expected_keys = {
+                (record.process_id, base): kind
+                for base, kind in record.implicit_unmap_bases
+            }
+            observed_keys = {
+                key: active[1]
+                for key, active in active_mappings.items()
+                if key[0] == record.process_id
+            }
+            if expected_keys != observed_keys:
+                _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+            for key in sorted(expected_keys):
+                token, kind = active_mappings.pop(key)
+                image_rows.append({
+                    "sequence": len(image_rows),
+                    "source_debug_sequence": record.sequence,
+                    "event": "PROCESS_EXIT_IMPLICIT_UNMAP",
+                    "process_token": process_token,
+                    "mapping_token": token,
+                    "mapping_kind": kind,
+                    "file_handle_present": None,
+                })
+                implicit_count += 1
+            for thread_id, owner in tuple(thread_owners.items()):
+                if owner == record.process_id:
+                    thread_owners.pop(thread_id, None)
+                    thread_tokens.pop(thread_id, None)
+        elif record.event == "EXIT_THREAD":
+            thread_owners.pop(record.thread_id, None)
+            thread_tokens.pop(record.thread_id, None)
+        process_rows.append({
+            "sequence": record.sequence,
+            "event": record.event,
+            "debug_event_code": record.event_code,
+            "process_token": process_token,
+            "thread_token": thread_token,
+            "mapping_token": mapping_token,
+            "mapping_kind": record.mapping_kind,
+            "continue_status": record.continue_status,
+            "exception_code": (
+                f"0x{record.exception_code:08x}"
+                if record.exception_code is not None else None
+            ),
+            "exception_disposition": record.exception_disposition,
+            "first_chance": record.first_chance,
+            "exit_code": record.exit_code,
+            "file_handle_present": record.file_handle_present,
+            "debug_string_code_units": record.debug_string_code_units,
+            "debug_string_unicode": record.debug_string_unicode,
+            "implicit_unmap_count": (
+                implicit_count if record.event == "EXIT_PROCESS" else None
+            ),
+        })
+    if active_mappings or thread_tokens or thread_owners:
+        _fail("WINDOWS_DEBUG_CAPTURE_TOKENIZATION_INVALID")
+    return process_rows, image_rows
+
+
 def _event_row(
         sequence: int,
         message: int,
@@ -1858,6 +2119,547 @@ def validate_windows_runtime_discovery_trace(value: Any) -> dict[str, Any]:
     return detached
 
 
+_DEBUG_EVENT_CODES = {
+    "EXCEPTION": 1,
+    "CREATE_THREAD": 2,
+    "CREATE_PROCESS": 3,
+    "EXIT_THREAD": 4,
+    "EXIT_PROCESS": 5,
+    "LOAD_DLL": 6,
+    "UNLOAD_DLL": 7,
+    "OUTPUT_DEBUG_STRING": 8,
+}
+_DEBUG_EVENT_ROW_FIELDS = {
+    "sequence",
+    "event",
+    "debug_event_code",
+    "process_token",
+    "thread_token",
+    "mapping_token",
+    "mapping_kind",
+    "continue_status",
+    "exception_code",
+    "exception_disposition",
+    "first_chance",
+    "exit_code",
+    "file_handle_present",
+    "debug_string_code_units",
+    "debug_string_unicode",
+    "implicit_unmap_count",
+}
+
+
+def _validate_debug_common(value: Mapping[str, Any]) -> None:
+    if (
+            value.get("capture_protocol") != _fixed_debug_capture_protocol()
+            or value.get("platform") != _fixed_platform()
+            or type(value.get("selected_commit")) is not str
+            or type(value.get("selected_tree")) is not str
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
+            or value.get("claim_boundary") != _fixed_debug_claim_boundary()
+            or not _has_fixed_authority(value.get("authority"))
+    ):
+        _fail("WINDOWS_DEBUG_RUNTIME_TRACE_COMMON_INVALID")
+
+
+def _validate_debug_event_scalar_fields(row: Mapping[str, Any], index: int) -> None:
+    event = row["event"]
+    if (
+            type(row["sequence"]) is not int
+            or row["sequence"] != index
+            or type(event) is not str
+            or event not in _DEBUG_EVENT_CODES
+            or type(row["debug_event_code"]) is not int
+            or row["debug_event_code"] != _DEBUG_EVENT_CODES[event]
+            or type(row["process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(row["process_token"])
+            or type(row["thread_token"]) is not str
+            or not _TOKEN_RE.fullmatch(row["thread_token"])
+            or row["continue_status"]
+            not in {"DBG_CONTINUE", "DBG_EXCEPTION_NOT_HANDLED"}
+    ):
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    for field in ("mapping_token",):
+        if row[field] is not None and (
+                type(row[field]) is not str or not _TOKEN_RE.fullmatch(row[field])):
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    if row["mapping_kind"] not in {None, "PROCESS_IMAGE", "DLL_IMAGE"}:
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    if row["exception_code"] is not None and (
+            type(row["exception_code"]) is not str
+            or not re.fullmatch(r"0x[0-9a-f]{8}", row["exception_code"])):
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    if row["exception_disposition"] not in {
+            None, "INITIAL_BREAKPOINT_HANDLED", "PASSED_TO_DEBUGGEE"}:
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    for field in ("first_chance", "file_handle_present", "debug_string_unicode"):
+        if row[field] is not None and type(row[field]) is not bool:
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    for field in ("exit_code", "debug_string_code_units", "implicit_unmap_count"):
+        if row[field] is not None and (
+                type(row[field]) is not int
+                or not 0 <= row[field] <= _PORTABLE_INT_MAX):
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+
+
+def _validate_debug_event_shape(row: Mapping[str, Any]) -> None:
+    null = None
+    expected: dict[str, tuple[Any, ...]] = {
+        "CREATE_PROCESS": (
+            "PROCESS_IMAGE", "DBG_CONTINUE", null, null, null, null, bool, null, null, null),
+        "CREATE_THREAD": (
+            null, "DBG_CONTINUE", null, null, null, null, null, null, null, null),
+        "EXIT_THREAD": (
+            null, "DBG_CONTINUE", null, null, null, int, null, null, null, null),
+        "EXIT_PROCESS": (
+            null, "DBG_CONTINUE", null, null, null, int, null, null, null, int),
+        "LOAD_DLL": (
+            "DLL_IMAGE", "DBG_CONTINUE", null, null, null, null, bool, null, null, null),
+        "UNLOAD_DLL": (
+            "DLL_IMAGE", "DBG_CONTINUE", null, null, null, null, null, null, null, null),
+        "OUTPUT_DEBUG_STRING": (
+            null, "DBG_CONTINUE", null, null, null, null, null, int, bool, null),
+    }
+    event = row["event"]
+    if event == "EXCEPTION":
+        initial = row["exception_disposition"] == "INITIAL_BREAKPOINT_HANDLED"
+        if (
+                row["mapping_token"] is not None
+                or row["mapping_kind"] is not None
+                or row["continue_status"]
+                != ("DBG_CONTINUE" if initial else "DBG_EXCEPTION_NOT_HANDLED")
+                or row["exception_code"] is None
+                or row["exception_disposition"] is None
+                or row["first_chance"] is not True
+                or row["exit_code"] is not None
+                or row["file_handle_present"] is not None
+                or row["debug_string_code_units"] is not None
+                or row["debug_string_unicode"] is not None
+                or row["implicit_unmap_count"] is not None
+                or (initial and row["exception_code"] != "0x80000003")
+        ):
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+        return
+    mapping_kind, status, code, disposition, first, exit_type, handle_type, string_type, unicode_type, implicit_type = expected[event]
+    if (
+            row["mapping_kind"] != mapping_kind
+            or row["continue_status"] != status
+            or row["exception_code"] != code
+            or row["exception_disposition"] != disposition
+            or row["first_chance"] != first
+            or (exit_type is None) != (row["exit_code"] is None)
+            or (handle_type is None) != (row["file_handle_present"] is None)
+            or (string_type is None) != (row["debug_string_code_units"] is None)
+            or (unicode_type is None) != (row["debug_string_unicode"] is None)
+            or (implicit_type is None) != (row["implicit_unmap_count"] is None)
+    ):
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    if event in {"CREATE_PROCESS", "LOAD_DLL", "UNLOAD_DLL"}:
+        if row["mapping_token"] is None:
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    elif row["mapping_token"] is not None:
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    if event == "EXIT_PROCESS" and row["implicit_unmap_count"] < 1:
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+
+
+def _validate_windows_debug_process_trace(value: Mapping[str, Any]) -> None:
+    if set(value) != {
+            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+            "claim_boundary", "authority", "limits", "target", "target_process_token",
+            "debugger", "job", "event_count", "events"}:
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_SHAPE_INVALID")
+    if not _has_fixed_debug_limits(value["limits"]):
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_LIMITS_INVALID")
+    target = value["target"]
+    if type(target) is not dict:
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_TARGET_INVALID")
+    if _validate_target(
+            target, target.get("program_digest", ""), target.get("input_digest", "")) != target:
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_TARGET_INVALID")
+    debugger = value["debugger"]
+    expected_debugger_fields = {
+        "wait_api", "creation_flags", "debug_only_this_process",
+        "debug_set_process_kill_on_exit", "creator_thread_only",
+        "root_process_token", "root_create_observed_before_first_continue",
+        "descendant_debugging_requested", "debug_event_count", "continued_event_count",
+        "created_process_count", "exited_process_count", "initial_breakpoint_count",
+    }
+    if (
+            type(debugger) is not dict
+            or set(debugger) != expected_debugger_fields
+            or debugger["wait_api"] != "WAIT_FOR_DEBUG_EVENT_EX"
+            or debugger["creation_flags"] != ["CREATE_NO_WINDOW", "DEBUG_PROCESS"]
+            or debugger["debug_only_this_process"] is not False
+            or debugger["debug_set_process_kill_on_exit"] is not True
+            or debugger["creator_thread_only"] is not True
+            or type(debugger["root_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(debugger["root_process_token"])
+            or debugger["root_create_observed_before_first_continue"] is not True
+            or debugger["descendant_debugging_requested"] is not True
+    ):
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_DEBUGGER_INVALID")
+    events = value["events"]
+    if (
+            type(events) is not list
+            or not 1 <= len(events) <= _MAX_DEBUG_EVENTS
+            or type(value["event_count"]) is not int
+            or value["event_count"] != len(events)
+            or type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+    ):
+        _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+    live_processes: set[str] = set()
+    created_processes: set[str] = set()
+    exited_processes: set[str] = set()
+    live_threads: dict[str, str] = {}
+    seen_threads: set[str] = set()
+    active_mappings: dict[str, tuple[str, str]] = {}
+    seen_mappings: set[str] = set()
+    initial_breakpoints: set[str] = set()
+    for index, row in enumerate(events):
+        if type(row) is not dict or set(row) != _DEBUG_EVENT_ROW_FIELDS:
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+        _validate_debug_event_scalar_fields(row, index)
+        _validate_debug_event_shape(row)
+        event = row["event"]
+        process = row["process_token"]
+        thread = row["thread_token"]
+        mapping = row["mapping_token"]
+        if event == "CREATE_PROCESS":
+            if process in created_processes or thread in seen_threads or mapping in seen_mappings:
+                _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+            created_processes.add(process)
+            live_processes.add(process)
+            seen_threads.add(thread)
+            live_threads[thread] = process
+            seen_mappings.add(mapping)
+            active_mappings[mapping] = (process, "PROCESS_IMAGE")
+        elif process not in live_processes:
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+        elif event == "CREATE_THREAD":
+            if thread in seen_threads:
+                _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+            seen_threads.add(thread)
+            live_threads[thread] = process
+        elif live_threads.get(thread) != process:
+            _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+        elif event == "EXIT_THREAD":
+            del live_threads[thread]
+        elif event == "LOAD_DLL":
+            if mapping in seen_mappings:
+                _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+            seen_mappings.add(mapping)
+            active_mappings[mapping] = (process, "DLL_IMAGE")
+        elif event == "UNLOAD_DLL":
+            if active_mappings.get(mapping) != (process, "DLL_IMAGE"):
+                _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+            del active_mappings[mapping]
+        elif event == "EXCEPTION":
+            initial = row["exception_disposition"] == "INITIAL_BREAKPOINT_HANDLED"
+            if initial:
+                if process in initial_breakpoints:
+                    _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+                initial_breakpoints.add(process)
+        elif event == "EXIT_PROCESS":
+            active_for_process = {
+                token for token, (owner, _kind) in active_mappings.items()
+                if owner == process
+            }
+            if row["exit_code"] != 0 or row["implicit_unmap_count"] != len(active_for_process):
+                _fail("WINDOWS_DEBUG_PROCESS_EVENTS_INVALID")
+            for token in active_for_process:
+                del active_mappings[token]
+            for token, owner in tuple(live_threads.items()):
+                if owner == process:
+                    del live_threads[token]
+            live_processes.remove(process)
+            exited_processes.add(process)
+    job = value["job"]
+    if type(job) is not dict or set(job) != {
+            "completion_port_associated", "kill_on_job_close", "breakaway_ok",
+            "silent_breakaway_ok", "assigned_process_count", "observed_process_count",
+            "active_process_zero_observed", "target_exit_code",
+            "assignment_completed_before_first_debug_event_pump",
+            "debug_created_process_set_matches_job", "debug_exited_process_set_matches_job",
+            "events"}:
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+    job_events = job["events"]
+    if type(job_events) is not list or not 1 <= len(job_events) <= _MAX_PROCESS_EVENTS:
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+    job_created: set[str] = set()
+    job_exited: set[str] = set()
+    active_zero_count = 0
+    job_event_codes = {"ACTIVE_PROCESS_ZERO": 4, "NEW_PROCESS": 6, "EXIT_PROCESS": 7}
+    for index, row in enumerate(job_events):
+        if (
+                type(row) is not dict
+                or set(row) != {"sequence", "event", "process_token", "job_message_id"}
+                or type(row["sequence"]) is not int
+                or row["sequence"] != index
+                or row["event"] not in job_event_codes
+                or type(row["job_message_id"]) is not int
+                or row["job_message_id"] != job_event_codes[row["event"]]
+        ):
+            _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+        token = row["process_token"]
+        if row["event"] == "ACTIVE_PROCESS_ZERO":
+            if token is not None:
+                _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+            active_zero_count += 1
+        elif type(token) is not str or not _TOKEN_RE.fullmatch(token):
+            _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+        elif row["event"] == "NEW_PROCESS":
+            if token in job_created:
+                _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+            job_created.add(token)
+        else:
+            if token not in job_created or token in job_exited:
+                _fail("WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID")
+            job_exited.add(token)
+    counts = (
+        debugger["debug_event_count"], debugger["continued_event_count"],
+        debugger["created_process_count"], debugger["exited_process_count"],
+        debugger["initial_breakpoint_count"], job["observed_process_count"],
+    )
+    if (
+            events[0]["event"] != "CREATE_PROCESS"
+            or events[0]["process_token"] != debugger["root_process_token"]
+            or value["target_process_token"] not in created_processes
+            or value["target_process_token"] == debugger["root_process_token"]
+            or any(type(item) is not int for item in counts)
+            or counts != (
+                len(events), len(events), len(created_processes), len(exited_processes),
+                len(initial_breakpoints), len(created_processes))
+            or not 2 <= len(created_processes) <= _MAX_DEBUG_PROCESSES
+            or len(seen_threads) > _MAX_DEBUG_THREADS
+            or created_processes != exited_processes
+            or initial_breakpoints != created_processes
+            or live_processes or live_threads or active_mappings
+            or job["completion_port_associated"] is not True
+            or job["kill_on_job_close"] is not True
+            or job["breakaway_ok"] is not False
+            or job["silent_breakaway_ok"] is not False
+            or type(job["assigned_process_count"]) is not int
+            or job["assigned_process_count"] != 1
+            or job["active_process_zero_observed"] is not True
+            or active_zero_count != 1
+            or job_events[-1]["event"] != "ACTIVE_PROCESS_ZERO"
+            or type(job["target_exit_code"]) is not int
+            or job["target_exit_code"] != 0
+            or job["assignment_completed_before_first_debug_event_pump"] is not True
+            or job["debug_created_process_set_matches_job"] is not True
+            or job["debug_exited_process_set_matches_job"] is not True
+            or job_created != created_processes
+            or job_exited != exited_processes
+    ):
+        _fail("WINDOWS_DEBUG_PROCESS_TRACE_RECONCILIATION_INVALID")
+
+
+def _validate_windows_debug_image_trace(value: Mapping[str, Any]) -> None:
+    if set(value) != {
+            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+            "claim_boundary", "authority", "method", "semantics", "history_complete",
+            "target_process_token", "debug_event_stream_digest", "load_event_count",
+            "explicit_unload_event_count", "implicit_unmap_count", "lifecycle_event_count",
+            "distinct_mapping_count", "snapshot_count", "snapshot_mapping_row_count",
+            "target_snapshots", "events"}:
+        _fail("WINDOWS_DEBUG_IMAGE_TRACE_SHAPE_INVALID")
+    events = value["events"]
+    snapshots = value["target_snapshots"]
+    if (
+            value["method"]
+            != "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_CHECKPOINT/2"
+            or value["semantics"]
+            != "DEBUG_IMAGE_LIFETIMES_PLUS_POINT_CHECKPOINT_NOT_COMPLETE_MAPPING_HISTORY"
+            or value["history_complete"] is not False
+            or type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+            or type(value["debug_event_stream_digest"]) is not str
+            or not _DIGEST_RE.fullmatch(value["debug_event_stream_digest"])
+            or type(events) is not list
+            or type(snapshots) is not list
+            or not 1 <= len(snapshots) <= _MAX_MAPPING_SNAPSHOTS
+    ):
+        _fail("WINDOWS_DEBUG_IMAGE_TRACE_INVALID")
+    active: dict[str, tuple[str, str]] = {}
+    seen: set[str] = set()
+    explicit = 0
+    implicit = 0
+    load = 0
+    event_fields = {
+        "sequence", "source_debug_sequence", "event", "process_token", "mapping_token",
+        "mapping_kind", "file_handle_present",
+    }
+    previous_source = -1
+    for index, row in enumerate(events):
+        if (
+                type(row) is not dict
+                or set(row) != event_fields
+                or type(row["sequence"]) is not int
+                or row["sequence"] != index
+                or type(row["source_debug_sequence"]) is not int
+                or not 0 <= row["source_debug_sequence"] <= _PORTABLE_INT_MAX
+                or row["source_debug_sequence"] < previous_source
+                or row["event"] not in {
+                    "LOAD_IMAGE", "UNLOAD_IMAGE", "PROCESS_EXIT_IMPLICIT_UNMAP"}
+                or type(row["process_token"]) is not str
+                or not _TOKEN_RE.fullmatch(row["process_token"])
+                or type(row["mapping_token"]) is not str
+                or not _TOKEN_RE.fullmatch(row["mapping_token"])
+                or row["mapping_kind"] not in {"PROCESS_IMAGE", "DLL_IMAGE"}
+                or (row["file_handle_present"] is not None
+                    and type(row["file_handle_present"]) is not bool)
+        ):
+            _fail("WINDOWS_DEBUG_IMAGE_TRACE_EVENTS_INVALID")
+        previous_source = row["source_debug_sequence"]
+        mapping = row["mapping_token"]
+        owner_kind = (row["process_token"], row["mapping_kind"])
+        if row["event"] == "LOAD_IMAGE":
+            if mapping in seen or row["file_handle_present"] is None:
+                _fail("WINDOWS_DEBUG_IMAGE_TRACE_EVENTS_INVALID")
+            seen.add(mapping)
+            active[mapping] = owner_kind
+            load += 1
+        else:
+            if active.get(mapping) != owner_kind or row["file_handle_present"] is not None:
+                _fail("WINDOWS_DEBUG_IMAGE_TRACE_EVENTS_INVALID")
+            if row["event"] == "UNLOAD_IMAGE" and row["mapping_kind"] != "DLL_IMAGE":
+                _fail("WINDOWS_DEBUG_IMAGE_TRACE_EVENTS_INVALID")
+            del active[mapping]
+            if row["event"] == "UNLOAD_IMAGE":
+                explicit += 1
+            else:
+                implicit += 1
+    snapshot_rows = 0
+    for index, snapshot in enumerate(snapshots):
+        if type(snapshot) is not dict or set(snapshot) != {
+                "sequence", "process_token", "status", "mappings"}:
+            _fail("WINDOWS_DEBUG_IMAGE_TRACE_SNAPSHOTS_INVALID")
+        mappings = snapshot["mappings"]
+        if (
+                type(snapshot["sequence"]) is not int
+                or snapshot["sequence"] != index
+                or snapshot["process_token"] != value["target_process_token"]
+                or snapshot["status"] != "OBSERVED_NONEMPTY"
+                or type(mappings) is not list
+                or not 1 <= len(mappings) <= _MAX_MAPPINGS_PER_SNAPSHOT
+        ):
+            _fail("WINDOWS_DEBUG_IMAGE_TRACE_SNAPSHOTS_INVALID")
+        tokens: list[str] = []
+        for row in mappings:
+            if (
+                    type(row) is not dict
+                    or set(row) != {
+                        "mapping_token", "observed_path_digest", "path_disclosure",
+                        "mapping_kind"}
+                    or type(row["mapping_token"]) is not str
+                    or not _TOKEN_RE.fullmatch(row["mapping_token"])
+                    or type(row["observed_path_digest"]) is not str
+                    or not _DIGEST_RE.fullmatch(row["observed_path_digest"])
+                    or row["path_disclosure"] != "DIGEST_ONLY_NO_RAW_PATH"
+                    or row["mapping_kind"] != "K32_ENUMERATED_IMAGE"
+            ):
+                _fail("WINDOWS_DEBUG_IMAGE_TRACE_SNAPSHOTS_INVALID")
+            tokens.append(row["mapping_token"])
+        if tokens != sorted(set(tokens)):
+            _fail("WINDOWS_DEBUG_IMAGE_TRACE_SNAPSHOTS_INVALID")
+        snapshot_rows += len(mappings)
+    counts = (
+        value["load_event_count"], value["explicit_unload_event_count"],
+        value["implicit_unmap_count"], value["lifecycle_event_count"],
+        value["distinct_mapping_count"], value["snapshot_count"],
+        value["snapshot_mapping_row_count"],
+    )
+    if (
+            any(type(item) is not int for item in counts)
+            or counts != (
+                load, explicit, implicit, len(events), len(seen), len(snapshots), snapshot_rows)
+            or load < 1
+            or len(events) != 2 * load
+            or active
+    ):
+        _fail("WINDOWS_DEBUG_IMAGE_TRACE_RECONCILIATION_INVALID")
+
+
+def _validate_windows_debug_loss_trace(value: Mapping[str, Any]) -> None:
+    if set(value) != {
+            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+            "claim_boundary", "authority", "target_process_token", "debug_event_count",
+            "created_process_count", "exited_process_count", "initial_breakpoint_count",
+            "load_event_count", "explicit_unload_event_count", "implicit_unmap_count",
+            "mapping_snapshot_count", "mapping_snapshot_row_count", "process_tree_reconciled",
+            "event_stream_contiguous", "start_end_snapshot_reconciled", "counters",
+            "limitations"}:
+        _fail("WINDOWS_DEBUG_LOSS_TRACE_SHAPE_INVALID")
+    counter_fields = {
+        "debug_wait_failures", "debug_continue_failures", "debug_handle_close_failures",
+        "job_messages_lost", "process_events_lost", "mapping_load_events_lost",
+        "mapping_unload_events_lost", "k32_enumeration_failures",
+    }
+    counters = value["counters"]
+    count_fields = (
+        "debug_event_count", "created_process_count", "exited_process_count",
+        "initial_breakpoint_count", "load_event_count", "explicit_unload_event_count",
+        "implicit_unmap_count", "mapping_snapshot_count", "mapping_snapshot_row_count",
+    )
+    if (
+            type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+            or any(type(value[field]) is not int or not 0 <= value[field] <= _PORTABLE_INT_MAX
+                   for field in count_fields)
+            or min(value[field] for field in (
+                "debug_event_count", "created_process_count", "exited_process_count",
+                "initial_breakpoint_count", "load_event_count", "mapping_snapshot_count",
+                "mapping_snapshot_row_count")) < 1
+            or value["created_process_count"] != value["exited_process_count"]
+            or value["created_process_count"] != value["initial_breakpoint_count"]
+            or value["load_event_count"]
+            != value["explicit_unload_event_count"] + value["implicit_unmap_count"]
+            or value["process_tree_reconciled"] is not True
+            or value["event_stream_contiguous"] is not False
+            or value["start_end_snapshot_reconciled"] is not False
+            or type(counters) is not dict
+            or set(counters) != counter_fields
+            or any(type(counters[field]) is not int or counters[field] != 0 for field in (
+                "debug_wait_failures", "debug_continue_failures", "debug_handle_close_failures"))
+            or any(counters[field] is not None for field in (
+                "job_messages_lost", "process_events_lost", "mapping_load_events_lost",
+                "mapping_unload_events_lost"))
+            or type(counters["k32_enumeration_failures"]) is not int
+            or not 0 <= counters["k32_enumeration_failures"] <= _PORTABLE_INT_MAX
+            or value["limitations"] != list(_fixed_debug_limitations())
+    ):
+        _fail("WINDOWS_DEBUG_LOSS_TRACE_INVALID")
+
+
+def validate_windows_debug_runtime_discovery_trace(value: Any) -> dict[str, Any]:
+    """Validate one closed, always-incomplete v2 DEBUG_PROCESS artifact."""
+
+    if type(value) is not dict:
+        _fail("WINDOWS_DEBUG_RUNTIME_TRACE_INVALID")
+    _validate_debug_common(value)
+    schema = value.get("schema")
+    if schema == _fixed_debug_process_trace_schema():
+        _validate_windows_debug_process_trace(value)
+    elif schema == _fixed_debug_image_trace_schema():
+        _validate_windows_debug_image_trace(value)
+    elif schema == _fixed_debug_loss_trace_schema():
+        _validate_windows_debug_loss_trace(value)
+    else:
+        _fail("WINDOWS_DEBUG_RUNTIME_TRACE_SCHEMA_INVALID")
+    try:
+        detached = parse_canonical_json_bytes(
+            canonical_json_bytes(value), require_canonical=True
+        )
+    except (RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_RUNTIME_TRACE_CANONICAL_INVALID")
+    if type(detached) is not dict:
+        _fail("WINDOWS_DEBUG_RUNTIME_TRACE_CANONICAL_INVALID")
+    return detached
+
+
 def _artifact_row(artifact_id: str, role: str, raw: bytes) -> dict[str, Any]:
     return {
         "artifact_id": artifact_id,
@@ -2206,6 +3008,364 @@ def _seal_captured_discovery_result(
         raise
     except (KeyError, RuntimeError, TypeError, ValueError):
         _fail("RUNTIME_DISCOVERY_CAPTURE_RESULT_INVALID")
+
+    result = object.__new__(CapturedIncompleteRuntimeClosureEvidence)
+    object.__setattr__(result, "_sealed", False)
+    object.__setattr__(result, "_bound_evidence", rebound)
+    object.__setattr__(result, "_evidence_raw", evidence_raw)
+    object.__setattr__(result, "_artifact_raw", tuple(sorted(artifact_raw_by_id.items())))
+    object.__setattr__(result, "_sealed", True)
+    return result
+
+
+def _validate_debug_image_projection(
+        process_trace: Mapping[str, Any], image_trace: Mapping[str, Any]) -> None:
+    process_events = process_trace["events"]
+    image_events = image_trace["events"]
+    by_source: dict[int, list[Mapping[str, Any]]] = {}
+    for row in image_events:
+        source = row["source_debug_sequence"]
+        if source >= len(process_events):
+            _fail("WINDOWS_DEBUG_IMAGE_PROJECTION_INVALID")
+        by_source.setdefault(source, []).append(row)
+
+    active: dict[str, tuple[str, str]] = {}
+    for process_row in process_events:
+        source = process_row["sequence"]
+        event = process_row["event"]
+        process_token = process_row["process_token"]
+        mapping_token = process_row["mapping_token"]
+        observed = by_source.pop(source, [])
+        expected_signatures: set[tuple[Any, ...]] = set()
+        if event in {"CREATE_PROCESS", "LOAD_DLL"}:
+            if mapping_token in active:
+                _fail("WINDOWS_DEBUG_IMAGE_PROJECTION_INVALID")
+            active[mapping_token] = (process_token, process_row["mapping_kind"])
+            expected_signatures.add((
+                "LOAD_IMAGE",
+                process_token,
+                mapping_token,
+                process_row["mapping_kind"],
+                process_row["file_handle_present"],
+            ))
+        elif event == "UNLOAD_DLL":
+            if active.pop(mapping_token, None) != (process_token, "DLL_IMAGE"):
+                _fail("WINDOWS_DEBUG_IMAGE_PROJECTION_INVALID")
+            expected_signatures.add((
+                "UNLOAD_IMAGE", process_token, mapping_token, "DLL_IMAGE", None
+            ))
+        elif event == "EXIT_PROCESS":
+            exiting = {
+                token: kind
+                for token, (owner, kind) in active.items()
+                if owner == process_token
+            }
+            if process_row["implicit_unmap_count"] != len(exiting):
+                _fail("WINDOWS_DEBUG_IMAGE_PROJECTION_INVALID")
+            expected_signatures.update(
+                ("PROCESS_EXIT_IMPLICIT_UNMAP", process_token, token, kind, None)
+                for token, kind in exiting.items()
+            )
+            for token in exiting:
+                del active[token]
+        observed_signatures = {
+            (
+                row["event"],
+                row["process_token"],
+                row["mapping_token"],
+                row["mapping_kind"],
+                row["file_handle_present"],
+            )
+            for row in observed
+        }
+        if (
+                len(observed_signatures) != len(observed)
+                or observed_signatures != expected_signatures
+        ):
+            _fail("WINDOWS_DEBUG_IMAGE_PROJECTION_INVALID")
+    if by_source or active:
+        _fail("WINDOWS_DEBUG_IMAGE_PROJECTION_INVALID")
+
+
+def _validate_sealed_debug_dynamic_profile(
+        artifact_raw_by_id: Mapping[str, bytes],
+        expected_crypto_provider_path_digest: str,
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if (
+            type(expected_crypto_provider_path_digest) is not str
+            or not _DIGEST_RE.fullmatch(expected_crypto_provider_path_digest)
+    ):
+        _fail("WINDOWS_DEBUG_CRYPTO_PROVIDER_BINDING_INVALID")
+    documents: dict[str, dict[str, Any]] = {}
+    for artifact_id, _role, expected_schema in _DEBUG_DYNAMIC_ARTIFACTS:
+        try:
+            parsed = parse_canonical_json_bytes(
+                artifact_raw_by_id[artifact_id], require_canonical=True
+            )
+            checked = validate_windows_debug_runtime_discovery_trace(parsed)
+        except RuntimeDiscoveryError:
+            raise
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            _fail("WINDOWS_DEBUG_CAPTURE_DYNAMIC_PROFILE_INVALID")
+        if checked.get("schema") != expected_schema or checked != parsed:
+            _fail("WINDOWS_DEBUG_CAPTURE_DYNAMIC_PROFILE_INVALID")
+        documents[expected_schema] = checked
+    process_trace = documents[_fixed_debug_process_trace_schema()]
+    image_trace = documents[_fixed_debug_image_trace_schema()]
+    loss_trace = documents[_fixed_debug_loss_trace_schema()]
+    environment_artifact_id, _role, _field, expected_environment_schema = (
+        _DEBUG_ENVIRONMENT_ARTIFACT
+    )
+    try:
+        parsed_environment = parse_canonical_json_bytes(
+            artifact_raw_by_id[environment_artifact_id], require_canonical=True
+        )
+        environment_manifest = validate_windows_debug_execution_environment_manifest(
+            parsed_environment
+        )
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    if (
+            environment_manifest.get("schema") != expected_environment_schema
+            or environment_manifest != parsed_environment
+    ):
+        _fail("WINDOWS_DEBUG_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    process_tokens = {
+        row["process_token"]
+        for row in process_trace["events"]
+        if row["event"] == "CREATE_PROCESS"
+    }
+    mapped_path_digests = {
+        row["observed_path_digest"]
+        for snapshot in image_trace["target_snapshots"]
+        for row in snapshot["mappings"]
+    }
+    _validate_debug_image_projection(process_trace, image_trace)
+    if (
+            any(document["selected_commit"] != process_trace["selected_commit"]
+                or document["selected_tree"] != process_trace["selected_tree"]
+                for document in (image_trace, loss_trace, environment_manifest))
+            or process_trace["target_process_token"] != image_trace["target_process_token"]
+            or process_trace["target_process_token"] != loss_trace["target_process_token"]
+            or process_trace["target_process_token"]
+            != environment_manifest["target_process_token"]
+            or process_trace["target_process_token"] not in process_tokens
+            or image_trace["debug_event_stream_digest"]
+            != canonical_digest(process_trace["events"])
+            or process_trace["event_count"] != loss_trace["debug_event_count"]
+            or process_trace["debugger"]["created_process_count"]
+            != loss_trace["created_process_count"]
+            or process_trace["debugger"]["exited_process_count"]
+            != loss_trace["exited_process_count"]
+            or process_trace["debugger"]["initial_breakpoint_count"]
+            != loss_trace["initial_breakpoint_count"]
+            or image_trace["load_event_count"] != loss_trace["load_event_count"]
+            or image_trace["explicit_unload_event_count"]
+            != loss_trace["explicit_unload_event_count"]
+            or image_trace["implicit_unmap_count"] != loss_trace["implicit_unmap_count"]
+            or image_trace["snapshot_count"] != loss_trace["mapping_snapshot_count"]
+            or image_trace["snapshot_mapping_row_count"]
+            != loss_trace["mapping_snapshot_row_count"]
+            or process_trace["target"]["program_digest"] != _FIXED_PROGRAM_DIGEST
+            or process_trace["target"]["input_digest"] != _FIXED_INPUT_DIGEST
+            or process_trace["target"]["crypto_provider_path_digest"]
+            != expected_crypto_provider_path_digest
+            or expected_crypto_provider_path_digest not in mapped_path_digests
+            or {
+                row["input_id"]: row["digest"]
+                for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+            }["dsl-program"] != process_trace["target"]["program_digest"]
+            or {
+                row["input_id"]: row["digest"]
+                for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+            }["dsl-input"] != process_trace["target"]["input_digest"]
+    ):
+        _fail("WINDOWS_DEBUG_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    return process_trace, image_trace, loss_trace, environment_manifest
+
+
+def _expected_debug_incomplete_evidence(
+        evidence: Mapping[str, Any],
+        artifact_raw_by_id: Mapping[str, bytes],
+        static_raw_by_relative: Mapping[str, bytes],
+        inventory: Mapping[str, Any],
+        process_trace: Mapping[str, Any],
+        image_trace: Mapping[str, Any],
+        loss_trace: Mapping[str, Any],
+        environment_manifest: Mapping[str, Any],
+        ) -> dict[str, Any]:
+    subject = _validate_subject(RuntimeClosureDiscoverySubject(
+        producer_id=evidence["producer_id"],
+        runtime_collector_id=evidence["runtime_collector_id"],
+        structural_tcb_producer_id=evidence["structural_tcb_producer_id"],
+        pack_producer_id=evidence["pack_producer_id"],
+        budget_proposer_id=evidence["budget_proposer_id"],
+        release_builder_id=evidence["release_builder_id"],
+        expected_selected_commit=evidence["selected_commit"],
+        expected_selected_tree=evidence["selected_tree"],
+    ))
+    if (
+            process_trace["selected_commit"] != subject.expected_selected_commit
+            or process_trace["selected_tree"] != subject.expected_selected_tree
+    ):
+        _fail("WINDOWS_DEBUG_CAPTURE_SOURCE_JOIN_INVALID")
+
+    artifact_rows: list[dict[str, Any]] = []
+    digest_fields: dict[str, str | None] = {
+        field: None for field in RUNTIME_CLOSURE_BINDING_DIGEST_FIELDS
+    }
+    for artifact_id, role, field, relative in _STATIC_ARTIFACTS:
+        raw = static_raw_by_relative[relative]
+        artifact_rows.append(_artifact_row(artifact_id, role, raw))
+        digest_fields[field] = bytes_digest(raw)
+    for artifact_id, role, _schema in _DEBUG_DYNAMIC_ARTIFACTS:
+        artifact_rows.append(_artifact_row(artifact_id, role, artifact_raw_by_id[artifact_id]))
+    environment_artifact_id, environment_role, environment_field, _schema = (
+        _DEBUG_ENVIRONMENT_ARTIFACT
+    )
+    environment_raw = artifact_raw_by_id[environment_artifact_id]
+    artifact_rows.append(_artifact_row(
+        environment_artifact_id, environment_role, environment_raw
+    ))
+    digest_fields[environment_field] = bytes_digest(environment_raw)
+    artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
+
+    coverage: dict[str, Any] = {"state": RUNTIME_CLOSURE_COVERAGE_INCOMPLETE}
+    coverage.update({field: False for field in RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS})
+    coverage["process_tree_captured_before_first_instruction_through_final_descendant"] = True
+    coverage["execution_environment_argv_cwd_and_inputs_bound"] = True
+    coverage.update({field: None for field in RUNTIME_CLOSURE_POSITIVE_COUNTER_FIELDS})
+    coverage.update({field: None for field in RUNTIME_CLOSURE_ZERO_COUNTER_FIELDS})
+    coverage.update({
+        "supported_execution_case_count": 1,
+        "observed_process_count": process_trace["job"]["observed_process_count"],
+        "observed_executable_mapping_count": image_trace["distinct_mapping_count"],
+        "observed_load_event_count": image_trace["load_event_count"],
+        "unresolved_dependency_count": inventory["coverage"][
+            "unresolved_native_dependency_edge_count"
+        ],
+        "unbound_file_identity_count": image_trace["distinct_mapping_count"],
+    })
+    evidence_seed = canonical_digest({
+        "process_trace_digest": canonical_digest(process_trace),
+        "image_trace_digest": canonical_digest(image_trace),
+        "loss_trace_digest": canonical_digest(loss_trace),
+        "execution_environment_manifest_digest": canonical_digest(environment_manifest),
+    }).removeprefix("sha256:")
+    expected: dict[str, Any] = {
+        "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
+        "evidence_id": f"transition-runtime-debug-discovery.{evidence_seed}",
+        "purpose": RUNTIME_CLOSURE_REVIEW_PURPOSE,
+        "state": RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE,
+        "producer_id": subject.producer_id,
+        "runtime_collector_id": subject.runtime_collector_id,
+        "structural_tcb_producer_id": subject.structural_tcb_producer_id,
+        "pack_producer_id": subject.pack_producer_id,
+        "budget_proposer_id": subject.budget_proposer_id,
+        "release_builder_id": subject.release_builder_id,
+        "selected_commit": subject.expected_selected_commit,
+        "selected_tree": subject.expected_selected_tree,
+        **digest_fields,
+        "scope": {
+            "scope_kind": RUNTIME_CLOSURE_SCOPE_KIND,
+            "substrate": RUNTIME_CLOSURE_REVIEW_SUBSTRATE,
+            "universal_all_input_behavior": False,
+            "portable_across_hosts": False,
+            "semantic_equivalence": False,
+            "continuous_capture_required": True,
+            "deny_by_default_execution_required": True,
+        },
+        "coverage": coverage,
+        "artifacts": artifact_rows,
+        "known_gaps": [],
+        "claim_boundary": RUNTIME_CLOSURE_EVIDENCE_CLAIM_BOUNDARY,
+        "authority": _fixed_authority(),
+    }
+    expected["known_gaps"] = expected_runtime_closure_gaps(expected)
+    return expected
+
+
+def _seal_captured_debug_discovery_result(
+        bound_evidence: BoundTransitionRuntimeClosureEvidence,
+        evidence_raw: bytes,
+        artifact_raw_by_id: Mapping[str, bytes],
+        expected_crypto_provider_path_digest: str,
+        source_raw_by_relative: Mapping[str, bytes],
+        outer_expected_launch: Mapping[str, Any],
+        ) -> CapturedIncompleteRuntimeClosureEvidence:
+    expected_artifact_ids = (
+        {row[0] for row in _STATIC_ARTIFACTS}
+        | {row[0] for row in _DEBUG_DYNAMIC_ARTIFACTS}
+        | {_DEBUG_ENVIRONMENT_ARTIFACT[0]}
+    )
+    expected_source_relatives = {
+        relative
+        for _input_id, _path_token, relative in _LAUNCH_INPUT_SPEC
+        if relative is not None
+    }
+    if (
+            type(bound_evidence) is not BoundTransitionRuntimeClosureEvidence
+            or type(evidence_raw) is not bytes
+            or type(artifact_raw_by_id) is not dict
+            or set(artifact_raw_by_id) != expected_artifact_ids
+            or any(type(raw) is not bytes or not raw for raw in artifact_raw_by_id.values())
+            or type(source_raw_by_relative) is not dict
+            or set(source_raw_by_relative) != expected_source_relatives
+            or any(type(raw) is not bytes or not raw for raw in source_raw_by_relative.values())
+            or type(outer_expected_launch) is not dict
+    ):
+        _fail("WINDOWS_DEBUG_CAPTURE_RESULT_INVALID")
+    try:
+        rebound = bind_transition_runtime_closure_evidence_bytes(
+            evidence_raw, artifact_raw_by_id
+        )
+        evidence = parse_canonical_json_bytes(evidence_raw, require_canonical=True)
+        if (
+                type(evidence) is not dict
+                or dict(bound_evidence) != dict(rebound)
+                or bound_evidence.digest != rebound.digest
+                or bound_evidence.source_bytes != rebound.source_bytes
+        ):
+            _fail("WINDOWS_DEBUG_CAPTURE_RESULT_INVALID")
+        static_raw_by_relative, inventory, input_digest = _validate_sealed_static_profile(
+            artifact_raw_by_id
+        )
+        process_trace, image_trace, loss_trace, environment_manifest = (
+            _validate_sealed_debug_dynamic_profile(
+                artifact_raw_by_id, expected_crypto_provider_path_digest
+            )
+        )
+        _validate_environment_source_joins(
+            environment_manifest, source_raw_by_relative
+        )
+        checked_outer_expected_launch = _validate_launch_binding(outer_expected_launch)
+        if (
+                environment_manifest["launch"]["parent_expected"]
+                != checked_outer_expected_launch
+                or environment_manifest["launch"]["target_observed"]
+                != checked_outer_expected_launch
+        ):
+            _fail("WINDOWS_DEBUG_OUTER_LAUNCH_RECONCILIATION_FAILED")
+        if input_digest != process_trace["target"]["input_digest"]:
+            _fail("WINDOWS_DEBUG_CAPTURE_STATIC_DYNAMIC_JOIN_INVALID")
+        expected = _expected_debug_incomplete_evidence(
+            evidence,
+            artifact_raw_by_id,
+            static_raw_by_relative,
+            inventory,
+            process_trace,
+            image_trace,
+            loss_trace,
+            environment_manifest,
+        )
+        if evidence != expected or evidence_raw != canonical_json_bytes(expected):
+            _fail("WINDOWS_DEBUG_CAPTURE_ENVELOPE_INVALID")
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_CAPTURE_RESULT_INVALID")
 
     result = object.__new__(CapturedIncompleteRuntimeClosureEvidence)
     object.__setattr__(result, "_sealed", False)
@@ -2701,27 +3861,7 @@ def _validate_launch_binding(value: Any) -> dict[str, Any]:
     return parse_canonical_json_bytes(canonical_json_bytes(value), require_canonical=True)
 
 
-def validate_windows_execution_environment_manifest(value: Any) -> dict[str, Any]:
-    """Validate one two-sided, non-authoritative execution-environment manifest."""
-
-    if type(value) is not dict or set(value) != {
-            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
-            "target_process_token", "launch", "reconciliation", "claim_boundary", "authority"}:
-        _fail("WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
-    if (
-            value["schema"] != _fixed_environment_manifest_schema()
-            or value["capture_protocol"] != _fixed_capture_protocol()
-            or value["platform"] != _fixed_platform()
-            or type(value["selected_commit"]) is not str
-            or type(value["selected_tree"]) is not str
-            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
-            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
-            or type(value["target_process_token"]) is not str
-            or not _TOKEN_RE.fullmatch(value["target_process_token"])
-            or value["claim_boundary"] != _fixed_environment_claim_boundary()
-            or not _has_fixed_authority(value["authority"])
-    ):
-        _fail("WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+def _validate_execution_environment_launch_pair(value: Mapping[str, Any]) -> dict[str, Any]:
     launches = value["launch"]
     if type(launches) is not dict or set(launches) != {
             "parent_expected", "target_observed"}:
@@ -2749,6 +3889,54 @@ def validate_windows_execution_environment_manifest(value: Any) -> dict[str, Any
     return parse_canonical_json_bytes(canonical_json_bytes(checked), require_canonical=True)
 
 
+def validate_windows_execution_environment_manifest(value: Any) -> dict[str, Any]:
+    """Validate one v1 two-sided, non-authoritative execution-environment manifest."""
+
+    if type(value) is not dict or set(value) != {
+            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+            "target_process_token", "launch", "reconciliation", "claim_boundary", "authority"}:
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    if (
+            value["schema"] != _fixed_environment_manifest_schema()
+            or value["capture_protocol"] != _fixed_capture_protocol()
+            or value["platform"] != _fixed_platform()
+            or type(value["selected_commit"]) is not str
+            or type(value["selected_tree"]) is not str
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
+            or type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+            or value["claim_boundary"] != _fixed_environment_claim_boundary()
+            or not _has_fixed_authority(value["authority"])
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    return _validate_execution_environment_launch_pair(value)
+
+
+def validate_windows_debug_execution_environment_manifest(value: Any) -> dict[str, Any]:
+    """Validate one v2 DEBUG_PROCESS execution-environment manifest."""
+
+    if type(value) is not dict or set(value) != {
+            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+            "target_process_token", "launch", "reconciliation", "claim_boundary", "authority"}:
+        _fail("WINDOWS_DEBUG_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    if (
+            value["schema"] != _fixed_debug_environment_manifest_schema()
+            or value["capture_protocol"] != _fixed_debug_capture_protocol()
+            or value["platform"] != _fixed_platform()
+            or type(value["selected_commit"]) is not str
+            or type(value["selected_tree"]) is not str
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
+            or type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+            or value["claim_boundary"] != _fixed_environment_claim_boundary()
+            or not _has_fixed_authority(value["authority"])
+    ):
+        _fail("WINDOWS_DEBUG_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    return _validate_execution_environment_launch_pair(value)
+
+
 def _capture_dynamic(
         python_executable: Path,
         crypto_root: Path,
@@ -2758,7 +3946,7 @@ def _capture_dynamic(
         selected_commit: str,
         selected_tree: str,
         temp_base: Path,
-        prepared_temp_root: Path | None = None,
+        prepared_temp_root: Path,
         ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     job: _WindowsJob | None = None
     shim: subprocess.Popen[bytes] | None = None
@@ -3015,6 +4203,893 @@ def _capture_dynamic(
             job.close()
 
 
+def _capture_debug_dynamic_on_creator_thread(
+        python_executable: Path,
+        crypto_root: Path,
+        raw_by_relative: Mapping[str, bytes],
+        program_digest: str,
+        input_digest: str,
+        selected_commit: str,
+        selected_tree: str,
+        temp_base: Path,
+        prepared_temp_root: Path | None = None,
+        outer_deadline_ns: int | None = None,
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    job: _WindowsJob | None = None
+    shim: subprocess.Popen[bytes] | None = None
+    debugger: WindowsDebugEventSession | None = None
+    completion_reader: threading.Thread | None = None
+    job_assigned = False
+    job_events: list[dict[str, Any]] = []
+    process_tokens: dict[int, str] = {}
+    k32_failures = 0
+    try:
+        if type(outer_deadline_ns) is not int or outer_deadline_ns <= 0:
+            _fail("WINDOWS_DEBUG_HELPER_DEADLINE_INVALID")
+        checked_temp_base = _resolve_local_no_reparse(temp_base, directory=True)
+        prepared = _resolve_local_no_reparse(prepared_temp_root, directory=True)
+        if prepared.parent != checked_temp_base or any(prepared.iterdir()):
+            _fail("WINDOWS_DEBUG_PREPARED_TEMP_ROOT_INVALID")
+        temp_context: AbstractContextManager[str] = nullcontext(str(prepared))
+        with temp_context as raw_temp:
+            temp_root = _resolve_local_no_reparse(Path(raw_temp), directory=True)
+            cache_raw = temp_root / "pycache"
+            try:
+                cache_raw.mkdir()
+            except OSError:
+                _fail("WINDOWS_DEBUG_PYCACHE_PREFIX_INVALID")
+            cache = _resolve_local_no_reparse(cache_raw, directory=True)
+            if any(cache.iterdir()):
+                _fail("WINDOWS_DEBUG_PYCACHE_PREFIX_NOT_EMPTY")
+            source_root, materialized_paths = _materialize_commit_inputs(
+                temp_root, raw_by_relative
+            )
+            target_script, target_script_raw = _materialize_collector_target_script(
+                temp_root
+            )
+            program_path = materialized_paths[_PROGRAM_RELATIVE]
+            input_path = materialized_paths[_INPUT_RELATIVE]
+            source_manifest = _selected_source_manifest_raw(raw_by_relative).decode("ascii")
+            environment = _sanitized_environment(cache)
+            expected_launch = _validate_launch_binding(_expected_launch_binding(
+                python_executable,
+                target_script,
+                target_script_raw,
+                source_root,
+                materialized_paths,
+                crypto_root,
+                cache,
+                environment,
+                source_manifest,
+                raw_by_relative,
+            ))
+            job = _WindowsJob()
+            debugger = WindowsDebugEventSession.prepare()
+            command = [
+                str(python_executable),
+                "-I", "-S", "-B", "-X", f"pycache_prefix={cache}",
+                "-c", _SHIM_SOURCE,
+                str(target_script), str(source_root), str(program_path), str(input_path),
+                str(crypto_root), str(cache), str(PROVISIONAL_MAX_CANONICAL_BYTES),
+                source_manifest, str(_MAX_CONTROL_LINE_BYTES),
+            ]
+            create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if type(create_no_window) is not int or create_no_window <= 0:
+                _fail("WINDOWS_DEBUG_CREATE_NO_WINDOW_UNAVAILABLE")
+            if time.monotonic_ns() >= outer_deadline_ns:
+                _fail("WINDOWS_DEBUG_HELPER_DEADLINE_EXCEEDED")
+            shim = subprocess.Popen(
+                command,
+                cwd=source_root,
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=create_no_window | DEBUG_PROCESS_CREATION_FLAG,
+                close_fds=True,
+            )
+            assert shim.stdin is not None and shim.stdout is not None and shim.stderr is not None
+
+            # The root is still stopped at its CREATE_PROCESS debug event.  Assign it to the
+            # non-breakaway Job before the event engine can issue the first ContinueDebugEvent.
+            debugger.bind_root_process(shim.pid)
+            job.assign(shim)
+            job_assigned = True
+            deadline = min(
+                time.monotonic() + _MAX_RUNTIME_SECONDS,
+                outer_deadline_ns / 1_000_000_000,
+            )
+
+            def pump_one_debug_event() -> None:
+                assert debugger is not None and job is not None
+                debugger.pump(_POLL_INTERVAL_MILLISECONDS)
+                _drain_messages(job, job_events, process_tokens, timeout_milliseconds=0)
+
+            ready_result: list[bytes] = []
+            ready_reader = threading.Thread(
+                target=_read_bounded_line, args=(shim.stdout, ready_result), daemon=True
+            )
+            ready_reader.start()
+            while not ready_result and time.monotonic() < deadline:
+                if debugger.all_processes_exited:
+                    break
+                pump_one_debug_event()
+                ready_reader.join(0)
+            if (
+                    ready_reader.is_alive()
+                    or ready_result != [_READY_SENTINEL]
+                    or not debugger.root_create_observed
+                    or not debugger.initial_breakpoint_observed(shim.pid)
+            ):
+                _fail("WINDOWS_DEBUG_SHIM_HANDSHAKE_INVALID")
+            while shim.pid not in process_tokens and time.monotonic() < deadline:
+                pump_one_debug_event()
+            root_token = process_tokens.get(shim.pid)
+            if root_token is None:
+                _fail("WINDOWS_DEBUG_SHIM_JOB_EVENT_MISSING")
+
+            shim.stdin.write(_RUN_COMMAND)
+            shim.stdin.flush()
+            target_line_result: list[bytes] = []
+            target_line_reader = threading.Thread(
+                target=_read_bounded_line,
+                args=(shim.stdout, target_line_result),
+                daemon=True,
+            )
+            target_line_reader.start()
+            while not target_line_result and time.monotonic() < deadline:
+                if debugger.all_processes_exited:
+                    break
+                pump_one_debug_event()
+                target_line_reader.join(0)
+            if target_line_reader.is_alive() or not target_line_result:
+                _fail("WINDOWS_DEBUG_TARGET_HANDSHAKE_TIMEOUT")
+            target_pid, target, observed_launch = _parse_target_line(
+                target_line_result[0], program_digest, input_digest
+            )
+            if observed_launch != expected_launch:
+                _fail("WINDOWS_DEBUG_EXECUTION_ENVIRONMENT_RECONCILIATION_FAILED")
+            while (
+                    (target_pid not in process_tokens
+                     or not debugger.process_created(target_pid)
+                     or not debugger.initial_breakpoint_observed(target_pid))
+                    and time.monotonic() < deadline
+            ):
+                pump_one_debug_event()
+            target_token = process_tokens.get(target_pid)
+            if (
+                    target_token is None
+                    or not debugger.process_created(target_pid)
+                    or not debugger.initial_breakpoint_observed(target_pid)
+            ):
+                _fail("WINDOWS_DEBUG_TARGET_PROCESS_RECONCILIATION_FAILED")
+
+            snapshots: list[dict[str, Any]] = []
+            while not snapshots and time.monotonic() < deadline:
+                try:
+                    snapshots.append(_mapping_snapshot(target_pid, target_token, 0))
+                except RuntimeDiscoveryError as error:
+                    if error.code != "RUNTIME_DISCOVERY_K32_ENUMERATION_FAILED":
+                        raise
+                    k32_failures += 1
+                    time.sleep(_POLL_INTERVAL_MILLISECONDS / 1000)
+            if not snapshots:
+                _fail("WINDOWS_DEBUG_DYNAMIC_TRACE_EMPTY")
+            if not any(
+                    row["observed_path_digest"] == target["crypto_provider_path_digest"]
+                    for snapshot in snapshots
+                    for row in snapshot["mappings"]
+            ):
+                _fail("WINDOWS_DEBUG_CRYPTO_MAPPING_JOIN_FAILED")
+
+            shim.stdin.write(_STOP_COMMAND)
+            shim.stdin.flush()
+            completion_result: list[tuple[bytes, bytes]] = []
+            completion_failed: list[bool] = []
+
+            def finish_shim() -> None:
+                assert shim is not None
+                try:
+                    completion_result.append(shim.communicate())
+                except (BrokenPipeError, OSError, ValueError):
+                    completion_failed.append(True)
+
+            completion_reader = threading.Thread(target=finish_shim, daemon=True)
+            completion_reader.start()
+            while time.monotonic() < deadline:
+                _drain_messages(job, job_events, process_tokens, timeout_milliseconds=0)
+                if debugger.all_processes_exited:
+                    completion_reader.join(_POLL_INTERVAL_MILLISECONDS / 1000)
+                    if not completion_reader.is_alive():
+                        break
+                else:
+                    pump_one_debug_event()
+            if (
+                    completion_reader.is_alive()
+                    or completion_failed
+                    or len(completion_result) != 1
+                    or shim.returncode != 0
+                    or completion_result[0][0]
+                    or completion_result[0][1]
+                    or not debugger.all_processes_exited
+            ):
+                _fail("WINDOWS_DEBUG_TARGET_COMPLETION_FAILED")
+            capture = debugger.snapshot()
+
+            while (
+                    not any(row["event"] == "ACTIVE_PROCESS_ZERO" for row in job_events)
+                    and time.monotonic() < deadline
+            ):
+                _drain_messages(
+                    job,
+                    job_events,
+                    process_tokens,
+                    timeout_milliseconds=_POLL_INTERVAL_MILLISECONDS,
+                )
+            _drain_messages(job, job_events, process_tokens, timeout_milliseconds=0)
+            accounting = job.accounting()
+            new_tokens = [
+                row["process_token"] for row in job_events if row["event"] == "NEW_PROCESS"
+            ]
+            exit_tokens = [
+                row["process_token"] for row in job_events if row["event"] == "EXIT_PROCESS"
+            ]
+            active_zero_count = sum(
+                row["event"] == "ACTIVE_PROCESS_ZERO" for row in job_events
+            )
+            known_tokens = set(process_tokens.values())
+            if (
+                    set(process_tokens) != set(capture.created_process_ids)
+                    or set(process_tokens) != set(capture.exited_process_ids)
+                    or len(new_tokens) != len(known_tokens)
+                    or len(exit_tokens) != len(known_tokens)
+                    or set(new_tokens) != known_tokens
+                    or set(exit_tokens) != known_tokens
+                    or active_zero_count != 1
+                    or any(row["event"] == "ABNORMAL_EXIT_PROCESS" for row in job_events)
+                    or int(accounting.ActiveProcesses) != 0
+                    or int(accounting.TotalProcesses) != len(known_tokens)
+                    or int(accounting.TotalTerminatedProcesses) != 0
+            ):
+                _fail("WINDOWS_DEBUG_JOB_ACCOUNTING_MISMATCH")
+            if any(cache.iterdir()):
+                _fail("WINDOWS_DEBUG_PYCACHE_WRITE_DETECTED")
+            _verify_materialized_inputs(materialized_paths, raw_by_relative)
+            if _stable_read(target_script) != target_script_raw:
+                _fail("WINDOWS_DEBUG_TARGET_SCRIPT_CHANGED")
+
+            process_rows, image_rows = _tokenize_debug_capture(capture, process_tokens)
+            target_exit_rows = [
+                row for row in process_rows
+                if row["event"] == "EXIT_PROCESS"
+                and row["process_token"] == target_token
+            ]
+            if len(target_exit_rows) != 1 or target_exit_rows[0]["exit_code"] != 0:
+                _fail("WINDOWS_DEBUG_TARGET_EXIT_RECONCILIATION_FAILED")
+            common = {
+                "capture_protocol": _fixed_debug_capture_protocol(),
+                "platform": _fixed_platform(),
+                "selected_commit": selected_commit,
+                "selected_tree": selected_tree,
+                "claim_boundary": _fixed_debug_claim_boundary(),
+                "authority": _fixed_authority(),
+            }
+            process_trace = {
+                **common,
+                "schema": _fixed_debug_process_trace_schema(),
+                "limits": _fixed_debug_limits(),
+                "target": target,
+                "target_process_token": target_token,
+                "debugger": {
+                    "wait_api": "WAIT_FOR_DEBUG_EVENT_EX",
+                    "creation_flags": ["CREATE_NO_WINDOW", "DEBUG_PROCESS"],
+                    "debug_only_this_process": False,
+                    "debug_set_process_kill_on_exit": True,
+                    "creator_thread_only": True,
+                    "root_process_token": root_token,
+                    "root_create_observed_before_first_continue": True,
+                    "descendant_debugging_requested": True,
+                    "debug_event_count": len(process_rows),
+                    "continued_event_count": capture.continued_event_count,
+                    "created_process_count": len(capture.created_process_ids),
+                    "exited_process_count": len(capture.exited_process_ids),
+                    "initial_breakpoint_count": len(capture.initial_breakpoint_process_ids),
+                },
+                "job": {
+                    "completion_port_associated": True,
+                    "kill_on_job_close": True,
+                    "breakaway_ok": False,
+                    "silent_breakaway_ok": False,
+                    "assigned_process_count": 1,
+                    "observed_process_count": len(process_tokens),
+                    "active_process_zero_observed": True,
+                    "target_exit_code": 0,
+                    "assignment_completed_before_first_debug_event_pump": True,
+                    "debug_created_process_set_matches_job": True,
+                    "debug_exited_process_set_matches_job": True,
+                    "events": job_events,
+                },
+                "event_count": len(process_rows),
+                "events": process_rows,
+            }
+            load_count = sum(row["event"] == "LOAD_IMAGE" for row in image_rows)
+            explicit_unload_count = sum(
+                row["event"] == "UNLOAD_IMAGE" for row in image_rows
+            )
+            implicit_unmap_count = sum(
+                row["event"] == "PROCESS_EXIT_IMPLICIT_UNMAP" for row in image_rows
+            )
+            snapshot_row_count = sum(len(item["mappings"]) for item in snapshots)
+            image_trace = {
+                **common,
+                "schema": _fixed_debug_image_trace_schema(),
+                "method": "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_CHECKPOINT/2",
+                "semantics": (
+                    "DEBUG_IMAGE_LIFETIMES_PLUS_POINT_CHECKPOINT_NOT_COMPLETE_MAPPING_HISTORY"
+                ),
+                "history_complete": False,
+                "target_process_token": target_token,
+                "debug_event_stream_digest": canonical_digest(process_rows),
+                "load_event_count": load_count,
+                "explicit_unload_event_count": explicit_unload_count,
+                "implicit_unmap_count": implicit_unmap_count,
+                "lifecycle_event_count": len(image_rows),
+                "distinct_mapping_count": load_count,
+                "snapshot_count": len(snapshots),
+                "snapshot_mapping_row_count": snapshot_row_count,
+                "target_snapshots": snapshots,
+                "events": image_rows,
+            }
+            loss_trace = {
+                **common,
+                "schema": _fixed_debug_loss_trace_schema(),
+                "target_process_token": target_token,
+                "debug_event_count": len(process_rows),
+                "created_process_count": len(capture.created_process_ids),
+                "exited_process_count": len(capture.exited_process_ids),
+                "initial_breakpoint_count": len(capture.initial_breakpoint_process_ids),
+                "load_event_count": load_count,
+                "explicit_unload_event_count": explicit_unload_count,
+                "implicit_unmap_count": implicit_unmap_count,
+                "mapping_snapshot_count": len(snapshots),
+                "mapping_snapshot_row_count": snapshot_row_count,
+                "process_tree_reconciled": True,
+                "event_stream_contiguous": False,
+                "start_end_snapshot_reconciled": False,
+                "counters": {
+                    "debug_wait_failures": capture.wait_failure_count,
+                    "debug_continue_failures": capture.continue_failure_count,
+                    "debug_handle_close_failures": capture.handle_close_failure_count,
+                    "job_messages_lost": None,
+                    "process_events_lost": None,
+                    "mapping_load_events_lost": None,
+                    "mapping_unload_events_lost": None,
+                    "k32_enumeration_failures": k32_failures,
+                },
+                "limitations": list(_fixed_debug_limitations()),
+            }
+            launch_digest = canonical_digest(expected_launch)
+            environment_manifest = {
+                "schema": _fixed_debug_environment_manifest_schema(),
+                "capture_protocol": _fixed_debug_capture_protocol(),
+                "platform": _fixed_platform(),
+                "selected_commit": selected_commit,
+                "selected_tree": selected_tree,
+                "target_process_token": target_token,
+                "launch": {
+                    "parent_expected": expected_launch,
+                    "target_observed": observed_launch,
+                },
+                "reconciliation": {
+                    "parent_expected_launch_digest": launch_digest,
+                    "target_observed_launch_digest": canonical_digest(observed_launch),
+                    "exact_match": True,
+                },
+                "claim_boundary": _fixed_environment_claim_boundary(),
+                "authority": _fixed_authority(),
+            }
+            for document in (process_trace, image_trace, loss_trace):
+                validate_windows_debug_runtime_discovery_trace(document)
+            _validate_debug_image_projection(process_trace, image_trace)
+            validate_windows_debug_execution_environment_manifest(environment_manifest)
+            return process_trace, image_trace, loss_trace, environment_manifest
+    except DebugEventEngineError as error:
+        _fail(error.code)
+    except RuntimeDiscoveryError:
+        raise
+    except (AssertionError, OSError, subprocess.SubprocessError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_COLLECTION_FAILED")
+    finally:
+        if job is not None:
+            if (
+                    shim is not None
+                    and (shim.poll() is None
+                         or debugger is not None and not debugger.all_processes_exited)
+            ):
+                if job_assigned:
+                    job.terminate()
+                elif shim.poll() is None:
+                    try:
+                        shim.kill()
+                    except OSError:
+                        pass
+                cleanup_deadline = time.monotonic() + 5
+                while (
+                        (shim.poll() is None
+                         or debugger is not None and not debugger.all_processes_exited)
+                        and time.monotonic() < cleanup_deadline
+                ):
+                    if debugger is not None:
+                        try:
+                            debugger.pump(_POLL_INTERVAL_MILLISECONDS)
+                        except DebugEventEngineError:
+                            pass
+                    if job_assigned:
+                        try:
+                            _drain_messages(
+                                job,
+                                job_events,
+                                process_tokens,
+                                timeout_milliseconds=0,
+                            )
+                        except RuntimeDiscoveryError:
+                            pass
+                if shim.poll() is None:
+                    try:
+                        shim.kill()
+                    except OSError:
+                        pass
+                if completion_reader is not None and completion_reader.is_alive():
+                    completion_reader.join(1)
+                elif shim.poll() is None:
+                    try:
+                        shim.communicate(timeout=1)
+                    except (OSError, subprocess.TimeoutExpired, ValueError):
+                        pass
+            job.close()
+
+
+def _debug_helper_error_response(code: str) -> dict[str, str]:
+    checked = (
+        code
+        if type(code) is str and _DEBUG_HELPER_ERROR_CODE_RE.fullmatch(code)
+        else "WINDOWS_DEBUG_COLLECTION_FAILED"
+    )
+    return {
+        "helper_protocol": _DEBUG_HELPER_PROTOCOL,
+        "status": "ERROR",
+        "error_code": checked,
+    }
+
+
+def _debug_helper_parent_watchdog(parent_sentinel: int) -> NoReturn:
+    """Exit the helper process if its supervising process disappears."""
+
+    try:
+        _multiprocessing_wait([parent_sentinel])
+    finally:
+        os._exit(1)
+
+
+def _install_debug_helper_parent_watchdog() -> int:
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        _fail("WINDOWS_DEBUG_HELPER_PARENT_INVALID")
+    parent_sentinel = parent.sentinel
+    watcher = threading.Thread(
+        target=_debug_helper_parent_watchdog,
+        args=(parent_sentinel,),
+        daemon=True,
+        name="atlas-r2-debug-helper-parent-watchdog",
+    )
+    watcher.start()
+    return parent_sentinel
+
+
+def _debug_capture_helper_main(
+        gate_receiver: Connection,
+        result_sender: Connection,
+        python_executable_raw: str,
+        crypto_root_raw: str,
+        raw_items: tuple[tuple[str, bytes], ...],
+        program_digest: str,
+        input_digest: str,
+        selected_commit: str,
+        selected_tree: str,
+        temp_base_raw: str,
+        prepared_temp_root_raw: str,
+        outer_deadline_ns: int,
+        ) -> None:
+    """Spawn target whose main thread exclusively owns the Win32 debug lifecycle."""
+
+    response: dict[str, Any]
+    try:
+        if threading.current_thread() is not threading.main_thread():
+            _fail("WINDOWS_DEBUG_HELPER_MAIN_THREAD_INVALID")
+        parent_sentinel = _install_debug_helper_parent_watchdog()
+        try:
+            remaining = (outer_deadline_ns - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                _fail("WINDOWS_DEBUG_HELPER_GATE_INVALID")
+            ready = _multiprocessing_wait(
+                [gate_receiver, parent_sentinel], remaining
+            )
+            if parent_sentinel in ready or gate_receiver not in ready:
+                _fail("WINDOWS_DEBUG_HELPER_GATE_INVALID")
+            gate = gate_receiver.recv_bytes(len(_DEBUG_HELPER_GO))
+        except RuntimeDiscoveryError:
+            raise
+        except (EOFError, OSError, TypeError, ValueError):
+            _fail("WINDOWS_DEBUG_HELPER_GATE_INVALID")
+        finally:
+            gate_receiver.close()
+        if gate != _DEBUG_HELPER_GO or time.monotonic_ns() >= outer_deadline_ns:
+            _fail("WINDOWS_DEBUG_HELPER_GATE_INVALID")
+        if (
+                type(python_executable_raw) is not str
+                or type(crypto_root_raw) is not str
+                or type(temp_base_raw) is not str
+                or type(prepared_temp_root_raw) is not str
+                or type(raw_items) is not tuple
+                or type(program_digest) is not str
+                or not _DIGEST_RE.fullmatch(program_digest)
+                or type(input_digest) is not str
+                or not _DIGEST_RE.fullmatch(input_digest)
+                or type(selected_commit) is not str
+                or not _GIT_OBJECT_RE.fullmatch(selected_commit)
+                or type(selected_tree) is not str
+                or not _GIT_OBJECT_RE.fullmatch(selected_tree)
+                or type(outer_deadline_ns) is not int
+                or outer_deadline_ns <= 0
+        ):
+            _fail("WINDOWS_DEBUG_HELPER_REQUEST_INVALID")
+        raw_by_relative: dict[str, bytes] = {}
+        for item in raw_items:
+            if (
+                    type(item) is not tuple
+                    or len(item) != 2
+                    or type(item[0]) is not str
+                    or type(item[1]) is not bytes
+                    or not item[1]
+                    or item[0] in raw_by_relative
+            ):
+                _fail("WINDOWS_DEBUG_HELPER_REQUEST_INVALID")
+            raw_by_relative[item[0]] = item[1]
+        result = _capture_debug_dynamic_on_creator_thread(
+            Path(python_executable_raw),
+            Path(crypto_root_raw),
+            raw_by_relative,
+            program_digest,
+            input_digest,
+            selected_commit,
+            selected_tree,
+            Path(temp_base_raw),
+            Path(prepared_temp_root_raw),
+            outer_deadline_ns,
+        )
+        response = {
+            "helper_protocol": _DEBUG_HELPER_PROTOCOL,
+            "status": "SUCCESS",
+            "documents": {
+                "process_trace": result[0],
+                "image_trace": result[1],
+                "loss_trace": result[2],
+                "environment_manifest": result[3],
+            },
+        }
+    except RuntimeDiscoveryError as error:
+        response = _debug_helper_error_response(error.code)
+    except BaseException:
+        response = _debug_helper_error_response("WINDOWS_DEBUG_COLLECTION_FAILED")
+    try:
+        try:
+            frame = canonical_json_bytes(response)
+        except BaseException:
+            frame = canonical_json_bytes(
+                _debug_helper_error_response("WINDOWS_DEBUG_COLLECTION_FAILED")
+            )
+        result_sender.send_bytes(frame)
+    except BaseException:
+        pass
+    finally:
+        try:
+            result_sender.close()
+        except BaseException:
+            pass
+
+
+def _decode_debug_helper_response(raw: bytes) -> tuple[str, Any]:
+    try:
+        value = parse_canonical_json_bytes(raw, require_canonical=True)
+    except Exception:
+        _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+    if type(value) is not dict or value.get("helper_protocol") != _DEBUG_HELPER_PROTOCOL:
+        _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+    status = value.get("status")
+    if status == "SUCCESS":
+        if set(value) != {"helper_protocol", "status", "documents"}:
+            _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+        documents = value["documents"]
+        if (
+                type(documents) is not dict
+                or set(documents) != {
+                    "process_trace", "image_trace", "loss_trace", "environment_manifest"
+                }
+                or any(type(document) is not dict for document in documents.values())
+        ):
+            _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+        return "SUCCESS", documents
+    if status == "ERROR":
+        if (
+                set(value) != {"helper_protocol", "status", "error_code"}
+                or type(value.get("error_code")) is not str
+                or not _DEBUG_HELPER_ERROR_CODE_RE.fullmatch(value["error_code"])
+        ):
+            _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+        return "ERROR", value["error_code"]
+    _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+
+
+def _wait_for_debug_helper(objects: list[Any], deadline_ns: int) -> list[Any]:
+    remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+    if remaining <= 0:
+        return []
+    try:
+        return _multiprocessing_wait(objects, remaining)
+    except (OSError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+
+
+def _receive_debug_helper_frame(
+        helper: multiprocessing.Process,
+        receiver: Connection,
+        deadline_ns: int,
+        ) -> bytes:
+    frame: bytes | None = None
+    pipe_eof = False
+    while frame is None:
+        ready = _wait_for_debug_helper([receiver, helper.sentinel], deadline_ns)
+        if not ready:
+            _fail("WINDOWS_DEBUG_HELPER_TIMEOUT")
+        if receiver in ready:
+            try:
+                frame = receiver.recv_bytes(PROVISIONAL_MAX_CANONICAL_BYTES)
+            except (EOFError, OSError, ValueError):
+                _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+        elif helper.sentinel in ready:
+            try:
+                helper.join(0)
+                frame = receiver.recv_bytes(PROVISIONAL_MAX_CANONICAL_BYTES)
+            except (AssertionError, EOFError, OSError, ValueError):
+                _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
+
+    while True:
+        wait_objects = [helper.sentinel] if pipe_eof else [receiver, helper.sentinel]
+        ready = _wait_for_debug_helper(wait_objects, deadline_ns)
+        if not ready:
+            _fail("WINDOWS_DEBUG_HELPER_TIMEOUT")
+        if not pipe_eof and receiver in ready:
+            try:
+                receiver.recv_bytes(PROVISIONAL_MAX_CANONICAL_BYTES)
+            except EOFError:
+                pipe_eof = True
+            except (OSError, ValueError):
+                _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+            else:
+                _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+        if helper.sentinel in ready:
+            try:
+                helper.join(0)
+                if not pipe_eof:
+                    try:
+                        receiver.recv_bytes(PROVISIONAL_MAX_CANONICAL_BYTES)
+                    except EOFError:
+                        pipe_eof = True
+                    else:
+                        _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+            except RuntimeDiscoveryError:
+                raise
+            except (AssertionError, OSError, ValueError):
+                _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
+            if helper.exitcode != 0 or not pipe_eof:
+                _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
+            return frame
+
+
+def _close_debug_helper_connection(connection: Connection | None) -> None:
+    if connection is not None:
+        try:
+            connection.close()
+        except BaseException:
+            pass
+
+
+def _dispose_debug_helper_process(helper: multiprocessing.Process | None) -> bool:
+    if helper is None:
+        return True
+    cleanup_ok = True
+    try:
+        alive = helper.is_alive()
+    except BaseException:
+        alive = True
+        cleanup_ok = False
+    if alive:
+        try:
+            helper.terminate()
+        except BaseException:
+            cleanup_ok = False
+        try:
+            helper.join(_DEBUG_HELPER_CLEANUP_SECONDS)
+        except BaseException:
+            cleanup_ok = False
+        try:
+            alive = helper.is_alive()
+        except BaseException:
+            alive = True
+            cleanup_ok = False
+    if alive:
+        try:
+            helper.kill()
+        except BaseException:
+            cleanup_ok = False
+        try:
+            helper.join(_DEBUG_HELPER_CLEANUP_SECONDS)
+        except BaseException:
+            cleanup_ok = False
+        try:
+            alive = helper.is_alive()
+        except BaseException:
+            alive = True
+            cleanup_ok = False
+    if alive:
+        return False
+    try:
+        if helper.pid is not None:
+            helper.join(0)
+        helper.close()
+    except BaseException:
+        cleanup_ok = False
+    return cleanup_ok
+
+
+def _validate_debug_helper_documents(
+        documents: Mapping[str, Any],
+        selected_commit: str,
+        selected_tree: str,
+        raw_by_relative: Mapping[str, bytes],
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    process_trace = documents["process_trace"]
+    image_trace = documents["image_trace"]
+    loss_trace = documents["loss_trace"]
+    environment_manifest = documents["environment_manifest"]
+    for document in (process_trace, image_trace, loss_trace):
+        validate_windows_debug_runtime_discovery_trace(document)
+        if (
+                document["selected_commit"] != selected_commit
+                or document["selected_tree"] != selected_tree
+        ):
+            _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
+    _validate_debug_image_projection(process_trace, image_trace)
+    validate_windows_debug_execution_environment_manifest(environment_manifest)
+    if (
+            environment_manifest["selected_commit"] != selected_commit
+            or environment_manifest["selected_tree"] != selected_tree
+    ):
+        _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
+    _validate_environment_source_joins(environment_manifest, raw_by_relative)
+    return process_trace, image_trace, loss_trace, environment_manifest
+
+
+def _capture_debug_dynamic(
+        python_executable: Path,
+        crypto_root: Path,
+        raw_by_relative: Mapping[str, bytes],
+        program_digest: str,
+        input_digest: str,
+        selected_commit: str,
+        selected_tree: str,
+        temp_base: Path,
+        prepared_temp_root: Path | None = None,
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Run the DEBUG_PROCESS lifecycle in a deadline-owned spawned helper process."""
+
+    if prepared_temp_root is None:
+        try:
+            checked_temp_base = _resolve_local_no_reparse(temp_base, directory=True)
+            with tempfile.TemporaryDirectory(
+                    prefix="atlas-r2-runtime-debug-",
+                    dir=checked_temp_base) as raw_temp:
+                planned_temp_root = _resolve_local_no_reparse(
+                    Path(raw_temp), directory=True
+                )
+                return _capture_debug_dynamic(
+                    python_executable,
+                    crypto_root,
+                    raw_by_relative,
+                    program_digest,
+                    input_digest,
+                    selected_commit,
+                    selected_tree,
+                    temp_base,
+                    planned_temp_root,
+                )
+        except RuntimeDiscoveryError:
+            raise
+        except OSError:
+            _fail("WINDOWS_DEBUG_TEMP_ROOT_CLEANUP_FAILED")
+
+    if (
+            type(raw_by_relative) is not dict
+            or any(
+                type(relative) is not str or type(raw) is not bytes or not raw
+                for relative, raw in raw_by_relative.items()
+            )
+    ):
+        _fail("WINDOWS_DEBUG_HELPER_REQUEST_INVALID")
+    raw_items = tuple(sorted(raw_by_relative.items()))
+    outer_deadline_ns = (
+        time.monotonic_ns() + _DEBUG_HELPER_OUTER_SECONDS * 1_000_000_000
+    )
+    helper: multiprocessing.Process | None = None
+    gate_receiver: Connection | None = None
+    gate_sender: Connection | None = None
+    result_receiver: Connection | None = None
+    result_sender: Connection | None = None
+    containment_ok = True
+    try:
+        context = multiprocessing.get_context("spawn")
+        gate_receiver, gate_sender = context.Pipe(duplex=False)
+        result_receiver, result_sender = context.Pipe(duplex=False)
+        helper = context.Process(
+            target=_debug_capture_helper_main,
+            args=(
+                gate_receiver,
+                result_sender,
+                str(python_executable),
+                str(crypto_root),
+                raw_items,
+                program_digest,
+                input_digest,
+                selected_commit,
+                selected_tree,
+                str(temp_base),
+                str(prepared_temp_root),
+                outer_deadline_ns,
+            ),
+            name="atlas-r2-debug-capture-helper",
+            daemon=False,
+        )
+        helper.start()
+        _close_debug_helper_connection(gate_receiver)
+        gate_receiver = None
+        _close_debug_helper_connection(result_sender)
+        result_sender = None
+        if time.monotonic_ns() >= outer_deadline_ns:
+            _fail("WINDOWS_DEBUG_HELPER_TIMEOUT")
+        gate_sender.send_bytes(_DEBUG_HELPER_GO)
+        _close_debug_helper_connection(gate_sender)
+        gate_sender = None
+        frame = _receive_debug_helper_frame(helper, result_receiver, outer_deadline_ns)
+        status, payload = _decode_debug_helper_response(frame)
+        if status == "ERROR":
+            _fail(payload)
+        return _validate_debug_helper_documents(
+            payload, selected_commit, selected_tree, raw_by_relative
+        )
+    except RuntimeDiscoveryError:
+        raise
+    except (AssertionError, OSError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
+    finally:
+        _close_debug_helper_connection(gate_sender)
+        _close_debug_helper_connection(gate_receiver)
+        _close_debug_helper_connection(result_sender)
+        _close_debug_helper_connection(result_receiver)
+        containment_ok = _dispose_debug_helper_process(helper)
+        if not containment_ok:
+            _fail("WINDOWS_DEBUG_HELPER_CONTAINMENT_FAILED")
+
+
 def capture_windows_runtime_closure_incomplete(
         subject: RuntimeClosureDiscoverySubject,
         project_root: Path) -> CapturedIncompleteRuntimeClosureEvidence:
@@ -3235,11 +5310,215 @@ def capture_windows_runtime_closure_incomplete(
     )
 
 
+def capture_windows_debug_runtime_closure_incomplete(
+        subject: RuntimeClosureDiscoverySubject,
+        project_root: Path) -> CapturedIncompleteRuntimeClosureEvidence:
+    """Capture one DEBUG_PROCESS/Job-reconciled, still-incomplete R2.0 execution."""
+
+    checked_subject = _validate_subject(subject)
+    if os.name != "nt" or sys.platform != "win32":
+        _fail("WINDOWS_DEBUG_RUNTIME_DISCOVERY_HOST_REQUIRED")
+    if not isinstance(project_root, Path):
+        _fail("WINDOWS_DEBUG_PROJECT_ROOT_REQUIRED")
+    root = _resolve_local_no_reparse(project_root, directory=True)
+    before_source = _checkout_fingerprint(root, checked_subject)
+    python_executable = _capture_python_executable()
+    crypto_root, expected_crypto_provider_path_digest = _distribution_import_root(
+        "cryptography"
+    )
+    temp_base = _resolve_local_no_reparse(root.parent, directory=True)
+
+    relative_paths = (
+        {row[3] for row in _STATIC_ARTIFACTS}
+        | {_INPUT_RELATIVE}
+        | set(_TARGET_SOURCE_RELATIVES)
+        | set(_PROTOTYPE_BINDING_SOURCE_RELATIVES)
+    )
+    asset_raw = _read_exact_commit_blobs(root, before_source[0], relative_paths)
+    _validate_static_joins(asset_raw)
+    source_raw_by_relative = {
+        relative: asset_raw[relative]
+        for _input_id, _path_token, relative in _LAUNCH_INPUT_SPEC
+        if relative is not None
+    }
+
+    try:
+        with tempfile.TemporaryDirectory(
+                prefix="atlas-r2-runtime-debug-",
+                dir=temp_base) as raw_temp:
+            planned_temp_root = _resolve_local_no_reparse(Path(raw_temp), directory=True)
+            if any(planned_temp_root.iterdir()):
+                _fail("WINDOWS_DEBUG_PREPARED_TEMP_ROOT_INVALID")
+            outer_expected_launch = _expected_planned_launch(
+                python_executable,
+                crypto_root,
+                asset_raw,
+                planned_temp_root,
+            )
+            process_trace, image_trace, loss_trace, environment_manifest = (
+                _capture_debug_dynamic(
+                    python_executable,
+                    crypto_root,
+                    asset_raw,
+                    bytes_digest(asset_raw[_PROGRAM_RELATIVE]),
+                    bytes_digest(asset_raw[_INPUT_RELATIVE]),
+                    before_source[0],
+                    before_source[1],
+                    temp_base,
+                    planned_temp_root,
+                )
+            )
+    except RuntimeDiscoveryError:
+        raise
+    except (OSError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_COLLECTION_FAILED")
+    for document in (process_trace, image_trace, loss_trace):
+        validate_windows_debug_runtime_discovery_trace(document)
+        if (
+                document["selected_commit"] != before_source[0]
+                or document["selected_tree"] != before_source[1]
+        ):
+            _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
+    validate_windows_debug_execution_environment_manifest(environment_manifest)
+    if (
+            environment_manifest["launch"]["parent_expected"] != outer_expected_launch
+            or environment_manifest["launch"]["target_observed"] != outer_expected_launch
+    ):
+        _fail("WINDOWS_DEBUG_OUTER_LAUNCH_RECONCILIATION_FAILED")
+    _validate_environment_source_joins(environment_manifest, source_raw_by_relative)
+    if (
+            environment_manifest["selected_commit"] != before_source[0]
+            or environment_manifest["selected_tree"] != before_source[1]
+    ):
+        _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
+    after_source = _checkout_fingerprint(root, checked_subject)
+    if after_source != before_source:
+        _fail("WINDOWS_DEBUG_SOURCE_CHANGED_DURING_CAPTURE")
+    if _read_exact_commit_blobs(root, before_source[0], relative_paths) != asset_raw:
+        _fail("WINDOWS_DEBUG_COMMIT_BLOB_CHANGED_DURING_CAPTURE")
+
+    artifact_raw_by_id: dict[str, bytes] = {}
+    artifact_rows: list[dict[str, Any]] = []
+    digest_fields: dict[str, str | None] = {
+        field: None for field in RUNTIME_CLOSURE_BINDING_DIGEST_FIELDS
+    }
+    for artifact_id, role, field, relative in _STATIC_ARTIFACTS:
+        raw = asset_raw[relative]
+        artifact_raw_by_id[artifact_id] = raw
+        artifact_rows.append(_artifact_row(artifact_id, role, raw))
+        digest_fields[field] = bytes_digest(raw)
+    dynamic_by_schema = {
+        process_trace["schema"]: process_trace,
+        image_trace["schema"]: image_trace,
+        loss_trace["schema"]: loss_trace,
+    }
+    for artifact_id, role, schema in _DEBUG_DYNAMIC_ARTIFACTS:
+        document = dynamic_by_schema[schema]
+        raw = canonical_json_bytes(document)
+        artifact_raw_by_id[artifact_id] = raw
+        artifact_rows.append(_artifact_row(artifact_id, role, raw))
+    environment_artifact_id, environment_role, environment_field, _schema = (
+        _DEBUG_ENVIRONMENT_ARTIFACT
+    )
+    environment_raw = canonical_json_bytes(environment_manifest)
+    artifact_raw_by_id[environment_artifact_id] = environment_raw
+    artifact_rows.append(_artifact_row(
+        environment_artifact_id, environment_role, environment_raw
+    ))
+    digest_fields[environment_field] = bytes_digest(environment_raw)
+    artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
+    _validate_sealed_debug_dynamic_profile(
+        artifact_raw_by_id, expected_crypto_provider_path_digest
+    )
+
+    inventory = parse_canonical_json_bytes(
+        asset_raw["cisco_toolkit/data/atlas-r2-runtime-inventory.reference.v1.json"],
+        require_canonical=True,
+    )
+    coverage: dict[str, Any] = {"state": RUNTIME_CLOSURE_COVERAGE_INCOMPLETE}
+    coverage.update({field: False for field in RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS})
+    coverage["process_tree_captured_before_first_instruction_through_final_descendant"] = True
+    coverage["execution_environment_argv_cwd_and_inputs_bound"] = True
+    coverage.update({field: None for field in RUNTIME_CLOSURE_POSITIVE_COUNTER_FIELDS})
+    coverage.update({field: None for field in RUNTIME_CLOSURE_ZERO_COUNTER_FIELDS})
+    coverage.update({
+        "supported_execution_case_count": 1,
+        "observed_process_count": process_trace["job"]["observed_process_count"],
+        "observed_executable_mapping_count": image_trace["distinct_mapping_count"],
+        "observed_load_event_count": image_trace["load_event_count"],
+        "unresolved_dependency_count": inventory["coverage"][
+            "unresolved_native_dependency_edge_count"
+        ],
+        "unbound_file_identity_count": image_trace["distinct_mapping_count"],
+    })
+    evidence_seed = canonical_digest({
+        "process_trace_digest": canonical_digest(process_trace),
+        "image_trace_digest": canonical_digest(image_trace),
+        "loss_trace_digest": canonical_digest(loss_trace),
+        "execution_environment_manifest_digest": canonical_digest(environment_manifest),
+    }).removeprefix("sha256:")
+    evidence: dict[str, Any] = {
+        "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
+        "evidence_id": f"transition-runtime-debug-discovery.{evidence_seed}",
+        "purpose": RUNTIME_CLOSURE_REVIEW_PURPOSE,
+        "state": RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE,
+        "producer_id": checked_subject.producer_id,
+        "runtime_collector_id": checked_subject.runtime_collector_id,
+        "structural_tcb_producer_id": checked_subject.structural_tcb_producer_id,
+        "pack_producer_id": checked_subject.pack_producer_id,
+        "budget_proposer_id": checked_subject.budget_proposer_id,
+        "release_builder_id": checked_subject.release_builder_id,
+        "selected_commit": before_source[0],
+        "selected_tree": before_source[1],
+        **digest_fields,
+        "scope": {
+            "scope_kind": RUNTIME_CLOSURE_SCOPE_KIND,
+            "substrate": RUNTIME_CLOSURE_REVIEW_SUBSTRATE,
+            "universal_all_input_behavior": False,
+            "portable_across_hosts": False,
+            "semantic_equivalence": False,
+            "continuous_capture_required": True,
+            "deny_by_default_execution_required": True,
+        },
+        "coverage": coverage,
+        "artifacts": artifact_rows,
+        "known_gaps": [],
+        "claim_boundary": RUNTIME_CLOSURE_EVIDENCE_CLAIM_BOUNDARY,
+        "authority": _fixed_authority(),
+    }
+    evidence["known_gaps"] = expected_runtime_closure_gaps(evidence)
+    evidence_raw = canonical_json_bytes(evidence)
+    bound = bind_transition_runtime_closure_evidence_bytes(
+        evidence_raw, artifact_raw_by_id
+    )
+    if (
+            bound["state"] != RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE
+            or bound["coverage"]["state"] != RUNTIME_CLOSURE_COVERAGE_INCOMPLETE
+            or bound["coverage"][
+                "process_tree_captured_before_first_instruction_through_final_descendant"
+            ] is not True
+            or bound["coverage"]["execution_environment_argv_cwd_and_inputs_bound"] is not True
+            or not _has_fixed_authority(bound["authority"])
+    ):
+        _fail("WINDOWS_DEBUG_INCOMPLETE_BOUNDARY_FAILED")
+    return _seal_captured_debug_discovery_result(
+        bound,
+        evidence_raw,
+        artifact_raw_by_id,
+        expected_crypto_provider_path_digest,
+        source_raw_by_relative,
+        outer_expected_launch,
+    )
+
+
 __all__ = [
     "CapturedIncompleteRuntimeClosureEvidence",
     "RuntimeClosureDiscoverySubject",
     "RuntimeDiscoveryError",
+    "capture_windows_debug_runtime_closure_incomplete",
     "capture_windows_runtime_closure_incomplete",
+    "validate_windows_debug_execution_environment_manifest",
+    "validate_windows_debug_runtime_discovery_trace",
     "validate_windows_execution_environment_manifest",
     "validate_windows_runtime_discovery_trace",
 ]

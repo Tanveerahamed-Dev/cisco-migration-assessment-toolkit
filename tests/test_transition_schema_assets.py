@@ -30,8 +30,14 @@ _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.
 _WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json"
 )
+_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v2.schema.json"
+)
 _WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json"
+)
+_WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-execution-environment-manifest-v2.schema.json"
 )
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
 _TCB_CENSUS_DIGEST = "sha256:f71abe7ea2d733eec30eaa7a1b4eba962a4bb4074758a1ec7335aa28c40f0d5b"
@@ -50,8 +56,16 @@ def _windows_runtime_discovery_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE))
 
 
+def _windows_debug_runtime_discovery_v2_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE))
+
+
 def _windows_execution_environment_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE))
+
+
+def _windows_execution_environment_v2_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE))
 
 
 def _windows_execution_environment_manifest() -> dict[str, Any]:
@@ -900,3 +914,77 @@ def test_windows_execution_environment_schema_is_a_packaged_standalone_resource(
     assert references
     assert all(reference.startswith("#/$defs/") for reference in references)
     assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE}",' in package_data
+
+
+def test_windows_debug_runtime_v2_schema_is_a_packaged_closed_union() -> None:
+    raw = _resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE)
+    schema = _windows_debug_runtime_discovery_v2_schema()
+    references: list[str] = []
+
+    def collect_references(value: Any) -> None:
+        if type(value) is dict:
+            if "$ref" in value:
+                references.append(value["$ref"])
+            for child in value.values():
+                collect_references(child)
+        elif type(value) is list:
+            for child in value:
+                collect_references(child)
+
+    collect_references(schema)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+
+    Draft202012Validator.check_schema(schema)
+    assert raw.endswith(b"\n")
+    assert schema["$id"] == "urn:atlas:schema:r2-windows-debug-runtime-discovery:2"
+    assert schema["oneOf"] == [
+        {"$ref": "#/$defs/processTrace"},
+        {"$ref": "#/$defs/imageTrace"},
+        {"$ref": "#/$defs/lossReconciliation"},
+    ]
+    assert references
+    assert all(reference.startswith("#/$defs/") for reference in references)
+    assert all(
+        schema["$defs"][name]["additionalProperties"] is False
+        for name in ("processTrace", "imageTrace", "lossReconciliation")
+    )
+    assert f'"{_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE}",' in package_data
+
+
+def test_windows_execution_environment_v2_schema_is_an_exact_closed_protocol_clone() -> None:
+    v1 = _windows_execution_environment_schema()
+    v2 = _windows_execution_environment_v2_schema()
+    expected_v2 = deepcopy(v1)
+    expected_v2["$id"] = (
+        "urn:atlas:schema:r2-windows-execution-environment-manifest:2"
+    )
+    expected_v2["title"] = "Atlas R2.0 Windows execution-environment manifest v2"
+    expected_v2["properties"]["schema"]["const"] = (
+        "atlas.windows-execution-environment-manifest/2"
+    )
+    expected_v2["$defs"]["captureProtocol"]["const"] = (
+        "WINDOWS_DEBUG_PROCESS_DISCOVERY/2"
+    )
+
+    Draft202012Validator.check_schema(v2)
+    assert v2 == expected_v2
+    assert v2["$defs"]["claimBoundary"] == v1["$defs"]["claimBoundary"]
+
+    manifest_v1 = _windows_execution_environment_manifest()
+    manifest_v2 = deepcopy(manifest_v1)
+    manifest_v2["schema"] = "atlas.windows-execution-environment-manifest/2"
+    manifest_v2["capture_protocol"] = "WINDOWS_DEBUG_PROCESS_DISCOVERY/2"
+    Draft202012Validator(v2).validate(manifest_v2)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v2).validate(manifest_v1)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v1).validate(manifest_v2)
+
+    raw = _resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    assert raw.endswith(b"\n")
+    assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE}",' in package_data
