@@ -36,6 +36,9 @@ _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE = (
 _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json"
 )
+_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json"
+)
 _WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json"
 )
@@ -45,8 +48,11 @@ _WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE = (
 _WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json"
 )
+_WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json"
+)
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:95ceb3535f01be84c0a3ed25ffe88f1b61bc191cca3b947c7b96faa904c8d36c"
+_TCB_CENSUS_DIGEST = "sha256:fd6aeef3a50dc00b5e8ec5577d19789d617ad41ff085f2d949191f1ebcc8955d"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -70,6 +76,10 @@ def _windows_debug_runtime_discovery_v3_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE))
 
 
+def _windows_debug_runtime_discovery_v4_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE))
+
+
 def _windows_execution_environment_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE))
 
@@ -80,6 +90,10 @@ def _windows_execution_environment_v2_schema() -> dict[str, Any]:
 
 def _windows_execution_environment_v3_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE))
+
+
+def _windows_execution_environment_v4_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE))
 
 
 def _windows_execution_environment_manifest() -> dict[str, Any]:
@@ -1183,3 +1197,186 @@ def test_windows_execution_environment_v3_schema_is_an_exact_closed_protocol_clo
     )
     assert raw.endswith(b"\n")
     assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE}",' in package_data
+
+
+def test_windows_debug_runtime_v4_schema_is_a_packaged_disjoint_four_document_union() -> None:
+    raw = _resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE)
+    v3 = _windows_debug_runtime_discovery_v3_schema()
+    v4 = _windows_debug_runtime_discovery_v4_schema()
+    references: list[str] = []
+
+    def collect_references(value: Any) -> None:
+        if type(value) is dict:
+            if "$ref" in value:
+                references.append(value["$ref"])
+            for child in value.values():
+                collect_references(child)
+        elif type(value) is list:
+            for child in value:
+                collect_references(child)
+
+    collect_references(v4)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+
+    Draft202012Validator.check_schema(v4)
+    assert raw.endswith(b"\n")
+    assert v4["$id"] == "urn:atlas:schema:r2-windows-debug-runtime-discovery:4"
+    assert v4["oneOf"] == [
+        {"$ref": "#/$defs/processTrace"},
+        {"$ref": "#/$defs/imageTrace"},
+        {"$ref": "#/$defs/lossReconciliation"},
+        {"$ref": "#/$defs/fileIdentityTrace"},
+    ]
+    assert references
+    assert all(reference.startswith("#/$defs/") for reference in references)
+    assert all(
+        v4["$defs"][name]["additionalProperties"] is False
+        for name in (
+            "processTrace",
+            "imageTrace",
+            "lossReconciliation",
+            "fileIdentityTrace",
+            "fileIdentityRow",
+            "fileIdentity",
+            "fileReadPass",
+            "fileCollectionGuards",
+        )
+    )
+    for unchanged_shape in ("processTrace", "imageTrace", "lossReconciliation"):
+        assert v4["$defs"][unchanged_shape]["required"] == v3["$defs"][
+            unchanged_shape
+        ]["required"]
+        assert set(v4["$defs"][unchanged_shape]["properties"]) == set(
+            v3["$defs"][unchanged_shape]["properties"]
+        )
+    assert f'"{_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE}",' in package_data
+
+    claim_boundary = v4["$defs"]["claimBoundary"]["const"]
+    assert "handle-addressed disk bytes are not mapped or loaded memory bytes" in claim_boundary
+    assert v4["$defs"]["lossReconciliation"]["properties"]["limitations"][
+        "const"
+    ] == list(rd._fixed_debug_v4_limitations())
+    file_trace = {
+        "schema": "atlas.windows-debug-file-identity-trace/4",
+        "capture_protocol": "WINDOWS_DEBUG_PROCESS_DISCOVERY/4",
+        "platform": {"os_name": "nt", "sys_platform": "win32"},
+        "selected_commit": "1" * 40,
+        "selected_tree": "2" * 40,
+        "claim_boundary": claim_boundary,
+        "authority": {
+            "authoritative": False,
+            "closure_decision": None,
+            "complete_exact_runtime_closure": False,
+            "approved_budget": None,
+            "qualification_effect": "NONE",
+            "promotion_eligible": False,
+            "release3_included": False,
+        },
+        "method": "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_FILE_ID_INFO_STABLE_DOUBLE_READ",
+        "semantics": "DEBUG_EVENT_IMAGE_HANDLES_TO_PERSISTENT_FILE_ID_AND_STABLE_SAME_HANDLE_ON_DISK_BYTES_ONLY",
+        "target_process_token": "process.000000000002",
+        "collection_guards": {
+            "max_file_bytes": 134217728,
+            "max_total_file_bytes": 1073741824,
+            "read_chunk_bytes": 1048576,
+            "stable_read_passes": 2,
+        },
+        "expected_debug_image_handle_count": 1,
+        "observed_non_null_handle_count": 1,
+        "stable_file_identity_count": 1,
+        "stable_disk_bytes_count": 1,
+        "unbound_debug_image_handle_count": 0,
+        "distinct_file_identity_count": 1,
+        "total_stable_disk_bytes": 1024,
+        "total_same_handle_read_bytes": 2048,
+        "persistent_file_identity_and_loaded_bytes_bound": False,
+        "mapped_or_loaded_memory_bytes_bound": False,
+        "rows": [
+            {
+                "sequence": 0,
+                "source_debug_sequence": 1,
+                "process_token": "process.000000000002",
+                "mapping_token": "mapping.000000000001",
+                "mapping_slot_token": "slot.000000000001",
+                "mapping_kind": "PROCESS_IMAGE",
+                "handle_custody": "BORROWED_NON_NULL_UNTIL_PRE_CONTINUE_CLOSE",
+                "path_disclosure": "NO_RAW_PATH_OR_FILENAME",
+                "file_identity": {
+                    "information_class": "FILE_ID_INFO",
+                    "volume_serial_number_hex": "0" * 16,
+                    "file_id_128_hex": "1" * 32,
+                },
+                "file_size_bytes": 1024,
+                "identity_and_size_stable_before_after": True,
+                "read_passes": [
+                    {
+                        "sequence": 0,
+                        "offset": 0,
+                        "raw_bytes": 1024,
+                        "digest": "sha256:" + "a" * 64,
+                    },
+                    {
+                        "sequence": 1,
+                        "offset": 0,
+                        "raw_bytes": 1024,
+                        "digest": "sha256:" + "a" * 64,
+                    },
+                ],
+                "stable_same_handle_full_file_bytes": True,
+            }
+        ],
+    }
+    Draft202012Validator(v4).validate(file_trace)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v3).validate(file_trace)
+
+    for field, hostile_value in (
+        ("persistent_file_identity_and_loaded_bytes_bound", True),
+        ("mapped_or_loaded_memory_bytes_bound", True),
+    ):
+        hostile = deepcopy(file_trace)
+        hostile[field] = hostile_value
+        with pytest.raises(ValidationError):
+            Draft202012Validator(v4).validate(hostile)
+
+    raw_path = deepcopy(file_trace)
+    raw_path["rows"][0]["raw_path"] = "C:/sensitive/provider.dll"
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v4).validate(raw_path)
+
+
+def test_windows_execution_environment_v4_schema_is_an_exact_closed_protocol_clone() -> None:
+    v3 = _windows_execution_environment_v3_schema()
+    v4 = _windows_execution_environment_v4_schema()
+    expected_v4 = deepcopy(v3)
+    expected_v4["$id"] = (
+        "urn:atlas:schema:r2-windows-execution-environment-manifest:4"
+    )
+    expected_v4["title"] = "Atlas R2.0 Windows execution-environment manifest v4"
+    expected_v4["properties"]["schema"]["const"] = (
+        "atlas.windows-execution-environment-manifest/4"
+    )
+    expected_v4["$defs"]["captureProtocol"]["const"] = (
+        "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
+    )
+
+    Draft202012Validator.check_schema(v4)
+    assert v4 == expected_v4
+    assert v4["$defs"]["claimBoundary"] == v3["$defs"]["claimBoundary"]
+
+    manifest_v1 = _windows_execution_environment_manifest()
+    manifest_v4 = deepcopy(manifest_v1)
+    manifest_v4["schema"] = "atlas.windows-execution-environment-manifest/4"
+    manifest_v4["capture_protocol"] = "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
+    Draft202012Validator(v4).validate(manifest_v4)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v3).validate(manifest_v4)
+
+    raw = _resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    assert raw.endswith(b"\n")
+    assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE}",' in package_data

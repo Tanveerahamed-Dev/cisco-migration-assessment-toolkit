@@ -365,6 +365,62 @@ def test_registry_windows_debug_v3_row_is_distinct_target_only_and_nonpromoting(
         assert v3_boundary in v3
 
 
+def test_registry_windows_debug_v4_row_binds_only_stable_on_disk_bytes_and_stays_nonpromoting():
+    lines = _registry_text().splitlines()
+    v3 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows target-endpoint reconciliation tranche" in line
+    )
+    v4 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows debug-file identity/on-disk-byte tranche" in line
+    )
+
+    assert v3 != v4
+    assert "(`/3`, incomplete only)" in v3
+    assert "(`/4`, incomplete only)" in v4
+    assert "capture_windows_debug_runtime_closure_v4_incomplete" in v4
+    assert "validate_windows_debug_runtime_discovery_v4_trace" in v4
+    assert "validate_windows_debug_execution_environment_v4_manifest" in v4
+
+    v4_assets = (
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json",
+    )
+    for relative in v4_assets:
+        assert (ROOT / relative).is_file(), f"R2.0 /4 SSOT asset is missing: {relative}"
+        basename = relative.rsplit("/", 1)[-1]
+        assert basename in v4
+        assert basename not in v3
+
+    for v4_boundary in (
+        "sealed 13-artifact `/4` envelope",
+        "borrowed debug-event image-handle trace",
+        "fixed capture fails closed unless every received CREATE_PROCESS or LOAD_DLL image row supplies a non-null debug-event `hFile`",
+        "joins one-to-one by source debug sequence and mapping tokens",
+        "borrows but never closes, retains, or transfers that handle",
+        "`FILE_ID_INFO`",
+        "exactly two equal SHA-256 whole-file reads from offset zero through that same handle",
+        "Raw paths and filenames are not disclosed",
+        "File identifiers are machine-local and can be reused over time",
+        "protective guards only, never approved budgets",
+        "stable handle-addressed **on-disk** bytes only",
+        "does not prove mapped or loaded memory bytes",
+        "Debug-event image handles can be null outside this fail-closed fixed capture",
+        "persistent_file_identity_and_loaded_bytes_bound=false",
+        "mapped_or_loaded_memory_bytes_bound=false",
+        "event_stream_contiguous=false",
+        "start_end_snapshot_reconciled=false",
+        "Only `process_tree_captured_before_first_instruction_through_final_descendant` and `execution_environment_argv_cwd_and_inputs_bound` may be true",
+        "Runtime inventory `/1` remains `PARTIAL_NONPORTABLE_PROTOTYPE`",
+        "`/2` and `/3` remain unchanged",
+        "No budget, authority, signature, qualification, promotion, R2.1+, or Release 3 effect",
+    ):
+        assert v4_boundary in v4
+
+
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():
     """The snapshot blocks the registry names as owners must be assigned by the engine source.
     Source-level guard (the blocks don't exist on every historical snapshot; the CONTRACT is the

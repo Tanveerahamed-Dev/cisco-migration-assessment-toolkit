@@ -434,6 +434,27 @@ def test_invalid_event_record_never_reaches_before_continue_observer(
     assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
 
 
+def test_invalid_event_record_never_reaches_event_file_observer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, base=0, file_handle=0xABC)],
+    )
+    observed: list[tuple[debug.DebugEventRecord, int]] = []
+
+    def observe_file(record: debug.DebugEventRecord, handle: int) -> None:
+        observed.append((record, handle))
+
+    with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_IMAGE_BASE_INVALID$"):
+        session.pump(0, before_event_file_close=observe_file)
+
+    assert observed == []
+    assert session.record_count == 0
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
 def test_before_continue_observer_receives_only_a_detached_suspended_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -457,6 +478,131 @@ def test_before_continue_observer_receives_only_a_detached_suspended_record(
     assert session.record_count == 1
     assert kernel32.closed_handles == [0xABC]
     assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_event_file_observer_borrows_open_handle_before_close_and_continue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    observed: list[tuple[debug.DebugEventRecord, int]] = []
+    before_continue_records: list[debug.DebugEventRecord] = []
+
+    def observe_file(record: debug.DebugEventRecord, handle: int) -> None:
+        assert session.record_count == 0
+        assert kernel32.closed_handles == []
+        assert kernel32.continues == []
+        with pytest.raises(FrozenInstanceError):
+            record.sequence = 7  # type: ignore[misc]
+        observed.append((record, handle))
+
+    def observe_before_continue(record: debug.DebugEventRecord) -> None:
+        assert kernel32.closed_handles == [0xABC]
+        assert kernel32.continues == []
+        before_continue_records.append(record)
+
+    assert session.pump(
+        0,
+        before_continue=observe_before_continue,
+        before_event_file_close=observe_file,
+    ) is True
+    assert len(observed) == 1
+    assert observed[0][0].event == "CREATE_PROCESS"
+    assert observed[0][1] == 0xABC
+    assert before_continue_records == [observed[0][0]]
+    assert session.record_count == 1
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_event_file_observer_receives_create_process_and_load_dll_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [
+            _event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xAAA),
+            _event(debug._EXCEPTION_DEBUG_EVENT),
+            _event(debug._LOAD_DLL_DEBUG_EVENT, file_handle=0xBBB, base=0x2000),
+        ],
+    )
+    observed: list[tuple[str, int]] = []
+
+    def observe_file(record: debug.DebugEventRecord, handle: int) -> None:
+        observed.append((record.event, handle))
+
+    while kernel32.events:
+        assert session.pump(0, before_event_file_close=observe_file) is True
+
+    assert observed == [("CREATE_PROCESS", 0xAAA), ("LOAD_DLL", 0xBBB)]
+    assert kernel32.closed_handles == [0xAAA, 0xBBB]
+    assert len(kernel32.continues) == 3
+
+
+def test_event_file_observer_is_not_called_without_a_nonzero_event_file_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT)],
+    )
+    observed: list[tuple[debug.DebugEventRecord, int]] = []
+
+    def observe_file(record: debug.DebugEventRecord, handle: int) -> None:
+        observed.append((record, handle))
+
+    assert session.pump(0, before_event_file_close=observe_file) is True
+    assert observed == []
+    assert kernel32.closed_handles == []
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_event_file_observer_failure_closes_continues_once_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    before_continue_records: list[debug.DebugEventRecord] = []
+
+    def fail(_record: debug.DebugEventRecord, _handle: int) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_FILE_OBSERVER_FAILED$",
+    ):
+        session.pump(
+            0,
+            before_continue=before_continue_records.append,
+            before_event_file_close=fail,
+        )
+    assert len(before_continue_records) == 1
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+    assert session.record_count == 1
+    with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_CAPTURE_INCOMPLETE$"):
+        session.snapshot()
+
+
+def test_event_file_observer_is_validated_before_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_FILE_OBSERVER_INVALID$",
+    ):
+        session.pump(0, before_event_file_close=object())  # type: ignore[arg-type]
+    assert len(kernel32.events) == 1
+    assert kernel32.closed_handles == []
+    assert kernel32.continues == []
 
 
 def test_before_continue_observer_failure_closes_continues_once_and_fails_closed(
@@ -567,6 +713,52 @@ def test_event_handle_close_failure_precedes_observer_failure(
     assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
     with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_CAPTURE_INCOMPLETE$"):
         session.snapshot()
+
+
+def test_event_handle_close_failure_precedes_event_file_observer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+        close_result=False,
+    )
+
+    def fail(_record: debug.DebugEventRecord, _handle: int) -> None:
+        raise RuntimeError("must not escape")
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_HANDLE_CLOSE_FAILED$",
+    ):
+        session.pump(0, before_event_file_close=fail)
+
+    assert session.record_count == 1
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_continue_failure_precedes_event_file_observer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+        continue_result=False,
+    )
+
+    def fail(_record: debug.DebugEventRecord, _handle: int) -> None:
+        raise RuntimeError("must not escape")
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_CONTINUE_FAILED$",
+    ):
+        session.pump(0, before_event_file_close=fail)
+
+    assert session.record_count == 0
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
 
 
 def test_intrinsic_fatal_event_precedes_observer_failure(
@@ -1117,6 +1309,502 @@ def _tokenized_v3_traces(
         "limitations": list(discovery._fixed_debug_v3_limitations()),
     }
     return process_trace, image_trace, loss_trace
+
+
+def _raw_v4_file_observations(
+    capture: debug.DebugEventCapture,
+) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for record in capture.records:
+        if record.event not in {"CREATE_PROCESS", "LOAD_DLL"}:
+            continue
+        digest = contract.bytes_digest(
+            f"debug-event-file:{record.sequence}".encode("ascii")
+        )
+        observations.append({
+            "source_debug_sequence": record.sequence,
+            "process_id": record.process_id,
+            "mapping_base": record.mapping_base,
+            "mapping_kind": record.mapping_kind,
+            "volume_serial_number_hex": "0000000000000001",
+            "file_id_128_hex": f"{record.sequence + 1:032x}",
+            "file_size_bytes": record.sequence + 1,
+            "read_digests": (digest, digest),
+        })
+    return observations
+
+
+def _refresh_v4_file_identity_totals(trace: dict[str, Any]) -> None:
+    rows = trace["rows"]
+    total_bytes = sum(row["file_size_bytes"] for row in rows)
+    trace.update({
+        "expected_debug_image_handle_count": len(rows),
+        "observed_non_null_handle_count": len(rows),
+        "stable_file_identity_count": len(rows),
+        "stable_disk_bytes_count": len(rows),
+        "unbound_debug_image_handle_count": 0,
+        "distinct_file_identity_count": len({
+            (
+                row["file_identity"]["volume_serial_number_hex"],
+                row["file_identity"]["file_id_128_hex"],
+            )
+            for row in rows
+        }),
+        "total_stable_disk_bytes": total_bytes,
+        "total_same_handle_read_bytes": (
+            total_bytes * discovery._DEBUG_FILE_STABLE_READ_PASSES
+        ),
+    })
+
+
+def _tokenized_v4_traces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    process_trace, image_trace, loss_trace = _tokenized_v3_traces(monkeypatch)
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    process_tokens = {
+        _ROOT_PID: "process.000000000001",
+        _CHILD_PID: "process.000000000002",
+    }
+    file_rows = discovery._seal_debug_file_identity_rows(
+        capture,
+        process_tokens,
+        _raw_v4_file_observations(capture),
+    )
+    schema_updates = (
+        (process_trace, discovery._fixed_debug_v4_process_trace_schema()),
+        (image_trace, discovery._fixed_debug_v4_image_trace_schema()),
+        (loss_trace, discovery._fixed_debug_v4_loss_trace_schema()),
+    )
+    for document, schema in schema_updates:
+        document.update({
+            "schema": schema,
+            "capture_protocol": discovery._fixed_debug_v4_capture_protocol(),
+            "claim_boundary": discovery._fixed_debug_v4_claim_boundary(),
+        })
+    image_trace["method"] = (
+        "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+        "STABLE_DOUBLE_READ/4"
+    )
+    loss_trace["limitations"] = list(discovery._fixed_debug_v4_limitations())
+    file_identity_trace = {
+        "schema": discovery._fixed_debug_v4_file_identity_trace_schema(),
+        "capture_protocol": discovery._fixed_debug_v4_capture_protocol(),
+        "platform": discovery._fixed_platform(),
+        "selected_commit": _COMMIT,
+        "selected_tree": _TREE,
+        "claim_boundary": discovery._fixed_debug_v4_claim_boundary(),
+        "authority": discovery._fixed_authority(),
+        "method": (
+            "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_FILE_ID_INFO_STABLE_DOUBLE_READ"
+        ),
+        "semantics": (
+            "DEBUG_EVENT_IMAGE_HANDLES_TO_PERSISTENT_FILE_ID_AND_STABLE_"
+            "SAME_HANDLE_ON_DISK_BYTES_ONLY"
+        ),
+        "target_process_token": process_trace["target_process_token"],
+        "collection_guards": {
+            "max_file_bytes": discovery._MAX_DEBUG_FILE_BYTES,
+            "max_total_file_bytes": discovery._MAX_DEBUG_TOTAL_FILE_BYTES,
+            "read_chunk_bytes": discovery._DEBUG_FILE_READ_CHUNK_BYTES,
+            "stable_read_passes": discovery._DEBUG_FILE_STABLE_READ_PASSES,
+        },
+        "expected_debug_image_handle_count": 0,
+        "observed_non_null_handle_count": 0,
+        "stable_file_identity_count": 0,
+        "stable_disk_bytes_count": 0,
+        "unbound_debug_image_handle_count": 0,
+        "distinct_file_identity_count": 0,
+        "total_stable_disk_bytes": 0,
+        "total_same_handle_read_bytes": 0,
+        "persistent_file_identity_and_loaded_bytes_bound": False,
+        "mapped_or_loaded_memory_bytes_bound": False,
+        "rows": file_rows,
+    }
+    _refresh_v4_file_identity_totals(file_identity_trace)
+    return process_trace, image_trace, file_identity_trace, loss_trace
+
+
+def test_v4_file_identity_trace_is_exact_closed_and_non_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, image_trace, file_trace, loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    schema = json.loads(
+        (
+            ROOT
+            / "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    schema_validator = Draft202012Validator(schema)
+
+    for document in (process_trace, image_trace, file_trace, loss_trace):
+        schema_validator.validate(document)
+        checked = discovery.validate_windows_debug_runtime_discovery_v4_trace(document)
+        assert checked == document
+        assert checked is not document
+        assert document["authority"] == discovery._fixed_authority()
+        assert all(
+            document["authority"][field] is False
+            for field in (
+                "authoritative",
+                "complete_exact_runtime_closure",
+                "promotion_eligible",
+                "release3_included",
+            )
+        )
+
+    assert file_trace["persistent_file_identity_and_loaded_bytes_bound"] is False
+    assert file_trace["mapped_or_loaded_memory_bytes_bound"] is False
+    assert image_trace["history_complete"] is False
+    assert loss_trace["event_stream_contiguous"] is False
+    assert loss_trace["start_end_snapshot_reconciled"] is False
+    assert loss_trace["os_event_sequence_available"] is False
+    assert loss_trace["os_loss_counter_available"] is False
+    assert discovery._validate_debug_v4_file_image_projection(
+        process_trace, image_trace, file_trace
+    ) is None
+
+    extra = deepcopy(file_trace)
+    extra["loaded_memory_digest"] = contract.bytes_digest(b"forbidden claim")
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_TRACE_SHAPE_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(extra)
+
+    for field in (
+        "persistent_file_identity_and_loaded_bytes_bound",
+        "mapped_or_loaded_memory_bytes_bound",
+    ):
+        inflated = deepcopy(file_trace)
+        inflated[field] = True
+        with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_TRACE_INVALID$",
+        ):
+            discovery.validate_windows_debug_runtime_discovery_v4_trace(inflated)
+
+    authority_injected = deepcopy(file_trace)
+    authority_injected["authority"]["authoritative"] = True
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_RUNTIME_TRACE_COMMON_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(
+            authority_injected
+        )
+
+
+@pytest.mark.parametrize("mutation", ["coordinated_omission", "token_substitution"])
+def test_v4_file_identity_join_is_exactly_one_to_one_with_load_image_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    process_trace, image_trace, file_trace, _loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    forged = deepcopy(file_trace)
+    if mutation == "coordinated_omission":
+        forged["rows"].pop()
+        _refresh_v4_file_identity_totals(forged)
+    else:
+        forged["rows"][0]["mapping_token"] = "mapping.forged"
+
+    # Each forgery is internally closed as a standalone file trace.  Only the exact
+    # cross-document LOAD_IMAGE projection is able to detect the substitution/omission.
+    assert discovery.validate_windows_debug_runtime_discovery_v4_trace(forged) == forged
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED$",
+    ):
+        discovery._validate_debug_v4_file_image_projection(
+            process_trace, image_trace, forged
+        )
+
+
+def test_v4_file_identity_join_requires_non_null_handle_facts_in_both_projections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, image_trace, file_trace, _loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    forged_process = deepcopy(process_trace)
+    forged_image = deepcopy(image_trace)
+    for row in forged_process["events"]:
+        if row["event"] in {"CREATE_PROCESS", "LOAD_DLL"}:
+            row["file_handle_present"] = False
+    for row in forged_image["events"]:
+        if row["event"] == "LOAD_IMAGE":
+            row["file_handle_present"] = False
+    forged_image["debug_event_stream_digest"] = contract.canonical_digest(
+        forged_process["events"]
+    )
+
+    assert discovery.validate_windows_debug_runtime_discovery_v4_trace(
+        forged_process
+    ) == forged_process
+    assert discovery.validate_windows_debug_runtime_discovery_v4_trace(
+        forged_image
+    ) == forged_image
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED$",
+    ):
+        discovery._validate_debug_v4_file_image_projection(
+            forged_process, forged_image, file_trace
+        )
+
+
+@pytest.mark.parametrize(
+    ("trace_index", "field", "hostile_value", "error_code"),
+    [
+        (1, "method", None, "WINDOWS_DEBUG_V4_IMAGE_TRACE_INVALID"),
+        (1, "method", [], "WINDOWS_DEBUG_V4_IMAGE_TRACE_INVALID"),
+        (3, "limitations", None, "WINDOWS_DEBUG_V4_LOSS_TRACE_INVALID"),
+        (3, "limitations", ["ARBITRARY"], "WINDOWS_DEBUG_V4_LOSS_TRACE_INVALID"),
+    ],
+)
+def test_v4_specific_fields_are_checked_before_v3_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    trace_index: int,
+    field: str,
+    hostile_value: Any,
+    error_code: str,
+) -> None:
+    traces = _tokenized_v4_traces(monkeypatch)
+    forged = deepcopy(traces[trace_index])
+    forged[field] = hostile_value
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$"):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(forged)
+
+
+def test_v4_borrowed_file_reader_requires_two_equal_same_handle_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    record = next(row for row in capture.records if row.event == "CREATE_PROCESS")
+    first = contract.bytes_digest(b"first read")
+    second = contract.bytes_digest(b"second read")
+
+    class FixtureReader(discovery._BorrowedDebugEventFileReader):
+        __slots__ = ("_fixture_digests",)
+
+        def __init__(self, digests: tuple[str, str]) -> None:
+            self._kernel32 = None
+            self._total_file_bytes = 0
+            self._fixture_digests = iter(digests)
+
+        def _identity_and_size(self, _handle: Any) -> tuple[str, str, int]:
+            return "0000000000000001", "00000000000000000000000000000002", 7
+
+        def _whole_file_digest(self, _handle: Any, expected_size: int) -> str:
+            assert expected_size == 7
+            return next(self._fixture_digests)
+
+    stable = FixtureReader((first, first)).observe(record, 101)
+    assert stable["read_digests"] == (first, first)
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_FILE_READ_UNSTABLE$",
+    ):
+        FixtureReader((first, second)).observe(record, 101)
+
+
+def test_v4_sealer_refuses_missing_null_and_unequal_file_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    process_tokens = {
+        _ROOT_PID: "process.000000000001",
+        _CHILD_PID: "process.000000000002",
+    }
+    observations = _raw_v4_file_observations(capture)
+
+    missing = deepcopy(observations)
+    missing.pop()
+    null = deepcopy(observations)
+    null[0] = None  # type: ignore[assignment]
+    for refused in (missing, null):
+        with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_DEBUG_V4_FILE_HANDLE_COVERAGE_INCOMPLETE$",
+        ):
+            discovery._seal_debug_file_identity_rows(
+                capture, process_tokens, refused
+            )
+
+    unstable = deepcopy(observations)
+    unstable[0]["read_digests"] = (
+        unstable[0]["read_digests"][0],
+        contract.bytes_digest(b"changed second read"),
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_TOKENIZATION_INVALID$",
+    ):
+        discovery._seal_debug_file_identity_rows(capture, process_tokens, unstable)
+
+
+@pytest.mark.parametrize(
+    ("location", "field", "error_code"),
+    [
+        ("row", "sequence", "WINDOWS_DEBUG_V4_FILE_IDENTITY_ROWS_INVALID"),
+        (
+            "row",
+            "source_debug_sequence",
+            "WINDOWS_DEBUG_V4_FILE_IDENTITY_ROWS_INVALID",
+        ),
+        ("row", "file_size_bytes", "WINDOWS_DEBUG_V4_FILE_IDENTITY_ROWS_INVALID"),
+        (
+            "aggregate",
+            "unbound_debug_image_handle_count",
+            "WINDOWS_DEBUG_V4_FILE_IDENTITY_RECONCILIATION_INVALID",
+        ),
+    ],
+)
+def test_v4_file_identity_validator_rejects_boolean_integer_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    field: str,
+    error_code: str,
+) -> None:
+    _process_trace, _image_trace, file_trace, _loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    forged = deepcopy(file_trace)
+    target = forged["rows"][0] if location == "row" else forged
+    target[field] = False
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$"):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(forged)
+
+
+@pytest.mark.parametrize(
+    ("read_index", "field", "hostile_value"),
+    [
+        (0, "sequence", False),
+        (1, "sequence", True),
+        (0, "offset", False),
+    ],
+)
+def test_v4_file_identity_validator_rejects_boolean_read_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+    read_index: int,
+    field: str,
+    hostile_value: bool,
+) -> None:
+    _process_trace, _image_trace, file_trace, _loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    forged = deepcopy(file_trace)
+    forged["rows"][0]["read_passes"][read_index][field] = hostile_value
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_READS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(forged)
+
+
+def test_v4_file_identity_validator_rejects_boolean_read_size_equal_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _process_trace, _image_trace, file_trace, _loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    forged = deepcopy(file_trace)
+    row = forged["rows"][0]
+    row["file_size_bytes"] = 1
+    for read in row["read_passes"]:
+        read["raw_bytes"] = 1
+    _refresh_v4_file_identity_totals(forged)
+    row["read_passes"][0]["raw_bytes"] = True
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_READS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(forged)
+
+
+def test_v4_sealer_rejects_boolean_debug_sequence_even_when_equal_to_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    observations = _raw_v4_file_observations(capture)
+    assert observations[0]["source_debug_sequence"] == 0
+    observations[0]["source_debug_sequence"] = False
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_TOKENIZATION_INVALID$",
+    ):
+        discovery._seal_debug_file_identity_rows(
+            capture,
+            {
+                _ROOT_PID: "process.000000000001",
+                _CHILD_PID: "process.000000000002",
+            },
+            observations,
+        )
+
+
+def test_v4_sealer_stabilizes_an_unhashable_read_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    observations = _raw_v4_file_observations(capture)
+    observations[0]["read_digests"] = (
+        observations[0]["read_digests"][0],
+        [],
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_TOKENIZATION_INVALID$",
+    ):
+        discovery._seal_debug_file_identity_rows(
+            capture,
+            {
+                _ROOT_PID: "process.000000000001",
+                _CHILD_PID: "process.000000000002",
+            },
+            observations,
+        )
+
+
+def test_v4_validator_stabilizes_an_unhashable_mapping_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _process_trace, _image_trace, file_trace, _loss_trace = _tokenized_v4_traces(
+        monkeypatch
+    )
+    file_trace["rows"][0]["mapping_kind"] = []
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IDENTITY_ROWS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v4_trace(file_trace)
+
+
+def test_v4_projects_to_v3_without_mutating_v2_or_v3_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v2_documents = _tokenized_traces(monkeypatch)
+    v3_documents = _tokenized_v3_traces(monkeypatch)
+    v3_raw_before = tuple(contract.canonical_json_bytes(row) for row in v3_documents)
+    process_v4, image_v4, _file_v4, loss_v4 = _tokenized_v4_traces(monkeypatch)
+
+    for document in v2_documents:
+        assert document["capture_protocol"] == discovery._fixed_debug_capture_protocol()
+        assert discovery.validate_windows_debug_runtime_discovery_trace(document) == document
+    for document in v3_documents:
+        assert document["capture_protocol"] == discovery._fixed_debug_v3_capture_protocol()
+        assert discovery.validate_windows_debug_runtime_discovery_v3_trace(document) == document
+    assert tuple(contract.canonical_json_bytes(row) for row in v3_documents) == v3_raw_before
+    assert discovery._project_debug_v4_trace_to_v3(process_v4) == v3_documents[0]
+    assert discovery._project_debug_v4_trace_to_v3(image_v4) == v3_documents[1]
+    assert discovery._project_debug_v4_trace_to_v3(loss_v4) == v3_documents[2]
+    for document in (process_v4, image_v4, loss_v4):
+        with pytest.raises(discovery.RuntimeDiscoveryError):
+            discovery.validate_windows_debug_runtime_discovery_v3_trace(document)
 
 
 def test_v3_target_checkpoint_reconciliation_is_narrow_and_closed(

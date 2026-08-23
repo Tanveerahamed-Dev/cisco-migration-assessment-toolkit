@@ -569,8 +569,14 @@ class WindowsDebugEventSession:
         timeout_milliseconds: int,
         *,
         before_continue: Callable[[DebugEventRecord], None] | None = None,
+        before_event_file_close: Callable[[DebugEventRecord, int], None] | None = None,
     ) -> bool:
         """Wait for and continue at most one event; return false only for a real timeout.
+
+        ``before_event_file_close`` receives a detached primitive record and the borrowed raw
+        event ``hFile`` while the debuggee remains suspended.  Ownership is not transferred: the
+        callback must not close or retain the handle, and the engine closes it immediately after
+        the callback returns.
 
         ``before_continue`` is a private observation seam.  It receives only the detached
         primitive record while the debuggee remains suspended.  Any observer failure is converted
@@ -588,6 +594,8 @@ class WindowsDebugEventSession:
             _fail("WINDOWS_DEBUG_WAIT_TIMEOUT_INVALID")
         if before_continue is not None and not callable(before_continue):
             _fail("WINDOWS_DEBUG_EVENT_OBSERVER_INVALID")
+        if before_event_file_close is not None and not callable(before_event_file_close):
+            _fail("WINDOWS_DEBUG_EVENT_FILE_OBSERVER_INVALID")
         event = _DebugEvent()
         ctypes.set_last_error(0)
         if not self._kernel32.WaitForDebugEventEx(
@@ -611,6 +619,7 @@ class WindowsDebugEventSession:
         )
         fatal_after_continue: str | None = None
         record_error: str | None = None
+        event_file_observer_error = False
         observer_error = False
         close_ok = True
         try:
@@ -626,6 +635,18 @@ class WindowsDebugEventSession:
                 if code == _EXCEPTION_DEBUG_EVENT
                 else _DBG_CONTINUE
             )
+        if (
+            copied is not None
+            and event_file_handle
+            and before_event_file_close is not None
+        ):
+            try:
+                self._observer_active = True
+                before_event_file_close(copied, event_file_handle)
+            except BaseException:
+                event_file_observer_error = True
+            finally:
+                self._observer_active = False
         if event_file_handle:
             close_ok = self._close_event_file(event_file_handle)
         if copied is not None and before_continue is not None:
@@ -656,6 +677,9 @@ class WindowsDebugEventSession:
         if fatal_after_continue is not None:
             self._fatal_error = fatal_after_continue
             _fail(fatal_after_continue)
+        if event_file_observer_error:
+            self._fatal_error = "WINDOWS_DEBUG_EVENT_FILE_OBSERVER_FAILED"
+            _fail("WINDOWS_DEBUG_EVENT_FILE_OBSERVER_FAILED")
         if observer_error:
             self._fatal_error = "WINDOWS_DEBUG_EVENT_OBSERVER_FAILED"
             _fail("WINDOWS_DEBUG_EVENT_OBSERVER_FAILED")

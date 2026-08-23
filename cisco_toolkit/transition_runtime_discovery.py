@@ -22,6 +22,14 @@ stable mapping-slot tokens.  These endpoint equalities cannot detect an omitted 
 load/unload pair, and the ledger ordinals are collector-local rather than operating-system sequence
 or loss evidence.  `/3` therefore remains incomplete and does not alter `/2` semantics or output.
 
+The separately versioned `/4` producer also borrows each non-null CREATE_PROCESS/LOAD_DLL ``hFile``
+while its debug event remains suspended.  It records Windows ``FILE_ID_INFO`` and two equal bounded
+whole-file digests read through that same handle, then lets the event engine close it before
+continuation.  The fixed capture fails closed if any received image-load event lacks that evidence.
+This binds persistent machine-local on-disk file identity for the observed debug image events only;
+it does not bind relocated, copy-on-write, or subsequently modified mapped-memory bytes, and it does
+not alter `/2` or `/3` semantics or output.  `/4` therefore also remains incomplete.
+
 The fixed target also reports a digest-only observation of its exact argv, working directory,
 environment, selected Python executable path and separately read file bytes, reported interpreter
 metadata, and seven listed input byte strings.  The parent derives the expected launch independently
@@ -118,6 +126,16 @@ WINDOWS_DEBUG_RECONCILED_LOSS_RECONCILIATION_SCHEMA = (
 WINDOWS_DEBUG_RECONCILED_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
     "atlas.windows-execution-environment-manifest/3"
 )
+WINDOWS_DEBUG_FILE_IDENTITY_CAPTURE_PROTOCOL = "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
+WINDOWS_DEBUG_FILE_IDENTITY_PROCESS_TRACE_SCHEMA = "atlas.windows-debug-process-trace/4"
+WINDOWS_DEBUG_FILE_IDENTITY_IMAGE_TRACE_SCHEMA = "atlas.windows-debug-image-trace/4"
+WINDOWS_DEBUG_FILE_IDENTITY_TRACE_SCHEMA = "atlas.windows-debug-file-identity-trace/4"
+WINDOWS_DEBUG_FILE_IDENTITY_LOSS_RECONCILIATION_SCHEMA = (
+    "atlas.windows-debug-loss-reconciliation/4"
+)
+WINDOWS_DEBUG_FILE_IDENTITY_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
+    "atlas.windows-execution-environment-manifest/4"
+)
 WINDOWS_RUNTIME_DISCOVERY_CLAIM_BOUNDARY = (
     "Windows Job Object process messages and K32 polling checkpoints for one R2.0 prototype "
     "execution only; incomplete and non-authoritative, with no exact runtime-closure, budget, "
@@ -146,6 +164,16 @@ WINDOWS_DEBUG_RUNTIME_RECONCILIATION_CLAIM_BOUNDARY = (
     "system event sequences or losslessness, complete mapping history, mapped-byte identity, "
     "manual or anonymous executable mapping absence, exact runtime closure, budget, qualification, "
     "promotion, or Release 3 authority."
+)
+WINDOWS_DEBUG_FILE_IDENTITY_CLAIM_BOUNDARY = (
+    "Windows DEBUG_PROCESS process and image events plus stable target-only K32 START/END "
+    "checkpoints and borrowed debug-event file-handle identity/stable on-disk byte reads "
+    "cross-checked for one R2.0 prototype execution only; handle-addressed disk bytes are not "
+    "mapped or loaded memory bytes, and target checkpoint slot reconciliation uses collector-"
+    "local append ordinals that cannot detect omitted balanced load/unload pairs, so this does "
+    "not establish operating-system event sequences or losslessness, complete mapping history, "
+    "manual or anonymous executable mapping absence, exact runtime closure, budget, "
+    "qualification, promotion, or Release 3 authority."
 )
 
 
@@ -249,6 +277,43 @@ def _fixed_debug_v3_claim_boundary() -> str:
         "qualification, promotion, or Release 3 authority."
     )
 
+
+def _fixed_debug_v4_capture_protocol() -> str:
+    return "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
+
+
+def _fixed_debug_v4_process_trace_schema() -> str:
+    return "atlas.windows-debug-process-trace/4"
+
+
+def _fixed_debug_v4_image_trace_schema() -> str:
+    return "atlas.windows-debug-image-trace/4"
+
+
+def _fixed_debug_v4_file_identity_trace_schema() -> str:
+    return "atlas.windows-debug-file-identity-trace/4"
+
+
+def _fixed_debug_v4_loss_trace_schema() -> str:
+    return "atlas.windows-debug-loss-reconciliation/4"
+
+
+def _fixed_debug_v4_environment_manifest_schema() -> str:
+    return "atlas.windows-execution-environment-manifest/4"
+
+
+def _fixed_debug_v4_claim_boundary() -> str:
+    return (
+        "Windows DEBUG_PROCESS process and image events plus stable target-only K32 START/END "
+        "checkpoints and borrowed debug-event file-handle identity/stable on-disk byte reads "
+        "cross-checked for one R2.0 prototype execution only; handle-addressed disk bytes are not "
+        "mapped or loaded memory bytes, and target checkpoint slot reconciliation uses collector-"
+        "local append ordinals that cannot detect omitted balanced load/unload pairs, so this does "
+        "not establish operating-system event sequences or losslessness, complete mapping history, "
+        "manual or anonymous executable mapping absence, exact runtime closure, budget, "
+        "qualification, promotion, or Release 3 authority."
+    )
+
 # Protective collection guards only.  They are not approved R2 budgets or qualification limits.
 _MAX_RUNTIME_SECONDS = 30
 _MAX_PROCESS_EVENTS = 4096
@@ -265,8 +330,14 @@ _DEBUG_HELPER_PROTOCOL = "ATLAS_WINDOWS_DEBUG_CAPTURE_HELPER/1"
 _DEBUG_HELPER_GO = b"ATLAS_WINDOWS_DEBUG_CAPTURE_GO/1"
 _DEBUG_CAPTURE_LANE_V2 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/2"
 _DEBUG_CAPTURE_LANE_V3 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/3"
+_DEBUG_CAPTURE_LANE_V4 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
 _DEBUG_HELPER_OUTER_SECONDS = _MAX_RUNTIME_SECONDS + 15
 _DEBUG_HELPER_CLEANUP_SECONDS = 5
+# Protective collection ceilings only.  They are not reviewed R2 budgets or qualification inputs.
+_MAX_DEBUG_FILE_BYTES = 128 * 1024 * 1024
+_MAX_DEBUG_TOTAL_FILE_BYTES = 1024 * 1024 * 1024
+_DEBUG_FILE_READ_CHUNK_BYTES = 1024 * 1024
+_DEBUG_FILE_STABLE_READ_PASSES = 2
 
 # Exact digests for the single fixed R2.0 synthetic execution lane.  These are content bindings,
 # not qualification inputs or approved budgets.  Pinning the complete receipt prevents a helper
@@ -421,6 +492,34 @@ _DEBUG_V3_ENVIRONMENT_ARTIFACT = (
     "execution_environment_manifest_digest",
     "atlas.windows-execution-environment-manifest/3",
 )
+_DEBUG_V4_DYNAMIC_ARTIFACTS = (
+    (
+        "windows-debug-process-trace.atlas-r2.v4",
+        "PROCESS_TREE_LIFETIME_TRACE",
+        "atlas.windows-debug-process-trace/4",
+    ),
+    (
+        "windows-debug-image-trace.atlas-r2.v4",
+        "EXECUTABLE_MAPPING_LOAD_UNLOAD_TRACE",
+        "atlas.windows-debug-image-trace/4",
+    ),
+    (
+        "windows-debug-file-identity-trace.atlas-r2.v4",
+        "FILE_IDENTITY_AND_HANDLE_TRACE",
+        "atlas.windows-debug-file-identity-trace/4",
+    ),
+    (
+        "windows-debug-loss-reconciliation.atlas-r2.v4",
+        "COLLECTOR_LOSS_AND_RECONCILIATION",
+        "atlas.windows-debug-loss-reconciliation/4",
+    ),
+)
+_DEBUG_V4_ENVIRONMENT_ARTIFACT = (
+    "windows-execution-environment-manifest.atlas-r2.v4",
+    "EXECUTION_ENVIRONMENT_MANIFEST",
+    "execution_environment_manifest_digest",
+    "atlas.windows-execution-environment-manifest/4",
+)
 
 _AUTHORITY = {
     "authoritative": False,
@@ -514,6 +613,25 @@ def _fixed_debug_v3_limitations() -> tuple[str, ...]:
         "COLLECTOR_SEQUENCE_IS_NOT_AN_OPERATING_SYSTEM_LOSS_COUNTER",
         "DEBUG_IMAGE_EVENTS_DO_NOT_PROVE_MANUAL_OR_ANONYMOUS_MAPPING_ABSENCE",
         "DEBUG_IMAGE_FILE_HANDLES_DO_NOT_PROVE_MAPPED_OR_LOADED_BYTES",
+        "TARGET_START_END_K32_CHECKPOINTS_DO_NOT_PROVE_COMPLETE_MAPPING_HISTORY",
+        "TARGET_ENDPOINT_EQUALITY_CANNOT_DETECT_OMITTED_BALANCED_LOAD_UNLOAD_PAIRS",
+        "TARGET_ONLY_ENDPOINT_RECONCILIATION_IS_NOT_GLOBAL_START_END_RECONCILIATION",
+        "END_CHECKPOINT_DOES_NOT_PROVE_A_SPECIFIC_TARGET_THREAD_WAIT_STATE",
+        "POST_END_TARGET_TEARDOWN_ACTIVITY_IS_OUTSIDE_ENDPOINT_RECONCILIATION",
+        "K32_ENUMERATION_CAN_RACE_WITH_LOADER_CHANGES_OR_OMIT_LOAD_LIBRARY_AS_DATAFILE_MAPPINGS",
+        "NO_STATIC_TRANSITIVE_LOADER_OR_CRYPTO_PROVIDER_CLOSURE",
+        "NO_PLATFORM_BOOT_ATTESTATION_OR_EXECUTABLE_ALLOW_SET",
+    )
+
+
+def _fixed_debug_v4_limitations() -> tuple[str, ...]:
+    return (
+        "DEBUG_PROCESS_AND_JOB_OBJECT_ARE_NOT_A_SANDBOX_OR_EXECUTION_POLICY",
+        "COLLECTOR_SEQUENCE_IS_NOT_AN_OPERATING_SYSTEM_LOSS_COUNTER",
+        "DEBUG_IMAGE_EVENTS_DO_NOT_PROVE_MANUAL_OR_ANONYMOUS_MAPPING_ABSENCE",
+        "DEBUG_EVENT_FILE_HANDLE_BYTES_ARE_ON_DISK_NOT_MAPPED_OR_LOADED_MEMORY_BYTES",
+        "DEBUG_EVENT_FILE_HANDLES_CAN_BE_NULL_OUTSIDE_THIS_FAIL_CLOSED_FIXED_CAPTURE",
+        "FILE_IDENTIFIERS_ARE_MACHINE_LOCAL_AND_CAN_BE_REUSED_OVER_TIME",
         "TARGET_START_END_K32_CHECKPOINTS_DO_NOT_PROVE_COMPLETE_MAPPING_HISTORY",
         "TARGET_ENDPOINT_EQUALITY_CANNOT_DETECT_OMITTED_BALANCED_LOAD_UNLOAD_PAIRS",
         "TARGET_ONLY_ENDPOINT_RECONCILIATION_IS_NOT_GLOBAL_START_END_RECONCILIATION",
@@ -734,6 +852,151 @@ class _BasicAccountingInformation(ctypes.Structure):
         ("ActiveProcesses", wintypes.DWORD),
         ("TotalTerminatedProcesses", wintypes.DWORD),
     ]
+
+
+class _FileId128(ctypes.Structure):
+    _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+
+class _FileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", _FileId128),
+    ]
+
+
+class _BorrowedDebugEventFileReader:
+    """Read stable on-disk bytes through event-owned hFile handles before they close."""
+
+    __slots__ = ("_kernel32", "_total_file_bytes")
+
+    def __init__(self) -> None:
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetFileInformationByHandleEx.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+            kernel32.GetFileSizeEx.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ctypes.c_longlong),
+            ]
+            kernel32.GetFileSizeEx.restype = wintypes.BOOL
+            kernel32.SetFilePointerEx.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_longlong,
+                ctypes.POINTER(ctypes.c_longlong),
+                wintypes.DWORD,
+            ]
+            kernel32.SetFilePointerEx.restype = wintypes.BOOL
+            kernel32.ReadFile.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+                ctypes.c_void_p,
+            ]
+            kernel32.ReadFile.restype = wintypes.BOOL
+        except (AttributeError, OSError):
+            _fail("WINDOWS_DEBUG_FILE_API_UNAVAILABLE")
+        self._kernel32 = kernel32
+        self._total_file_bytes = 0
+
+    def _identity_and_size(self, handle: wintypes.HANDLE) -> tuple[str, str, int]:
+        identity = _FileIdInfo()
+        if not self._kernel32.GetFileInformationByHandleEx(
+                handle,
+                18,  # FILE_INFO_BY_HANDLE_CLASS.FileIdInfo
+                ctypes.byref(identity),
+                ctypes.sizeof(identity)):
+            _fail("WINDOWS_DEBUG_FILE_IDENTITY_QUERY_FAILED")
+        size = ctypes.c_longlong()
+        if not self._kernel32.GetFileSizeEx(handle, ctypes.byref(size)):
+            _fail("WINDOWS_DEBUG_FILE_SIZE_QUERY_FAILED")
+        raw_size = int(size.value)
+        if not 0 < raw_size <= _MAX_DEBUG_FILE_BYTES:
+            _fail("WINDOWS_DEBUG_FILE_SIZE_INVALID")
+        return (
+            f"{int(identity.VolumeSerialNumber):016x}",
+            bytes(identity.FileId.Identifier).hex(),
+            raw_size,
+        )
+
+    def _whole_file_digest(self, handle: wintypes.HANDLE, expected_size: int) -> str:
+        new_position = ctypes.c_longlong()
+        if not self._kernel32.SetFilePointerEx(
+                handle, 0, ctypes.byref(new_position), 0):  # FILE_BEGIN
+            _fail("WINDOWS_DEBUG_FILE_SEEK_FAILED")
+        if int(new_position.value) != 0:
+            _fail("WINDOWS_DEBUG_FILE_SEEK_FAILED")
+        digest = hashlib.sha256()
+        remaining = expected_size
+        while remaining:
+            requested = min(remaining, _DEBUG_FILE_READ_CHUNK_BYTES)
+            buffer = ctypes.create_string_buffer(requested)
+            returned = wintypes.DWORD()
+            if not self._kernel32.ReadFile(
+                    handle,
+                    ctypes.byref(buffer),
+                    requested,
+                    ctypes.byref(returned),
+                    None):
+                _fail("WINDOWS_DEBUG_FILE_READ_FAILED")
+            count = int(returned.value)
+            if not 0 < count <= requested:
+                _fail("WINDOWS_DEBUG_FILE_READ_FAILED")
+            digest.update(buffer.raw[:count])
+            remaining -= count
+        eof_buffer = ctypes.create_string_buffer(1)
+        eof_returned = wintypes.DWORD()
+        if (
+                not self._kernel32.ReadFile(
+                    handle,
+                    ctypes.byref(eof_buffer),
+                    1,
+                    ctypes.byref(eof_returned),
+                    None)
+                or int(eof_returned.value) != 0
+        ):
+            _fail("WINDOWS_DEBUG_FILE_READ_FAILED")
+        return "sha256:" + digest.hexdigest()
+
+    def observe(self, record: DebugEventRecord, raw_handle: int) -> dict[str, Any]:
+        if (
+                type(record) is not DebugEventRecord
+                or record.event not in {"CREATE_PROCESS", "LOAD_DLL"}
+                or type(raw_handle) is not int
+                or raw_handle <= 0
+                or record.mapping_base is None
+                or record.mapping_kind not in {"PROCESS_IMAGE", "DLL_IMAGE"}
+                or record.file_handle_present is not True
+        ):
+            _fail("WINDOWS_DEBUG_FILE_HANDLE_INVALID")
+        handle = wintypes.HANDLE(raw_handle)
+        before = self._identity_and_size(handle)
+        if self._total_file_bytes + before[2] > _MAX_DEBUG_TOTAL_FILE_BYTES:
+            _fail("WINDOWS_DEBUG_FILE_TOTAL_CEILING_EXCEEDED")
+        read_digests = tuple(
+            self._whole_file_digest(handle, before[2])
+            for _index in range(_DEBUG_FILE_STABLE_READ_PASSES)
+        )
+        after = self._identity_and_size(handle)
+        if before != after or len(set(read_digests)) != 1:
+            _fail("WINDOWS_DEBUG_FILE_READ_UNSTABLE")
+        self._total_file_bytes += before[2]
+        return {
+            "source_debug_sequence": record.sequence,
+            "process_id": record.process_id,
+            "mapping_base": record.mapping_base,
+            "mapping_kind": record.mapping_kind,
+            "volume_serial_number_hex": before[0],
+            "file_id_128_hex": before[1],
+            "file_size_bytes": before[2],
+            "read_digests": read_digests,
+        }
 
 
 class _WindowsJob:
@@ -2084,6 +2347,103 @@ def _tokenize_debug_capture_v3(
     )
 
 
+def _seal_debug_file_identity_rows(
+        capture: DebugEventCapture,
+        process_tokens: Mapping[int, str],
+        raw_observations: Any,
+        ) -> list[dict[str, Any]]:
+    """Join pre-close hFile observations one-to-one to received debug image loads."""
+
+    if (
+            type(capture) is not DebugEventCapture
+            or type(process_tokens) is not dict
+            or type(raw_observations) is not list
+    ):
+        _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_TOKENIZATION_INVALID")
+    expected_records = [
+        record
+        for record in capture.records
+        if record.event in {"CREATE_PROCESS", "LOAD_DLL"}
+    ]
+    if (
+            len(raw_observations) != len(expected_records)
+            or [row.get("source_debug_sequence") if type(row) is dict else None
+                for row in raw_observations]
+            != [record.sequence for record in expected_records]
+    ):
+        _fail("WINDOWS_DEBUG_V4_FILE_HANDLE_COVERAGE_INCOMPLETE")
+    rows: list[dict[str, Any]] = []
+    for index, (record, raw) in enumerate(zip(expected_records, raw_observations)):
+        process_token = process_tokens.get(record.process_id)
+        expected_keys = {
+            "source_debug_sequence", "process_id", "mapping_base", "mapping_kind",
+            "volume_serial_number_hex", "file_id_128_hex", "file_size_bytes",
+            "read_digests",
+        }
+        if (
+                type(raw) is not dict
+                or set(raw) != expected_keys
+                or process_token is None
+                or type(raw["source_debug_sequence"]) is not int
+                or type(raw["process_id"]) is not int
+                or type(raw["mapping_base"]) is not int
+                or type(raw["mapping_kind"]) is not str
+                or raw["source_debug_sequence"] != record.sequence
+                or raw["process_id"] != record.process_id
+                or raw["mapping_base"] != record.mapping_base
+                or raw["mapping_kind"] != record.mapping_kind
+                or record.file_handle_present is not True
+                or type(raw["volume_serial_number_hex"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{16}", raw["volume_serial_number_hex"])
+                or type(raw["file_id_128_hex"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{32}", raw["file_id_128_hex"])
+                or type(raw["file_size_bytes"]) is not int
+                or not 0 < raw["file_size_bytes"] <= _MAX_DEBUG_FILE_BYTES
+                or type(raw["read_digests"]) is not tuple
+                or len(raw["read_digests"]) != _DEBUG_FILE_STABLE_READ_PASSES
+                or any(type(item) is not str or not _DIGEST_RE.fullmatch(item)
+                       for item in raw["read_digests"])
+                or len(set(raw["read_digests"])) != 1
+                or record.mapping_base is None
+        ):
+            _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_TOKENIZATION_INVALID")
+        mapping_token = _debug_mapping_token(
+            process_token, record.mapping_base, record.sequence
+        )
+        rows.append({
+            "sequence": index,
+            "source_debug_sequence": record.sequence,
+            "process_token": process_token,
+            "mapping_token": mapping_token,
+            "mapping_slot_token": _debug_mapping_slot_token(
+                process_token, record.mapping_base
+            ),
+            "mapping_kind": record.mapping_kind,
+            "handle_custody": "BORROWED_NON_NULL_UNTIL_PRE_CONTINUE_CLOSE",
+            "path_disclosure": "NO_RAW_PATH_OR_FILENAME",
+            "file_identity": {
+                "information_class": "FILE_ID_INFO",
+                "volume_serial_number_hex": raw["volume_serial_number_hex"],
+                "file_id_128_hex": raw["file_id_128_hex"],
+            },
+            "file_size_bytes": raw["file_size_bytes"],
+            "identity_and_size_stable_before_after": True,
+            "read_passes": [
+                {
+                    "sequence": read_sequence,
+                    "offset": 0,
+                    "raw_bytes": raw["file_size_bytes"],
+                    "digest": digest,
+                }
+                for read_sequence, digest in enumerate(raw["read_digests"])
+            ],
+            "stable_same_handle_full_file_bytes": True,
+        })
+    if sum(row["file_size_bytes"] for row in rows) > _MAX_DEBUG_TOTAL_FILE_BYTES:
+        _fail("WINDOWS_DEBUG_V4_FILE_TOTAL_CEILING_EXCEEDED")
+    return rows
+
+
 def _event_row(
         sequence: int,
         message: int,
@@ -2840,6 +3200,7 @@ def _validate_windows_debug_image_trace(value: Mapping[str, Any]) -> None:
                 or not _TOKEN_RE.fullmatch(row["process_token"])
                 or type(row["mapping_token"]) is not str
                 or not _TOKEN_RE.fullmatch(row["mapping_token"])
+                or type(row["mapping_kind"]) is not str
                 or row["mapping_kind"] not in {"PROCESS_IMAGE", "DLL_IMAGE"}
                 or (row["file_handle_present"] is not None
                     and type(row["file_handle_present"]) is not bool)
@@ -3343,6 +3704,266 @@ def validate_windows_debug_runtime_discovery_v3_trace(value: Any) -> dict[str, A
     if type(detached) is not dict:
         _fail("WINDOWS_DEBUG_V3_RUNTIME_TRACE_CANONICAL_INVALID")
     return detached
+
+
+def _validate_debug_v4_file_identity_trace(value: Mapping[str, Any]) -> None:
+    fields = {
+        "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+        "claim_boundary", "authority", "method", "semantics", "target_process_token",
+        "collection_guards", "expected_debug_image_handle_count",
+        "observed_non_null_handle_count", "stable_file_identity_count",
+        "stable_disk_bytes_count", "unbound_debug_image_handle_count",
+        "distinct_file_identity_count", "total_stable_disk_bytes",
+        "total_same_handle_read_bytes", "persistent_file_identity_and_loaded_bytes_bound",
+        "mapped_or_loaded_memory_bytes_bound", "rows",
+    }
+    if set(value) != fields:
+        _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_TRACE_SHAPE_INVALID")
+    guards = value["collection_guards"]
+    rows = value["rows"]
+    if (
+            value["method"]
+            != "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_FILE_ID_INFO_STABLE_DOUBLE_READ"
+            or value["semantics"]
+            != "DEBUG_EVENT_IMAGE_HANDLES_TO_PERSISTENT_FILE_ID_AND_STABLE_SAME_HANDLE_ON_DISK_BYTES_ONLY"
+            or type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+            or type(guards) is not dict
+            or guards != {
+                "max_file_bytes": _MAX_DEBUG_FILE_BYTES,
+                "max_total_file_bytes": _MAX_DEBUG_TOTAL_FILE_BYTES,
+                "read_chunk_bytes": _DEBUG_FILE_READ_CHUNK_BYTES,
+                "stable_read_passes": _DEBUG_FILE_STABLE_READ_PASSES,
+            }
+            or any(type(item) is not int for item in guards.values())
+            or value["persistent_file_identity_and_loaded_bytes_bound"] is not False
+            or value["mapped_or_loaded_memory_bytes_bound"] is not False
+            or type(rows) is not list
+            or not 1 <= len(rows) <= _MAX_DEBUG_IMAGE_MAPPINGS
+    ):
+        _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_TRACE_INVALID")
+    row_fields = {
+        "sequence", "source_debug_sequence", "process_token", "mapping_token",
+        "mapping_slot_token", "mapping_kind", "handle_custody", "path_disclosure",
+        "file_identity", "file_size_bytes", "identity_and_size_stable_before_after",
+        "read_passes", "stable_same_handle_full_file_bytes",
+    }
+    identities: set[tuple[str, str]] = set()
+    mapping_tokens: set[str] = set()
+    source_sequences: list[int] = []
+    total_bytes = 0
+    target_seen = False
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != row_fields:
+            _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_ROWS_INVALID")
+        identity = row["file_identity"]
+        reads = row["read_passes"]
+        scalar_values = (
+            row["sequence"], row["source_debug_sequence"], row["file_size_bytes"]
+        )
+        if (
+                any(type(item) is not int for item in scalar_values)
+                or row["sequence"] != index
+                or not 0 <= row["source_debug_sequence"] < _MAX_DEBUG_EVENTS
+                or type(row["process_token"]) is not str
+                or not _TOKEN_RE.fullmatch(row["process_token"])
+                or type(row["mapping_token"]) is not str
+                or not _TOKEN_RE.fullmatch(row["mapping_token"])
+                or row["mapping_token"] in mapping_tokens
+                or type(row["mapping_slot_token"]) is not str
+                or not _TOKEN_RE.fullmatch(row["mapping_slot_token"])
+                or type(row["mapping_kind"]) is not str
+                or row["mapping_kind"] not in {"PROCESS_IMAGE", "DLL_IMAGE"}
+                or row["handle_custody"]
+                != "BORROWED_NON_NULL_UNTIL_PRE_CONTINUE_CLOSE"
+                or row["path_disclosure"] != "NO_RAW_PATH_OR_FILENAME"
+                or type(identity) is not dict
+                or set(identity) != {
+                    "information_class", "volume_serial_number_hex", "file_id_128_hex"}
+                or identity["information_class"] != "FILE_ID_INFO"
+                or type(identity["volume_serial_number_hex"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{16}", identity["volume_serial_number_hex"])
+                or type(identity["file_id_128_hex"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{32}", identity["file_id_128_hex"])
+                or not 0 < row["file_size_bytes"] <= _MAX_DEBUG_FILE_BYTES
+                or row["identity_and_size_stable_before_after"] is not True
+                or type(reads) is not list
+                or len(reads) != _DEBUG_FILE_STABLE_READ_PASSES
+                or row["stable_same_handle_full_file_bytes"] is not True
+        ):
+            _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_ROWS_INVALID")
+        expected_reads = [
+            {
+                "sequence": read_sequence,
+                "offset": 0,
+                "raw_bytes": row["file_size_bytes"],
+                "digest": reads[0].get("digest") if type(reads[0]) is dict else None,
+            }
+            for read_sequence in range(_DEBUG_FILE_STABLE_READ_PASSES)
+        ]
+        if (
+                any(
+                    type(read) is not dict
+                    or set(read) != {"sequence", "offset", "raw_bytes", "digest"}
+                    or any(
+                        type(read[field]) is not int
+                        for field in ("sequence", "offset", "raw_bytes")
+                    )
+                    for read in reads
+                )
+                or reads != expected_reads
+                or type(reads[0]["digest"]) is not str
+                or not _DIGEST_RE.fullmatch(reads[0]["digest"])
+        ):
+            _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_READS_INVALID")
+        mapping_tokens.add(row["mapping_token"])
+        source_sequences.append(row["source_debug_sequence"])
+        identities.add((
+            identity["volume_serial_number_hex"], identity["file_id_128_hex"]
+        ))
+        total_bytes += row["file_size_bytes"]
+        target_seen = target_seen or row["process_token"] == value["target_process_token"]
+    counts = (
+        value["expected_debug_image_handle_count"],
+        value["observed_non_null_handle_count"],
+        value["stable_file_identity_count"],
+        value["stable_disk_bytes_count"],
+        value["unbound_debug_image_handle_count"],
+        value["distinct_file_identity_count"],
+        value["total_stable_disk_bytes"],
+        value["total_same_handle_read_bytes"],
+    )
+    if (
+            any(type(item) is not int for item in counts)
+            or counts != (
+                len(rows), len(rows), len(rows), len(rows), 0, len(identities),
+                total_bytes, total_bytes * _DEBUG_FILE_STABLE_READ_PASSES)
+            or source_sequences != sorted(set(source_sequences))
+            or total_bytes > _MAX_DEBUG_TOTAL_FILE_BYTES
+            or not target_seen
+    ):
+        _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_RECONCILIATION_INVALID")
+
+
+def _project_debug_v4_trace_to_v3(value: Mapping[str, Any]) -> dict[str, Any]:
+    projected = dict(value)
+    schemas = {
+        _fixed_debug_v4_process_trace_schema(): _fixed_debug_v3_process_trace_schema(),
+        _fixed_debug_v4_image_trace_schema(): _fixed_debug_v3_image_trace_schema(),
+        _fixed_debug_v4_loss_trace_schema(): _fixed_debug_v3_loss_trace_schema(),
+    }
+    raw_schema = value.get("schema")
+    schema = schemas.get(raw_schema) if type(raw_schema) is str else None
+    if schema is None:
+        _fail("WINDOWS_DEBUG_V4_RUNTIME_TRACE_SCHEMA_INVALID")
+    projected.update({
+        "schema": schema,
+        "capture_protocol": _fixed_debug_v3_capture_protocol(),
+        "claim_boundary": _fixed_debug_v3_claim_boundary(),
+    })
+    if schema == _fixed_debug_v3_image_trace_schema():
+        projected["method"] = (
+            "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+            "STABLE_DOUBLE_READ/3"
+        )
+    if schema == _fixed_debug_v3_loss_trace_schema():
+        projected["limitations"] = list(_fixed_debug_v3_limitations())
+    return projected
+
+
+def validate_windows_debug_runtime_discovery_v4_trace(value: Any) -> dict[str, Any]:
+    """Validate one closed hFile-custody, still-incomplete v4 runtime artifact."""
+
+    if type(value) is not dict:
+        _fail("WINDOWS_DEBUG_V4_RUNTIME_TRACE_INVALID")
+    if (
+            value.get("capture_protocol") != _fixed_debug_v4_capture_protocol()
+            or value.get("platform") != _fixed_platform()
+            or type(value.get("selected_commit")) is not str
+            or type(value.get("selected_tree")) is not str
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
+            or value.get("claim_boundary") != _fixed_debug_v4_claim_boundary()
+            or not _has_fixed_authority(value.get("authority"))
+    ):
+        _fail("WINDOWS_DEBUG_V4_RUNTIME_TRACE_COMMON_INVALID")
+    schema = value.get("schema")
+    if schema == _fixed_debug_v4_image_trace_schema() and value.get("method") != (
+            "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+            "STABLE_DOUBLE_READ/4"
+    ):
+        _fail("WINDOWS_DEBUG_V4_IMAGE_TRACE_INVALID")
+    if (
+            schema == _fixed_debug_v4_loss_trace_schema()
+            and value.get("limitations") != list(_fixed_debug_v4_limitations())
+    ):
+        _fail("WINDOWS_DEBUG_V4_LOSS_TRACE_INVALID")
+    if schema == _fixed_debug_v4_file_identity_trace_schema():
+        _validate_debug_v4_file_identity_trace(value)
+    else:
+        validate_windows_debug_runtime_discovery_v3_trace(
+            _project_debug_v4_trace_to_v3(value)
+        )
+    try:
+        detached = parse_canonical_json_bytes(
+            canonical_json_bytes(value), require_canonical=True
+        )
+    except (RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V4_RUNTIME_TRACE_CANONICAL_INVALID")
+    if type(detached) is not dict:
+        _fail("WINDOWS_DEBUG_V4_RUNTIME_TRACE_CANONICAL_INVALID")
+    return detached
+
+
+def _validate_debug_v4_file_image_projection(
+        process_trace: Mapping[str, Any],
+        image_trace: Mapping[str, Any],
+        file_identity_trace: Mapping[str, Any],
+        ) -> None:
+    """Require exact one-to-one /4 file rows for every received image-load event."""
+
+    for document in (process_trace, image_trace, file_identity_trace):
+        validate_windows_debug_runtime_discovery_v4_trace(document)
+    projected_process = _project_debug_v4_trace_to_v3(process_trace)
+    projected_image = _project_debug_v4_trace_to_v3(image_trace)
+    _validate_debug_v3_checkpoint_projection(projected_process, projected_image)
+    try:
+        image_rows = [
+            (
+                row["source_debug_sequence"], row["process_token"],
+                row["mapping_token"], row["mapping_slot_token"], row["mapping_kind"],
+            )
+            for row in image_trace["events"]
+            if row["event"] == "LOAD_IMAGE"
+        ]
+        file_rows = [
+            (
+                row["source_debug_sequence"], row["process_token"],
+                row["mapping_token"], row["mapping_slot_token"], row["mapping_kind"],
+            )
+            for row in file_identity_trace["rows"]
+        ]
+    except (KeyError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED")
+    if (
+            image_rows != file_rows
+            or any(
+                row["file_handle_present"] is not True
+                for row in process_trace["events"]
+                if row["event"] in {"CREATE_PROCESS", "LOAD_DLL"}
+            )
+            or any(
+                row["file_handle_present"] is not True
+                for row in image_trace["events"]
+                if row["event"] == "LOAD_IMAGE"
+            )
+            or image_trace["target_process_token"]
+            != file_identity_trace["target_process_token"]
+            or image_trace["load_event_count"]
+            != file_identity_trace["expected_debug_image_handle_count"]
+            or file_identity_trace["unbound_debug_image_handle_count"] != 0
+    ):
+        _fail("WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED")
 
 
 def _artifact_row(artifact_id: str, role: str, raw: bytes) -> dict[str, Any]:
@@ -4092,6 +4713,97 @@ def _validate_sealed_debug_v3_dynamic_profile(
     return process_trace, image_trace, loss_trace, environment_manifest
 
 
+def _validate_sealed_debug_v4_dynamic_profile(
+        artifact_raw_by_id: Mapping[str, bytes],
+        expected_crypto_provider_path_digest: str,
+        ) -> tuple[
+            dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+        ]:
+    """Reload and rejoin the exact sealed /4 dynamic artifact family."""
+
+    documents: dict[str, dict[str, Any]] = {}
+    for artifact_id, _role, expected_schema in _DEBUG_V4_DYNAMIC_ARTIFACTS:
+        try:
+            parsed = parse_canonical_json_bytes(
+                artifact_raw_by_id[artifact_id], require_canonical=True
+            )
+            checked = validate_windows_debug_runtime_discovery_v4_trace(parsed)
+        except RuntimeDiscoveryError:
+            raise
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            _fail("WINDOWS_DEBUG_V4_CAPTURE_DYNAMIC_PROFILE_INVALID")
+        if checked.get("schema") != expected_schema or checked != parsed:
+            _fail("WINDOWS_DEBUG_V4_CAPTURE_DYNAMIC_PROFILE_INVALID")
+        documents[expected_schema] = checked
+    process_trace = documents[_fixed_debug_v4_process_trace_schema()]
+    image_trace = documents[_fixed_debug_v4_image_trace_schema()]
+    file_identity_trace = documents[_fixed_debug_v4_file_identity_trace_schema()]
+    loss_trace = documents[_fixed_debug_v4_loss_trace_schema()]
+    environment_artifact_id, _role, _field, expected_environment_schema = (
+        _DEBUG_V4_ENVIRONMENT_ARTIFACT
+    )
+    try:
+        parsed_environment = parse_canonical_json_bytes(
+            artifact_raw_by_id[environment_artifact_id], require_canonical=True
+        )
+        environment_manifest = validate_windows_debug_execution_environment_v4_manifest(
+            parsed_environment
+        )
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V4_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    if (
+            environment_manifest.get("schema") != expected_environment_schema
+            or environment_manifest != parsed_environment
+    ):
+        _fail("WINDOWS_DEBUG_V4_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    _validate_debug_v4_file_image_projection(
+        process_trace, image_trace, file_identity_trace
+    )
+    projected_environment = dict(environment_manifest)
+    projected_environment.update({
+        "schema": _fixed_debug_v3_environment_manifest_schema(),
+        "capture_protocol": _fixed_debug_v3_capture_protocol(),
+    })
+    projected_artifacts: dict[str, bytes] = {}
+    projected_by_schema = {
+        _fixed_debug_v3_process_trace_schema(): _project_debug_v4_trace_to_v3(
+            process_trace
+        ),
+        _fixed_debug_v3_image_trace_schema(): _project_debug_v4_trace_to_v3(
+            image_trace
+        ),
+        _fixed_debug_v3_loss_trace_schema(): _project_debug_v4_trace_to_v3(
+            loss_trace
+        ),
+    }
+    for artifact_id, _role, schema in _DEBUG_V3_DYNAMIC_ARTIFACTS:
+        projected_artifacts[artifact_id] = canonical_json_bytes(projected_by_schema[schema])
+    projected_artifacts[_DEBUG_V3_ENVIRONMENT_ARTIFACT[0]] = canonical_json_bytes(
+        projected_environment
+    )
+    _validate_sealed_debug_v3_dynamic_profile(
+        projected_artifacts, expected_crypto_provider_path_digest
+    )
+    if any(
+            document["selected_commit"] != process_trace["selected_commit"]
+            or document["selected_tree"] != process_trace["selected_tree"]
+            or document["target_process_token"] != process_trace["target_process_token"]
+            for document in (
+                image_trace, file_identity_trace, loss_trace, environment_manifest
+            )
+    ):
+        _fail("WINDOWS_DEBUG_V4_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    return (
+        process_trace,
+        image_trace,
+        file_identity_trace,
+        loss_trace,
+        environment_manifest,
+    )
+
+
 def _expected_debug_incomplete_evidence(
         evidence: Mapping[str, Any],
         artifact_raw_by_id: Mapping[str, bytes],
@@ -4382,6 +5094,112 @@ def _expected_debug_v3_incomplete_evidence(
     return expected
 
 
+def _expected_debug_v4_incomplete_evidence(
+        evidence: Mapping[str, Any],
+        artifact_raw_by_id: Mapping[str, bytes],
+        static_raw_by_relative: Mapping[str, bytes],
+        inventory: Mapping[str, Any],
+        process_trace: Mapping[str, Any],
+        image_trace: Mapping[str, Any],
+        file_identity_trace: Mapping[str, Any],
+        loss_trace: Mapping[str, Any],
+        environment_manifest: Mapping[str, Any],
+        ) -> dict[str, Any]:
+    subject = _validate_subject(RuntimeClosureDiscoverySubject(
+        producer_id=evidence["producer_id"],
+        runtime_collector_id=evidence["runtime_collector_id"],
+        structural_tcb_producer_id=evidence["structural_tcb_producer_id"],
+        pack_producer_id=evidence["pack_producer_id"],
+        budget_proposer_id=evidence["budget_proposer_id"],
+        release_builder_id=evidence["release_builder_id"],
+        expected_selected_commit=evidence["selected_commit"],
+        expected_selected_tree=evidence["selected_tree"],
+    ))
+    if (
+            process_trace["selected_commit"] != subject.expected_selected_commit
+            or process_trace["selected_tree"] != subject.expected_selected_tree
+    ):
+        _fail("WINDOWS_DEBUG_V4_CAPTURE_SOURCE_JOIN_INVALID")
+    artifact_rows: list[dict[str, Any]] = []
+    digest_fields: dict[str, str | None] = {
+        field: None for field in RUNTIME_CLOSURE_BINDING_DIGEST_FIELDS
+    }
+    for artifact_id, role, field, relative in _STATIC_ARTIFACTS:
+        raw = static_raw_by_relative[relative]
+        artifact_rows.append(_artifact_row(artifact_id, role, raw))
+        digest_fields[field] = bytes_digest(raw)
+    for artifact_id, role, _schema in _DEBUG_V4_DYNAMIC_ARTIFACTS:
+        artifact_rows.append(
+            _artifact_row(artifact_id, role, artifact_raw_by_id[artifact_id])
+        )
+    environment_artifact_id, environment_role, environment_field, _schema = (
+        _DEBUG_V4_ENVIRONMENT_ARTIFACT
+    )
+    environment_raw = artifact_raw_by_id[environment_artifact_id]
+    artifact_rows.append(_artifact_row(
+        environment_artifact_id, environment_role, environment_raw
+    ))
+    digest_fields[environment_field] = bytes_digest(environment_raw)
+    artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
+
+    coverage: dict[str, Any] = {"state": RUNTIME_CLOSURE_COVERAGE_INCOMPLETE}
+    coverage.update({field: False for field in RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS})
+    coverage["process_tree_captured_before_first_instruction_through_final_descendant"] = True
+    coverage["execution_environment_argv_cwd_and_inputs_bound"] = True
+    coverage.update({field: None for field in RUNTIME_CLOSURE_POSITIVE_COUNTER_FIELDS})
+    coverage.update({field: None for field in RUNTIME_CLOSURE_ZERO_COUNTER_FIELDS})
+    coverage.update({
+        "supported_execution_case_count": 1,
+        "observed_process_count": process_trace["job"]["observed_process_count"],
+        "observed_executable_mapping_count": image_trace["distinct_mapping_count"],
+        "observed_load_event_count": image_trace["load_event_count"],
+        "unresolved_dependency_count": inventory["coverage"][
+            "unresolved_native_dependency_edge_count"
+        ],
+        "unbound_file_identity_count": file_identity_trace[
+            "unbound_debug_image_handle_count"
+        ],
+    })
+    evidence_seed = canonical_digest({
+        "process_trace_digest": canonical_digest(process_trace),
+        "image_trace_digest": canonical_digest(image_trace),
+        "file_identity_trace_digest": canonical_digest(file_identity_trace),
+        "loss_trace_digest": canonical_digest(loss_trace),
+        "execution_environment_manifest_digest": canonical_digest(environment_manifest),
+    }).removeprefix("sha256:")
+    expected: dict[str, Any] = {
+        "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
+        "evidence_id": f"transition-runtime-debug-file-identity.{evidence_seed}",
+        "purpose": RUNTIME_CLOSURE_REVIEW_PURPOSE,
+        "state": RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE,
+        "producer_id": subject.producer_id,
+        "runtime_collector_id": subject.runtime_collector_id,
+        "structural_tcb_producer_id": subject.structural_tcb_producer_id,
+        "pack_producer_id": subject.pack_producer_id,
+        "budget_proposer_id": subject.budget_proposer_id,
+        "release_builder_id": subject.release_builder_id,
+        "selected_commit": subject.expected_selected_commit,
+        "selected_tree": subject.expected_selected_tree,
+        **digest_fields,
+        "scope": {
+            "scope_kind": RUNTIME_CLOSURE_SCOPE_KIND,
+            "substrate": RUNTIME_CLOSURE_REVIEW_SUBSTRATE,
+            "universal_all_input_behavior": False,
+            "portable_across_hosts": False,
+            "semantic_equivalence": False,
+            "continuous_capture_required": True,
+            "deny_by_default_execution_required": True,
+        },
+        "coverage": coverage,
+        "artifacts": artifact_rows,
+        "known_gaps": [],
+        "claim_boundary": RUNTIME_CLOSURE_EVIDENCE_CLAIM_BOUNDARY,
+        "authority": _fixed_authority(),
+    }
+    expected["known_gaps"] = expected_runtime_closure_gaps(expected)
+    return expected
+
+
 def _seal_captured_debug_v3_discovery_result(
         bound_evidence: BoundTransitionRuntimeClosureEvidence,
         evidence_raw: bytes,
@@ -4461,6 +5279,99 @@ def _seal_captured_debug_v3_discovery_result(
         raise
     except (KeyError, RuntimeError, TypeError, ValueError):
         _fail("WINDOWS_DEBUG_V3_CAPTURE_RESULT_INVALID")
+    result = object.__new__(CapturedIncompleteRuntimeClosureEvidence)
+    object.__setattr__(result, "_sealed", False)
+    object.__setattr__(result, "_bound_evidence", rebound)
+    object.__setattr__(result, "_evidence_raw", evidence_raw)
+    object.__setattr__(result, "_artifact_raw", tuple(sorted(artifact_raw_by_id.items())))
+    object.__setattr__(result, "_sealed", True)
+    return result
+
+
+def _seal_captured_debug_v4_discovery_result(
+        bound_evidence: BoundTransitionRuntimeClosureEvidence,
+        evidence_raw: bytes,
+        artifact_raw_by_id: Mapping[str, bytes],
+        expected_crypto_provider_path_digest: str,
+        source_raw_by_relative: Mapping[str, bytes],
+        outer_expected_launch: Mapping[str, Any],
+        ) -> CapturedIncompleteRuntimeClosureEvidence:
+    expected_artifact_ids = (
+        {row[0] for row in _STATIC_ARTIFACTS}
+        | {row[0] for row in _DEBUG_V4_DYNAMIC_ARTIFACTS}
+        | {_DEBUG_V4_ENVIRONMENT_ARTIFACT[0]}
+    )
+    expected_source_relatives = {
+        relative
+        for _input_id, _path_token, relative in _LAUNCH_INPUT_SPEC
+        if relative is not None
+    }
+    if (
+            type(bound_evidence) is not BoundTransitionRuntimeClosureEvidence
+            or type(evidence_raw) is not bytes
+            or type(artifact_raw_by_id) is not dict
+            or set(artifact_raw_by_id) != expected_artifact_ids
+            or any(type(raw) is not bytes or not raw for raw in artifact_raw_by_id.values())
+            or type(source_raw_by_relative) is not dict
+            or set(source_raw_by_relative) != expected_source_relatives
+            or any(type(raw) is not bytes or not raw for raw in source_raw_by_relative.values())
+            or type(outer_expected_launch) is not dict
+    ):
+        _fail("WINDOWS_DEBUG_V4_CAPTURE_RESULT_INVALID")
+    try:
+        rebound = bind_transition_runtime_closure_evidence_bytes(
+            evidence_raw, artifact_raw_by_id
+        )
+        evidence = parse_canonical_json_bytes(evidence_raw, require_canonical=True)
+        if (
+                type(evidence) is not dict
+                or dict(bound_evidence) != dict(rebound)
+                or bound_evidence.digest != rebound.digest
+                or bound_evidence.source_bytes != rebound.source_bytes
+        ):
+            _fail("WINDOWS_DEBUG_V4_CAPTURE_RESULT_INVALID")
+        static_raw_by_relative, inventory, input_digest = _validate_sealed_static_profile(
+            artifact_raw_by_id
+        )
+        (
+            process_trace,
+            image_trace,
+            file_identity_trace,
+            loss_trace,
+            environment_manifest,
+        ) = _validate_sealed_debug_v4_dynamic_profile(
+            artifact_raw_by_id, expected_crypto_provider_path_digest
+        )
+        _validate_environment_source_joins(
+            environment_manifest, source_raw_by_relative
+        )
+        checked_outer_expected_launch = _validate_launch_binding(outer_expected_launch)
+        if (
+                environment_manifest["launch"]["parent_expected"]
+                != checked_outer_expected_launch
+                or environment_manifest["launch"]["target_observed"]
+                != checked_outer_expected_launch
+        ):
+            _fail("WINDOWS_DEBUG_V4_OUTER_LAUNCH_RECONCILIATION_FAILED")
+        if input_digest != process_trace["target"]["input_digest"]:
+            _fail("WINDOWS_DEBUG_V4_CAPTURE_STATIC_DYNAMIC_JOIN_INVALID")
+        expected = _expected_debug_v4_incomplete_evidence(
+            evidence,
+            artifact_raw_by_id,
+            static_raw_by_relative,
+            inventory,
+            process_trace,
+            image_trace,
+            file_identity_trace,
+            loss_trace,
+            environment_manifest,
+        )
+        if evidence != expected or evidence_raw != canonical_json_bytes(expected):
+            _fail("WINDOWS_DEBUG_V4_CAPTURE_ENVELOPE_INVALID")
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V4_CAPTURE_RESULT_INVALID")
     result = object.__new__(CapturedIncompleteRuntimeClosureEvidence)
     object.__setattr__(result, "_sealed", False)
     object.__setattr__(result, "_bound_evidence", rebound)
@@ -5055,6 +5966,26 @@ def validate_windows_debug_execution_environment_v3_manifest(value: Any) -> dict
     return _validate_execution_environment_launch_pair(value)
 
 
+def validate_windows_debug_execution_environment_v4_manifest(value: Any) -> dict[str, Any]:
+    """Validate one v4 DEBUG_PROCESS execution-environment manifest."""
+
+    if type(value) is not dict:
+        _fail("WINDOWS_DEBUG_V4_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    projected = dict(value)
+    projected["schema"] = _fixed_debug_v3_environment_manifest_schema()
+    projected["capture_protocol"] = _fixed_debug_v3_capture_protocol()
+    try:
+        validate_windows_debug_execution_environment_v3_manifest(projected)
+    except RuntimeDiscoveryError:
+        _fail("WINDOWS_DEBUG_V4_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    if (
+            value.get("schema") != _fixed_debug_v4_environment_manifest_schema()
+            or value.get("capture_protocol") != _fixed_debug_v4_capture_protocol()
+    ):
+        _fail("WINDOWS_DEBUG_V4_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    return _validate_execution_environment_launch_pair(value)
+
+
 def _capture_dynamic(
         python_executable: Path,
         crypto_root: Path,
@@ -5333,7 +6264,7 @@ def _capture_debug_dynamic_on_creator_thread(
         prepared_temp_root: Path | None = None,
         outer_deadline_ns: int | None = None,
         capture_lane: str = _DEBUG_CAPTURE_LANE_V2,
-        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        ) -> tuple[dict[str, Any], ...]:
     job: _WindowsJob | None = None
     shim: subprocess.Popen[bytes] | None = None
     debugger: WindowsDebugEventSession | None = None
@@ -5345,14 +6276,21 @@ def _capture_debug_dynamic_on_creator_thread(
     announced_target_pid: int | None = None
     child_create_process_ids: list[int] = []
     raw_target_checkpoints: list[dict[str, Any]] = []
+    raw_file_observations: list[dict[str, Any]] = []
     try:
         if (
                 type(outer_deadline_ns) is not int
                 or outer_deadline_ns <= 0
-                or capture_lane not in {_DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3}
+                or capture_lane not in {
+                    _DEBUG_CAPTURE_LANE_V2,
+                    _DEBUG_CAPTURE_LANE_V3,
+                    _DEBUG_CAPTURE_LANE_V4,
+                }
         ):
             _fail("WINDOWS_DEBUG_HELPER_DEADLINE_INVALID")
-        capture_v3 = capture_lane == _DEBUG_CAPTURE_LANE_V3
+        capture_v4 = capture_lane == _DEBUG_CAPTURE_LANE_V4
+        capture_v3 = capture_lane in {_DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4}
+        file_reader = _BorrowedDebugEventFileReader() if capture_v4 else None
         checked_temp_base = _resolve_local_no_reparse(temp_base, directory=True)
         prepared = _resolve_local_no_reparse(prepared_temp_root, directory=True)
         if prepared.parent != checked_temp_base or any(prepared.iterdir()):
@@ -5460,12 +6398,20 @@ def _capture_debug_dynamic_on_creator_thread(
                         record.process_id, "START", record.sequence
                     ))
 
+            def before_event_file_close(record: DebugEventRecord, raw_handle: int) -> None:
+                if file_reader is None:
+                    _fail("WINDOWS_DEBUG_V4_FILE_READER_MISSING")
+                raw_file_observations.append(file_reader.observe(record, raw_handle))
+
             def pump_one_debug_event() -> bool:
                 assert debugger is not None and job is not None
                 observed = (
                     debugger.pump(
                         _POLL_INTERVAL_MILLISECONDS,
                         before_continue=before_continue,
+                        before_event_file_close=(
+                            before_event_file_close if capture_v4 else None
+                        ),
                     )
                     if capture_v3
                     else debugger.pump(_POLL_INTERVAL_MILLISECONDS)
@@ -5573,7 +6519,13 @@ def _capture_debug_dynamic_on_creator_thread(
                 if len(raw_target_checkpoints) != 1:
                     _fail("WINDOWS_DEBUG_V3_START_CHECKPOINT_MISSING")
                 while time.monotonic() < deadline:
-                    observed = debugger.pump(0, before_continue=before_continue)
+                    observed = debugger.pump(
+                        0,
+                        before_continue=before_continue,
+                        before_event_file_close=(
+                            before_event_file_close if capture_v4 else None
+                        ),
+                    )
                     _drain_messages(job, job_events, process_tokens, timeout_milliseconds=0)
                     if not observed:
                         break
@@ -5699,6 +6651,12 @@ def _capture_debug_dynamic_on_creator_thread(
                 _tokenize_debug_capture_v3(capture, process_tokens)
                 if capture_v3
                 else _tokenize_debug_capture(capture, process_tokens)
+            )
+            file_identity_rows = (
+                _seal_debug_file_identity_rows(
+                    capture, process_tokens, raw_file_observations
+                )
+                if capture_v4 else []
             )
             target_exit_rows = [
                 row for row in process_rows
@@ -5928,6 +6886,115 @@ def _capture_debug_dynamic_on_creator_thread(
                     validate_windows_debug_runtime_discovery_v3_trace(document)
                 _validate_debug_v3_checkpoint_projection(process_trace, image_trace)
                 validate_windows_debug_execution_environment_v3_manifest(environment_manifest)
+                if capture_v4:
+                    v4_schema_by_v3 = {
+                        _fixed_debug_v3_process_trace_schema(): (
+                            _fixed_debug_v4_process_trace_schema()
+                        ),
+                        _fixed_debug_v3_image_trace_schema(): (
+                            _fixed_debug_v4_image_trace_schema()
+                        ),
+                        _fixed_debug_v3_loss_trace_schema(): (
+                            _fixed_debug_v4_loss_trace_schema()
+                        ),
+                    }
+                    for document in (process_trace, image_trace, loss_trace):
+                        document.update({
+                            "schema": v4_schema_by_v3[document["schema"]],
+                            "capture_protocol": _fixed_debug_v4_capture_protocol(),
+                            "claim_boundary": _fixed_debug_v4_claim_boundary(),
+                        })
+                    image_trace["method"] = (
+                        "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+                        "STABLE_DOUBLE_READ/4"
+                    )
+                    loss_trace["limitations"] = list(_fixed_debug_v4_limitations())
+                    environment_manifest.update({
+                        "schema": _fixed_debug_v4_environment_manifest_schema(),
+                        "capture_protocol": _fixed_debug_v4_capture_protocol(),
+                    })
+                    file_projection = [
+                        (
+                            row["source_debug_sequence"], row["process_token"],
+                            row["mapping_token"], row["mapping_slot_token"],
+                            row["mapping_kind"],
+                        )
+                        for row in file_identity_rows
+                    ]
+                    image_projection = [
+                        (
+                            row["source_debug_sequence"], row["process_token"],
+                            row["mapping_token"], row["mapping_slot_token"],
+                            row["mapping_kind"],
+                        )
+                        for row in image_trace["events"]
+                        if row["event"] == "LOAD_IMAGE"
+                    ]
+                    if file_projection != image_projection:
+                        _fail("WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED")
+                    total_stable_disk_bytes = sum(
+                        row["file_size_bytes"] for row in file_identity_rows
+                    )
+                    distinct_file_identities = {
+                        (
+                            row["file_identity"]["volume_serial_number_hex"],
+                            row["file_identity"]["file_id_128_hex"],
+                        )
+                        for row in file_identity_rows
+                    }
+                    file_identity_trace = {
+                        "schema": _fixed_debug_v4_file_identity_trace_schema(),
+                        "capture_protocol": _fixed_debug_v4_capture_protocol(),
+                        "platform": _fixed_platform(),
+                        "selected_commit": selected_commit,
+                        "selected_tree": selected_tree,
+                        "claim_boundary": _fixed_debug_v4_claim_boundary(),
+                        "authority": _fixed_authority(),
+                        "method": (
+                            "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_FILE_ID_INFO_"
+                            "STABLE_DOUBLE_READ"
+                        ),
+                        "semantics": (
+                            "DEBUG_EVENT_IMAGE_HANDLES_TO_PERSISTENT_FILE_ID_AND_STABLE_"
+                            "SAME_HANDLE_ON_DISK_BYTES_ONLY"
+                        ),
+                        "target_process_token": target_token,
+                        "collection_guards": {
+                            "max_file_bytes": _MAX_DEBUG_FILE_BYTES,
+                            "max_total_file_bytes": _MAX_DEBUG_TOTAL_FILE_BYTES,
+                            "read_chunk_bytes": _DEBUG_FILE_READ_CHUNK_BYTES,
+                            "stable_read_passes": _DEBUG_FILE_STABLE_READ_PASSES,
+                        },
+                        "expected_debug_image_handle_count": load_count,
+                        "observed_non_null_handle_count": len(file_identity_rows),
+                        "stable_file_identity_count": len(file_identity_rows),
+                        "stable_disk_bytes_count": len(file_identity_rows),
+                        "unbound_debug_image_handle_count": 0,
+                        "distinct_file_identity_count": len(distinct_file_identities),
+                        "total_stable_disk_bytes": total_stable_disk_bytes,
+                        "total_same_handle_read_bytes": (
+                            total_stable_disk_bytes * _DEBUG_FILE_STABLE_READ_PASSES
+                        ),
+                        "persistent_file_identity_and_loaded_bytes_bound": False,
+                        "mapped_or_loaded_memory_bytes_bound": False,
+                        "rows": file_identity_rows,
+                    }
+                    for document in (
+                            process_trace, image_trace, file_identity_trace, loss_trace):
+                        validate_windows_debug_runtime_discovery_v4_trace(document)
+                    _validate_debug_v4_file_image_projection(
+                        process_trace, image_trace, file_identity_trace
+                    )
+                    validate_windows_debug_execution_environment_v4_manifest(
+                        environment_manifest
+                    )
+                    return (
+                        process_trace,
+                        image_trace,
+                        file_identity_trace,
+                        loss_trace,
+                        environment_manifest,
+                    )
             else:
                 for document in (process_trace, image_trace, loss_trace):
                     validate_windows_debug_runtime_discovery_trace(document)
@@ -6083,7 +7150,11 @@ def _debug_capture_helper_main(
                 or not _GIT_OBJECT_RE.fullmatch(selected_tree)
                 or type(outer_deadline_ns) is not int
                 or outer_deadline_ns <= 0
-                or capture_lane not in {_DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3}
+                or capture_lane not in {
+                    _DEBUG_CAPTURE_LANE_V2,
+                    _DEBUG_CAPTURE_LANE_V3,
+                    _DEBUG_CAPTURE_LANE_V4,
+                }
         ):
             _fail("WINDOWS_DEBUG_HELPER_REQUEST_INVALID")
         raw_by_relative: dict[str, bytes] = {}
@@ -6111,15 +7182,26 @@ def _debug_capture_helper_main(
             outer_deadline_ns,
             capture_lane,
         )
-        response = {
-            "helper_protocol": _DEBUG_HELPER_PROTOCOL,
-            "status": "SUCCESS",
-            "documents": {
+        documents = (
+            {
+                "process_trace": result[0],
+                "image_trace": result[1],
+                "file_identity_trace": result[2],
+                "loss_trace": result[3],
+                "environment_manifest": result[4],
+            }
+            if capture_lane == _DEBUG_CAPTURE_LANE_V4
+            else {
                 "process_trace": result[0],
                 "image_trace": result[1],
                 "loss_trace": result[2],
                 "environment_manifest": result[3],
-            },
+            }
+        )
+        response = {
+            "helper_protocol": _DEBUG_HELPER_PROTOCOL,
+            "status": "SUCCESS",
+            "documents": documents,
         }
     except RuntimeDiscoveryError as error:
         response = _debug_helper_error_response(error.code)
@@ -6154,11 +7236,18 @@ def _decode_debug_helper_response(raw: bytes) -> tuple[str, Any]:
         if set(value) != {"helper_protocol", "status", "documents"}:
             _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
         documents = value["documents"]
+        document_keys = (
+            {
+                "process_trace", "image_trace", "loss_trace", "environment_manifest"
+            },
+            {
+                "process_trace", "image_trace", "file_identity_trace", "loss_trace",
+                "environment_manifest",
+            },
+        )
         if (
                 type(documents) is not dict
-                or set(documents) != {
-                    "process_trace", "image_trace", "loss_trace", "environment_manifest"
-                }
+                or set(documents) not in document_keys
                 or any(type(document) is not dict for document in documents.values())
         ):
             _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
@@ -6302,15 +7391,32 @@ def _validate_debug_helper_documents(
         selected_tree: str,
         raw_by_relative: Mapping[str, bytes],
         capture_lane: str = _DEBUG_CAPTURE_LANE_V2,
-        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        ) -> tuple[dict[str, Any], ...]:
     process_trace = documents["process_trace"]
     image_trace = documents["image_trace"]
     loss_trace = documents["loss_trace"]
     environment_manifest = documents["environment_manifest"]
-    if capture_lane not in {_DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3}:
+    if capture_lane not in {
+            _DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4}:
         _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+    expected_keys = (
+        {
+            "process_trace", "image_trace", "file_identity_trace", "loss_trace",
+            "environment_manifest",
+        }
+        if capture_lane == _DEBUG_CAPTURE_LANE_V4
+        else {"process_trace", "image_trace", "loss_trace", "environment_manifest"}
+    )
+    if set(documents) != expected_keys:
+        _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
+    file_identity_trace = (
+        documents["file_identity_trace"]
+        if capture_lane == _DEBUG_CAPTURE_LANE_V4 else None
+    )
     for document in (process_trace, image_trace, loss_trace):
-        if capture_lane == _DEBUG_CAPTURE_LANE_V3:
+        if capture_lane == _DEBUG_CAPTURE_LANE_V4:
+            validate_windows_debug_runtime_discovery_v4_trace(document)
+        elif capture_lane == _DEBUG_CAPTURE_LANE_V3:
             validate_windows_debug_runtime_discovery_v3_trace(document)
         else:
             validate_windows_debug_runtime_discovery_trace(document)
@@ -6319,7 +7425,14 @@ def _validate_debug_helper_documents(
                 or document["selected_tree"] != selected_tree
         ):
             _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
-    if capture_lane == _DEBUG_CAPTURE_LANE_V3:
+    if capture_lane == _DEBUG_CAPTURE_LANE_V4:
+        assert file_identity_trace is not None
+        validate_windows_debug_runtime_discovery_v4_trace(file_identity_trace)
+        _validate_debug_v4_file_image_projection(
+            process_trace, image_trace, file_identity_trace
+        )
+        validate_windows_debug_execution_environment_v4_manifest(environment_manifest)
+    elif capture_lane == _DEBUG_CAPTURE_LANE_V3:
         _validate_debug_v3_checkpoint_projection(process_trace, image_trace)
         validate_windows_debug_execution_environment_v3_manifest(environment_manifest)
     else:
@@ -6331,6 +7444,14 @@ def _validate_debug_helper_documents(
     ):
         _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
     _validate_environment_source_joins(environment_manifest, raw_by_relative)
+    if file_identity_trace is not None:
+        return (
+            process_trace,
+            image_trace,
+            file_identity_trace,
+            loss_trace,
+            environment_manifest,
+        )
     return process_trace, image_trace, loss_trace, environment_manifest
 
 
@@ -6345,7 +7466,7 @@ def _capture_debug_dynamic(
         temp_base: Path,
         prepared_temp_root: Path | None = None,
         capture_lane: str = _DEBUG_CAPTURE_LANE_V2,
-        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        ) -> tuple[dict[str, Any], ...]:
     """Run the DEBUG_PROCESS lifecycle in a deadline-owned spawned helper process."""
 
     if prepared_temp_root is None:
@@ -6376,7 +7497,11 @@ def _capture_debug_dynamic(
 
     if (
             type(raw_by_relative) is not dict
-            or capture_lane not in {_DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3}
+            or capture_lane not in {
+                _DEBUG_CAPTURE_LANE_V2,
+                _DEBUG_CAPTURE_LANE_V3,
+                _DEBUG_CAPTURE_LANE_V4,
+            }
             or any(
                 type(relative) is not str or type(raw) is not bytes or not raw
                 for relative, raw in raw_by_relative.items()
@@ -6676,8 +7801,10 @@ def _capture_windows_debug_runtime_closure_incomplete(
     """Capture one DEBUG_PROCESS/Job-reconciled, still-incomplete R2.0 execution."""
 
     checked_subject = _validate_subject(subject)
-    if capture_lane not in {_DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3}:
+    if capture_lane not in {
+            _DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4}:
         _fail("WINDOWS_DEBUG_CAPTURE_LANE_INVALID")
+    capture_v4 = capture_lane == _DEBUG_CAPTURE_LANE_V4
     capture_v3 = capture_lane == _DEBUG_CAPTURE_LANE_V3
     if os.name != "nt" or sys.platform != "win32":
         _fail("WINDOWS_DEBUG_RUNTIME_DISCOVERY_HOST_REQUIRED")
@@ -6718,26 +7845,39 @@ def _capture_windows_debug_runtime_closure_incomplete(
                 asset_raw,
                 planned_temp_root,
             )
-            process_trace, image_trace, loss_trace, environment_manifest = (
-                _capture_debug_dynamic(
-                    python_executable,
-                    crypto_root,
-                    asset_raw,
-                    bytes_digest(asset_raw[_PROGRAM_RELATIVE]),
-                    bytes_digest(asset_raw[_INPUT_RELATIVE]),
-                    before_source[0],
-                    before_source[1],
-                    temp_base,
-                    planned_temp_root,
-                    capture_lane,
-                )
+            dynamic_result = _capture_debug_dynamic(
+                python_executable,
+                crypto_root,
+                asset_raw,
+                bytes_digest(asset_raw[_PROGRAM_RELATIVE]),
+                bytes_digest(asset_raw[_INPUT_RELATIVE]),
+                before_source[0],
+                before_source[1],
+                temp_base,
+                planned_temp_root,
+                capture_lane,
             )
+            if capture_v4:
+                (
+                    process_trace,
+                    image_trace,
+                    file_identity_trace,
+                    loss_trace,
+                    environment_manifest,
+                ) = dynamic_result
+            else:
+                process_trace, image_trace, loss_trace, environment_manifest = (
+                    dynamic_result
+                )
+                file_identity_trace = None
     except RuntimeDiscoveryError:
         raise
     except (OSError, TypeError, ValueError):
         _fail("WINDOWS_DEBUG_COLLECTION_FAILED")
     for document in (process_trace, image_trace, loss_trace):
-        if capture_v3:
+        if capture_v4:
+            validate_windows_debug_runtime_discovery_v4_trace(document)
+        elif capture_v3:
             validate_windows_debug_runtime_discovery_v3_trace(document)
         else:
             validate_windows_debug_runtime_discovery_trace(document)
@@ -6746,7 +7886,15 @@ def _capture_windows_debug_runtime_closure_incomplete(
                 or document["selected_tree"] != before_source[1]
         ):
             _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
-    if capture_v3:
+    if capture_v4:
+        if file_identity_trace is None:
+            _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_TRACE_MISSING")
+        validate_windows_debug_runtime_discovery_v4_trace(file_identity_trace)
+        _validate_debug_v4_file_image_projection(
+            process_trace, image_trace, file_identity_trace
+        )
+        validate_windows_debug_execution_environment_v4_manifest(environment_manifest)
+    elif capture_v3:
         validate_windows_debug_execution_environment_v3_manifest(environment_manifest)
     else:
         validate_windows_debug_execution_environment_manifest(environment_manifest)
@@ -6782,8 +7930,14 @@ def _capture_windows_debug_runtime_closure_incomplete(
         image_trace["schema"]: image_trace,
         loss_trace["schema"]: loss_trace,
     }
+    if file_identity_trace is not None:
+        dynamic_by_schema[file_identity_trace["schema"]] = file_identity_trace
     dynamic_artifacts = (
-        _DEBUG_V3_DYNAMIC_ARTIFACTS if capture_v3 else _DEBUG_DYNAMIC_ARTIFACTS
+        _DEBUG_V4_DYNAMIC_ARTIFACTS
+        if capture_v4
+        else _DEBUG_V3_DYNAMIC_ARTIFACTS
+        if capture_v3
+        else _DEBUG_DYNAMIC_ARTIFACTS
     )
     for artifact_id, role, schema in dynamic_artifacts:
         document = dynamic_by_schema[schema]
@@ -6791,7 +7945,11 @@ def _capture_windows_debug_runtime_closure_incomplete(
         artifact_raw_by_id[artifact_id] = raw
         artifact_rows.append(_artifact_row(artifact_id, role, raw))
     environment_artifact = (
-        _DEBUG_V3_ENVIRONMENT_ARTIFACT if capture_v3 else _DEBUG_ENVIRONMENT_ARTIFACT
+        _DEBUG_V4_ENVIRONMENT_ARTIFACT
+        if capture_v4
+        else _DEBUG_V3_ENVIRONMENT_ARTIFACT
+        if capture_v3
+        else _DEBUG_ENVIRONMENT_ARTIFACT
     )
     environment_artifact_id, environment_role, environment_field, _schema = environment_artifact
     environment_raw = canonical_json_bytes(environment_manifest)
@@ -6801,7 +7959,11 @@ def _capture_windows_debug_runtime_closure_incomplete(
     ))
     digest_fields[environment_field] = bytes_digest(environment_raw)
     artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
-    if capture_v3:
+    if capture_v4:
+        _validate_sealed_debug_v4_dynamic_profile(
+            artifact_raw_by_id, expected_crypto_provider_path_digest
+        )
+    elif capture_v3:
         _validate_sealed_debug_v3_dynamic_profile(
             artifact_raw_by_id, expected_crypto_provider_path_digest
         )
@@ -6828,19 +7990,31 @@ def _capture_windows_debug_runtime_closure_incomplete(
         "unresolved_dependency_count": inventory["coverage"][
             "unresolved_native_dependency_edge_count"
         ],
-        "unbound_file_identity_count": image_trace["distinct_mapping_count"],
+        "unbound_file_identity_count": (
+            file_identity_trace["unbound_debug_image_handle_count"]
+            if file_identity_trace is not None
+            else image_trace["distinct_mapping_count"]
+        ),
     })
-    evidence_seed = canonical_digest({
+    evidence_seed_inputs = {
         "process_trace_digest": canonical_digest(process_trace),
         "image_trace_digest": canonical_digest(image_trace),
         "loss_trace_digest": canonical_digest(loss_trace),
         "execution_environment_manifest_digest": canonical_digest(environment_manifest),
-    }).removeprefix("sha256:")
+    }
+    if file_identity_trace is not None:
+        evidence_seed_inputs["file_identity_trace_digest"] = canonical_digest(
+            file_identity_trace
+        )
+    evidence_seed = canonical_digest(evidence_seed_inputs).removeprefix("sha256:")
     evidence: dict[str, Any] = {
         "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
         "evidence_id": (
-            f"transition-runtime-debug-reconciliation.{evidence_seed}"
-            if capture_v3 else f"transition-runtime-debug-discovery.{evidence_seed}"
+            f"transition-runtime-debug-file-identity.{evidence_seed}"
+            if capture_v4
+            else f"transition-runtime-debug-reconciliation.{evidence_seed}"
+            if capture_v3
+            else f"transition-runtime-debug-discovery.{evidence_seed}"
         ),
         "purpose": RUNTIME_CLOSURE_REVIEW_PURPOSE,
         "state": RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE,
@@ -6886,8 +8060,11 @@ def _capture_windows_debug_runtime_closure_incomplete(
     ):
         _fail("WINDOWS_DEBUG_INCOMPLETE_BOUNDARY_FAILED")
     sealer = (
-        _seal_captured_debug_v3_discovery_result
-        if capture_v3 else _seal_captured_debug_discovery_result
+        _seal_captured_debug_v4_discovery_result
+        if capture_v4
+        else _seal_captured_debug_v3_discovery_result
+        if capture_v3
+        else _seal_captured_debug_discovery_result
     )
     return sealer(
         bound,
@@ -6921,17 +8098,31 @@ def capture_windows_debug_runtime_closure_v3_incomplete(
     )
 
 
+def capture_windows_debug_runtime_closure_v4_incomplete(
+        subject: RuntimeClosureDiscoverySubject,
+        project_root: Path,
+        ) -> CapturedIncompleteRuntimeClosureEvidence:
+    """Capture `/4` hFile identity/stable disk bytes without loaded-memory claims."""
+
+    return _capture_windows_debug_runtime_closure_incomplete(
+        subject, project_root, _DEBUG_CAPTURE_LANE_V4
+    )
+
+
 __all__ = [
     "CapturedIncompleteRuntimeClosureEvidence",
     "RuntimeClosureDiscoverySubject",
     "RuntimeDiscoveryError",
     "capture_windows_debug_runtime_closure_incomplete",
     "capture_windows_debug_runtime_closure_v3_incomplete",
+    "capture_windows_debug_runtime_closure_v4_incomplete",
     "capture_windows_runtime_closure_incomplete",
     "validate_windows_debug_execution_environment_manifest",
     "validate_windows_debug_execution_environment_v3_manifest",
+    "validate_windows_debug_execution_environment_v4_manifest",
     "validate_windows_debug_runtime_discovery_trace",
     "validate_windows_debug_runtime_discovery_v3_trace",
+    "validate_windows_debug_runtime_discovery_v4_trace",
     "validate_windows_execution_environment_manifest",
     "validate_windows_runtime_discovery_trace",
 ]
