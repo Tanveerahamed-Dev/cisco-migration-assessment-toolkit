@@ -153,6 +153,7 @@ def test_setup_guard_behaviorally_rejects_missing_traffic_intents_example(
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
         "cisco_toolkit/transition_runtime_closure.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
         "cisco_toolkit/transition_runtime_inventory.py",
         "cisco_toolkit/transition_workload_review.py",
         "cisco_toolkit/data/qcp-001.experimental.json",
@@ -176,6 +177,7 @@ def test_setup_guard_behaviorally_rejects_missing_traffic_intents_example(
         "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-runtime-discovery-v1.schema.json",
         "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
     ),
 )
@@ -223,6 +225,7 @@ def test_transition_runtime_data_assets_are_explicit_package_data_and_required()
         "schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
         "schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
         "schemas/atlas-r2-transition-workload-review-v1.schema.json",
+        "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json",
         "schemas/atlas-transition-runtime-inventory-v1.schema.json",
     }
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -732,6 +735,7 @@ def _lay_out_probe_project(project: Path) -> None:
         "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-runtime-discovery-v1.schema.json",
         "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
         "cisco_toolkit/transition_contract.py",
         "cisco_toolkit/transition_pack.py",
@@ -740,6 +744,7 @@ def _lay_out_probe_project(project: Path) -> None:
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
         "cisco_toolkit/transition_runtime_closure.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
         "cisco_toolkit/transition_runtime_inventory.py",
         "cisco_toolkit/transition_workload_review.py",
         "cisco_toolkit/blast_radius_explorer.html",

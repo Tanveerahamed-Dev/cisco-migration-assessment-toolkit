@@ -66,6 +66,24 @@ def test_runtime_closure_is_structural_tcb_authority_not_runtime_inventory_v1() 
     assert module_name not in runtime_inventory._STRUCTURAL_CORE_VALIDATOR_MODULES
 
 
+def test_runtime_discovery_is_not_structural_or_dsl_tcb_authority() -> None:
+    relative = "cisco_toolkit/transition_runtime_discovery.py"
+    module_name = "cisco_toolkit.transition_runtime_discovery"
+
+    assert relative not in dict(tcb_census.CORE_SOURCES)
+    assert relative not in {
+        path for _artifact_id, _source_role, path in prototype_assets.CORE_SOURCE_ROSTER
+    }
+    assert relative not in dict(tp._STRUCTURAL_TCB_CORE_SOURCE_ROLES)
+    assert relative not in tcb_review._STRUCTURAL_CORE_SOURCE_PATH_ROSTER
+    assert module_name not in {
+        module for module, _path in tcb_review._STRUCTURAL_CORE_RUNTIME_MODULE_ROSTER
+    }
+    assert module_name not in runtime_inventory._REQUIRED_STRUCTURAL_MODULE_LOAD_PHASES
+    assert module_name not in runtime_inventory._REQUIRED_STRUCTURAL_MODULE_PATH_TOKENS
+    assert module_name not in runtime_inventory._STRUCTURAL_CORE_VALIDATOR_MODULES
+
+
 def _digest(label: str) -> str:
     return tc.bytes_digest(label.encode("utf-8"))
 

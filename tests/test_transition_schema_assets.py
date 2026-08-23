@@ -16,6 +16,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from cisco_toolkit import transition_contract as tc
+from cisco_toolkit import transition_dsl as dsl
 from cisco_toolkit import transition_pack as tp
 from cisco_toolkit import transition_runtime_inventory as ri
 from tests.transition_fixtures import minimal_transition_case
@@ -25,6 +26,9 @@ _SCHEMA_RESOURCE = "schemas/atlas-transition-contract-v1.schema.json"
 _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
+_WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json"
+)
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
 _TCB_CENSUS_DIGEST = "sha256:f71abe7ea2d733eec30eaa7a1b4eba962a4bb4074758a1ec7335aa28c40f0d5b"
 
@@ -36,6 +40,156 @@ def _resource_bytes(relative: str) -> bytes:
 
 def _schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_SCHEMA_RESOURCE))
+
+
+def _windows_runtime_discovery_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE))
+
+
+def _windows_runtime_discovery_documents() -> list[dict[str, Any]]:
+    schema = _windows_runtime_discovery_schema()
+    protocol = schema["$defs"]["captureProtocol"]["const"]
+    claim_boundary = schema["$defs"]["claimBoundary"]["const"]
+    program_raw = _resource_bytes("data/atlas-r2-dsl-prototype-program.v1.json")
+    input_raw = _resource_bytes("data/atlas-r2-dsl-prototype-input.v1.json")
+    receipt = json.loads(dsl.run_pack_abi("evaluate", program_raw, input_raw))
+    shim_token = "process.000000000001"
+    process_token = "process.000000000002"
+    mapping_token = "mapping.000000000001"
+    digest = "sha256:" + "a" * 64
+    authority = {
+        "authoritative": False,
+        "closure_decision": None,
+        "complete_exact_runtime_closure": False,
+        "approved_budget": None,
+        "qualification_effect": "NONE",
+        "promotion_eligible": False,
+        "release3_included": False,
+    }
+    common = {
+        "capture_protocol": protocol,
+        "platform": {"os_name": "nt", "sys_platform": "win32"},
+        "selected_commit": "1" * 40,
+        "selected_tree": "2" * 40,
+        "claim_boundary": claim_boundary,
+        "authority": authority,
+    }
+    process_trace = {
+        **deepcopy(common),
+        "schema": "atlas.windows-job-process-trace/1",
+        "limits": {
+            "max_runtime_seconds": 30,
+            "max_process_events": 4096,
+            "max_mapping_snapshots": 256,
+            "max_mappings_per_snapshot": 4096,
+            "poll_interval_milliseconds": 25,
+        },
+        "target": {
+            "program_digest": tc.bytes_digest(program_raw),
+            "input_digest": tc.bytes_digest(input_raw),
+            "receipt_digest": tc.canonical_digest(receipt),
+            "receipt": receipt,
+            "outcome": "EXECUTED_NONAUTHORITATIVE",
+            "authoritative": False,
+            "promotion_eligible": False,
+            "crypto_provider_module": "cryptography.hazmat.bindings._rust",
+            "crypto_provider_path_digest": digest,
+            "crypto_vector": "RFC8032-TEST-1-EMPTY-MESSAGE",
+            "crypto_verified": True,
+        },
+        "target_process_token": process_token,
+        "job": {
+            "completion_port_associated": True,
+            "kill_on_job_close": True,
+            "breakaway_ok": False,
+            "silent_breakaway_ok": False,
+            "assigned_process_count": 1,
+            "observed_process_count": 2,
+            "active_process_zero_observed": True,
+            "target_exit_code": 0,
+        },
+        "process_event_count": 5,
+        "events": [
+            {
+                "sequence": 0,
+                "event": "NEW_PROCESS",
+                "process_token": shim_token,
+                "job_message_id": 6,
+            },
+            {
+                "sequence": 1,
+                "event": "NEW_PROCESS",
+                "process_token": process_token,
+                "job_message_id": 6,
+            },
+            {
+                "sequence": 2,
+                "event": "EXIT_PROCESS",
+                "process_token": process_token,
+                "job_message_id": 7,
+            },
+            {
+                "sequence": 3,
+                "event": "EXIT_PROCESS",
+                "process_token": shim_token,
+                "job_message_id": 7,
+            },
+            {
+                "sequence": 4,
+                "event": "ACTIVE_PROCESS_ZERO",
+                "process_token": None,
+                "job_message_id": 4,
+            },
+        ],
+    }
+    mapping_trace = {
+        **deepcopy(common),
+        "schema": "atlas.windows-k32-mapping-observation-trace/1",
+        "method": "WINDOWS_K32_ENUM_PROCESS_MODULES_EX_POLLING/1",
+        "semantics": "POLLING_CHECKPOINTS_NOT_LOAD_UNLOAD_HISTORY",
+        "history_complete": False,
+        "target_process_token": process_token,
+        "snapshot_count": 1,
+        "mapping_row_count": 1,
+        "distinct_mapping_count": 1,
+        "snapshots": [
+            {
+                "sequence": 0,
+                "process_token": process_token,
+                "status": "OBSERVED_NONEMPTY",
+                "mappings": [
+                    {
+                        "mapping_token": mapping_token,
+                        "observed_path_digest": digest,
+                        "path_disclosure": "DIGEST_ONLY_NO_RAW_PATH",
+                        "mapping_kind": "K32_ENUMERATED_IMAGE",
+                    }
+                ],
+            }
+        ],
+    }
+    loss_reconciliation = {
+        **deepcopy(common),
+        "schema": "atlas.windows-discovery-loss-reconciliation/1",
+        "target_process_token": process_token,
+        "process_event_count": 5,
+        "mapping_snapshot_count": 1,
+        "mapping_row_count": 1,
+        "event_stream_contiguous": False,
+        "start_end_snapshot_reconciled": False,
+        "counters": {
+            "job_messages_lost": None,
+            "process_events_lost": None,
+            "mapping_snapshots_lost": None,
+            "mapping_load_events_lost": None,
+            "mapping_unload_events_lost": None,
+            "k32_enumeration_failures": 0,
+        },
+        "limitations": schema["$defs"]["lossReconciliation"]["properties"][
+            "limitations"
+        ]["const"],
+    }
+    return [process_trace, mapping_trace, loss_reconciliation]
 
 
 def _validator_for(definition: str) -> Draft202012Validator:
@@ -327,3 +481,121 @@ def test_schema_and_code_both_reject_open_fields_and_caller_qualification_author
     assert nested_code_error.value.code == "CLOSED_SCHEMA_KEYS"
     with pytest.raises(ValidationError):
         Draft202012Validator(_schema()).validate(hostile)
+
+
+def test_windows_runtime_discovery_schema_accepts_exactly_three_incomplete_artifacts() -> None:
+    schema = _windows_runtime_discovery_schema()
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    documents = _windows_runtime_discovery_documents()
+
+    assert {item["schema"] for item in documents} == {
+        "atlas.windows-job-process-trace/1",
+        "atlas.windows-k32-mapping-observation-trace/1",
+        "atlas.windows-discovery-loss-reconciliation/1",
+    }
+    assert {item["$ref"] for item in schema["oneOf"]} == {
+        "#/$defs/processTrace",
+        "#/$defs/mappingTrace",
+        "#/$defs/lossReconciliation",
+    }
+    for document in documents:
+        validator.validate(document)
+        assert document["authority"] == {
+            "authoritative": False,
+            "closure_decision": None,
+            "complete_exact_runtime_closure": False,
+            "approved_budget": None,
+            "qualification_effect": "NONE",
+            "promotion_eligible": False,
+            "release3_included": False,
+        }
+
+
+def test_windows_runtime_discovery_schema_rejects_authority_raw_paths_and_history_lies() -> None:
+    validator = Draft202012Validator(_windows_runtime_discovery_schema())
+    process_trace, mapping_trace, loss_reconciliation = (
+        _windows_runtime_discovery_documents()
+    )
+    hostile_documents: list[dict[str, Any]] = []
+
+    authoritative = deepcopy(process_trace)
+    authoritative["authority"]["authoritative"] = True
+    hostile_documents.append(authoritative)
+
+    complete = deepcopy(process_trace)
+    complete["authority"]["complete_exact_runtime_closure"] = True
+    hostile_documents.append(complete)
+
+    qualified = deepcopy(process_trace)
+    qualified["target"]["receipt"]["qualification_state"] = "QUALIFIED"
+    hostile_documents.append(qualified)
+
+    open_surface = deepcopy(process_trace)
+    open_surface["ready_for_external_review"] = True
+    hostile_documents.append(open_surface)
+
+    rechained_nested_authority = deepcopy(process_trace)
+    target = rechained_nested_authority["target"]
+    receipt = target["receipt"]
+    receipt["result"]["entries"][0]["value"] = {
+        "authoritative": True,
+        "qualification_effect": "COMPLETE",
+    }
+    receipt["result_digest"] = tc.canonical_digest(receipt["result"])
+    receipt["work_units"]["result_bytes"] = len(tc.canonical_json_bytes(receipt["result"]))
+    target["receipt_digest"] = tc.canonical_digest(receipt)
+    hostile_documents.append(rechained_nested_authority)
+
+    raw_path = deepcopy(mapping_trace)
+    raw_path["snapshots"][0]["mappings"][0]["raw_path"] = (
+        "C:/sensitive/provider.dll"
+    )
+    hostile_documents.append(raw_path)
+
+    history_lie = deepcopy(mapping_trace)
+    history_lie["semantics"] = "LOAD_UNLOAD_HISTORY"
+    hostile_documents.append(history_lie)
+
+    reconciled_lie = deepcopy(loss_reconciliation)
+    reconciled_lie["event_stream_contiguous"] = True
+    hostile_documents.append(reconciled_lie)
+
+    missing_unknown_counter = deepcopy(loss_reconciliation)
+    del missing_unknown_counter["counters"]["mapping_unload_events_lost"]
+    hostile_documents.append(missing_unknown_counter)
+
+    for hostile in hostile_documents:
+        with pytest.raises(ValidationError):
+            validator.validate(hostile)
+
+
+def test_windows_runtime_discovery_schema_bounds_rows_and_declares_ordering_owner() -> None:
+    schema = _windows_runtime_discovery_schema()
+    validator = Draft202012Validator(schema)
+    process_trace, mapping_trace, _ = _windows_runtime_discovery_documents()
+    process_rows = schema["$defs"]["processTrace"]["properties"]["events"]
+    snapshot_rows = schema["$defs"]["mappingTrace"]["properties"]["snapshots"]
+    mapping_rows = schema["$defs"]["mappingSnapshot"]["properties"]["mappings"]
+
+    assert process_rows["maxItems"] == 4096
+    assert snapshot_rows["maxItems"] == 256
+    assert mapping_rows["maxItems"] == 4096
+    assert "sequence ordered from zero" in process_rows["$comment"]
+    assert "sequence ordered from zero" in snapshot_rows["$comment"]
+    assert "Python validation" in schema["$comment"]
+
+    negative_sequence = deepcopy(process_trace)
+    negative_sequence["events"][0]["sequence"] = -1
+    with pytest.raises(ValidationError):
+        validator.validate(negative_sequence)
+
+    no_initial_sequence = deepcopy(process_trace)
+    no_initial_sequence["events"][0]["sequence"] = 3
+    with pytest.raises(ValidationError):
+        validator.validate(no_initial_sequence)
+
+    empty_dynamic_snapshot = deepcopy(mapping_trace)
+    empty_dynamic_snapshot["snapshots"][0]["mappings"] = []
+    with pytest.raises(ValidationError):
+        validator.validate(empty_dynamic_snapshot)

@@ -67,6 +67,7 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/transition_dsl.py",
         "cisco_toolkit/transition_tcb_review.py",
         "cisco_toolkit/transition_runtime_closure.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
         "cisco_toolkit/transition_workload_review.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
@@ -115,6 +116,7 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         transition_legacy,
         transition_pack,
         transition_runtime_closure,
+        transition_runtime_discovery,
         transition_tcb_review,
         transition_verifier,
         transition_workload_review,
@@ -137,6 +139,12 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
             "bind_transition_runtime_closure_evidence_bytes",
             "verify_transition_runtime_closure_review",
             "require_verified_transition_runtime_closure_review",
+        ),
+        transition_runtime_discovery: (
+            "RuntimeClosureDiscoverySubject",
+            "CapturedIncompleteRuntimeClosureEvidence",
+            "validate_windows_runtime_discovery_trace",
+            "capture_windows_runtime_closure_incomplete",
         ),
         transition_verifier: (
             "verify_transition_case",
@@ -210,7 +218,9 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "PARTIAL_NONPORTABLE_PROTOTYPE",
         "COMPLETE_EXACT_RUNTIME_CLOSURE",
         "runtime-closure `/2` module and schema are protocol structure only",
-        "no runtime-closure evidence, capture corpus, trust policy, reviewer key, signature, or signed closure-review receipt is bundled",
+        "Windows live discovery emits only non-authoritative `COLLECTED_INCOMPLETE` evidence",
+        "no closure-capable collector, capture corpus, or authority",
+        "No trust policy, reviewer key, signature, or signed closure-review receipt is bundled",
         "do not change the runtime-inventory `/1` roster",
         "freeze `/1` remains unchanged and blocked",
         "Representative-workload evidence is non-authoritative",

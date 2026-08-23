@@ -11703,7 +11703,7 @@
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 97 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 98 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -11715,7 +11715,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 99 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 100 modules (analysis package + collector entry)"
    }
   ]
  },
