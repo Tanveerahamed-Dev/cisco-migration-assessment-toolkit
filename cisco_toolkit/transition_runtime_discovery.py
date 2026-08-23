@@ -32,7 +32,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -2765,6 +2765,7 @@ def _capture_dynamic(
     k32_failures = 0
     try:
         checked_temp_base = _resolve_local_no_reparse(temp_base, directory=True)
+        temp_context: AbstractContextManager[str]
         if prepared_temp_root is None:
             temp_context = tempfile.TemporaryDirectory(
                 prefix="atlas-r2-runtime-discovery-", dir=checked_temp_base
