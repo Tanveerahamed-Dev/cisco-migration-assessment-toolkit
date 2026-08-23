@@ -52,7 +52,7 @@
       "const": "WINDOWS_JOB_OBJECT_K32_DISCOVERY/1"
     },
     "claimBoundary": {
-      "const": "Two-sided parent-expected and target-observed binding of argv, working directory, environment, the Python executable file and reported interpreter metadata, and seven listed input byte strings for one R2.0 prototype execution only; this does not establish loader policy, interpreter or runtime dependency closure, platform or boot state, authority, qualification, promotion, or Release 3 readiness."
+      "const": "Two-sided parent-expected and target-observed binding of argv, working directory, environment, the selected Python executable path and separately read file bytes, reported interpreter metadata, and seven listed input byte strings for one R2.0 prototype execution only; this does not establish mapped or loaded executable bytes, persistent file identity, loader policy, interpreter or runtime dependency closure, platform or boot state, authority, qualification, promotion, or Release 3 readiness."
     },
     "platform": {
       "type": "object",

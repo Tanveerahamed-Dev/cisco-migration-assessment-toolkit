@@ -343,6 +343,65 @@ class _ModuleProxy:
         return getattr(self._wrapped, name)
 
 
+class _StringSubclass(str):
+    pass
+
+
+class _FakeCFunction:
+    def __init__(self, callback: Callable[..., Any]) -> None:
+        self.callback = callback
+        self.argtypes: Any = None
+        self.restype: Any = None
+
+    def __call__(self, *args: Any) -> Any:
+        return self.callback(*args)
+
+
+def _fake_current_process_image_kernel(
+        raw_path: str,
+        *,
+        api_success: bool = True,
+        reported_length: int | None = None,
+        ) -> tuple[SimpleNamespace, dict[str, Any]]:
+    state: dict[str, Any] = {"current_process_calls": 0, "query_calls": 0}
+
+    def current_process() -> int:
+        state["current_process_calls"] += 1
+        return 0x1234
+
+    def query(process: int, flags: int, buffer: Any, size_pointer: Any) -> bool:
+        state["query_calls"] += 1
+        state["process"] = process
+        state["flags"] = flags
+        if raw_path:
+            buffer.value = raw_path
+        size_pointer._obj.value = (
+            len(raw_path) if reported_length is None else reported_length
+        )
+        return api_success
+
+    return (
+        SimpleNamespace(
+            GetCurrentProcess=_FakeCFunction(current_process),
+            QueryFullProcessImageNameW=_FakeCFunction(query),
+        ),
+        state,
+    )
+
+
+def _install_fake_current_process_image_api(
+        monkeypatch: pytest.MonkeyPatch,
+        kernel32: SimpleNamespace) -> None:
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", _ModuleProxy(sys, platform="win32"))
+    monkeypatch.setattr(
+        discovery.ctypes, "WinDLL", lambda *args, **kwargs: kernel32, raising=False
+    )
+    monkeypatch.setattr(
+        discovery.ctypes, "set_last_error", lambda value: None, raising=False
+    )
+
+
 def _prepare_fake_capture(
         monkeypatch: pytest.MonkeyPatch,
         traces: tuple[
@@ -504,6 +563,438 @@ def test_public_capture_accepts_a_concrete_pathlib_path(
     monkeypatch.setattr(discovery, "_resolve_local_no_reparse", reached)
     with pytest.raises(ReachedPathBoundary):
         discovery.capture_windows_runtime_closure_incomplete(_subject(), ROOT)
+
+
+def test_current_process_image_helper_has_closed_shape_and_resolves_one_os_query(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    assert tuple(inspect.signature(discovery._current_process_image_path).parameters) == ()
+    raw_image = r"C:\Python312\python.exe"
+    kernel32, state = _fake_current_process_image_kernel(raw_image)
+    _install_fake_current_process_image_api(monkeypatch, kernel32)
+    resolved_image = ROOT / "resolved-os-image-python.exe"
+    resolve_calls: list[tuple[Path, bool | None]] = []
+
+    def resolve(path: Path, *, directory: bool | None = None) -> Path:
+        resolve_calls.append((path, directory))
+        return resolved_image
+
+    monkeypatch.setattr(discovery, "_resolve_local_no_reparse", resolve)
+    assert discovery._current_process_image_path() is resolved_image
+    assert state == {
+        "current_process_calls": 1,
+        "query_calls": 1,
+        "process": 0x1234,
+        "flags": 0,
+    }
+    assert resolve_calls == [(type(ROOT)(raw_image), False)]
+
+
+@pytest.mark.parametrize(
+    ("raw_image", "api_success", "reported_length"),
+    [
+        (r"C:\Python312\python.exe", False, None),
+        ("", True, 0),
+        (r"C:\Python312\python.exe", True, 1),
+        (r"C:\Python312\python.exe", True, 32768),
+        ("python.exe", True, None),
+        ("C:\\bad\npython.exe", True, None),
+    ],
+)
+def test_current_process_image_helper_rejects_api_and_shape_failures_without_resolution(
+        raw_image: str,
+        api_success: bool,
+        reported_length: int | None,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    kernel32, state = _fake_current_process_image_kernel(
+        raw_image, api_success=api_success, reported_length=reported_length
+    )
+    _install_fake_current_process_image_api(monkeypatch, kernel32)
+    monkeypatch.setattr(
+        discovery,
+        "_resolve_local_no_reparse",
+        lambda *args, **kwargs: pytest.fail("invalid OS image must not be resolved"),
+    )
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID$") as caught:
+        discovery._current_process_image_path()
+    assert caught.value.code == "RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID"
+    assert state["query_calls"] == 1
+
+
+def test_current_process_image_helper_stabilizes_api_and_path_failures(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", _ModuleProxy(sys, platform="win32"))
+    monkeypatch.setattr(
+        discovery.ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+        raising=False,
+    )
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID$"):
+        discovery._current_process_image_path()
+
+    kernel32, state = _fake_current_process_image_kernel(r"C:\Python312\python.exe")
+    _install_fake_current_process_image_api(monkeypatch, kernel32)
+    monkeypatch.setattr(
+        discovery,
+        "_resolve_local_no_reparse",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            discovery.RuntimeDiscoveryError("RUNTIME_DISCOVERY_FILE_REQUIRED")
+        ),
+    )
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID$") as caught:
+        discovery._current_process_image_path()
+    assert caught.value.code == "RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID"
+    assert state["query_calls"] == 1
+
+
+def test_capture_python_executable_uses_resolved_base_only_for_a_windows_venv(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = {
+        "prefix": r"C:\private-venv",
+        "base_prefix": r"C:\Python312",
+        "launcher": r"C:\private-venv\Scripts\python.exe",
+        "base": r"C:\Python312\python.exe",
+    }
+    resolved = {
+        "prefix": ROOT / "resolved-venv",
+        "base_prefix": ROOT / "resolved-python",
+        "launcher": ROOT / "resolved-venv-python.exe",
+        "base": ROOT / "resolved-base-python.exe",
+    }
+    runtime = SimpleNamespace(
+        platform="win32",
+        implementation=SimpleNamespace(name="cpython"),
+        prefix=raw["prefix"],
+        base_prefix=raw["base_prefix"],
+        executable=raw["launcher"],
+        _base_executable=raw["base"],
+    )
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", runtime)
+    resolve_calls: list[tuple[Path, bool | None]] = []
+    by_raw = {raw[key]: resolved[key] for key in raw}
+
+    def resolve(path: Path, *, directory: bool | None = None) -> Path:
+        resolve_calls.append((path, directory))
+        return by_raw[str(path)]
+
+    image_calls = 0
+
+    def image() -> Path:
+        nonlocal image_calls
+        image_calls += 1
+        return resolved["base"]
+
+    monkeypatch.setattr(discovery, "_resolve_local_no_reparse", resolve)
+    monkeypatch.setattr(discovery, "_current_process_image_path", image)
+    assert discovery._capture_python_executable() is resolved["base"]
+    assert image_calls == 1
+    assert resolve_calls == [
+        (type(ROOT)(raw["prefix"]), True),
+        (type(ROOT)(raw["base_prefix"]), True),
+        (type(ROOT)(raw["launcher"]), False),
+        (type(ROOT)(raw["base"]), False),
+    ]
+
+
+def test_capture_python_executable_detects_nonvenv_from_resolved_prefixes_and_skips_base(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    class Runtime:
+        platform = "win32"
+        implementation = SimpleNamespace(name="cpython")
+        prefix = r"C:\Python312\."
+        base_prefix = r"C:\Python312"
+        executable = r"C:\Python312\python.exe"
+
+        @property
+        def _base_executable(self) -> str:
+            raise AssertionError("non-venv selection must not consult _base_executable")
+
+    resolved_prefix = ROOT / "resolved-python"
+    resolved_launcher = ROOT / "resolved-python.exe"
+    resolution = {
+        Runtime.prefix: resolved_prefix,
+        Runtime.base_prefix: resolved_prefix,
+        Runtime.executable: resolved_launcher,
+    }
+    calls: list[tuple[Path, bool | None]] = []
+
+    def resolve(path: Path, *, directory: bool | None = None) -> Path:
+        calls.append((path, directory))
+        return resolution[str(path)]
+
+    image_calls = 0
+
+    def image() -> Path:
+        nonlocal image_calls
+        image_calls += 1
+        return resolved_launcher
+
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", Runtime())
+    monkeypatch.setattr(discovery, "_resolve_local_no_reparse", resolve)
+    monkeypatch.setattr(discovery, "_current_process_image_path", image)
+    assert discovery._capture_python_executable() is resolved_launcher
+    assert image_calls == 1
+    assert calls == [
+        (type(ROOT)(Runtime.prefix), True),
+        (type(ROOT)(Runtime.base_prefix), True),
+        (type(ROOT)(Runtime.executable), False),
+    ]
+
+
+@pytest.mark.parametrize("implementation_name", [None, "pypy", _StringSubclass("cpython")])
+def test_capture_python_executable_requires_exact_cpython_before_path_or_image_access(
+        implementation_name: Any,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = SimpleNamespace(
+        platform="win32",
+        implementation=SimpleNamespace(name=implementation_name),
+        prefix=r"C:\Python312",
+        base_prefix=r"C:\Python312",
+        executable=r"C:\Python312\python.exe",
+    )
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", runtime)
+    monkeypatch.setattr(
+        discovery,
+        "_resolve_local_no_reparse",
+        lambda *args, **kwargs: pytest.fail("non-CPython metadata must fail before resolution"),
+    )
+    monkeypatch.setattr(
+        discovery,
+        "_current_process_image_path",
+        lambda: pytest.fail("non-CPython metadata must fail before OS-image query"),
+    )
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID$") as caught:
+        discovery._capture_python_executable()
+    assert caught.value.code == "RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "windows_venv"),
+    [
+        ("prefix", "", False),
+        ("prefix", _StringSubclass(r"C:\Python312"), False),
+        ("base_prefix", Path(r"C:\Python312"), False),
+        ("executable", b"C:\\Python312\\python.exe", False),
+        ("executable", _StringSubclass(r"C:\Python312\python.exe"), False),
+        ("_base_executable", None, True),
+        ("_base_executable", "", True),
+        ("_base_executable", Path(r"C:\Python312\python.exe"), True),
+    ],
+)
+def test_capture_python_executable_stabilizes_malformed_runtime_metadata(
+        field: str,
+        invalid: Any,
+        windows_venv: bool,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    raw: dict[str, Any] = {
+        "prefix": r"C:\private-venv" if windows_venv else r"C:\Python312",
+        "base_prefix": r"C:\Python312",
+        "executable": (
+            r"C:\private-venv\Scripts\python.exe"
+            if windows_venv else r"C:\Python312\python.exe"
+        ),
+        "_base_executable": r"C:\Python312\python.exe",
+    }
+    raw[field] = invalid
+    runtime = SimpleNamespace(
+        platform="win32",
+        implementation=SimpleNamespace(name="cpython"),
+        **raw,
+    )
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", runtime)
+    resolved_prefix = ROOT / "resolved-venv"
+    resolved_base_prefix = ROOT / "resolved-python"
+    resolved_launcher = ROOT / "resolved-launcher.exe"
+
+    def resolve(path: Path, *, directory: bool | None = None) -> Path:
+        if type(raw["prefix"]) is str and str(path) == raw["prefix"]:
+            return resolved_prefix
+        if type(raw["base_prefix"]) is str and str(path) == raw["base_prefix"]:
+            return resolved_base_prefix
+        if type(raw["executable"]) is str and str(path) == raw["executable"]:
+            return resolved_launcher
+        raise AssertionError("malformed executable metadata reached path resolution")
+
+    monkeypatch.setattr(discovery, "_resolve_local_no_reparse", resolve)
+    monkeypatch.setattr(
+        discovery, "_current_process_image_path", lambda: ROOT / "os-image.exe"
+    )
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID$") as caught:
+        discovery._capture_python_executable()
+    assert caught.value.code == "RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID"
+
+
+def test_capture_python_executable_stabilizes_metadata_path_resolution_failure(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", SimpleNamespace(
+        platform="win32",
+        implementation=SimpleNamespace(name="cpython"),
+        prefix="relative-venv",
+        base_prefix=r"C:\Python312",
+        executable=r"C:\Python312\python.exe",
+    ))
+    monkeypatch.setattr(
+        discovery,
+        "_resolve_local_no_reparse",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            discovery.RuntimeDiscoveryError("RUNTIME_DISCOVERY_ABSOLUTE_PATH_REQUIRED")
+        ),
+    )
+    monkeypatch.setattr(
+        discovery,
+        "_current_process_image_path",
+        lambda: pytest.fail("invalid metadata path must fail before OS-image query"),
+    )
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID$") as caught:
+        discovery._capture_python_executable()
+    assert caught.value.code == "RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("windows_venv", "image_kind"),
+    [(True, "other"), (True, "launcher"), (False, "other")],
+)
+def test_capture_python_executable_rejects_os_image_metadata_mismatch(
+        windows_venv: bool,
+        image_kind: str,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_prefix = r"C:\private-venv" if windows_venv else r"C:\Python312"
+    raw_base_prefix = r"C:\Python312"
+    raw_launcher = (
+        r"C:\private-venv\Scripts\python.exe"
+        if windows_venv else r"C:\Python312\python.exe"
+    )
+    raw_base = r"C:\Python312\python.exe"
+    resolved_prefix = ROOT / ("resolved-venv" if windows_venv else "resolved-python")
+    resolved_base_prefix = ROOT / "resolved-python"
+    resolved_launcher = ROOT / "resolved-launcher.exe"
+    resolved_base = ROOT / "resolved-base.exe"
+    resolution = {
+        raw_prefix: resolved_prefix,
+        raw_base_prefix: resolved_base_prefix,
+        raw_launcher: resolved_launcher,
+        raw_base: resolved_base,
+    }
+    runtime = SimpleNamespace(
+        platform="win32",
+        implementation=SimpleNamespace(name="cpython"),
+        prefix=raw_prefix,
+        base_prefix=raw_base_prefix,
+        executable=raw_launcher,
+        _base_executable=raw_base,
+    )
+    image = resolved_launcher if image_kind == "launcher" else ROOT / "other-image.exe"
+    image_calls = 0
+
+    def current_image() -> Path:
+        nonlocal image_calls
+        image_calls += 1
+        return image
+
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", runtime)
+    monkeypatch.setattr(
+        discovery,
+        "_resolve_local_no_reparse",
+        lambda path, *, directory=None: resolution[str(path)],
+    )
+    monkeypatch.setattr(discovery, "_current_process_image_path", current_image)
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID$") as caught:
+        discovery._capture_python_executable()
+    assert caught.value.code == "RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID"
+    assert image_calls == 1
+
+
+def test_capture_python_executable_propagates_one_os_image_failure_without_fallback(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
+    monkeypatch.setattr(discovery, "sys", SimpleNamespace(
+        platform="win32",
+        implementation=SimpleNamespace(name="cpython"),
+        prefix=r"C:\Python312",
+        base_prefix=r"C:\Python312",
+        executable=r"C:\Python312\python.exe",
+    ))
+    resolved_prefix = ROOT / "resolved-python"
+    resolved_launcher = ROOT / "resolved-python.exe"
+    image_calls = 0
+
+    def image() -> Path:
+        nonlocal image_calls
+        image_calls += 1
+        raise discovery.RuntimeDiscoveryError(
+            "RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID"
+        )
+
+    monkeypatch.setattr(
+        discovery,
+        "_resolve_local_no_reparse",
+        lambda path, *, directory=None: (
+            resolved_launcher if directory is False else resolved_prefix
+        ),
+    )
+    monkeypatch.setattr(discovery, "_current_process_image_path", image)
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID$") as caught:
+        discovery._capture_python_executable()
+    assert caught.value.code == "RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID"
+    assert image_calls == 1
+
+
+def test_public_capture_passes_one_selected_python_to_both_launch_sides(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    documents = _valid_capture_documents()
+    _prepare_fake_capture(monkeypatch, documents)
+    selected = ROOT / "selected-base-python.exe"
+    selector_calls = 0
+    expected_calls: list[Path] = []
+    dynamic_calls: list[Path] = []
+
+    def select() -> Path:
+        nonlocal selector_calls
+        selector_calls += 1
+        return selected
+
+    def expected(python_executable: Path, *args: Any) -> dict[str, Any]:
+        assert python_executable is selected
+        expected_calls.append(python_executable)
+        return deepcopy(_valid_launch_binding())
+
+    def dynamic(python_executable: Path, *args: Any) -> tuple[
+            dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        assert python_executable is selected
+        dynamic_calls.append(python_executable)
+        return deepcopy(documents)
+
+    monkeypatch.setattr(discovery, "_capture_python_executable", select)
+    monkeypatch.setattr(discovery, "_expected_planned_launch", expected)
+    monkeypatch.setattr(discovery, "_capture_dynamic", dynamic)
+    result = discovery.capture_windows_runtime_closure_incomplete(_subject(), ROOT)
+    assert result.bound_evidence["state"] == closure.RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE
+    assert selector_calls == 1
+    assert expected_calls == [selected]
+    assert dynamic_calls == [selected]
 
 
 @pytest.mark.parametrize(

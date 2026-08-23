@@ -7,10 +7,11 @@ is a sandbox, a lossless event source, loaded-byte identity, or load/unload hist
 capture therefore always returns ``COLLECTED_INCOMPLETE`` evidence; failures return no evidence.
 
 The fixed target also reports a digest-only observation of its exact argv, working directory,
-environment, Python executable file and reported interpreter metadata, and seven listed input byte
-strings.  The parent derives the expected launch independently and refuses any mismatch.  This
-binds one prototype execution environment only; it does not establish loader policy, interpreter
-or transitive runtime closure, platform state, or authority.
+environment, selected Python executable path and separately read file bytes, reported interpreter
+metadata, and seven listed input byte strings.  The parent derives the expected launch independently
+and refuses any mismatch.  This binds one prototype execution environment only; it does not
+establish loaded-image identity, loader policy, interpreter or transitive runtime closure, platform
+state, or authority.
 
 The caller supplies subject identities plus an externally expected commit/tree.  Those strings are
 bindings, not proof of organizational independence or source selection.  This module creates no
@@ -81,10 +82,11 @@ WINDOWS_RUNTIME_DISCOVERY_CLAIM_BOUNDARY = (
 )
 WINDOWS_EXECUTION_ENVIRONMENT_CLAIM_BOUNDARY = (
     "Two-sided parent-expected and target-observed binding of argv, working directory, "
-    "environment, the Python executable file and reported interpreter metadata, and seven "
-    "listed input byte strings for one R2.0 prototype execution only; this does not establish "
-    "loader policy, interpreter or runtime dependency closure, platform or boot state, "
-    "authority, qualification, promotion, or Release 3 readiness."
+    "environment, the selected Python executable path and separately read file bytes, reported "
+    "interpreter metadata, and seven listed input byte strings for one R2.0 prototype execution "
+    "only; this does not establish mapped or loaded executable bytes, persistent file identity, "
+    "loader policy, interpreter or runtime dependency closure, platform or boot state, authority, "
+    "qualification, promotion, or Release 3 readiness."
 )
 
 
@@ -119,8 +121,9 @@ def _fixed_claim_boundary() -> str:
 def _fixed_environment_claim_boundary() -> str:
     return (
         "Two-sided parent-expected and target-observed binding of argv, working directory, "
-        "environment, the Python executable file and reported interpreter metadata, and seven "
-        "listed input byte strings for one R2.0 prototype execution only; this does not establish "
+        "environment, the selected Python executable path and separately read file bytes, reported "
+        "interpreter metadata, and seven listed input byte strings for one R2.0 prototype execution "
+        "only; this does not establish mapped or loaded executable bytes, persistent file identity, "
         "loader policy, interpreter or runtime dependency closure, platform or boot state, "
         "authority, qualification, promotion, or Release 3 readiness."
     )
@@ -1030,6 +1033,119 @@ def _resolve_local_no_reparse(path: Path, *, directory: bool | None = None) -> P
     if directory is False and not resolved.is_file():
         _fail("RUNTIME_DISCOVERY_FILE_REQUIRED")
     return resolved
+
+
+def _current_process_image_path() -> Path:
+    """Return the resolved local file named by the Windows current-process image query."""
+
+    if os.name != "nt" or sys.platform != "win32":
+        _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.argtypes = ()
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        current_process = kernel32.GetCurrentProcess()
+        if not current_process:
+            _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        ctypes.set_last_error(0)
+        queried = kernel32.QueryFullProcessImageNameW(
+            current_process,
+            0,
+            buffer,
+            ctypes.byref(length),
+        )
+    except RuntimeDiscoveryError:
+        raise
+    except (AttributeError, OSError, TypeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+    count = int(length.value)
+    raw = buffer.value
+    if (
+            not queried
+            or count < 1
+            or count >= len(buffer)
+            or len(raw) != count
+            or any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw)
+    ):
+        _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+    try:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+        return _resolve_local_no_reparse(candidate, directory=False)
+    except RuntimeDiscoveryError:
+        _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+    except (OSError, TypeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_CURRENT_PROCESS_IMAGE_INVALID")
+
+
+def _python_runtime_path(value: Any, *, directory: bool) -> Path:
+    if (
+            type(value) is not str
+            or not value
+            or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+    try:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+        return _resolve_local_no_reparse(candidate, directory=directory)
+    except RuntimeDiscoveryError:
+        _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+    except (OSError, TypeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+
+
+def _same_windows_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def _capture_python_executable() -> Path:
+    """Select the current OS process image after strict CPython consistency checks.
+
+    A Windows virtual environment's ``sys.executable`` is a short-lived redirector.  The fixed
+    capture instead anchors selection to the parent process image reported by Windows, and uses
+    CPython's runtime metadata only as fail-closed consistency checks.  Later path reads do not
+    prove the bytes of the already-loaded image or persistent file identity.
+    """
+
+    implementation = getattr(sys, "implementation", None)
+    implementation_name = getattr(implementation, "name", None)
+    platform = getattr(sys, "platform", None)
+    if (
+            os.name != "nt"
+            or type(platform) is not str
+            or platform != "win32"
+            or type(implementation_name) is not str
+            or implementation_name != "cpython"
+    ):
+        _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+    prefix = _python_runtime_path(getattr(sys, "prefix", None), directory=True)
+    base_prefix = _python_runtime_path(getattr(sys, "base_prefix", None), directory=True)
+    launcher = _python_runtime_path(getattr(sys, "executable", None), directory=False)
+    process_image = _current_process_image_path()
+    if not _same_windows_path(prefix, base_prefix):
+        base_executable = _python_runtime_path(
+            getattr(sys, "_base_executable", None), directory=False
+        )
+        if (
+                not _same_windows_path(process_image, base_executable)
+                or _same_windows_path(process_image, launcher)
+        ):
+            _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+    elif not _same_windows_path(process_image, launcher):
+        _fail("RUNTIME_DISCOVERY_PYTHON_EXECUTABLE_INVALID")
+    return process_image
 
 
 def _stable_read(path: Path) -> bytes:
@@ -2913,7 +3029,7 @@ def capture_windows_runtime_closure_incomplete(
         _fail("RUNTIME_DISCOVERY_PROJECT_ROOT_REQUIRED")
     root = _resolve_local_no_reparse(project_root, directory=True)
     before_source = _checkout_fingerprint(root, checked_subject)
-    python_executable = _resolve_local_no_reparse(Path(sys.executable), directory=False)
+    python_executable = _capture_python_executable()
     crypto_root, expected_crypto_provider_path_digest = _distribution_import_root("cryptography")
     temp_base = _resolve_local_no_reparse(root.parent, directory=True)
 
