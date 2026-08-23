@@ -161,6 +161,17 @@ def _evidence(
     return value, raw_by_id
 
 
+def test_runtime_closure_claim_boundary_does_not_imply_missing_policy_artifacts() -> None:
+    assert (
+        "requirements for candidate closure, not facts established by this envelope"
+        in rc.RUNTIME_CLOSURE_EVIDENCE_CLAIM_BOUNDARY
+    )
+    assert (
+        "under an immutable content-addressed executable allow-set"
+        not in rc.RUNTIME_CLOSURE_EVIDENCE_CLAIM_BOUNDARY
+    )
+
+
 def _public_key_raw(private_key: Ed25519PrivateKey) -> bytes:
     return private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,

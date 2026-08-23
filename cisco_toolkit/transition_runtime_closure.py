@@ -83,10 +83,11 @@ RUNTIME_CLOSURE_REVIEW_INCOMPLETE = "INCOMPLETE_RUNTIME_CLOSURE"
 
 RUNTIME_CLOSURE_EVIDENCE_CLAIM_BOUNDARY = (
     "Exact non-authoritative evidence for external review of one selected R2.0 supported-"
-    "execution and ABI denominator under an immutable content-addressed executable allow-set "
-    "and deny-by-default execution policy; the envelope cannot establish closure, representative "
-    "workload adequacy, universal all-input behavior, portability, semantic equivalence, approve "
-    "budgets, qualify a pack, authorize execution, enable promotion, or include Release 3."
+    "execution and ABI denominator; an immutable content-addressed executable allow-set and "
+    "deny-by-default execution policy are requirements for candidate closure, not facts established "
+    "by this envelope. The envelope cannot establish closure, representative workload adequacy, "
+    "universal all-input behavior, portability, semantic equivalence, approve budgets, qualify a "
+    "pack, authorize execution, enable promotion, or include Release 3."
 )
 
 RUNTIME_CLOSURE_DIGEST_ROLE_MAP = {
