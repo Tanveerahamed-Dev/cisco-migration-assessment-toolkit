@@ -2611,7 +2611,7 @@ def test_real_windows_debug_v4_capture_runs_only_from_a_tracked_clean_committed_
     assert evidence["coverage"][
         "persistent_file_identity_and_loaded_bytes_bound"
     ] is False
-    assert evidence["coverage"]["complete_runtime_file_denominator_closed"] is False
+    assert evidence["coverage"]["supported_execution_denominator_closed"] is False
     assert evidence["coverage"]["event_stream_contiguous"] is False
     assert evidence["coverage"]["start_end_snapshot_reconciled"] is False
 
