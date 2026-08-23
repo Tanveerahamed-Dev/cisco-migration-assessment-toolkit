@@ -23,11 +23,13 @@ from cisco_toolkit import transition_runtime_inventory as inventory
 ROOT = Path(__file__).resolve().parents[1]
 _COMMIT = "a" * 40
 _TREE = "b" * 40
-_DYNAMIC_ARTIFACT_IDS = {
+_TRACE_ARTIFACT_IDS = {
     "windows-job-process-trace.atlas-r2.v1",
     "windows-k32-mapping-observation-trace.atlas-r2.v1",
     "windows-discovery-loss-reconciliation.atlas-r2.v1",
 }
+_ENVIRONMENT_ARTIFACT_ID = "windows-execution-environment-manifest.atlas-r2.v1"
+_DYNAMIC_ARTIFACT_IDS = {*_TRACE_ARTIFACT_IDS, _ENVIRONMENT_ARTIFACT_ID}
 _CRYPTO_PROVIDER_PATH_DIGEST = contract.bytes_digest(b"normalized crypto path")
 _AUTHORITY = {
     "authoritative": False,
@@ -88,6 +90,140 @@ def _target() -> dict[str, Any]:
         "crypto_vector": "RFC8032-TEST-1-EMPTY-MESSAGE",
         "crypto_verified": True,
     }
+
+
+def _valid_launch_binding() -> dict[str, Any]:
+    path_digests = {
+        "collector-target-script": contract.bytes_digest(b"private-target-script-path"),
+        "dsl-input": contract.bytes_digest(b"private-dsl-input-path"),
+        "dsl-program": contract.bytes_digest(b"private-dsl-program-path"),
+        "source-root": contract.bytes_digest(b"private-selected-source-root"),
+        "crypto-root": contract.bytes_digest(b"private-crypto-root"),
+        "pycache": contract.bytes_digest(b"private-pycache-path"),
+        "temp": contract.bytes_digest(b"private-temp-path"),
+        "windows": contract.bytes_digest(b"private-windows-path"),
+    }
+    input_rows = []
+    for input_id, path_token, relative in sorted(discovery._LAUNCH_INPUT_SPEC):
+        raw = (
+            discovery._TARGET_SOURCE.encode("utf-8")
+            if relative is None
+            else (ROOT / relative).read_bytes()
+        )
+        input_rows.append({
+            "input_id": input_id,
+            "path_token": path_token,
+            "path_digest": path_digests.get(
+                input_id, contract.bytes_digest(f"private-path:{input_id}".encode())
+            ),
+            "raw_bytes": len(raw),
+            "digest": contract.bytes_digest(raw),
+        })
+    source_manifest_raw = contract.canonical_json_bytes({
+        relative: contract.bytes_digest((ROOT / relative).read_bytes())
+        for relative in discovery._TARGET_SOURCE_RELATIVES
+    })
+    exact_argv_digests = {
+        0: path_digests["collector-target-script"],
+        1: path_digests["source-root"],
+        2: path_digests["dsl-program"],
+        3: path_digests["dsl-input"],
+        4: path_digests["crypto-root"],
+        5: contract.bytes_digest(str(contract.PROVISIONAL_MAX_CANONICAL_BYTES).encode()),
+        6: contract.bytes_digest(source_manifest_raw),
+    }
+    environment_digests = {
+        "PATH": contract.bytes_digest(b""),
+        "PYTHONHASHSEED": contract.bytes_digest(b"0"),
+        "PYTHONIOENCODING": contract.bytes_digest(b"utf-8"),
+        "PYTHONPYCACHEPREFIX": path_digests["pycache"],
+        "PYTHONUTF8": contract.bytes_digest(b"1"),
+        "SYSTEMROOT": path_digests["windows"],
+        "TEMP": path_digests["temp"],
+        "TMP": path_digests["temp"],
+        "WINDIR": path_digests["windows"],
+    }
+    return {
+        "python": {
+            "implementation": "cpython",
+            "version": "3.12.10",
+            "cache_tag": "cpython-312",
+            "executable": {
+                "path_token": "$PYTHON_EXECUTABLE",
+                "path_digest": contract.bytes_digest(b"private-python-path"),
+                "raw_bytes": len(b"fixture-python-executable"),
+                "digest": contract.bytes_digest(b"fixture-python-executable"),
+            },
+            "flags": {
+                "isolated": True,
+                "no_site": True,
+                "ignore_environment": True,
+                "safe_path": True,
+                "dont_write_bytecode": True,
+            },
+            "pycache_prefix": {
+                "path_token": "$PRIVATE_PYCACHE_PREFIX",
+                "path_digest": path_digests["pycache"],
+            },
+        },
+        "argv": [
+            {
+                "index": index,
+                "value_kind": kind,
+                "value_token": token,
+                "value_digest": exact_argv_digests[index],
+            }
+            for index, (token, kind) in enumerate(discovery._TARGET_ARGV_SPEC)
+        ],
+        "cwd": {
+            "path_token": "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT",
+            "path_digest": path_digests["source-root"],
+        },
+        "environment": [
+            {
+                "name": name,
+                "value_kind": discovery._ENVIRONMENT_VALUE_SPEC[name][0],
+                "value_token": discovery._ENVIRONMENT_VALUE_SPEC[name][1],
+                "value_digest": environment_digests[name],
+            }
+            for name in sorted(discovery._ENVIRONMENT_VALUE_SPEC)
+        ],
+        "inputs": input_rows,
+        "source_manifest_digest": contract.bytes_digest(source_manifest_raw),
+    }
+
+
+def _valid_environment_manifest() -> dict[str, Any]:
+    parent_expected = _valid_launch_binding()
+    target_observed = deepcopy(parent_expected)
+    return {
+        "schema": discovery.WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA,
+        "capture_protocol": discovery.WINDOWS_RUNTIME_DISCOVERY_CAPTURE_PROTOCOL,
+        "platform": {"os_name": "nt", "sys_platform": "win32"},
+        "selected_commit": _COMMIT,
+        "selected_tree": _TREE,
+        "target_process_token": "process.000000000002",
+        "launch": {
+            "parent_expected": parent_expected,
+            "target_observed": target_observed,
+        },
+        "reconciliation": {
+            "parent_expected_launch_digest": contract.canonical_digest(parent_expected),
+            "target_observed_launch_digest": contract.canonical_digest(target_observed),
+            "exact_match": True,
+        },
+        "claim_boundary": discovery.WINDOWS_EXECUTION_ENVIRONMENT_CLAIM_BOUNDARY,
+        "authority": deepcopy(_AUTHORITY),
+    }
+
+
+def _refresh_environment_reconciliation(manifest: dict[str, Any]) -> None:
+    manifest["reconciliation"]["parent_expected_launch_digest"] = (
+        contract.canonical_digest(manifest["launch"]["parent_expected"])
+    )
+    manifest["reconciliation"]["target_observed_launch_digest"] = (
+        contract.canonical_digest(manifest["launch"]["target_observed"])
+    )
 
 
 def _valid_traces() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -191,6 +327,11 @@ def _valid_traces() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     return process_trace, mapping_trace, loss_trace
 
 
+def _valid_capture_documents(
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    return (*_valid_traces(), _valid_environment_manifest())
+
+
 class _ModuleProxy:
     def __init__(self, wrapped: Any, **overrides: Any) -> None:
         self._wrapped = wrapped
@@ -204,7 +345,9 @@ class _ModuleProxy:
 
 def _prepare_fake_capture(
         monkeypatch: pytest.MonkeyPatch,
-        traces: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> None:
+        traces: tuple[
+            dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+        ]) -> None:
     # Keep unit evidence construction portable without changing the host modules globally.
     monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
     monkeypatch.setattr(
@@ -234,14 +377,21 @@ def _prepare_fake_capture(
         "_distribution_import_root",
         lambda package: (ROOT, _CRYPTO_PROVIDER_PATH_DIGEST),
     )
+    monkeypatch.setattr(
+        discovery,
+        "_expected_planned_launch",
+        lambda *args: deepcopy(_valid_launch_binding()),
+    )
     monkeypatch.setattr(discovery, "_capture_dynamic", lambda *args: deepcopy(traces))
 
 
 def _fake_capture(
         monkeypatch: pytest.MonkeyPatch,
-        traces: tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None = None,
+        traces: tuple[
+            dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+        ] | None = None,
         ) -> discovery.CapturedIncompleteRuntimeClosureEvidence:
-    _prepare_fake_capture(monkeypatch, traces or _valid_traces())
+    _prepare_fake_capture(monkeypatch, traces or _valid_capture_documents())
     return discovery.capture_windows_runtime_closure_incomplete(_subject(), ROOT)
 
 
@@ -259,6 +409,7 @@ def test_public_surface_is_incomplete_only_and_has_no_claim_injection() -> None:
         "RuntimeClosureDiscoverySubject",
         "RuntimeDiscoveryError",
         "capture_windows_runtime_closure_incomplete",
+        "validate_windows_execution_environment_manifest",
         "validate_windows_runtime_discovery_trace",
     ]
     signature = inspect.signature(discovery.capture_windows_runtime_closure_incomplete)
@@ -529,6 +680,219 @@ def test_trace_validator_accepts_only_the_three_closed_incomplete_documents() ->
         discovery.validate_windows_runtime_discovery_trace(unknown)
 
 
+def test_environment_manifest_validator_accepts_only_the_fixed_two_sided_document() -> None:
+    manifest = _valid_environment_manifest()
+    checked = discovery.validate_windows_execution_environment_manifest(manifest)
+    assert checked == manifest
+    assert checked is not manifest
+    assert checked["launch"] is not manifest["launch"]
+    assert checked["launch"]["parent_expected"] is not manifest["launch"][
+        "parent_expected"
+    ]
+    assert checked["launch"]["target_observed"] is not manifest["launch"][
+        "target_observed"
+    ]
+    assert checked["reconciliation"] == {
+        "parent_expected_launch_digest": contract.canonical_digest(
+            checked["launch"]["parent_expected"]
+        ),
+        "target_observed_launch_digest": contract.canonical_digest(
+            checked["launch"]["target_observed"]
+        ),
+        "exact_match": True,
+    }
+
+    manifest["launch"]["parent_expected"]["argv"][0]["value_digest"] = (
+        contract.bytes_digest(b"changed")
+    )
+    assert checked == _valid_environment_manifest()
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID$"):
+        discovery.validate_windows_execution_environment_manifest([])
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error_code"),
+    [
+        (
+            lambda value: value["launch"]["parent_expected"]["argv"][0].__setitem__(
+                "value_token", "$UNRECOGNIZED_ARGV"
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_ARGV_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["argv"][0].__setitem__(
+                "value_digest", contract.bytes_digest(b"changed argv")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_CROSS_BINDING_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["argv"][0].__setitem__(
+                "index", False
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_ARGV_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["python"][
+                "flags"
+            ].__setitem__("isolated", 1),
+            "WINDOWS_EXECUTION_ENVIRONMENT_FLAGS_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["cwd"].__setitem__(
+                "path_token", "$UNRECOGNIZED_CWD"
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_CWD_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["cwd"].__setitem__(
+                "path_digest", contract.bytes_digest(b"changed cwd")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_CROSS_BINDING_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["environment"][0].__setitem__(
+                "name", "UNRECOGNIZED_VARIABLE"
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_VARIABLES_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["environment"][0].__setitem__(
+                "value_digest", contract.bytes_digest(b"changed environment")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_CROSS_BINDING_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["inputs"][3].__setitem__(
+                "path_digest", contract.bytes_digest(b"changed selected source path")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["inputs"][2].__setitem__(
+                "digest", contract.bytes_digest(b"changed DSL program")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["inputs"][0].__setitem__(
+                "raw_bytes", True
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["inputs"][0].__setitem__(
+                "raw_bytes", len(discovery._TARGET_SOURCE.encode("utf-8")) + 1
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["inputs"][1].__setitem__(
+                "raw_bytes", discovery._FIXED_INPUT_BYTES + 1
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID",
+        ),
+        (
+            lambda value: value["launch"]["parent_expected"]["inputs"][2].__setitem__(
+                "raw_bytes", discovery._FIXED_PROGRAM_BYTES + 1
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID",
+        ),
+        (
+            lambda value: value["reconciliation"].__setitem__(
+                "parent_expected_launch_digest", contract.bytes_digest(b"wrong parent")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_INVALID",
+        ),
+        (
+            lambda value: value["reconciliation"].__setitem__(
+                "target_observed_launch_digest", contract.bytes_digest(b"wrong target")
+            ),
+            "WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_INVALID",
+        ),
+        (
+            lambda value: value["reconciliation"].__setitem__("exact_match", False),
+            "WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_INVALID",
+        ),
+    ],
+)
+def test_environment_manifest_validator_fails_closed_on_launch_and_reconciliation_mutation(
+        mutate: Callable[[dict[str, Any]], None],
+        error_code: str) -> None:
+    manifest = deepcopy(_valid_environment_manifest())
+    mutate(manifest)
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$") as caught:
+        discovery.validate_windows_execution_environment_manifest(manifest)
+    assert caught.value.code == error_code
+
+
+def test_environment_manifest_retains_and_reconciles_both_launch_sides() -> None:
+    manifest = _valid_environment_manifest()
+    target = manifest["launch"]["target_observed"]
+    target["python"]["implementation"] = "different-python-implementation"
+    manifest["reconciliation"]["target_observed_launch_digest"] = (
+        contract.canonical_digest(target)
+    )
+
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_INVALID$"):
+        discovery.validate_windows_execution_environment_manifest(manifest)
+
+    missing_side = _valid_environment_manifest()
+    del missing_side["launch"]["target_observed"]
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_EXECUTION_ENVIRONMENT_LAUNCH_PAIR_INVALID$"):
+        discovery.validate_windows_execution_environment_manifest(missing_side)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda launch: launch["argv"][1].__setitem__(
+            "value_digest", contract.bytes_digest(b"different source root")
+        ),
+        lambda launch: launch["argv"][2].__setitem__(
+            "value_digest", contract.bytes_digest(b"different program path")
+        ),
+        lambda launch: launch["argv"][3].__setitem__(
+            "value_digest", contract.bytes_digest(b"different input path")
+        ),
+        lambda launch: launch["environment"][3].__setitem__(
+            "value_digest", contract.bytes_digest(b"different pycache prefix")
+        ),
+        lambda launch: launch["environment"][5].__setitem__(
+            "value_digest", contract.bytes_digest(b"different system root")
+        ),
+        lambda launch: launch["environment"][6].__setitem__(
+            "value_digest", contract.bytes_digest(b"different temp root")
+        ),
+        lambda launch: launch["argv"][5].__setitem__(
+            "value_digest", contract.bytes_digest(b"different collection ceiling")
+        ),
+        lambda launch: launch["argv"][6].__setitem__(
+            "value_digest", contract.bytes_digest(b"different source manifest argv")
+        ),
+        lambda launch: launch["inputs"][3].__setitem__(
+            "digest", contract.bytes_digest(b"different selected source bytes")
+        ),
+        lambda launch: launch.__setitem__(
+            "source_manifest_digest", contract.bytes_digest(b"different source manifest")
+        ),
+    ],
+)
+def test_environment_manifest_rejects_internally_contradictory_launch_bindings(
+        mutate: Callable[[dict[str, Any]], None]) -> None:
+    manifest = _valid_environment_manifest()
+    mutate(manifest["launch"]["parent_expected"])
+    with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_EXECUTION_ENVIRONMENT_CROSS_BINDING_INVALID$"):
+        discovery.validate_windows_execution_environment_manifest(manifest)
+
+
 def test_mapping_snapshot_digests_paths_without_disclosing_them(
         monkeypatch: pytest.MonkeyPatch) -> None:
     secret = r"C:\Users\Alice\Secret\crypto-provider.pyd"
@@ -566,9 +930,11 @@ def test_fake_dynamic_capture_derives_a_bound_incomplete_envelope(
     assert evidence["authority"] == _AUTHORITY
     assert evidence["known_gaps"] == closure.expected_runtime_closure_gaps(evidence)
     assert evidence["known_gaps"]
+    assert evidence["coverage"]["execution_environment_argv_cwd_and_inputs_bound"] is True
     assert all(
         evidence["coverage"][field] is False
         for field in closure.RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS
+        if field != "execution_environment_argv_cwd_and_inputs_bound"
     )
     assert evidence["coverage"]["supported_execution_case_count"] == 1
     assert evidence["coverage"]["observed_process_count"] == 2
@@ -578,7 +944,39 @@ def test_fake_dynamic_capture_derives_a_bound_incomplete_envelope(
     assert evidence["coverage"]["sequence_gap_count"] is None
     assert evidence["coverage"]["unbound_file_identity_count"] == 1
     assert set(artifact_raw) == {row["artifact_id"] for row in evidence["artifacts"]}
+    assert len(artifact_raw) == 12
     assert _DYNAMIC_ARTIFACT_IDS <= set(artifact_raw)
+
+    environment_raw = artifact_raw[_ENVIRONMENT_ARTIFACT_ID]
+    environment_row = next(
+        row for row in evidence["artifacts"]
+        if row["artifact_id"] == _ENVIRONMENT_ARTIFACT_ID
+    )
+    assert environment_row == {
+        "artifact_id": _ENVIRONMENT_ARTIFACT_ID,
+        "role": "EXECUTION_ENVIRONMENT_MANIFEST",
+        "digest": contract.bytes_digest(environment_raw),
+        "raw_bytes": len(environment_raw),
+    }
+    assert evidence["execution_environment_manifest_digest"] == contract.bytes_digest(
+        environment_raw
+    )
+    environment_manifest = contract.parse_canonical_json_bytes(
+        environment_raw, require_canonical=True
+    )
+    assert discovery.validate_windows_execution_environment_manifest(
+        environment_manifest
+    ) == environment_manifest
+    assert environment_manifest["target_process_token"] == "process.000000000002"
+    assert environment_manifest["reconciliation"] == {
+        "parent_expected_launch_digest": contract.canonical_digest(
+            environment_manifest["launch"]["parent_expected"]
+        ),
+        "target_observed_launch_digest": contract.canonical_digest(
+            environment_manifest["launch"]["target_observed"]
+        ),
+        "exact_match": True,
+    }
 
     inventory_raw = artifact_raw["reference-runtime-inventory-v1.atlas-r2.reference"]
     inventory_value = contract.parse_canonical_json_bytes(
@@ -588,11 +986,12 @@ def test_fake_dynamic_capture_derives_a_bound_incomplete_envelope(
     assert inventory_value["closure"]["state"] == "PARTIAL_NONPORTABLE_PROTOTYPE"
     assert inventory_value["closure"]["complete_exact_runtime_closure"] is False
 
-    for artifact_id in _DYNAMIC_ARTIFACT_IDS:
+    for artifact_id in _TRACE_ARTIFACT_IDS:
         raw = artifact_raw[artifact_id]
         trace = contract.parse_canonical_json_bytes(raw, require_canonical=True)
         discovery.validate_windows_runtime_discovery_trace(trace)
         assert re.search(rb"[A-Za-z]:[\\/]", raw) is None
+    assert re.search(rb"[A-Za-z]:[\\/]", environment_raw) is None
 
 
 def test_captured_result_is_sealed_and_returns_artifact_copies(
@@ -621,13 +1020,23 @@ def test_captured_result_is_sealed_and_returns_artifact_copies(
         "empty_mapping_trace",
         "cross_trace_count_mismatch",
         "cross_trace_target_token_mismatch",
+        "environment_target_token_mismatch",
+        "environment_source_mismatch",
+        "environment_selected_source_digest_mismatch",
+        "environment_source_manifest_digest_mismatch",
+        "environment_limit_argv_mismatch",
+        "environment_colluded_python",
+        "environment_colluded_windows_directory",
+        "environment_colluded_cwd",
+        "environment_colluded_target_path",
+        "environment_colluded_crypto_root",
         "colluded_crypto_provider_path",
     ],
 )
 def test_capture_revalidates_and_cross_joins_dynamic_helper_results_fail_closed(
         tamper_kind: str,
         monkeypatch: pytest.MonkeyPatch) -> None:
-    traces = list(deepcopy(_valid_traces()))
+    traces = list(deepcopy(_valid_capture_documents()))
     if tamper_kind == "empty_mapping_trace":
         traces[1]["snapshots"] = []
         traces[1]["snapshot_count"] = 0
@@ -640,6 +1049,76 @@ def test_capture_revalidates_and_cross_joins_dynamic_helper_results_fail_closed(
     elif tamper_kind == "cross_trace_target_token_mismatch":
         traces[1]["target_process_token"] = "process.000000000001"
         traces[1]["snapshots"][0]["process_token"] = "process.000000000001"
+    elif tamper_kind == "environment_target_token_mismatch":
+        traces[3]["target_process_token"] = "process.000000000001"
+    elif tamper_kind == "environment_source_mismatch":
+        traces[3]["selected_tree"] = "c" * 40
+    elif tamper_kind == "environment_selected_source_digest_mismatch":
+        for side in ("parent_expected", "target_observed"):
+            traces[3]["launch"][side]["inputs"][3]["digest"] = contract.bytes_digest(
+                b"different selected source bytes"
+            )
+            traces[3]["reconciliation"][f"{side}_launch_digest"] = (
+                contract.canonical_digest(traces[3]["launch"][side])
+            )
+    elif tamper_kind == "environment_source_manifest_digest_mismatch":
+        for side in ("parent_expected", "target_observed"):
+            traces[3]["launch"][side]["source_manifest_digest"] = contract.bytes_digest(
+                b"different source manifest bytes"
+            )
+            traces[3]["reconciliation"][f"{side}_launch_digest"] = (
+                contract.canonical_digest(traces[3]["launch"][side])
+            )
+    elif tamper_kind == "environment_limit_argv_mismatch":
+        for side in ("parent_expected", "target_observed"):
+            traces[3]["launch"][side]["argv"][5]["value_digest"] = (
+                contract.bytes_digest(b"different collection ceiling")
+            )
+            traces[3]["reconciliation"][f"{side}_launch_digest"] = (
+                contract.canonical_digest(traces[3]["launch"][side])
+            )
+    elif tamper_kind == "environment_colluded_python":
+        for side in ("parent_expected", "target_observed"):
+            python = traces[3]["launch"][side]["python"]
+            python["implementation"] = "fabricated-python"
+            python["version"] = "9.9.9"
+            python["cache_tag"] = "fabricated-999"
+            python["executable"]["path_digest"] = contract.bytes_digest(
+                b"fabricated-python-path"
+            )
+            python["executable"]["raw_bytes"] = 17
+            python["executable"]["digest"] = contract.bytes_digest(
+                b"fabricated-python-bytes"
+            )
+        _refresh_environment_reconciliation(traces[3])
+    elif tamper_kind == "environment_colluded_windows_directory":
+        fabricated = contract.bytes_digest(b"fabricated-windows-directory")
+        for side in ("parent_expected", "target_observed"):
+            rows = {
+                row["name"]: row for row in traces[3]["launch"][side]["environment"]
+            }
+            rows["SYSTEMROOT"]["value_digest"] = fabricated
+            rows["WINDIR"]["value_digest"] = fabricated
+        _refresh_environment_reconciliation(traces[3])
+    elif tamper_kind == "environment_colluded_cwd":
+        fabricated = contract.bytes_digest(b"fabricated-source-root")
+        for side in ("parent_expected", "target_observed"):
+            launch = traces[3]["launch"][side]
+            launch["cwd"]["path_digest"] = fabricated
+            launch["argv"][1]["value_digest"] = fabricated
+        _refresh_environment_reconciliation(traces[3])
+    elif tamper_kind == "environment_colluded_target_path":
+        fabricated = contract.bytes_digest(b"fabricated-target-path")
+        for side in ("parent_expected", "target_observed"):
+            launch = traces[3]["launch"][side]
+            launch["argv"][0]["value_digest"] = fabricated
+            launch["inputs"][0]["path_digest"] = fabricated
+        _refresh_environment_reconciliation(traces[3])
+    elif tamper_kind == "environment_colluded_crypto_root":
+        fabricated = contract.bytes_digest(b"fabricated-crypto-root")
+        for side in ("parent_expected", "target_observed"):
+            traces[3]["launch"][side]["argv"][4]["value_digest"] = fabricated
+        _refresh_environment_reconciliation(traces[3])
     else:
         colluded = contract.bytes_digest(b"helper-colluded provider path")
         traces[0]["target"]["crypto_provider_path_digest"] = colluded
@@ -651,7 +1130,7 @@ def test_capture_revalidates_and_cross_joins_dynamic_helper_results_fail_closed(
 
 def test_capture_refuses_commit_blob_change_after_dynamic_collection(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    traces = _valid_traces()
+    traces = _valid_capture_documents()
     _prepare_fake_capture(monkeypatch, traces)
     calls = 0
 
@@ -872,21 +1351,74 @@ def test_real_windows_capture_runs_only_from_a_tracked_clean_committed_checkout(
     assert evidence["coverage"]["state"] == closure.RUNTIME_CLOSURE_COVERAGE_INCOMPLETE
     assert evidence["authority"] == _AUTHORITY
     assert evidence["known_gaps"] == closure.expected_runtime_closure_gaps(evidence)
+    assert evidence["coverage"]["execution_environment_argv_cwd_and_inputs_bound"] is True
     assert all(
         evidence["coverage"][field] is False
         for field in closure.RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS
+        if field != "execution_environment_argv_cwd_and_inputs_bound"
     )
 
     artifact_raw = result.artifact_raw_by_id()
-    for artifact_id in _DYNAMIC_ARTIFACT_IDS:
+    assert len(artifact_raw) == 12
+    for artifact_id in _TRACE_ARTIFACT_IDS:
         raw = artifact_raw[artifact_id]
         value = contract.parse_canonical_json_bytes(raw, require_canonical=True)
         discovery.validate_windows_runtime_discovery_trace(value)
         assert re.search(rb"[A-Za-z]:[\\/]", raw) is None
+    environment_raw = artifact_raw[_ENVIRONMENT_ARTIFACT_ID]
+    environment_manifest = contract.parse_canonical_json_bytes(
+        environment_raw, require_canonical=True
+    )
+    assert discovery.validate_windows_execution_environment_manifest(
+        environment_manifest
+    ) == environment_manifest
+    assert re.search(rb"[A-Za-z]:[\\/]", environment_raw) is None
+    assert environment_manifest["selected_commit"] == commit
+    assert environment_manifest["selected_tree"] == tree
+    assert environment_manifest["authority"] == _AUTHORITY
+    assert environment_manifest["reconciliation"] == {
+        "parent_expected_launch_digest": contract.canonical_digest(
+            environment_manifest["launch"]["parent_expected"]
+        ),
+        "target_observed_launch_digest": contract.canonical_digest(
+            environment_manifest["launch"]["target_observed"]
+        ),
+        "exact_match": True,
+    }
+    assert evidence["execution_environment_manifest_digest"] == contract.bytes_digest(
+        environment_raw
+    )
+    environment_row = next(
+        row for row in evidence["artifacts"]
+        if row["artifact_id"] == _ENVIRONMENT_ARTIFACT_ID
+    )
+    assert environment_row["role"] == "EXECUTION_ENVIRONMENT_MANIFEST"
+    assert environment_row["digest"] == contract.bytes_digest(environment_raw)
+    assert environment_row["raw_bytes"] == len(environment_raw)
+
+    process = contract.parse_canonical_json_bytes(
+        artifact_raw["windows-job-process-trace.atlas-r2.v1"], require_canonical=True
+    )
     mapping = contract.parse_canonical_json_bytes(
         artifact_raw["windows-k32-mapping-observation-trace.atlas-r2.v1"],
         require_canonical=True,
     )
+    loss = contract.parse_canonical_json_bytes(
+        artifact_raw["windows-discovery-loss-reconciliation.atlas-r2.v1"],
+        require_canonical=True,
+    )
+    assert (
+        process["target_process_token"]
+        == mapping["target_process_token"]
+        == loss["target_process_token"]
+        == environment_manifest["target_process_token"]
+    )
+    launch_inputs = {
+        row["input_id"]: row["digest"]
+        for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+    }
+    assert launch_inputs["dsl-program"] == process["target"]["program_digest"]
+    assert launch_inputs["dsl-input"] == process["target"]["input_digest"]
     assert mapping["snapshot_count"] >= 1
     assert mapping["mapping_row_count"] >= 1
     assert mapping["history_complete"] is False

@@ -18,6 +18,7 @@ from jsonschema.exceptions import ValidationError
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_dsl as dsl
 from cisco_toolkit import transition_pack as tp
+from cisco_toolkit import transition_runtime_discovery as rd
 from cisco_toolkit import transition_runtime_inventory as ri
 from tests.transition_fixtures import minimal_transition_case
 
@@ -28,6 +29,9 @@ _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
 _WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json"
+)
+_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json"
 )
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
 _TCB_CENSUS_DIGEST = "sha256:f71abe7ea2d733eec30eaa7a1b4eba962a4bb4074758a1ec7335aa28c40f0d5b"
@@ -44,6 +48,189 @@ def _schema() -> dict[str, Any]:
 
 def _windows_runtime_discovery_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE))
+
+
+def _windows_execution_environment_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE))
+
+
+def _windows_execution_environment_manifest() -> dict[str, Any]:
+    schema = _windows_execution_environment_schema()
+    digest = "sha256:" + "a" * 64
+    target_script_raw = rd._TARGET_SOURCE.encode("utf-8")
+    parent_expected = {
+        "python": {
+            "implementation": "cpython",
+            "version": "3.12.10",
+            "cache_tag": "cpython-312",
+            "executable": {
+                "path_token": "$PYTHON_EXECUTABLE",
+                "path_digest": digest,
+                "raw_bytes": 103424,
+                "digest": "sha256:" + "b" * 64,
+            },
+            "flags": {
+                "isolated": True,
+                "no_site": True,
+                "ignore_environment": True,
+                "safe_path": True,
+                "dont_write_bytecode": True,
+            },
+            "pycache_prefix": {
+                "path_token": "$PRIVATE_PYCACHE_PREFIX",
+                "path_digest": "sha256:" + "c" * 64,
+            },
+        },
+        "argv": [
+            {
+                "index": index,
+                "value_kind": kind,
+                "value_token": token,
+                "value_digest": "sha256:" + format(index + 1, "x") * 64,
+            }
+            for index, (token, kind) in enumerate((
+                ("$COLLECTOR_TARGET_SCRIPT", "PATH"),
+                ("$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT", "PATH"),
+                ("$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM", "PATH"),
+                ("$PRIVATE_SELECTED_COMMIT_DSL_INPUT", "PATH"),
+                ("$CRYPTOGRAPHY_IMPORT_ROOT", "PATH"),
+                ("$COLLECTION_MAX_CANONICAL_BYTES", "INTEGER"),
+                ("$SELECTED_COMMIT_SOURCE_MANIFEST", "CANONICAL_JSON"),
+            ))
+        ],
+        "cwd": {
+            "path_token": "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT",
+            "path_digest": "sha256:" + "d" * 64,
+        },
+        "environment": [
+            {
+                "name": name,
+                "value_kind": kind,
+                "value_token": token,
+                "value_digest": digest,
+            }
+            for name, kind, token in (
+                ("PATH", "LITERAL", "$EMPTY_PATH"),
+                ("PYTHONHASHSEED", "LITERAL", "$PYTHONHASHSEED"),
+                ("PYTHONIOENCODING", "LITERAL", "$PYTHONIOENCODING"),
+                ("PYTHONPYCACHEPREFIX", "PATH", "$PRIVATE_PYCACHE_PREFIX"),
+                ("PYTHONUTF8", "LITERAL", "$PYTHONUTF8"),
+                ("SYSTEMROOT", "PATH", "$WINDOWS_DIRECTORY"),
+                ("TEMP", "PATH", "$PRIVATE_TEMP_ROOT"),
+                ("TMP", "PATH", "$PRIVATE_TEMP_ROOT"),
+                ("WINDIR", "PATH", "$WINDOWS_DIRECTORY"),
+            )
+        ],
+        "inputs": [
+            {
+                "input_id": input_id,
+                "path_token": path_token,
+                "path_digest": digest,
+                "raw_bytes": raw_bytes,
+                "digest": raw_digest,
+            }
+            for input_id, path_token, raw_bytes, raw_digest in (
+                (
+                    "collector-target-script",
+                    "$COLLECTOR_TARGET_SCRIPT",
+                    len(target_script_raw),
+                    tc.bytes_digest(target_script_raw),
+                ),
+                (
+                    "dsl-input",
+                    "$PRIVATE_SELECTED_COMMIT_DSL_INPUT",
+                    1134,
+                    "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293",
+                ),
+                (
+                    "dsl-program",
+                    "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM",
+                    2035,
+                    "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b",
+                ),
+                ("selected-source-init", "$PRIVATE_SELECTED_COMMIT_SOURCE_INIT", 64, digest),
+                (
+                    "selected-source-transition-contract",
+                    "$PRIVATE_SELECTED_COMMIT_TRANSITION_CONTRACT",
+                    128,
+                    digest,
+                ),
+                (
+                    "selected-source-transition-dsl",
+                    "$PRIVATE_SELECTED_COMMIT_TRANSITION_DSL",
+                    256,
+                    digest,
+                ),
+                (
+                    "selected-source-transition-pack",
+                    "$PRIVATE_SELECTED_COMMIT_TRANSITION_PACK",
+                    512,
+                    digest,
+                ),
+            )
+        ],
+        "source_manifest_digest": "sha256:" + "e" * 64,
+    }
+    inputs_by_id = {row["input_id"]: row for row in parent_expected["inputs"]}
+    selected_source_manifest_raw = tc.canonical_json_bytes({
+        relative: inputs_by_id[input_id]["digest"]
+        for input_id, _path_token, relative in rd._LAUNCH_INPUT_SPEC
+        if relative in rd._TARGET_SOURCE_RELATIVES
+    })
+    parent_expected["source_manifest_digest"] = tc.bytes_digest(
+        selected_source_manifest_raw
+    )
+    argv = parent_expected["argv"]
+    argv[0]["value_digest"] = inputs_by_id["collector-target-script"]["path_digest"]
+    argv[1]["value_digest"] = parent_expected["cwd"]["path_digest"]
+    argv[2]["value_digest"] = inputs_by_id["dsl-program"]["path_digest"]
+    argv[3]["value_digest"] = inputs_by_id["dsl-input"]["path_digest"]
+    argv[5]["value_digest"] = tc.bytes_digest(
+        str(tc.PROVISIONAL_MAX_CANONICAL_BYTES).encode("ascii")
+    )
+    argv[6]["value_digest"] = tc.bytes_digest(selected_source_manifest_raw)
+    environment_by_name = {
+        row["name"]: row for row in parent_expected["environment"]
+    }
+    environment_by_name["PATH"]["value_digest"] = tc.bytes_digest(b"")
+    environment_by_name["PYTHONHASHSEED"]["value_digest"] = tc.bytes_digest(b"0")
+    environment_by_name["PYTHONIOENCODING"]["value_digest"] = tc.bytes_digest(
+        b"utf-8"
+    )
+    environment_by_name["PYTHONPYCACHEPREFIX"]["value_digest"] = (
+        parent_expected["python"]["pycache_prefix"]["path_digest"]
+    )
+    environment_by_name["PYTHONUTF8"]["value_digest"] = tc.bytes_digest(b"1")
+    target_observed = deepcopy(parent_expected)
+    parent_digest = tc.canonical_digest(parent_expected)
+    target_digest = tc.canonical_digest(target_observed)
+    return {
+        "schema": "atlas.windows-execution-environment-manifest/1",
+        "capture_protocol": "WINDOWS_JOB_OBJECT_K32_DISCOVERY/1",
+        "platform": {"os_name": "nt", "sys_platform": "win32"},
+        "selected_commit": "1" * 40,
+        "selected_tree": "2" * 40,
+        "target_process_token": "process.000000000001",
+        "launch": {
+            "parent_expected": parent_expected,
+            "target_observed": target_observed,
+        },
+        "reconciliation": {
+            "parent_expected_launch_digest": parent_digest,
+            "target_observed_launch_digest": target_digest,
+            "exact_match": True,
+        },
+        "claim_boundary": schema["$defs"]["claimBoundary"]["const"],
+        "authority": {
+            "authoritative": False,
+            "closure_decision": None,
+            "complete_exact_runtime_closure": False,
+            "approved_budget": None,
+            "qualification_effect": "NONE",
+            "promotion_eligible": False,
+            "release3_included": False,
+        },
+    }
 
 
 def _windows_runtime_discovery_documents() -> list[dict[str, Any]]:
@@ -599,3 +786,117 @@ def test_windows_runtime_discovery_schema_bounds_rows_and_declares_ordering_owne
     empty_dynamic_snapshot["snapshots"][0]["mappings"] = []
     with pytest.raises(ValidationError):
         validator.validate(empty_dynamic_snapshot)
+
+
+def test_windows_execution_environment_schema_accepts_the_exact_closed_manifest() -> None:
+    schema = _windows_execution_environment_schema()
+    Draft202012Validator.check_schema(schema)
+    manifest = _windows_execution_environment_manifest()
+
+    Draft202012Validator(schema).validate(manifest)
+    assert rd.validate_windows_execution_environment_manifest(manifest) == manifest
+    assert manifest["authority"] == {
+        "authoritative": False,
+        "closure_decision": None,
+        "complete_exact_runtime_closure": False,
+        "approved_budget": None,
+        "qualification_effect": "NONE",
+        "promotion_eligible": False,
+        "release3_included": False,
+    }
+
+
+def test_windows_execution_environment_schema_rejects_mutated_or_open_manifests() -> None:
+    validator = Draft202012Validator(_windows_execution_environment_schema())
+    valid = _windows_execution_environment_manifest()
+    hostile_manifests: list[dict[str, Any]] = []
+
+    open_root = deepcopy(valid)
+    open_root["ready_for_external_review"] = True
+    hostile_manifests.append(open_root)
+
+    authoritative = deepcopy(valid)
+    authoritative["authority"]["authoritative"] = True
+    hostile_manifests.append(authoritative)
+
+    raw_path = deepcopy(valid)
+    raw_path["launch"]["parent_expected"]["python"]["executable"]["raw_path"] = (
+        "C:/sensitive/python.exe"
+    )
+    hostile_manifests.append(raw_path)
+
+    reordered_argv = deepcopy(valid)
+    parent_argv = reordered_argv["launch"]["parent_expected"]["argv"]
+    parent_argv[0], parent_argv[1] = (
+        parent_argv[1],
+        parent_argv[0],
+    )
+    hostile_manifests.append(reordered_argv)
+
+    reordered_environment = deepcopy(valid)
+    environment = reordered_environment["launch"]["target_observed"]["environment"]
+    environment[0], environment[1] = environment[1], environment[0]
+    hostile_manifests.append(reordered_environment)
+
+    changed_program = deepcopy(valid)
+    changed_program["launch"]["parent_expected"]["inputs"][2]["digest"] = (
+        "sha256:" + "f" * 64
+    )
+    hostile_manifests.append(changed_program)
+
+    open_launch_pair = deepcopy(valid)
+    open_launch_pair["launch"]["selected"] = deepcopy(
+        open_launch_pair["launch"]["parent_expected"]
+    )
+    hostile_manifests.append(open_launch_pair)
+
+    no_exact_reconciliation = deepcopy(valid)
+    no_exact_reconciliation["reconciliation"]["exact_match"] = False
+    hostile_manifests.append(no_exact_reconciliation)
+
+    for hostile in hostile_manifests:
+        with pytest.raises(ValidationError):
+            validator.validate(hostile)
+
+
+def test_windows_execution_environment_python_validator_rejects_two_sided_drift() -> None:
+    schema = _windows_execution_environment_schema()
+    validator = Draft202012Validator(schema)
+    drifted = _windows_execution_environment_manifest()
+    target_observed = drifted["launch"]["target_observed"]
+    target_observed["cwd"]["path_digest"] = "sha256:" + "f" * 64
+    drifted["reconciliation"]["target_observed_launch_digest"] = tc.canonical_digest(
+        target_observed
+    )
+
+    validator.validate(drifted)
+    with pytest.raises(rd.RuntimeDiscoveryError):
+        rd.validate_windows_execution_environment_manifest(drifted)
+
+
+def test_windows_execution_environment_schema_is_a_packaged_standalone_resource() -> None:
+    raw = _resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE)
+    schema = json.loads(raw)
+    references: list[str] = []
+
+    def collect_references(value: Any) -> None:
+        if type(value) is dict:
+            if "$ref" in value:
+                references.append(value["$ref"])
+            for child in value.values():
+                collect_references(child)
+        elif type(value) is list:
+            for child in value:
+                collect_references(child)
+
+    collect_references(schema)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+
+    assert raw.endswith(b"\n")
+    assert schema["$id"] == "urn:atlas:schema:r2-windows-execution-environment-manifest:1"
+    assert schema["additionalProperties"] is False
+    assert references
+    assert all(reference.startswith("#/$defs/") for reference in references)
+    assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE}",' in package_data

@@ -6,6 +6,12 @@ observations and K32 polling provides bounded executable-mapping checkpoints.  N
 is a sandbox, a lossless event source, loaded-byte identity, or load/unload history.  Successful
 capture therefore always returns ``COLLECTED_INCOMPLETE`` evidence; failures return no evidence.
 
+The fixed target also reports a digest-only observation of its exact argv, working directory,
+environment, Python executable file and reported interpreter metadata, and seven listed input byte
+strings.  The parent derives the expected launch independently and refuses any mismatch.  This
+binds one prototype execution environment only; it does not establish loader policy, interpreter
+or transitive runtime closure, platform state, or authority.
+
 The caller supplies subject identities plus an externally expected commit/tree.  Those strings are
 bindings, not proof of organizational independence or source selection.  This module creates no
 policy, key, signature, budget, review decision, qualification, promotion, or Release 3 authority.
@@ -25,6 +31,7 @@ import sysconfig
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,10 +71,20 @@ WINDOWS_K32_MAPPING_TRACE_SCHEMA = "atlas.windows-k32-mapping-observation-trace/
 WINDOWS_DISCOVERY_LOSS_RECONCILIATION_SCHEMA = (
     "atlas.windows-discovery-loss-reconciliation/1"
 )
+WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
+    "atlas.windows-execution-environment-manifest/1"
+)
 WINDOWS_RUNTIME_DISCOVERY_CLAIM_BOUNDARY = (
     "Windows Job Object process messages and K32 polling checkpoints for one R2.0 prototype "
     "execution only; incomplete and non-authoritative, with no exact runtime-closure, budget, "
     "qualification, promotion, or Release 3 effect."
+)
+WINDOWS_EXECUTION_ENVIRONMENT_CLAIM_BOUNDARY = (
+    "Two-sided parent-expected and target-observed binding of argv, working directory, "
+    "environment, the Python executable file and reported interpreter metadata, and seven "
+    "listed input byte strings for one R2.0 prototype execution only; this does not establish "
+    "loader policy, interpreter or runtime dependency closure, platform or boot state, "
+    "authority, qualification, promotion, or Release 3 readiness."
 )
 
 
@@ -87,11 +104,25 @@ def _fixed_loss_trace_schema() -> str:
     return "atlas.windows-discovery-loss-reconciliation/1"
 
 
+def _fixed_environment_manifest_schema() -> str:
+    return "atlas.windows-execution-environment-manifest/1"
+
+
 def _fixed_claim_boundary() -> str:
     return (
         "Windows Job Object process messages and K32 polling checkpoints for one R2.0 prototype "
         "execution only; incomplete and non-authoritative, with no exact runtime-closure, budget, "
         "qualification, promotion, or Release 3 effect."
+    )
+
+
+def _fixed_environment_claim_boundary() -> str:
+    return (
+        "Two-sided parent-expected and target-observed binding of argv, working directory, "
+        "environment, the Python executable file and reported interpreter metadata, and seven "
+        "listed input byte strings for one R2.0 prototype execution only; this does not establish "
+        "loader policy, interpreter or runtime dependency closure, platform or boot state, "
+        "authority, qualification, promotion, or Release 3 readiness."
     )
 
 # Protective collection guards only.  They are not approved R2 budgets or qualification limits.
@@ -108,6 +139,8 @@ _PORTABLE_INT_MAX = 9_007_199_254_740_991
 # from rechaining a structurally valid but different nested result into discovery evidence.
 _FIXED_PROGRAM_DIGEST = "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b"
 _FIXED_INPUT_DIGEST = "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293"
+_FIXED_PROGRAM_BYTES = 2035
+_FIXED_INPUT_BYTES = 1134
 _FIXED_RECEIPT_DIGEST = "sha256:657d2c01f4f387cdfbd11814efac52f48cdace97e71c1a16bde7b76d5476c6fa"
 _FIXED_RESULT_DIGEST = "sha256:cd7870a1acf7369a649e99bceb91cd79f90e8c0aa816e52b6f239ccad41cb16d"
 
@@ -201,6 +234,12 @@ _DYNAMIC_ARTIFACTS = (
         "COLLECTOR_LOSS_AND_RECONCILIATION",
         "atlas.windows-discovery-loss-reconciliation/1",
     ),
+)
+_ENVIRONMENT_ARTIFACT = (
+    "windows-execution-environment-manifest.atlas-r2.v1",
+    "EXECUTION_ENVIRONMENT_MANIFEST",
+    "execution_environment_manifest_digest",
+    "atlas.windows-execution-environment-manifest/1",
 )
 
 _AUTHORITY = {
@@ -300,6 +339,48 @@ _READY_SENTINEL = b"ATLAS_R2_WINDOWS_DISCOVERY_SHIM_READY_V1\n"
 _RUN_COMMAND = b"RUN\n"
 _STOP_COMMAND = b"STOP\n"
 _TARGET_SENTINEL = b"ATLAS_R2_WINDOWS_DISCOVERY_TARGET_V1\t"
+
+_TARGET_ARGV_SPEC = (
+    ("$COLLECTOR_TARGET_SCRIPT", "PATH"),
+    ("$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT", "PATH"),
+    ("$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM", "PATH"),
+    ("$PRIVATE_SELECTED_COMMIT_DSL_INPUT", "PATH"),
+    ("$CRYPTOGRAPHY_IMPORT_ROOT", "PATH"),
+    ("$COLLECTION_MAX_CANONICAL_BYTES", "INTEGER"),
+    ("$SELECTED_COMMIT_SOURCE_MANIFEST", "CANONICAL_JSON"),
+)
+_ENVIRONMENT_VALUE_SPEC = {
+    "PATH": ("LITERAL", "$EMPTY_PATH"),
+    "PYTHONHASHSEED": ("LITERAL", "$PYTHONHASHSEED"),
+    "PYTHONIOENCODING": ("LITERAL", "$PYTHONIOENCODING"),
+    "PYTHONPYCACHEPREFIX": ("PATH", "$PRIVATE_PYCACHE_PREFIX"),
+    "PYTHONUTF8": ("LITERAL", "$PYTHONUTF8"),
+    "SYSTEMROOT": ("PATH", "$WINDOWS_DIRECTORY"),
+    "TEMP": ("PATH", "$PRIVATE_TEMP_ROOT"),
+    "TMP": ("PATH", "$PRIVATE_TEMP_ROOT"),
+    "WINDIR": ("PATH", "$WINDOWS_DIRECTORY"),
+}
+_LAUNCH_INPUT_SPEC = (
+    ("collector-target-script", "$COLLECTOR_TARGET_SCRIPT", None),
+    ("dsl-input", "$PRIVATE_SELECTED_COMMIT_DSL_INPUT", _INPUT_RELATIVE),
+    ("dsl-program", "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM", _PROGRAM_RELATIVE),
+    ("selected-source-init", "$PRIVATE_SELECTED_COMMIT_SOURCE_INIT", _TARGET_SOURCE_RELATIVES[0]),
+    (
+        "selected-source-transition-contract",
+        "$PRIVATE_SELECTED_COMMIT_TRANSITION_CONTRACT",
+        _TARGET_SOURCE_RELATIVES[1],
+    ),
+    (
+        "selected-source-transition-dsl",
+        "$PRIVATE_SELECTED_COMMIT_TRANSITION_DSL",
+        _TARGET_SOURCE_RELATIVES[3],
+    ),
+    (
+        "selected-source-transition-pack",
+        "$PRIVATE_SELECTED_COMMIT_TRANSITION_PACK",
+        _TARGET_SOURCE_RELATIVES[2],
+    ),
+)
 
 _JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION = 7
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -605,17 +686,143 @@ expected_source_paths = {
 }
 if not isinstance(source_manifest, dict) or set(source_manifest) != expected_source_paths:
     raise SystemExit(83)
+source_raw_by_relative = {}
 for relative, expected_digest in source_manifest.items():
     if not isinstance(expected_digest, str) or len(expected_digest) != 71:
         raise SystemExit(83)
-    observed = "sha256:" + hashlib.sha256(
-        stable_read(os.path.join(source_root, *relative.split("/")))
-    ).hexdigest()
+    source_raw = stable_read(os.path.join(source_root, *relative.split("/")))
+    source_raw_by_relative[relative] = source_raw
+    observed = "sha256:" + hashlib.sha256(source_raw).hexdigest()
     if observed != expected_digest:
         raise SystemExit(83)
 
 program_raw = stable_read(program_path)
 input_raw = stable_read(input_path)
+
+def raw_digest(raw):
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+def value_digest(value):
+    return raw_digest(value.encode("utf-8"))
+
+argv_spec = [
+    ("$COLLECTOR_TARGET_SCRIPT", "PATH"),
+    ("$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT", "PATH"),
+    ("$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM", "PATH"),
+    ("$PRIVATE_SELECTED_COMMIT_DSL_INPUT", "PATH"),
+    ("$CRYPTOGRAPHY_IMPORT_ROOT", "PATH"),
+    ("$COLLECTION_MAX_CANONICAL_BYTES", "INTEGER"),
+    ("$SELECTED_COMMIT_SOURCE_MANIFEST", "CANONICAL_JSON"),
+]
+if len(sys.argv) != len(argv_spec):
+    raise SystemExit(83)
+argv_rows = [
+    {
+        "index": index,
+        "value_kind": kind,
+        "value_token": token,
+        "value_digest": value_digest(sys.argv[index]),
+    }
+    for index, (token, kind) in enumerate(argv_spec)
+]
+
+environment_spec = {
+    "PATH": ("LITERAL", "$EMPTY_PATH"),
+    "PYTHONHASHSEED": ("LITERAL", "$PYTHONHASHSEED"),
+    "PYTHONIOENCODING": ("LITERAL", "$PYTHONIOENCODING"),
+    "PYTHONPYCACHEPREFIX": ("PATH", "$PRIVATE_PYCACHE_PREFIX"),
+    "PYTHONUTF8": ("LITERAL", "$PYTHONUTF8"),
+    "SYSTEMROOT": ("PATH", "$WINDOWS_DIRECTORY"),
+    "TEMP": ("PATH", "$PRIVATE_TEMP_ROOT"),
+    "TMP": ("PATH", "$PRIVATE_TEMP_ROOT"),
+    "WINDIR": ("PATH", "$WINDOWS_DIRECTORY"),
+}
+if set(os.environ) != set(environment_spec):
+    raise SystemExit(83)
+environment_rows = [
+    {
+        "name": name,
+        "value_kind": environment_spec[name][0],
+        "value_token": environment_spec[name][1],
+        "value_digest": value_digest(os.environ[name]),
+    }
+    for name in sorted(environment_spec)
+]
+
+def input_row(input_id, path_token, path, raw):
+    return {
+        "input_id": input_id,
+        "path_token": path_token,
+        "path_digest": value_digest(path),
+        "raw_bytes": len(raw),
+        "digest": raw_digest(raw),
+    }
+
+target_script_raw = stable_read(sys.argv[0])
+python_executable_raw = stable_read(sys.executable)
+input_rows = [
+    input_row("collector-target-script", "$COLLECTOR_TARGET_SCRIPT", sys.argv[0], target_script_raw),
+    input_row("dsl-input", "$PRIVATE_SELECTED_COMMIT_DSL_INPUT", input_path, input_raw),
+    input_row("dsl-program", "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM", program_path, program_raw),
+    input_row(
+        "selected-source-init",
+        "$PRIVATE_SELECTED_COMMIT_SOURCE_INIT",
+        os.path.join(source_root, "cisco_toolkit", "__init__.py"),
+        source_raw_by_relative["cisco_toolkit/__init__.py"],
+    ),
+    input_row(
+        "selected-source-transition-contract",
+        "$PRIVATE_SELECTED_COMMIT_TRANSITION_CONTRACT",
+        os.path.join(source_root, "cisco_toolkit", "transition_contract.py"),
+        source_raw_by_relative["cisco_toolkit/transition_contract.py"],
+    ),
+    input_row(
+        "selected-source-transition-dsl",
+        "$PRIVATE_SELECTED_COMMIT_TRANSITION_DSL",
+        os.path.join(source_root, "cisco_toolkit", "transition_dsl.py"),
+        source_raw_by_relative["cisco_toolkit/transition_dsl.py"],
+    ),
+    input_row(
+        "selected-source-transition-pack",
+        "$PRIVATE_SELECTED_COMMIT_TRANSITION_PACK",
+        os.path.join(source_root, "cisco_toolkit", "transition_pack.py"),
+        source_raw_by_relative["cisco_toolkit/transition_pack.py"],
+    ),
+]
+input_rows.sort(key=lambda row: row["input_id"])
+flags = sys.flags
+observed_launch = {
+    "python": {
+        "implementation": sys.implementation.name,
+        "version": ".".join(str(item) for item in sys.version_info[:3]),
+        "cache_tag": sys.implementation.cache_tag,
+        "executable": {
+            "path_token": "$PYTHON_EXECUTABLE",
+            "path_digest": value_digest(sys.executable),
+            "raw_bytes": len(python_executable_raw),
+            "digest": raw_digest(python_executable_raw),
+        },
+        "flags": {
+            "isolated": bool(flags.isolated),
+            "no_site": bool(flags.no_site),
+            "ignore_environment": bool(flags.ignore_environment),
+            "safe_path": bool(getattr(flags, "safe_path", flags.isolated)),
+            "dont_write_bytecode": bool(flags.dont_write_bytecode),
+        },
+        "pycache_prefix": {
+            "path_token": "$PRIVATE_PYCACHE_PREFIX",
+            "path_digest": value_digest(sys.pycache_prefix or ""),
+        },
+    },
+    "argv": argv_rows,
+    "cwd": {
+        "path_token": "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT",
+        "path_digest": value_digest(os.getcwd()),
+    },
+    "environment": environment_rows,
+    "inputs": input_rows,
+    "source_manifest_digest": raw_digest(source_manifest_raw.encode("ascii")),
+}
 sys.path.insert(0, source_root)
 sys.path.insert(1, crypto_root)
 
@@ -676,26 +883,26 @@ payload = {
     "crypto_verified": True,
 }
 sys.stdout.write("ATLAS_R2_WINDOWS_DISCOVERY_TARGET_PAYLOAD_V1\t" + json.dumps(
-    payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    {"observed_launch": observed_launch, "target": payload},
+    sort_keys=True, separators=(",", ":"), ensure_ascii=True
 ) + "\n")
 sys.stdout.flush()
 if sys.stdin.buffer.readline() != b"STOP\n":
     raise SystemExit(82)
 '''
 
-_SHIM_SOURCE = f'''
+_SHIM_SOURCE = r'''
 import subprocess
 import sys
 
-target_source = {_TARGET_SOURCE!r}
-source_root, program_path, input_path, crypto_root, pycache_prefix, max_bytes, source_manifest, max_line = sys.argv[1:9]
-sys.stdout.buffer.write(b"ATLAS_R2_WINDOWS_DISCOVERY_SHIM_READY_V1\\n")
+target_script, source_root, program_path, input_path, crypto_root, pycache_prefix, max_bytes, source_manifest, max_line = sys.argv[1:10]
+sys.stdout.buffer.write(b"ATLAS_R2_WINDOWS_DISCOVERY_SHIM_READY_V1\n")
 sys.stdout.buffer.flush()
-if sys.stdin.buffer.readline() != b"RUN\\n":
+if sys.stdin.buffer.readline() != b"RUN\n":
     raise SystemExit(80)
 command = [
     sys.executable, "-I", "-S", "-B", "-X", "pycache_prefix=" + pycache_prefix,
-    "-c", target_source, source_root, program_path, input_path, crypto_root, max_bytes,
+    target_script, source_root, program_path, input_path, crypto_root, max_bytes,
     source_manifest,
 ]
 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -709,9 +916,9 @@ target = subprocess.Popen(
 )
 assert target.stdin is not None and target.stdout is not None and target.stderr is not None
 line = target.stdout.readline(int(max_line) + 1)
-payload_sentinel = b"ATLAS_R2_WINDOWS_DISCOVERY_TARGET_PAYLOAD_V1\\t"
+payload_sentinel = b"ATLAS_R2_WINDOWS_DISCOVERY_TARGET_PAYLOAD_V1\t"
 if (
-    not line.endswith(b"\\n")
+    not line.endswith(b"\n")
     or len(line) > int(max_line)
     or not line.startswith(payload_sentinel)
 ):
@@ -719,18 +926,18 @@ if (
     target.communicate()
     raise SystemExit(81)
 sys.stdout.buffer.write(
-    b"ATLAS_R2_WINDOWS_DISCOVERY_TARGET_V1\\t"
+    b"ATLAS_R2_WINDOWS_DISCOVERY_TARGET_V1\t"
     + str(target.pid).encode("ascii")
-    + b"\\t"
+    + b"\t"
     + line[len(payload_sentinel):]
 )
 sys.stdout.buffer.flush()
-if sys.stdin.buffer.readline() != b"STOP\\n":
+if sys.stdin.buffer.readline() != b"STOP\n":
     target.kill()
     target.communicate()
     raise SystemExit(82)
 try:
-    target.stdin.write(b"STOP\\n")
+    target.stdin.write(b"STOP\n")
     target.stdin.flush()
     stdout, stderr = target.communicate(timeout=10)
 except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
@@ -1067,7 +1274,7 @@ def _sanitized_environment(pycache_prefix: Path) -> dict[str, str]:
         "PYTHONIOENCODING": "utf-8",
         "PYTHONPYCACHEPREFIX": str(pycache_prefix),
         "PYTHONUTF8": "1",
-        "SystemRoot": str(windows),
+        "SYSTEMROOT": str(windows),
         "TEMP": str(pycache_prefix.parent),
         "TMP": str(pycache_prefix.parent),
         "WINDIR": str(windows),
@@ -1283,7 +1490,7 @@ def _validate_target(
 def _parse_target_line(
         line: bytes,
         program_digest: str,
-        input_digest: str) -> tuple[int, dict[str, Any]]:
+        input_digest: str) -> tuple[int, dict[str, Any], dict[str, Any]]:
     if not line.startswith(_TARGET_SENTINEL):
         _fail("RUNTIME_DISCOVERY_TARGET_HANDSHAKE_INVALID")
     raw = line[len(_TARGET_SENTINEL):].rstrip(b"\n")
@@ -1293,9 +1500,17 @@ def _parse_target_line(
         value = json.loads(payload_raw)
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
         _fail("RUNTIME_DISCOVERY_TARGET_HANDSHAKE_INVALID")
-    if pid <= 0:
+    if (
+            pid <= 0
+            or type(value) is not dict
+            or set(value) != {"observed_launch", "target"}
+    ):
         _fail("RUNTIME_DISCOVERY_TARGET_HANDSHAKE_INVALID")
-    return pid, _validate_target(value, program_digest, input_digest)
+    return (
+        pid,
+        _validate_target(value["target"], program_digest, input_digest),
+        _validate_launch_binding(value["observed_launch"]),
+    )
 
 
 def _validate_common(value: dict[str, Any]) -> None:
@@ -1637,7 +1852,7 @@ def _validate_sealed_static_profile(
 def _validate_sealed_dynamic_profile(
         artifact_raw_by_id: Mapping[str, bytes],
         expected_crypto_provider_path_digest: str,
-        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     if (
             type(expected_crypto_provider_path_digest) is not str
             or not _DIGEST_RE.fullmatch(expected_crypto_provider_path_digest)
@@ -1660,6 +1875,25 @@ def _validate_sealed_dynamic_profile(
     process_trace = documents[_fixed_process_trace_schema()]
     mapping_trace = documents[_fixed_mapping_trace_schema()]
     loss_trace = documents[_fixed_loss_trace_schema()]
+    environment_artifact_id, _role, _field, expected_environment_schema = (
+        _ENVIRONMENT_ARTIFACT
+    )
+    try:
+        parsed_environment = parse_canonical_json_bytes(
+            artifact_raw_by_id[environment_artifact_id], require_canonical=True
+        )
+        environment_manifest = validate_windows_execution_environment_manifest(
+            parsed_environment
+        )
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    if (
+            environment_manifest.get("schema") != expected_environment_schema
+            or environment_manifest != parsed_environment
+    ):
+        _fail("RUNTIME_DISCOVERY_CAPTURE_DYNAMIC_PROFILE_INVALID")
     process_tokens = {
         row["process_token"]
         for row in process_trace["events"]
@@ -1673,9 +1907,11 @@ def _validate_sealed_dynamic_profile(
     if (
             any(document["selected_commit"] != process_trace["selected_commit"]
                 or document["selected_tree"] != process_trace["selected_tree"]
-                for document in (mapping_trace, loss_trace))
+                for document in (mapping_trace, loss_trace, environment_manifest))
             or process_trace["target_process_token"] != mapping_trace["target_process_token"]
             or process_trace["target_process_token"] != loss_trace["target_process_token"]
+            or process_trace["target_process_token"]
+            != environment_manifest["target_process_token"]
             or process_trace["target_process_token"] not in process_tokens
             or process_trace["process_event_count"] != loss_trace["process_event_count"]
             or mapping_trace["snapshot_count"] != loss_trace["mapping_snapshot_count"]
@@ -1685,9 +1921,17 @@ def _validate_sealed_dynamic_profile(
             or process_trace["target"]["crypto_provider_path_digest"]
             != expected_crypto_provider_path_digest
             or expected_crypto_provider_path_digest not in mapped_path_digests
+            or {
+                row["input_id"]: row["digest"]
+                for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+            }["dsl-program"] != process_trace["target"]["program_digest"]
+            or {
+                row["input_id"]: row["digest"]
+                for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+            }["dsl-input"] != process_trace["target"]["input_digest"]
     ):
         _fail("RUNTIME_DISCOVERY_CAPTURE_DYNAMIC_PROFILE_INVALID")
-    return process_trace, mapping_trace, loss_trace
+    return process_trace, mapping_trace, loss_trace, environment_manifest
 
 
 def _expected_incomplete_evidence(
@@ -1698,6 +1942,7 @@ def _expected_incomplete_evidence(
         process_trace: Mapping[str, Any],
         mapping_trace: Mapping[str, Any],
         loss_trace: Mapping[str, Any],
+        environment_manifest: Mapping[str, Any],
         ) -> dict[str, Any]:
     subject = _validate_subject(RuntimeClosureDiscoverySubject(
         producer_id=evidence["producer_id"],
@@ -1725,10 +1970,19 @@ def _expected_incomplete_evidence(
         digest_fields[field] = bytes_digest(raw)
     for artifact_id, role, _schema in _DYNAMIC_ARTIFACTS:
         artifact_rows.append(_artifact_row(artifact_id, role, artifact_raw_by_id[artifact_id]))
+    environment_artifact_id, environment_role, environment_field, _schema = (
+        _ENVIRONMENT_ARTIFACT
+    )
+    environment_raw = artifact_raw_by_id[environment_artifact_id]
+    artifact_rows.append(_artifact_row(
+        environment_artifact_id, environment_role, environment_raw
+    ))
+    digest_fields[environment_field] = bytes_digest(environment_raw)
     artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
 
     coverage: dict[str, Any] = {"state": RUNTIME_CLOSURE_COVERAGE_INCOMPLETE}
     coverage.update({field: False for field in RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS})
+    coverage["execution_environment_argv_cwd_and_inputs_bound"] = True
     coverage.update({field: None for field in RUNTIME_CLOSURE_POSITIVE_COUNTER_FIELDS})
     coverage.update({field: None for field in RUNTIME_CLOSURE_ZERO_COUNTER_FIELDS})
     coverage.update({
@@ -1744,6 +1998,7 @@ def _expected_incomplete_evidence(
         "process_trace_digest": canonical_digest(process_trace),
         "mapping_trace_digest": canonical_digest(mapping_trace),
         "loss_trace_digest": canonical_digest(loss_trace),
+        "execution_environment_manifest_digest": canonical_digest(environment_manifest),
     }).removeprefix("sha256:")
     expected: dict[str, Any] = {
         "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
@@ -1787,6 +2042,7 @@ def _seal_captured_discovery_result(
     expected_artifact_ids = (
         {row[0] for row in _STATIC_ARTIFACTS}
         | {row[0] for row in _DYNAMIC_ARTIFACTS}
+        | {_ENVIRONMENT_ARTIFACT[0]}
     )
     if (
             type(bound_evidence) is not BoundTransitionRuntimeClosureEvidence
@@ -1811,8 +2067,10 @@ def _seal_captured_discovery_result(
         static_raw_by_relative, inventory, input_digest = _validate_sealed_static_profile(
             artifact_raw_by_id
         )
-        process_trace, mapping_trace, loss_trace = _validate_sealed_dynamic_profile(
+        process_trace, mapping_trace, loss_trace, environment_manifest = (
+            _validate_sealed_dynamic_profile(
             artifact_raw_by_id, expected_crypto_provider_path_digest
+            )
         )
         if input_digest != process_trace["target"]["input_digest"]:
             _fail("RUNTIME_DISCOVERY_CAPTURE_STATIC_DYNAMIC_JOIN_INVALID")
@@ -1824,6 +2082,7 @@ def _seal_captured_discovery_result(
             process_trace,
             mapping_trace,
             loss_trace,
+            environment_manifest,
         )
         if evidence != expected or evidence_raw != canonical_json_bytes(expected):
             _fail("RUNTIME_DISCOVERY_CAPTURE_ENVELOPE_INVALID")
@@ -1970,6 +2229,410 @@ def _verify_materialized_inputs(
             _fail("RUNTIME_DISCOVERY_MATERIALIZATION_CHANGED")
 
 
+def _materialize_collector_target_script(base: Path) -> tuple[Path, bytes]:
+    raw = _TARGET_SOURCE.encode("utf-8")
+    collector_raw = base / "collector"
+    try:
+        collector_raw.mkdir()
+    except OSError:
+        _fail("RUNTIME_DISCOVERY_TARGET_SCRIPT_MATERIALIZATION_FAILED")
+    collector = _resolve_local_no_reparse(collector_raw, directory=True)
+    candidate = collector / "atlas_r2_runtime_target.py"
+    try:
+        with candidate.open("xb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        _fail("RUNTIME_DISCOVERY_TARGET_SCRIPT_MATERIALIZATION_FAILED")
+    target = _resolve_local_no_reparse(candidate, directory=False)
+    if _stable_read(target) != raw:
+        _fail("RUNTIME_DISCOVERY_TARGET_SCRIPT_MATERIALIZATION_MISMATCH")
+    return target, raw
+
+
+def _launch_value_digest(value: str) -> str:
+    if type(value) is not str:
+        _fail("RUNTIME_DISCOVERY_LAUNCH_VALUE_INVALID")
+    return bytes_digest(value.encode("utf-8"))
+
+
+def _launch_input_row(
+        input_id: str,
+        path_token: str,
+        path: Path,
+        raw: bytes) -> dict[str, Any]:
+    return {
+        "input_id": input_id,
+        "path_token": path_token,
+        "path_digest": _launch_value_digest(str(path)),
+        "raw_bytes": len(raw),
+        "digest": bytes_digest(raw),
+    }
+
+
+def _selected_source_manifest_raw(raw_by_relative: Mapping[str, bytes]) -> bytes:
+    try:
+        manifest = {
+            relative: bytes_digest(raw_by_relative[relative])
+            for relative in _TARGET_SOURCE_RELATIVES
+        }
+    except (KeyError, TypeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_SOURCE_MANIFEST_INPUT_INVALID")
+    return canonical_json_bytes(manifest)
+
+
+def _validate_environment_source_joins(
+        environment_manifest: Mapping[str, Any],
+        raw_by_relative: Mapping[str, bytes]) -> None:
+    try:
+        source_manifest_raw = _selected_source_manifest_raw(raw_by_relative)
+        launches = environment_manifest["launch"]
+        for side in ("parent_expected", "target_observed"):
+            launch = launches[side]
+            by_id = {row["input_id"]: row for row in launch["inputs"]}
+            for input_id, _path_token, relative in _LAUNCH_INPUT_SPEC:
+                if relative is None:
+                    raw = _TARGET_SOURCE.encode("utf-8")
+                else:
+                    raw = raw_by_relative[relative]
+                if (
+                        by_id[input_id]["raw_bytes"] != len(raw)
+                        or by_id[input_id]["digest"] != bytes_digest(raw)
+                ):
+                    _fail("RUNTIME_DISCOVERY_ENVIRONMENT_SOURCE_JOIN_INVALID")
+            if (
+                    launch["source_manifest_digest"] != bytes_digest(source_manifest_raw)
+                    or launch["argv"][5]["value_digest"]
+                    != _launch_value_digest(str(PROVISIONAL_MAX_CANONICAL_BYTES))
+                    or launch["argv"][6]["value_digest"]
+                    != _launch_value_digest(source_manifest_raw.decode("ascii"))
+            ):
+                _fail("RUNTIME_DISCOVERY_ENVIRONMENT_SOURCE_JOIN_INVALID")
+    except RuntimeDiscoveryError:
+        raise
+    except (IndexError, KeyError, TypeError, UnicodeDecodeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_ENVIRONMENT_SOURCE_JOIN_INVALID")
+
+
+def _expected_launch_binding(
+        python_executable: Path,
+        target_script: Path,
+        target_script_raw: bytes,
+        source_root: Path,
+        materialized_paths: Mapping[str, Path],
+        crypto_root: Path,
+        cache: Path,
+        environment: Mapping[str, str],
+        source_manifest_raw: str,
+        raw_by_relative: Mapping[str, bytes]) -> dict[str, Any]:
+    argv = (
+        str(target_script),
+        str(source_root),
+        str(materialized_paths[_PROGRAM_RELATIVE]),
+        str(materialized_paths[_INPUT_RELATIVE]),
+        str(crypto_root),
+        str(PROVISIONAL_MAX_CANONICAL_BYTES),
+        source_manifest_raw,
+    )
+    input_rows = []
+    for input_id, path_token, relative in _LAUNCH_INPUT_SPEC:
+        if relative is None:
+            path, raw = target_script, target_script_raw
+        else:
+            path, raw = materialized_paths[relative], raw_by_relative[relative]
+        input_rows.append(_launch_input_row(input_id, path_token, path, raw))
+    input_rows.sort(key=lambda row: row["input_id"])
+    executable_raw = _stable_read(python_executable)
+    return {
+        "python": {
+            "implementation": sys.implementation.name,
+            "version": ".".join(str(item) for item in sys.version_info[:3]),
+            "cache_tag": sys.implementation.cache_tag,
+            "executable": {
+                "path_token": "$PYTHON_EXECUTABLE",
+                "path_digest": _launch_value_digest(str(python_executable)),
+                "raw_bytes": len(executable_raw),
+                "digest": bytes_digest(executable_raw),
+            },
+            "flags": {
+                "isolated": True,
+                "no_site": True,
+                "ignore_environment": True,
+                "safe_path": True,
+                "dont_write_bytecode": True,
+            },
+            "pycache_prefix": {
+                "path_token": "$PRIVATE_PYCACHE_PREFIX",
+                "path_digest": _launch_value_digest(str(cache)),
+            },
+        },
+        "argv": [
+            {
+                "index": index,
+                "value_kind": kind,
+                "value_token": token,
+                "value_digest": _launch_value_digest(argv[index]),
+            }
+            for index, (token, kind) in enumerate(_TARGET_ARGV_SPEC)
+        ],
+        "cwd": {
+            "path_token": "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT",
+            "path_digest": _launch_value_digest(str(source_root)),
+        },
+        "environment": [
+            {
+                "name": name,
+                "value_kind": _ENVIRONMENT_VALUE_SPEC[name][0],
+                "value_token": _ENVIRONMENT_VALUE_SPEC[name][1],
+                "value_digest": _launch_value_digest(environment[name]),
+            }
+            for name in sorted(_ENVIRONMENT_VALUE_SPEC)
+        ],
+        "inputs": input_rows,
+        "source_manifest_digest": bytes_digest(source_manifest_raw.encode("ascii")),
+    }
+
+
+def _expected_planned_launch(
+        python_executable: Path,
+        crypto_root: Path,
+        raw_by_relative: Mapping[str, bytes],
+        temp_root: Path) -> dict[str, Any]:
+    """Derive the outer capture owner's expectation before the dynamic helper runs."""
+
+    source_root = temp_root / "source"
+    materialized_paths = {
+        relative: source_root / Path(relative)
+        for relative in raw_by_relative
+    }
+    target_script = temp_root / "collector" / "atlas_r2_runtime_target.py"
+    cache = temp_root / "pycache"
+    source_manifest = _selected_source_manifest_raw(raw_by_relative).decode("ascii")
+    environment = _sanitized_environment(cache)
+    return _validate_launch_binding(_expected_launch_binding(
+        python_executable,
+        target_script,
+        _TARGET_SOURCE.encode("utf-8"),
+        source_root,
+        materialized_paths,
+        crypto_root,
+        cache,
+        environment,
+        source_manifest,
+        raw_by_relative,
+    ))
+
+
+def _validate_launch_binding(value: Any) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != {
+            "python", "argv", "cwd", "environment", "inputs", "source_manifest_digest"}:
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_LAUNCH_INVALID")
+    python = value["python"]
+    if type(python) is not dict or set(python) != {
+            "implementation", "version", "cache_tag", "executable", "flags",
+            "pycache_prefix"}:
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_PYTHON_INVALID")
+    if (
+            type(python["implementation"]) is not str
+            or not python["implementation"]
+            or type(python["version"]) is not str
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", python["version"])
+            or type(python["cache_tag"]) is not str
+            or not python["cache_tag"]
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_PYTHON_INVALID")
+    executable = python["executable"]
+    if (
+            type(executable) is not dict
+            or set(executable) != {"path_token", "path_digest", "raw_bytes", "digest"}
+            or executable["path_token"] != "$PYTHON_EXECUTABLE"
+            or type(executable["path_digest"]) is not str
+            or not _DIGEST_RE.fullmatch(executable["path_digest"])
+            or type(executable["raw_bytes"]) is not int
+            or not 0 < executable["raw_bytes"] <= PROVISIONAL_MAX_CANONICAL_BYTES
+            or type(executable["digest"]) is not str
+            or not _DIGEST_RE.fullmatch(executable["digest"])
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_PYTHON_INVALID")
+    flags = python["flags"]
+    expected_flags = {
+        "isolated", "no_site", "ignore_environment", "safe_path",
+        "dont_write_bytecode",
+    }
+    if (
+            type(flags) is not dict
+            or set(flags) != expected_flags
+            or any(flags[field] is not True for field in expected_flags)
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_FLAGS_INVALID")
+    pycache = python["pycache_prefix"]
+    if (
+            type(pycache) is not dict
+            or set(pycache) != {"path_token", "path_digest"}
+            or pycache["path_token"] != "$PRIVATE_PYCACHE_PREFIX"
+            or type(pycache["path_digest"]) is not str
+            or not _DIGEST_RE.fullmatch(pycache["path_digest"])
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_PYTHON_INVALID")
+
+    argv = value["argv"]
+    if type(argv) is not list or len(argv) != len(_TARGET_ARGV_SPEC):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_ARGV_INVALID")
+    for index, ((token, kind), row) in enumerate(zip(_TARGET_ARGV_SPEC, argv, strict=True)):
+        if (
+                type(row) is not dict
+                or set(row) != {"index", "value_kind", "value_token", "value_digest"}
+                or type(row["index"]) is not int
+                or row["index"] != index
+                or row["value_kind"] != kind
+                or row["value_token"] != token
+                or type(row["value_digest"]) is not str
+                or not _DIGEST_RE.fullmatch(row["value_digest"])
+        ):
+            _fail("WINDOWS_EXECUTION_ENVIRONMENT_ARGV_INVALID")
+    cwd = value["cwd"]
+    if (
+            type(cwd) is not dict
+            or set(cwd) != {"path_token", "path_digest"}
+            or cwd["path_token"] != "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT"
+            or type(cwd["path_digest"]) is not str
+            or not _DIGEST_RE.fullmatch(cwd["path_digest"])
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_CWD_INVALID")
+
+    environment = value["environment"]
+    expected_names = sorted(_ENVIRONMENT_VALUE_SPEC)
+    if type(environment) is not list or len(environment) != len(expected_names):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_VARIABLES_INVALID")
+    for name, row in zip(expected_names, environment, strict=True):
+        kind, token = _ENVIRONMENT_VALUE_SPEC[name]
+        if (
+                type(row) is not dict
+                or set(row) != {"name", "value_kind", "value_token", "value_digest"}
+                or row["name"] != name
+                or row["value_kind"] != kind
+                or row["value_token"] != token
+                or type(row["value_digest"]) is not str
+                or not _DIGEST_RE.fullmatch(row["value_digest"])
+        ):
+            _fail("WINDOWS_EXECUTION_ENVIRONMENT_VARIABLES_INVALID")
+
+    inputs = value["inputs"]
+    expected_inputs = sorted(_LAUNCH_INPUT_SPEC)
+    if type(inputs) is not list or len(inputs) != len(expected_inputs):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID")
+    for (input_id, path_token, _relative), row in zip(expected_inputs, inputs, strict=True):
+        if (
+                type(row) is not dict
+                or set(row) != {"input_id", "path_token", "path_digest", "raw_bytes", "digest"}
+                or row["input_id"] != input_id
+                or row["path_token"] != path_token
+                or type(row["path_digest"]) is not str
+                or not _DIGEST_RE.fullmatch(row["path_digest"])
+                or type(row["raw_bytes"]) is not int
+                or not 0 < row["raw_bytes"] <= PROVISIONAL_MAX_CANONICAL_BYTES
+                or type(row["digest"]) is not str
+                or not _DIGEST_RE.fullmatch(row["digest"])
+        ):
+            _fail("WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID")
+    by_id = {row["input_id"]: row for row in inputs}
+    environment_by_name = {row["name"]: row for row in environment}
+    selected_source_manifest_raw = canonical_json_bytes({
+        relative: by_id[input_id]["digest"]
+        for input_id, _path_token, relative in _LAUNCH_INPUT_SPEC
+        if relative in _TARGET_SOURCE_RELATIVES
+    })
+    if (
+            by_id["collector-target-script"]["digest"]
+            != bytes_digest(_TARGET_SOURCE.encode("utf-8"))
+            or by_id["collector-target-script"]["raw_bytes"]
+            != len(_TARGET_SOURCE.encode("utf-8"))
+            or by_id["dsl-program"]["digest"] != _FIXED_PROGRAM_DIGEST
+            or by_id["dsl-program"]["raw_bytes"] != _FIXED_PROGRAM_BYTES
+            or by_id["dsl-input"]["digest"] != _FIXED_INPUT_DIGEST
+            or by_id["dsl-input"]["raw_bytes"] != _FIXED_INPUT_BYTES
+            or type(value["source_manifest_digest"]) is not str
+            or not _DIGEST_RE.fullmatch(value["source_manifest_digest"])
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_INPUTS_INVALID")
+    if (
+            argv[0]["value_digest"]
+            != by_id["collector-target-script"]["path_digest"]
+            or argv[1]["value_digest"] != cwd["path_digest"]
+            or argv[2]["value_digest"] != by_id["dsl-program"]["path_digest"]
+            or argv[3]["value_digest"] != by_id["dsl-input"]["path_digest"]
+            or argv[5]["value_digest"]
+            != _launch_value_digest(str(PROVISIONAL_MAX_CANONICAL_BYTES))
+            or argv[6]["value_digest"] != bytes_digest(selected_source_manifest_raw)
+            or value["source_manifest_digest"] != bytes_digest(selected_source_manifest_raw)
+            or python["pycache_prefix"]["path_digest"]
+            != environment_by_name["PYTHONPYCACHEPREFIX"]["value_digest"]
+            or environment_by_name["SYSTEMROOT"]["value_digest"]
+            != environment_by_name["WINDIR"]["value_digest"]
+            or environment_by_name["TEMP"]["value_digest"]
+            != environment_by_name["TMP"]["value_digest"]
+            or environment_by_name["PATH"]["value_digest"]
+            != _launch_value_digest("")
+            or environment_by_name["PYTHONHASHSEED"]["value_digest"]
+            != _launch_value_digest("0")
+            or environment_by_name["PYTHONIOENCODING"]["value_digest"]
+            != _launch_value_digest("utf-8")
+            or environment_by_name["PYTHONUTF8"]["value_digest"]
+            != _launch_value_digest("1")
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_CROSS_BINDING_INVALID")
+    return parse_canonical_json_bytes(canonical_json_bytes(value), require_canonical=True)
+
+
+def validate_windows_execution_environment_manifest(value: Any) -> dict[str, Any]:
+    """Validate one two-sided, non-authoritative execution-environment manifest."""
+
+    if type(value) is not dict or set(value) != {
+            "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+            "target_process_token", "launch", "reconciliation", "claim_boundary", "authority"}:
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    if (
+            value["schema"] != _fixed_environment_manifest_schema()
+            or value["capture_protocol"] != _fixed_capture_protocol()
+            or value["platform"] != _fixed_platform()
+            or type(value["selected_commit"]) is not str
+            or type(value["selected_tree"]) is not str
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
+            or type(value["target_process_token"]) is not str
+            or not _TOKEN_RE.fullmatch(value["target_process_token"])
+            or value["claim_boundary"] != _fixed_environment_claim_boundary()
+            or not _has_fixed_authority(value["authority"])
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    launches = value["launch"]
+    if type(launches) is not dict or set(launches) != {
+            "parent_expected", "target_observed"}:
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_LAUNCH_PAIR_INVALID")
+    parent_expected = _validate_launch_binding(launches["parent_expected"])
+    target_observed = _validate_launch_binding(launches["target_observed"])
+    reconciliation = value["reconciliation"]
+    parent_digest = canonical_digest(parent_expected)
+    target_digest = canonical_digest(target_observed)
+    if (
+            type(reconciliation) is not dict
+            or set(reconciliation) != {
+                "parent_expected_launch_digest", "target_observed_launch_digest", "exact_match"}
+            or reconciliation["parent_expected_launch_digest"] != parent_digest
+            or reconciliation["target_observed_launch_digest"] != target_digest
+            or reconciliation["exact_match"] is not True
+            or parent_expected != target_observed
+    ):
+        _fail("WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_INVALID")
+    checked = dict(value)
+    checked["launch"] = {
+        "parent_expected": parent_expected,
+        "target_observed": target_observed,
+    }
+    return parse_canonical_json_bytes(canonical_json_bytes(checked), require_canonical=True)
+
+
 def _capture_dynamic(
         python_executable: Path,
         crypto_root: Path,
@@ -1978,15 +2641,27 @@ def _capture_dynamic(
         input_digest: str,
         selected_commit: str,
         selected_tree: str,
-        temp_base: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        temp_base: Path,
+        prepared_temp_root: Path | None = None,
+        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     job: _WindowsJob | None = None
     shim: subprocess.Popen[bytes] | None = None
     k32_failures = 0
     try:
         checked_temp_base = _resolve_local_no_reparse(temp_base, directory=True)
-        with tempfile.TemporaryDirectory(
-                prefix="atlas-r2-runtime-discovery-",
-                dir=checked_temp_base) as raw_temp:
+        if prepared_temp_root is None:
+            temp_context = tempfile.TemporaryDirectory(
+                prefix="atlas-r2-runtime-discovery-", dir=checked_temp_base
+            )
+        else:
+            prepared = _resolve_local_no_reparse(prepared_temp_root, directory=True)
+            if (
+                    prepared.parent != checked_temp_base
+                    or any(prepared.iterdir())
+            ):
+                _fail("RUNTIME_DISCOVERY_PREPARED_TEMP_ROOT_INVALID")
+            temp_context = nullcontext(str(prepared))
+        with temp_context as raw_temp:
             temp_root = _resolve_local_no_reparse(Path(raw_temp), directory=True)
             cache_raw = temp_root / "pycache"
             try:
@@ -2000,25 +2675,38 @@ def _capture_dynamic(
                 temp_root,
                 raw_by_relative,
             )
+            target_script, target_script_raw = _materialize_collector_target_script(
+                temp_root
+            )
             program_path = materialized_paths[_PROGRAM_RELATIVE]
             input_path = materialized_paths[_INPUT_RELATIVE]
-            source_manifest = canonical_json_bytes({
-                relative: bytes_digest(raw_by_relative[relative])
-                for relative in _TARGET_SOURCE_RELATIVES
-            }).decode("ascii")
+            source_manifest = _selected_source_manifest_raw(raw_by_relative).decode("ascii")
+            environment = _sanitized_environment(cache)
+            expected_launch = _validate_launch_binding(_expected_launch_binding(
+                python_executable,
+                target_script,
+                target_script_raw,
+                source_root,
+                materialized_paths,
+                crypto_root,
+                cache,
+                environment,
+                source_manifest,
+                raw_by_relative,
+            ))
             job = _WindowsJob()
             command = [
                 str(python_executable),
                 "-I", "-S", "-B", "-X", f"pycache_prefix={cache}",
                 "-c", _SHIM_SOURCE,
-                str(source_root), str(program_path), str(input_path), str(crypto_root), str(cache),
-                str(PROVISIONAL_MAX_CANONICAL_BYTES), source_manifest,
+                str(target_script), str(source_root), str(program_path), str(input_path),
+                str(crypto_root), str(cache), str(PROVISIONAL_MAX_CANONICAL_BYTES), source_manifest,
                 str(_MAX_CONTROL_LINE_BYTES),
             ]
             shim = subprocess.Popen(
                 command,
                 cwd=source_root,
-                env=_sanitized_environment(cache),
+                env=environment,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -2053,9 +2741,11 @@ def _capture_dynamic(
                 line_reader.join(_POLL_INTERVAL_MILLISECONDS / 1000)
             if line_reader.is_alive() or not line_result:
                 _fail("RUNTIME_DISCOVERY_TARGET_HANDSHAKE_TIMEOUT")
-            target_pid, target = _parse_target_line(
+            target_pid, target, observed_launch = _parse_target_line(
                 line_result[0], program_digest, input_digest
             )
+            if observed_launch != expected_launch:
+                _fail("WINDOWS_EXECUTION_ENVIRONMENT_RECONCILIATION_FAILED")
             while target_pid not in tokens and time.monotonic() < deadline:
                 _drain_messages(job, events, tokens, timeout_milliseconds=25)
             target_token = tokens.get(target_pid)
@@ -2102,6 +2792,8 @@ def _capture_dynamic(
             if any(cache.iterdir()):
                 _fail("RUNTIME_DISCOVERY_PYCACHE_WRITE_DETECTED")
             _verify_materialized_inputs(materialized_paths, raw_by_relative)
+            if _stable_read(target_script) != target_script_raw:
+                _fail("RUNTIME_DISCOVERY_TARGET_SCRIPT_CHANGED")
 
             common = {
                 "capture_protocol": _fixed_capture_protocol(),
@@ -2166,9 +2858,30 @@ def _capture_dynamic(
                 },
                 "limitations": list(_fixed_limitations()),
             }
+            launch_digest = canonical_digest(expected_launch)
+            environment_manifest = {
+                "schema": _fixed_environment_manifest_schema(),
+                "capture_protocol": _fixed_capture_protocol(),
+                "platform": _fixed_platform(),
+                "selected_commit": selected_commit,
+                "selected_tree": selected_tree,
+                "target_process_token": target_token,
+                "launch": {
+                    "parent_expected": expected_launch,
+                    "target_observed": observed_launch,
+                },
+                "reconciliation": {
+                    "parent_expected_launch_digest": launch_digest,
+                    "target_observed_launch_digest": canonical_digest(observed_launch),
+                    "exact_match": True,
+                },
+                "claim_boundary": _fixed_environment_claim_boundary(),
+                "authority": _fixed_authority(),
+            }
             for document in (process_trace, mapping_trace, loss_trace):
                 validate_windows_runtime_discovery_trace(document)
-            return process_trace, mapping_trace, loss_trace
+            validate_windows_execution_environment_manifest(environment_manifest)
+            return process_trace, mapping_trace, loss_trace, environment_manifest
     except RuntimeDiscoveryError:
         raise
     except (AssertionError, OSError, subprocess.SubprocessError, TypeError, ValueError):
@@ -2213,16 +2926,34 @@ def capture_windows_runtime_closure_incomplete(
     asset_raw = _read_exact_commit_blobs(root, before_source[0], relative_paths)
     _validate_static_joins(asset_raw)
 
-    process_trace, mapping_trace, loss_trace = _capture_dynamic(
-        python_executable,
-        crypto_root,
-        asset_raw,
-        bytes_digest(asset_raw[_PROGRAM_RELATIVE]),
-        bytes_digest(asset_raw[_INPUT_RELATIVE]),
-        before_source[0],
-        before_source[1],
-        temp_base,
-    )
+    try:
+        with tempfile.TemporaryDirectory(
+                prefix="atlas-r2-runtime-discovery-",
+                dir=temp_base) as raw_temp:
+            planned_temp_root = _resolve_local_no_reparse(Path(raw_temp), directory=True)
+            if any(planned_temp_root.iterdir()):
+                _fail("RUNTIME_DISCOVERY_PREPARED_TEMP_ROOT_INVALID")
+            outer_expected_launch = _expected_planned_launch(
+                python_executable,
+                crypto_root,
+                asset_raw,
+                planned_temp_root,
+            )
+            process_trace, mapping_trace, loss_trace, environment_manifest = _capture_dynamic(
+                python_executable,
+                crypto_root,
+                asset_raw,
+                bytes_digest(asset_raw[_PROGRAM_RELATIVE]),
+                bytes_digest(asset_raw[_INPUT_RELATIVE]),
+                before_source[0],
+                before_source[1],
+                temp_base,
+                planned_temp_root,
+            )
+    except RuntimeDiscoveryError:
+        raise
+    except (OSError, TypeError, ValueError):
+        _fail("RUNTIME_DISCOVERY_COLLECTION_FAILED")
     for document in (process_trace, mapping_trace, loss_trace):
         validate_windows_runtime_discovery_trace(document)
         if (
@@ -2230,6 +2961,20 @@ def capture_windows_runtime_closure_incomplete(
                 or document["selected_tree"] != before_source[1]
         ):
             _fail("RUNTIME_DISCOVERY_DYNAMIC_SOURCE_JOIN_FAILED")
+    validate_windows_execution_environment_manifest(environment_manifest)
+    if (
+            environment_manifest["launch"]["parent_expected"]
+            != outer_expected_launch
+            or environment_manifest["launch"]["target_observed"]
+            != outer_expected_launch
+    ):
+        _fail("RUNTIME_DISCOVERY_OUTER_LAUNCH_RECONCILIATION_FAILED")
+    _validate_environment_source_joins(environment_manifest, asset_raw)
+    if (
+            environment_manifest["selected_commit"] != before_source[0]
+            or environment_manifest["selected_tree"] != before_source[1]
+    ):
+        _fail("RUNTIME_DISCOVERY_DYNAMIC_SOURCE_JOIN_FAILED")
     process_tokens = {
         row["process_token"]
         for row in process_trace["events"]
@@ -2243,6 +2988,8 @@ def capture_windows_runtime_closure_incomplete(
     if (
             process_trace["target_process_token"] != mapping_trace["target_process_token"]
             or process_trace["target_process_token"] != loss_trace["target_process_token"]
+            or process_trace["target_process_token"]
+            != environment_manifest["target_process_token"]
             or process_trace["target_process_token"] not in process_tokens
             or process_trace["process_event_count"] != loss_trace["process_event_count"]
             or mapping_trace["snapshot_count"] != loss_trace["mapping_snapshot_count"]
@@ -2255,6 +3002,14 @@ def capture_windows_runtime_closure_incomplete(
             != expected_crypto_provider_path_digest
             or expected_crypto_provider_path_digest
             not in mapped_path_digests
+            or {
+                row["input_id"]: row["digest"]
+                for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+            }["dsl-program"] != process_trace["target"]["program_digest"]
+            or {
+                row["input_id"]: row["digest"]
+                for row in environment_manifest["launch"]["parent_expected"]["inputs"]
+            }["dsl-input"] != process_trace["target"]["input_digest"]
     ):
         _fail("RUNTIME_DISCOVERY_DYNAMIC_ARTIFACT_JOIN_FAILED")
     after_source = _checkout_fingerprint(root, checked_subject)
@@ -2283,10 +3038,20 @@ def capture_windows_runtime_closure_incomplete(
         raw = canonical_json_bytes(document)
         artifact_raw_by_id[artifact_id] = raw
         artifact_rows.append(_artifact_row(artifact_id, role, raw))
+    environment_artifact_id, environment_role, environment_field, _schema = (
+        _ENVIRONMENT_ARTIFACT
+    )
+    environment_raw = canonical_json_bytes(environment_manifest)
+    artifact_raw_by_id[environment_artifact_id] = environment_raw
+    artifact_rows.append(_artifact_row(
+        environment_artifact_id, environment_role, environment_raw
+    ))
+    digest_fields[environment_field] = bytes_digest(environment_raw)
     artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
 
     coverage: dict[str, Any] = {"state": RUNTIME_CLOSURE_COVERAGE_INCOMPLETE}
     coverage.update({field: False for field in RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS})
+    coverage["execution_environment_argv_cwd_and_inputs_bound"] = True
     coverage.update({field: None for field in RUNTIME_CLOSURE_POSITIVE_COUNTER_FIELDS})
     coverage.update({field: None for field in RUNTIME_CLOSURE_ZERO_COUNTER_FIELDS})
     coverage.update({
@@ -2303,6 +3068,7 @@ def capture_windows_runtime_closure_incomplete(
         "process_trace_digest": canonical_digest(process_trace),
         "mapping_trace_digest": canonical_digest(mapping_trace),
         "loss_trace_digest": canonical_digest(loss_trace),
+        "execution_environment_manifest_digest": canonical_digest(environment_manifest),
     }).removeprefix("sha256:")
     evidence: dict[str, Any] = {
         "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
@@ -2357,5 +3123,6 @@ __all__ = [
     "RuntimeClosureDiscoverySubject",
     "RuntimeDiscoveryError",
     "capture_windows_runtime_closure_incomplete",
+    "validate_windows_execution_environment_manifest",
     "validate_windows_runtime_discovery_trace",
 ]
