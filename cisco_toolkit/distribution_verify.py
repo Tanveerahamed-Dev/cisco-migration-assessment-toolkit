@@ -1371,6 +1371,7 @@ def _expected_runtime_inventory(root: Path) -> dict[str, str]:
         "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
         "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json",
         "cisco_toolkit/schemas/atlas-r2-windows-runtime-discovery-v1.schema.json",
         "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
         "cisco_toolkit/transition_contract.py",
