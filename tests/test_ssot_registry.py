@@ -147,9 +147,12 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
             "CapturedIncompleteRuntimeClosureEvidence",
             "validate_windows_runtime_discovery_trace",
             "validate_windows_debug_runtime_discovery_trace",
+            "validate_windows_debug_runtime_discovery_v3_trace",
             "validate_windows_debug_execution_environment_manifest",
+            "validate_windows_debug_execution_environment_v3_manifest",
             "capture_windows_runtime_closure_incomplete",
             "capture_windows_debug_runtime_closure_incomplete",
+            "capture_windows_debug_runtime_closure_v3_incomplete",
         ),
         _transition_runtime_debug: (
             "DebugEventCapture",
@@ -295,6 +298,71 @@ def test_registry_transition_contract_owners_are_real_and_bounded():
         "No current TCB-budget policy, key, signature, receipt, independently approved budget, or positive freeze is bundled",
     ):
         assert tcb_budget_authority_boundary in registry
+
+
+def test_registry_windows_debug_v3_row_is_distinct_target_only_and_nonpromoting():
+    lines = _registry_text().splitlines()
+    v2 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows debug-event capture tranche" in line
+    )
+    v3 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows target-endpoint reconciliation tranche" in line
+    )
+
+    assert v2 != v3
+    assert "(`/2`, incomplete only)" in v2
+    assert "(`/3`, incomplete only)" in v3
+    assert "capture_windows_debug_runtime_closure_incomplete" in v2
+    assert "capture_windows_debug_runtime_closure_v3_incomplete" in v3
+
+    v2_assets = (
+        "atlas-r2-windows-debug-runtime-discovery-v2.schema.json",
+        "atlas-r2-windows-execution-environment-manifest-v2.schema.json",
+    )
+    v3_assets = (
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json",
+    )
+    for basename in v2_assets:
+        assert basename in v2
+        assert basename not in v3
+    for relative in v3_assets:
+        assert (ROOT / relative).is_file(), f"R2.0 /3 SSOT asset is missing: {relative}"
+        basename = relative.rsplit("/", 1)[-1]
+        assert basename in v3
+        assert basename not in v2
+
+    for unchanged_v2_boundary in (
+        "deliberately incomplete image-event observation",
+        "event-stream continuity, start/end reconciliation",
+        "OS loss counters remain null",
+    ):
+        assert unchanged_v2_boundary in v2
+
+    for v3_boundary in (
+        "sealed 12-artifact `/3` envelope",
+        "target_start_end_snapshot_reconciled=true",
+        "collector_sequence_kind=LOCAL_APPEND_ORDINAL",
+        "collector_ledger_contiguous=true",
+        "collector_sequence_gap_count=0",
+        "event_stream_contiguous=false",
+        "start_end_snapshot_reconciled=false",
+        "os_event_sequence_available=false",
+        "os_loss_counter_available=false",
+        "OS/global loss counters remain null",
+        "Endpoint equality cannot detect an omitted balanced load/unload pair",
+        "Later target teardown image activity remains serialized and debug-projected but is outside END checkpoint reconciliation",
+        "`LOAD_LIBRARY_AS_DATAFILE`",
+        "Only `process_tree_captured_before_first_instruction_through_final_descendant` and `execution_environment_argv_cwd_and_inputs_bound` may be true",
+        "Runtime inventory `/1` remains `PARTIAL_NONPORTABLE_PROTOTYPE`",
+        "`/2` remains unchanged",
+        "No budget, authority, signature, qualification, promotion, R2.1+, or Release 3 effect",
+    ):
+        assert v3_boundary in v3
 
 
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():

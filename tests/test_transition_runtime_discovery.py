@@ -43,6 +43,16 @@ _DEBUG_DYNAMIC_ARTIFACT_IDS = {
     *_DEBUG_TRACE_ARTIFACT_IDS,
     _DEBUG_ENVIRONMENT_ARTIFACT_ID,
 }
+_DEBUG_V3_TRACE_ARTIFACT_IDS = {
+    "windows-debug-process-trace.atlas-r2.v3",
+    "windows-debug-image-trace.atlas-r2.v3",
+    "windows-debug-loss-reconciliation.atlas-r2.v3",
+}
+_DEBUG_V3_ENVIRONMENT_ARTIFACT_ID = "windows-execution-environment-manifest.atlas-r2.v3"
+_DEBUG_V3_DYNAMIC_ARTIFACT_IDS = {
+    *_DEBUG_V3_TRACE_ARTIFACT_IDS,
+    _DEBUG_V3_ENVIRONMENT_ARTIFACT_ID,
+}
 _CRYPTO_PROVIDER_PATH_DIGEST = contract.bytes_digest(b"normalized crypto path")
 _AUTHORITY = {
     "authoritative": False,
@@ -501,14 +511,18 @@ def test_public_surface_is_incomplete_only_and_has_no_claim_injection() -> None:
         "RuntimeClosureDiscoverySubject",
         "RuntimeDiscoveryError",
         "capture_windows_debug_runtime_closure_incomplete",
+        "capture_windows_debug_runtime_closure_v3_incomplete",
         "capture_windows_runtime_closure_incomplete",
         "validate_windows_debug_execution_environment_manifest",
+        "validate_windows_debug_execution_environment_v3_manifest",
         "validate_windows_debug_runtime_discovery_trace",
+        "validate_windows_debug_runtime_discovery_v3_trace",
         "validate_windows_execution_environment_manifest",
         "validate_windows_runtime_discovery_trace",
     ]
     for capture in (
         discovery.capture_windows_debug_runtime_closure_incomplete,
+        discovery.capture_windows_debug_runtime_closure_v3_incomplete,
         discovery.capture_windows_runtime_closure_incomplete,
     ):
         signature = inspect.signature(capture)
@@ -520,7 +534,9 @@ def test_public_surface_is_incomplete_only_and_has_no_claim_injection() -> None:
         )
     for validator in (
         discovery.validate_windows_debug_execution_environment_manifest,
+        discovery.validate_windows_debug_execution_environment_v3_manifest,
         discovery.validate_windows_debug_runtime_discovery_trace,
+        discovery.validate_windows_debug_runtime_discovery_v3_trace,
         discovery.validate_windows_execution_environment_manifest,
         discovery.validate_windows_runtime_discovery_trace,
     ):
@@ -541,6 +557,10 @@ def test_public_surface_is_incomplete_only_and_has_no_claim_injection() -> None:
         )
     with pytest.raises(TypeError):
         discovery.capture_windows_debug_runtime_closure_incomplete(
+            _subject(), ROOT, state=closure.RUNTIME_CLOSURE_EVIDENCE_READY  # type: ignore[call-arg]
+        )
+    with pytest.raises(TypeError):
+        discovery.capture_windows_debug_runtime_closure_v3_incomplete(
             _subject(), ROOT, state=closure.RUNTIME_CLOSURE_EVIDENCE_READY  # type: ignore[call-arg]
         )
     with pytest.raises(TypeError):
@@ -2406,6 +2426,109 @@ def test_real_windows_debug_capture_runs_only_from_a_tracked_clean_committed_che
     assert process["job"]["debug_exited_process_set_matches_job"] is True
     assert discovery._validate_debug_image_projection(process, image) is None
     sealed = discovery._validate_sealed_debug_dynamic_profile(
+        artifact_raw, process["target"]["crypto_provider_path_digest"]
+    )
+    assert sealed == (process, image, loss, environment_manifest)
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="live DEBUG_PROCESS /3 reconciliation is intentionally Windows-only",
+)
+def test_real_windows_debug_v3_capture_runs_only_from_a_tracked_clean_committed_checkout() -> None:
+    tracked_status = _git("status", "--porcelain=v1", "--untracked-files=no")
+    if tracked_status:
+        pytest.skip("live DEBUG_PROCESS /3 reconciliation requires a tracked-clean checkout")
+    required_tracked = (
+        "cisco_toolkit/_transition_runtime_debug.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json",
+        "tests/test_transition_runtime_debug.py",
+        "tests/test_transition_runtime_discovery.py",
+    )
+    for relative in required_tracked:
+        if _git("ls-files", "--", relative) != relative:
+            pytest.skip("live DEBUG_PROCESS /3 reconciliation requires the collector in HEAD")
+
+    commit = _git("rev-parse", "HEAD^{commit}")
+    tree = _git("rev-parse", "HEAD^{tree}")
+    result = discovery.capture_windows_debug_runtime_closure_v3_incomplete(
+        _subject(commit=commit, tree=tree), ROOT
+    )
+    evidence = result.bound_evidence
+    assert evidence["selected_commit"] == commit
+    assert evidence["selected_tree"] == tree
+    assert evidence["state"] == closure.RUNTIME_CLOSURE_EVIDENCE_INCOMPLETE
+    assert evidence["coverage"]["state"] == closure.RUNTIME_CLOSURE_COVERAGE_INCOMPLETE
+    assert evidence["authority"] == _AUTHORITY
+    assert evidence["known_gaps"] == closure.expected_runtime_closure_gaps(evidence)
+    positive_coverage = {
+        "process_tree_captured_before_first_instruction_through_final_descendant",
+        "execution_environment_argv_cwd_and_inputs_bound",
+    }
+    assert all(
+        evidence["coverage"][field] is (field in positive_coverage)
+        for field in closure.RUNTIME_CLOSURE_COVERAGE_BOOLEAN_FIELDS
+    )
+    assert evidence["coverage"]["event_stream_contiguous"] is False
+    assert evidence["coverage"]["start_end_snapshot_reconciled"] is False
+
+    artifact_raw = result.artifact_raw_by_id()
+    assert len(artifact_raw) == 12
+    assert set(_DEBUG_V3_DYNAMIC_ARTIFACT_IDS) <= set(artifact_raw)
+    documents: dict[str, dict[str, Any]] = {}
+    for artifact_id in _DEBUG_V3_TRACE_ARTIFACT_IDS:
+        raw = artifact_raw[artifact_id]
+        value = contract.parse_canonical_json_bytes(raw, require_canonical=True)
+        assert discovery.validate_windows_debug_runtime_discovery_v3_trace(value) == value
+        assert value["authority"] == _AUTHORITY
+        assert re.search(rb"[A-Za-z]:[\\/]", raw) is None
+        documents[value["schema"]] = value
+    environment_raw = artifact_raw[_DEBUG_V3_ENVIRONMENT_ARTIFACT_ID]
+    environment_manifest = contract.parse_canonical_json_bytes(
+        environment_raw, require_canonical=True
+    )
+    assert discovery.validate_windows_debug_execution_environment_v3_manifest(
+        environment_manifest
+    ) == environment_manifest
+    assert environment_manifest["authority"] == _AUTHORITY
+    assert re.search(rb"[A-Za-z]:[\\/]", environment_raw) is None
+
+    process = documents[discovery._fixed_debug_v3_process_trace_schema()]
+    image = documents[discovery._fixed_debug_v3_image_trace_schema()]
+    loss = documents[discovery._fixed_debug_v3_loss_trace_schema()]
+    assert (
+        process["target_process_token"]
+        == image["target_process_token"]
+        == loss["target_process_token"]
+        == environment_manifest["target_process_token"]
+    )
+    assert image["target_checkpoint_count"] == loss["target_checkpoint_count"] == 2
+    assert image["target_checkpoint_read_count"] == loss["target_checkpoint_read_count"] == 4
+    assert loss["target_start_end_snapshot_reconciled"] is True
+    assert loss["collector_sequence_kind"] == "LOCAL_APPEND_ORDINAL"
+    assert loss["collector_ledger_contiguous"] is True
+    assert loss["collector_sequence_gap_count"] == 0
+    assert loss["os_event_sequence_available"] is False
+    assert loss["os_loss_counter_available"] is False
+    assert loss["event_stream_contiguous"] is False
+    assert loss["start_end_snapshot_reconciled"] is False
+    assert all(
+        loss["counters"][field] is None
+        for field in (
+            "job_messages_lost",
+            "process_events_lost",
+            "mapping_load_events_lost",
+            "mapping_unload_events_lost",
+            "mapping_snapshots_lost",
+            "collector_loss_count",
+            "sequence_gap_count",
+            "unmatched_runtime_event_count",
+        )
+    )
+    assert discovery._validate_debug_v3_checkpoint_projection(process, image) is None
+    sealed = discovery._validate_sealed_debug_v3_dynamic_profile(
         artifact_raw, process["target"]["crypto_provider_path_digest"]
     )
     assert sealed == (process, image, loss, environment_manifest)

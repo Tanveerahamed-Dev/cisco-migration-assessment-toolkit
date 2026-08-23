@@ -33,14 +33,20 @@ _WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE = (
 _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-debug-runtime-discovery-v2.schema.json"
 )
+_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json"
+)
 _WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json"
 )
 _WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v2.schema.json"
 )
+_WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json"
+)
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:fc66bf8e83cfdf7287a0ecef7c32aa1ff07e6c82a6b50c593395a09fb54a7472"
+_TCB_CENSUS_DIGEST = "sha256:95ceb3535f01be84c0a3ed25ffe88f1b61bc191cca3b947c7b96faa904c8d36c"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -60,12 +66,20 @@ def _windows_debug_runtime_discovery_v2_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE))
 
 
+def _windows_debug_runtime_discovery_v3_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE))
+
+
 def _windows_execution_environment_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE))
 
 
 def _windows_execution_environment_v2_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE))
+
+
+def _windows_execution_environment_v3_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE))
 
 
 def _windows_execution_environment_manifest() -> dict[str, Any]:
@@ -988,3 +1002,184 @@ def test_windows_execution_environment_v2_schema_is_an_exact_closed_protocol_clo
     )
     assert raw.endswith(b"\n")
     assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE}",' in package_data
+
+
+def test_windows_debug_runtime_v3_schema_is_a_packaged_closed_target_only_union() -> None:
+    raw = _resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE)
+    schema = _windows_debug_runtime_discovery_v3_schema()
+    references: list[str] = []
+
+    def collect_references(value: Any) -> None:
+        if type(value) is dict:
+            if "$ref" in value:
+                references.append(value["$ref"])
+            for child in value.values():
+                collect_references(child)
+        elif type(value) is list:
+            for child in value:
+                collect_references(child)
+
+    collect_references(schema)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+
+    Draft202012Validator.check_schema(schema)
+    assert raw.endswith(b"\n")
+    assert schema["$id"] == "urn:atlas:schema:r2-windows-debug-runtime-discovery:3"
+    assert schema["oneOf"] == [
+        {"$ref": "#/$defs/processTrace"},
+        {"$ref": "#/$defs/imageTrace"},
+        {"$ref": "#/$defs/lossReconciliation"},
+    ]
+    assert references
+    assert all(reference.startswith("#/$defs/") for reference in references)
+    assert all(
+        schema["$defs"][name]["additionalProperties"] is False
+        for name in (
+            "processTrace",
+            "imageTrace",
+            "lossReconciliation",
+            "targetCheckpoint",
+            "mappingRead",
+            "mapping",
+        )
+    )
+    loss_properties = schema["$defs"]["lossReconciliation"]["properties"]
+    assert loss_properties["target_start_end_snapshot_reconciled"]["const"] is True
+    assert loss_properties["collector_sequence_kind"]["const"] == "LOCAL_APPEND_ORDINAL"
+    assert loss_properties["collector_ledger_contiguous"]["const"] is True
+    assert loss_properties["collector_sequence_gap_count"]["const"] == 0
+    assert loss_properties["os_event_sequence_available"]["const"] is False
+    assert loss_properties["os_loss_counter_available"]["const"] is False
+    assert loss_properties["event_stream_contiguous"]["const"] is False
+    assert loss_properties["start_end_snapshot_reconciled"]["const"] is False
+    loss_counters = schema["$defs"]["lossCounters"]["properties"]
+    for field in (
+        "job_messages_lost",
+        "process_events_lost",
+        "mapping_load_events_lost",
+        "mapping_unload_events_lost",
+        "mapping_snapshots_lost",
+        "collector_loss_count",
+        "sequence_gap_count",
+        "unmatched_runtime_event_count",
+    ):
+        assert loss_counters[field]["type"] == "null"
+    claim_boundary = schema["$defs"]["claimBoundary"]["const"]
+    for boundary in (
+        "target-only",
+        "collector-local append ordinals",
+        "omitted balanced load/unload pairs",
+        "does not establish operating-system event sequences or losslessness",
+    ):
+        assert boundary in claim_boundary
+    assert f'"{_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE}",' in package_data
+
+    authority = {
+        "authoritative": False,
+        "closure_decision": None,
+        "complete_exact_runtime_closure": False,
+        "approved_budget": None,
+        "qualification_effect": "NONE",
+        "promotion_eligible": False,
+        "release3_included": False,
+    }
+    counters = {
+        "debug_wait_failures": 0,
+        "debug_continue_failures": 0,
+        "debug_handle_close_failures": 0,
+        "job_messages_lost": None,
+        "process_events_lost": None,
+        "mapping_load_events_lost": None,
+        "mapping_unload_events_lost": None,
+        "mapping_snapshots_lost": None,
+        "collector_loss_count": None,
+        "sequence_gap_count": None,
+        "unmatched_runtime_event_count": None,
+        "k32_enumeration_failures": 0,
+    }
+    representative_loss = {
+        "schema": "atlas.windows-debug-loss-reconciliation/3",
+        "capture_protocol": "WINDOWS_DEBUG_PROCESS_DISCOVERY/3",
+        "platform": {"os_name": "nt", "sys_platform": "win32"},
+        "selected_commit": "1" * 40,
+        "selected_tree": "2" * 40,
+        "claim_boundary": claim_boundary,
+        "authority": authority,
+        "target_process_token": "process.000000000002",
+        "debug_event_count": 7,
+        "created_process_count": 2,
+        "exited_process_count": 2,
+        "initial_breakpoint_count": 2,
+        "load_event_count": 3,
+        "explicit_unload_event_count": 0,
+        "implicit_unmap_count": 3,
+        "mapping_snapshot_count": 2,
+        "mapping_snapshot_row_count": 3,
+        "target_checkpoint_count": 2,
+        "target_checkpoint_read_count": 4,
+        "target_checkpoint_mapping_row_count": 6,
+        "process_tree_reconciled": True,
+        "event_stream_contiguous": False,
+        "start_end_snapshot_reconciled": False,
+        "target_start_end_snapshot_reconciled": True,
+        "collector_sequence_kind": "LOCAL_APPEND_ORDINAL",
+        "collector_ledger_contiguous": True,
+        "collector_sequence_gap_count": 0,
+        "os_event_sequence_available": False,
+        "os_loss_counter_available": False,
+        "counters": counters,
+        "limitations": schema["$defs"]["lossReconciliation"]["properties"][
+            "limitations"
+        ]["const"],
+    }
+    Draft202012Validator(schema).validate(representative_loss)
+    assert rd.validate_windows_debug_runtime_discovery_v3_trace(
+        representative_loss
+    ) == representative_loss
+    with pytest.raises(rd.RuntimeDiscoveryError):
+        rd.validate_windows_debug_runtime_discovery_trace(representative_loss)
+
+
+def test_windows_execution_environment_v3_schema_is_an_exact_closed_protocol_clone() -> None:
+    v1 = _windows_execution_environment_schema()
+    v2 = _windows_execution_environment_v2_schema()
+    v3 = _windows_execution_environment_v3_schema()
+    expected_v3 = deepcopy(v2)
+    expected_v3["$id"] = (
+        "urn:atlas:schema:r2-windows-execution-environment-manifest:3"
+    )
+    expected_v3["title"] = "Atlas R2.0 Windows execution-environment manifest v3"
+    expected_v3["properties"]["schema"]["const"] = (
+        "atlas.windows-execution-environment-manifest/3"
+    )
+    expected_v3["$defs"]["captureProtocol"]["const"] = (
+        "WINDOWS_DEBUG_PROCESS_DISCOVERY/3"
+    )
+
+    Draft202012Validator.check_schema(v3)
+    assert v3 == expected_v3
+    assert v3["$defs"]["claimBoundary"] == v2["$defs"]["claimBoundary"]
+
+    manifest_v1 = _windows_execution_environment_manifest()
+    manifest_v3 = deepcopy(manifest_v1)
+    manifest_v3["schema"] = "atlas.windows-execution-environment-manifest/3"
+    manifest_v3["capture_protocol"] = "WINDOWS_DEBUG_PROCESS_DISCOVERY/3"
+    Draft202012Validator(v3).validate(manifest_v3)
+    assert rd.validate_windows_debug_execution_environment_v3_manifest(
+        manifest_v3
+    ) == manifest_v3
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v1).validate(manifest_v3)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(v2).validate(manifest_v3)
+    with pytest.raises(rd.RuntimeDiscoveryError):
+        rd.validate_windows_debug_execution_environment_manifest(manifest_v3)
+
+    raw = _resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    assert raw.endswith(b"\n")
+    assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE}",' in package_data

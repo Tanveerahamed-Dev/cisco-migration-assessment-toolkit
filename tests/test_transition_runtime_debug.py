@@ -4,6 +4,7 @@ from collections import deque
 from copy import deepcopy
 import ctypes
 from dataclasses import FrozenInstanceError
+import json
 import os
 from pathlib import Path
 import platform
@@ -13,6 +14,7 @@ import time
 from typing import Any, Callable
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from cisco_toolkit import transition_contract as contract
 from cisco_toolkit import transition_dsl as dsl
@@ -383,6 +385,237 @@ def test_create_process_file_handle_closes_once_when_event_parsing_fails(
     assert session.root_create_observed is False
 
 
+def test_omitted_before_continue_observer_matches_explicit_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def complete(*, explicit_none: bool) -> tuple[debug.DebugEventCapture, _FakeKernel32]:
+        session, kernel32 = _fake_session(
+            monkeypatch,
+            [
+                _event(
+                    debug._CREATE_PROCESS_DEBUG_EVENT,
+                    file_handle=0xABC,
+                ),
+                _event(debug._EXCEPTION_DEBUG_EVENT),
+                _event(debug._EXIT_PROCESS_DEBUG_EVENT),
+            ],
+        )
+        while kernel32.events:
+            if explicit_none:
+                assert session.pump(0, before_continue=None) is True
+            else:
+                assert session.pump(0) is True
+        return session.snapshot(), kernel32
+
+    omitted_capture, omitted_kernel32 = complete(explicit_none=False)
+    explicit_capture, explicit_kernel32 = complete(explicit_none=True)
+
+    assert explicit_capture == omitted_capture
+    assert explicit_kernel32.closed_handles == omitted_kernel32.closed_handles == [0xABC]
+    assert explicit_kernel32.continues == omitted_kernel32.continues
+
+
+def test_invalid_event_record_never_reaches_before_continue_observer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, base=0, file_handle=0xABC)],
+    )
+    observed: list[debug.DebugEventRecord] = []
+
+    with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_IMAGE_BASE_INVALID$"):
+        session.pump(0, before_continue=observed.append)
+
+    assert observed == []
+    assert session.record_count == 0
+    assert session.root_create_observed is False
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_before_continue_observer_receives_only_a_detached_suspended_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    observed: list[debug.DebugEventRecord] = []
+
+    def observe(record: debug.DebugEventRecord) -> None:
+        assert session.record_count == 0
+        assert kernel32.continues == []
+        assert kernel32.closed_handles == [0xABC]
+        with pytest.raises(FrozenInstanceError):
+            record.sequence = 7  # type: ignore[misc]
+        observed.append(record)
+
+    assert session.pump(0, before_continue=observe) is True
+    assert len(observed) == 1
+    assert observed[0].event == "CREATE_PROCESS"
+    assert session.record_count == 1
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_before_continue_observer_failure_closes_continues_once_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+
+    def fail(_record: debug.DebugEventRecord) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_OBSERVER_FAILED$",
+    ):
+        session.pump(0, before_continue=fail)
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+    assert session.record_count == 1
+    with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_CAPTURE_INCOMPLETE$"):
+        session.snapshot()
+
+
+def test_before_continue_observer_is_validated_before_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT)],
+    )
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_OBSERVER_INVALID$",
+    ):
+        session.pump(0, before_continue=object())  # type: ignore[arg-type]
+    assert len(kernel32.events) == 1
+    assert kernel32.continues == []
+
+
+def test_continue_failure_never_appends_the_observed_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT)],
+        continue_result=False,
+    )
+    observed: list[debug.DebugEventRecord] = []
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_CONTINUE_FAILED$",
+    ):
+        session.pump(0, before_continue=observed.append)
+    assert len(observed) == 1
+    assert session.record_count == 0
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_before_continue_observer_cannot_reenter_the_event_pump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [
+            _event(debug._CREATE_PROCESS_DEBUG_EVENT),
+            _event(debug._EXCEPTION_DEBUG_EVENT),
+        ],
+    )
+    errors: list[str] = []
+
+    def observe(_record: debug.DebugEventRecord) -> None:
+        try:
+            session.pump(0)
+        except debug.DebugEventEngineError as error:
+            errors.append(error.code)
+
+    assert session.pump(0, before_continue=observe) is True
+    assert errors == ["WINDOWS_DEBUG_EVENT_OBSERVER_REENTRANT"]
+    assert len(kernel32.events) == 1
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+
+
+def test_event_handle_close_failure_precedes_observer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+        close_result=False,
+    )
+    observed: list[debug.DebugEventRecord] = []
+
+    def fail(record: debug.DebugEventRecord) -> None:
+        observed.append(record)
+        raise RuntimeError("must not escape")
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_HANDLE_CLOSE_FAILED$",
+    ):
+        session.pump(0, before_continue=fail)
+
+    assert len(observed) == 1
+    assert session.record_count == 1
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+    with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_CAPTURE_INCOMPLETE$"):
+        session.snapshot()
+
+
+def test_intrinsic_fatal_event_precedes_observer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [
+            _event(debug._CREATE_PROCESS_DEBUG_EVENT),
+            _event(debug._EXCEPTION_DEBUG_EVENT),
+            _event(debug._EXIT_PROCESS_DEBUG_EVENT, exit_code=7),
+        ],
+    )
+    assert session.pump(0) is True
+    assert session.pump(0) is True
+    observed: list[debug.DebugEventRecord] = []
+
+    def fail(record: debug.DebugEventRecord) -> None:
+        observed.append(record)
+        raise RuntimeError("must not escape")
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_PROCESS_EXIT_FAILED$",
+    ):
+        session.pump(0, before_continue=fail)
+
+    assert len(observed) == 1
+    assert observed[0].event == "EXIT_PROCESS"
+    assert session.record_count == 3
+    assert session.all_processes_exited is True
+    assert len(kernel32.continues) == 3
+    with pytest.raises(debug.DebugEventEngineError, match="^WINDOWS_DEBUG_CAPTURE_INCOMPLETE$"):
+        session.snapshot()
+
+
+def test_real_timeout_never_invokes_before_continue_observer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(monkeypatch, [])
+    observed: list[debug.DebugEventRecord] = []
+
+    assert session.pump(0, before_continue=observed.append) is False
+    assert observed == []
+    assert session.record_count == 0
+    assert kernel32.closed_handles == []
+    assert kernel32.continues == []
+
+
 def test_load_dll_file_handle_closes_once_on_duplicate_active_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -717,6 +950,539 @@ def _tokenized_traces(
         "limitations": list(discovery._fixed_debug_limitations()),
     }
     return process_trace, image_trace, loss_trace
+
+
+def _debug_v3_common(schema: str) -> dict[str, Any]:
+    return {
+        "schema": schema,
+        "capture_protocol": discovery._fixed_debug_v3_capture_protocol(),
+        "platform": discovery._fixed_platform(),
+        "selected_commit": _COMMIT,
+        "selected_tree": _TREE,
+        "claim_boundary": discovery._fixed_debug_v3_claim_boundary(),
+        "authority": discovery._fixed_authority(),
+    }
+
+
+def _checkpoint_mapping(slot: str, path_digest: str) -> dict[str, Any]:
+    return {
+        "mapping_slot_token": slot,
+        "observed_path_digest": path_digest,
+        "path_disclosure": "DIGEST_ONLY_NO_RAW_PATH",
+        "mapping_kind": "K32_ENUMERATED_IMAGE",
+    }
+
+
+def _tokenized_v3_traces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    v2_process, _v2_image, _v2_loss = _tokenized_traces(monkeypatch)
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    process_tokens = {
+        _ROOT_PID: "process.000000000001",
+        _CHILD_PID: "process.000000000002",
+    }
+    process_rows, image_rows = discovery._tokenize_debug_capture_v3(capture, process_tokens)
+    target_token = process_tokens[_CHILD_PID]
+    process_trace = deepcopy(v2_process)
+    process_trace.update(_debug_v3_common(discovery._fixed_debug_v3_process_trace_schema()))
+    process_trace["events"] = process_rows
+    process_trace["event_count"] = len(process_rows)
+    process_trace["debugger"]["debug_event_count"] = len(process_rows)
+    process_trace["debugger"]["continued_event_count"] = len(process_rows)
+
+    child_create = next(
+        row for row in process_rows
+        if row["event"] == "CREATE_PROCESS" and row["process_token"] == target_token
+    )
+    child_dll_loads = [
+        row for row in process_rows
+        if row["event"] == "LOAD_DLL" and row["process_token"] == target_token
+    ]
+    assert len(child_dll_loads) == 2
+    assert child_dll_loads[0]["mapping_slot_token"] == child_dll_loads[1][
+        "mapping_slot_token"
+    ]
+    assert child_dll_loads[0]["mapping_token"] != child_dll_loads[1]["mapping_token"]
+    process_mapping = _checkpoint_mapping(
+        child_create["mapping_slot_token"], contract.bytes_digest(b"target process image")
+    )
+    crypto_mapping = _checkpoint_mapping(
+        child_dll_loads[-1]["mapping_slot_token"],
+        process_trace["target"]["crypto_provider_path_digest"],
+    )
+    start_mappings = sorted([process_mapping], key=lambda row: row["mapping_slot_token"])
+    end_mappings = sorted(
+        [process_mapping, crypto_mapping], key=lambda row: row["mapping_slot_token"]
+    )
+    checkpoints = [
+        {
+            "sequence": 0,
+            "checkpoint": "START",
+            "source_debug_sequence": 3,
+            "process_token": target_token,
+            "target_state": "SUSPENDED_AT_INITIAL_BREAKPOINT_BEFORE_CONTINUE",
+            "reads": [
+                {"sequence": index, "status": "OBSERVED_NONEMPTY", "mappings": deepcopy(
+                    start_mappings
+                )}
+                for index in range(2)
+            ],
+        },
+        {
+            "sequence": 1,
+            "checkpoint": "END",
+            "source_debug_sequence": 8,
+            "process_token": target_token,
+            "target_state": "AFTER_PAYLOAD_BEFORE_STOP_RELEASE",
+            "reads": [
+                {"sequence": index, "status": "OBSERVED_NONEMPTY", "mappings": deepcopy(
+                    end_mappings
+                )}
+                for index in range(2)
+            ],
+        },
+    ]
+    load_count = sum(row["event"] == "LOAD_IMAGE" for row in image_rows)
+    explicit_count = sum(row["event"] == "UNLOAD_IMAGE" for row in image_rows)
+    implicit_count = sum(
+        row["event"] == "PROCESS_EXIT_IMPLICIT_UNMAP" for row in image_rows
+    )
+    checkpoint_rows = sum(
+        len(read["mappings"])
+        for checkpoint in checkpoints
+        for read in checkpoint["reads"]
+    )
+    image_trace = {
+        **_debug_v3_common(discovery._fixed_debug_v3_image_trace_schema()),
+        "method": (
+            "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_STABLE_DOUBLE_READ/3"
+        ),
+        "semantics": (
+            "DEBUG_IMAGE_LIFETIMES_PLUS_TARGET_ONLY_STABLE_K32_ENDPOINT_"
+            "RECONCILIATION_NOT_COMPLETE_MAPPING_HISTORY"
+        ),
+        "history_complete": False,
+        "target_process_token": target_token,
+        "debug_event_stream_digest": contract.canonical_digest(process_rows),
+        "load_event_count": load_count,
+        "explicit_unload_event_count": explicit_count,
+        "implicit_unmap_count": implicit_count,
+        "lifecycle_event_count": len(image_rows),
+        "distinct_mapping_count": load_count,
+        "target_checkpoint_count": 2,
+        "target_checkpoint_read_count": 4,
+        "target_checkpoint_mapping_row_count": checkpoint_rows,
+        "target_checkpoints": checkpoints,
+        "events": image_rows,
+    }
+    loss_trace = {
+        **_debug_v3_common(discovery._fixed_debug_v3_loss_trace_schema()),
+        "target_process_token": target_token,
+        "debug_event_count": len(process_rows),
+        "created_process_count": 2,
+        "exited_process_count": 2,
+        "initial_breakpoint_count": 2,
+        "load_event_count": load_count,
+        "explicit_unload_event_count": explicit_count,
+        "implicit_unmap_count": implicit_count,
+        "mapping_snapshot_count": 2,
+        "mapping_snapshot_row_count": len(start_mappings) + len(end_mappings),
+        "target_checkpoint_count": 2,
+        "target_checkpoint_read_count": 4,
+        "target_checkpoint_mapping_row_count": checkpoint_rows,
+        "process_tree_reconciled": True,
+        "event_stream_contiguous": False,
+        "start_end_snapshot_reconciled": False,
+        "target_start_end_snapshot_reconciled": True,
+        "collector_sequence_kind": "LOCAL_APPEND_ORDINAL",
+        "collector_ledger_contiguous": True,
+        "collector_sequence_gap_count": 0,
+        "os_event_sequence_available": False,
+        "os_loss_counter_available": False,
+        "counters": {
+            "debug_wait_failures": 0,
+            "debug_continue_failures": 0,
+            "debug_handle_close_failures": 0,
+            "job_messages_lost": None,
+            "process_events_lost": None,
+            "mapping_load_events_lost": None,
+            "mapping_unload_events_lost": None,
+            "mapping_snapshots_lost": None,
+            "collector_loss_count": None,
+            "sequence_gap_count": None,
+            "unmatched_runtime_event_count": None,
+            "k32_enumeration_failures": 0,
+        },
+        "limitations": list(discovery._fixed_debug_v3_limitations()),
+    }
+    return process_trace, image_trace, loss_trace
+
+
+def test_v3_target_checkpoint_reconciliation_is_narrow_and_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, image_trace, loss_trace = _tokenized_v3_traces(monkeypatch)
+    schema = json.loads(
+        (
+            ROOT
+            / "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    schema_validator = Draft202012Validator(schema)
+    for document in (process_trace, image_trace, loss_trace):
+        schema_validator.validate(document)
+        assert discovery.validate_windows_debug_runtime_discovery_v3_trace(document) == document
+        with pytest.raises(discovery.RuntimeDiscoveryError):
+            discovery.validate_windows_debug_runtime_discovery_trace(document)
+    discovery._validate_debug_v3_checkpoint_projection(process_trace, image_trace)
+    assert image_trace["history_complete"] is False
+    assert loss_trace["target_start_end_snapshot_reconciled"] is True
+    assert loss_trace["event_stream_contiguous"] is False
+    assert loss_trace["start_end_snapshot_reconciled"] is False
+    assert loss_trace["collector_sequence_gap_count"] == 0
+    assert loss_trace["counters"]["sequence_gap_count"] is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["event", "continue_status", "mapping_kind", "exception_disposition"],
+)
+def test_v3_rejects_unhashable_process_event_scalar_with_stable_error(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    process_trace, _image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+    process_trace["events"][0][field] = []
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_PROCESS_EVENTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(process_trace)
+
+
+def test_v3_rejects_unhashable_job_event_with_stable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, _image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+    process_trace["job"]["events"][0]["event"] = []
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_PROCESS_TRACE_JOB_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(process_trace)
+
+
+def test_v3_rejects_unhashable_image_event_with_stable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _process_trace, image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+    unload = next(row for row in image_trace["events"] if row["event"] != "LOAD_IMAGE")
+    unload["event"] = []
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_EVENTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(image_trace)
+
+
+def test_v3_rejects_coordinated_unhashable_image_kind_with_stable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _process_trace, image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+    slot = image_trace["events"][0]["mapping_slot_token"]
+    for row in image_trace["events"]:
+        if row["mapping_slot_token"] == slot:
+            row["mapping_kind"] = []
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_EVENTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(image_trace)
+
+
+def test_v3_rejects_unstable_k32_reads_and_debug_slot_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+    unstable = deepcopy(image_trace)
+    unstable["target_checkpoints"][1]["reads"][1]["mappings"].pop()
+    unstable["target_checkpoint_mapping_row_count"] -= 1
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_CHECKPOINTS_UNSTABLE$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(unstable)
+
+    mismatch = deepcopy(image_trace)
+    replacement = "mapping-slot." + "f" * 64
+    for read in mismatch["target_checkpoints"][1]["reads"]:
+        read["mappings"][-1]["mapping_slot_token"] = replacement
+        read["mappings"].sort(key=lambda row: row["mapping_slot_token"])
+    assert discovery.validate_windows_debug_runtime_discovery_v3_trace(mismatch) == mismatch
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_CHECKPOINT_REPLAY_INVALID$",
+    ):
+        discovery._validate_debug_v3_checkpoint_projection(process_trace, mismatch)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("event_stream_contiguous", True),
+        ("start_end_snapshot_reconciled", True),
+        ("target_start_end_snapshot_reconciled", False),
+        ("collector_sequence_gap_count", 1),
+        ("os_event_sequence_available", True),
+        ("os_loss_counter_available", True),
+    ],
+)
+def test_v3_rejects_global_or_os_loss_claims(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: Any,
+) -> None:
+    _process_trace, _image_trace, loss_trace = _tokenized_v3_traces(monkeypatch)
+    loss_trace[field] = value
+    with pytest.raises(discovery.RuntimeDiscoveryError, match="^WINDOWS_DEBUG_V3_LOSS_TRACE_INVALID$"):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(loss_trace)
+
+
+def test_v3_rejects_boolean_ordinals_and_inconsistent_checkpoint_totals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _process_trace, image_trace, loss_trace = _tokenized_v3_traces(monkeypatch)
+
+    boolean_checkpoint = deepcopy(image_trace)
+    boolean_checkpoint["target_checkpoints"][0]["sequence"] = False
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_CHECKPOINTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(boolean_checkpoint)
+
+    boolean_read = deepcopy(image_trace)
+    boolean_read["target_checkpoints"][0]["reads"][0]["sequence"] = False
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_CHECKPOINTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(boolean_read)
+
+    for field, value in (
+        ("collector_sequence_gap_count", False),
+        ("mapping_snapshot_count", 1),
+        (
+            "target_checkpoint_mapping_row_count",
+            loss_trace["target_checkpoint_mapping_row_count"] + 2,
+        ),
+    ):
+        forged = deepcopy(loss_trace)
+        forged[field] = value
+        with pytest.raises(
+            discovery.RuntimeDiscoveryError,
+            match="^WINDOWS_DEBUG_V3_LOSS_TRACE_INVALID$",
+        ):
+            discovery.validate_windows_debug_runtime_discovery_v3_trace(forged)
+
+
+def test_v3_rejects_missing_reversed_wrong_or_late_checkpoint_anchors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+
+    missing = deepcopy(image_trace)
+    missing["target_checkpoints"].pop()
+    missing["target_checkpoint_count"] = 1
+    missing["target_checkpoint_read_count"] = 2
+    missing["target_checkpoint_mapping_row_count"] = 2
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_TRACE_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(missing)
+
+    reversed_checkpoints = deepcopy(image_trace)
+    reversed_checkpoints["target_checkpoints"].reverse()
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_CHECKPOINTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(reversed_checkpoints)
+
+    wrong_target = deepcopy(image_trace)
+    wrong_target["target_checkpoints"][0]["process_token"] = "process.wrong"
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_IMAGE_CHECKPOINTS_INVALID$",
+    ):
+        discovery.validate_windows_debug_runtime_discovery_v3_trace(wrong_target)
+
+    wrong_start_anchor = deepcopy(image_trace)
+    wrong_start_anchor["target_checkpoints"][0]["source_debug_sequence"] = 2
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V3_START_CHECKPOINT_ANCHOR_INVALID$",
+    ):
+        discovery._validate_debug_v3_checkpoint_projection(
+            process_trace, wrong_start_anchor
+        )
+
+
+
+def test_v3_serializes_balanced_post_endpoint_teardown_outside_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_trace, image_trace, _loss_trace = _tokenized_v3_traces(monkeypatch)
+    target_token = process_trace["target_process_token"]
+    teardown_mapping = "mapping.post-end-teardown"
+    teardown_slot = "mapping-slot.post-end-teardown"
+
+    for row in process_trace["events"]:
+        if row["sequence"] >= 9:
+            row["sequence"] += 2
+    load_process = deepcopy(process_trace["events"][8])
+    load_process.update({
+        "sequence": 9,
+        "mapping_token": teardown_mapping,
+        "mapping_slot_token": teardown_slot,
+    })
+    unload_process = deepcopy(process_trace["events"][7])
+    unload_process.update({
+        "sequence": 10,
+        "mapping_token": teardown_mapping,
+        "mapping_slot_token": teardown_slot,
+    })
+    process_trace["events"][9:9] = [load_process, unload_process]
+    process_trace["event_count"] += 2
+    process_trace["debugger"]["debug_event_count"] += 2
+    process_trace["debugger"]["continued_event_count"] += 2
+
+    for row in image_trace["events"]:
+        if row["source_debug_sequence"] >= 9:
+            row["source_debug_sequence"] += 2
+    load_image = deepcopy(next(
+        row for row in image_trace["events"]
+        if row["source_debug_sequence"] == 8 and row["process_token"] == target_token
+    ))
+    load_image.update({
+        "source_debug_sequence": 9,
+        "mapping_token": teardown_mapping,
+        "mapping_slot_token": teardown_slot,
+    })
+    unload_image = deepcopy(load_image)
+    unload_image.update({
+        "source_debug_sequence": 10,
+        "event": "UNLOAD_IMAGE",
+        "file_handle_present": None,
+    })
+    image_trace["events"].extend([load_image, unload_image])
+    image_trace["events"].sort(key=lambda row: row["source_debug_sequence"])
+    for sequence, row in enumerate(image_trace["events"]):
+        row["sequence"] = sequence
+    image_trace["debug_event_stream_digest"] = contract.canonical_digest(
+        process_trace["events"]
+    )
+    image_trace["load_event_count"] += 1
+    image_trace["explicit_unload_event_count"] += 1
+    image_trace["lifecycle_event_count"] += 2
+    image_trace["distinct_mapping_count"] += 1
+
+    assert discovery.validate_windows_debug_runtime_discovery_v3_trace(
+        process_trace
+    ) == process_trace
+    assert discovery.validate_windows_debug_runtime_discovery_v3_trace(
+        image_trace
+    ) == image_trace
+    assert discovery._validate_debug_v3_checkpoint_projection(
+        process_trace, image_trace
+    ) is None
+
+
+def test_v3_stable_k32_checkpoint_is_exactly_two_normalized_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+    rows = [(0x4000, r"C:\Runtime\B.DLL"), (0x1000, r"C:\Runtime\A.EXE")]
+
+    def enumerate_rows(pid: int) -> list[tuple[int, str]]:
+        calls.append(pid)
+        return list(rows)
+
+    monkeypatch.setattr(discovery, "_windows_process_module_paths", enumerate_rows)
+    raw = discovery._stable_debug_mapping_checkpoint(200, "END", 8)
+    assert calls == [200, 200]
+    assert raw == {
+        "checkpoint": "END",
+        "target_state": "AFTER_PAYLOAD_BEFORE_STOP_RELEASE",
+        "process_id": 200,
+        "source_debug_sequence": 8,
+        "normalized_reads": (
+            (
+                (0x1000, contract.bytes_digest(b"c:/runtime/a.exe")),
+                (0x4000, contract.bytes_digest(b"c:/runtime/b.dll")),
+            ),
+            (
+                (0x1000, contract.bytes_digest(b"c:/runtime/a.exe")),
+                (0x4000, contract.bytes_digest(b"c:/runtime/b.dll")),
+            ),
+        ),
+    }
+    sealed = discovery._sealed_debug_mapping_checkpoint(
+        raw, "process.000000000002"
+    )
+    assert set(sealed) == {
+        "checkpoint",
+        "target_state",
+        "source_debug_sequence",
+        "process_token",
+        "reads",
+    }
+    assert len(sealed["reads"]) == 2
+    assert sealed["reads"][0] == sealed["reads"][1] | {"sequence": 0}
+    assert [
+        row["mapping_slot_token"] for row in sealed["reads"][0]["mappings"]
+    ] == sorted(
+        row["mapping_slot_token"] for row in sealed["reads"][0]["mappings"]
+    )
+    assert "process_id" not in sealed
+    assert "normalized_reads" not in sealed
+
+
+def test_v3_stable_k32_checkpoint_rejects_instability_and_duplicate_bases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            [(0x1000, r"C:\Runtime\A.EXE")],
+            [(0x1000, r"C:\Runtime\B.EXE")],
+        ]
+    )
+    monkeypatch.setattr(
+        discovery,
+        "_windows_process_module_paths",
+        lambda _pid: next(responses),
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_K32_CHECKPOINT_UNSTABLE$",
+    ):
+        discovery._stable_debug_mapping_checkpoint(200, "START", 3)
+
+    monkeypatch.setattr(
+        discovery,
+        "_windows_process_module_paths",
+        lambda _pid: [
+            (0x1000, r"C:\Runtime\A.EXE"),
+            (0x1000, r"C:\Runtime\A.EXE"),
+        ],
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_K32_CHECKPOINT_INVALID$",
+    ):
+        discovery._stable_debug_mapping_checkpoint(200, "START", 3)
 
 
 def test_tokenization_generates_new_mapping_token_after_base_reuse_and_v2_validates(

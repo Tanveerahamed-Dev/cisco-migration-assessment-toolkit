@@ -13,7 +13,7 @@ import platform
 import threading
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Callable, NoReturn
 
 
 DEBUG_PROCESS_CREATION_FLAG = 0x00000001
@@ -246,6 +246,7 @@ class WindowsDebugEventSession:
         "_kill_on_exit_configured",
         "_live_processes",
         "_live_threads",
+        "_observer_active",
         "_records",
         "_root_pid",
         "_seen_threads",
@@ -298,6 +299,7 @@ class WindowsDebugEventSession:
         self._live_processes: set[int] = set()
         self._seen_threads: set[int] = set()
         self._live_threads: dict[int, int] = {}
+        self._observer_active = False
         self._active_mappings: dict[tuple[int, int], str] = {}
         self._initial_breakpoints: set[int] = set()
         self._continued = 0
@@ -349,6 +351,13 @@ class WindowsDebugEventSession:
     @property
     def live_process_ids(self) -> tuple[int, ...]:
         return tuple(sorted(self._live_processes))
+
+    @property
+    def record_count(self) -> int:
+        """Return the number of successfully continued records in the local ledger."""
+
+        self._require_creator_thread()
+        return len(self._records)
 
     def process_created(self, process_id: int) -> bool:
         return type(process_id) is int and process_id in self._created
@@ -555,15 +564,30 @@ class WindowsDebugEventSession:
         )
         return copied, status, event_file_handle, bool(event_file_handle), fatal_after_continue
 
-    def pump(self, timeout_milliseconds: int) -> bool:
-        """Wait for and continue at most one event; return false only for a real timeout."""
+    def pump(
+        self,
+        timeout_milliseconds: int,
+        *,
+        before_continue: Callable[[DebugEventRecord], None] | None = None,
+    ) -> bool:
+        """Wait for and continue at most one event; return false only for a real timeout.
+
+        ``before_continue`` is a private observation seam.  It receives only the detached
+        primitive record while the debuggee remains suspended.  Any observer failure is converted
+        to a stable fatal engine error after the event-owned file handle is closed and the event is
+        continued exactly once.
+        """
 
         self._require_creator_thread()
+        if self._observer_active:
+            _fail("WINDOWS_DEBUG_EVENT_OBSERVER_REENTRANT")
         if (
             type(timeout_milliseconds) is not int
             or not 0 <= timeout_milliseconds <= 60_000
         ):
             _fail("WINDOWS_DEBUG_WAIT_TIMEOUT_INVALID")
+        if before_continue is not None and not callable(before_continue):
+            _fail("WINDOWS_DEBUG_EVENT_OBSERVER_INVALID")
         event = _DebugEvent()
         ctypes.set_last_error(0)
         if not self._kernel32.WaitForDebugEventEx(
@@ -587,6 +611,7 @@ class WindowsDebugEventSession:
         )
         fatal_after_continue: str | None = None
         record_error: str | None = None
+        observer_error = False
         close_ok = True
         try:
             copied, status, _returned_handle, _present, fatal_after_continue = (
@@ -601,11 +626,16 @@ class WindowsDebugEventSession:
                 if code == _EXCEPTION_DEBUG_EVENT
                 else _DBG_CONTINUE
             )
-        finally:
-            if event_file_handle:
-                close_ok = self._close_event_file(event_file_handle)
-        if copied is not None:
-            self._records.append(copied)
+        if event_file_handle:
+            close_ok = self._close_event_file(event_file_handle)
+        if copied is not None and before_continue is not None:
+            try:
+                self._observer_active = True
+                before_continue(copied)
+            except BaseException:
+                observer_error = True
+            finally:
+                self._observer_active = False
         if not self._kernel32.ContinueDebugEvent(
             wintypes.DWORD(event.dwProcessId),
             wintypes.DWORD(event.dwThreadId),
@@ -614,6 +644,8 @@ class WindowsDebugEventSession:
             self._continue_failures += 1
             self._fatal_error = "WINDOWS_DEBUG_CONTINUE_FAILED"
             _fail("WINDOWS_DEBUG_CONTINUE_FAILED")
+        if copied is not None:
+            self._records.append(copied)
         self._continued += 1
         if not close_ok:
             self._fatal_error = "WINDOWS_DEBUG_EVENT_HANDLE_CLOSE_FAILED"
@@ -624,6 +656,9 @@ class WindowsDebugEventSession:
         if fatal_after_continue is not None:
             self._fatal_error = fatal_after_continue
             _fail(fatal_after_continue)
+        if observer_error:
+            self._fatal_error = "WINDOWS_DEBUG_EVENT_OBSERVER_FAILED"
+            _fail("WINDOWS_DEBUG_EVENT_OBSERVER_FAILED")
         return True
 
     def snapshot(self) -> DebugEventCapture:
