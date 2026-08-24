@@ -872,12 +872,10 @@ def test_default_labels_path_derivation_is_total_and_non_echoing():
     assert "PRIVATE_MARKER_DO_NOT_ECHO" not in rendered
 
 
-def test_current_live_residual_vocabulary_is_closed():
-    # This is an owner-machine residual ratchet, not a fabricated CI pass.  A
-    # clean clone has no graph/report and is covered by test_graph_invariants.py's
-    # skip policy.  When upstream fixes the report, PASS is accepted; while it is
-    # blocked, no new unreviewed category may appear silently.
-    assert KNOWN_EXTERNAL_REPORT_RESIDUALS == {"graph_report_summary_partition_mismatch"}
+def test_guarded_producer_has_no_allowed_report_residuals():
+    # Old or unguarded reports still receive the precise mismatch diagnostic,
+    # but no report defect is accepted after the producer correction.
+    assert KNOWN_EXTERNAL_REPORT_RESIDUALS == frozenset()
 
 
 def test_invariant_guard_requires_report_and_audited_substantial_count():

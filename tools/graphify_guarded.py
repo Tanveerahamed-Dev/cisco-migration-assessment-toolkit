@@ -1,9 +1,11 @@
-"""Run Graphify 0.9.47 with the reviewed JSON ``extends`` correction in memory.
+"""Run Graphify 0.9.47 with two reviewed producer corrections in memory.
 
 Graphifyy 0.9.47's JSON extractor emits ``extends`` edges for every array-valued
-property.  This launcher accepts only the reviewed upstream extractor bytes,
-changes the one faulty predicate in memory, verifies the result, and rebinds the
-aliases used by the 0.9.47 dispatcher before Graphify's CLI is entered.
+property.  Its report summary also counts structural-only communities as shown,
+although its navigation and sections exclude them.  This launcher accepts only
+the reviewed upstream extractor and reporter bytes, changes those two faulty
+expressions in memory, verifies both results, and rebinds the live 0.9.47 aliases
+before Graphify's CLI is entered.
 Because parallel AST workers reload the on-disk module, the launcher also owns
 ``GRAPHIFY_MAX_WORKERS=1`` and rejects command-line worker overrides.
 
@@ -28,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-GUARD_CONTRACT = "graphify-json-extends-overlay/1"
+GUARD_CONTRACT = "graphify-producer-overlays/2"
 DIST_NAME = "graphifyy"
 EXPECTED_VERSION = "0.9.47"
 EXTRACTOR_MODULE = "graphify.extractors.json_config"
@@ -37,6 +39,12 @@ EXPECTED_SOURCE_BYTES = 9_723
 EXPECTED_SOURCE_SHA256 = "d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945"
 EXPECTED_PATCHED_BYTES = 9_744
 EXPECTED_PATCHED_SHA256 = "cb6b660bd2dee3f58e9007d0eac27883cd3bb3fe5d8136c13e8d83b92b90e011"
+REPORT_MODULE = "graphify.report"
+REPORT_RELATIVE_PATH = "graphify/report.py"
+EXPECTED_REPORT_SOURCE_BYTES = 14_395
+EXPECTED_REPORT_SOURCE_SHA256 = "382d844327181b652bbcd3ebd9cc3f2ab63bbce30e6eb5da80ced2b1575d1d0a"
+EXPECTED_REPORT_PATCHED_BYTES = 14_393
+EXPECTED_REPORT_PATCHED_SHA256 = "b6855a4111f7aec351022fc0d7ed96359216eb3b48c307ea025b8b41ef600bb9"
 WORKER_ENV = "GRAPHIFY_MAX_WORKERS"
 GUARDED_MAX_WORKERS = "1"
 REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/1"
@@ -44,16 +52,18 @@ REFRESH_RECEIPT_PATH = Path("graphify-out/.guarded_refresh.json")
 
 _SOURCE_SENTINEL = b'            elif val.type == "array":'
 _PATCHED_SENTINEL = b'            elif val.type == "array" and key == "extends":'
-_MAX_EXTRACTOR_BYTES = 32_768
+_REPORT_SOURCE_SENTINEL = b"    shown_count = len(communities) - thin_count_summary"
+_REPORT_PATCHED_SENTINEL = b"    shown_count = len(non_empty) - thin_count_summary"
+_MAX_REVIEWED_SOURCE_BYTES = 32_768
 
 _ERROR_MESSAGES = {
     "G001": "graphifyy distribution metadata is unavailable",
     "G002": "graphifyy version is not the reviewed 0.9.47 release",
-    "G003": "the reviewed extractor path is unavailable or ambiguous",
-    "G004": "the extractor bytes do not match the reviewed 0.9.47 source",
-    "G005": "the in-memory correction does not match the reviewed result",
-    "G006": "the imported extractor path or alias topology is unexpected",
-    "G007": "the in-memory extractor overlay could not be installed",
+    "G003": "a reviewed Graphify source path is unavailable or ambiguous",
+    "G004": "the Graphify bytes do not match the reviewed 0.9.47 sources",
+    "G005": "an in-memory correction does not match the reviewed result",
+    "G006": "an imported Graphify path or alias topology is unexpected",
+    "G007": "an in-memory Graphify overlay could not be installed",
     "G008": "the guard failed unexpectedly",
     "G009": "--probe does not accept additional arguments",
     "G010": "the guard owns single-process AST extraction; --max-workers is not accepted",
@@ -114,7 +124,7 @@ def _read_stable_source(path: Path) -> bytes:
             before = os.fstat(handle.fileno())
             if not stat.S_ISREG(before.st_mode):
                 raise GuardFailure("G003")
-            payload = handle.read(_MAX_EXTRACTOR_BYTES + 1)
+            payload = handle.read(_MAX_REVIEWED_SOURCE_BYTES + 1)
             after = os.fstat(handle.fileno())
     except GuardFailure:
         raise
@@ -122,7 +132,7 @@ def _read_stable_source(path: Path) -> bytes:
         raise GuardFailure("G003") from exc
 
     if (
-        len(payload) > _MAX_EXTRACTOR_BYTES
+        len(payload) > _MAX_REVIEWED_SOURCE_BYTES
         or len(payload) != after.st_size
         or _stat_identity(before) != _stat_identity(after)
     ):
@@ -130,7 +140,7 @@ def _read_stable_source(path: Path) -> bytes:
     return payload
 
 
-def _locate_extractor(distribution: Any) -> Path:
+def _locate_reviewed_source(distribution: Any, relative_path: str) -> Path:
     try:
         version = distribution.version
     except Exception as exc:  # metadata providers are external to this repository
@@ -143,7 +153,7 @@ def _locate_extractor(distribution: Any) -> Path:
         matches = [
             item
             for item in (files or ())
-            if str(item).replace("\\", "/") == EXTRACTOR_RELATIVE_PATH
+            if str(item).replace("\\", "/") == relative_path
         ]
         if len(matches) != 1:
             raise GuardFailure("G003")
@@ -153,6 +163,14 @@ def _locate_extractor(distribution: Any) -> Path:
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise GuardFailure("G003") from exc
     return path
+
+
+def _locate_extractor(distribution: Any) -> Path:
+    return _locate_reviewed_source(distribution, EXTRACTOR_RELATIVE_PATH)
+
+
+def _locate_report(distribution: Any) -> Path:
+    return _locate_reviewed_source(distribution, REPORT_RELATIVE_PATH)
 
 
 def _verified_patch(source: bytes) -> bytes:
@@ -170,6 +188,26 @@ def _verified_patch(source: bytes) -> bytes:
         or _sha256(patched) != EXPECTED_PATCHED_SHA256
         or patched.count(_SOURCE_SENTINEL) != 0
         or patched.count(_PATCHED_SENTINEL) != 1
+    ):
+        raise GuardFailure("G005")
+    return patched
+
+
+def _verified_report_patch(source: bytes) -> bytes:
+    if (
+        len(source) != EXPECTED_REPORT_SOURCE_BYTES
+        or _sha256(source) != EXPECTED_REPORT_SOURCE_SHA256
+        or source.count(_REPORT_SOURCE_SENTINEL) != 1
+        or source.count(_REPORT_PATCHED_SENTINEL) != 0
+    ):
+        raise GuardFailure("G004")
+
+    patched = source.replace(_REPORT_SOURCE_SENTINEL, _REPORT_PATCHED_SENTINEL, 1)
+    if (
+        len(patched) != EXPECTED_REPORT_PATCHED_BYTES
+        or _sha256(patched) != EXPECTED_REPORT_PATCHED_SHA256
+        or patched.count(_REPORT_SOURCE_SENTINEL) != 0
+        or patched.count(_REPORT_PATCHED_SENTINEL) != 1
     ):
         raise GuardFailure("G005")
     return patched
@@ -199,26 +237,37 @@ def _prepare_overlay(
         raise GuardFailure("G001") from exc
 
     source_path = _locate_extractor(distribution)
+    report_source_path = _locate_report(distribution)
     source = _read_stable_source(source_path)
+    report_source = _read_stable_source(report_source_path)
     patched = _verified_patch(source)
+    report_patched = _verified_report_patch(report_source)
 
     try:
         original_module = import_module(EXTRACTOR_MODULE)
         extractors_package = import_module("graphify.extractors")
         models_module = import_module("graphify.extractors.models")
         extract_facade = import_module("graphify.extract")
+        graphify_package = import_module("graphify")
+        original_report_module = import_module(REPORT_MODULE)
     except Exception as exc:
         raise GuardFailure("G006") from exc
 
     # Imports may have read the installed module. Recheck the same file before
     # any alias is changed or the Graphify CLI is allowed to run.
-    if _module_file(original_module) != source_path or _read_stable_source(source_path) != source:
+    if (
+        _module_file(original_module) != source_path
+        or _read_stable_source(source_path) != source
+        or _module_file(original_report_module) != report_source_path
+        or _read_stable_source(report_source_path) != report_source
+    ):
         raise GuardFailure("G006")
 
     original_extract_json = getattr(original_module, "extract_json", None)
     dispatch = getattr(extract_facade, "_DISPATCH", None)
     language_extractors = getattr(extractors_package, "LANGUAGE_EXTRACTORS", None)
     cache_bypass_suffixes = getattr(extract_facade, "_JS_CACHE_BYPASS_SUFFIXES", None)
+    original_generate = getattr(original_report_module, "generate", None)
     if (
         not callable(original_extract_json)
         or getattr(extractors_package, "json_config", None) is not original_module
@@ -230,6 +279,8 @@ def _prepare_overlay(
         or dispatch.get(".json") is not original_extract_json
         or not isinstance(cache_bypass_suffixes, set)
         or getattr(models_module, "_JS_CACHE_BYPASS_SUFFIXES", None) is not cache_bypass_suffixes
+        or getattr(graphify_package, "report", None) is not original_report_module
+        or not callable(original_generate)
     ):
         raise GuardFailure("G006")
 
@@ -249,6 +300,26 @@ def _prepare_overlay(
     if not callable(corrected_extract_json):
         raise GuardFailure("G007")
 
+    report_overlay = types.ModuleType(REPORT_MODULE)
+    report_overlay.__file__ = str(report_source_path)
+    report_overlay.__package__ = "graphify"
+    report_overlay.__loader__ = None
+    report_overlay.__spec__ = importlib.util.spec_from_loader(
+        REPORT_MODULE, loader=None, origin=str(report_source_path)
+    )
+    try:
+        report_code = compile(
+            report_patched.decode("utf-8", errors="strict"),
+            str(report_source_path),
+            "exec",
+        )
+        exec(report_code, report_overlay.__dict__)
+        corrected_generate = report_overlay.generate
+    except Exception as exc:
+        raise GuardFailure("G007") from exc
+    if not callable(corrected_generate):
+        raise GuardFailure("G007")
+
     # Rebind every public/live 0.9.47 function alias. The dispatcher mapping is
     # the extraction owner; the others keep direct imports coherent.
     sys.modules[EXTRACTOR_MODULE] = overlay
@@ -257,6 +328,7 @@ def _prepare_overlay(
     language_extractors["json"] = corrected_extract_json
     extract_facade.extract_json = corrected_extract_json
     dispatch[".json"] = corrected_extract_json
+    original_report_module.generate = corrected_generate
 
     # 0.9.47's AST cache namespace identifies only the package version/schema,
     # not these corrected extractor bytes. Never read or write ambiguous JSON
@@ -275,6 +347,7 @@ def _prepare_overlay(
         and dispatch.get(".json") is corrected_extract_json
         and _JSON_SUFFIX_VARIANTS.issubset(cache_bypass_suffixes)
         and getattr(models_module, "_JS_CACHE_BYPASS_SUFFIXES", None) is cache_bypass_suffixes
+        and original_report_module.generate is corrected_generate
     ):
         raise GuardFailure("G007")
 
@@ -285,6 +358,10 @@ def _prepare_overlay(
         "extractor": EXTRACTOR_RELATIVE_PATH,
         "max_workers": int(GUARDED_MAX_WORKERS),
         "patched_sha256": EXPECTED_PATCHED_SHA256,
+        "report": REPORT_RELATIVE_PATH,
+        "report_aliases": 1,
+        "report_patched_sha256": EXPECTED_REPORT_PATCHED_SHA256,
+        "report_source_sha256": EXPECTED_REPORT_SOURCE_SHA256,
         "source_sha256": EXPECTED_SOURCE_SHA256,
         "status": "pass",
         "version": EXPECTED_VERSION,

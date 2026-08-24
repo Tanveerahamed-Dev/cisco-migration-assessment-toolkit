@@ -2,11 +2,11 @@
 """Bounded, non-echoing integrity audit for Graphify's generated report.
 
 ``graphify-out/graph.json`` is the repository's structural owner and compiler
-input.  ``GRAPH_REPORT.md`` is an external-tool derivative.  Graphifyy 0.9.47
-can overstate the number of displayed communities when a community contains
-only synthetic file/stub nodes.  This verifier keeps that report defect from
-silently becoming a repository fact and binds saved community labels to the
-producer's membership-signature sidecar.
+input.  ``GRAPH_REPORT.md`` is an external-tool derivative.  The guarded
+Graphifyy 0.9.47 producer corrects an upstream summary formula that otherwise
+counts structural-only communities as displayed.  This verifier prevents that
+defect from recurring and binds saved community labels to the producer's
+membership-signature sidecar.
 
 The compatibility predicate below deliberately mirrors Graphifyy 0.9.47
 ``graphify.analyze._is_file_node`` behavior.  It is local code,
@@ -44,7 +44,7 @@ MAX_IDENTIFIER_CHARS = 4096
 MAX_REPORT_LINES = 2_000_000
 MAX_COMMUNITY_ID = (1 << 53) - 1
 
-KNOWN_EXTERNAL_REPORT_RESIDUALS = frozenset({"graph_report_summary_partition_mismatch"})
+KNOWN_EXTERNAL_REPORT_RESIDUALS = frozenset()
 
 _SUMMARY_RE = re.compile(
     r"^- ([0-9]+) nodes · ([0-9]+) edges · ([0-9]+) communities"
