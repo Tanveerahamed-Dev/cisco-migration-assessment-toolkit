@@ -39,15 +39,16 @@ This ledger is mandatory input to every R3 discovery artifact. A downstream arti
 | ID | Dependency | Verified state at entry | Discovery use allowed | Held result |
 |---|---|---|---|---|
 | `R3-DEP-001` | Stable R2 case schema and structural verifier semantics | Substantial R2.0 experimental checkpoint exists; R2.0 freeze is blocked. | Map fields, identities, invalidation, and gate vocabulary; create draft fixtures. | No preview or authoritative compilation. |
-| `R3-DEP-002` | Qualified QCP-001 v1 and exact applicability denominator | `EXPERIMENTAL` / `CONTRACT_ONLY`; no signed qualification receipt. | Explore only the proposed gateway-handoff grammar and explicitly label unqualified assumptions. | No feasibility verdict, selection, `TRANSLATION_CHECKED`, or QDP-001 preview. |
-| `R3-DEP-003` | Complete runtime/crypto closure for the activated verifier and packs | Runtime inventory v1 is `PARTIAL_NONPORTABLE_PROTOTYPE`; protocol v1 cannot express complete closure. | Threat-model runtime and pack boundaries; design future evidence interfaces. | No authoritative execution or portable-verifier claim. |
-| `R3-DEP-004` | Representative workload, approved budgets, trust/key custody, and detached signed review | All absent; numeric values are proposals and protective guards only. | Specify the exact authority inputs R3 would consume. | No promotion-bearing execution or positive completeness claim. |
-| `R3-DEP-005` | Selected R2 source and independent provenance | Selected commit/tree are null; source binding is same-checkout self-check only. | Keep discovery artifacts source-referenced and replaceable. | No claim that R3 is built on a selected qualified R2 release. |
-| `R3-DEP-006` | One-generation Graphify and Obsidian evidence over final integrated source | Current protected graph is stale/cross-generation; canonical refresh is held. | Use the reviewed coherent seed and direct source only as navigation, with corpus limitations visible. | No graph-based proof of absence or final relation/memory receipt. |
-| `R3-DEP-007` | QCP-002 Routed Access-Block Migration | Not implemented or qualified. | Capture routed-access requirements and risks as research context only. | QDP-002 remains blocked; no L2/L3 boundary selection or compilation. |
-| `R3-DEP-008` | QDP-002 design qualification | Not implemented or qualified. | Define later acceptance questions without capability claims. | `ARCHITECTURE_DECISION_ASSURANCE_GA` remains prohibited. |
-| `R3-DEP-009` | QCP-003/QDP-003 EVPN semantics | Not implemented or qualified. | Record EVPN ideas only as `UNQUALIFIED_CANDIDATE`. | No EVPN feasibility, ranking, selection, or compilation. |
-| `R3-DEP-010` | Legal/IP and redistribution authority for verifier/pack bytes | Repository remains proprietary; no accountable carve-out or redistribution decision is recorded. | Model packaging choices and decision inputs. | No open-source, unrestricted redistribution, or sealed-binary right claim. |
+| `R3-DEP-002` | Deferred R2.1-R2.5 engineering and operator workflow | Transition identity/persistence, executable obligation integration, pair-bound acquisition and trials, decision workspace/operator surfaces, and portable case/verifier work are all deferred and unqualified. | Specify interfaces, dependencies, UX questions, and non-promoting fixtures while preserving each missing owner explicitly. | No assumption that the R2.0 structural checkpoint supplies persistence, acquisition, operator usability, portable-case behavior, or a field-ready workflow. |
+| `R3-DEP-003` | Qualified QCP-001 v1 and exact applicability denominator | `EXPERIMENTAL` / `CONTRACT_ONLY`; no signed qualification receipt. | Explore only the proposed gateway-handoff grammar and explicitly label unqualified assumptions. | No feasibility verdict, selection, `TRANSLATION_CHECKED`, or QDP-001 preview. |
+| `R3-DEP-004` | Complete runtime/crypto closure for the activated verifier and packs | Runtime inventory v1 is `PARTIAL_NONPORTABLE_PROTOTYPE`; protocol v1 cannot express complete closure. | Threat-model runtime and pack boundaries; design future evidence interfaces. | No authoritative execution or portable-verifier claim. |
+| `R3-DEP-005` | Representative workload, approved budgets, trust/key custody, and detached signed review | All absent; numeric values are proposals and protective guards only. | Specify the exact authority inputs R3 would consume. | No promotion-bearing execution or positive completeness claim. |
+| `R3-DEP-006` | Selected R2 source and independent provenance | Selected commit/tree are null; source binding is same-checkout self-check only. | Keep discovery artifacts source-referenced and replaceable. | No claim that R3 is built on a selected qualified R2 release. |
+| `R3-DEP-007` | One-generation Graphify and Obsidian evidence over final integrated source | Current protected graph is stale/cross-generation; canonical refresh is held. | Use the reviewed coherent seed and direct source only as navigation, with corpus limitations visible. | No graph-based proof of absence or final relation/memory receipt. |
+| `R3-DEP-008` | QCP-002 Routed Access-Block Migration | Not implemented or qualified. | Capture routed-access requirements and risks as research context only. | QDP-002 remains blocked; no L2/L3 boundary selection or compilation. |
+| `R3-DEP-009` | QDP-002 design qualification | Not implemented or qualified. | Define later acceptance questions without capability claims. | `ARCHITECTURE_DECISION_ASSURANCE_GA` remains prohibited. |
+| `R3-DEP-010` | QCP-003/QDP-003 EVPN semantics | Not implemented or qualified. | Record EVPN ideas only as `UNQUALIFIED_CANDIDATE`. | No EVPN feasibility, ranking, selection, or compilation. |
+| `R3-DEP-011` | Legal/IP and redistribution authority for verifier/pack bytes | Repository remains proprietary; no accountable carve-out or redistribution decision is recorded. | Model packaging choices and decision inputs. | No open-source, unrestricted redistribution, or sealed-binary right claim. |
 
 ## Discovery workstreams
 
@@ -85,7 +86,7 @@ This ledger is mandatory input to every R3 discovery artifact. A downstream arti
 
 - Map a selected-candidate digest, requirements, profiles, source state, and bound envelope to a partial-order Transition Program.
 - Define fixtures for dropped requirements, widened mutations, lost observation barriers, missing rollback edges, and inconsistent target composition.
-- Keep every result `TRANSLATION_NOT_ESTABLISHED` or test-only until `R3-DEP-001` and `R3-DEP-002` are genuinely satisfied and a trusted checker is activated.
+- Keep every result `TRANSLATION_NOT_ESTABLISHED` or test-only until `R3-DEP-001`, `R3-DEP-002`, and `R3-DEP-003` are genuinely satisfied and a trusted checker is activated.
 
 ### 7. Threat model and evaluation design
 

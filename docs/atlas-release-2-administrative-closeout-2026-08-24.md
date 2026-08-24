@@ -20,13 +20,15 @@ The closeout integration preserves the complete R2 checkpoint history with a mer
 
 | Evidence | Exact value | Meaning |
 |---|---|---|
-| Integration base | `7ae372f9745173ef7d1e12f72cd76cb8c7043831` | Verified live `origin/main` at integration start. |
+| Integration base | `7ae372f9745173ef7d1e12f72cd76cb8c7043831` | Live `origin/main` SHA observed at integration start; its re-run Python workflow did not reach a terminal test result. |
 | R2 checkpoint parent | `5e121862b0412cbf437d61f2c1535ac93f32ee1f` | Frozen local experimental checkpoint. |
 | R2 checkpoint tree | `66b50e3bffd5878efb71ea45d65eb7809eeb8dd4` | Exact pre-integration candidate tree. |
 | Common ancestor | `935213e8babc6fde555627eaa434749397a1617d` | Merge base of the two parents. |
 | Lineage merge | `9537916db7d179857825897c67edc02737640ece` | Two-parent local integration anchor. |
 | Lineage-merge tree | `829751b7f9a058364faa62c91dd0f45c16b4d7a5` | Auto-merged tree before closeout documents and evidence regeneration. |
-| Integration branch | `codex/atlas-r2-closeout-incomplete` | Local-only until exact-tree verification and GitHub authority gates permit publication. |
+| Evidence-generation commit | `2f073cd1aa2275044b90b1e8a05ec5f18fbe2ae9` | Corrected LF-byte regeneration checkpoint; supersedes the unpublished CRLF-contaminated attempt. |
+| Evidence-generation tree | `86d24bc7bd59ed778eed9913e7b371ea9df1e97d` | Exact tree used for the deterministic drift and focused/live Windows checks below. |
+| Integration branch | `codex/atlas-r2-closeout-incomplete-exact` | Local-only until exact-tree verification and GitHub authority gates permit publication. |
 
 The only path changed on both parents was `docs/ssot.md`. The automatic merge retained the current-main Graphify owner contract and the R2 transition/runtime owner rows. Every other R2-changed path was checked against the checkpoint: 78 of 78 index blobs matched exactly.
 
@@ -71,7 +73,7 @@ Every row below remains open. A later authority decision must bind exact evidenc
 | `R2-AUTH-004` | Trust policy, key custody, and reviewer separation | Verifiers can check supplied bytes; no externally authoritative policy, key, custody record, or independence evidence is bundled. | Approved external trust policy, authorized key custody, current revocation/time evidence, and genuine separation. | Blocks authoritative signed review. |
 | `R2-AUTH-005` | Detached signed review | No accepted signature or review receipt. | A detached signature over the exact selected commit/tree, runtime inventory, census, measurements, pack/TCB subjects, denominator, and approved budgets. | Blocks R2.0 freeze and promotion. |
 | `R2-AUTH-006` | Selected-source ceremony and independent provenance | Selected commit/tree remain null; distribution proof is a same-checkout self-check. | Accountable source selection plus independently custodied provenance; do not relabel the self-check. | Blocks qualification and portable replay claims. |
-| `R2-AUTH-007` | Upstream Graphify/report integration | PR #534 is exact-head green but lacks the required independent approval. | Genuine independent approval, merge without bypass, and exact-main post-merge checks. | Prevents treating the Graphify fix as landed and prevents a final canonical refresh. |
+| `R2-AUTH-007` | Upstream Graphify/report and receipt integration | PR #534 is exact-head green but lacks the required independent approval; PR #531 is stale against its old graph and memory corpus. | Genuine #534 approval and merge without bypass, exact-main post-merge checks, accepted final memory corpus, and regenerated #531 relation/memory receipts against the final source and graph. | Prevents treating either Graphify fix or receipt set as landed and prevents a final canonical refresh. |
 | `R2-ENG-008` | Activated operator surface | No R2 persistence, supported API/CLI/UI workflow, field pilot, or commercial-readiness evidence exists. | Implement and qualify the later R2 slices under their own gates. | Keeps the checkpoint structural and non-promoting. |
 
 ## Verification record
@@ -82,14 +84,17 @@ This table is an evidence ledger, not a completion score. A passing row never wa
 |---|---|---|
 | Two-parent lineage and checkpoint preservation | `PASS` | Merge parents and checkpoint blob comparison recorded above. |
 | `docs/ssot.md` reconciliation | `PASS` | Current Graphify owner row and R2 owner rows are both present; no conflict markers. |
-| Dependency-ordered R2 asset regeneration on the exact closeout tree | `PENDING` | Must run inventory, DSL assets, measurements, census, then budget proposal. |
-| Focused transition/schema/adversarial checks | `PENDING` | No result recorded yet for the closeout tree. |
+| Dependency-ordered R2 asset regeneration on the exact closeout tree | `PASS` | Commit `2f073cd1aa2275044b90b1e8a05ec5f18fbe2ae9`, tree `86d24bc7bd59ed778eed9913e7b371ea9df1e97d`; inventory, DSL assets, measurements, census, and proposal regenerated in order, then all six read-only drift gates exited 0. |
+| Focused transition/schema/adversarial checks | `PASS` | 1,209 collected tests across 21 files exited 0 on the evidence-generation commit/tree. This is structural test evidence, not qualification or completion. |
 | Full default suite | `PENDING` | Must not overlap the shared-host `main-selfhosted` workflow. |
 | Wheel/sdist, archive audit, source binding, and installed smoke | `PENDING` | Must bind artifacts to the exact closeout tree. |
-| Live Windows `/1`-`/5` evidence lanes | `PENDING` | Results remain incomplete-only even when they pass. |
-| Independent implementation review | `PENDING` | This is a code/reconciliation review, not the absent accountable signed authority review. |
-| Canonical Graphify/Obsidian generation | `HELD` | Run only after the final integrated source exists; validate graph, analysis, labels/signature, report, relation/memory receipts, multigraph diagnostics, vault parity, and clone-bound transaction receipt as one generation. |
+| Live Windows `/1`-`/5` evidence lanes | `PASS_INCOMPLETE_ONLY` | All five clean-checkout node IDs passed inside the 1,209-test batch. They remain bounded observations and do not establish complete runtime closure. |
+| Independent implementation review | `PASS_WITH_CORRECTIONS` | Read-only lineage and closeout red-team reviews found no integration defect or status laundering; their precision corrections are incorporated here. This is not the absent accountable signed authority review. |
+| Current-main `main-selfhosted` rerun | `CANCELLED_IN_PYTHON_SUITE` | Attempt 4 for exact main `7ae372f9745173ef7d1e12f72cd76cb8c7043831`: frontend, Ruff, and privacy passed; the complete default Python step was cancelled after about 29 minutes, so base verification remains incomplete. |
+| Canonical Graphify/Obsidian generation | `HELD` | #534 has not landed and #531 receipts are stale. The coherent seed has 11 on-disk memories but only 10 ingested; eight reviewed newer R2 memories make the accepted future on-disk corpus 19. Run the two-pass receipt fixed point only after final source exists, then validate graph, analysis, labels/membership fingerprint, report, relation/memory receipts, multigraph diagnostics, vault parity, and clone-bound transaction receipt as one generation. |
 | Protected dirty-checkout custody | `PASS_AT_INTEGRATION_START` | Head `08f745ff7e12ff14ec84dee500b016292870aaa5`, tree `4bb6e150d40f49beb84c541cf9856a6f92262cd8`, 14 unstaged tracked entries, zero staged/untracked; recheck after all work. |
+
+Regenerated exact-byte SHA-256 values at the evidence-generation commit are: runtime inventory `1a299f0e1c2545f464f1dce92d11ce6cdb185c710cca03635c56066898f259c8`; experimental pack `78e8c9690f7833bf32f8347aac54aa8d9ab8f8b49543603f20f52d8fbee51a0e`; TCB manifest `b47c208c64448495f736dcb027bbca5571a6959a552ee38b068404ed29f2c9c9`; measurements `89cfefd9edb6a24858201f8b6d326f00a82b0463b60b4caa0fe1350266b01048`; structural census `33fc92fd505b40b637f32b02856e67b9181f8e594989c376a226179ce6d811af`; budget proposal `2badce348a6f8e06d16e2f9ff28f7b4a8f4f8f719f44d1347c243e2770bf907b`.
 
 ## GitHub authority boundary
 
@@ -97,13 +102,13 @@ Live audit on 2026-08-24 found:
 
 - PR #534 at exact head `b277c62398836d2b532cfda006f481cb443b00ac` is mergeable and its listed checks are green, but `reviewDecision=REVIEW_REQUIRED` and the reviews list is empty.
 - Main requires one approval and dismisses stale reviews. The only repository collaborator returned by the API is the PR author, so self-approval cannot create the required independent review.
-- No admin bypass, review fabrication, collaborator change, merge, readiness change, comment, or close action was performed.
+- Task-scoped evidence records no admin bypass, review fabrication, collaborator mutation, merge, readiness mutation, PR comment, or PR closure action. The only GitHub mutation in this task was re-running the previously cancelled exact-main `main-selfhosted` workflow; that rerun also ended cancelled during the Python suite.
 - PR #530 remains a stale draft and must be closed only after #534 lands.
 - PR #531 remains a stale draft whose relation and memory receipts must be regenerated from the final integrated tree and accepted memory corpus.
 - PR #533 is unrelated failing dependency work and is excluded.
 - No Atlas Release 2 GitHub Release or tag is permitted; roadmap release names are distinct from semantic-version releases.
 
-The previously cancelled `main-selfhosted` workflow for exact main `7ae372f9745173ef7d1e12f72cd76cb8c7043831` was re-run without changing source. Its terminal result belongs in this ledger before the base is called fully verified.
+The `main-selfhosted` rerun for exact main `7ae372f9745173ef7d1e12f72cd76cb8c7043831` changed no source but ended cancelled during the complete Python suite. It does not make that base fully verified.
 
 Do not push or open the closeout integration PR until every local exact-tree verification row above has a truthful result. Do not merge it without genuine required review and exact-head green checks. The planned R3 authority-debt issue is created only when remote closeout evidence exists to link; its required title is `Atlas roadmap R3 start gate - R2 closed incomplete; authority debt preserved`.
 
