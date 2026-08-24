@@ -1,0 +1,661 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:transition-runtime-inventory:1",
+  "title": "Atlas transition reference runtime inventory v1",
+  "description": "Closed evidence schema for one measured, partial reference runtime inventory. The v1 snapshot protocol cannot represent complete exact-runtime closure; a future closure-capable protocol requires a new versioned boundary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profile", "platform", "python", "root_bindings", "python_modules", "runtime_files", "native_dependencies", "native_scan_denominator", "coverage", "closure"],
+  "properties": {
+    "schema": { "const": "atlas.transition-runtime-inventory/1" },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "profile_version", "probe_protocol", "probe_script_digest", "python_flags", "environment_policy", "bytecode_policy", "root_identity_contract", "working_directory", "prototype", "structural_core_probe", "crypto_probe"],
+      "properties": {
+        "profile_id": { "const": "ATLAS-R2-DSL-PROTOTYPE-REFERENCE" },
+        "profile_version": { "const": "1.0.0" },
+        "probe_protocol": { "const": "ISOLATED_CHILD_NATIVE_HANDSHAKE/1" },
+        "probe_script_digest": { "$ref": "#/$defs/digest" },
+        "python_flags": { "const": ["-I", "-S", "-B", "-X", "pycache_prefix=$FRESH_EMPTY_PROBE_CACHE"] },
+        "environment_policy": { "const": "FIXED_MINIMAL_NO_PATH_WITH_FRESH_PYCACHE_PREFIX" },
+        "bytecode_policy": {
+          "const": {
+            "source_cache_lookup": "FRESH_EMPTY_COMMAND_LINE_PYCACHE_PREFIX",
+            "preexisting_repository_and_site_source_cache_pyc": "EXCLUDED_FROM_SOURCE_CACHE_LOOKUP",
+            "legacy_sourceless_pyc": "INVENTORIED_IF_LOADED_STRUCTURAL_CORE_REJECTED",
+            "writes": "DISABLED_BY_MINUS_B",
+            "post_probe_cache_state": "EMPTY_VERIFIED_BY_PARENT"
+          }
+        },
+        "root_identity_contract": {
+          "const": {
+            "project_root": "TOKEN_BINDINGS_ONLY_RESOLVED_IDENTITY_NOT_INDEPENDENTLY_VERIFIED",
+            "python_base": "ROOT_DIGEST_EQUALS_PREFIX_AND_BASE_PREFIX_DIGESTS",
+            "python_site_packages": "CRYPTO_PROVIDER_TOKEN_BINDING_ONLY_RESOLVED_IDENTITY_NOT_INDEPENDENTLY_VERIFIED"
+          }
+        },
+        "working_directory": { "const": "$PROJECT_ROOT" },
+        "prototype": { "$ref": "#/$defs/prototype" },
+        "structural_core_probe": { "$ref": "#/$defs/structuralCoreProbe" },
+        "crypto_probe": { "$ref": "#/$defs/cryptoProbe" }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os_name", "sys_platform"],
+      "properties": {
+        "os_name": { "type": "string", "minLength": 1 },
+        "sys_platform": { "type": "string", "minLength": 1 }
+      }
+    },
+    "python": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "cache_tag", "byteorder", "pointer_bits", "isolated", "no_site", "ignore_environment", "safe_path", "dont_write_bytecode", "pycache_prefix_active", "pycache_prefix_matches_expected", "executable_file_id", "prefix_path_digest", "base_prefix_path_digest"],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "cache_tag": { "type": "string", "minLength": 1 },
+        "byteorder": { "enum": ["little", "big"] },
+        "pointer_bits": { "enum": [32, 64] },
+        "isolated": { "const": true },
+        "no_site": { "const": true },
+        "ignore_environment": { "const": true },
+        "safe_path": { "const": true },
+        "dont_write_bytecode": { "const": true },
+        "pycache_prefix_active": { "const": true },
+        "pycache_prefix_matches_expected": { "const": true },
+        "executable_file_id": { "$ref": "#/$defs/fileId" },
+        "prefix_path_digest": { "$ref": "#/$defs/digest" },
+        "base_prefix_path_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "root_bindings": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/rootBinding" }
+    },
+    "python_modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/pythonModule" }
+    },
+    "runtime_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/runtimeFile" }
+    },
+    "native_dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nativeDependency" }
+    },
+    "native_scan_denominator": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nativeScan" }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python_module_count", "runtime_file_count", "observed_native_module_count", "native_dependency_edge_count", "resolved_native_dependency_edge_count", "unresolved_native_dependency_edge_count", "native_scan_candidate_count", "native_scan_parsed_count", "native_scan_incomplete_count", "native_snapshot_method", "pe_transitive_walk_performed"],
+      "properties": {
+        "python_module_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "runtime_file_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "observed_native_module_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "native_dependency_edge_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "resolved_native_dependency_edge_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "unresolved_native_dependency_edge_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "native_scan_candidate_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "native_scan_parsed_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "native_scan_incomplete_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "native_snapshot_method": { "enum": ["WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1", "LINUX_PROC_MAPS_PROCESS_MODULE_SNAPSHOT/1", "UNSUPPORTED"] },
+        "pe_transitive_walk_performed": { "type": "boolean" }
+      }
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "complete_exact_runtime_closure", "blind_spots", "claim_boundary"],
+      "properties": {
+        "state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" },
+        "complete_exact_runtime_closure": { "const": false },
+        "blind_spots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "AMBIGUOUS_NATIVE_IMPORT_RESOLUTION",
+              "DELETED_NATIVE_MAPPING_COULD_NOT_BE_DIGESTED",
+              "DYNAMIC_LOAD_AND_UNLOAD_HISTORY_NOT_INTERCEPTED",
+              "ELF_TRANSITIVE_IMPORT_WALK_NOT_IMPLEMENTED",
+              "FILE_PATH_IDENTITY_NOT_BOUND_TO_PERSISTENT_HANDLE",
+              "MALFORMED_PE_IMPORT_TABLE_NOT_CLOSED",
+              "NATIVE_RESOLUTION_POLICY_APPROXIMATES_LOADER_FOR_UNOBSERVED_IMPORTS",
+              "NATIVE_TRANSITIVE_IMPORT_WALK_NOT_IMPLEMENTED_FOR_PLATFORM",
+              "OBSERVED_NATIVE_FILE_NOT_PE",
+              "OS_KERNEL_DRIVER_AND_FIRMWARE_BYTES_OUTSIDE_PROCESS_INVENTORY",
+              "PE_EXPORT_FORWARDERS_NOT_WALKED",
+              "PROCESS_NATIVE_MODULE_ENUMERATION_NOT_IMPLEMENTED_FOR_PLATFORM",
+              "PROC_MAPS_SNAPSHOT_IS_NOT_NATIVE_LOAD_HISTORY",
+              "REFERENCE_PROFILE_ONLY_NOT_ALL_INPUTS_OR_BRANCHES",
+              "UNRESOLVED_NATIVE_IMPORT",
+              "VIRTUAL_PROCESS_MAPPING_HAS_NO_DIGESTABLE_FILE",
+              "WINDOWS_API_SET_HOST_MAPPING_NOT_BOUND",
+              "WINDOWS_API_SET_IMPORT_UNRESOLVED"
+            ]
+          }
+        },
+        "claim_boundary": { "const": "Exact-byte inventory of the observed isolated reference process and bounded static PE resolutions only; not portable closure, all-branch coverage, qualification, or promotion authority." }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "properties": { "sys_platform": { "const": "win32" } },
+            "required": ["sys_platform"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "native_scan_denominator": {
+            "items": {
+              "properties": {
+                "scan_method": { "const": "WINDOWS_PE_IMPORT_AND_DELAY_IMPORT_TABLE_SCAN/1" },
+                "status": { "enum": ["PARSED", "MALFORMED", "NOT_PE"] }
+              }
+            }
+          },
+          "runtime_files": {
+            "contains": {
+              "properties": {
+                "roles": {
+                  "allOf": [
+                    { "contains": { "const": "CPYTHON_EXECUTABLE" } },
+                    { "contains": { "const": "OBSERVED_PROCESS_NATIVE_MODULE" } }
+                  ]
+                }
+              },
+              "required": ["roles"]
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "path_token": { "const": "$PYTHON_SITE_PACKAGES/cryptography/hazmat/bindings/_rust.pyd" },
+                    "roles": {
+                      "allOf": [
+                        { "contains": { "const": "CRYPTOGRAPHY_NATIVE_RUNTIME" } },
+                        { "contains": { "const": "NATIVE_EXTENSION_MODULE" } },
+                        { "contains": { "const": "OBSERVED_PROCESS_NATIVE_MODULE" } },
+                        { "contains": { "const": "THIRD_PARTY_DISTRIBUTION_MODULE" } }
+                      ]
+                    }
+                  },
+                  "required": ["path_token", "roles"]
+                }
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "roles": {
+                      "allOf": [
+                        { "contains": { "const": "CPYTHON_RUNTIME_LIBRARY" } },
+                        { "contains": { "const": "OBSERVED_PROCESS_NATIVE_MODULE" } }
+                      ]
+                    }
+                  },
+                  "required": ["roles"]
+                }
+              }
+            ],
+            "items": {
+              "if": {
+                "properties": {
+                  "roles": {
+                    "contains": {
+                      "enum": ["CPYTHON_EXECUTABLE", "CPYTHON_RUNTIME_LIBRARY", "CRYPTOGRAPHY_NATIVE_RUNTIME", "NATIVE_EXTENSION_MODULE"]
+                    }
+                  }
+                },
+                "required": ["roles"]
+              },
+              "then": {
+                "properties": {
+                  "roles": { "contains": { "const": "OBSERVED_PROCESS_NATIVE_MODULE" } }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "native_scan_denominator": {
+            "items": {
+              "properties": {
+                "scan_method": { "const": "UNSUPPORTED_PLATFORM_NO_NATIVE_IMPORT_SCAN/1" },
+                "status": { "const": "UNSCANNED_UNSUPPORTED_PLATFORM" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "python_modules": {
+          "allOf": [
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cisco_toolkit.transition_contract" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "PROJECT_DISTRIBUTION_MODULE" },
+                  "load_phase": { "const": "STRUCTURAL_CORE_VALIDATOR_IMPORT" },
+                  "file_path_token": { "const": "$PROJECT_ROOT/cisco_toolkit/transition_contract.py" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cisco_toolkit.transition_dsl" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "PROJECT_DISTRIBUTION_MODULE" },
+                  "load_phase": { "const": "DSL_EXECUTION" },
+                  "file_path_token": { "const": "$PROJECT_ROOT/cisco_toolkit/transition_dsl.py" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cisco_toolkit.transition_pack" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "PROJECT_DISTRIBUTION_MODULE" },
+                  "load_phase": { "const": "STRUCTURAL_CORE_VALIDATOR_IMPORT" },
+                  "file_path_token": { "const": "$PROJECT_ROOT/cisco_toolkit/transition_pack.py" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cisco_toolkit.transition_runtime_inventory" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "PROJECT_DISTRIBUTION_MODULE" },
+                  "load_phase": { "const": "STRUCTURAL_CORE_VALIDATOR_IMPORT" },
+                  "file_path_token": { "const": "$PROJECT_ROOT/cisco_toolkit/transition_runtime_inventory.py" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cisco_toolkit.transition_tcb_review" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "PROJECT_DISTRIBUTION_MODULE" },
+                  "load_phase": { "const": "STRUCTURAL_CORE_VALIDATOR_IMPORT" },
+                  "file_path_token": { "const": "$PROJECT_ROOT/cisco_toolkit/transition_tcb_review.py" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cisco_toolkit.transition_verifier" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "PROJECT_DISTRIBUTION_MODULE" },
+                  "load_phase": { "const": "STRUCTURAL_CORE_VALIDATOR_IMPORT" },
+                  "file_path_token": { "const": "$PROJECT_ROOT/cisco_toolkit/transition_verifier.py" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": {
+                  "module_name": { "const": "cryptography.hazmat.bindings._rust" },
+                  "origin_kind": { "const": "FILE" },
+                  "classification": { "const": "THIRD_PARTY_DISTRIBUTION_NATIVE_EXTENSION" },
+                  "load_phase": { "const": "RAW_ED25519_PROBE" },
+                  "file_path_token": { "pattern": "^\\$PYTHON_SITE_PACKAGES/cryptography/hazmat/bindings/_rust(\\.[^/]+)?\\.(pyd|so|dylib)$" }
+                },
+                "required": ["module_name", "origin_kind", "classification", "load_phase", "file_id"]
+              }
+            }
+          ]
+        },
+        "runtime_files": {
+          "allOf": [
+            {
+              "contains": {
+                "properties": {
+                  "roles": { "contains": { "const": "PROTOTYPE_DECLARATIVE_PROGRAM" } }
+                },
+                "required": ["roles"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "roles": { "contains": { "const": "PROTOTYPE_TYPED_INPUT" } }
+                },
+                "required": ["roles"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "fileId": { "type": "string", "pattern": "^runtime-file\\.[0-9a-f]{64}$" },
+    "pathToken": {
+      "type": "string",
+      "allOf": [
+        {
+          "oneOf": [
+            { "pattern": "^\\$(PROJECT_ROOT|PYTHON_BASE|PYTHON_SITE_PACKAGES|WINDOWS_ROOT)/[^/\\\\<>:\"|?*\\u0000-\\u001f\\u007f]+(/[^/\\\\<>:\"|?*\\u0000-\\u001f\\u007f]+)*$" },
+            { "pattern": "^\\$EXTERNAL_BY_PATH_DIGEST/sha256:[0-9a-f]{64}/[^/\\\\<>:\"|?*\\u0000-\\u001f\\u007f]+$" }
+          ]
+        },
+        { "not": { "pattern": "(^|/)\\.{1,2}($|/)" } },
+        { "not": { "pattern": "[. ]($|/)" } },
+        { "not": { "pattern": "(^|/)([Aa][Uu][Xx]|[Cc][Oo][Nn]|[Nn][Uu][Ll]|[Pp][Rr][Nn]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(\\.|/|$)" } }
+      ]
+    },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "prototype": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["abi_function", "program_digest", "input_digest", "receipt_digest", "receipt_digest_binding", "receipt_outcome", "authoritative", "promotion_eligible"],
+      "properties": {
+        "abi_function": { "const": "evaluate" },
+        "program_digest": { "$ref": "#/$defs/digest" },
+        "input_digest": { "$ref": "#/$defs/digest" },
+        "receipt_digest": { "$ref": "#/$defs/digest" },
+        "receipt_digest_binding": { "const": "CHILD_RETURNED_DIGEST_ONLY_RAW_RECEIPT_NOT_INCLUDED" },
+        "receipt_outcome": { "const": "EXECUTED_NONAUTHORITATIVE" },
+        "authoritative": { "const": false },
+        "promotion_eligible": { "const": false }
+      }
+    },
+    "structuralCoreProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_module_roster", "validator_modules", "validators_imported_before_dsl_execution", "module_path_bindings"],
+      "properties": {
+        "required_module_roster": {
+          "const": [
+            "cisco_toolkit.transition_contract",
+            "cisco_toolkit.transition_dsl",
+            "cisco_toolkit.transition_pack",
+            "cisco_toolkit.transition_runtime_inventory",
+            "cisco_toolkit.transition_tcb_review",
+            "cisco_toolkit.transition_verifier"
+          ]
+        },
+        "validator_modules": {
+          "const": [
+            "cisco_toolkit.transition_runtime_inventory",
+            "cisco_toolkit.transition_verifier"
+          ]
+        },
+        "module_path_bindings": {
+          "const": [
+            { "module_name": "cisco_toolkit.transition_contract", "path_token": "$PROJECT_ROOT/cisco_toolkit/transition_contract.py" },
+            { "module_name": "cisco_toolkit.transition_dsl", "path_token": "$PROJECT_ROOT/cisco_toolkit/transition_dsl.py" },
+            { "module_name": "cisco_toolkit.transition_pack", "path_token": "$PROJECT_ROOT/cisco_toolkit/transition_pack.py" },
+            { "module_name": "cisco_toolkit.transition_runtime_inventory", "path_token": "$PROJECT_ROOT/cisco_toolkit/transition_runtime_inventory.py" },
+            { "module_name": "cisco_toolkit.transition_tcb_review", "path_token": "$PROJECT_ROOT/cisco_toolkit/transition_tcb_review.py" },
+            { "module_name": "cisco_toolkit.transition_verifier", "path_token": "$PROJECT_ROOT/cisco_toolkit/transition_verifier.py" }
+          ]
+        },
+        "validators_imported_before_dsl_execution": { "const": true }
+      }
+    },
+    "cryptoProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "cryptography_version", "key_encoding", "provider_module", "provider_file_id", "public_key_digest", "review_module", "signature_digest", "vector_id", "verified"],
+      "properties": {
+        "algorithm": { "const": "Ed25519" },
+        "cryptography_version": { "type": "string", "minLength": 1 },
+        "key_encoding": { "const": "RAW_32_BYTES" },
+        "provider_module": { "const": "cryptography.hazmat.bindings._rust" },
+        "provider_file_id": { "$ref": "#/$defs/fileId" },
+        "public_key_digest": { "const": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9" },
+        "review_module": { "const": "cisco_toolkit.transition_tcb_review" },
+        "signature_digest": { "const": "sha256:a99e560bf0a0bbf8566a5a13200f1348301b6f691644d95b8ea276ae34c429e6" },
+        "vector_id": { "const": "RFC8032-TEST-1-EMPTY-MESSAGE" },
+        "verified": { "const": true }
+      }
+    },
+    "rootBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "resolved_path_digest", "path_disclosure"],
+      "properties": {
+        "root_id": { "enum": ["PROJECT_ROOT", "PYTHON_BASE", "PYTHON_SITE_PACKAGES", "WINDOWS_ROOT"] },
+        "resolved_path_digest": { "$ref": "#/$defs/digest" },
+        "path_disclosure": { "const": "TOKENIZED_DIGEST_BOUND" }
+      }
+    },
+    "pythonModule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "module_name", "origin_kind", "classification", "load_phase", "file_id", "file_path_token"],
+      "properties": {
+        "schema": { "const": "atlas.runtime-python-module/1" },
+        "module_name": { "type": "string", "minLength": 1 },
+        "origin_kind": { "enum": ["BUILTIN", "FROZEN", "FILE", "NAMESPACE", "NO_FILE"] },
+        "classification": { "enum": ["CPYTHON_BUILTIN", "CPYTHON_FROZEN", "CPYTHON_STDLIB_MODULE", "CPYTHON_STDLIB_NATIVE_EXTENSION", "PROJECT_DISTRIBUTION_MODULE", "THIRD_PARTY_DISTRIBUTION_MODULE", "THIRD_PARTY_DISTRIBUTION_NATIVE_EXTENSION", "NAMESPACE_PACKAGE", "PROBE_NO_FILE", "EXTERNAL_FILE_MODULE"] },
+        "load_phase": { "enum": ["INTERPRETER_BASELINE", "STRUCTURAL_CORE_VALIDATOR_IMPORT", "DSL_EXECUTION", "RAW_ED25519_PROBE"] },
+        "file_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/fileId" },
+            { "type": "null" }
+          ]
+        },
+        "file_path_token": {
+          "oneOf": [
+            { "$ref": "#/$defs/pathToken" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            { "properties": { "origin_kind": { "const": "BUILTIN" }, "classification": { "const": "CPYTHON_BUILTIN" }, "file_id": { "type": "null" }, "file_path_token": { "type": "null" } } },
+            { "properties": { "origin_kind": { "const": "FROZEN" }, "classification": { "const": "CPYTHON_FROZEN" }, "file_id": { "type": "null" }, "file_path_token": { "type": "null" } } },
+            { "properties": { "origin_kind": { "const": "NAMESPACE" }, "classification": { "const": "NAMESPACE_PACKAGE" }, "file_id": { "type": "null" }, "file_path_token": { "type": "null" } } },
+            { "properties": { "origin_kind": { "const": "NO_FILE" }, "classification": { "const": "PROBE_NO_FILE" }, "file_id": { "type": "null" }, "file_path_token": { "type": "null" } } },
+            {
+              "properties": {
+                "origin_kind": { "const": "FILE" },
+                "classification": { "enum": ["CPYTHON_STDLIB_MODULE", "CPYTHON_STDLIB_NATIVE_EXTENSION", "PROJECT_DISTRIBUTION_MODULE", "THIRD_PARTY_DISTRIBUTION_MODULE", "THIRD_PARTY_DISTRIBUTION_NATIVE_EXTENSION", "EXTERNAL_FILE_MODULE"] },
+                "file_id": { "$ref": "#/$defs/fileId" },
+                "file_path_token": { "$ref": "#/$defs/pathToken" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "runtimeFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "file_id", "path_token", "resolved_path_digest", "bytes", "digest", "roles"],
+      "properties": {
+        "schema": { "const": "atlas.runtime-file/1" },
+        "file_id": { "$ref": "#/$defs/fileId" },
+        "path_token": { "$ref": "#/$defs/pathToken" },
+        "resolved_path_digest": { "$ref": "#/$defs/digest" },
+        "bytes": { "$ref": "#/$defs/nonNegativeInteger" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "CPYTHON_EXECUTABLE",
+              "CPYTHON_RUNTIME_LIBRARY",
+              "CPYTHON_STDLIB_MODULE",
+              "CRYPTOGRAPHY_NATIVE_RUNTIME",
+              "NATIVE_EXTENSION_MODULE",
+              "OBSERVED_PROCESS_NATIVE_MODULE",
+              "PROJECT_DISTRIBUTION_PYTHON_MODULE",
+              "PROTOTYPE_DECLARATIVE_PROGRAM",
+              "PROTOTYPE_TYPED_INPUT",
+              "PYTHON_MODULE",
+              "STATIC_NATIVE_DEPENDENCY",
+              "THIRD_PARTY_DISTRIBUTION_MODULE"
+            ]
+          }
+        }
+      }
+    },
+    "nativeScan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "file_id", "scan_method", "status", "import_table_edge_count", "delay_import_table_edge_count", "error_code"],
+      "properties": {
+        "schema": { "const": "atlas.native-file-scan/1" },
+        "file_id": { "$ref": "#/$defs/fileId" },
+        "scan_method": { "enum": ["WINDOWS_PE_IMPORT_AND_DELAY_IMPORT_TABLE_SCAN/1", "UNSUPPORTED_PLATFORM_NO_NATIVE_IMPORT_SCAN/1"] },
+        "status": { "enum": ["PARSED", "MALFORMED", "NOT_PE", "UNSCANNED_UNSUPPORTED_PLATFORM"] },
+        "import_table_edge_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "delay_import_table_edge_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "error_code": {
+          "oneOf": [
+            {
+              "enum": [
+                "PE_DELAY_IMPORT_COUNT_EXCEEDED",
+                "PE_DELAY_IMPORT_NAME_INVALID",
+                "PE_DELAY_IMPORT_TABLE_UNTERMINATED",
+                "PE_DIRECTORY_TABLE_TRUNCATED",
+                "PE_IMPORT_COUNT_EXCEEDED",
+                "PE_IMPORT_NAME_INVALID",
+                "PE_IMPORT_NAME_NOT_ASCII",
+                "PE_IMPORT_NAME_OUT_OF_BOUNDS",
+                "PE_IMPORT_NAME_UNTERMINATED",
+                "PE_IMPORT_TABLE_UNTERMINATED",
+                "PE_OPTIONAL_HEADER_TRUNCATED",
+                "PE_OPTIONAL_HEADER_UNSUPPORTED",
+                "PE_RVA_UNMAPPED",
+                "PE_SECTION_TABLE_INVALID",
+                "PE_SIGNATURE_INVALID",
+                "PE_STRUCTURE_OUT_OF_BOUNDS"
+              ]
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "scan_method": { "const": "WINDOWS_PE_IMPORT_AND_DELAY_IMPORT_TABLE_SCAN/1" },
+                "status": { "enum": ["PARSED", "MALFORMED", "NOT_PE"] }
+              }
+            },
+            {
+              "properties": {
+                "scan_method": { "const": "UNSUPPORTED_PLATFORM_NO_NATIVE_IMPORT_SCAN/1" },
+                "status": { "const": "UNSCANNED_UNSUPPORTED_PLATFORM" },
+                "import_table_edge_count": { "const": 0 },
+                "delay_import_table_edge_count": { "const": 0 },
+                "error_code": { "type": "null" }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "MALFORMED" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "error_code": { "type": "string" },
+              "import_table_edge_count": { "const": 0 },
+              "delay_import_table_edge_count": { "const": 0 }
+            }
+          },
+          "else": { "properties": { "error_code": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": { "status": { "enum": ["NOT_PE", "UNSCANNED_UNSUPPORTED_PLATFORM"] } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "import_table_edge_count": { "const": 0 },
+              "delay_import_table_edge_count": { "const": 0 }
+            }
+          }
+        }
+      ]
+    },
+    "nativeDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "requester_file_id", "import_kind", "import_name", "resolution", "target_file_id"],
+      "properties": {
+        "schema": { "const": "atlas.native-dependency-edge/1" },
+        "requester_file_id": { "$ref": "#/$defs/fileId" },
+        "import_kind": { "enum": ["IMPORT_TABLE", "DELAY_IMPORT_TABLE"] },
+        "import_name": { "type": "string", "pattern": "^[^/\\\\:]+$" },
+        "resolution": { "enum": ["VIRTUAL_API_SET_UNRESOLVED", "RESOLVED_OBSERVED_PROCESS_MODULE", "AMBIGUOUS_OBSERVED_PROCESS_MODULE", "RESOLVED_DETERMINISTIC_REFERENCE_ROOT", "RESOLVED_REVIEWED_API_SET_HOST", "AMBIGUOUS_DETERMINISTIC_REFERENCE_ROOT", "UNRESOLVED"] },
+        "target_file_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/fileId" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "resolution": { "enum": ["RESOLVED_OBSERVED_PROCESS_MODULE", "RESOLVED_DETERMINISTIC_REFERENCE_ROOT", "RESOLVED_REVIEWED_API_SET_HOST"] },
+                "target_file_id": { "$ref": "#/$defs/fileId" }
+              }
+            },
+            {
+              "properties": {
+                "resolution": { "enum": ["VIRTUAL_API_SET_UNRESOLVED", "AMBIGUOUS_OBSERVED_PROCESS_MODULE", "AMBIGUOUS_DETERMINISTIC_REFERENCE_ROOT", "UNRESOLVED"] },
+                "target_file_id": { "type": "null" }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,2016 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-windows-debug-runtime-discovery:4",
+  "title": "Atlas R2.0 Windows debug runtime discovery v4",
+  "description": "Closed structural schema for four incomplete, non-authoritative Windows DEBUG_PROCESS discovery artifacts adding borrowed debug-event file-handle identity and stable same-handle whole-file on-disk reads to the v3 target-only reconciliation lane.",
+  "$comment": "The file-identity trace binds only non-null borrowed debug-event image hFile values to FILE_ID_INFO and two equal same-handle whole-file on-disk reads while the debuggee is suspended. Those bytes are not mapped or loaded memory bytes. Target-only K32 endpoint reconciliation remains checked against received debug-image events using collector-local append ordinals; it is not an operating-system sequence or loss counter and cannot detect an omitted balanced load/unload pair. The protocol does not establish complete mapping history, manual or anonymous mapping absence, exact runtime closure, qualification, promotion, or Release 3 authority. Python validation remains authoritative for canonical bytes, lifecycle replay, exact checkpoint anchors, stable identity/size/read equality, token joins, digest joins, and cross-document equality.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/processTrace"
+    },
+    {
+      "$ref": "#/$defs/imageTrace"
+    },
+    {
+      "$ref": "#/$defs/lossReconciliation"
+    },
+    {
+      "$ref": "#/$defs/fileIdentityTrace"
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "opaqueToken": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$"
+    },
+    "positivePortableInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "nonnegativePortableInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os_name",
+        "sys_platform"
+      ],
+      "properties": {
+        "os_name": {
+          "const": "nt"
+        },
+        "sys_platform": {
+          "const": "win32"
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative",
+        "closure_decision",
+        "complete_exact_runtime_closure",
+        "approved_budget",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "authoritative": {
+          "const": false
+        },
+        "closure_decision": {
+          "type": "null"
+        },
+        "complete_exact_runtime_closure": {
+          "const": false
+        },
+        "approved_budget": {
+          "type": "null"
+        },
+        "qualification_effect": {
+          "const": "NONE"
+        },
+        "promotion_eligible": {
+          "const": false
+        },
+        "release3_included": {
+          "const": false
+        }
+      }
+    },
+    "captureProtocol": {
+      "const": "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
+    },
+    "claimBoundary": {
+      "const": "Windows DEBUG_PROCESS process and image events plus stable target-only K32 START/END checkpoints and borrowed debug-event file-handle identity/stable on-disk byte reads cross-checked for one R2.0 prototype execution only; handle-addressed disk bytes are not mapped or loaded memory bytes, and target checkpoint slot reconciliation uses collector-local append ordinals that cannot detect omitted balanced load/unload pairs, so this does not establish operating-system event sequences or losslessness, complete mapping history, manual or anonymous executable mapping absence, exact runtime closure, budget, qualification, promotion, or Release 3 authority."
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_runtime_seconds",
+        "max_debug_events",
+        "max_processes",
+        "max_threads",
+        "max_image_mappings",
+        "wait_interval_milliseconds"
+      ],
+      "properties": {
+        "max_runtime_seconds": {
+          "type": "integer",
+          "const": 30
+        },
+        "max_debug_events": {
+          "type": "integer",
+          "const": 16384
+        },
+        "max_processes": {
+          "type": "integer",
+          "const": 256
+        },
+        "max_threads": {
+          "type": "integer",
+          "const": 4096
+        },
+        "max_image_mappings": {
+          "type": "integer",
+          "const": 16384
+        },
+        "wait_interval_milliseconds": {
+          "type": "integer",
+          "const": 25
+        }
+      },
+      "$comment": "Operational collection guards only; these values are not approved R2 TCB, closure, or pack budgets."
+    },
+    "executedReceipt": {
+      "type": "object",
+      "const": {
+        "authoritative": false,
+        "authoritative_gate": null,
+        "binding_digests": {
+          "identity": "sha256:77aca46a8deb00ba293f1d3dfc44ad0cc220f9ab49c3ca7c754a1fd0f2991522",
+          "scope": "sha256:0829b4d3479b225950e08fdcbd0e0a40fa998a76eb128ecaa4ee6b1fc1930712",
+          "time": "sha256:6d30510e2d1277cce7e6fe92b2d1a2aff20dca3f5bb7eff59ca73df4f2af4a7d"
+        },
+        "error": null,
+        "execution_state": "CONTRACT_ONLY",
+        "function": "evaluate",
+        "input_digest": "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293",
+        "interpreter_semantics_version": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1",
+        "limit_profile": {
+          "max_expression_depth": 32,
+          "max_expression_nodes": 4096,
+          "max_input_bytes": 1048576,
+          "max_input_nodes": 16384,
+          "max_instruction_fuel": 32768,
+          "max_operator_operands": 256,
+          "max_output_bytes": 131072,
+          "max_path_segments": 32,
+          "max_program_bytes": 262144,
+          "max_rules": 1024,
+          "max_set_items": 1024,
+          "max_string_bytes": 65536
+        },
+        "limit_profile_digest": "sha256:fe54f5ca9b6e1a1257d42e81e8d44684e88df451254c55af2e75d2fd1753b520",
+        "outcome": "EXECUTED_NONAUTHORITATIVE",
+        "program_digest": "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b",
+        "promotion_eligible": false,
+        "qualification_effect": "NONE",
+        "qualification_state": "EXPERIMENTAL",
+        "result": {
+          "entries": [
+            {
+              "rule_id": "prototype.evaluate-functional",
+              "truth": "TRUE",
+              "value": {
+                "kind": "PROTOTYPE_EVALUATION",
+                "value": "matched"
+              }
+            },
+            {
+              "rule_id": "prototype.evaluate-temporal",
+              "truth": "INCONCLUSIVE",
+              "value": null
+            }
+          ],
+          "schema": "atlas.declarative-result/1"
+        },
+        "result_digest": "sha256:cd7870a1acf7369a649e99bceb91cd79f90e8c0aa816e52b6f239ccad41cb16d",
+        "schema": "atlas.declarative-prototype-receipt/1",
+        "supplies_obligation_support": false,
+        "work_units": {
+          "expression_nodes": 21,
+          "fuel_consumed": 38,
+          "input_bytes": 1134,
+          "input_nodes": 36,
+          "program_bytes": 2035,
+          "result_bytes": 246,
+          "result_records": 2,
+          "rules": 6
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program_digest",
+        "input_digest",
+        "receipt_digest",
+        "receipt",
+        "outcome",
+        "authoritative",
+        "promotion_eligible",
+        "crypto_provider_module",
+        "crypto_provider_path_digest",
+        "crypto_vector",
+        "crypto_verified"
+      ],
+      "properties": {
+        "program_digest": {
+          "const": "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b"
+        },
+        "input_digest": {
+          "const": "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293"
+        },
+        "receipt_digest": {
+          "const": "sha256:657d2c01f4f387cdfbd11814efac52f48cdace97e71c1a16bde7b76d5476c6fa"
+        },
+        "receipt": {
+          "$ref": "#/$defs/executedReceipt"
+        },
+        "outcome": {
+          "const": "EXECUTED_NONAUTHORITATIVE"
+        },
+        "authoritative": {
+          "const": false
+        },
+        "promotion_eligible": {
+          "const": false
+        },
+        "crypto_provider_module": {
+          "const": "cryptography.hazmat.bindings._rust"
+        },
+        "crypto_provider_path_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "crypto_vector": {
+          "const": "RFC8032-TEST-1-EMPTY-MESSAGE"
+        },
+        "crypto_verified": {
+          "const": true
+        }
+      }
+    },
+    "debugger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wait_api",
+        "creation_flags",
+        "debug_only_this_process",
+        "debug_set_process_kill_on_exit",
+        "creator_thread_only",
+        "root_process_token",
+        "root_create_observed_before_first_continue",
+        "descendant_debugging_requested",
+        "debug_event_count",
+        "continued_event_count",
+        "created_process_count",
+        "exited_process_count",
+        "initial_breakpoint_count"
+      ],
+      "properties": {
+        "wait_api": {
+          "const": "WAIT_FOR_DEBUG_EVENT_EX"
+        },
+        "creation_flags": {
+          "const": [
+            "CREATE_NO_WINDOW",
+            "DEBUG_PROCESS"
+          ]
+        },
+        "debug_only_this_process": {
+          "const": false
+        },
+        "debug_set_process_kill_on_exit": {
+          "const": true
+        },
+        "creator_thread_only": {
+          "const": true
+        },
+        "root_process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "root_create_observed_before_first_continue": {
+          "const": true
+        },
+        "descendant_debugging_requested": {
+          "const": true
+        },
+        "debug_event_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "continued_event_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "created_process_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 256
+        },
+        "exited_process_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 256
+        },
+        "initial_breakpoint_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 256
+        }
+      },
+      "$comment": "Python validation joins every count to the event ledger and requires exact created, exited, and initial-breakpoint process sets."
+    },
+    "jobEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "event",
+        "process_token",
+        "job_message_id"
+      ],
+      "properties": {
+        "sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "event": {
+          "enum": [
+            "NEW_PROCESS",
+            "EXIT_PROCESS",
+            "ACTIVE_PROCESS_ZERO"
+          ]
+        },
+        "process_token": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaqueToken"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_message_id": {
+          "enum": [
+            4,
+            6,
+            7
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "event": {
+              "const": "NEW_PROCESS"
+            },
+            "process_token": {
+              "$ref": "#/$defs/opaqueToken"
+            },
+            "job_message_id": {
+              "const": 6
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "EXIT_PROCESS"
+            },
+            "process_token": {
+              "$ref": "#/$defs/opaqueToken"
+            },
+            "job_message_id": {
+              "const": 7
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "ACTIVE_PROCESS_ZERO"
+            },
+            "process_token": {
+              "type": "null"
+            },
+            "job_message_id": {
+              "const": 4
+            }
+          }
+        }
+      ]
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completion_port_associated",
+        "kill_on_job_close",
+        "breakaway_ok",
+        "silent_breakaway_ok",
+        "assigned_process_count",
+        "observed_process_count",
+        "active_process_zero_observed",
+        "target_exit_code",
+        "assignment_completed_before_first_debug_event_pump",
+        "debug_created_process_set_matches_job",
+        "debug_exited_process_set_matches_job",
+        "events"
+      ],
+      "properties": {
+        "completion_port_associated": {
+          "const": true
+        },
+        "kill_on_job_close": {
+          "const": true
+        },
+        "breakaway_ok": {
+          "const": false
+        },
+        "silent_breakaway_ok": {
+          "const": false
+        },
+        "assigned_process_count": {
+          "const": 1
+        },
+        "observed_process_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 256
+        },
+        "active_process_zero_observed": {
+          "const": true
+        },
+        "target_exit_code": {
+          "const": 0
+        },
+        "assignment_completed_before_first_debug_event_pump": {
+          "const": true
+        },
+        "debug_created_process_set_matches_job": {
+          "const": true
+        },
+        "debug_exited_process_set_matches_job": {
+          "const": true
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "contains": {
+            "properties": {
+              "event": {
+                "const": "ACTIVE_PROCESS_ZERO"
+              }
+            },
+            "required": [
+              "event"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1,
+          "items": {
+            "$ref": "#/$defs/jobEvent"
+          },
+          "$comment": "Rows are contiguous and sequence ordered from zero. Python validation enforces NEW_PROCESS-before-EXIT_PROCESS state, exact process-set joins to the debug ledger, and a final unique ACTIVE_PROCESS_ZERO row."
+        }
+      },
+      "$comment": "Job Object containment and termination guards are collection mechanics, not a security sandbox or deny-by-default execution policy."
+    },
+    "debugEventBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "event",
+        "debug_event_code",
+        "process_token",
+        "thread_token",
+        "mapping_token",
+        "mapping_slot_token",
+        "mapping_kind",
+        "continue_status",
+        "exception_code",
+        "exception_disposition",
+        "first_chance",
+        "exit_code",
+        "file_handle_present",
+        "debug_string_code_units",
+        "debug_string_unicode",
+        "implicit_unmap_count"
+      ],
+      "properties": {
+        "sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "event": {
+          "enum": [
+            "EXCEPTION",
+            "CREATE_THREAD",
+            "CREATE_PROCESS",
+            "EXIT_THREAD",
+            "EXIT_PROCESS",
+            "LOAD_DLL",
+            "UNLOAD_DLL",
+            "OUTPUT_DEBUG_STRING"
+          ]
+        },
+        "debug_event_code": {
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        "process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "thread_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "mapping_token": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaqueToken"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mapping_kind": {
+          "enum": [
+            null,
+            "PROCESS_IMAGE",
+            "DLL_IMAGE"
+          ]
+        },
+        "continue_status": {
+          "enum": [
+            "DBG_CONTINUE",
+            "DBG_EXCEPTION_NOT_HANDLED"
+          ]
+        },
+        "exception_code": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^0x[0-9a-f]{8}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exception_disposition": {
+          "enum": [
+            null,
+            "INITIAL_BREAKPOINT_HANDLED",
+            "PASSED_TO_DEBUGGEE"
+          ]
+        },
+        "first_chance": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "exit_code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/nonnegativePortableInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file_handle_present": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "debug_string_code_units": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/nonnegativePortableInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "debug_string_unicode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "implicit_unmap_count": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/nonnegativePortableInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mapping_slot_token": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaqueToken"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "debugEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/debugEventBase"
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "event": {
+                  "const": "CREATE_PROCESS"
+                },
+                "debug_event_code": {
+                  "const": 3
+                },
+                "mapping_token": {
+                  "$ref": "#/$defs/opaqueToken"
+                },
+                "mapping_kind": {
+                  "const": "PROCESS_IMAGE"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "boolean"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "$ref": "#/$defs/opaqueToken"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "CREATE_THREAD"
+                },
+                "debug_event_code": {
+                  "const": 2
+                },
+                "mapping_token": {
+                  "type": "null"
+                },
+                "mapping_kind": {
+                  "type": "null"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "EXIT_THREAD"
+                },
+                "debug_event_code": {
+                  "const": 4
+                },
+                "mapping_token": {
+                  "type": "null"
+                },
+                "mapping_kind": {
+                  "type": "null"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "$ref": "#/$defs/nonnegativePortableInteger"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "EXIT_PROCESS"
+                },
+                "debug_event_code": {
+                  "const": 5
+                },
+                "mapping_token": {
+                  "type": "null"
+                },
+                "mapping_kind": {
+                  "type": "null"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "const": 0
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "$ref": "#/$defs/positivePortableInteger"
+                },
+                "mapping_slot_token": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "LOAD_DLL"
+                },
+                "debug_event_code": {
+                  "const": 6
+                },
+                "mapping_token": {
+                  "$ref": "#/$defs/opaqueToken"
+                },
+                "mapping_kind": {
+                  "const": "DLL_IMAGE"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "boolean"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "$ref": "#/$defs/opaqueToken"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "UNLOAD_DLL"
+                },
+                "debug_event_code": {
+                  "const": 7
+                },
+                "mapping_token": {
+                  "$ref": "#/$defs/opaqueToken"
+                },
+                "mapping_kind": {
+                  "const": "DLL_IMAGE"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "$ref": "#/$defs/opaqueToken"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "OUTPUT_DEBUG_STRING"
+                },
+                "debug_event_code": {
+                  "const": 8
+                },
+                "mapping_token": {
+                  "type": "null"
+                },
+                "mapping_kind": {
+                  "type": "null"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "type": "null"
+                },
+                "exception_disposition": {
+                  "type": "null"
+                },
+                "first_chance": {
+                  "type": "null"
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "$ref": "#/$defs/nonnegativePortableInteger"
+                },
+                "debug_string_unicode": {
+                  "type": "boolean"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "EXCEPTION"
+                },
+                "debug_event_code": {
+                  "const": 1
+                },
+                "mapping_token": {
+                  "type": "null"
+                },
+                "mapping_kind": {
+                  "type": "null"
+                },
+                "continue_status": {
+                  "const": "DBG_CONTINUE"
+                },
+                "exception_code": {
+                  "const": "0x80000003"
+                },
+                "exception_disposition": {
+                  "const": "INITIAL_BREAKPOINT_HANDLED"
+                },
+                "first_chance": {
+                  "const": true
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "EXCEPTION"
+                },
+                "debug_event_code": {
+                  "const": 1
+                },
+                "mapping_token": {
+                  "type": "null"
+                },
+                "mapping_kind": {
+                  "type": "null"
+                },
+                "continue_status": {
+                  "const": "DBG_EXCEPTION_NOT_HANDLED"
+                },
+                "exception_code": {
+                  "type": "string",
+                  "pattern": "^0x[0-9a-f]{8}$"
+                },
+                "exception_disposition": {
+                  "const": "PASSED_TO_DEBUGGEE"
+                },
+                "first_chance": {
+                  "const": true
+                },
+                "exit_code": {
+                  "type": "null"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                },
+                "debug_string_code_units": {
+                  "type": "null"
+                },
+                "debug_string_unicode": {
+                  "type": "null"
+                },
+                "implicit_unmap_count": {
+                  "type": "null"
+                },
+                "mapping_slot_token": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mapping_slot_token",
+        "observed_path_digest",
+        "path_disclosure",
+        "mapping_kind"
+      ],
+      "properties": {
+        "mapping_slot_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "observed_path_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "path_disclosure": {
+          "const": "DIGEST_ONLY_NO_RAW_PATH"
+        },
+        "mapping_kind": {
+          "const": "K32_ENUMERATED_IMAGE"
+        }
+      }
+    },
+    "imageEventBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "source_debug_sequence",
+        "event",
+        "process_token",
+        "mapping_token",
+        "mapping_slot_token",
+        "mapping_kind",
+        "file_handle_present"
+      ],
+      "properties": {
+        "sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "source_debug_sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "event": {
+          "enum": [
+            "LOAD_IMAGE",
+            "UNLOAD_IMAGE",
+            "PROCESS_EXIT_IMPLICIT_UNMAP"
+          ]
+        },
+        "process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "mapping_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "mapping_kind": {
+          "enum": [
+            "PROCESS_IMAGE",
+            "DLL_IMAGE"
+          ]
+        },
+        "file_handle_present": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mapping_slot_token": {
+          "$ref": "#/$defs/opaqueToken"
+        }
+      }
+    },
+    "imageEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/imageEventBase"
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "event": {
+                  "const": "LOAD_IMAGE"
+                },
+                "file_handle_present": {
+                  "type": "boolean"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "UNLOAD_IMAGE"
+                },
+                "mapping_kind": {
+                  "const": "DLL_IMAGE"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "PROCESS_EXIT_IMPLICIT_UNMAP"
+                },
+                "file_handle_present": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "processTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "limits",
+        "target",
+        "target_process_token",
+        "debugger",
+        "job",
+        "event_count",
+        "events"
+      ],
+      "properties": {
+        "schema": {
+          "const": "atlas.windows-debug-process-trace/4"
+        },
+        "capture_protocol": {
+          "$ref": "#/$defs/captureProtocol"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "selected_commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "selected_tree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "claim_boundary": {
+          "$ref": "#/$defs/claimBoundary"
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "target_process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "debugger": {
+          "$ref": "#/$defs/debugger"
+        },
+        "job": {
+          "$ref": "#/$defs/job"
+        },
+        "event_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16384,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/debugEvent"
+          },
+          "$comment": "Rows are contiguous and sequence ordered from zero. Python validation enforces state-machine transitions, exact count joins, root-first creation, target distinction, and complete process, thread, mapping, and initial-breakpoint reconciliation."
+        }
+      }
+    },
+    "imageTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "method",
+        "semantics",
+        "history_complete",
+        "target_process_token",
+        "debug_event_stream_digest",
+        "load_event_count",
+        "explicit_unload_event_count",
+        "implicit_unmap_count",
+        "lifecycle_event_count",
+        "distinct_mapping_count",
+        "target_checkpoint_count",
+        "target_checkpoint_read_count",
+        "target_checkpoint_mapping_row_count",
+        "target_checkpoints",
+        "events"
+      ],
+      "properties": {
+        "schema": {
+          "const": "atlas.windows-debug-image-trace/4"
+        },
+        "capture_protocol": {
+          "$ref": "#/$defs/captureProtocol"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "selected_commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "selected_tree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "claim_boundary": {
+          "$ref": "#/$defs/claimBoundary"
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "method": {
+          "const": "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_STABLE_DOUBLE_READ/4"
+        },
+        "semantics": {
+          "const": "DEBUG_IMAGE_LIFETIMES_PLUS_TARGET_ONLY_STABLE_K32_ENDPOINT_RECONCILIATION_NOT_COMPLETE_MAPPING_HISTORY"
+        },
+        "history_complete": {
+          "const": false
+        },
+        "target_process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "debug_event_stream_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "load_event_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "explicit_unload_event_count": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "implicit_unmap_count": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "lifecycle_event_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 32768
+        },
+        "distinct_mapping_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "events": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 32768,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/imageEvent"
+          },
+          "$comment": "Rows are contiguous and sequence ordered from zero with nondecreasing source-debug sequence. Python validation enforces exact load/unload lifecycle state and count reconciliation."
+        },
+        "target_checkpoint_count": {
+          "const": 2
+        },
+        "target_checkpoint_read_count": {
+          "const": 4
+        },
+        "target_checkpoint_mapping_row_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "target_checkpoints": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/targetCheckpoint"
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 0
+                    },
+                    "checkpoint": {
+                      "const": "START"
+                    },
+                    "target_state": {
+                      "const": "SUSPENDED_AT_INITIAL_BREAKPOINT_BEFORE_CONTINUE"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/targetCheckpoint"
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 1
+                    },
+                    "checkpoint": {
+                      "const": "END"
+                    },
+                    "target_state": {
+                      "const": "AFTER_PAYLOAD_BEFORE_STOP_RELEASE"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false,
+          "$comment": "Exactly two target-only checkpoints. Python validation anchors START to the handled target initial breakpoint, END before target exit at the payload STOP barrier, requires two equal normalized reads per checkpoint, and replays received target image events through both local ordinals."
+        }
+      }
+    },
+    "lossCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "debug_wait_failures",
+        "debug_continue_failures",
+        "debug_handle_close_failures",
+        "job_messages_lost",
+        "process_events_lost",
+        "mapping_load_events_lost",
+        "mapping_unload_events_lost",
+        "mapping_snapshots_lost",
+        "collector_loss_count",
+        "sequence_gap_count",
+        "unmatched_runtime_event_count",
+        "k32_enumeration_failures"
+      ],
+      "properties": {
+        "debug_wait_failures": {
+          "const": 0
+        },
+        "debug_continue_failures": {
+          "const": 0
+        },
+        "debug_handle_close_failures": {
+          "const": 0
+        },
+        "job_messages_lost": {
+          "type": "null"
+        },
+        "process_events_lost": {
+          "type": "null"
+        },
+        "mapping_load_events_lost": {
+          "type": "null"
+        },
+        "mapping_unload_events_lost": {
+          "type": "null"
+        },
+        "k32_enumeration_failures": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "mapping_snapshots_lost": {
+          "type": "null"
+        },
+        "collector_loss_count": {
+          "type": "null"
+        },
+        "sequence_gap_count": {
+          "type": "null"
+        },
+        "unmatched_runtime_event_count": {
+          "type": "null"
+        }
+      },
+      "$comment": "Debug wait, debug continue, and handle-close failures must be zero before evidence is emitted. K32 enumeration retry failures are disclosed as a nonnegative count; each emitted checkpoint still requires a successful stable read pair. OS/job/process/mapping loss counters and global collector/gap/unmatched counters remain exactly null. The separate collector-local append ordinal and its zero internal gap are not OS loss facts."
+    },
+    "lossReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "target_process_token",
+        "debug_event_count",
+        "created_process_count",
+        "exited_process_count",
+        "initial_breakpoint_count",
+        "load_event_count",
+        "explicit_unload_event_count",
+        "implicit_unmap_count",
+        "mapping_snapshot_count",
+        "mapping_snapshot_row_count",
+        "target_checkpoint_count",
+        "target_checkpoint_read_count",
+        "target_checkpoint_mapping_row_count",
+        "process_tree_reconciled",
+        "event_stream_contiguous",
+        "start_end_snapshot_reconciled",
+        "target_start_end_snapshot_reconciled",
+        "collector_sequence_kind",
+        "collector_ledger_contiguous",
+        "collector_sequence_gap_count",
+        "os_event_sequence_available",
+        "os_loss_counter_available",
+        "counters",
+        "limitations"
+      ],
+      "properties": {
+        "schema": {
+          "const": "atlas.windows-debug-loss-reconciliation/4"
+        },
+        "capture_protocol": {
+          "$ref": "#/$defs/captureProtocol"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "selected_commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "selected_tree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "claim_boundary": {
+          "$ref": "#/$defs/claimBoundary"
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "target_process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "debug_event_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "created_process_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "exited_process_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "initial_breakpoint_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "load_event_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "explicit_unload_event_count": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "implicit_unmap_count": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "mapping_snapshot_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "mapping_snapshot_row_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "process_tree_reconciled": {
+          "const": true
+        },
+        "event_stream_contiguous": {
+          "const": false
+        },
+        "start_end_snapshot_reconciled": {
+          "const": false
+        },
+        "counters": {
+          "$ref": "#/$defs/lossCounters"
+        },
+        "limitations": {
+          "const": [
+            "DEBUG_PROCESS_AND_JOB_OBJECT_ARE_NOT_A_SANDBOX_OR_EXECUTION_POLICY",
+            "COLLECTOR_SEQUENCE_IS_NOT_AN_OPERATING_SYSTEM_LOSS_COUNTER",
+            "DEBUG_IMAGE_EVENTS_DO_NOT_PROVE_MANUAL_OR_ANONYMOUS_MAPPING_ABSENCE",
+            "DEBUG_EVENT_FILE_HANDLE_BYTES_ARE_ON_DISK_NOT_MAPPED_OR_LOADED_MEMORY_BYTES",
+            "DEBUG_EVENT_FILE_HANDLES_CAN_BE_NULL_OUTSIDE_THIS_FAIL_CLOSED_FIXED_CAPTURE",
+            "FILE_IDENTIFIERS_ARE_MACHINE_LOCAL_AND_CAN_BE_REUSED_OVER_TIME",
+            "TARGET_START_END_K32_CHECKPOINTS_DO_NOT_PROVE_COMPLETE_MAPPING_HISTORY",
+            "TARGET_ENDPOINT_EQUALITY_CANNOT_DETECT_OMITTED_BALANCED_LOAD_UNLOAD_PAIRS",
+            "TARGET_ONLY_ENDPOINT_RECONCILIATION_IS_NOT_GLOBAL_START_END_RECONCILIATION",
+            "END_CHECKPOINT_DOES_NOT_PROVE_A_SPECIFIC_TARGET_THREAD_WAIT_STATE",
+            "POST_END_TARGET_TEARDOWN_ACTIVITY_IS_OUTSIDE_ENDPOINT_RECONCILIATION",
+            "K32_ENUMERATION_CAN_RACE_WITH_LOADER_CHANGES_OR_OMIT_LOAD_LIBRARY_AS_DATAFILE_MAPPINGS",
+            "NO_STATIC_TRANSITIVE_LOADER_OR_CRYPTO_PROVIDER_CLOSURE",
+            "NO_PLATFORM_BOOT_ATTESTATION_OR_EXECUTABLE_ALLOW_SET"
+          ]
+        },
+        "target_checkpoint_count": {
+          "const": 2
+        },
+        "target_checkpoint_read_count": {
+          "const": 4
+        },
+        "target_checkpoint_mapping_row_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "target_start_end_snapshot_reconciled": {
+          "const": true
+        },
+        "collector_sequence_kind": {
+          "const": "LOCAL_APPEND_ORDINAL"
+        },
+        "collector_ledger_contiguous": {
+          "const": true
+        },
+        "collector_sequence_gap_count": {
+          "const": 0
+        },
+        "os_event_sequence_available": {
+          "const": false
+        },
+        "os_loss_counter_available": {
+          "const": false
+        }
+      },
+      "$comment": "Python validation enforces exact process/image/checkpoint joins and target replay. target_start_end_snapshot_reconciled is target-only; broad start_end_snapshot_reconciled and event_stream_contiguous remain false, while OS and global loss counts remain null."
+    },
+    "fileCollectionGuards": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_file_bytes",
+        "max_total_file_bytes",
+        "read_chunk_bytes",
+        "stable_read_passes"
+      ],
+      "properties": {
+        "max_file_bytes": {
+          "const": 134217728
+        },
+        "max_total_file_bytes": {
+          "const": 1073741824
+        },
+        "read_chunk_bytes": {
+          "const": 1048576
+        },
+        "stable_read_passes": {
+          "const": 2
+        }
+      },
+      "$comment": "Protective collection ceilings only. They are not approved R2 budgets, closure limits, qualification inputs, or promotion authority."
+    },
+    "fileIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "information_class",
+        "volume_serial_number_hex",
+        "file_id_128_hex"
+      ],
+      "properties": {
+        "information_class": {
+          "const": "FILE_ID_INFO"
+        },
+        "volume_serial_number_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "file_id_128_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      },
+      "$comment": "The volume serial and 128-bit file ID identify the handle-addressed file for this local observation. Python validation requires both values to remain equal across the before/after identity reads for the same borrowed handle."
+    },
+    "fileReadPass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "offset",
+        "raw_bytes",
+        "digest"
+      ],
+      "properties": {
+        "sequence": {
+          "enum": [
+            0,
+            1
+          ]
+        },
+        "offset": {
+          "const": 0
+        },
+        "raw_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "fileIdentityRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "source_debug_sequence",
+        "process_token",
+        "mapping_token",
+        "mapping_slot_token",
+        "mapping_kind",
+        "handle_custody",
+        "path_disclosure",
+        "file_identity",
+        "file_size_bytes",
+        "identity_and_size_stable_before_after",
+        "read_passes",
+        "stable_same_handle_full_file_bytes"
+      ],
+      "properties": {
+        "sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "source_debug_sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "mapping_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "mapping_slot_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "mapping_kind": {
+          "enum": [
+            "PROCESS_IMAGE",
+            "DLL_IMAGE"
+          ]
+        },
+        "handle_custody": {
+          "const": "BORROWED_NON_NULL_UNTIL_PRE_CONTINUE_CLOSE"
+        },
+        "path_disclosure": {
+          "const": "NO_RAW_PATH_OR_FILENAME"
+        },
+        "file_identity": {
+          "$ref": "#/$defs/fileIdentity"
+        },
+        "file_size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "identity_and_size_stable_before_after": {
+          "const": true
+        },
+        "read_passes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/fileReadPass"
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 0
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/fileReadPass"
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 1
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false,
+          "$comment": "Python validation requires both passes to read exactly file_size_bytes bytes from offset zero through the same borrowed handle and requires their SHA-256 digests to be equal."
+        },
+        "stable_same_handle_full_file_bytes": {
+          "const": true
+        }
+      },
+      "$comment": "Rows are contiguous and sequence ordered from zero with strictly increasing source-debug sequence. Python validation joins each row one-to-one to a CREATE_PROCESS or LOAD_DLL image event whose file_handle_present value is true."
+    },
+    "fileIdentityTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "method",
+        "semantics",
+        "target_process_token",
+        "collection_guards",
+        "expected_debug_image_handle_count",
+        "observed_non_null_handle_count",
+        "stable_file_identity_count",
+        "stable_disk_bytes_count",
+        "unbound_debug_image_handle_count",
+        "distinct_file_identity_count",
+        "total_stable_disk_bytes",
+        "total_same_handle_read_bytes",
+        "persistent_file_identity_and_loaded_bytes_bound",
+        "mapped_or_loaded_memory_bytes_bound",
+        "rows"
+      ],
+      "properties": {
+        "schema": {
+          "const": "atlas.windows-debug-file-identity-trace/4"
+        },
+        "capture_protocol": {
+          "$ref": "#/$defs/captureProtocol"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "selected_commit": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "selected_tree": {
+          "$ref": "#/$defs/gitObject"
+        },
+        "claim_boundary": {
+          "$ref": "#/$defs/claimBoundary"
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "method": {
+          "const": "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_FILE_ID_INFO_STABLE_DOUBLE_READ"
+        },
+        "semantics": {
+          "const": "DEBUG_EVENT_IMAGE_HANDLES_TO_PERSISTENT_FILE_ID_AND_STABLE_SAME_HANDLE_ON_DISK_BYTES_ONLY"
+        },
+        "target_process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "collection_guards": {
+          "$ref": "#/$defs/fileCollectionGuards"
+        },
+        "expected_debug_image_handle_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "observed_non_null_handle_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "stable_file_identity_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "stable_disk_bytes_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "unbound_debug_image_handle_count": {
+          "const": 0
+        },
+        "distinct_file_identity_count": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "total_stable_disk_bytes": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "total_same_handle_read_bytes": {
+          "$ref": "#/$defs/positivePortableInteger"
+        },
+        "persistent_file_identity_and_loaded_bytes_bound": {
+          "const": false
+        },
+        "mapped_or_loaded_memory_bytes_bound": {
+          "const": false
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16384,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/fileIdentityRow"
+          },
+          "$comment": "Python validation binds every non-null debug-image hFile to exactly one row, enforces stable identity/size and two equal whole-file same-handle reads, and reconciles every aggregate count and byte total."
+        }
+      },
+      "$comment": "This trace binds persistent FILE_ID_INFO identity and stable handle-addressed on-disk bytes for the debug-image handles surfaced by this bounded run. It explicitly does not bind mapped or loaded memory bytes, manual or anonymous executable mappings, a global mapping history, loader resolution, crypto-provider closure, or any closure/authority decision."
+    },
+    "mappingRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "status",
+        "mappings"
+      ],
+      "properties": {
+        "sequence": {
+          "enum": [
+            0,
+            1
+          ]
+        },
+        "status": {
+          "const": "OBSERVED_NONEMPTY"
+        },
+        "mappings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mapping"
+          },
+          "$comment": "Rows are mapping-slot-token ordered. Python validation enforces strict ordering, unique slots, and exact equality of both normalized reads."
+        }
+      }
+    },
+    "targetCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "checkpoint",
+        "source_debug_sequence",
+        "process_token",
+        "target_state",
+        "reads"
+      ],
+      "properties": {
+        "sequence": {
+          "enum": [
+            0,
+            1
+          ]
+        },
+        "checkpoint": {
+          "enum": [
+            "START",
+            "END"
+          ]
+        },
+        "source_debug_sequence": {
+          "$ref": "#/$defs/nonnegativePortableInteger"
+        },
+        "process_token": {
+          "$ref": "#/$defs/opaqueToken"
+        },
+        "target_state": {
+          "enum": [
+            "SUSPENDED_AT_INITIAL_BREAKPOINT_BEFORE_CONTINUE",
+            "AFTER_PAYLOAD_BEFORE_STOP_RELEASE"
+          ]
+        },
+        "reads": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/mappingRead"
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 0
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/mappingRead"
+                },
+                {
+                  "properties": {
+                    "sequence": {
+                      "const": 1
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false
+        }
+      }
+    }
+  }
+}

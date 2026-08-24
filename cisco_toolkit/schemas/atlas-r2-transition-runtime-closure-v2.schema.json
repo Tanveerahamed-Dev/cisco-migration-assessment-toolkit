@@ -1,0 +1,645 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-transition-runtime-closure:2",
+  "title": "Atlas R2 non-authoritative runtime-closure evidence and external review v2",
+  "description": "Closed structural schema for exact raw runtime-closure evidence and an independently supplied detached review. Python validators remain authoritative for canonical bytes, exact artifact roles, mechanically derived gaps, ordering, times, signatures, trust, revocation, and cross-document joins.",
+  "$comment": "This protocol schema includes structure only. A sibling Windows discovery producer can emit non-authoritative incomplete evidence, but the package includes no closure-capable capture corpus, monitor, trust policy, reviewer key, signature, budget approval, qualification, promotion, or Release 3 authority. Runtime inventory v1 remains permanently partial. Every authority use must rebind a current external policy and an externally selected exact digest; schema validation cannot establish policy issuer, namespace, succession, authenticity, custody, trusted time, freshness, anti-rollback, reviewer-key identity/custody, independence, artifact semantic truth, real-world capture completeness, or COMPLETE authority, and the Python verifier remains authoritative for temporal and cross-document joins.",
+  "$ref": "#/$defs/runtimeClosureEvidence",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,191}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "positivePortableInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "nullableNonnegativePortableInteger": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        { "type": "null" }
+      ]
+    },
+    "evidenceState": {
+      "enum": ["ABSENT", "COLLECTED_INCOMPLETE", "READY_FOR_EXTERNAL_REVIEW"]
+    },
+    "coverageState": {
+      "enum": ["NOT_MEASURED", "MEASURED_INCOMPLETE", "MEASURED_CANDIDATE_COMPLETE"]
+    },
+    "artifactRole": {
+      "enum": [
+        "REFERENCE_RUNTIME_INVENTORY_V1",
+        "STRUCTURAL_TCB_CENSUS",
+        "PROTOTYPE_MEASUREMENTS",
+        "DSL_INTERPRETER_SOURCE",
+        "PROTOTYPE_PROGRAM",
+        "PROTOTYPE_PACK_MANIFEST",
+        "PROTOTYPE_TCB_MANIFEST",
+        "SUPPORTED_EXECUTION_DENOMINATOR",
+        "INSTALLED_DISTRIBUTION",
+        "EXACT_RUNTIME_PROFILE",
+        "CONTENT_ADDRESSED_EXECUTABLE_ALLOW_SET",
+        "DENY_BY_DEFAULT_EXECUTION_POLICY",
+        "COLLECTOR_AND_VERIFIER_TCB",
+        "EXECUTION_ENVIRONMENT_MANIFEST",
+        "STATIC_TRANSITIVE_DEPENDENCY_CLOSURE",
+        "PROCESS_TREE_LIFETIME_TRACE",
+        "EXECUTABLE_MAPPING_LOAD_UNLOAD_TRACE",
+        "FILE_IDENTITY_AND_HANDLE_TRACE",
+        "LOADER_RESOLUTION_TRACE",
+        "CRYPTO_PROVIDER_TRACE",
+        "PLATFORM_BOOT_ATTESTATION",
+        "COLLECTOR_LOSS_AND_RECONCILIATION"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_kind",
+        "substrate",
+        "universal_all_input_behavior",
+        "portable_across_hosts",
+        "semantic_equivalence",
+        "continuous_capture_required",
+        "deny_by_default_execution_required"
+      ],
+      "properties": {
+        "scope_kind": { "const": "EXACT_SELECTED_R2_0_RUNTIME_PROFILE" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" },
+        "universal_all_input_behavior": { "const": false },
+        "portable_across_hosts": { "const": false },
+        "semantic_equivalence": { "const": false },
+        "continuous_capture_required": { "const": true },
+        "deny_by_default_execution_required": { "const": true }
+      }
+    },
+    "authorityBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative",
+        "closure_decision",
+        "complete_exact_runtime_closure",
+        "approved_budget",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "authoritative": { "const": false },
+        "closure_decision": { "type": "null" },
+        "complete_exact_runtime_closure": { "const": false },
+        "approved_budget": { "type": "null" },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false },
+        "release3_included": { "const": false }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "role", "digest", "raw_bytes"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/identifier" },
+        "role": { "$ref": "#/$defs/artifactRole" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "raw_bytes": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "readyArtifactSet": {
+      "type": "array",
+      "minItems": 22,
+      "maxItems": 22,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/artifact" },
+      "allOf": [
+        { "contains": { "properties": { "role": { "const": "REFERENCE_RUNTIME_INVENTORY_V1" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "STRUCTURAL_TCB_CENSUS" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "PROTOTYPE_MEASUREMENTS" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "DSL_INTERPRETER_SOURCE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "PROTOTYPE_PROGRAM" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "PROTOTYPE_PACK_MANIFEST" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "PROTOTYPE_TCB_MANIFEST" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "SUPPORTED_EXECUTION_DENOMINATOR" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "INSTALLED_DISTRIBUTION" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "EXACT_RUNTIME_PROFILE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "CONTENT_ADDRESSED_EXECUTABLE_ALLOW_SET" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "DENY_BY_DEFAULT_EXECUTION_POLICY" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "COLLECTOR_AND_VERIFIER_TCB" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "EXECUTION_ENVIRONMENT_MANIFEST" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "STATIC_TRANSITIVE_DEPENDENCY_CLOSURE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "PROCESS_TREE_LIFETIME_TRACE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "EXECUTABLE_MAPPING_LOAD_UNLOAD_TRACE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "FILE_IDENTITY_AND_HANDLE_TRACE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "LOADER_RESOLUTION_TRACE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "CRYPTO_PROVIDER_TRACE" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "PLATFORM_BOOT_ATTESTATION" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "role": { "const": "COLLECTOR_LOSS_AND_RECONCILIATION" } }, "required": ["role"] }, "minContains": 1, "maxContains": 1 }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "supported_execution_denominator_closed",
+        "executable_allow_set_closed",
+        "deny_by_default_execution_enforced",
+        "static_transitive_dependency_closure_complete",
+        "process_tree_captured_before_first_instruction_through_final_descendant",
+        "executable_mapping_load_unload_history_complete",
+        "persistent_file_identity_and_loaded_bytes_bound",
+        "loader_configuration_and_resolution_bound",
+        "crypto_provider_configuration_and_native_bytes_bound",
+        "execution_environment_argv_cwd_and_inputs_bound",
+        "platform_components_and_boot_state_attested",
+        "collector_and_verifier_tcb_bound",
+        "event_stream_contiguous",
+        "start_end_snapshot_reconciled",
+        "supported_execution_case_count",
+        "allowed_executable_count",
+        "observed_process_count",
+        "observed_executable_mapping_count",
+        "observed_load_event_count",
+        "collector_loss_count",
+        "sequence_gap_count",
+        "unresolved_dependency_count",
+        "ambiguous_resolution_count",
+        "unmatched_runtime_event_count",
+        "unbound_file_identity_count",
+        "unexpected_process_count",
+        "unexpected_executable_mapping_count",
+        "unexpected_network_access_count",
+        "policy_violation_count",
+        "anonymous_executable_mapping_count",
+        "manual_mapping_count",
+        "breakaway_process_count",
+        "unscanned_executable_count",
+        "malformed_executable_count"
+      ],
+      "properties": {
+        "state": { "$ref": "#/$defs/coverageState" },
+        "supported_execution_denominator_closed": { "type": "boolean" },
+        "executable_allow_set_closed": { "type": "boolean" },
+        "deny_by_default_execution_enforced": { "type": "boolean" },
+        "static_transitive_dependency_closure_complete": { "type": "boolean" },
+        "process_tree_captured_before_first_instruction_through_final_descendant": { "type": "boolean" },
+        "executable_mapping_load_unload_history_complete": { "type": "boolean" },
+        "persistent_file_identity_and_loaded_bytes_bound": { "type": "boolean" },
+        "loader_configuration_and_resolution_bound": { "type": "boolean" },
+        "crypto_provider_configuration_and_native_bytes_bound": { "type": "boolean" },
+        "execution_environment_argv_cwd_and_inputs_bound": { "type": "boolean" },
+        "platform_components_and_boot_state_attested": { "type": "boolean" },
+        "collector_and_verifier_tcb_bound": { "type": "boolean" },
+        "event_stream_contiguous": { "type": "boolean" },
+        "start_end_snapshot_reconciled": { "type": "boolean" },
+        "supported_execution_case_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "allowed_executable_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "observed_process_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "observed_executable_mapping_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "observed_load_event_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "collector_loss_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "sequence_gap_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unresolved_dependency_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "ambiguous_resolution_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unmatched_runtime_event_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unbound_file_identity_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unexpected_process_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unexpected_executable_mapping_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unexpected_network_access_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "policy_violation_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "anonymous_executable_mapping_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "manual_mapping_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "breakaway_process_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "unscanned_executable_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" },
+        "malformed_executable_count": { "$ref": "#/$defs/nullableNonnegativePortableInteger" }
+      }
+    },
+    "readyCoverage": {
+      "allOf": [
+        { "$ref": "#/$defs/coverage" },
+        {
+          "type": "object",
+          "properties": {
+            "state": { "const": "MEASURED_CANDIDATE_COMPLETE" },
+            "supported_execution_denominator_closed": { "const": true },
+            "executable_allow_set_closed": { "const": true },
+            "deny_by_default_execution_enforced": { "const": true },
+            "static_transitive_dependency_closure_complete": { "const": true },
+            "process_tree_captured_before_first_instruction_through_final_descendant": { "const": true },
+            "executable_mapping_load_unload_history_complete": { "const": true },
+            "persistent_file_identity_and_loaded_bytes_bound": { "const": true },
+            "loader_configuration_and_resolution_bound": { "const": true },
+            "crypto_provider_configuration_and_native_bytes_bound": { "const": true },
+            "execution_environment_argv_cwd_and_inputs_bound": { "const": true },
+            "platform_components_and_boot_state_attested": { "const": true },
+            "collector_and_verifier_tcb_bound": { "const": true },
+            "event_stream_contiguous": { "const": true },
+            "start_end_snapshot_reconciled": { "const": true },
+            "supported_execution_case_count": { "$ref": "#/$defs/positivePortableInteger" },
+            "allowed_executable_count": { "$ref": "#/$defs/positivePortableInteger" },
+            "observed_process_count": { "$ref": "#/$defs/positivePortableInteger" },
+            "observed_executable_mapping_count": { "$ref": "#/$defs/positivePortableInteger" },
+            "observed_load_event_count": { "$ref": "#/$defs/positivePortableInteger" },
+            "collector_loss_count": { "const": 0 },
+            "sequence_gap_count": { "const": 0 },
+            "unresolved_dependency_count": { "const": 0 },
+            "ambiguous_resolution_count": { "const": 0 },
+            "unmatched_runtime_event_count": { "const": 0 },
+            "unbound_file_identity_count": { "const": 0 },
+            "unexpected_process_count": { "const": 0 },
+            "unexpected_executable_mapping_count": { "const": 0 },
+            "unexpected_network_access_count": { "const": 0 },
+            "policy_violation_count": { "const": 0 },
+            "anonymous_executable_mapping_count": { "const": 0 },
+            "manual_mapping_count": { "const": 0 },
+            "breakaway_process_count": { "const": 0 },
+            "unscanned_executable_count": { "const": 0 },
+            "malformed_executable_count": { "const": 0 }
+          }
+        }
+      ]
+    },
+    "runtimeClosureEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "evidence_id",
+        "purpose",
+        "state",
+        "producer_id",
+        "runtime_collector_id",
+        "structural_tcb_producer_id",
+        "pack_producer_id",
+        "budget_proposer_id",
+        "release_builder_id",
+        "selected_commit",
+        "selected_tree",
+        "reference_runtime_inventory_v1_digest",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_pack_manifest_digest",
+        "prototype_tcb_manifest_digest",
+        "supported_execution_denominator_digest",
+        "installed_distribution_digest",
+        "exact_runtime_profile_digest",
+        "executable_allow_set_digest",
+        "enforcement_policy_digest",
+        "collector_tcb_digest",
+        "execution_environment_manifest_digest",
+        "scope",
+        "coverage",
+        "artifacts",
+        "known_gaps",
+        "claim_boundary",
+        "authority"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-runtime-closure-evidence/2" },
+        "evidence_id": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_EXACT_RUNTIME_CLOSURE_REVIEW" },
+        "state": { "$ref": "#/$defs/evidenceState" },
+        "producer_id": { "$ref": "#/$defs/identifier" },
+        "runtime_collector_id": { "$ref": "#/$defs/identifier" },
+        "structural_tcb_producer_id": { "$ref": "#/$defs/identifier" },
+        "pack_producer_id": { "$ref": "#/$defs/identifier" },
+        "budget_proposer_id": { "$ref": "#/$defs/identifier" },
+        "release_builder_id": { "$ref": "#/$defs/identifier" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "reference_runtime_inventory_v1_digest": { "$ref": "#/$defs/nullableDigest" },
+        "structural_census_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/nullableDigest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_program_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_tcb_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "supported_execution_denominator_digest": { "$ref": "#/$defs/nullableDigest" },
+        "installed_distribution_digest": { "$ref": "#/$defs/nullableDigest" },
+        "exact_runtime_profile_digest": { "$ref": "#/$defs/nullableDigest" },
+        "executable_allow_set_digest": { "$ref": "#/$defs/nullableDigest" },
+        "enforcement_policy_digest": { "$ref": "#/$defs/nullableDigest" },
+        "collector_tcb_digest": { "$ref": "#/$defs/nullableDigest" },
+        "execution_environment_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 22,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "known_gaps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "claim_boundary": {
+          "const": "Exact non-authoritative evidence for external review of one selected R2.0 supported-execution and ABI denominator; an immutable content-addressed executable allow-set and deny-by-default execution policy are requirements for candidate closure, not facts established by this envelope. The envelope cannot establish closure, representative workload adequacy, universal all-input behavior, portability, semantic equivalence, approve budgets, qualify a pack, authorize execution, enable promotion, or include Release 3."
+        },
+        "authority": { "$ref": "#/$defs/authorityBoundary" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "ABSENT" } } },
+          "then": {
+            "properties": {
+              "coverage": { "properties": { "state": { "const": "NOT_MEASURED" } } },
+              "artifacts": { "maxItems": 0 },
+              "known_gaps": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "COLLECTED_INCOMPLETE" } } },
+          "then": {
+            "properties": {
+              "coverage": { "properties": { "state": { "const": "MEASURED_INCOMPLETE" } } },
+              "known_gaps": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "READY_FOR_EXTERNAL_REVIEW" } } },
+          "then": {
+            "properties": {
+              "reference_runtime_inventory_v1_digest": { "$ref": "#/$defs/digest" },
+              "structural_census_digest": { "$ref": "#/$defs/digest" },
+              "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+              "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+              "prototype_program_digest": { "$ref": "#/$defs/digest" },
+              "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+              "prototype_tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+              "supported_execution_denominator_digest": { "$ref": "#/$defs/digest" },
+              "installed_distribution_digest": { "$ref": "#/$defs/digest" },
+              "exact_runtime_profile_digest": { "$ref": "#/$defs/digest" },
+              "executable_allow_set_digest": { "$ref": "#/$defs/digest" },
+              "enforcement_policy_digest": { "$ref": "#/$defs/digest" },
+              "collector_tcb_digest": { "$ref": "#/$defs/digest" },
+              "execution_environment_manifest_digest": { "$ref": "#/$defs/digest" },
+              "coverage": { "$ref": "#/$defs/readyCoverage" },
+              "artifacts": { "$ref": "#/$defs/readyArtifactSet" },
+              "known_gaps": { "maxItems": 0 }
+            }
+          }
+        }
+      ]
+    },
+    "reviewBindingFields": {
+      "type": "object",
+      "properties": {
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "reference_runtime_inventory_v1_digest": { "$ref": "#/$defs/nullableDigest" },
+        "structural_census_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/nullableDigest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_program_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "prototype_tcb_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "supported_execution_denominator_digest": { "$ref": "#/$defs/nullableDigest" },
+        "installed_distribution_digest": { "$ref": "#/$defs/nullableDigest" },
+        "exact_runtime_profile_digest": { "$ref": "#/$defs/nullableDigest" },
+        "executable_allow_set_digest": { "$ref": "#/$defs/nullableDigest" },
+        "enforcement_policy_digest": { "$ref": "#/$defs/nullableDigest" },
+        "collector_tcb_digest": { "$ref": "#/$defs/nullableDigest" },
+        "execution_environment_manifest_digest": { "$ref": "#/$defs/nullableDigest" },
+        "runtime_closure_evidence_digest": { "$ref": "#/$defs/digest" },
+        "runtime_closure_evidence_state": { "$ref": "#/$defs/evidenceState" },
+        "runtime_closure_coverage_state": { "$ref": "#/$defs/coverageState" }
+      }
+    },
+    "reviewBindings": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/reviewBindingFields" },
+        {
+          "type": "object",
+          "required": [
+            "schema",
+            "selected_commit",
+            "selected_tree",
+            "reference_runtime_inventory_v1_digest",
+            "structural_census_digest",
+            "prototype_measurement_digest",
+            "dsl_interpreter_digest",
+            "prototype_program_digest",
+            "prototype_pack_manifest_digest",
+            "prototype_tcb_manifest_digest",
+            "supported_execution_denominator_digest",
+            "installed_distribution_digest",
+            "exact_runtime_profile_digest",
+            "executable_allow_set_digest",
+            "enforcement_policy_digest",
+            "collector_tcb_digest",
+            "execution_environment_manifest_digest",
+            "runtime_closure_evidence_digest",
+            "runtime_closure_evidence_state",
+            "runtime_closure_coverage_state"
+          ],
+          "properties": {
+            "schema": { "const": "atlas.transition-runtime-closure-review-bindings/1" }
+          }
+        }
+      ]
+    },
+    "reviewReceipt": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/reviewBindingFields" },
+        {
+          "type": "object",
+          "required": [
+            "schema",
+            "receipt_id",
+            "purpose",
+            "selected_commit",
+            "selected_tree",
+            "reference_runtime_inventory_v1_digest",
+            "structural_census_digest",
+            "prototype_measurement_digest",
+            "dsl_interpreter_digest",
+            "prototype_program_digest",
+            "prototype_pack_manifest_digest",
+            "prototype_tcb_manifest_digest",
+            "supported_execution_denominator_digest",
+            "installed_distribution_digest",
+            "exact_runtime_profile_digest",
+            "executable_allow_set_digest",
+            "enforcement_policy_digest",
+            "collector_tcb_digest",
+            "execution_environment_manifest_digest",
+            "runtime_closure_evidence_digest",
+            "runtime_closure_evidence_state",
+            "runtime_closure_coverage_state",
+            "decision",
+            "issued_at",
+            "valid_from",
+            "valid_until",
+            "reviewer_key_id"
+          ],
+          "properties": {
+            "schema": { "const": "atlas.transition-runtime-closure-review-receipt/1" },
+            "receipt_id": { "$ref": "#/$defs/identifier" },
+            "purpose": { "const": "ATLAS_R2_EXACT_RUNTIME_CLOSURE_REVIEW" },
+            "decision": {
+              "enum": ["COMPLETE_EXACT_RUNTIME_CLOSURE", "INCOMPLETE_RUNTIME_CLOSURE"]
+            },
+            "issued_at": { "$ref": "#/$defs/timestamp" },
+            "valid_from": { "$ref": "#/$defs/timestamp" },
+            "valid_until": { "$ref": "#/$defs/timestamp" },
+            "reviewer_key_id": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
+    "reviewSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "purpose",
+        "payload_digest",
+        "signer_key_id",
+        "algorithm",
+        "signature_base64"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-runtime-closure-review-signature/1" },
+        "purpose": { "const": "ATLAS_R2_EXACT_RUNTIME_CLOSURE_REVIEW" },
+        "payload_digest": { "$ref": "#/$defs/digest" },
+        "signer_key_id": { "$ref": "#/$defs/identifier" },
+        "algorithm": { "const": "Ed25519" },
+        "signature_base64": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{86}==$"
+        }
+      }
+    },
+    "reviewAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "purpose", "target_schema_version", "reviewer_role", "substrate"],
+      "properties": {
+        "schema": { "const": "atlas.transition-runtime-closure-review-authorization/1" },
+        "purpose": { "const": "ATLAS_R2_EXACT_RUNTIME_CLOSURE_REVIEW" },
+        "target_schema_version": { "const": "atlas.transition-runtime-closure-review-receipt/1" },
+        "reviewer_role": { "const": "EXACT_RUNTIME_CLOSURE_REVIEWER" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" }
+      }
+    },
+    "allowedSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected_commit", "selected_tree", "runtime_closure_evidence_digest"],
+      "properties": {
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "runtime_closure_evidence_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "trustedKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "key_id",
+        "public_key_digest",
+        "reviewer_kind",
+        "independent_from_evidence_producer",
+        "independent_from_runtime_collector",
+        "independent_from_structural_tcb_producer",
+        "independent_from_pack_producer",
+        "independent_from_budget_proposer",
+        "independent_from_release_builder",
+        "authorizations",
+        "allowed_subjects",
+        "valid_from",
+        "valid_until"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-runtime-closure-review-trusted-key/1" },
+        "key_id": { "$ref": "#/$defs/identifier" },
+        "public_key_digest": { "$ref": "#/$defs/digest" },
+        "reviewer_kind": { "const": "INDEPENDENT_REVIEWER" },
+        "independent_from_evidence_producer": { "const": true },
+        "independent_from_runtime_collector": { "const": true },
+        "independent_from_structural_tcb_producer": { "const": true },
+        "independent_from_pack_producer": { "const": true },
+        "independent_from_budget_proposer": { "const": true },
+        "independent_from_release_builder": { "const": true },
+        "authorizations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/reviewAuthorization" }
+        },
+        "allowed_subjects": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/allowedSubject" }
+        },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_until": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "trustPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "policy_kind",
+        "policy_id",
+        "policy_version",
+        "purpose",
+        "evaluated_at",
+        "trusted_keys",
+        "revoked_receipt_digests"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.transition-runtime-closure-review-trust-policy/1" },
+        "policy_kind": { "const": "EXTERNAL_INDEPENDENT_RUNTIME_CLOSURE_REVIEW_KEY_ALLOWLIST" },
+        "policy_id": { "$ref": "#/$defs/identifier" },
+        "policy_version": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_EXACT_RUNTIME_CLOSURE_REVIEW" },
+        "evaluated_at": { "$ref": "#/$defs/timestamp" },
+        "trusted_keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/trustedKey" }
+        },
+        "revoked_receipt_digests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        }
+      }
+    }
+  }
+}
