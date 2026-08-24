@@ -247,6 +247,7 @@ class WindowsDebugEventSession:
         "_live_processes",
         "_live_threads",
         "_observer_active",
+        "_process_handles",
         "_records",
         "_root_pid",
         "_seen_threads",
@@ -300,6 +301,10 @@ class WindowsDebugEventSession:
         self._seen_threads: set[int] = set()
         self._live_threads: dict[int, int] = {}
         self._observer_active = False
+        # CREATE_PROCESS_DEBUG_INFO.hProcess remains a system-owned debugger handle
+        # until the corresponding EXIT_PROCESS event is continued.  Raw handle values
+        # never leave this private engine or the suspended-event observer seam.
+        self._process_handles: dict[int, int] = {}
         self._active_mappings: dict[tuple[int, int], str] = {}
         self._initial_breakpoints: set[int] = set()
         self._continued = 0
@@ -389,10 +394,65 @@ class WindowsDebugEventSession:
     def _close_event_file(self, handle: int) -> bool:
         if not handle:
             return True
-        if not self._kernel32.CloseHandle(wintypes.HANDLE(handle)):
+        try:
+            closed = bool(self._kernel32.CloseHandle(wintypes.HANDLE(handle)))
+        except BaseException:
+            closed = False
+        if not closed:
             self._close_failures += 1
             return False
         return True
+
+    def _duplicate_process_read_handle(self, handle: int) -> int:
+        """Duplicate one debug-event process handle with read/query rights only."""
+
+        if type(handle) is not int or handle <= 0:
+            return 0
+        duplicate = wintypes.HANDLE()
+        try:
+            get_current_process = self._kernel32.GetCurrentProcess
+            get_current_process.argtypes = ()
+            get_current_process.restype = wintypes.HANDLE
+            duplicate_handle = self._kernel32.DuplicateHandle
+            duplicate_handle.argtypes = (
+                wintypes.HANDLE,
+                wintypes.HANDLE,
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.HANDLE),
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            )
+            duplicate_handle.restype = wintypes.BOOL
+            current = get_current_process()
+            # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ.  This is a protective
+            # least-privilege duplicate, not an execution policy or sandbox.
+            if not current:
+                return 0
+            duplicated = bool(duplicate_handle(
+                    current,
+                    wintypes.HANDLE(handle),
+                    current,
+                    ctypes.byref(duplicate),
+                    wintypes.DWORD(0x0410),
+                    False,
+                    wintypes.DWORD(0)))
+            raw_duplicate = int(duplicate.value or 0)
+            if not duplicated:
+                if raw_duplicate:
+                    self._close_event_file(raw_duplicate)
+                return 0
+            return raw_duplicate
+        except BaseException:
+            # A hostile/failing API seam must not bypass the pump's close-and-continue path.  If
+            # an injected implementation populated the out parameter before failing, reclaim it.
+            try:
+                raw_duplicate = int(duplicate.value or 0)
+            except BaseException:
+                raw_duplicate = 0
+            if raw_duplicate:
+                self._close_event_file(raw_duplicate)
+            return 0
 
     def _record_for_event(
         self, event: _DebugEvent
@@ -570,6 +630,9 @@ class WindowsDebugEventSession:
         *,
         before_continue: Callable[[DebugEventRecord], None] | None = None,
         before_event_file_close: Callable[[DebugEventRecord, int], None] | None = None,
+        before_event_image_memory_read: (
+            Callable[[DebugEventRecord, int, int], None] | None
+        ) = None,
     ) -> bool:
         """Wait for and continue at most one event; return false only for a real timeout.
 
@@ -582,6 +645,12 @@ class WindowsDebugEventSession:
         primitive record while the debuggee remains suspended.  Any observer failure is converted
         to a stable fatal engine error after the event-owned file handle is closed and the event is
         continued exactly once.
+
+        ``before_event_image_memory_read`` is a separately versioned `/5` seam.  For one
+        CREATE_PROCESS or LOAD_DLL event it receives the detached record, the borrowed event
+        ``hFile``, and a borrowed non-inheritable read/query-only duplicate of the exact
+        CREATE_PROCESS ``hProcess``.  The engine closes both observer handles before continuing;
+        the callback must not close or retain either handle.
         """
 
         self._require_creator_thread()
@@ -596,6 +665,16 @@ class WindowsDebugEventSession:
             _fail("WINDOWS_DEBUG_EVENT_OBSERVER_INVALID")
         if before_event_file_close is not None and not callable(before_event_file_close):
             _fail("WINDOWS_DEBUG_EVENT_FILE_OBSERVER_INVALID")
+        if (
+            before_event_image_memory_read is not None
+            and not callable(before_event_image_memory_read)
+        ):
+            _fail("WINDOWS_DEBUG_EVENT_MEMORY_OBSERVER_INVALID")
+        if (
+            before_event_file_close is not None
+            and before_event_image_memory_read is not None
+        ):
+            _fail("WINDOWS_DEBUG_EVENT_OBSERVER_CONFLICT")
         event = _DebugEvent()
         ctypes.set_last_error(0)
         if not self._kernel32.WaitForDebugEventEx(
@@ -620,14 +699,29 @@ class WindowsDebugEventSession:
         fatal_after_continue: str | None = None
         record_error: str | None = None
         event_file_observer_error = False
+        event_memory_observer_error = False
         observer_error = False
         close_ok = True
+        duplicate_process_handle = 0
         try:
-            copied, status, _returned_handle, _present, fatal_after_continue = (
+            parsed, status, _returned_handle, _present, fatal_after_continue = (
                 self._record_for_event(event)
             )
             if _returned_handle != event_file_handle:
                 _fail("WINDOWS_DEBUG_EVENT_HANDLE_INVALID")
+            if before_event_image_memory_read is not None:
+                if parsed.event == "CREATE_PROCESS":
+                    raw_process_handle = int(event.u.CreateProcessInfo.hProcess or 0)
+                    if raw_process_handle:
+                        if parsed.process_id in self._process_handles:
+                            _fail("WINDOWS_DEBUG_PROCESS_HANDLE_LIFECYCLE_INVALID")
+                        self._process_handles[parsed.process_id] = raw_process_handle
+                elif (
+                    parsed.event == "EXIT_PROCESS"
+                    and parsed.process_id not in self._process_handles
+                ):
+                    _fail("WINDOWS_DEBUG_PROCESS_HANDLE_LIFECYCLE_INVALID")
+            copied = parsed
         except DebugEventEngineError as error:
             record_error = error.code
             status = (
@@ -647,8 +741,34 @@ class WindowsDebugEventSession:
                 event_file_observer_error = True
             finally:
                 self._observer_active = False
+        if (
+            copied is not None
+            and copied.event in {"CREATE_PROCESS", "LOAD_DLL"}
+            and before_event_image_memory_read is not None
+        ):
+            raw_process_handle = self._process_handles.get(copied.process_id, 0)
+            close_failures_before_duplicate = self._close_failures
+            duplicate_process_handle = self._duplicate_process_read_handle(
+                raw_process_handle
+            )
+            if self._close_failures != close_failures_before_duplicate:
+                close_ok = False
+            if not event_file_handle or not duplicate_process_handle:
+                event_memory_observer_error = True
+            else:
+                try:
+                    self._observer_active = True
+                    before_event_image_memory_read(
+                        copied, event_file_handle, duplicate_process_handle
+                    )
+                except BaseException:
+                    event_memory_observer_error = True
+                finally:
+                    self._observer_active = False
+        if duplicate_process_handle:
+            close_ok = self._close_event_file(duplicate_process_handle) and close_ok
         if event_file_handle:
-            close_ok = self._close_event_file(event_file_handle)
+            close_ok = self._close_event_file(event_file_handle) and close_ok
         if copied is not None and before_continue is not None:
             try:
                 self._observer_active = True
@@ -667,6 +787,8 @@ class WindowsDebugEventSession:
             _fail("WINDOWS_DEBUG_CONTINUE_FAILED")
         if copied is not None:
             self._records.append(copied)
+            if copied.event == "EXIT_PROCESS":
+                self._process_handles.pop(copied.process_id, None)
         self._continued += 1
         if not close_ok:
             self._fatal_error = "WINDOWS_DEBUG_EVENT_HANDLE_CLOSE_FAILED"
@@ -680,6 +802,9 @@ class WindowsDebugEventSession:
         if event_file_observer_error:
             self._fatal_error = "WINDOWS_DEBUG_EVENT_FILE_OBSERVER_FAILED"
             _fail("WINDOWS_DEBUG_EVENT_FILE_OBSERVER_FAILED")
+        if event_memory_observer_error:
+            self._fatal_error = "WINDOWS_DEBUG_EVENT_MEMORY_OBSERVER_FAILED"
+            _fail("WINDOWS_DEBUG_EVENT_MEMORY_OBSERVER_FAILED")
         if observer_error:
             self._fatal_error = "WINDOWS_DEBUG_EVENT_OBSERVER_FAILED"
             _fail("WINDOWS_DEBUG_EVENT_OBSERVER_FAILED")
@@ -698,6 +823,7 @@ class WindowsDebugEventSession:
             or self._live_processes
             or self._live_threads
             or self._active_mappings
+            or self._process_handles
             or self._continued != len(self._records)
             or self._wait_failures
             or self._continue_failures

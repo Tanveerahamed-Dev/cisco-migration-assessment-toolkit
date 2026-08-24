@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+import hashlib
 import importlib.util
 from importlib import resources
 from pathlib import Path
@@ -39,6 +40,9 @@ _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE = (
 _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json"
 )
+_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V5_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v5.schema.json"
+)
 _WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json"
 )
@@ -51,8 +55,11 @@ _WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE = (
 _WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json"
 )
+_WINDOWS_EXECUTION_ENVIRONMENT_V5_SCHEMA_RESOURCE = (
+    "schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json"
+)
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:fd6aeef3a50dc00b5e8ec5577d19789d617ad41ff085f2d949191f1ebcc8955d"
+_TCB_CENSUS_DIGEST = "sha256:fba851ed73cfb89a1cc3fd4365717a38644e9c9d8f98a6acc7c821c43a8be329"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -80,6 +87,10 @@ def _windows_debug_runtime_discovery_v4_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE))
 
 
+def _windows_debug_runtime_discovery_v5_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V5_SCHEMA_RESOURCE))
+
+
 def _windows_execution_environment_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_SCHEMA_RESOURCE))
 
@@ -94,6 +105,10 @@ def _windows_execution_environment_v3_schema() -> dict[str, Any]:
 
 def _windows_execution_environment_v4_schema() -> dict[str, Any]:
     return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE))
+
+
+def _windows_execution_environment_v5_schema() -> dict[str, Any]:
+    return json.loads(_resource_bytes(_WINDOWS_EXECUTION_ENVIRONMENT_V5_SCHEMA_RESOURCE))
 
 
 def _windows_execution_environment_manifest() -> dict[str, Any]:
@@ -1380,3 +1395,143 @@ def test_windows_execution_environment_v4_schema_is_an_exact_closed_protocol_clo
     )
     assert raw.endswith(b"\n")
     assert f'"{_WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE}",' in package_data
+
+
+def test_windows_debug_runtime_v5_schema_is_packaged_closed_and_memory_scoped() -> None:
+    v4 = _windows_debug_runtime_discovery_v4_schema()
+    v5 = _windows_debug_runtime_discovery_v5_schema()
+    Draft202012Validator.check_schema(v5)
+
+    assert v5["$id"] == "urn:atlas:schema:r2-windows-debug-runtime-discovery:5"
+    assert v5["oneOf"] == v4["oneOf"]
+    assert v5["$defs"]["captureProtocol"]["const"] == "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+    assert v5["$defs"]["claimBoundary"]["const"] == rd._fixed_debug_v5_claim_boundary()
+    assert v5["$defs"]["lossReconciliation"]["properties"]["limitations"][
+        "const"
+    ] == list(rd._fixed_debug_v5_limitations())
+
+    guards = v5["$defs"]["fileCollectionGuards"]
+    assert guards["additionalProperties"] is False
+    assert set(guards["required"]) == {
+        "max_file_bytes",
+        "max_total_file_bytes",
+        "read_chunk_bytes",
+        "stable_read_passes",
+        "max_image_memory_bytes",
+        "max_total_image_memory_bytes",
+        "memory_read_chunk_bytes",
+        "memory_stable_read_passes",
+        "max_pe_header_bytes",
+        "max_pe_sections",
+        "max_memory_regions_per_image_pass",
+        "max_total_memory_regions",
+    }
+    assert guards["properties"]["max_memory_regions_per_image_pass"] == {"const": 512}
+    assert guards["properties"]["max_total_memory_regions"] == {"const": 16384}
+    assert v5["$defs"]["peLayout"]["properties"]["file_alignment"]["maximum"] == 65536
+    assert v5["$defs"]["peLayout"]["properties"]["pe_header_offset"] == {
+        "type": "integer",
+        "minimum": 64,
+        "maximum": 1048552,
+    }
+    row = v5["$defs"]["fileIdentityRow"]
+    assert row["additionalProperties"] is False
+    assert {
+        "process_handle_custody",
+        "observation_point",
+        "pe_layout",
+        "memory_size_bytes",
+        "memory_region_passes",
+        "memory_read_passes",
+        "disk_memory_pe_layout_reconciled",
+        "stable_event_coincident_complete_pe_size_of_image_span",
+        "binding_digest",
+    } <= set(row["required"])
+    region_passes = row["properties"]["memory_region_passes"]
+    assert region_passes["minItems"] == region_passes["maxItems"] == 2
+    assert region_passes["items"] is False
+    assert [
+        item["allOf"][1]["properties"]["sequence"]["const"]
+        for item in region_passes["prefixItems"]
+    ] == [0, 1]
+    assert v5["$defs"]["memoryRegionPass"]["properties"]["regions"]["maxItems"] == 512
+    trace = v5["$defs"]["fileIdentityTrace"]
+    assert trace["additionalProperties"] is False
+    assert trace["properties"]["persistent_file_identity_and_loaded_bytes_bound"] == {
+        "const": False
+    }
+    assert trace["properties"]["mapped_or_loaded_memory_bytes_bound"] == {
+        "const": True
+    }
+    assert trace["properties"]["event_coincident_mem_image_bytes_bound"] == {
+        "const": True
+    }
+    assert trace["properties"]["total_memory_region_count"]["maximum"] == 16384
+    for field in (
+        "disk_memory_byte_equality_claimed",
+        "loader_transformations_interpreted",
+        "loaded_memory_lifetime_immutability_claimed",
+    ):
+        assert trace["properties"][field] == {"const": False}
+
+    raw = _resource_bytes(_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V5_SCHEMA_RESOURCE)
+    package_data = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    assert raw.endswith(b"\n")
+    assert f'"{_WINDOWS_DEBUG_RUNTIME_DISCOVERY_V5_SCHEMA_RESOURCE}",' in package_data
+
+
+def test_windows_execution_environment_v5_schema_is_an_exact_closed_protocol_clone() -> None:
+    v4 = _windows_execution_environment_v4_schema()
+    v5 = _windows_execution_environment_v5_schema()
+    expected = deepcopy(v4)
+    expected["$id"] = "urn:atlas:schema:r2-windows-execution-environment-manifest:5"
+    expected["title"] = "Atlas R2.0 Windows execution-environment manifest v5"
+    expected["properties"]["schema"]["const"] = (
+        "atlas.windows-execution-environment-manifest/5"
+    )
+    expected["$defs"]["captureProtocol"]["const"] = (
+        "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+    )
+    Draft202012Validator.check_schema(v5)
+    assert v5 == expected
+
+    manifest = _windows_execution_environment_manifest()
+    manifest["schema"] = "atlas.windows-execution-environment-manifest/5"
+    manifest["capture_protocol"] = "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+    Draft202012Validator(v5).validate(manifest)
+    assert rd.validate_windows_debug_execution_environment_v5_manifest(manifest) == manifest
+
+
+def test_windows_debug_v2_through_v4_schema_bytes_are_unchanged() -> None:
+    expected = {
+        "schemas/atlas-r2-windows-debug-runtime-discovery-v2.schema.json": (
+            34822,
+            "8eaecfce58bf0d3db1dc72e29ddc46b949d38413490d46ab301d2a9108b30b0f",
+        ),
+        "schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json": (
+            49627,
+            "2c760905a549cc61da5d45ebef654b5b5233d42633131b9bad68f6e6e908c5d2",
+        ),
+        "schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json": (
+            58920,
+            "17aa8db07fec0b5a044741f948206ed787c1aec51d877314594d22097db8766c",
+        ),
+        "schemas/atlas-r2-windows-execution-environment-manifest-v2.schema.json": (
+            19721,
+            "14fff22aa8297c02b641f179e574986ec65f430e6202e73e45911a7b5a9ada6e",
+        ),
+        "schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json": (
+            19721,
+            "71eb539219d1de6eebcf68d60acecdfebf617c28e8c9e292a7c80c6c3862e753",
+        ),
+        "schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json": (
+            19721,
+            "8e45b8e2d56320906acef0d755b93a6ac31d324d8136471ec1a381ae9097c686",
+        ),
+    }
+    for resource, (size, digest) in expected.items():
+        raw = _resource_bytes(resource)
+        assert len(raw) == size
+        assert hashlib.sha256(raw).hexdigest() == digest

@@ -30,6 +30,17 @@ This binds persistent machine-local on-disk file identity for the observed debug
 it does not bind relocated, copy-on-write, or subsequently modified mapped-memory bytes, and it does
 not alter `/2` or `/3` semantics or output.  `/4` therefore also remains incomplete.
 
+The additive `/5` producer observes the exact PE ``SizeOfImage`` span within the corresponding
+committed ``MEM_IMAGE`` allocation through a read/query-only duplicate of the retained
+CREATE_PROCESS debug-event ``hProcess`` for that process while the current image event remains
+suspended.  It requires two complete reads with equal whole-span digests and equal retained PE
+header prefixes; each read retains its own independently complete region partition because Windows
+copy-on-write/protection bookkeeping may split the topology between reads.  It reconciles a
+normalized AMD64 PE32+ layout with the event-handle disk image.  This is a point-in-time binding for
+received image events, not allocation exhaustion, region-topology stability, disk/memory byte
+equality, lifetime immutability, complete mapping history, loader closure, manual-mapping absence,
+or losslessness.  `/5` therefore remains incomplete as well.
+
 The fixed target also reports a digest-only observation of its exact argv, working directory,
 environment, selected Python executable path and separately read file bytes, reported interpreter
 metadata, and seven listed input byte strings.  The parent derives the expected launch independently
@@ -136,6 +147,18 @@ WINDOWS_DEBUG_FILE_IDENTITY_LOSS_RECONCILIATION_SCHEMA = (
 WINDOWS_DEBUG_FILE_IDENTITY_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
     "atlas.windows-execution-environment-manifest/4"
 )
+WINDOWS_DEBUG_MAPPED_IMAGE_CAPTURE_PROTOCOL = "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+WINDOWS_DEBUG_MAPPED_IMAGE_PROCESS_TRACE_SCHEMA = "atlas.windows-debug-process-trace/5"
+WINDOWS_DEBUG_MAPPED_IMAGE_IMAGE_TRACE_SCHEMA = "atlas.windows-debug-image-trace/5"
+WINDOWS_DEBUG_MAPPED_IMAGE_FILE_IDENTITY_TRACE_SCHEMA = (
+    "atlas.windows-debug-file-identity-trace/5"
+)
+WINDOWS_DEBUG_MAPPED_IMAGE_LOSS_RECONCILIATION_SCHEMA = (
+    "atlas.windows-debug-loss-reconciliation/5"
+)
+WINDOWS_DEBUG_MAPPED_IMAGE_EXECUTION_ENVIRONMENT_MANIFEST_SCHEMA = (
+    "atlas.windows-execution-environment-manifest/5"
+)
 WINDOWS_RUNTIME_DISCOVERY_CLAIM_BOUNDARY = (
     "Windows Job Object process messages and K32 polling checkpoints for one R2.0 prototype "
     "execution only; incomplete and non-authoritative, with no exact runtime-closure, budget, "
@@ -174,6 +197,18 @@ WINDOWS_DEBUG_FILE_IDENTITY_CLAIM_BOUNDARY = (
     "not establish operating-system event sequences or losslessness, complete mapping history, "
     "manual or anonymous executable mapping absence, exact runtime closure, budget, "
     "qualification, promotion, or Release 3 authority."
+)
+WINDOWS_DEBUG_MAPPED_IMAGE_CLAIM_BOUNDARY = (
+    "Windows DEBUG_PROCESS process and image events plus stable target-only K32 START/END "
+    "checkpoints and event-coincident borrowed hFile identity/stable disk reads plus two complete "
+    "reads of the exact PE SizeOfImage span with equal whole-span SHA-256 digests and equal retained "
+    "PE-header prefixes within the corresponding committed MEM_IMAGE allocation through a least-"
+    "privilege duplicate of the retained CREATE_PROCESS debug-event hProcess for that process, "
+    "cross-checked for one R2.0 prototype execution only; this point-in-time observation does not "
+    "claim allocation exhaustion, region-topology stability, disk/memory byte equality, "
+    "loaded-memory lifetime immutability, operating-system event losslessness, complete mapping "
+    "history, manual or anonymous executable mapping absence, loader closure, exact runtime "
+    "closure, budget, qualification, promotion, or Release 3 authority."
 )
 
 
@@ -314,6 +349,34 @@ def _fixed_debug_v4_claim_boundary() -> str:
         "qualification, promotion, or Release 3 authority."
     )
 
+
+def _fixed_debug_v5_capture_protocol() -> str:
+    return "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+
+
+def _fixed_debug_v5_process_trace_schema() -> str:
+    return "atlas.windows-debug-process-trace/5"
+
+
+def _fixed_debug_v5_image_trace_schema() -> str:
+    return "atlas.windows-debug-image-trace/5"
+
+
+def _fixed_debug_v5_file_identity_trace_schema() -> str:
+    return "atlas.windows-debug-file-identity-trace/5"
+
+
+def _fixed_debug_v5_loss_trace_schema() -> str:
+    return "atlas.windows-debug-loss-reconciliation/5"
+
+
+def _fixed_debug_v5_environment_manifest_schema() -> str:
+    return "atlas.windows-execution-environment-manifest/5"
+
+
+def _fixed_debug_v5_claim_boundary() -> str:
+    return WINDOWS_DEBUG_MAPPED_IMAGE_CLAIM_BOUNDARY
+
 # Protective collection guards only.  They are not approved R2 budgets or qualification limits.
 _MAX_RUNTIME_SECONDS = 30
 _MAX_PROCESS_EVENTS = 4096
@@ -331,6 +394,17 @@ _DEBUG_HELPER_GO = b"ATLAS_WINDOWS_DEBUG_CAPTURE_GO/1"
 _DEBUG_CAPTURE_LANE_V2 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/2"
 _DEBUG_CAPTURE_LANE_V3 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/3"
 _DEBUG_CAPTURE_LANE_V4 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/4"
+_DEBUG_CAPTURE_LANE_V5 = "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+_DEBUG_CAPTURE_LANES = frozenset({
+    _DEBUG_CAPTURE_LANE_V2,
+    _DEBUG_CAPTURE_LANE_V3,
+    _DEBUG_CAPTURE_LANE_V4,
+    _DEBUG_CAPTURE_LANE_V5,
+})
+_DEBUG_CAPTURE_FILE_BINDING_LANES = frozenset({
+    _DEBUG_CAPTURE_LANE_V4,
+    _DEBUG_CAPTURE_LANE_V5,
+})
 _DEBUG_HELPER_OUTER_SECONDS = _MAX_RUNTIME_SECONDS + 15
 _DEBUG_HELPER_CLEANUP_SECONDS = 5
 # Protective collection ceilings only.  They are not reviewed R2 budgets or qualification inputs.
@@ -338,6 +412,16 @@ _MAX_DEBUG_FILE_BYTES = 128 * 1024 * 1024
 _MAX_DEBUG_TOTAL_FILE_BYTES = 1024 * 1024 * 1024
 _DEBUG_FILE_READ_CHUNK_BYTES = 1024 * 1024
 _DEBUG_FILE_STABLE_READ_PASSES = 2
+# Protective collection guards only.  These are not approved R2 budgets, policy, or qualification
+# limits.  Exceeding one makes this fixed capture fail incomplete.
+_MAX_DEBUG_IMAGE_MEMORY_BYTES = 512 * 1024 * 1024
+_MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
+_DEBUG_MEMORY_READ_CHUNK_BYTES = 1024 * 1024
+_DEBUG_MEMORY_STABLE_READ_PASSES = 2
+_MAX_DEBUG_PE_HEADER_BYTES = 1024 * 1024
+_MAX_DEBUG_PE_SECTIONS = 96
+_MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS = 512
+_MAX_DEBUG_TOTAL_MEMORY_REGIONS = 16_384
 
 # Exact digests for the single fixed R2.0 synthetic execution lane.  These are content bindings,
 # not qualification inputs or approved budgets.  Pinning the complete receipt prevents a helper
@@ -520,6 +604,34 @@ _DEBUG_V4_ENVIRONMENT_ARTIFACT = (
     "execution_environment_manifest_digest",
     "atlas.windows-execution-environment-manifest/4",
 )
+_DEBUG_V5_DYNAMIC_ARTIFACTS = (
+    (
+        "windows-debug-process-trace.atlas-r2.v5",
+        "PROCESS_TREE_LIFETIME_TRACE",
+        "atlas.windows-debug-process-trace/5",
+    ),
+    (
+        "windows-debug-image-trace.atlas-r2.v5",
+        "EXECUTABLE_MAPPING_LOAD_UNLOAD_TRACE",
+        "atlas.windows-debug-image-trace/5",
+    ),
+    (
+        "windows-debug-file-identity-trace.atlas-r2.v5",
+        "FILE_IDENTITY_AND_HANDLE_TRACE",
+        "atlas.windows-debug-file-identity-trace/5",
+    ),
+    (
+        "windows-debug-loss-reconciliation.atlas-r2.v5",
+        "COLLECTOR_LOSS_AND_RECONCILIATION",
+        "atlas.windows-debug-loss-reconciliation/5",
+    ),
+)
+_DEBUG_V5_ENVIRONMENT_ARTIFACT = (
+    "windows-execution-environment-manifest.atlas-r2.v5",
+    "EXECUTION_ENVIRONMENT_MANIFEST",
+    "execution_environment_manifest_digest",
+    "atlas.windows-execution-environment-manifest/5",
+)
 
 _AUTHORITY = {
     "authoritative": False,
@@ -631,6 +743,27 @@ def _fixed_debug_v4_limitations() -> tuple[str, ...]:
         "DEBUG_IMAGE_EVENTS_DO_NOT_PROVE_MANUAL_OR_ANONYMOUS_MAPPING_ABSENCE",
         "DEBUG_EVENT_FILE_HANDLE_BYTES_ARE_ON_DISK_NOT_MAPPED_OR_LOADED_MEMORY_BYTES",
         "DEBUG_EVENT_FILE_HANDLES_CAN_BE_NULL_OUTSIDE_THIS_FAIL_CLOSED_FIXED_CAPTURE",
+        "FILE_IDENTIFIERS_ARE_MACHINE_LOCAL_AND_CAN_BE_REUSED_OVER_TIME",
+        "TARGET_START_END_K32_CHECKPOINTS_DO_NOT_PROVE_COMPLETE_MAPPING_HISTORY",
+        "TARGET_ENDPOINT_EQUALITY_CANNOT_DETECT_OMITTED_BALANCED_LOAD_UNLOAD_PAIRS",
+        "TARGET_ONLY_ENDPOINT_RECONCILIATION_IS_NOT_GLOBAL_START_END_RECONCILIATION",
+        "END_CHECKPOINT_DOES_NOT_PROVE_A_SPECIFIC_TARGET_THREAD_WAIT_STATE",
+        "POST_END_TARGET_TEARDOWN_ACTIVITY_IS_OUTSIDE_ENDPOINT_RECONCILIATION",
+        "K32_ENUMERATION_CAN_RACE_WITH_LOADER_CHANGES_OR_OMIT_LOAD_LIBRARY_AS_DATAFILE_MAPPINGS",
+        "NO_STATIC_TRANSITIVE_LOADER_OR_CRYPTO_PROVIDER_CLOSURE",
+        "NO_PLATFORM_BOOT_ATTESTATION_OR_EXECUTABLE_ALLOW_SET",
+    )
+
+
+def _fixed_debug_v5_limitations() -> tuple[str, ...]:
+    return (
+        "DEBUG_PROCESS_AND_JOB_OBJECT_ARE_NOT_A_SANDBOX_OR_EXECUTION_POLICY",
+        "COLLECTOR_SEQUENCE_IS_NOT_AN_OPERATING_SYSTEM_LOSS_COUNTER",
+        "DEBUG_IMAGE_EVENTS_DO_NOT_PROVE_MANUAL_OR_ANONYMOUS_MAPPING_ABSENCE",
+        "EVENT_COINCIDENT_MEM_IMAGE_READS_DO_NOT_PROVE_LOADED_MEMORY_LIFETIME_IMMUTABILITY",
+        "DISK_AND_MEMORY_PE_LAYOUT_RECONCILIATION_DOES_NOT_CLAIM_BYTE_EQUALITY",
+        "LOADER_RELOCATIONS_IMPORT_FIXUPS_COPY_ON_WRITE_AND_RUNTIME_WRITES_ARE_NOT_INTERPRETED",
+        "DEBUG_EVENT_FILE_OR_PROCESS_HANDLES_CAN_BE_NULL_OUTSIDE_THIS_FAIL_CLOSED_FIXED_CAPTURE",
         "FILE_IDENTIFIERS_ARE_MACHINE_LOCAL_AND_CAN_BE_REUSED_OVER_TIME",
         "TARGET_START_END_K32_CHECKPOINTS_DO_NOT_PROVE_COMPLETE_MAPPING_HISTORY",
         "TARGET_ENDPOINT_EQUALITY_CANNOT_DETECT_OMITTED_BALANCED_LOAD_UNLOAD_PAIRS",
@@ -865,6 +998,221 @@ class _FileIdInfo(ctypes.Structure):
     ]
 
 
+class _MemoryBasicInformation(ctypes.Structure):
+    """Native AMD64 ``MEMORY_BASIC_INFORMATION`` used only by the fixed `/5` lane."""
+
+    _fields_ = [
+        ("BaseAddress", ctypes.c_void_p),
+        ("AllocationBase", ctypes.c_void_p),
+        ("AllocationProtect", wintypes.DWORD),
+        ("PartitionId", wintypes.WORD),
+        ("RegionSize", ctypes.c_size_t),
+        ("State", wintypes.DWORD),
+        ("Protect", wintypes.DWORD),
+        ("Type", wintypes.DWORD),
+    ]
+
+
+def _pe_u16(raw: bytes, offset: int) -> int:
+    if type(raw) is not bytes or type(offset) is not int or offset < 0 or offset + 2 > len(raw):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    return int.from_bytes(raw[offset:offset + 2], "little")
+
+
+def _pe_u32(raw: bytes, offset: int) -> int:
+    if type(raw) is not bytes or type(offset) is not int or offset < 0 or offset + 4 > len(raw):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    return int.from_bytes(raw[offset:offset + 4], "little")
+
+
+def _pe_u64(raw: bytes, offset: int) -> int:
+    if type(raw) is not bytes or type(offset) is not int or offset < 0 or offset + 8 > len(raw):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    return int.from_bytes(raw[offset:offset + 8], "little")
+
+
+def _valid_debug_pe_alignments(section_alignment: Any, file_alignment: Any) -> bool:
+    if (
+            type(section_alignment) is not int
+            or type(file_alignment) is not int
+            or section_alignment <= 0
+            or file_alignment <= 0
+            or section_alignment & (section_alignment - 1)
+            or file_alignment & (file_alignment - 1)
+    ):
+        return False
+    if section_alignment < 0x1000:
+        return file_alignment == section_alignment
+    return 0x200 <= file_alignment <= 0x10000 and file_alignment <= section_alignment
+
+
+def _valid_debug_readable_memory_protection(value: Any) -> bool:
+    if type(value) is not int or value <= 0 or value > 0xFFFFFFFF:
+        return False
+    base = value & 0xFF
+    modifiers = value & ~0xFF
+    readable_bases = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80}
+    executable_bases = {0x20, 0x40, 0x80}
+    allowed_modifiers = 0x200 | 0x400 | 0x40000000  # NOCACHE | WRITECOMBINE | TARGETS_INVALID
+    return (
+        base in readable_bases
+        and modifiers & ~allowed_modifiers == 0
+        and modifiers & 0x600 != 0x600
+        and (not (modifiers & 0x40000000) or base in executable_bases)
+    )
+
+
+def _parse_debug_amd64_pe_layout(
+        raw_prefix: bytes,
+        *,
+        disk_file_size: int | None,
+        ) -> dict[str, Any]:
+    """Parse a bounded normalized PE layout without interpreting loader transformations."""
+
+    if (
+            type(raw_prefix) is not bytes
+            or len(raw_prefix) < 64
+            or len(raw_prefix) > _MAX_DEBUG_PE_HEADER_BYTES
+            or raw_prefix[:2] != b"MZ"
+            or (disk_file_size is not None and (
+                type(disk_file_size) is not int or disk_file_size <= 0
+            ))
+    ):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    pe_offset = _pe_u32(raw_prefix, 0x3C)
+    if (
+            not 64 <= pe_offset <= _MAX_DEBUG_PE_HEADER_BYTES - 24
+            or pe_offset + 24 > len(raw_prefix)
+            or raw_prefix[pe_offset:pe_offset + 4] != b"PE\0\0"
+    ):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    machine = _pe_u16(raw_prefix, pe_offset + 4)
+    section_count = _pe_u16(raw_prefix, pe_offset + 6)
+    optional_size = _pe_u16(raw_prefix, pe_offset + 20)
+    optional_offset = pe_offset + 24
+    section_offset = optional_offset + optional_size
+    section_end = section_offset + section_count * 40
+    if (
+            machine != 0x8664
+            or not 1 <= section_count <= _MAX_DEBUG_PE_SECTIONS
+            or not 112 <= optional_size <= 1024
+            or section_end > len(raw_prefix)
+            or section_end > _MAX_DEBUG_PE_HEADER_BYTES
+            or _pe_u16(raw_prefix, optional_offset) != 0x20B
+    ):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    entry_rva = _pe_u32(raw_prefix, optional_offset + 16)
+    section_alignment = _pe_u32(raw_prefix, optional_offset + 32)
+    file_alignment = _pe_u32(raw_prefix, optional_offset + 36)
+    size_of_image = _pe_u32(raw_prefix, optional_offset + 56)
+    size_of_headers = _pe_u32(raw_prefix, optional_offset + 60)
+    directory_count = _pe_u32(raw_prefix, optional_offset + 108)
+    if (
+            not _valid_debug_pe_alignments(section_alignment, file_alignment)
+            or not 0 < size_of_image <= _MAX_DEBUG_IMAGE_MEMORY_BYTES
+            or size_of_image % section_alignment
+            or not section_end <= size_of_headers <= min(
+                size_of_image, _MAX_DEBUG_PE_HEADER_BYTES
+            )
+            or (disk_file_size is not None and size_of_headers > disk_file_size)
+            or size_of_headers % file_alignment
+            or entry_rva >= size_of_image
+            or directory_count > 32
+            or 112 + directory_count * 8 > optional_size
+    ):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    directories = []
+    for index in range(directory_count):
+        offset = optional_offset + 112 + index * 8
+        rva = _pe_u32(raw_prefix, offset)
+        raw_size = _pe_u32(raw_prefix, offset + 4)
+        if bool(rva) != bool(raw_size):
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        if index == 4:
+            # The certificate directory uses a file offset rather than an RVA.
+            if (
+                    disk_file_size is not None
+                    and rva
+                    and (rva > disk_file_size or raw_size > disk_file_size - rva)
+            ):
+                _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        elif rva and (rva >= size_of_image or raw_size > size_of_image - rva):
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        directories.append({
+            "sequence": index,
+            "rva_or_file_offset": rva,
+            "size_bytes": raw_size,
+        })
+    sections = []
+    expected_virtual_rva = (
+        (size_of_headers + section_alignment - 1) // section_alignment
+    ) * section_alignment
+    previous_raw_end = size_of_headers
+    for index in range(section_count):
+        offset = section_offset + index * 40
+        virtual_size = _pe_u32(raw_prefix, offset + 8)
+        virtual_rva = _pe_u32(raw_prefix, offset + 12)
+        raw_size = _pe_u32(raw_prefix, offset + 16)
+        raw_offset = _pe_u32(raw_prefix, offset + 20)
+        characteristics = _pe_u32(raw_prefix, offset + 36)
+        mapped_size = max(virtual_size, raw_size)
+        mapped_span = (
+            (mapped_size + section_alignment - 1) // section_alignment
+        ) * section_alignment
+        virtual_end = virtual_rva + mapped_span
+        raw_end = raw_offset + raw_size
+        if (
+                mapped_span == 0
+                or virtual_rva != expected_virtual_rva
+                or virtual_rva >= size_of_image
+                or virtual_rva % section_alignment
+                or virtual_end < virtual_rva
+                or virtual_end > size_of_image
+                or bool(raw_size) != bool(raw_offset)
+                or (raw_size and (
+                    raw_size % file_alignment
+                    or raw_offset % file_alignment
+                    or raw_offset < size_of_headers
+                    or raw_offset < previous_raw_end
+                    or (
+                        section_alignment < 0x1000
+                        and raw_offset != virtual_rva
+                    )
+                ))
+                or raw_end < raw_offset
+                or (disk_file_size is not None and raw_end > disk_file_size)
+        ):
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        expected_virtual_rva = virtual_end
+        if raw_size:
+            previous_raw_end = raw_end
+        sections.append({
+            "sequence": index,
+            "virtual_address_rva": virtual_rva,
+            "virtual_size_bytes": virtual_size,
+            "raw_file_offset": raw_offset,
+            "raw_size_bytes": raw_size,
+            "characteristics_hex": f"{characteristics:08x}",
+        })
+    if expected_virtual_rva != size_of_image:
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    return {
+        "machine": "AMD64",
+        "optional_header_format": "PE32_PLUS",
+        "pe_header_offset": pe_offset,
+        "number_of_sections": section_count,
+        "size_of_optional_header": optional_size,
+        "address_of_entry_point_rva": entry_rva,
+        "section_alignment": section_alignment,
+        "file_alignment": file_alignment,
+        "size_of_image": size_of_image,
+        "size_of_headers": size_of_headers,
+        "number_of_rva_and_sizes": directory_count,
+        "data_directories": directories,
+        "sections": sections,
+    }
+
+
 class _BorrowedDebugEventFileReader:
     """Read stable on-disk bytes through event-owned hFile handles before they close."""
 
@@ -925,7 +1273,19 @@ class _BorrowedDebugEventFileReader:
             raw_size,
         )
 
-    def _whole_file_digest(self, handle: wintypes.HANDLE, expected_size: int) -> str:
+    def _whole_file_digest_and_prefix(
+            self,
+            handle: wintypes.HANDLE,
+            expected_size: int,
+            prefix_limit: int,
+            ) -> tuple[str, bytes]:
+        if (
+                type(expected_size) is not int
+                or not 0 < expected_size <= _MAX_DEBUG_FILE_BYTES
+                or type(prefix_limit) is not int
+                or not 0 <= prefix_limit <= _MAX_DEBUG_PE_HEADER_BYTES
+        ):
+            _fail("WINDOWS_DEBUG_FILE_READ_FAILED")
         new_position = ctypes.c_longlong()
         if not self._kernel32.SetFilePointerEx(
                 handle, 0, ctypes.byref(new_position), 0):  # FILE_BEGIN
@@ -933,6 +1293,7 @@ class _BorrowedDebugEventFileReader:
         if int(new_position.value) != 0:
             _fail("WINDOWS_DEBUG_FILE_SEEK_FAILED")
         digest = hashlib.sha256()
+        prefix = bytearray()
         remaining = expected_size
         while remaining:
             requested = min(remaining, _DEBUG_FILE_READ_CHUNK_BYTES)
@@ -948,7 +1309,10 @@ class _BorrowedDebugEventFileReader:
             count = int(returned.value)
             if not 0 < count <= requested:
                 _fail("WINDOWS_DEBUG_FILE_READ_FAILED")
-            digest.update(buffer.raw[:count])
+            chunk = buffer.raw[:count]
+            digest.update(chunk)
+            if len(prefix) < prefix_limit:
+                prefix.extend(chunk[:prefix_limit - len(prefix)])
             remaining -= count
         eof_buffer = ctypes.create_string_buffer(1)
         eof_returned = wintypes.DWORD()
@@ -962,7 +1326,10 @@ class _BorrowedDebugEventFileReader:
                 or int(eof_returned.value) != 0
         ):
             _fail("WINDOWS_DEBUG_FILE_READ_FAILED")
-        return "sha256:" + digest.hexdigest()
+        return "sha256:" + digest.hexdigest(), bytes(prefix)
+
+    def _whole_file_digest(self, handle: wintypes.HANDLE, expected_size: int) -> str:
+        return self._whole_file_digest_and_prefix(handle, expected_size, 0)[0]
 
     def observe(self, record: DebugEventRecord, raw_handle: int) -> dict[str, Any]:
         if (
@@ -996,6 +1363,223 @@ class _BorrowedDebugEventFileReader:
             "file_id_128_hex": before[1],
             "file_size_bytes": before[2],
             "read_digests": read_digests,
+        }
+
+
+class _BorrowedDebugEventFileMemoryReader(_BorrowedDebugEventFileReader):
+    """Bind disk bytes to the suspended event's exact PE ``SizeOfImage`` memory span."""
+
+    __slots__ = ("_total_image_memory_bytes", "_total_memory_regions")
+
+    def __init__(self) -> None:
+        super().__init__()
+        if ctypes.sizeof(ctypes.c_void_p) != 8 or ctypes.sizeof(_MemoryBasicInformation) != 48:
+            _fail("WINDOWS_DEBUG_V5_NATIVE_AMD64_REQUIRED")
+        try:
+            self._kernel32.VirtualQueryEx.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_void_p,
+                ctypes.POINTER(_MemoryBasicInformation),
+                ctypes.c_size_t,
+            ]
+            self._kernel32.VirtualQueryEx.restype = ctypes.c_size_t
+            self._kernel32.ReadProcessMemory.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            self._kernel32.ReadProcessMemory.restype = wintypes.BOOL
+        except AttributeError:
+            _fail("WINDOWS_DEBUG_V5_MEMORY_API_UNAVAILABLE")
+        self._total_image_memory_bytes = 0
+        self._total_memory_regions = 0
+
+    def _memory_pass(
+            self,
+            process_handle: wintypes.HANDLE,
+            mapping_base: int,
+            image_size: int,
+            *,
+            total_region_allowance: int = _MAX_DEBUG_TOTAL_MEMORY_REGIONS,
+            ) -> tuple[tuple[dict[str, Any], ...], str, bytes]:
+        if (
+                type(mapping_base) is not int
+                or mapping_base <= 0
+                or type(image_size) is not int
+                or not 0 < image_size <= _MAX_DEBUG_IMAGE_MEMORY_BYTES
+                or mapping_base > 0xFFFFFFFFFFFFFFFF - image_size
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_RANGE_INVALID")
+        if (
+                type(total_region_allowance) is not int
+                or not 0 <= total_region_allowance <= _MAX_DEBUG_TOTAL_MEMORY_REGIONS
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_REGION_TOTAL_CEILING_EXCEEDED")
+        cursor = mapping_base
+        end = mapping_base + image_size
+        whole_digest = hashlib.sha256()
+        prefix = bytearray()
+        regions: list[dict[str, Any]] = []
+        while cursor < end:
+            if len(regions) >= _MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS:
+                _fail("WINDOWS_DEBUG_V5_MEMORY_REGION_CEILING_EXCEEDED")
+            if len(regions) >= total_region_allowance:
+                _fail("WINDOWS_DEBUG_V5_MEMORY_REGION_TOTAL_CEILING_EXCEEDED")
+            information = _MemoryBasicInformation()
+            returned = int(self._kernel32.VirtualQueryEx(
+                process_handle,
+                ctypes.c_void_p(cursor),
+                ctypes.byref(information),
+                ctypes.sizeof(information),
+            ))
+            region_base = int(information.BaseAddress or 0)
+            allocation_base = int(information.AllocationBase or 0)
+            region_size = int(information.RegionSize)
+            region_end = region_base + region_size
+            state = int(information.State)
+            protect = int(information.Protect)
+            memory_type = int(information.Type)
+            if (
+                    returned != ctypes.sizeof(information)
+                    or region_size <= 0
+                    or region_base != cursor
+                    or region_end <= cursor
+                    or region_end > 0x10000000000000000
+                    or allocation_base != mapping_base
+                    or state != 0x1000  # MEM_COMMIT
+                    or memory_type != 0x1000000  # MEM_IMAGE
+                    or not _valid_debug_readable_memory_protection(protect)
+            ):
+                _fail("WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID")
+            segment_end = min(region_end, end)
+            segment_size = segment_end - cursor
+            region_digest = hashlib.sha256()
+            read_cursor = cursor
+            while read_cursor < segment_end:
+                requested = min(
+                    segment_end - read_cursor, _DEBUG_MEMORY_READ_CHUNK_BYTES
+                )
+                buffer = ctypes.create_string_buffer(requested)
+                read_count = ctypes.c_size_t()
+                if not self._kernel32.ReadProcessMemory(
+                        process_handle,
+                        ctypes.c_void_p(read_cursor),
+                        ctypes.byref(buffer),
+                        requested,
+                        ctypes.byref(read_count)):
+                    _fail("WINDOWS_DEBUG_V5_MEMORY_READ_FAILED")
+                count = int(read_count.value)
+                if count != requested:
+                    _fail("WINDOWS_DEBUG_V5_MEMORY_READ_PARTIAL")
+                chunk = buffer.raw[:count]
+                whole_digest.update(chunk)
+                region_digest.update(chunk)
+                if len(prefix) < _MAX_DEBUG_PE_HEADER_BYTES:
+                    prefix.extend(chunk[:_MAX_DEBUG_PE_HEADER_BYTES - len(prefix)])
+                read_cursor += count
+            regions.append({
+                "sequence": len(regions),
+                "rva": cursor - mapping_base,
+                "size_bytes": segment_size,
+                "allocation_base_matches_event_image": True,
+                "state": "MEM_COMMIT",
+                "type": "MEM_IMAGE",
+                "protection_hex": f"{protect:08x}",
+                "digest": "sha256:" + region_digest.hexdigest(),
+            })
+            cursor = segment_end
+        if cursor != end or sum(row["size_bytes"] for row in regions) != image_size:
+            _fail("WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID")
+        return tuple(regions), "sha256:" + whole_digest.hexdigest(), bytes(prefix)
+
+    def observe(
+            self,
+            record: DebugEventRecord,
+            raw_file_handle: int,
+            raw_process_handle: int,
+            ) -> dict[str, Any]:
+        if (
+                type(record) is not DebugEventRecord
+                or record.event not in {"CREATE_PROCESS", "LOAD_DLL"}
+                or type(raw_file_handle) is not int
+                or raw_file_handle <= 0
+                or type(raw_process_handle) is not int
+                or raw_process_handle <= 0
+                or record.mapping_base is None
+                or record.mapping_kind not in {"PROCESS_IMAGE", "DLL_IMAGE"}
+                or record.file_handle_present is not True
+        ):
+            _fail("WINDOWS_DEBUG_V5_IMAGE_HANDLE_INVALID")
+        file_handle = wintypes.HANDLE(raw_file_handle)
+        process_handle = wintypes.HANDLE(raw_process_handle)
+        before = self._identity_and_size(file_handle)
+        if self._total_file_bytes + before[2] > _MAX_DEBUG_TOTAL_FILE_BYTES:
+            _fail("WINDOWS_DEBUG_FILE_TOTAL_CEILING_EXCEEDED")
+        file_passes = tuple(
+            self._whole_file_digest_and_prefix(
+                file_handle, before[2], min(before[2], _MAX_DEBUG_PE_HEADER_BYTES)
+            )
+            for _index in range(_DEBUG_FILE_STABLE_READ_PASSES)
+        )
+        after = self._identity_and_size(file_handle)
+        if before != after or len({item[0] for item in file_passes}) != 1:
+            _fail("WINDOWS_DEBUG_FILE_READ_UNSTABLE")
+        if len({item[1] for item in file_passes}) != 1:
+            _fail("WINDOWS_DEBUG_V5_PE_HEADER_UNSTABLE")
+        disk_layout = _parse_debug_amd64_pe_layout(
+            file_passes[0][1], disk_file_size=before[2]
+        )
+        image_size = disk_layout["size_of_image"]
+        if self._total_image_memory_bytes + image_size > _MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES:
+            _fail("WINDOWS_DEBUG_V5_MEMORY_TOTAL_CEILING_EXCEEDED")
+        memory_passes_list = []
+        for _index in range(_DEBUG_MEMORY_STABLE_READ_PASSES):
+            already_read_regions = sum(len(item[0]) for item in memory_passes_list)
+            memory_passes_list.append(self._memory_pass(
+                process_handle,
+                record.mapping_base,
+                image_size,
+                total_region_allowance=(
+                    _MAX_DEBUG_TOTAL_MEMORY_REGIONS
+                    - self._total_memory_regions
+                    - already_read_regions
+                ),
+            ))
+        memory_passes = tuple(memory_passes_list)
+        if (
+                len({item[1] for item in memory_passes}) != 1
+                or len({item[2] for item in memory_passes}) != 1
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_READ_UNSTABLE")
+        memory_layout = _parse_debug_amd64_pe_layout(
+            memory_passes[0][2], disk_file_size=None
+        )
+        if memory_layout != disk_layout:
+            _fail("WINDOWS_DEBUG_V5_DISK_MEMORY_PE_LAYOUT_MISMATCH")
+        memory_region_count = sum(len(item[0]) for item in memory_passes)
+        if (
+                self._total_memory_regions + memory_region_count
+                > _MAX_DEBUG_TOTAL_MEMORY_REGIONS
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_REGION_TOTAL_CEILING_EXCEEDED")
+        self._total_file_bytes += before[2]
+        self._total_image_memory_bytes += image_size
+        self._total_memory_regions += memory_region_count
+        return {
+            "source_debug_sequence": record.sequence,
+            "process_id": record.process_id,
+            "mapping_base": record.mapping_base,
+            "mapping_kind": record.mapping_kind,
+            "volume_serial_number_hex": before[0],
+            "file_id_128_hex": before[1],
+            "file_size_bytes": before[2],
+            "read_digests": tuple(item[0] for item in file_passes),
+            "pe_layout": disk_layout,
+            "memory_size_bytes": image_size,
+            "memory_region_passes": tuple(item[0] for item in memory_passes),
+            "memory_read_digests": tuple(item[1] for item in memory_passes),
         }
 
 
@@ -2441,6 +3025,280 @@ def _seal_debug_file_identity_rows(
         })
     if sum(row["file_size_bytes"] for row in rows) > _MAX_DEBUG_TOTAL_FILE_BYTES:
         _fail("WINDOWS_DEBUG_V4_FILE_TOTAL_CEILING_EXCEEDED")
+    return rows
+
+
+def _validate_debug_v5_pe_layout_value(value: Any, disk_file_size: int) -> None:
+    fields = {
+        "machine", "optional_header_format", "pe_header_offset", "number_of_sections",
+        "size_of_optional_header", "address_of_entry_point_rva", "section_alignment",
+        "file_alignment", "size_of_image", "size_of_headers", "number_of_rva_and_sizes",
+        "data_directories", "sections",
+    }
+    if type(value) is not dict or set(value) != fields:
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    integers = (
+        value["pe_header_offset"], value["number_of_sections"],
+        value["size_of_optional_header"],
+        value["address_of_entry_point_rva"], value["section_alignment"],
+        value["file_alignment"], value["size_of_image"], value["size_of_headers"],
+        value["number_of_rva_and_sizes"], disk_file_size,
+    )
+    section_alignment = value["section_alignment"]
+    file_alignment = value["file_alignment"]
+    image_size = value["size_of_image"]
+    directories = value["data_directories"]
+    sections = value["sections"]
+    if (
+            value["machine"] != "AMD64"
+            or value["optional_header_format"] != "PE32_PLUS"
+            or any(type(item) is not int for item in integers)
+            or not 64 <= value["pe_header_offset"] <= _MAX_DEBUG_PE_HEADER_BYTES - 24
+            or not 1 <= value["number_of_sections"] <= _MAX_DEBUG_PE_SECTIONS
+            or not 112 <= value["size_of_optional_header"] <= 1024
+            or 112 + value["number_of_rva_and_sizes"] * 8
+            > value["size_of_optional_header"]
+            or value["pe_header_offset"] + 24 + value["size_of_optional_header"]
+            + value["number_of_sections"] * 40 > value["size_of_headers"]
+            or not 0 < section_alignment <= image_size
+            or not _valid_debug_pe_alignments(section_alignment, file_alignment)
+            or not 0 < image_size <= _MAX_DEBUG_IMAGE_MEMORY_BYTES
+            or image_size % section_alignment
+            or not 0 < value["size_of_headers"] <= min(
+                image_size, _MAX_DEBUG_PE_HEADER_BYTES
+            )
+            or value["size_of_headers"] > disk_file_size
+            or value["size_of_headers"] % file_alignment
+            or not 0 <= value["address_of_entry_point_rva"] < image_size
+            or not 0 <= value["number_of_rva_and_sizes"] <= 32
+            or type(directories) is not list
+            or len(directories) != value["number_of_rva_and_sizes"]
+            or type(sections) is not list
+            or len(sections) != value["number_of_sections"]
+            or not 0 < disk_file_size <= _MAX_DEBUG_FILE_BYTES
+    ):
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    for index, row in enumerate(directories):
+        if (
+                type(row) is not dict
+                or set(row) != {"sequence", "rva_or_file_offset", "size_bytes"}
+                or any(type(row[field]) is not int for field in row)
+                or row["sequence"] != index
+                or not 0 <= row["rva_or_file_offset"] <= 0xFFFFFFFF
+                or not 0 <= row["size_bytes"] <= 0xFFFFFFFF
+                or bool(row["rva_or_file_offset"]) != bool(row["size_bytes"])
+                or (
+                    index != 4
+                    and row["rva_or_file_offset"]
+                    and (
+                        row["rva_or_file_offset"] >= image_size
+                        or row["size_bytes"]
+                        > image_size - row["rva_or_file_offset"]
+                    )
+                )
+                or (
+                    index == 4
+                    and row["rva_or_file_offset"]
+                    and (
+                        row["rva_or_file_offset"] > disk_file_size
+                        or row["size_bytes"]
+                        > disk_file_size - row["rva_or_file_offset"]
+                    )
+                )
+        ):
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+    expected_virtual_rva = (
+        (value["size_of_headers"] + section_alignment - 1) // section_alignment
+    ) * section_alignment
+    previous_raw_end = value["size_of_headers"]
+    for index, row in enumerate(sections):
+        expected = {
+            "sequence", "virtual_address_rva", "virtual_size_bytes", "raw_file_offset",
+            "raw_size_bytes", "characteristics_hex",
+        }
+        if type(row) is not dict or set(row) != expected:
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        scalar_fields = (
+            "sequence", "virtual_address_rva", "virtual_size_bytes", "raw_file_offset",
+            "raw_size_bytes",
+        )
+        if any(type(row[field]) is not int for field in scalar_fields):
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        rva = row["virtual_address_rva"]
+        virtual_size = row["virtual_size_bytes"]
+        raw_offset = row["raw_file_offset"]
+        raw_size = row["raw_size_bytes"]
+        mapped_size = max(virtual_size, raw_size)
+        mapped_span = (
+            (mapped_size + section_alignment - 1) // section_alignment
+        ) * section_alignment
+        if (
+                row["sequence"] != index
+                or mapped_span == 0
+                or rva != expected_virtual_rva
+                or rva >= image_size
+                or rva % section_alignment
+                or mapped_span > image_size - rva
+                or not 0 <= virtual_size <= 0xFFFFFFFF
+                or not 0 <= raw_offset <= 0xFFFFFFFF
+                or not 0 <= raw_size <= 0xFFFFFFFF
+                or bool(raw_size) != bool(raw_offset)
+                or (raw_size and (
+                    raw_offset % file_alignment
+                    or raw_size % file_alignment
+                    or raw_offset < value["size_of_headers"]
+                    or raw_offset < previous_raw_end
+                    or (
+                        section_alignment < 0x1000
+                        and raw_offset != rva
+                    )
+                    or raw_offset > disk_file_size
+                    or raw_size > disk_file_size - raw_offset
+                ))
+                or type(row["characteristics_hex"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{8}", row["characteristics_hex"])
+        ):
+            _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+        expected_virtual_rva = rva + mapped_span
+        if raw_size:
+            previous_raw_end = raw_offset + raw_size
+    if expected_virtual_rva != image_size:
+        _fail("WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID")
+
+
+def _validate_debug_v5_memory_regions(value: Any, image_size: int) -> None:
+    if (
+            type(value) not in {tuple, list}
+            or type(image_size) is not int
+            or not 0 < image_size <= _MAX_DEBUG_IMAGE_MEMORY_BYTES
+            or not value
+            or len(value) > _MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS
+    ):
+        _fail("WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID")
+    expected_rva = 0
+    for index, row in enumerate(value):
+        if (
+                type(row) is not dict
+                or set(row) != {
+                    "sequence", "rva", "size_bytes", "allocation_base_matches_event_image",
+                    "state", "type", "protection_hex", "digest",
+                }
+                or any(type(row[field]) is not int for field in (
+                    "sequence", "rva", "size_bytes"
+                ))
+                or row["sequence"] != index
+                or row["rva"] != expected_rva
+                or not 0 < row["size_bytes"] <= image_size - expected_rva
+                or row["allocation_base_matches_event_image"] is not True
+                or row["state"] != "MEM_COMMIT"
+                or row["type"] != "MEM_IMAGE"
+                or type(row["protection_hex"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{8}", row["protection_hex"])
+                or not _valid_debug_readable_memory_protection(
+                    int(row["protection_hex"], 16)
+                )
+                or type(row["digest"]) is not str
+                or not _DIGEST_RE.fullmatch(row["digest"])
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID")
+        expected_rva += row["size_bytes"]
+    if expected_rva != image_size:
+        _fail("WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID")
+
+
+def _debug_v5_binding_digest(row: Mapping[str, Any]) -> str:
+    if type(row) is not dict or "binding_digest" not in row:
+        _fail("WINDOWS_DEBUG_V5_BINDING_DIGEST_INVALID")
+    return canonical_digest({
+        key: value for key, value in row.items() if key != "binding_digest"
+    })
+
+
+def _seal_debug_file_memory_rows(
+        capture: DebugEventCapture,
+        process_tokens: Mapping[int, str],
+        raw_observations: Any,
+        ) -> list[dict[str, Any]]:
+    """Extend `/4` rows with complete event-coincident PE ``SizeOfImage`` span reads."""
+
+    v4_raw_keys = {
+        "source_debug_sequence", "process_id", "mapping_base", "mapping_kind",
+        "volume_serial_number_hex", "file_id_128_hex", "file_size_bytes", "read_digests",
+    }
+    v5_raw_keys = v4_raw_keys | {
+        "pe_layout", "memory_size_bytes", "memory_region_passes", "memory_read_digests",
+    }
+    if (
+            type(raw_observations) is not list
+            or any(type(row) is not dict or set(row) != v5_raw_keys for row in raw_observations)
+    ):
+        _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_TOKENIZATION_INVALID")
+    v4_rows = _seal_debug_file_identity_rows(
+        capture,
+        process_tokens,
+        [{key: row[key] for key in v4_raw_keys} for row in raw_observations],
+    )
+    rows: list[dict[str, Any]] = []
+    for v4_row, raw in zip(v4_rows, raw_observations):
+        if (
+                type(raw["pe_layout"]) is not dict
+                or type(raw["memory_size_bytes"]) is not int
+                or raw["memory_size_bytes"] != raw["pe_layout"].get("size_of_image")
+        ):
+            _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_TOKENIZATION_INVALID")
+        _validate_debug_v5_pe_layout_value(raw["pe_layout"], raw["file_size_bytes"])
+        region_passes = raw["memory_region_passes"]
+        if (
+                type(region_passes) is not tuple
+                or len(region_passes) != _DEBUG_MEMORY_STABLE_READ_PASSES
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID")
+        for region_pass in region_passes:
+            _validate_debug_v5_memory_regions(
+                region_pass, raw["memory_size_bytes"]
+            )
+        digests = raw["memory_read_digests"]
+        if (
+                type(digests) is not tuple
+                or len(digests) != _DEBUG_MEMORY_STABLE_READ_PASSES
+                or any(type(item) is not str or not _DIGEST_RE.fullmatch(item) for item in digests)
+                or len(set(digests)) != 1
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_READS_INVALID")
+        row = {
+            **v4_row,
+            "process_handle_custody": (
+                "BORROWED_NONINHERITABLE_QUERY_READ_DUPLICATE_UNTIL_PRE_CONTINUE_CLOSE"
+            ),
+            "observation_point": (
+                "SUSPENDED_DEBUG_IMAGE_EVENT_BEFORE_HANDLE_CLOSE_AND_CONTINUE"
+            ),
+            "pe_layout": raw["pe_layout"],
+            "memory_size_bytes": raw["memory_size_bytes"],
+            "memory_region_passes": [
+                {
+                    "sequence": sequence,
+                    "regions": list(region_pass),
+                }
+                for sequence, region_pass in enumerate(region_passes)
+            ],
+            "memory_read_passes": [
+                {
+                    "sequence": sequence,
+                    "rva": 0,
+                    "raw_bytes": raw["memory_size_bytes"],
+                    "digest": digest,
+                }
+                for sequence, digest in enumerate(digests)
+            ],
+            "disk_memory_pe_layout_reconciled": True,
+            "stable_event_coincident_complete_pe_size_of_image_span": True,
+            "binding_digest": "sha256:" + "0" * 64,
+        }
+        row["binding_digest"] = _debug_v5_binding_digest(row)
+        rows.append(row)
+    if sum(row["memory_size_bytes"] for row in rows) > _MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES:
+        _fail("WINDOWS_DEBUG_V5_MEMORY_TOTAL_CEILING_EXCEEDED")
     return rows
 
 
@@ -3966,6 +4824,292 @@ def _validate_debug_v4_file_image_projection(
         _fail("WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED")
 
 
+def _project_debug_v5_trace_to_v4(value: Mapping[str, Any]) -> dict[str, Any]:
+    schemas = {
+        _fixed_debug_v5_process_trace_schema(): _fixed_debug_v4_process_trace_schema(),
+        _fixed_debug_v5_image_trace_schema(): _fixed_debug_v4_image_trace_schema(),
+        _fixed_debug_v5_file_identity_trace_schema(): (
+            _fixed_debug_v4_file_identity_trace_schema()
+        ),
+        _fixed_debug_v5_loss_trace_schema(): _fixed_debug_v4_loss_trace_schema(),
+    }
+    raw_schema = value.get("schema")
+    schema = schemas.get(raw_schema) if type(raw_schema) is str else None
+    if schema is None:
+        _fail("WINDOWS_DEBUG_V5_RUNTIME_TRACE_SCHEMA_INVALID")
+    projected = dict(value)
+    projected.update({
+        "schema": schema,
+        "capture_protocol": _fixed_debug_v4_capture_protocol(),
+        "claim_boundary": _fixed_debug_v4_claim_boundary(),
+    })
+    if schema == _fixed_debug_v4_image_trace_schema():
+        projected["method"] = (
+            "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+            "STABLE_DOUBLE_READ/4"
+        )
+    elif schema == _fixed_debug_v4_loss_trace_schema():
+        projected["limitations"] = list(_fixed_debug_v4_limitations())
+    elif schema == _fixed_debug_v4_file_identity_trace_schema():
+        for field in (
+                "binding_scope", "event_coincident_mem_image_bytes_bound",
+                "disk_memory_byte_equality_claimed", "loader_transformations_interpreted",
+                "loaded_memory_lifetime_immutability_claimed",
+                "stable_event_coincident_memory_count", "total_stable_memory_bytes",
+                "total_process_memory_read_bytes", "total_memory_region_count"):
+            projected.pop(field, None)
+        projected.update({
+            "method": (
+                "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_FILE_ID_INFO_STABLE_DOUBLE_READ"
+            ),
+            "semantics": (
+                "DEBUG_EVENT_IMAGE_HANDLES_TO_PERSISTENT_FILE_ID_AND_STABLE_"
+                "SAME_HANDLE_ON_DISK_BYTES_ONLY"
+            ),
+            "collection_guards": {
+                "max_file_bytes": _MAX_DEBUG_FILE_BYTES,
+                "max_total_file_bytes": _MAX_DEBUG_TOTAL_FILE_BYTES,
+                "read_chunk_bytes": _DEBUG_FILE_READ_CHUNK_BYTES,
+                "stable_read_passes": _DEBUG_FILE_STABLE_READ_PASSES,
+            },
+            "mapped_or_loaded_memory_bytes_bound": False,
+        })
+        v4_row_fields = {
+            "sequence", "source_debug_sequence", "process_token", "mapping_token",
+            "mapping_slot_token", "mapping_kind", "handle_custody", "path_disclosure",
+            "file_identity", "file_size_bytes", "identity_and_size_stable_before_after",
+            "read_passes", "stable_same_handle_full_file_bytes",
+        }
+        rows = value.get("rows")
+        if type(rows) is not list or any(type(row) is not dict for row in rows):
+            _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_TRACE_INVALID")
+        projected["rows"] = [
+            {field: row[field] for field in v4_row_fields if field in row}
+            for row in rows
+        ]
+    return projected
+
+
+def _validate_debug_v5_file_identity_trace(value: Mapping[str, Any]) -> None:
+    fields = {
+        "schema", "capture_protocol", "platform", "selected_commit", "selected_tree",
+        "claim_boundary", "authority", "method", "semantics", "target_process_token",
+        "collection_guards", "expected_debug_image_handle_count",
+        "observed_non_null_handle_count", "stable_file_identity_count",
+        "stable_disk_bytes_count", "unbound_debug_image_handle_count",
+        "distinct_file_identity_count", "total_stable_disk_bytes",
+        "total_same_handle_read_bytes", "persistent_file_identity_and_loaded_bytes_bound",
+        "mapped_or_loaded_memory_bytes_bound", "binding_scope",
+        "event_coincident_mem_image_bytes_bound", "disk_memory_byte_equality_claimed",
+        "loader_transformations_interpreted", "loaded_memory_lifetime_immutability_claimed",
+        "stable_event_coincident_memory_count", "total_stable_memory_bytes",
+        "total_process_memory_read_bytes", "total_memory_region_count", "rows",
+    }
+    guards = value.get("collection_guards")
+    rows = value.get("rows")
+    expected_guards = {
+        "max_file_bytes": _MAX_DEBUG_FILE_BYTES,
+        "max_total_file_bytes": _MAX_DEBUG_TOTAL_FILE_BYTES,
+        "read_chunk_bytes": _DEBUG_FILE_READ_CHUNK_BYTES,
+        "stable_read_passes": _DEBUG_FILE_STABLE_READ_PASSES,
+        "max_image_memory_bytes": _MAX_DEBUG_IMAGE_MEMORY_BYTES,
+        "max_total_image_memory_bytes": _MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES,
+        "memory_read_chunk_bytes": _DEBUG_MEMORY_READ_CHUNK_BYTES,
+        "memory_stable_read_passes": _DEBUG_MEMORY_STABLE_READ_PASSES,
+        "max_pe_header_bytes": _MAX_DEBUG_PE_HEADER_BYTES,
+        "max_pe_sections": _MAX_DEBUG_PE_SECTIONS,
+        "max_memory_regions_per_image_pass": _MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS,
+        "max_total_memory_regions": _MAX_DEBUG_TOTAL_MEMORY_REGIONS,
+    }
+    if (
+            set(value) != fields
+            or value.get("method") != (
+                "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_AND_DUPLICATED_HPROCESS_"
+                "STABLE_DISK_AND_MEM_IMAGE_DOUBLE_READ"
+            )
+            or value.get("semantics") != (
+                "RECEIVED_DEBUG_IMAGE_EVENTS_TO_PERSISTENT_FILE_ID_STABLE_DISK_BYTES_"
+                "AND_EVENT_COINCIDENT_COMPLETE_PE_SIZE_OF_IMAGE_SPAN"
+            )
+            or value.get("binding_scope") != (
+                "RECEIVED_DEBUG_IMAGE_EVENTS_AT_SUSPENDED_PRE_CONTINUE_INSTANT"
+            )
+            or value.get("persistent_file_identity_and_loaded_bytes_bound") is not False
+            or value.get("mapped_or_loaded_memory_bytes_bound") is not True
+            or value.get("event_coincident_mem_image_bytes_bound") is not True
+            or value.get("disk_memory_byte_equality_claimed") is not False
+            or value.get("loader_transformations_interpreted") is not False
+            or value.get("loaded_memory_lifetime_immutability_claimed") is not False
+            or type(guards) is not dict
+            or guards != expected_guards
+            or any(type(item) is not int for item in guards.values())
+            or type(rows) is not list
+            or not 1 <= len(rows) <= _MAX_DEBUG_IMAGE_MAPPINGS
+    ):
+        _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_TRACE_INVALID")
+    v4_row_fields = {
+        "sequence", "source_debug_sequence", "process_token", "mapping_token",
+        "mapping_slot_token", "mapping_kind", "handle_custody", "path_disclosure",
+        "file_identity", "file_size_bytes", "identity_and_size_stable_before_after",
+        "read_passes", "stable_same_handle_full_file_bytes",
+    }
+    v5_row_fields = v4_row_fields | {
+        "process_handle_custody", "observation_point", "pe_layout", "memory_size_bytes",
+        "memory_region_passes", "memory_read_passes", "disk_memory_pe_layout_reconciled",
+        "stable_event_coincident_complete_pe_size_of_image_span", "binding_digest",
+    }
+    total_memory_bytes = 0
+    total_regions = 0
+    binding_digests: set[str] = set()
+    for row in rows:
+        if (
+                type(row) is not dict
+                or set(row) != v5_row_fields
+                or row["process_handle_custody"] != (
+                    "BORROWED_NONINHERITABLE_QUERY_READ_DUPLICATE_UNTIL_PRE_CONTINUE_CLOSE"
+                )
+                or row["observation_point"] != (
+                    "SUSPENDED_DEBUG_IMAGE_EVENT_BEFORE_HANDLE_CLOSE_AND_CONTINUE"
+                )
+                or type(row["memory_size_bytes"]) is not int
+                or row["disk_memory_pe_layout_reconciled"] is not True
+                or row[
+                    "stable_event_coincident_complete_pe_size_of_image_span"
+                ] is not True
+                or type(row["binding_digest"]) is not str
+                or not _DIGEST_RE.fullmatch(row["binding_digest"])
+        ):
+            _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_ROWS_INVALID")
+        _validate_debug_v5_pe_layout_value(row["pe_layout"], row["file_size_bytes"])
+        if row["memory_size_bytes"] != row["pe_layout"]["size_of_image"]:
+            _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_ROWS_INVALID")
+        region_passes = row["memory_region_passes"]
+        if (
+                type(region_passes) is not list
+                or len(region_passes) != _DEBUG_MEMORY_STABLE_READ_PASSES
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID")
+        for index, region_pass in enumerate(region_passes):
+            if (
+                    type(region_pass) is not dict
+                    or set(region_pass) != {"sequence", "regions"}
+                    or type(region_pass["sequence"]) is not int
+                    or region_pass["sequence"] != index
+            ):
+                _fail("WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID")
+            _validate_debug_v5_memory_regions(
+                region_pass["regions"], row["memory_size_bytes"]
+            )
+        reads = row["memory_read_passes"]
+        if (
+                type(reads) is not list
+                or len(reads) != _DEBUG_MEMORY_STABLE_READ_PASSES
+                or any(
+                    type(read) is not dict
+                    or set(read) != {"sequence", "rva", "raw_bytes", "digest"}
+                    or any(type(read[field]) is not int for field in (
+                        "sequence", "rva", "raw_bytes"
+                    ))
+                    or read["sequence"] != index
+                    or read["rva"] != 0
+                    or read["raw_bytes"] != row["memory_size_bytes"]
+                    or type(read["digest"]) is not str
+                    or not _DIGEST_RE.fullmatch(read["digest"])
+                    for index, read in enumerate(reads)
+                )
+                or reads[0]["digest"] != reads[1]["digest"]
+                or row["binding_digest"] != _debug_v5_binding_digest(row)
+                or row["binding_digest"] in binding_digests
+        ):
+            _fail("WINDOWS_DEBUG_V5_MEMORY_READS_INVALID")
+        binding_digests.add(row["binding_digest"])
+        total_memory_bytes += row["memory_size_bytes"]
+        total_regions += sum(
+            len(region_pass["regions"]) for region_pass in region_passes
+        )
+    counters = (
+        value.get("stable_event_coincident_memory_count"),
+        value.get("total_stable_memory_bytes"),
+        value.get("total_process_memory_read_bytes"),
+        value.get("total_memory_region_count"),
+    )
+    if (
+            any(type(item) is not int for item in counters)
+            or counters != (
+                len(rows), total_memory_bytes,
+                total_memory_bytes * _DEBUG_MEMORY_STABLE_READ_PASSES, total_regions,
+            )
+            or total_memory_bytes > _MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES
+            or total_regions > _MAX_DEBUG_TOTAL_MEMORY_REGIONS
+    ):
+        _fail("WINDOWS_DEBUG_V5_MEMORY_TOTALS_INVALID")
+
+
+def validate_windows_debug_runtime_discovery_v5_trace(value: Any) -> dict[str, Any]:
+    """Validate one event-coincident mapped-image, still-incomplete `/5` artifact."""
+
+    if type(value) is not dict:
+        _fail("WINDOWS_DEBUG_V5_RUNTIME_TRACE_INVALID")
+    if (
+            value.get("capture_protocol") != _fixed_debug_v5_capture_protocol()
+            or value.get("platform") != _fixed_platform()
+            or type(value.get("selected_commit")) is not str
+            or type(value.get("selected_tree")) is not str
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_commit"])
+            or not _GIT_OBJECT_RE.fullmatch(value["selected_tree"])
+            or value.get("claim_boundary") != _fixed_debug_v5_claim_boundary()
+            or not _has_fixed_authority(value.get("authority"))
+    ):
+        _fail("WINDOWS_DEBUG_V5_RUNTIME_TRACE_COMMON_INVALID")
+    schema = value.get("schema")
+    if schema == _fixed_debug_v5_file_identity_trace_schema():
+        _validate_debug_v5_file_identity_trace(value)
+    else:
+        if schema == _fixed_debug_v5_image_trace_schema() and value.get("method") != (
+                "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+                "STABLE_DOUBLE_READ/5"
+        ):
+            _fail("WINDOWS_DEBUG_V5_IMAGE_TRACE_INVALID")
+        if (
+                schema == _fixed_debug_v5_loss_trace_schema()
+                and value.get("limitations") != list(_fixed_debug_v5_limitations())
+        ):
+            _fail("WINDOWS_DEBUG_V5_LOSS_TRACE_INVALID")
+    validate_windows_debug_runtime_discovery_v4_trace(
+        _project_debug_v5_trace_to_v4(value)
+    )
+    try:
+        detached = parse_canonical_json_bytes(
+            canonical_json_bytes(value), require_canonical=True
+        )
+    except (RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V5_RUNTIME_TRACE_CANONICAL_INVALID")
+    if type(detached) is not dict:
+        _fail("WINDOWS_DEBUG_V5_RUNTIME_TRACE_CANONICAL_INVALID")
+    return detached
+
+
+def _validate_debug_v5_file_image_projection(
+        process_trace: Mapping[str, Any],
+        image_trace: Mapping[str, Any],
+        file_identity_trace: Mapping[str, Any],
+        ) -> None:
+    for document in (process_trace, image_trace, file_identity_trace):
+        validate_windows_debug_runtime_discovery_v5_trace(document)
+    _validate_debug_v4_file_image_projection(
+        _project_debug_v5_trace_to_v4(process_trace),
+        _project_debug_v5_trace_to_v4(image_trace),
+        _project_debug_v5_trace_to_v4(file_identity_trace),
+    )
+    if (
+            image_trace["load_event_count"]
+            != file_identity_trace["stable_event_coincident_memory_count"]
+            or file_identity_trace["mapped_or_loaded_memory_bytes_bound"] is not True
+            or file_identity_trace["event_coincident_mem_image_bytes_bound"] is not True
+    ):
+        _fail("WINDOWS_DEBUG_V5_FILE_IMAGE_JOIN_FAILED")
+
+
 def _artifact_row(artifact_id: str, role: str, raw: bytes) -> dict[str, Any]:
     return {
         "artifact_id": artifact_id,
@@ -4804,6 +5948,95 @@ def _validate_sealed_debug_v4_dynamic_profile(
     )
 
 
+def _validate_sealed_debug_v5_dynamic_profile(
+        artifact_raw_by_id: Mapping[str, bytes],
+        expected_crypto_provider_path_digest: str,
+        ) -> tuple[
+            dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+        ]:
+    """Reload `/5`, prove its exact `/4` projection, and retain its bounded memory facts."""
+
+    documents: dict[str, dict[str, Any]] = {}
+    for artifact_id, _role, expected_schema in _DEBUG_V5_DYNAMIC_ARTIFACTS:
+        try:
+            parsed = parse_canonical_json_bytes(
+                artifact_raw_by_id[artifact_id], require_canonical=True
+            )
+            checked = validate_windows_debug_runtime_discovery_v5_trace(parsed)
+        except RuntimeDiscoveryError:
+            raise
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            _fail("WINDOWS_DEBUG_V5_CAPTURE_DYNAMIC_PROFILE_INVALID")
+        if checked.get("schema") != expected_schema or checked != parsed:
+            _fail("WINDOWS_DEBUG_V5_CAPTURE_DYNAMIC_PROFILE_INVALID")
+        documents[expected_schema] = checked
+    process_trace = documents[_fixed_debug_v5_process_trace_schema()]
+    image_trace = documents[_fixed_debug_v5_image_trace_schema()]
+    file_identity_trace = documents[_fixed_debug_v5_file_identity_trace_schema()]
+    loss_trace = documents[_fixed_debug_v5_loss_trace_schema()]
+    environment_artifact_id, _role, _field, expected_environment_schema = (
+        _DEBUG_V5_ENVIRONMENT_ARTIFACT
+    )
+    try:
+        parsed_environment = parse_canonical_json_bytes(
+            artifact_raw_by_id[environment_artifact_id], require_canonical=True
+        )
+        environment_manifest = validate_windows_debug_execution_environment_v5_manifest(
+            parsed_environment
+        )
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V5_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    if (
+            environment_manifest.get("schema") != expected_environment_schema
+            or environment_manifest != parsed_environment
+    ):
+        _fail("WINDOWS_DEBUG_V5_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    _validate_debug_v5_file_image_projection(
+        process_trace, image_trace, file_identity_trace
+    )
+    projected_environment = dict(environment_manifest)
+    projected_environment.update({
+        "schema": _fixed_debug_v4_environment_manifest_schema(),
+        "capture_protocol": _fixed_debug_v4_capture_protocol(),
+    })
+    projected_by_schema = {
+        _fixed_debug_v4_process_trace_schema(): _project_debug_v5_trace_to_v4(process_trace),
+        _fixed_debug_v4_image_trace_schema(): _project_debug_v5_trace_to_v4(image_trace),
+        _fixed_debug_v4_file_identity_trace_schema(): _project_debug_v5_trace_to_v4(
+            file_identity_trace
+        ),
+        _fixed_debug_v4_loss_trace_schema(): _project_debug_v5_trace_to_v4(loss_trace),
+    }
+    projected_artifacts = {
+        artifact_id: canonical_json_bytes(projected_by_schema[schema])
+        for artifact_id, _role, schema in _DEBUG_V4_DYNAMIC_ARTIFACTS
+    }
+    projected_artifacts[_DEBUG_V4_ENVIRONMENT_ARTIFACT[0]] = canonical_json_bytes(
+        projected_environment
+    )
+    _validate_sealed_debug_v4_dynamic_profile(
+        projected_artifacts, expected_crypto_provider_path_digest
+    )
+    if any(
+            document["selected_commit"] != process_trace["selected_commit"]
+            or document["selected_tree"] != process_trace["selected_tree"]
+            or document["target_process_token"] != process_trace["target_process_token"]
+            for document in (
+                image_trace, file_identity_trace, loss_trace, environment_manifest
+            )
+    ):
+        _fail("WINDOWS_DEBUG_V5_CAPTURE_DYNAMIC_PROFILE_INVALID")
+    return (
+        process_trace,
+        image_trace,
+        file_identity_trace,
+        loss_trace,
+        environment_manifest,
+    )
+
+
 def _expected_debug_incomplete_evidence(
         evidence: Mapping[str, Any],
         artifact_raw_by_id: Mapping[str, bytes],
@@ -5200,6 +6433,82 @@ def _expected_debug_v4_incomplete_evidence(
     return expected
 
 
+def _expected_debug_v5_incomplete_evidence(
+        evidence: Mapping[str, Any],
+        artifact_raw_by_id: Mapping[str, bytes],
+        static_raw_by_relative: Mapping[str, bytes],
+        inventory: Mapping[str, Any],
+        process_trace: Mapping[str, Any],
+        image_trace: Mapping[str, Any],
+        file_identity_trace: Mapping[str, Any],
+        loss_trace: Mapping[str, Any],
+        environment_manifest: Mapping[str, Any],
+        ) -> dict[str, Any]:
+    """Derive the `/5` envelope through the exact `/4` incomplete-evidence contract."""
+
+    projected_environment = dict(environment_manifest)
+    projected_environment.update({
+        "schema": _fixed_debug_v4_environment_manifest_schema(),
+        "capture_protocol": _fixed_debug_v4_capture_protocol(),
+    })
+    projected_by_schema = {
+        _fixed_debug_v4_process_trace_schema(): _project_debug_v5_trace_to_v4(process_trace),
+        _fixed_debug_v4_image_trace_schema(): _project_debug_v5_trace_to_v4(image_trace),
+        _fixed_debug_v4_file_identity_trace_schema(): _project_debug_v5_trace_to_v4(
+            file_identity_trace
+        ),
+        _fixed_debug_v4_loss_trace_schema(): _project_debug_v5_trace_to_v4(loss_trace),
+    }
+    projected_artifacts = {
+        artifact_id: canonical_json_bytes(projected_by_schema[schema])
+        for artifact_id, _role, schema in _DEBUG_V4_DYNAMIC_ARTIFACTS
+    }
+    projected_artifacts[_DEBUG_V4_ENVIRONMENT_ARTIFACT[0]] = canonical_json_bytes(
+        projected_environment
+    )
+    expected = _expected_debug_v4_incomplete_evidence(
+        evidence,
+        projected_artifacts,
+        static_raw_by_relative,
+        inventory,
+        projected_by_schema[_fixed_debug_v4_process_trace_schema()],
+        projected_by_schema[_fixed_debug_v4_image_trace_schema()],
+        projected_by_schema[_fixed_debug_v4_file_identity_trace_schema()],
+        projected_by_schema[_fixed_debug_v4_loss_trace_schema()],
+        projected_environment,
+    )
+    artifact_rows = [
+        _artifact_row(artifact_id, role, static_raw_by_relative[relative])
+        for artifact_id, role, _field, relative in _STATIC_ARTIFACTS
+    ]
+    artifact_rows.extend(
+        _artifact_row(artifact_id, role, artifact_raw_by_id[artifact_id])
+        for artifact_id, role, _schema in _DEBUG_V5_DYNAMIC_ARTIFACTS
+    )
+    environment_artifact_id, environment_role, environment_field, _schema = (
+        _DEBUG_V5_ENVIRONMENT_ARTIFACT
+    )
+    environment_raw = artifact_raw_by_id[environment_artifact_id]
+    artifact_rows.append(_artifact_row(
+        environment_artifact_id, environment_role, environment_raw
+    ))
+    artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
+    evidence_seed = canonical_digest({
+        "process_trace_digest": canonical_digest(process_trace),
+        "image_trace_digest": canonical_digest(image_trace),
+        "file_identity_trace_digest": canonical_digest(file_identity_trace),
+        "loss_trace_digest": canonical_digest(loss_trace),
+        "execution_environment_manifest_digest": canonical_digest(environment_manifest),
+    }).removeprefix("sha256:")
+    expected.update({
+        "evidence_id": f"transition-runtime-debug-mapped-image.{evidence_seed}",
+        "artifacts": artifact_rows,
+        environment_field: bytes_digest(environment_raw),
+    })
+    expected["known_gaps"] = expected_runtime_closure_gaps(expected)
+    return expected
+
+
 def _seal_captured_debug_v3_discovery_result(
         bound_evidence: BoundTransitionRuntimeClosureEvidence,
         evidence_raw: bytes,
@@ -5372,6 +6681,99 @@ def _seal_captured_debug_v4_discovery_result(
         raise
     except (KeyError, RuntimeError, TypeError, ValueError):
         _fail("WINDOWS_DEBUG_V4_CAPTURE_RESULT_INVALID")
+    result = object.__new__(CapturedIncompleteRuntimeClosureEvidence)
+    object.__setattr__(result, "_sealed", False)
+    object.__setattr__(result, "_bound_evidence", rebound)
+    object.__setattr__(result, "_evidence_raw", evidence_raw)
+    object.__setattr__(result, "_artifact_raw", tuple(sorted(artifact_raw_by_id.items())))
+    object.__setattr__(result, "_sealed", True)
+    return result
+
+
+def _seal_captured_debug_v5_discovery_result(
+        bound_evidence: BoundTransitionRuntimeClosureEvidence,
+        evidence_raw: bytes,
+        artifact_raw_by_id: Mapping[str, bytes],
+        expected_crypto_provider_path_digest: str,
+        source_raw_by_relative: Mapping[str, bytes],
+        outer_expected_launch: Mapping[str, Any],
+        ) -> CapturedIncompleteRuntimeClosureEvidence:
+    expected_artifact_ids = (
+        {row[0] for row in _STATIC_ARTIFACTS}
+        | {row[0] for row in _DEBUG_V5_DYNAMIC_ARTIFACTS}
+        | {_DEBUG_V5_ENVIRONMENT_ARTIFACT[0]}
+    )
+    expected_source_relatives = {
+        relative
+        for _input_id, _path_token, relative in _LAUNCH_INPUT_SPEC
+        if relative is not None
+    }
+    if (
+            type(bound_evidence) is not BoundTransitionRuntimeClosureEvidence
+            or type(evidence_raw) is not bytes
+            or type(artifact_raw_by_id) is not dict
+            or set(artifact_raw_by_id) != expected_artifact_ids
+            or any(type(raw) is not bytes or not raw for raw in artifact_raw_by_id.values())
+            or type(source_raw_by_relative) is not dict
+            or set(source_raw_by_relative) != expected_source_relatives
+            or any(type(raw) is not bytes or not raw for raw in source_raw_by_relative.values())
+            or type(outer_expected_launch) is not dict
+    ):
+        _fail("WINDOWS_DEBUG_V5_CAPTURE_RESULT_INVALID")
+    try:
+        rebound = bind_transition_runtime_closure_evidence_bytes(
+            evidence_raw, artifact_raw_by_id
+        )
+        evidence = parse_canonical_json_bytes(evidence_raw, require_canonical=True)
+        if (
+                type(evidence) is not dict
+                or dict(bound_evidence) != dict(rebound)
+                or bound_evidence.digest != rebound.digest
+                or bound_evidence.source_bytes != rebound.source_bytes
+        ):
+            _fail("WINDOWS_DEBUG_V5_CAPTURE_RESULT_INVALID")
+        static_raw_by_relative, inventory, input_digest = _validate_sealed_static_profile(
+            artifact_raw_by_id
+        )
+        (
+            process_trace,
+            image_trace,
+            file_identity_trace,
+            loss_trace,
+            environment_manifest,
+        ) = _validate_sealed_debug_v5_dynamic_profile(
+            artifact_raw_by_id, expected_crypto_provider_path_digest
+        )
+        _validate_environment_source_joins(
+            environment_manifest, source_raw_by_relative
+        )
+        checked_outer_expected_launch = _validate_launch_binding(outer_expected_launch)
+        if (
+                environment_manifest["launch"]["parent_expected"]
+                != checked_outer_expected_launch
+                or environment_manifest["launch"]["target_observed"]
+                != checked_outer_expected_launch
+        ):
+            _fail("WINDOWS_DEBUG_V5_OUTER_LAUNCH_RECONCILIATION_FAILED")
+        if input_digest != process_trace["target"]["input_digest"]:
+            _fail("WINDOWS_DEBUG_V5_CAPTURE_STATIC_DYNAMIC_JOIN_INVALID")
+        expected = _expected_debug_v5_incomplete_evidence(
+            evidence,
+            artifact_raw_by_id,
+            static_raw_by_relative,
+            inventory,
+            process_trace,
+            image_trace,
+            file_identity_trace,
+            loss_trace,
+            environment_manifest,
+        )
+        if evidence != expected or evidence_raw != canonical_json_bytes(expected):
+            _fail("WINDOWS_DEBUG_V5_CAPTURE_ENVELOPE_INVALID")
+    except RuntimeDiscoveryError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        _fail("WINDOWS_DEBUG_V5_CAPTURE_RESULT_INVALID")
     result = object.__new__(CapturedIncompleteRuntimeClosureEvidence)
     object.__setattr__(result, "_sealed", False)
     object.__setattr__(result, "_bound_evidence", rebound)
@@ -5986,6 +7388,26 @@ def validate_windows_debug_execution_environment_v4_manifest(value: Any) -> dict
     return _validate_execution_environment_launch_pair(value)
 
 
+def validate_windows_debug_execution_environment_v5_manifest(value: Any) -> dict[str, Any]:
+    """Validate the exact closed `/5` clone of the v4 execution-environment manifest."""
+
+    if type(value) is not dict:
+        _fail("WINDOWS_DEBUG_V5_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    projected = dict(value)
+    projected["schema"] = _fixed_debug_v4_environment_manifest_schema()
+    projected["capture_protocol"] = _fixed_debug_v4_capture_protocol()
+    try:
+        validate_windows_debug_execution_environment_v4_manifest(projected)
+    except RuntimeDiscoveryError:
+        _fail("WINDOWS_DEBUG_V5_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    if (
+            value.get("schema") != _fixed_debug_v5_environment_manifest_schema()
+            or value.get("capture_protocol") != _fixed_debug_v5_capture_protocol()
+    ):
+        _fail("WINDOWS_DEBUG_V5_EXECUTION_ENVIRONMENT_MANIFEST_INVALID")
+    return _validate_execution_environment_launch_pair(value)
+
+
 def _capture_dynamic(
         python_executable: Path,
         crypto_root: Path,
@@ -6281,16 +7703,22 @@ def _capture_debug_dynamic_on_creator_thread(
         if (
                 type(outer_deadline_ns) is not int
                 or outer_deadline_ns <= 0
-                or capture_lane not in {
-                    _DEBUG_CAPTURE_LANE_V2,
-                    _DEBUG_CAPTURE_LANE_V3,
-                    _DEBUG_CAPTURE_LANE_V4,
-                }
+                or capture_lane not in _DEBUG_CAPTURE_LANES
         ):
             _fail("WINDOWS_DEBUG_HELPER_DEADLINE_INVALID")
+        capture_v5 = capture_lane == _DEBUG_CAPTURE_LANE_V5
         capture_v4 = capture_lane == _DEBUG_CAPTURE_LANE_V4
-        capture_v3 = capture_lane in {_DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4}
-        file_reader = _BorrowedDebugEventFileReader() if capture_v4 else None
+        capture_file_binding = capture_v4 or capture_v5
+        capture_v3 = capture_lane in {
+            _DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4, _DEBUG_CAPTURE_LANE_V5
+        }
+        file_reader = (
+            _BorrowedDebugEventFileMemoryReader()
+            if capture_v5
+            else _BorrowedDebugEventFileReader()
+            if capture_v4
+            else None
+        )
         checked_temp_base = _resolve_local_no_reparse(temp_base, directory=True)
         prepared = _resolve_local_no_reparse(prepared_temp_root, directory=True)
         if prepared.parent != checked_temp_base or any(prepared.iterdir()):
@@ -6403,6 +7831,17 @@ def _capture_debug_dynamic_on_creator_thread(
                     _fail("WINDOWS_DEBUG_V4_FILE_READER_MISSING")
                 raw_file_observations.append(file_reader.observe(record, raw_handle))
 
+            def before_event_image_memory_read(
+                    record: DebugEventRecord,
+                    raw_file_handle: int,
+                    raw_process_handle: int,
+                    ) -> None:
+                if type(file_reader) is not _BorrowedDebugEventFileMemoryReader:
+                    _fail("WINDOWS_DEBUG_V5_FILE_MEMORY_READER_MISSING")
+                raw_file_observations.append(file_reader.observe(
+                    record, raw_file_handle, raw_process_handle
+                ))
+
             def pump_one_debug_event() -> bool:
                 assert debugger is not None and job is not None
                 observed = (
@@ -6411,6 +7850,9 @@ def _capture_debug_dynamic_on_creator_thread(
                         before_continue=before_continue,
                         before_event_file_close=(
                             before_event_file_close if capture_v4 else None
+                        ),
+                        before_event_image_memory_read=(
+                            before_event_image_memory_read if capture_v5 else None
                         ),
                     )
                     if capture_v3
@@ -6524,6 +7966,9 @@ def _capture_debug_dynamic_on_creator_thread(
                         before_continue=before_continue,
                         before_event_file_close=(
                             before_event_file_close if capture_v4 else None
+                        ),
+                        before_event_image_memory_read=(
+                            before_event_image_memory_read if capture_v5 else None
                         ),
                     )
                     _drain_messages(job, job_events, process_tokens, timeout_milliseconds=0)
@@ -6653,10 +8098,15 @@ def _capture_debug_dynamic_on_creator_thread(
                 else _tokenize_debug_capture(capture, process_tokens)
             )
             file_identity_rows = (
-                _seal_debug_file_identity_rows(
+                _seal_debug_file_memory_rows(
                     capture, process_tokens, raw_file_observations
                 )
-                if capture_v4 else []
+                if capture_v5
+                else _seal_debug_file_identity_rows(
+                    capture, process_tokens, raw_file_observations
+                )
+                if capture_v4
+                else []
             )
             target_exit_rows = [
                 row for row in process_rows
@@ -6886,7 +8336,7 @@ def _capture_debug_dynamic_on_creator_thread(
                     validate_windows_debug_runtime_discovery_v3_trace(document)
                 _validate_debug_v3_checkpoint_projection(process_trace, image_trace)
                 validate_windows_debug_execution_environment_v3_manifest(environment_manifest)
-                if capture_v4:
+                if capture_file_binding:
                     v4_schema_by_v3 = {
                         _fixed_debug_v3_process_trace_schema(): (
                             _fixed_debug_v4_process_trace_schema()
@@ -6979,15 +8429,109 @@ def _capture_debug_dynamic_on_creator_thread(
                         "mapped_or_loaded_memory_bytes_bound": False,
                         "rows": file_identity_rows,
                     }
-                    for document in (
-                            process_trace, image_trace, file_identity_trace, loss_trace):
-                        validate_windows_debug_runtime_discovery_v4_trace(document)
-                    _validate_debug_v4_file_image_projection(
-                        process_trace, image_trace, file_identity_trace
-                    )
-                    validate_windows_debug_execution_environment_v4_manifest(
-                        environment_manifest
-                    )
+                    if capture_v5:
+                        v5_schema_by_v4 = {
+                            _fixed_debug_v4_process_trace_schema(): (
+                                _fixed_debug_v5_process_trace_schema()
+                            ),
+                            _fixed_debug_v4_image_trace_schema(): (
+                                _fixed_debug_v5_image_trace_schema()
+                            ),
+                            _fixed_debug_v4_loss_trace_schema(): (
+                                _fixed_debug_v5_loss_trace_schema()
+                            ),
+                        }
+                        for document in (process_trace, image_trace, loss_trace):
+                            document.update({
+                                "schema": v5_schema_by_v4[document["schema"]],
+                                "capture_protocol": _fixed_debug_v5_capture_protocol(),
+                                "claim_boundary": _fixed_debug_v5_claim_boundary(),
+                            })
+                        image_trace["method"] = (
+                            "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+                            "STABLE_DOUBLE_READ/5"
+                        )
+                        loss_trace["limitations"] = list(_fixed_debug_v5_limitations())
+                        environment_manifest.update({
+                            "schema": _fixed_debug_v5_environment_manifest_schema(),
+                            "capture_protocol": _fixed_debug_v5_capture_protocol(),
+                        })
+                        total_memory_bytes = sum(
+                            row["memory_size_bytes"] for row in file_identity_rows
+                        )
+                        file_identity_trace.update({
+                            "schema": _fixed_debug_v5_file_identity_trace_schema(),
+                            "capture_protocol": _fixed_debug_v5_capture_protocol(),
+                            "claim_boundary": _fixed_debug_v5_claim_boundary(),
+                            "method": (
+                                "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_AND_DUPLICATED_HPROCESS_"
+                                "STABLE_DISK_AND_MEM_IMAGE_DOUBLE_READ"
+                            ),
+                            "semantics": (
+                                "RECEIVED_DEBUG_IMAGE_EVENTS_TO_PERSISTENT_FILE_ID_STABLE_"
+                                "DISK_BYTES_AND_EVENT_COINCIDENT_COMPLETE_PE_SIZE_OF_IMAGE_"
+                                "SPAN"
+                            ),
+                            "collection_guards": {
+                                "max_file_bytes": _MAX_DEBUG_FILE_BYTES,
+                                "max_total_file_bytes": _MAX_DEBUG_TOTAL_FILE_BYTES,
+                                "read_chunk_bytes": _DEBUG_FILE_READ_CHUNK_BYTES,
+                                "stable_read_passes": _DEBUG_FILE_STABLE_READ_PASSES,
+                                "max_image_memory_bytes": _MAX_DEBUG_IMAGE_MEMORY_BYTES,
+                                "max_total_image_memory_bytes": (
+                                    _MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES
+                                ),
+                                "memory_read_chunk_bytes": _DEBUG_MEMORY_READ_CHUNK_BYTES,
+                                "memory_stable_read_passes": _DEBUG_MEMORY_STABLE_READ_PASSES,
+                                "max_pe_header_bytes": _MAX_DEBUG_PE_HEADER_BYTES,
+                                "max_pe_sections": _MAX_DEBUG_PE_SECTIONS,
+                                "max_memory_regions_per_image_pass": (
+                                    _MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS
+                                ),
+                                "max_total_memory_regions": (
+                                    _MAX_DEBUG_TOTAL_MEMORY_REGIONS
+                                ),
+                            },
+                            "binding_scope": (
+                                "RECEIVED_DEBUG_IMAGE_EVENTS_AT_SUSPENDED_PRE_CONTINUE_INSTANT"
+                            ),
+                            "mapped_or_loaded_memory_bytes_bound": True,
+                            "event_coincident_mem_image_bytes_bound": True,
+                            "disk_memory_byte_equality_claimed": False,
+                            "loader_transformations_interpreted": False,
+                            "loaded_memory_lifetime_immutability_claimed": False,
+                            "stable_event_coincident_memory_count": len(file_identity_rows),
+                            "total_stable_memory_bytes": total_memory_bytes,
+                            "total_process_memory_read_bytes": (
+                                total_memory_bytes * _DEBUG_MEMORY_STABLE_READ_PASSES
+                            ),
+                            "total_memory_region_count": sum(
+                                sum(
+                                    len(region_pass["regions"])
+                                    for region_pass in row["memory_region_passes"]
+                                )
+                                for row in file_identity_rows
+                            ),
+                        })
+                        for document in (
+                                process_trace, image_trace, file_identity_trace, loss_trace):
+                            validate_windows_debug_runtime_discovery_v5_trace(document)
+                        _validate_debug_v5_file_image_projection(
+                            process_trace, image_trace, file_identity_trace
+                        )
+                        validate_windows_debug_execution_environment_v5_manifest(
+                            environment_manifest
+                        )
+                    else:
+                        for document in (
+                                process_trace, image_trace, file_identity_trace, loss_trace):
+                            validate_windows_debug_runtime_discovery_v4_trace(document)
+                        _validate_debug_v4_file_image_projection(
+                            process_trace, image_trace, file_identity_trace
+                        )
+                        validate_windows_debug_execution_environment_v4_manifest(
+                            environment_manifest
+                        )
                     return (
                         process_trace,
                         image_trace,
@@ -7150,11 +8694,7 @@ def _debug_capture_helper_main(
                 or not _GIT_OBJECT_RE.fullmatch(selected_tree)
                 or type(outer_deadline_ns) is not int
                 or outer_deadline_ns <= 0
-                or capture_lane not in {
-                    _DEBUG_CAPTURE_LANE_V2,
-                    _DEBUG_CAPTURE_LANE_V3,
-                    _DEBUG_CAPTURE_LANE_V4,
-                }
+                or capture_lane not in _DEBUG_CAPTURE_LANES
         ):
             _fail("WINDOWS_DEBUG_HELPER_REQUEST_INVALID")
         raw_by_relative: dict[str, bytes] = {}
@@ -7190,7 +8730,7 @@ def _debug_capture_helper_main(
                 "loss_trace": result[3],
                 "environment_manifest": result[4],
             }
-            if capture_lane == _DEBUG_CAPTURE_LANE_V4
+            if capture_lane in _DEBUG_CAPTURE_FILE_BINDING_LANES
             else {
                 "process_trace": result[0],
                 "image_trace": result[1],
@@ -7396,25 +8936,26 @@ def _validate_debug_helper_documents(
     image_trace = documents["image_trace"]
     loss_trace = documents["loss_trace"]
     environment_manifest = documents["environment_manifest"]
-    if capture_lane not in {
-            _DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4}:
+    if capture_lane not in _DEBUG_CAPTURE_LANES:
         _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
     expected_keys = (
         {
             "process_trace", "image_trace", "file_identity_trace", "loss_trace",
             "environment_manifest",
         }
-        if capture_lane == _DEBUG_CAPTURE_LANE_V4
+        if capture_lane in _DEBUG_CAPTURE_FILE_BINDING_LANES
         else {"process_trace", "image_trace", "loss_trace", "environment_manifest"}
     )
     if set(documents) != expected_keys:
         _fail("WINDOWS_DEBUG_HELPER_PROTOCOL_INVALID")
     file_identity_trace = (
         documents["file_identity_trace"]
-        if capture_lane == _DEBUG_CAPTURE_LANE_V4 else None
+        if capture_lane in _DEBUG_CAPTURE_FILE_BINDING_LANES else None
     )
     for document in (process_trace, image_trace, loss_trace):
-        if capture_lane == _DEBUG_CAPTURE_LANE_V4:
+        if capture_lane == _DEBUG_CAPTURE_LANE_V5:
+            validate_windows_debug_runtime_discovery_v5_trace(document)
+        elif capture_lane == _DEBUG_CAPTURE_LANE_V4:
             validate_windows_debug_runtime_discovery_v4_trace(document)
         elif capture_lane == _DEBUG_CAPTURE_LANE_V3:
             validate_windows_debug_runtime_discovery_v3_trace(document)
@@ -7425,7 +8966,14 @@ def _validate_debug_helper_documents(
                 or document["selected_tree"] != selected_tree
         ):
             _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
-    if capture_lane == _DEBUG_CAPTURE_LANE_V4:
+    if capture_lane == _DEBUG_CAPTURE_LANE_V5:
+        assert file_identity_trace is not None
+        validate_windows_debug_runtime_discovery_v5_trace(file_identity_trace)
+        _validate_debug_v5_file_image_projection(
+            process_trace, image_trace, file_identity_trace
+        )
+        validate_windows_debug_execution_environment_v5_manifest(environment_manifest)
+    elif capture_lane == _DEBUG_CAPTURE_LANE_V4:
         assert file_identity_trace is not None
         validate_windows_debug_runtime_discovery_v4_trace(file_identity_trace)
         _validate_debug_v4_file_image_projection(
@@ -7497,11 +9045,7 @@ def _capture_debug_dynamic(
 
     if (
             type(raw_by_relative) is not dict
-            or capture_lane not in {
-                _DEBUG_CAPTURE_LANE_V2,
-                _DEBUG_CAPTURE_LANE_V3,
-                _DEBUG_CAPTURE_LANE_V4,
-            }
+            or capture_lane not in _DEBUG_CAPTURE_LANES
             or any(
                 type(relative) is not str or type(raw) is not bytes or not raw
                 for relative, raw in raw_by_relative.items()
@@ -7801,10 +9345,11 @@ def _capture_windows_debug_runtime_closure_incomplete(
     """Capture one DEBUG_PROCESS/Job-reconciled, still-incomplete R2.0 execution."""
 
     checked_subject = _validate_subject(subject)
-    if capture_lane not in {
-            _DEBUG_CAPTURE_LANE_V2, _DEBUG_CAPTURE_LANE_V3, _DEBUG_CAPTURE_LANE_V4}:
+    if capture_lane not in _DEBUG_CAPTURE_LANES:
         _fail("WINDOWS_DEBUG_CAPTURE_LANE_INVALID")
+    capture_v5 = capture_lane == _DEBUG_CAPTURE_LANE_V5
     capture_v4 = capture_lane == _DEBUG_CAPTURE_LANE_V4
+    capture_file_binding = capture_v4 or capture_v5
     capture_v3 = capture_lane == _DEBUG_CAPTURE_LANE_V3
     if os.name != "nt" or sys.platform != "win32":
         _fail("WINDOWS_DEBUG_RUNTIME_DISCOVERY_HOST_REQUIRED")
@@ -7857,7 +9402,7 @@ def _capture_windows_debug_runtime_closure_incomplete(
                 planned_temp_root,
                 capture_lane,
             )
-            if capture_v4:
+            if capture_file_binding:
                 (
                     process_trace,
                     image_trace,
@@ -7875,7 +9420,9 @@ def _capture_windows_debug_runtime_closure_incomplete(
     except (OSError, TypeError, ValueError):
         _fail("WINDOWS_DEBUG_COLLECTION_FAILED")
     for document in (process_trace, image_trace, loss_trace):
-        if capture_v4:
+        if capture_v5:
+            validate_windows_debug_runtime_discovery_v5_trace(document)
+        elif capture_v4:
             validate_windows_debug_runtime_discovery_v4_trace(document)
         elif capture_v3:
             validate_windows_debug_runtime_discovery_v3_trace(document)
@@ -7886,7 +9433,15 @@ def _capture_windows_debug_runtime_closure_incomplete(
                 or document["selected_tree"] != before_source[1]
         ):
             _fail("WINDOWS_DEBUG_DYNAMIC_SOURCE_JOIN_FAILED")
-    if capture_v4:
+    if capture_v5:
+        if file_identity_trace is None:
+            _fail("WINDOWS_DEBUG_V5_FILE_IDENTITY_TRACE_MISSING")
+        validate_windows_debug_runtime_discovery_v5_trace(file_identity_trace)
+        _validate_debug_v5_file_image_projection(
+            process_trace, image_trace, file_identity_trace
+        )
+        validate_windows_debug_execution_environment_v5_manifest(environment_manifest)
+    elif capture_v4:
         if file_identity_trace is None:
             _fail("WINDOWS_DEBUG_V4_FILE_IDENTITY_TRACE_MISSING")
         validate_windows_debug_runtime_discovery_v4_trace(file_identity_trace)
@@ -7933,7 +9488,9 @@ def _capture_windows_debug_runtime_closure_incomplete(
     if file_identity_trace is not None:
         dynamic_by_schema[file_identity_trace["schema"]] = file_identity_trace
     dynamic_artifacts = (
-        _DEBUG_V4_DYNAMIC_ARTIFACTS
+        _DEBUG_V5_DYNAMIC_ARTIFACTS
+        if capture_v5
+        else _DEBUG_V4_DYNAMIC_ARTIFACTS
         if capture_v4
         else _DEBUG_V3_DYNAMIC_ARTIFACTS
         if capture_v3
@@ -7945,7 +9502,9 @@ def _capture_windows_debug_runtime_closure_incomplete(
         artifact_raw_by_id[artifact_id] = raw
         artifact_rows.append(_artifact_row(artifact_id, role, raw))
     environment_artifact = (
-        _DEBUG_V4_ENVIRONMENT_ARTIFACT
+        _DEBUG_V5_ENVIRONMENT_ARTIFACT
+        if capture_v5
+        else _DEBUG_V4_ENVIRONMENT_ARTIFACT
         if capture_v4
         else _DEBUG_V3_ENVIRONMENT_ARTIFACT
         if capture_v3
@@ -7959,7 +9518,11 @@ def _capture_windows_debug_runtime_closure_incomplete(
     ))
     digest_fields[environment_field] = bytes_digest(environment_raw)
     artifact_rows.sort(key=lambda row: (row["artifact_id"], row["role"], row["digest"]))
-    if capture_v4:
+    if capture_v5:
+        _validate_sealed_debug_v5_dynamic_profile(
+            artifact_raw_by_id, expected_crypto_provider_path_digest
+        )
+    elif capture_v4:
         _validate_sealed_debug_v4_dynamic_profile(
             artifact_raw_by_id, expected_crypto_provider_path_digest
         )
@@ -8010,7 +9573,9 @@ def _capture_windows_debug_runtime_closure_incomplete(
     evidence: dict[str, Any] = {
         "schema": TRANSITION_RUNTIME_CLOSURE_EVIDENCE_SCHEMA,
         "evidence_id": (
-            f"transition-runtime-debug-file-identity.{evidence_seed}"
+            f"transition-runtime-debug-mapped-image.{evidence_seed}"
+            if capture_v5
+            else f"transition-runtime-debug-file-identity.{evidence_seed}"
             if capture_v4
             else f"transition-runtime-debug-reconciliation.{evidence_seed}"
             if capture_v3
@@ -8060,7 +9625,9 @@ def _capture_windows_debug_runtime_closure_incomplete(
     ):
         _fail("WINDOWS_DEBUG_INCOMPLETE_BOUNDARY_FAILED")
     sealer = (
-        _seal_captured_debug_v4_discovery_result
+        _seal_captured_debug_v5_discovery_result
+        if capture_v5
+        else _seal_captured_debug_v4_discovery_result
         if capture_v4
         else _seal_captured_debug_v3_discovery_result
         if capture_v3
@@ -8109,6 +9676,17 @@ def capture_windows_debug_runtime_closure_v4_incomplete(
     )
 
 
+def capture_windows_debug_runtime_closure_v5_incomplete(
+        subject: RuntimeClosureDiscoverySubject,
+        project_root: Path,
+        ) -> CapturedIncompleteRuntimeClosureEvidence:
+    """Capture `/5` event-coincident ``MEM_IMAGE`` bytes without broad closure authority."""
+
+    return _capture_windows_debug_runtime_closure_incomplete(
+        subject, project_root, _DEBUG_CAPTURE_LANE_V5
+    )
+
+
 __all__ = [
     "CapturedIncompleteRuntimeClosureEvidence",
     "RuntimeClosureDiscoverySubject",
@@ -8116,13 +9694,16 @@ __all__ = [
     "capture_windows_debug_runtime_closure_incomplete",
     "capture_windows_debug_runtime_closure_v3_incomplete",
     "capture_windows_debug_runtime_closure_v4_incomplete",
+    "capture_windows_debug_runtime_closure_v5_incomplete",
     "capture_windows_runtime_closure_incomplete",
     "validate_windows_debug_execution_environment_manifest",
     "validate_windows_debug_execution_environment_v3_manifest",
     "validate_windows_debug_execution_environment_v4_manifest",
+    "validate_windows_debug_execution_environment_v5_manifest",
     "validate_windows_debug_runtime_discovery_trace",
     "validate_windows_debug_runtime_discovery_v3_trace",
     "validate_windows_debug_runtime_discovery_v4_trace",
+    "validate_windows_debug_runtime_discovery_v5_trace",
     "validate_windows_execution_environment_manifest",
     "validate_windows_runtime_discovery_trace",
 ]

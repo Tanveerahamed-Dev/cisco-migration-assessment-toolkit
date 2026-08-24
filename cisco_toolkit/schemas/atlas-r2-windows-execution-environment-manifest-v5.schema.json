@@ -1,0 +1,613 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-windows-execution-environment-manifest:5",
+  "title": "Atlas R2.0 Windows execution-environment manifest v5",
+  "description": "Closed structural schema for the two-sided, non-authoritative execution-environment binding from one fixed R2.0 prototype execution.",
+  "$comment": "This artifact retains closed parent-expected and target-observed launch documents whose path and environment values are disclosed by digest only. Python validation remains authoritative for canonical bytes, both canonical launch-digest joins, exact equality of the two launch documents, exact source-manifest joins, and byte-digest verification. It does not establish loader policy, exact runtime closure, an approved budget, qualification, promotion, or Release 3 authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "capture_protocol",
+    "platform",
+    "selected_commit",
+    "selected_tree",
+    "target_process_token",
+    "launch",
+    "reconciliation",
+    "claim_boundary",
+    "authority"
+  ],
+  "properties": {
+    "schema": { "const": "atlas.windows-execution-environment-manifest/5" },
+    "capture_protocol": { "$ref": "#/$defs/captureProtocol" },
+    "platform": { "$ref": "#/$defs/platform" },
+    "selected_commit": { "$ref": "#/$defs/gitObject" },
+    "selected_tree": { "$ref": "#/$defs/gitObject" },
+    "target_process_token": { "$ref": "#/$defs/opaqueToken" },
+    "launch": { "$ref": "#/$defs/launchPair" },
+    "reconciliation": { "$ref": "#/$defs/reconciliation" },
+    "claim_boundary": { "$ref": "#/$defs/claimBoundary" },
+    "authority": { "$ref": "#/$defs/authority" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "opaqueToken": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$"
+    },
+    "rawByteCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8388608
+    },
+    "captureProtocol": {
+      "const": "WINDOWS_DEBUG_PROCESS_DISCOVERY/5"
+    },
+    "claimBoundary": {
+      "const": "Two-sided parent-expected and target-observed binding of argv, working directory, environment, the selected Python executable path and separately read file bytes, reported interpreter metadata, and seven listed input byte strings for one R2.0 prototype execution only; this does not establish mapped or loaded executable bytes, persistent file identity, loader policy, interpreter or runtime dependency closure, platform or boot state, authority, qualification, promotion, or Release 3 readiness."
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os_name", "sys_platform"],
+      "properties": {
+        "os_name": { "const": "nt" },
+        "sys_platform": { "const": "win32" }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative",
+        "closure_decision",
+        "complete_exact_runtime_closure",
+        "approved_budget",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "authoritative": { "const": false },
+        "closure_decision": { "type": "null" },
+        "complete_exact_runtime_closure": { "const": false },
+        "approved_budget": { "type": "null" },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false },
+        "release3_included": { "const": false }
+      }
+    },
+    "pathBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path_token", "path_digest"],
+      "properties": {
+        "path_token": {
+          "enum": [
+            "$PRIVATE_PYCACHE_PREFIX",
+            "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT"
+          ]
+        },
+        "path_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "executableBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path_token", "path_digest", "raw_bytes", "digest"],
+      "properties": {
+        "path_token": { "const": "$PYTHON_EXECUTABLE" },
+        "path_digest": { "$ref": "#/$defs/digest" },
+        "raw_bytes": { "$ref": "#/$defs/rawByteCount" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "pythonFlags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "isolated",
+        "no_site",
+        "ignore_environment",
+        "safe_path",
+        "dont_write_bytecode"
+      ],
+      "properties": {
+        "isolated": { "const": true },
+        "no_site": { "const": true },
+        "ignore_environment": { "const": true },
+        "safe_path": { "const": true },
+        "dont_write_bytecode": { "const": true }
+      }
+    },
+    "python": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation",
+        "version",
+        "cache_tag",
+        "executable",
+        "flags",
+        "pycache_prefix"
+      ],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "cache_tag": { "type": "string", "minLength": 1 },
+        "executable": { "$ref": "#/$defs/executableBinding" },
+        "flags": { "$ref": "#/$defs/pythonFlags" },
+        "pycache_prefix": {
+          "allOf": [
+            { "$ref": "#/$defs/pathBinding" },
+            {
+              "properties": {
+                "path_token": { "const": "$PRIVATE_PYCACHE_PREFIX" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "argvEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "value_kind", "value_token", "value_digest"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "maximum": 6 },
+        "value_kind": { "enum": ["PATH", "INTEGER", "CANONICAL_JSON"] },
+        "value_token": {
+          "enum": [
+            "$COLLECTOR_TARGET_SCRIPT",
+            "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT",
+            "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM",
+            "$PRIVATE_SELECTED_COMMIT_DSL_INPUT",
+            "$CRYPTOGRAPHY_IMPORT_ROOT",
+            "$COLLECTION_MAX_CANONICAL_BYTES",
+            "$SELECTED_COMMIT_SOURCE_MANIFEST"
+          ]
+        },
+        "value_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 0 },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$COLLECTOR_TARGET_SCRIPT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 1 },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 2 },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 3 },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$PRIVATE_SELECTED_COMMIT_DSL_INPUT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 4 },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$CRYPTOGRAPHY_IMPORT_ROOT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 5 },
+                "value_kind": { "const": "INTEGER" },
+                "value_token": { "const": "$COLLECTION_MAX_CANONICAL_BYTES" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/argvEntry" },
+            {
+              "properties": {
+                "index": { "const": 6 },
+                "value_kind": { "const": "CANONICAL_JSON" },
+                "value_token": { "const": "$SELECTED_COMMIT_SOURCE_MANIFEST" }
+              }
+            }
+          ]
+        }
+      ],
+      "items": false
+    },
+    "environmentEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value_kind", "value_token", "value_digest"],
+      "properties": {
+        "name": {
+          "enum": [
+            "PATH",
+            "PYTHONHASHSEED",
+            "PYTHONIOENCODING",
+            "PYTHONPYCACHEPREFIX",
+            "PYTHONUTF8",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "WINDIR"
+          ]
+        },
+        "value_kind": { "enum": ["LITERAL", "PATH"] },
+        "value_token": {
+          "enum": [
+            "$EMPTY_PATH",
+            "$PYTHONHASHSEED",
+            "$PYTHONIOENCODING",
+            "$PRIVATE_PYCACHE_PREFIX",
+            "$PYTHONUTF8",
+            "$WINDOWS_DIRECTORY",
+            "$PRIVATE_TEMP_ROOT"
+          ]
+        },
+        "value_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "environment": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "PATH" },
+                "value_kind": { "const": "LITERAL" },
+                "value_token": { "const": "$EMPTY_PATH" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "PYTHONHASHSEED" },
+                "value_kind": { "const": "LITERAL" },
+                "value_token": { "const": "$PYTHONHASHSEED" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "PYTHONIOENCODING" },
+                "value_kind": { "const": "LITERAL" },
+                "value_token": { "const": "$PYTHONIOENCODING" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "PYTHONPYCACHEPREFIX" },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$PRIVATE_PYCACHE_PREFIX" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "PYTHONUTF8" },
+                "value_kind": { "const": "LITERAL" },
+                "value_token": { "const": "$PYTHONUTF8" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "SYSTEMROOT" },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$WINDOWS_DIRECTORY" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "TEMP" },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$PRIVATE_TEMP_ROOT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "TMP" },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$PRIVATE_TEMP_ROOT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/environmentEntry" },
+            {
+              "properties": {
+                "name": { "const": "WINDIR" },
+                "value_kind": { "const": "PATH" },
+                "value_token": { "const": "$WINDOWS_DIRECTORY" }
+              }
+            }
+          ]
+        }
+      ],
+      "items": false
+    },
+    "inputEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_id", "path_token", "path_digest", "raw_bytes", "digest"],
+      "properties": {
+        "input_id": {
+          "enum": [
+            "collector-target-script",
+            "dsl-input",
+            "dsl-program",
+            "selected-source-init",
+            "selected-source-transition-contract",
+            "selected-source-transition-dsl",
+            "selected-source-transition-pack"
+          ]
+        },
+        "path_token": {
+          "enum": [
+            "$COLLECTOR_TARGET_SCRIPT",
+            "$PRIVATE_SELECTED_COMMIT_DSL_INPUT",
+            "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM",
+            "$PRIVATE_SELECTED_COMMIT_SOURCE_INIT",
+            "$PRIVATE_SELECTED_COMMIT_TRANSITION_CONTRACT",
+            "$PRIVATE_SELECTED_COMMIT_TRANSITION_DSL",
+            "$PRIVATE_SELECTED_COMMIT_TRANSITION_PACK"
+          ]
+        },
+        "path_digest": { "$ref": "#/$defs/digest" },
+        "raw_bytes": { "$ref": "#/$defs/rawByteCount" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "collector-target-script" },
+                "path_token": { "const": "$COLLECTOR_TARGET_SCRIPT" },
+                "raw_bytes": { "const": 9537 },
+                "digest": {
+                  "const": "sha256:f3e52345060020276093966ac3ca7b98ff00babe2fae6d0b0bf2a8ef5ed5c0d3"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "dsl-input" },
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_DSL_INPUT" },
+                "raw_bytes": { "const": 1134 },
+                "digest": {
+                  "const": "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "dsl-program" },
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_DSL_PROGRAM" },
+                "raw_bytes": { "const": 2035 },
+                "digest": {
+                  "const": "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "selected-source-init" },
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_SOURCE_INIT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "selected-source-transition-contract" },
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_TRANSITION_CONTRACT" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "selected-source-transition-dsl" },
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_TRANSITION_DSL" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inputEntry" },
+            {
+              "properties": {
+                "input_id": { "const": "selected-source-transition-pack" },
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_TRANSITION_PACK" }
+              }
+            }
+          ]
+        }
+      ],
+      "items": false,
+      "$comment": "Rows are fixed and input-id ordered. The three invariant prototype inputs are exact-byte pinned; selected-commit source bytes and their manifest join remain Python-validation responsibilities."
+    },
+    "launchBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python",
+        "argv",
+        "cwd",
+        "environment",
+        "inputs",
+        "source_manifest_digest"
+      ],
+      "properties": {
+        "python": { "$ref": "#/$defs/python" },
+        "argv": { "$ref": "#/$defs/argv" },
+        "cwd": {
+          "allOf": [
+            { "$ref": "#/$defs/pathBinding" },
+            {
+              "properties": {
+                "path_token": { "const": "$PRIVATE_SELECTED_COMMIT_SOURCE_ROOT" }
+              }
+            }
+          ]
+        },
+        "environment": { "$ref": "#/$defs/environment" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "source_manifest_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "launchPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parent_expected", "target_observed"],
+      "properties": {
+        "parent_expected": { "$ref": "#/$defs/launchBinding" },
+        "target_observed": { "$ref": "#/$defs/launchBinding" }
+      },
+      "$comment": "Both launch documents are retained. JSON Schema validates each closed document; Python validation binds each reconciliation digest and requires byte-for-byte canonical equality."
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_expected_launch_digest",
+        "target_observed_launch_digest",
+        "exact_match"
+      ],
+      "properties": {
+        "parent_expected_launch_digest": { "$ref": "#/$defs/digest" },
+        "target_observed_launch_digest": { "$ref": "#/$defs/digest" },
+        "exact_match": { "const": true }
+      },
+      "$comment": "Python validation recomputes each canonical launch digest, binds it to its corresponding field, and requires both launch documents to be exactly equal; exact_match is an asserted result, never authority."
+    }
+  }
+}

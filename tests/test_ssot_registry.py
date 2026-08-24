@@ -421,6 +421,67 @@ def test_registry_windows_debug_v4_row_binds_only_stable_on_disk_bytes_and_stays
         assert v4_boundary in v4
 
 
+def test_registry_windows_debug_v5_row_scopes_event_coincident_memory_and_stays_nonpromoting():
+    lines = _registry_text().splitlines()
+    v4 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows debug-file identity/on-disk-byte tranche" in line
+    )
+    v5 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows event-coincident mapped-image-byte tranche" in line
+    )
+
+    assert v4 != v5
+    assert "(`/4`, incomplete only)" in v4
+    assert "(`/5`, incomplete only)" in v5
+    assert "capture_windows_debug_runtime_closure_v5_incomplete" in v5
+    assert "validate_windows_debug_runtime_discovery_v5_trace" in v5
+    assert "validate_windows_debug_execution_environment_v5_manifest" in v5
+
+    v5_assets = (
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v5.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json",
+    )
+    for relative in v5_assets:
+        assert (ROOT / relative).is_file(), f"R2.0 /5 SSOT asset is missing: {relative}"
+        basename = relative.rsplit("/", 1)[-1]
+        assert basename in v5
+        assert basename not in v4
+
+    for v5_boundary in (
+        "sealed 13-artifact `/5` envelope",
+        "fresh non-inheritable least-privilege query/read duplicate",
+        "retained CREATE_PROCESS debug-event `hProcess` for that process",
+        "closes the duplicate and event-owned file handle before `ContinueDebugEvent`",
+        "walks exactly `[mapping_base, mapping_base + SizeOfImage)` twice",
+        "Each pass must independently form",
+        "contiguous same-allocation-base partition",
+        "`MEM_COMMIT` + `MEM_IMAGE`",
+        "every `ReadProcessMemory` call must return its exact requested bytes",
+        "equal whole-span SHA-256 digests and equal retained PE-header prefixes",
+        "topology, protection, and per-region digest stability are not claimed",
+        "No raw path, filename, process handle, or runtime address is serialized",
+        "512 memory regions per image read pass, 16,384 total emitted memory regions across both passes",
+        "protective guards only, never approved budgets",
+        "mapped_or_loaded_memory_bytes_bound=true",
+        "event_coincident_mem_image_bytes_bound=true",
+        "received image event at its suspended pre-continue instant",
+        "persistent_file_identity_and_loaded_bytes_bound=false",
+        "runtime-closure envelope does not gain a broad loaded-byte closure bit",
+        "not disk/memory byte equality",
+        "point reads do not prove allocation exhaustion, lifetime immutability, or complete mapping history",
+        "manual/anonymous mappings",
+        "Only `process_tree_captured_before_first_instruction_through_final_descendant` and `execution_environment_argv_cwd_and_inputs_bound` may be true",
+        "Runtime inventory `/1` remains `PARTIAL_NONPORTABLE_PROTOTYPE`",
+        "`/2`, `/3`, and `/4` remain unchanged",
+        "No budget, authority, signature, qualification, promotion, R2.1+, or Release 3 effect",
+    ):
+        assert v5_boundary in v5
+
+
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():
     """The snapshot blocks the registry names as owners must be assigned by the engine source.
     Source-level guard (the blocks don't exist on every historical snapshot; the CONTRACT is the

@@ -2553,3 +2553,1054 @@ def test_live_debug_process_smoke_is_bounded() -> None:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+
+
+def _install_duplicate_handle_fixture(
+    kernel32: _FakeKernel32,
+    *,
+    failure: BaseException | None = None,
+) -> list[tuple[int, int, int, bool, int, int]]:
+    calls: list[tuple[int, int, int, bool, int, int]] = []
+    next_handle = iter(range(0xD001, 0xD100))
+    kernel32.GetCurrentProcess = _FakeFunction(lambda: 0xFFFFFFFF)
+
+    def duplicate(
+        source_process: Any,
+        source_handle: Any,
+        target_process: Any,
+        target_pointer: Any,
+        desired_access: Any,
+        inherit: Any,
+        options: Any,
+    ) -> int:
+        calls.append((
+            _integer(source_process),
+            _integer(source_handle),
+            _integer(target_process),
+            bool(inherit),
+            _integer(desired_access),
+            _integer(options),
+        ))
+        if failure is not None:
+            raise failure
+        value = next(next_handle)
+        ctypes.cast(target_pointer, ctypes.POINTER(ctypes.c_void_p))[0] = value
+        return 1
+
+    kernel32.DuplicateHandle = _FakeFunction(duplicate)
+    return calls
+
+
+def test_v5_memory_observer_uses_fresh_least_privilege_duplicates_and_closes_before_continue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        _event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xA01, base=0x1000),
+        _event(debug._EXCEPTION_DEBUG_EVENT),
+        _event(debug._LOAD_DLL_DEBUG_EVENT, file_handle=0xA02, base=0x3000),
+        _event(debug._EXIT_PROCESS_DEBUG_EVENT),
+    ]
+    session, kernel32 = _fake_session(monkeypatch, events)
+    duplicate_calls = _install_duplicate_handle_fixture(kernel32)
+    order: list[tuple[str, int]] = []
+    original_close = kernel32._close
+    original_continue = kernel32._continue
+    kernel32.CloseHandle = _FakeFunction(
+        lambda handle: (order.append(("close", _integer(handle))), original_close(handle))[1]
+    )
+    kernel32.ContinueDebugEvent = _FakeFunction(
+        lambda pid, tid, status: (
+            order.append(("continue", _integer(pid))),
+            original_continue(pid, tid, status),
+        )[1]
+    )
+    observed: list[tuple[str, int, int]] = []
+
+    def observe(record: debug.DebugEventRecord, file_handle: int, process_handle: int) -> None:
+        assert file_handle not in kernel32.closed_handles
+        assert process_handle not in kernel32.closed_handles
+        observed.append((record.event, file_handle, process_handle))
+
+    while kernel32.events:
+        assert session.pump(0, before_event_image_memory_read=observe) is True
+    capture = session.snapshot()
+
+    assert [row[:3] for row in duplicate_calls] == [
+        (0xFFFFFFFF, 0x5000 + _ROOT_PID, 0xFFFFFFFF),
+        (0xFFFFFFFF, 0x5000 + _ROOT_PID, 0xFFFFFFFF),
+    ]
+    assert all(row[3:] == (False, 0x0410, 0) for row in duplicate_calls)
+    assert observed == [
+        ("CREATE_PROCESS", 0xA01, 0xD001),
+        ("LOAD_DLL", 0xA02, 0xD002),
+    ]
+    assert kernel32.closed_handles == [0xD001, 0xA01, 0xD002, 0xA02]
+    assert 0x5000 + _ROOT_PID not in kernel32.closed_handles
+    assert order.index(("close", 0xD001)) < order.index(("close", 0xA01))
+    assert order.index(("close", 0xA01)) < order.index(("continue", _ROOT_PID))
+    assert capture.created_process_ids == capture.exited_process_ids == (_ROOT_PID,)
+
+
+def test_v5_duplicate_exception_still_closes_hfile_and_continues_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    _install_duplicate_handle_fixture(kernel32, failure=OSError("injected"))
+    observed: list[tuple[debug.DebugEventRecord, int, int]] = []
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_MEMORY_OBSERVER_FAILED$",
+    ):
+        session.pump(
+            0,
+            before_event_image_memory_read=lambda *args: observed.append(args),
+        )
+
+    assert observed == []
+    assert kernel32.closed_handles == [0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+    assert session.record_count == 1
+
+
+def test_v5_duplicate_false_after_writing_output_reclaims_it_before_continue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    kernel32.GetCurrentProcess = _FakeFunction(lambda: 0xFFFFFFFF)
+
+    def false_after_write(
+        _source_process: Any,
+        _source_handle: Any,
+        _target_process: Any,
+        target_pointer: Any,
+        _desired_access: Any,
+        _inherit: Any,
+        _options: Any,
+    ) -> int:
+        ctypes.cast(target_pointer, ctypes.POINTER(ctypes.c_void_p))[0] = 0xD0FF
+        return 0
+
+    kernel32.DuplicateHandle = _FakeFunction(false_after_write)
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_MEMORY_OBSERVER_FAILED$",
+    ):
+        session.pump(0, before_event_image_memory_read=lambda *_args: None)
+
+    assert kernel32.closed_handles == [0xD0FF, 0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+    assert session.record_count == 1
+
+
+@pytest.mark.parametrize("raising_handles", [{0xD001}, {0xABC}, {0xD001, 0xABC}])
+def test_v5_raising_closehandle_still_attempts_both_closes_and_continues_once(
+    monkeypatch: pytest.MonkeyPatch,
+    raising_handles: set[int],
+) -> None:
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [_event(debug._CREATE_PROCESS_DEBUG_EVENT, file_handle=0xABC)],
+    )
+    _install_duplicate_handle_fixture(kernel32)
+    attempted: list[int] = []
+
+    def hostile_close(handle: Any) -> int:
+        raw = _integer(handle)
+        attempted.append(raw)
+        if raw in raising_handles:
+            raise OSError("injected CloseHandle failure")
+        return kernel32._close(handle)
+
+    kernel32.CloseHandle = _FakeFunction(hostile_close)
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_HANDLE_CLOSE_FAILED$",
+    ):
+        session.pump(0, before_event_image_memory_read=lambda *_args: None)
+
+    assert attempted == [0xD001, 0xABC]
+    assert kernel32.continues == [(_ROOT_PID, _ROOT_TID, debug._DBG_CONTINUE)]
+    assert session.record_count == 1
+    assert kernel32.closed_handles == [
+        handle for handle in (0xD001, 0xABC) if handle not in raising_handles
+    ]
+
+
+def test_v5_post_parse_process_handle_error_reaches_neither_observer_nor_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create = _event(debug._CREATE_PROCESS_DEBUG_EVENT)
+    create.u.CreateProcessInfo.hProcess = None
+    session, kernel32 = _fake_session(
+        monkeypatch,
+        [create, _event(debug._EXCEPTION_DEBUG_EVENT), _event(debug._EXIT_PROCESS_DEBUG_EVENT)],
+    )
+    assert session.pump(0) is True
+    assert session.pump(0) is True
+    observed: list[debug.DebugEventRecord] = []
+
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_PROCESS_HANDLE_LIFECYCLE_INVALID$",
+    ):
+        session.pump(
+            0,
+            before_continue=observed.append,
+            before_event_image_memory_read=lambda *_args: None,
+        )
+
+    assert observed == []
+    assert session.record_count == 2
+    assert len(kernel32.continues) == 3
+
+
+def test_v5_memory_observer_rejects_conflicting_or_noncallable_seams_before_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, kernel32 = _fake_session(monkeypatch, [])
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_OBSERVER_CONFLICT$",
+    ):
+        session.pump(
+            0,
+            before_event_file_close=lambda *_args: None,
+            before_event_image_memory_read=lambda *_args: None,
+        )
+    with pytest.raises(
+        debug.DebugEventEngineError,
+        match="^WINDOWS_DEBUG_EVENT_MEMORY_OBSERVER_INVALID$",
+    ):
+        session.pump(0, before_event_image_memory_read=1)  # type: ignore[arg-type]
+    assert kernel32.continues == []
+
+
+class _FakeV5MemoryKernel32:
+    def __init__(
+        self,
+        *,
+        mapping_base: int,
+        payload: bytes,
+        regions: list[dict[str, int]],
+        query_size_delta: int = 0,
+        read_result: bool = True,
+        read_count_delta: int = 0,
+    ) -> None:
+        self.mapping_base = mapping_base
+        self.payload = payload
+        self.regions = regions
+        self.query_size_delta = query_size_delta
+        self.read_result = read_result
+        self.read_count_delta = read_count_delta
+        self.query_calls: list[int] = []
+        self.read_calls: list[tuple[int, int]] = []
+
+    def VirtualQueryEx(
+        self,
+        _process_handle: Any,
+        address: Any,
+        information_pointer: Any,
+        _information_size: int,
+    ) -> int:
+        query_address = int(address.value)
+        row = self.regions[len(self.query_calls)]
+        self.query_calls.append(query_address)
+        information = information_pointer._obj
+        information.BaseAddress = row["base"]
+        information.AllocationBase = row["allocation_base"]
+        information.AllocationProtect = row["protect"]
+        information.PartitionId = 0
+        information.RegionSize = row["size"]
+        information.State = row["state"]
+        information.Protect = row["protect"]
+        information.Type = row["type"]
+        return ctypes.sizeof(discovery._MemoryBasicInformation) + self.query_size_delta
+
+    def ReadProcessMemory(
+        self,
+        _process_handle: Any,
+        address: Any,
+        buffer_pointer: Any,
+        requested: int,
+        read_count_pointer: Any,
+    ) -> bool:
+        read_address = int(address.value)
+        self.read_calls.append((read_address, requested))
+        count = requested + self.read_count_delta
+        if self.read_result and count > 0:
+            offset = read_address - self.mapping_base
+            ctypes.memmove(buffer_pointer, self.payload[offset:offset + count], count)
+        read_count_pointer._obj.value = max(count, 0)
+        return self.read_result
+
+
+def _fake_v5_memory_reader(
+    kernel32: _FakeV5MemoryKernel32,
+) -> discovery._BorrowedDebugEventFileMemoryReader:
+    reader = object.__new__(discovery._BorrowedDebugEventFileMemoryReader)
+    reader._kernel32 = kernel32
+    reader._total_file_bytes = 0
+    reader._total_image_memory_bytes = 0
+    reader._total_memory_regions = 0
+    return reader
+
+
+def test_v5_memory_reader_reads_one_exact_contiguous_mem_image_partition() -> None:
+    base = 0x10000000
+    payload = b"MZ" + bytes((index % 251 for index in range(8190)))
+    kernel32 = _FakeV5MemoryKernel32(
+        mapping_base=base,
+        payload=payload,
+        regions=[
+            {
+                "base": base,
+                "allocation_base": base,
+                "size": 4096,
+                "state": 0x1000,
+                "protect": 0x02,
+                "type": 0x1000000,
+            },
+            {
+                "base": base + 4096,
+                "allocation_base": base,
+                "size": 4096,
+                "state": 0x1000,
+                "protect": 0x20,
+                "type": 0x1000000,
+            },
+        ],
+    )
+    regions, digest, prefix = _fake_v5_memory_reader(kernel32)._memory_pass(
+        1, base, len(payload)
+    )
+
+    assert kernel32.query_calls == [base, base + 4096]
+    assert kernel32.read_calls == [(base, 4096), (base + 4096, 4096)]
+    assert [row["rva"] for row in regions] == [0, 4096]
+    assert [row["size_bytes"] for row in regions] == [4096, 4096]
+    assert [row["protection_hex"] for row in regions] == ["00000002", "00000020"]
+    assert digest == contract.bytes_digest(payload)
+    assert prefix == payload
+
+
+def test_v5_memory_reader_bounds_the_pe_span_without_claiming_allocation_exhaustion() -> None:
+    base = 0x18000000
+    payload = bytes(4096)
+    kernel32 = _FakeV5MemoryKernel32(
+        mapping_base=base,
+        payload=payload,
+        regions=[
+            {
+                "base": base,
+                "allocation_base": base,
+                "size": 8192,
+                "state": 0x1000,
+                "protect": 0x02,
+                "type": 0x1000000,
+            }
+        ],
+    )
+    regions, digest, prefix = _fake_v5_memory_reader(kernel32)._memory_pass(
+        1, base, len(payload)
+    )
+
+    assert kernel32.query_calls == [base]
+    assert kernel32.read_calls == [(base, len(payload))]
+    assert len(regions) == 1
+    assert regions[0]["size_bytes"] == len(payload)
+    assert digest == contract.bytes_digest(payload)
+    assert prefix == payload
+
+
+def test_v5_memory_reader_caps_hostile_tiny_region_partitions() -> None:
+    base = 0x19000000
+    count = discovery._MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS + 1
+    payload = bytes(count)
+    kernel32 = _FakeV5MemoryKernel32(
+        mapping_base=base,
+        payload=payload,
+        regions=[
+            {
+                "base": base + index,
+                "allocation_base": base,
+                "size": 1,
+                "state": 0x1000,
+                "protect": 0x02,
+                "type": 0x1000000,
+            }
+            for index in range(count)
+        ],
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V5_MEMORY_REGION_CEILING_EXCEEDED$",
+    ):
+        _fake_v5_memory_reader(kernel32)._memory_pass(1, base, len(payload))
+    assert len(kernel32.query_calls) == discovery._MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS
+
+
+def test_v5_memory_reader_enforces_remaining_total_before_the_next_query() -> None:
+    base = 0x1A000000
+    payload = b"ab"
+    kernel32 = _FakeV5MemoryKernel32(
+        mapping_base=base,
+        payload=payload,
+        regions=[
+            {
+                "base": base + index,
+                "allocation_base": base,
+                "size": 1,
+                "state": 0x1000,
+                "protect": 0x02,
+                "type": 0x1000000,
+            }
+            for index in range(2)
+        ],
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V5_MEMORY_REGION_TOTAL_CEILING_EXCEEDED$",
+    ):
+        _fake_v5_memory_reader(kernel32)._memory_pass(
+            1, base, len(payload), total_region_allowance=1
+        )
+    assert kernel32.query_calls == [base]
+    assert kernel32.read_calls == [(base, 1)]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_code"),
+    [
+        ("short_query", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("region_gap", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("wrong_allocation", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("uncommitted", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("not_image", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("zero_protection", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("modifier_only_protection", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("unknown_protection_bit", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("nocache_writecombine", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("cfg_nonexecutable", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("guard", "WINDOWS_DEBUG_V5_MEMORY_REGION_INVALID"),
+        ("read_failure", "WINDOWS_DEBUG_V5_MEMORY_READ_FAILED"),
+        ("partial_read", "WINDOWS_DEBUG_V5_MEMORY_READ_PARTIAL"),
+    ],
+)
+def test_v5_memory_reader_fails_closed_on_native_region_or_read_anomalies(
+    mutation: str,
+    error_code: str,
+) -> None:
+    base = 0x20000000
+    payload = bytes(4096)
+    region = {
+        "base": base,
+        "allocation_base": base,
+        "size": len(payload),
+        "state": 0x1000,
+        "protect": 0x02,
+        "type": 0x1000000,
+    }
+    kwargs: dict[str, Any] = {}
+    if mutation == "short_query":
+        kwargs["query_size_delta"] = -1
+    elif mutation == "region_gap":
+        region["base"] += 1
+    elif mutation == "wrong_allocation":
+        region["allocation_base"] += 4096
+    elif mutation == "uncommitted":
+        region["state"] = 0x2000
+    elif mutation == "not_image":
+        region["type"] = 0x20000
+    elif mutation == "zero_protection":
+        region["protect"] = 0
+    elif mutation == "modifier_only_protection":
+        region["protect"] = 0x200
+    elif mutation == "unknown_protection_bit":
+        region["protect"] = 0x80000002
+    elif mutation == "nocache_writecombine":
+        region["protect"] = 0x602
+    elif mutation == "cfg_nonexecutable":
+        region["protect"] = 0x40000002
+    elif mutation == "guard":
+        region["protect"] = 0x102
+    elif mutation == "read_failure":
+        kwargs["read_result"] = False
+    elif mutation == "partial_read":
+        kwargs["read_count_delta"] = -1
+    else:
+        raise AssertionError(mutation)
+    kernel32 = _FakeV5MemoryKernel32(
+        mapping_base=base,
+        payload=payload,
+        regions=[region],
+        **kwargs,
+    )
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$"):
+        _fake_v5_memory_reader(kernel32)._memory_pass(1, base, len(payload))
+
+
+def _v5_fixture_pe_layout() -> dict[str, Any]:
+    return {
+        "machine": "AMD64",
+        "optional_header_format": "PE32_PLUS",
+        "pe_header_offset": 64,
+        "number_of_sections": 1,
+        "size_of_optional_header": 240,
+        "address_of_entry_point_rva": 4096,
+        "section_alignment": 4096,
+        "file_alignment": 512,
+        "size_of_image": 8192,
+        "size_of_headers": 512,
+        "number_of_rva_and_sizes": 0,
+        "data_directories": [],
+        "sections": [
+            {
+                "sequence": 0,
+                "virtual_address_rva": 4096,
+                "virtual_size_bytes": 1,
+                "raw_file_offset": 0,
+                "raw_size_bytes": 0,
+                "characteristics_hex": "60000020",
+            }
+        ],
+    }
+
+
+def test_v5_observer_accepts_cow_region_split_with_stable_whole_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _v5_fixture_pe_layout()
+    disk_digest = contract.bytes_digest(b"disk")
+    memory_digest = contract.bytes_digest(b"memory")
+    prefix = b"retained-pe-header"
+
+    def region(
+        sequence: int,
+        rva: int,
+        size_bytes: int,
+        protection_hex: str,
+    ) -> dict[str, Any]:
+        return {
+            "sequence": sequence,
+            "rva": rva,
+            "size_bytes": size_bytes,
+            "allocation_base_matches_event_image": True,
+            "state": "MEM_COMMIT",
+            "type": "MEM_IMAGE",
+            "protection_hex": protection_hex,
+            "digest": contract.bytes_digest(
+                f"region:{sequence}:{rva}:{size_bytes}:{protection_hex}".encode("ascii")
+            ),
+        }
+
+    memory_passes = iter((
+        ((region(0, 0, 8192, "00000008"),), memory_digest, prefix),
+        (
+            (
+                region(0, 0, 4096, "00000008"),
+                region(1, 4096, 4096, "00000004"),
+            ),
+            memory_digest,
+            prefix,
+        ),
+    ))
+    reader = object.__new__(discovery._BorrowedDebugEventFileMemoryReader)
+    reader._kernel32 = object()
+    reader._total_file_bytes = 0
+    reader._total_image_memory_bytes = 0
+    reader._total_memory_regions = 0
+    monkeypatch.setattr(
+        discovery._BorrowedDebugEventFileMemoryReader,
+        "_identity_and_size",
+        lambda _self, _handle: ("0123456789abcdef", "0" * 32, 1024),
+    )
+    monkeypatch.setattr(
+        discovery._BorrowedDebugEventFileMemoryReader,
+        "_whole_file_digest_and_prefix",
+        lambda _self, _handle, _size, _prefix_size: (disk_digest, prefix),
+    )
+    monkeypatch.setattr(
+        discovery._BorrowedDebugEventFileMemoryReader,
+        "_memory_pass",
+        lambda _self, *_args, **_kwargs: next(memory_passes),
+    )
+    monkeypatch.setattr(
+        discovery,
+        "_parse_debug_amd64_pe_layout",
+        lambda _raw, *, disk_file_size: deepcopy(layout),
+    )
+    record = debug.DebugEventRecord(
+        sequence=7,
+        event="LOAD_DLL",
+        event_code=debug._LOAD_DLL_DEBUG_EVENT,
+        process_id=_ROOT_PID,
+        thread_id=_ROOT_TID,
+        mapping_base=0x400000,
+        mapping_kind="DLL_IMAGE",
+        continue_status="DBG_CONTINUE",
+        exception_code=None,
+        exception_disposition=None,
+        first_chance=None,
+        exit_code=None,
+        file_handle_present=True,
+        debug_string_code_units=None,
+        debug_string_unicode=None,
+        implicit_unmap_bases=(),
+    )
+
+    observation = reader.observe(record, 0xA01, 0xD01)
+
+    assert [len(item) for item in observation["memory_region_passes"]] == [1, 2]
+    assert observation["memory_read_digests"] == (memory_digest, memory_digest)
+    assert reader._total_memory_regions == 3
+
+
+def _raw_v5_file_memory_observations(
+    capture: debug.DebugEventCapture,
+) -> list[dict[str, Any]]:
+    observations = _raw_v4_file_observations(capture)
+    for raw in observations:
+        sequence = raw["source_debug_sequence"]
+        disk_digest = contract.bytes_digest(f"v5-disk:{sequence}".encode("ascii"))
+        memory_digest = contract.bytes_digest(f"v5-memory:{sequence}".encode("ascii"))
+        memory_regions = (
+            {
+                "sequence": 0,
+                "rva": 0,
+                "size_bytes": 4096,
+                "allocation_base_matches_event_image": True,
+                "state": "MEM_COMMIT",
+                "type": "MEM_IMAGE",
+                "protection_hex": "00000002",
+                "digest": contract.bytes_digest(
+                    f"v5-region-0:{sequence}".encode("ascii")
+                ),
+            },
+            {
+                "sequence": 1,
+                "rva": 4096,
+                "size_bytes": 4096,
+                "allocation_base_matches_event_image": True,
+                "state": "MEM_COMMIT",
+                "type": "MEM_IMAGE",
+                "protection_hex": "00000020",
+                "digest": contract.bytes_digest(
+                    f"v5-region-1:{sequence}".encode("ascii")
+                ),
+            },
+        )
+        raw.update({
+            "file_size_bytes": 1024,
+            "read_digests": (disk_digest, disk_digest),
+            "pe_layout": _v5_fixture_pe_layout(),
+            "memory_size_bytes": 8192,
+            "memory_region_passes": (
+                memory_regions,
+                deepcopy(memory_regions),
+            ),
+            "memory_read_digests": (memory_digest, memory_digest),
+        })
+    return observations
+
+
+def _refresh_v5_file_memory_totals(trace: dict[str, Any]) -> None:
+    _refresh_v4_file_identity_totals(trace)
+    rows = trace["rows"]
+    total = sum(row["memory_size_bytes"] for row in rows)
+    trace.update({
+        "stable_event_coincident_memory_count": len(rows),
+        "total_stable_memory_bytes": total,
+        "total_process_memory_read_bytes": (
+            total * discovery._DEBUG_MEMORY_STABLE_READ_PASSES
+        ),
+        "total_memory_region_count": sum(
+            len(region_pass["regions"])
+            for row in rows
+            for region_pass in row["memory_region_passes"]
+        ),
+    })
+
+
+def _tokenized_v5_traces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    process_trace, image_trace, file_trace, loss_trace = _tokenized_v4_traces(monkeypatch)
+    capture, _kernel32 = _complete_capture(monkeypatch)
+    process_tokens = {
+        _ROOT_PID: "process.000000000001",
+        _CHILD_PID: "process.000000000002",
+    }
+    rows = discovery._seal_debug_file_memory_rows(
+        capture,
+        process_tokens,
+        _raw_v5_file_memory_observations(capture),
+    )
+    schema_updates = (
+        (process_trace, discovery._fixed_debug_v5_process_trace_schema()),
+        (image_trace, discovery._fixed_debug_v5_image_trace_schema()),
+        (loss_trace, discovery._fixed_debug_v5_loss_trace_schema()),
+    )
+    for document, schema in schema_updates:
+        document.update({
+            "schema": schema,
+            "capture_protocol": discovery._fixed_debug_v5_capture_protocol(),
+            "claim_boundary": discovery._fixed_debug_v5_claim_boundary(),
+        })
+    image_trace["method"] = (
+        "WINDOWS_DEBUG_PROCESS_IMAGE_EVENTS_WITH_K32_TARGET_START_END_"
+        "STABLE_DOUBLE_READ/5"
+    )
+    loss_trace["limitations"] = list(discovery._fixed_debug_v5_limitations())
+    file_trace.update({
+        "schema": discovery._fixed_debug_v5_file_identity_trace_schema(),
+        "capture_protocol": discovery._fixed_debug_v5_capture_protocol(),
+        "claim_boundary": discovery._fixed_debug_v5_claim_boundary(),
+        "method": (
+            "WINDOWS_DEBUG_EVENT_BORROWED_HFILE_AND_DUPLICATED_HPROCESS_"
+            "STABLE_DISK_AND_MEM_IMAGE_DOUBLE_READ"
+        ),
+        "semantics": (
+            "RECEIVED_DEBUG_IMAGE_EVENTS_TO_PERSISTENT_FILE_ID_STABLE_DISK_BYTES_"
+            "AND_EVENT_COINCIDENT_COMPLETE_PE_SIZE_OF_IMAGE_SPAN"
+        ),
+        "collection_guards": {
+            "max_file_bytes": discovery._MAX_DEBUG_FILE_BYTES,
+            "max_total_file_bytes": discovery._MAX_DEBUG_TOTAL_FILE_BYTES,
+            "read_chunk_bytes": discovery._DEBUG_FILE_READ_CHUNK_BYTES,
+            "stable_read_passes": discovery._DEBUG_FILE_STABLE_READ_PASSES,
+            "max_image_memory_bytes": discovery._MAX_DEBUG_IMAGE_MEMORY_BYTES,
+            "max_total_image_memory_bytes": discovery._MAX_DEBUG_TOTAL_IMAGE_MEMORY_BYTES,
+            "memory_read_chunk_bytes": discovery._DEBUG_MEMORY_READ_CHUNK_BYTES,
+            "memory_stable_read_passes": discovery._DEBUG_MEMORY_STABLE_READ_PASSES,
+            "max_pe_header_bytes": discovery._MAX_DEBUG_PE_HEADER_BYTES,
+            "max_pe_sections": discovery._MAX_DEBUG_PE_SECTIONS,
+            "max_memory_regions_per_image_pass": (
+                discovery._MAX_DEBUG_MEMORY_REGIONS_PER_IMAGE_PASS
+            ),
+            "max_total_memory_regions": discovery._MAX_DEBUG_TOTAL_MEMORY_REGIONS,
+        },
+        "binding_scope": (
+            "RECEIVED_DEBUG_IMAGE_EVENTS_AT_SUSPENDED_PRE_CONTINUE_INSTANT"
+        ),
+        "persistent_file_identity_and_loaded_bytes_bound": False,
+        "mapped_or_loaded_memory_bytes_bound": True,
+        "event_coincident_mem_image_bytes_bound": True,
+        "disk_memory_byte_equality_claimed": False,
+        "loader_transformations_interpreted": False,
+        "loaded_memory_lifetime_immutability_claimed": False,
+        "rows": rows,
+    })
+    _refresh_v5_file_memory_totals(file_trace)
+    return process_trace, image_trace, file_trace, loss_trace
+
+
+def test_v5_file_memory_trace_is_closed_incomplete_and_projects_exactly_to_v4(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    documents = _tokenized_v5_traces(monkeypatch)
+    schema = json.loads(
+        (
+            ROOT
+            / "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v5.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    schema_validator = Draft202012Validator(schema)
+    raw_before = tuple(contract.canonical_json_bytes(row) for row in documents)
+
+    for document in documents:
+        schema_validator.validate(document)
+        assert discovery.validate_windows_debug_runtime_discovery_v5_trace(document) == document
+        projected = discovery._project_debug_v5_trace_to_v4(document)
+        assert discovery.validate_windows_debug_runtime_discovery_v4_trace(projected) == projected
+
+    process, image, file_trace, loss = documents
+    assert tuple(contract.canonical_json_bytes(row) for row in documents) == raw_before
+    assert file_trace["persistent_file_identity_and_loaded_bytes_bound"] is False
+    assert file_trace["mapped_or_loaded_memory_bytes_bound"] is True
+    assert file_trace["event_coincident_mem_image_bytes_bound"] is True
+    assert file_trace["disk_memory_byte_equality_claimed"] is False
+    assert file_trace["loaded_memory_lifetime_immutability_claimed"] is False
+    assert image["history_complete"] is False
+    assert loss["event_stream_contiguous"] is False
+    assert loss["os_loss_counter_available"] is False
+    assert discovery._validate_debug_v5_file_image_projection(
+        process, image, file_trace
+    ) is None
+
+
+def test_v5_validator_accepts_independently_complete_pass_specific_topologies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _process, _image, file_trace, _loss = _tokenized_v5_traces(monkeypatch)
+    changed = deepcopy(file_trace)
+    row = changed["rows"][0]
+    second_pass = row["memory_region_passes"][1]
+    tail = deepcopy(second_pass["regions"][1])
+    tail["sequence"] = 2
+    second_pass["regions"] = [
+        {
+            **deepcopy(second_pass["regions"][0]),
+            "size_bytes": 2048,
+            "protection_hex": "00000008",
+            "digest": contract.bytes_digest(b"cow-before"),
+        },
+        {
+            **deepcopy(second_pass["regions"][0]),
+            "sequence": 1,
+            "rva": 2048,
+            "size_bytes": 2048,
+            "protection_hex": "00000004",
+            "digest": contract.bytes_digest(b"cow-after"),
+        },
+        tail,
+    ]
+    row["binding_digest"] = discovery._debug_v5_binding_digest(row)
+    _refresh_v5_file_memory_totals(changed)
+
+    assert discovery.validate_windows_debug_runtime_discovery_v5_trace(changed) == changed
+    assert [
+        len(region_pass["regions"])
+        for region_pass in row["memory_region_passes"]
+    ] == [2, 3]
+    assert row["memory_read_passes"][0]["digest"] == row["memory_read_passes"][1][
+        "digest"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_code"),
+    [
+        ("region_gap", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("guard_page", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("memory_digest_drift", "WINDOWS_DEBUG_V5_MEMORY_READS_INVALID"),
+        ("binding_digest", "WINDOWS_DEBUG_V5_MEMORY_READS_INVALID"),
+        ("boolean_memory_size", "WINDOWS_DEBUG_V5_FILE_MEMORY_ROWS_INVALID"),
+        ("boolean_section_count", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("file_alignment_one", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("zero_raw_size_offset", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("virtual_gap", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("zero_mapped_span", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("trailing_image_gap", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("raw_inside_headers", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("raw_reverse", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("low_alignment_offset_mismatch", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("certificate_beyond_file", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("zero_protection", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("modifier_only_protection", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("unknown_protection_bit", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("nocache_writecombine", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("cfg_nonexecutable", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("directory_table_overflow", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("section_table_beyond_headers", "WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID"),
+        ("region_pass_sequence", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("region_pass_wrapper_extra", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("region_pass_count", "WINDOWS_DEBUG_V5_MEMORY_REGIONS_INVALID"),
+        ("region_total_underreported", "WINDOWS_DEBUG_V5_MEMORY_TOTALS_INVALID"),
+        ("persistent_claim", "WINDOWS_DEBUG_V5_FILE_MEMORY_TRACE_INVALID"),
+        ("disk_equality_claim", "WINDOWS_DEBUG_V5_FILE_MEMORY_TRACE_INVALID"),
+    ],
+)
+def test_v5_validator_rejects_memory_and_claim_inflation(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    error_code: str,
+) -> None:
+    _process, _image, file_trace, _loss = _tokenized_v5_traces(monkeypatch)
+    forged = deepcopy(file_trace)
+    row = forged["rows"][0]
+    if mutation == "region_gap":
+        row["memory_region_passes"][1]["regions"][1]["rva"] += 1
+    elif mutation == "guard_page":
+        row["memory_region_passes"][1]["regions"][0]["protection_hex"] = "00000102"
+    elif mutation == "memory_digest_drift":
+        row["memory_read_passes"][1]["digest"] = contract.bytes_digest(b"drift")
+    elif mutation == "binding_digest":
+        row["binding_digest"] = contract.bytes_digest(b"forged")
+    elif mutation == "boolean_memory_size":
+        row["memory_size_bytes"] = True
+    elif mutation == "boolean_section_count":
+        row["pe_layout"]["number_of_sections"] = True
+    elif mutation == "file_alignment_one":
+        row["pe_layout"]["file_alignment"] = 1
+    elif mutation == "zero_raw_size_offset":
+        row["pe_layout"]["sections"][0]["raw_file_offset"] = 512
+    elif mutation == "virtual_gap":
+        row["pe_layout"]["size_of_image"] = 12288
+        row["pe_layout"]["sections"][0]["virtual_address_rva"] = 8192
+    elif mutation == "zero_mapped_span":
+        row["pe_layout"]["sections"][0]["virtual_size_bytes"] = 0
+    elif mutation == "trailing_image_gap":
+        row["pe_layout"]["size_of_image"] = 12288
+    elif mutation == "raw_inside_headers":
+        row["pe_layout"]["size_of_headers"] = 1024
+        row["pe_layout"]["sections"][0].update({
+            "raw_file_offset": 512,
+            "raw_size_bytes": 512,
+        })
+    elif mutation == "raw_reverse":
+        row["file_size_bytes"] = 2048
+        row["pe_layout"].update({
+            "number_of_sections": 2,
+            "size_of_image": 12288,
+            "sections": [
+                {
+                    "sequence": 0,
+                    "virtual_address_rva": 4096,
+                    "virtual_size_bytes": 1,
+                    "raw_file_offset": 1024,
+                    "raw_size_bytes": 512,
+                    "characteristics_hex": "60000020",
+                },
+                {
+                    "sequence": 1,
+                    "virtual_address_rva": 8192,
+                    "virtual_size_bytes": 1,
+                    "raw_file_offset": 512,
+                    "raw_size_bytes": 512,
+                    "characteristics_hex": "c0000040",
+                },
+            ],
+        })
+    elif mutation == "low_alignment_offset_mismatch":
+        row["file_size_bytes"] = 2048
+        row["pe_layout"].update({
+            "section_alignment": 512,
+            "file_alignment": 512,
+            "size_of_image": 1024,
+            "size_of_headers": 512,
+        })
+        row["pe_layout"]["sections"][0].update({
+            "virtual_address_rva": 512,
+            "virtual_size_bytes": 512,
+            "raw_file_offset": 1024,
+            "raw_size_bytes": 512,
+        })
+    elif mutation == "certificate_beyond_file":
+        row["pe_layout"]["number_of_rva_and_sizes"] = 5
+        row["pe_layout"]["data_directories"] = [
+            {"sequence": sequence, "rva_or_file_offset": 0, "size_bytes": 0}
+            for sequence in range(4)
+        ] + [{"sequence": 4, "rva_or_file_offset": 2048, "size_bytes": 8}]
+    elif mutation == "zero_protection":
+        row["memory_region_passes"][1]["regions"][0]["protection_hex"] = "00000000"
+    elif mutation == "modifier_only_protection":
+        row["memory_region_passes"][1]["regions"][0]["protection_hex"] = "00000200"
+    elif mutation == "unknown_protection_bit":
+        row["memory_region_passes"][1]["regions"][0]["protection_hex"] = "80000002"
+    elif mutation == "nocache_writecombine":
+        row["memory_region_passes"][1]["regions"][0]["protection_hex"] = "00000602"
+    elif mutation == "cfg_nonexecutable":
+        row["memory_region_passes"][1]["regions"][0]["protection_hex"] = "40000002"
+    elif mutation == "directory_table_overflow":
+        row["pe_layout"]["size_of_optional_header"] = 112
+        row["pe_layout"]["number_of_rva_and_sizes"] = 1
+        row["pe_layout"]["data_directories"] = [
+            {"sequence": 0, "rva_or_file_offset": 0, "size_bytes": 0}
+        ]
+    elif mutation == "section_table_beyond_headers":
+        row["pe_layout"]["pe_header_offset"] = 256
+        row["pe_layout"]["size_of_optional_header"] = 240
+    elif mutation == "region_pass_sequence":
+        row["memory_region_passes"][1]["sequence"] = 0
+    elif mutation == "region_pass_wrapper_extra":
+        row["memory_region_passes"][1]["unexpected"] = False
+    elif mutation == "region_pass_count":
+        row["memory_region_passes"].pop()
+    elif mutation == "region_total_underreported":
+        forged["total_memory_region_count"] -= 1
+    elif mutation == "persistent_claim":
+        forged["persistent_file_identity_and_loaded_bytes_bound"] = True
+    elif mutation == "disk_equality_claim":
+        forged["disk_memory_byte_equality_claimed"] = True
+    else:
+        raise AssertionError(mutation)
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$"):
+        discovery.validate_windows_debug_runtime_discovery_v5_trace(forged)
+
+
+def test_v5_file_memory_join_rejects_coordinated_omission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process, image, file_trace, _loss = _tokenized_v5_traces(monkeypatch)
+    forged = deepcopy(file_trace)
+    forged["rows"].pop()
+    _refresh_v5_file_memory_totals(forged)
+    assert discovery.validate_windows_debug_runtime_discovery_v5_trace(forged) == forged
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V4_FILE_IMAGE_JOIN_FAILED$",
+    ):
+        discovery._validate_debug_v5_file_image_projection(process, image, forged)
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8,
+    reason="native Windows AMD64 MEMORY_BASIC_INFORMATION only",
+)
+def test_v5_memory_basic_information_amd64_layout_is_exact() -> None:
+    assert ctypes.sizeof(discovery._MemoryBasicInformation) == 48
+    assert discovery._MemoryBasicInformation.BaseAddress.offset == 0
+    assert discovery._MemoryBasicInformation.AllocationBase.offset == 8
+    assert discovery._MemoryBasicInformation.AllocationProtect.offset == 16
+    assert discovery._MemoryBasicInformation.PartitionId.offset == 20
+    assert discovery._MemoryBasicInformation.RegionSize.offset == 24
+    assert discovery._MemoryBasicInformation.State.offset == 32
+    assert discovery._MemoryBasicInformation.Protect.offset == 36
+    assert discovery._MemoryBasicInformation.Type.offset == 40
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PE host executable required")
+def test_v5_pe_parser_accepts_host_amd64_image_and_rejects_hostile_offsets() -> None:
+    executable = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    raw = executable.read_bytes()
+    layout = discovery._parse_debug_amd64_pe_layout(
+        raw[:discovery._MAX_DEBUG_PE_HEADER_BYTES], disk_file_size=len(raw)
+    )
+    discovery._validate_debug_v5_pe_layout_value(layout, len(raw))
+    assert layout["machine"] == "AMD64"
+    hostile = bytearray(raw[:discovery._MAX_DEBUG_PE_HEADER_BYTES])
+    hostile[0x3C:0x40] = (discovery._MAX_DEBUG_PE_HEADER_BYTES).to_bytes(4, "little")
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID$",
+    ):
+        discovery._parse_debug_amd64_pe_layout(bytes(hostile), disk_file_size=len(raw))
+
+    invalid_file_alignment = bytearray(raw[:discovery._MAX_DEBUG_PE_HEADER_BYTES])
+    pe_offset = int.from_bytes(invalid_file_alignment[0x3C:0x40], "little")
+    optional_offset = pe_offset + 24
+    invalid_file_alignment[optional_offset + 36:optional_offset + 40] = (1).to_bytes(
+        4, "little"
+    )
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID$",
+    ):
+        discovery._parse_debug_amd64_pe_layout(
+            bytes(invalid_file_alignment), disk_file_size=len(raw)
+        )
+
+    certificate_beyond_file = bytearray(raw[:discovery._MAX_DEBUG_PE_HEADER_BYTES])
+    pe_offset = int.from_bytes(certificate_beyond_file[0x3C:0x40], "little")
+    optional_offset = pe_offset + 24
+    certificate_offset = optional_offset + 112 + 4 * 8
+    certificate_beyond_file[certificate_offset:certificate_offset + 4] = (
+        len(raw) + 8
+    ).to_bytes(4, "little")
+    certificate_beyond_file[certificate_offset + 4:certificate_offset + 8] = (
+        8
+    ).to_bytes(4, "little")
+    with pytest.raises(
+        discovery.RuntimeDiscoveryError,
+        match="^WINDOWS_DEBUG_V5_PE_LAYOUT_INVALID$",
+    ):
+        discovery._parse_debug_amd64_pe_layout(
+            bytes(certificate_beyond_file), disk_file_size=len(raw)
+        )

@@ -5,7 +5,8 @@ Run this script from a directory outside the source checkout with the target
 virtual environment's interpreter.  It refuses source-tree imports, executes
 the exact packaged non-authoritative DSL prototype, validates the packaged
 QCP/census/measurement resources, and replays the pinned Release 1 conformance
-vector twice under the exact reference runtime profile.
+vector twice under the exact reference runtime profile.  It also binds the
+installed R2.0 `/5` schemas and public fail-closed validator entry points.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from cisco_toolkit import transition_contract as contract
 from cisco_toolkit import transition_dsl as dsl
 from cisco_toolkit import transition_legacy as legacy
 from cisco_toolkit import transition_pack as pack
+from cisco_toolkit import transition_runtime_discovery as runtime_discovery
 from cisco_toolkit import transition_runtime_inventory as runtime_inventory
 from cisco_toolkit import transition_verifier as verifier
 
@@ -26,8 +28,18 @@ from cisco_toolkit import transition_verifier as verifier
 _DISTRIBUTION = "cisco-migration-assessment-toolkit"
 _QCP_RESOURCE = "qcp-001.experimental.json"
 _MEASUREMENT_RESOURCE = "atlas-r2-dsl-prototype-measurements.v1.json"
+_V5_RUNTIME_SCHEMA_RESOURCE = "atlas-r2-windows-debug-runtime-discovery-v5.schema.json"
+_V5_ENVIRONMENT_SCHEMA_RESOURCE = (
+    "atlas-r2-windows-execution-environment-manifest-v5.schema.json"
+)
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
 _R1_REPLAY_DIGEST = "sha256:e92dbe997b92b3c6d1e3017408ac1a32e7364e14f61edd9202a67d9710a87c70"
+_V5_RUNTIME_SCHEMA_DIGEST = (
+    "sha256:bcb5ccc2b06d892978a70d2b984c7d104b6a7e2252114af5281c4002b9ba428f"
+)
+_V5_ENVIRONMENT_SCHEMA_DIGEST = (
+    "sha256:047478aed5fa8f83467a57afece872b59a831873670d1305390d071ea3c0ec5a"
+)
 
 
 def _installed_module_path() -> Path:
@@ -49,9 +61,75 @@ def _parsed(raw: bytes) -> dict:
     return value
 
 
+def _schema(raw: bytes) -> dict:
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("installed transition schema is not strict UTF-8 JSON") from exc
+    if type(value) is not dict:
+        raise RuntimeError("installed transition schema is not an object")
+    return value
+
+
 def main() -> int:
     module_path = _installed_module_path()
     package_root = resources.files("cisco_toolkit")
+    v5_runtime_schema_raw = package_root.joinpath(
+        "schemas", _V5_RUNTIME_SCHEMA_RESOURCE
+    ).read_bytes()
+    v5_environment_schema_raw = package_root.joinpath(
+        "schemas", _V5_ENVIRONMENT_SCHEMA_RESOURCE
+    ).read_bytes()
+    v5_runtime_schema = _schema(v5_runtime_schema_raw)
+    v5_environment_schema = _schema(v5_environment_schema_raw)
+    expected_v5_exports = {
+        "capture_windows_debug_runtime_closure_v5_incomplete",
+        "validate_windows_debug_execution_environment_v5_manifest",
+        "validate_windows_debug_runtime_discovery_v5_trace",
+    }
+    if (
+        contract.bytes_digest(v5_runtime_schema_raw) != _V5_RUNTIME_SCHEMA_DIGEST
+        or contract.bytes_digest(v5_environment_schema_raw)
+        != _V5_ENVIRONMENT_SCHEMA_DIGEST
+        or v5_runtime_schema.get("$id")
+        != "urn:atlas:schema:r2-windows-debug-runtime-discovery:5"
+        or v5_runtime_schema.get("$defs", {}).get("claimBoundary", {}).get("const")
+        != runtime_discovery.WINDOWS_DEBUG_MAPPED_IMAGE_CLAIM_BOUNDARY
+        or "memory_region_passes"
+        not in v5_runtime_schema.get("$defs", {}).get("fileIdentityRow", {}).get(
+            "required", []
+        )
+        or "memory_regions"
+        in v5_runtime_schema.get("$defs", {}).get("fileIdentityRow", {}).get(
+            "required", []
+        )
+        or v5_environment_schema.get("$id")
+        != "urn:atlas:schema:r2-windows-execution-environment-manifest:5"
+        or v5_environment_schema.get("$defs", {}).get("captureProtocol", {}).get(
+            "const"
+        )
+        != runtime_discovery.WINDOWS_DEBUG_MAPPED_IMAGE_CAPTURE_PROTOCOL
+        or not expected_v5_exports.issubset(set(runtime_discovery.__all__))
+    ):
+        raise RuntimeError("installed `/5` schemas or public API drifted")
+    invalid_v5_calls = (
+        (
+            runtime_discovery.validate_windows_debug_runtime_discovery_v5_trace,
+            "WINDOWS_DEBUG_V5_RUNTIME_TRACE_COMMON_INVALID",
+        ),
+        (
+            runtime_discovery.validate_windows_debug_execution_environment_v5_manifest,
+            "WINDOWS_DEBUG_V5_EXECUTION_ENVIRONMENT_MANIFEST_INVALID",
+        ),
+    )
+    for validator, expected_code in invalid_v5_calls:
+        try:
+            validator({})
+        except runtime_discovery.RuntimeDiscoveryError as exc:
+            if exc.code != expected_code:
+                raise RuntimeError("installed `/5` validator reason drifted") from exc
+        else:
+            raise RuntimeError("installed `/5` validator accepted an empty artifact")
     qcp_raw = package_root.joinpath("data", _QCP_RESOURCE).read_bytes()
     qcp = pack.bind_pack_manifest_bytes(qcp_raw)
     if qcp.digest != _QCP_DIGEST:
@@ -292,6 +370,11 @@ def main() -> int:
         "runtime_profile_digest": bundle.runtime_profile_digest,
         "semantic_bundle_digest": bundle.digest,
         "structural_tcb_budget_state": census["budget_gate"]["budget_state"],
+        "v5_environment_schema_digest": contract.bytes_digest(
+            v5_environment_schema_raw
+        ),
+        "v5_runtime_schema_digest": contract.bytes_digest(v5_runtime_schema_raw),
+        "v5_validator_empty_artifacts_refused": True,
     }, ensure_ascii=True, sort_keys=True))
     return 0
 
