@@ -4,6 +4,24 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-08-24] — Closed a work campaign without converting its blockers into a release claim
+
+- Recorded an incomplete experimental checkpoint with its exact merge lineage, machine-owned status, residual
+  authority ledger, and a separately dependency-held discovery entry decision. R2.1-R2.6 remain deferred, and
+  no qualification, portability, promotion, or shipment claim was introduced.
+- `!lesson` **Closing a work campaign is not closing the product or its verifier gate.** Administrative state,
+  machine evidence, qualification, and shipment are different axes; record each independently so a completed
+  checklist cannot relabel an incomplete evidence state. `bridge-candidate`
+- `!lesson` **Green checks and mergeability do not manufacture independent approval.** Read the actual review
+  ledger and branch rule, preserve an absent reviewer as an external blocker, and continue only work whose truth
+  does not depend on pretending the protected change landed. `bridge-candidate`
+- `!lesson` **Regenerate derivative evidence only after selecting the source generation it describes.** Run
+  dependency-ordered producers from the exact integrated tree, then bind package, archive, graph, report,
+  relation, memory, and vault receipts to that same generation. `bridge-candidate`
+- `!lesson` **Clone-bound provenance must stay with its clone.** A root/HEAD receipt copied into an older dirty
+  checkout looks portable but asserts false custody; preserve the dirty checkout and keep canonical generated
+  evidence beside the standalone source that produced it. `bridge-candidate`
+
 ## [2026-07-26] — Closed the gate-refusal audit gap; every defect found afterwards was in a claim about the work, not the work
 
 - Shipped **#494** (refusals now append a durable `refuse` row to the ledger's audit array; `enforce`
