@@ -5,7 +5,7 @@ the morning briefing with any failure. The whole autonomy story rests on guards 
 appender, the protected-constraint tier, the learnings discipline, the SSOT reconcilers). A guard that has
 been **deleted or gutted** silently stops protecting — a *skipped* test is **red**, not green. This module
 re-derives, from the repo, whether each guard is present and actually asserting, plus whether the feedback
-substrate is being written, the graph is fresh, and the REAL protected-memory artifact is still pinned
+substrate is being written, guarded-refresh bookkeeping is current, and the REAL protected-memory artifact is still pinned
 (P0-1 / DEC-005 — the memory_guard mechanism's only live wiring).
 
 Every check returns **GREEN** (verified healthy), **RED** (verified broken — leads the briefing), or
@@ -17,13 +17,32 @@ crashes the nightly run.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 GREEN, RED, UNKNOWN = "GREEN", "RED", "UNKNOWN"
+GRAPHIFY_REFRESH_COMMAND = "py -3.12 -I -B tools/graphify_guarded.py update ."
+GRAPHIFY_REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/1"
+GRAPHIFY_GUARD_IDENTITY = {
+    "aliases": 5,
+    "ast_cache": "bypass-json-casefold",
+    "bytecode_writes": "disabled",
+    "contract": "graphify-json-extends-overlay/1",
+    "environment": "graphify-git-path-sanitized",
+    "extractor": "graphify/extractors/json_config.py",
+    "isolated": True,
+    "max_workers": 1,
+    "patched_sha256": "cb6b660bd2dee3f58e9007d0eac27883cd3bb3fe5d8136c13e8d83b92b90e011",
+    "source_sha256": "d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945",
+    "status": "pass",
+    "version": "0.9.47",
+}
 
 # The non-vacuity guards: each must exist AND actually assert something. A guard deleted or emptied is RED.
 GUARD_FILES = [
@@ -419,60 +438,177 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
                   "`python -m cisco_toolkit.memory_guard snapshot|verify` around a consolidation pass")
 
 
+def _stable_graph_identity(path: str) -> Dict[str, Any]:
+    """Hash one regular graph file and reject a replacement during the read."""
+    if os.path.islink(path):
+        raise ValueError("graph.json is a symlink")
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("graph.json is not a regular file")
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+        after = os.fstat(handle.fileno())
+    def identity(value):
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+    if identity(before) != identity(after):
+        raise ValueError("graph.json changed while hashing")
+    return {"sha256": digest.hexdigest(), "size": after.st_size}
+
+
+def _strict_json_equal(left: Any, right: Any) -> bool:
+    """JSON comparison that keeps booleans distinct from integers."""
+    try:
+        return json.dumps(left, allow_nan=False, sort_keys=True, separators=(",", ":")) == json.dumps(
+            right, allow_nan=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _guarded_refresh_time(root: str) -> Tuple[Optional[float], Optional[str]]:
+    """Validate clean-HEAD endpoint evidence and the still-identical graph bytes.
+
+    This local hook receipt is not a signed source-to-output attestation and cannot
+    exclude a source writer that changes and restores a file during extraction.
+    """
+    path = os.path.join(root, "graphify-out", ".guarded_refresh.json")
+    if not os.path.exists(path):
+        return None, None
+    try:
+        if os.path.islink(path) or os.path.getsize(path) > 16_384:
+            raise ValueError("receipt is not a bounded regular file")
+        with open(path, encoding="utf-8") as handle:
+            receipt = json.load(handle)
+        updated = datetime.fromisoformat(receipt["updated_at"])
+        guard = receipt["guard"]
+        python_version = guard.get("python") if isinstance(guard, dict) else None
+        if not isinstance(python_version, str):
+            raise ValueError("guard Python identity absent")
+        try:
+            python_parts = tuple(int(part) for part in python_version.split("."))
+        except ValueError as exc:
+            raise ValueError("guard Python identity invalid") from exc
+        expected_guard = {**GRAPHIFY_GUARD_IDENTITY, "python": python_version}
+        graph_path = os.path.join(root, "graphify-out", "graph.json")
+        graph_identity = _stable_graph_identity(graph_path)
+        head_proc = _run_git(root, "rev-parse", "--verify", "HEAD")
+        status_proc = _run_git(root, "status", "--porcelain")
+        if (
+            not isinstance(receipt, dict)
+            or set(receipt) != {"contract", "graph", "guard", "head", "phase", "root", "state", "updated_at"}
+            or receipt.get("contract") != GRAPHIFY_REFRESH_RECEIPT_CONTRACT
+            or receipt.get("phase") != "complete"
+            or receipt.get("state") != "clean"
+            or os.path.realpath(receipt.get("root", "")) != os.path.realpath(root)
+            or python_parts < (3, 12)
+            or not _strict_json_equal(guard, expected_guard)
+            or not _strict_json_equal(receipt.get("graph"), graph_identity)
+            or head_proc is None
+            or head_proc.returncode != 0
+            or receipt.get("head") != head_proc.stdout.strip()
+            or status_proc is None
+            or status_proc.returncode != 0
+            or bool(status_proc.stdout.strip())
+            or updated.tzinfo is None
+        ):
+            raise ValueError("receipt identity/state mismatch")
+        return updated.timestamp(), None
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        return None, f"guarded refresh receipt invalid: {exc}"
+
+
 def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str, str]:
-    """graph.json lives in the MAIN checkout (untracked) — absent in a worktree -> UNKNOWN, never RED/GREEN."""
+    """Verify bounded refresh bookkeeping; mtime is context, never refresh evidence."""
+    del stale_days  # identity, not elapsed wall time, determines currency
     p = os.path.join(root, "graphify-out", "graph.json")
     if not os.path.exists(p):
-        return _check("graph_fresh", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout; a worktree won't have it)")
+        return _check("graph_refresh_receipt", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout; a worktree won't have it)")
+    refreshed_at, receipt_error = _guarded_refresh_time(root)
     try:
-        age_days = (now - os.path.getmtime(p)) / 86400.0
+        topology_age = (now - os.path.getmtime(p)) / 86400.0
     except OSError as e:
-        return _check("graph_fresh", UNKNOWN, f"could not stat graph.json: {e!r}")
-    if age_days > stale_days:
-        return _check("graph_fresh", RED, f"stale: {age_days:.0f}d old (> {stale_days}d) — run: python -m graphify update .")
-    return _check("graph_fresh", GREEN, f"fresh ({age_days:.0f}d old)")
+        return _check("graph_refresh_receipt", UNKNOWN, f"could not stat graph.json: {e!r}")
+    if receipt_error:
+        return _check("graph_refresh_receipt", UNKNOWN, receipt_error)
+    if refreshed_at is None:
+        return _check(
+            "graph_refresh_receipt",
+            UNKNOWN,
+            f"topology write is {topology_age:.0f}d old, but no current guarded refresh receipt exists; "
+            "topology-neutral scans do not update graph.json mtime",
+        )
+    age_days = (now - refreshed_at) / 86400.0
+    return _check(
+        "graph_refresh_receipt",
+        GREEN,
+        f"guarded refresh completed at this clean HEAD; graph bytes still match "
+        f"(recorded {age_days:.0f}d ago; concurrent source writes are not excluded)",
+    )
 
 
-def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool], n_py: int,
-                          stale_py_files: int) -> Tuple[str, str]:
-    """The PURE decision for graph code-currency (no I/O -> exhaustively unit-testable). ``built``/``head``
+def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool],
+                          n_changed: Optional[int]) -> Tuple[str, str]:
+    """The PURE decision for graph topology-stamp currency. ``built``/``head``
     are non-empty commit strings; ``is_ancestor`` is whether ``built`` is an ancestor of ``head`` (None =
-    undeterminable); ``n_py`` is the count of .py files changed between them (only meaningful when
+    undeterminable); ``n_changed`` is the count of tracked paths changed between them (only meaningful when
     ``is_ancestor``). Coverage-honest: what cannot be evaluated is UNKNOWN, never a fabricated GREEN.
 
-    Low false-alarm by design: a graph legitimately lags HEAD between Stop-hook refreshes, so lagging is
-    GREEN-with-a-note; only EGREGIOUS code-drift (> ``stale_py_files`` .py files changed since the build,
-    i.e. the refresh is demonstrably not running) is RED — the actionable "the graph is silently wrong
-    for impact analysis" signal that mtime-freshness (:func:`check_graph_fresh`) cannot see."""
+    Graphify intentionally leaves ``built_at_commit`` unchanged after a successful refresh whose graph topology
+    is byte-equivalent. Any path drift is therefore a disclosed risk/UNKNOWN, not proof that the hook failed."""
     if head.startswith(built) or built.startswith(head):
         return GREEN, f"current (built at HEAD {head[:10]})"
     if is_ancestor is None:
         return UNKNOWN, f"built at {built[:10]}; ancestry vs HEAD {head[:10]} undeterminable"
     if not is_ancestor:
-        return UNKNOWN, (f"built at {built[:10]} — not in current history (rebased/rewritten); "
-                         "run: python -m graphify update .")
-    if n_py <= 0:
-        return GREEN, f"built at {built[:10]}; behind HEAD but no .py change since (reflects current code)"
-    if n_py > stale_py_files:
-        return RED, (f"CODE-STALE: {n_py} .py files changed since the graph was built ({built[:10]}) — "
-                     "the Stop-hook refresh isn't keeping up; run: python -m graphify update .")
-    return GREEN, f"built at {built[:10]}; {n_py} .py file(s) changed since (refreshes on the next edit)"
+        return UNKNOWN, (
+            f"built at {built[:10]} — not in current history (rebased/rewritten); "
+            f"from the main checkout root, run: {GRAPHIFY_REFRESH_COMMAND}"
+        )
+    if n_changed is None:
+        return UNKNOWN, (
+            f"built at {built[:10]}; changed-path denominator vs HEAD {head[:10]} unavailable"
+        )
+    if n_changed <= 0:
+        return GREEN, f"built at {built[:10]}; behind HEAD but no tracked path changed"
+    return UNKNOWN, (
+        f"built at topology write {built[:10]}; {n_changed} tracked path(s) changed since. "
+        "The stamp does not distinguish a missed refresh from a successful topology-neutral scan; "
+        f"from the main checkout root, run: {GRAPHIFY_REFRESH_COMMAND}"
+    )
 
 
 def _run_git(root: str, *args: str) -> Optional[subprocess.CompletedProcess]:
     """Run git in ``root``; None on any failure (the caller degrades to UNKNOWN — never crashes a run)."""
     try:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=15)
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+        }
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
     except Exception:
         return None
 
 
-def check_graph_commit_current(root: str, *, stale_py_files: int = 30) -> Dict[str, str]:
-    """Companion to :func:`check_graph_fresh`: mtime freshness is NOT code currency. A graph touched
-    recently (mtime-fresh) can still be built from OLD code if the Stop-hook refresh isn't running, and
-    impact analysis over a code-stale graph is *silently wrong* (Dimension A gap). This surfaces the
-    ``built_at_commit`` vs HEAD drift, measured in the .py files that changed since — the thing the
-    AST graph reflects. Absent graph / non-git / unreadable -> UNKNOWN (coverage-honest)."""
+def check_graph_commit_current(root: str) -> Dict[str, str]:
+    """Disclose ``built_at_commit`` vs HEAD without overstating the stamp.
+
+    The stamp records the last topology write, not the last successful full scan: Markdown body-only,
+    unsupported, and other topology-neutral changes can be scanned successfully without advancing it.
+    Any tracked-path drift is therefore UNKNOWN. Absent graph / non-git / unreadable is also UNKNOWN."""
     p = os.path.join(root, "graphify-out", "graph.json")
     if not os.path.exists(p):
         return _check("graph_commit", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout)")
@@ -488,7 +624,7 @@ def check_graph_commit_current(root: str, *, stale_py_files: int = 30) -> Dict[s
         return _check("graph_commit", UNKNOWN, "not a git checkout / HEAD unavailable")
     head = head_proc.stdout.strip()
     is_ancestor: Optional[bool] = None
-    n_py = 0
+    n_changed: Optional[int] = None
     if not (head.startswith(built) or built.startswith(head)):
         anc = _run_git(root, "merge-base", "--is-ancestor", built, head)
         if anc is not None and anc.returncode in (0, 1):
@@ -496,8 +632,13 @@ def check_graph_commit_current(root: str, *, stale_py_files: int = 30) -> Dict[s
             if is_ancestor:
                 diff = _run_git(root, "diff", "--name-only", built, head)
                 if diff is not None and diff.returncode == 0:
-                    n_py = sum(1 for ln in diff.stdout.splitlines() if ln.strip().endswith(".py"))
-    status, detail = _graph_commit_verdict(built, head, is_ancestor, n_py, stale_py_files)
+                    n_changed = sum(1 for line in diff.stdout.splitlines() if line.strip())
+    status, detail = _graph_commit_verdict(
+        built,
+        head,
+        is_ancestor,
+        n_changed,
+    )
     return _check("graph_commit", status, detail)
 
 
@@ -540,7 +681,7 @@ def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
         _guarded("guards_nonvacuous", check_guards_nonvacuous, root),
         _guarded("judge_trust", check_judge_trust, root),
         _guarded("protected_artifact", check_protected_artifact, root, memory_dir=memory_dir),
-        _guarded("graph_fresh", check_graph_fresh, root, now=now, stale_days=graph_stale_days),
+        _guarded("graph_refresh_receipt", check_graph_fresh, root, now=now, stale_days=graph_stale_days),
         _guarded("graph_commit", check_graph_commit_current, root),
     ]
     n_red = sum(1 for c in checks if c["status"] == RED)

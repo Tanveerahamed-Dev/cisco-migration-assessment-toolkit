@@ -20,7 +20,7 @@ Rules of engagement:
   work, don't stop at the first plausible answer, and don't ask me to do steps
   you can do yourself.
 - VERIFY OR IT DIDN'T HAPPEN: run the relevant tests / build / golden and
-  `graphify update .`, and show me the real output. If it fails, fix and re-run
+  from the main checkout root run `py -3.12 -I -B tools/graphify_guarded.py update .`, and show me the real output. If it fails, fix and re-run
   until green. Never imply success you didn't observe.
 - GROUND EVERYTHING: make no claims from memory that you can verify in seconds;
   label anything genuinely unverified as "unverified."

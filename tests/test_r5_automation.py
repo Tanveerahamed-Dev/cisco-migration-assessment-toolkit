@@ -38,7 +38,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS = os.path.join(ROOT, ".claude", "hooks")
 AGENTS = os.path.join(ROOT, ".claude", "agents")
 
-_BASH = shutil.which("bash")
+def _resolve_bash():
+    found = shutil.which("bash")
+    if found or os.name != "nt":
+        return found
+    for root in filter(None, (
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramW6432"),
+        os.environ.get("LOCALAPPDATA"),
+    )):
+        for relative in (("Git", "bin", "bash.exe"), ("Programs", "Git", "bin", "bash.exe")):
+            candidate = os.path.join(root, *relative)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+_BASH = _resolve_bash()
 _needs_bash = pytest.mark.skipif(not _BASH, reason="bash unavailable")
 
 

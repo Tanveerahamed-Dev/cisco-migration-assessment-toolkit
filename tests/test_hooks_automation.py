@@ -36,13 +36,32 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS = os.path.join(ROOT, ".claude", "hooks")
 
-_BASH = shutil.which("bash")
+def _resolve_bash():
+    found = shutil.which("bash")
+    if found or os.name != "nt":
+        return found
+    roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramW6432"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    for root in filter(None, roots):
+        for relative in (("Git", "bin", "bash.exe"), ("Programs", "Git", "bin", "bash.exe")):
+            candidate = os.path.join(root, *relative)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+_BASH = _resolve_bash()
 _GIT = shutil.which("git")
 _needs_shell = pytest.mark.skipif(not (_BASH and _GIT), reason="bash / git unavailable")
 
@@ -185,52 +204,219 @@ def test_pretooluse_graphify_hints_actually_fire(tmp_path):
     read_hint = [c for c in cmds if "additionalContext" in c and "file_path" in c]
     assert bash_hint and read_hint, "the graphify PreToolUse hint hooks are gone from settings.json"
 
-    if not os.path.isfile(os.path.join(ROOT, "graphify-out", "graph.json")):
-        pytest.skip("no graphify-out/graph.json in this checkout — the hints are gated on it")
+    hint_repo = tmp_path / "hint-repo"
+    (hint_repo / "graphify-out").mkdir(parents=True)
+    (hint_repo / "graphify-out" / "graph.json").write_text("{}\n", encoding="utf-8")
 
     hit = _run_command_string(bash_hint[0], _payload(
-        tmp_path, "b1", {"tool_name": "Bash", "tool_input": {"command": "grep -rn foo ."}}))
+        tmp_path, "b1", {"tool_name": "Bash", "tool_input": {"command": "grep -rn foo ."}}),
+        cwd=hint_repo)
     assert "graphify" in hit.stdout, \
         "the Bash search hint produced nothing for a grep command (dead interpreter?)"
-    json.loads(hit.stdout)
+    bash_context = json.loads(hit.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "py -3.12 -m graphify query" in bash_context
+    assert "`graphify query" not in bash_context
 
     miss = _run_command_string(bash_hint[0], _payload(
-        tmp_path, "b2", {"tool_name": "Bash", "tool_input": {"command": "python -m pytest -q"}}))
+        tmp_path, "b2", {"tool_name": "Bash", "tool_input": {"command": "python -m pytest -q"}}),
+        cwd=hint_repo)
     assert not miss.stdout.strip(), "the Bash hint fired for a command that does no searching"
 
     hit2 = _run_command_string(read_hint[0], _payload(
-        tmp_path, "r1", {"tool_name": "Read", "tool_input": {"file_path": "cisco_toolkit/model.py"}}))
+        tmp_path, "r1", {"tool_name": "Read", "tool_input": {"file_path": "cisco_toolkit/model.py"}}),
+        cwd=hint_repo)
     assert "graphify" in hit2.stdout, \
         "the Read/Glob hint produced nothing for a source file (dead interpreter?)"
-    json.loads(hit2.stdout)
+    read_context = json.loads(hit2.stdout)["hookSpecificOutput"]["additionalContext"]
+    for command in ("query", "explain", "path"):
+        assert f"py -3.12 -m graphify {command}" in read_context
+    assert "`graphify " not in read_context
 
     miss2 = _run_command_string(read_hint[0], _payload(
-        tmp_path, "r2", {"tool_name": "Read", "tool_input": {"file_path": "deliverables/out.xlsx"}}))
+        tmp_path, "r2", {"tool_name": "Read", "tool_input": {"file_path": "deliverables/out.xlsx"}}),
+        cwd=hint_repo)
     assert not miss2.stdout.strip(), "the Read hint fired for a non-source file"
 
 
 # --------------------------------------------------------------------- graph-refresh.sh
 # Fail-open MAINTENANCE (always exit 0), so exit status can never tell us whether it worked.
-# The observable is whether it reached the updater at all: shadow `graphify` through PYTHONPATH
-# so the update exits non-zero instantly and the hook's own warning line becomes the signal.
+# The updater deliberately runs Python in isolated mode, so PYTHONPATH cannot be the fixture.
+# Instead a pinned executable records the exact probe/update argv and returns controlled codes.
 
-def _graph_refresh_probe(tmp_path, filename):
-    repo = _git_repo(tmp_path, "gr_" + filename.replace(" ", "_").replace("/", "_"))
-    (repo / "graphify-out").mkdir()
-    (repo / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
-    (repo / filename).write_text("x = 1\n", encoding="utf-8")
-    env = _env_with(PYTHONPATH=_pythonpath_shim(tmp_path, "graphify", None, 7))
+
+def _receipt_shim(tmp_path, name):
+    shim = tmp_path / ("receipt-shim-" + name.replace(" ", "_").replace("/", "_") + ".py")
+    shim.write_text(
+        "import hashlib, json, os, sys\n"
+        "from datetime import datetime, timezone\n"
+        "mode, path, head, state = sys.argv[1:]\n"
+        "root = os.path.realpath(os.getcwd())\n"
+        "def graph():\n"
+        "    p = os.path.join(os.path.dirname(path), 'graph.json')\n"
+        "    data = open(p, 'rb').read()\n"
+        "    return {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}\n"
+        "def read():\n"
+        "    try:\n"
+        "        return json.load(open(path, encoding='utf-8'))\n"
+        "    except Exception:\n"
+        "        return None\n"
+        "def payload(phase):\n"
+        "    value = {'contract': 'test-refresh/1', 'guard': {'test_shim': True}, "
+        "'head': head, 'phase': phase, 'root': root, 'state': state, "
+        "'updated_at': datetime.now(timezone.utc).isoformat()}\n"
+        "    if phase == 'complete': value['graph'] = graph()\n"
+        "    return value\n"
+        "if mode == '--receipt-status':\n"
+        "    actual = read()\n"
+        "    expected = payload('complete')\n"
+        "    if actual: actual.pop('updated_at', None)\n"
+        "    expected.pop('updated_at', None)\n"
+        "    raise SystemExit(0 if state == 'clean' and actual == expected else 1)\n"
+        "if mode == '--receipt-pending':\n"
+        "    value = payload('pending')\n"
+        "elif mode == '--receipt-complete':\n"
+        "    current = read()\n"
+        "    expected = payload('pending')\n"
+        "    if current: current.pop('updated_at', None)\n"
+        "    expected.pop('updated_at', None)\n"
+        "    if current != expected: raise SystemExit(2)\n"
+        "    value = payload('complete')\n"
+        "else: raise SystemExit(2)\n"
+        "tmp = path + '.tmp'\n"
+        "with open(tmp, 'w', encoding='utf-8', newline='\\n') as f: json.dump(value, f)\n"
+        "os.replace(tmp, path)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return shim
+
+
+def _fake_graphify_python(tmp_path, name):
+    receipt_shim = _receipt_shim(tmp_path, name)
+    fake = tmp_path / ("fake-python-" + name.replace(" ", "_").replace("/", "_"))
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "{ printf 'CALL'; for arg in \"$@\"; do printf '\\t%s' \"$arg\"; done; "
+        "printf '\\n'; } >> \"$GRAPHIFY_FAKE_LOG\"\n"
+        "case \" $* \" in\n"
+        "  *' --probe '*) exit \"${GRAPHIFY_FAKE_PROBE_RC:-0}\" ;;\n"
+        f"  *' --receipt-'*) exec \"{Path(sys.executable).as_posix()}\" "
+        f"\"{receipt_shim.as_posix()}\" \"${{@:4}}\" ;;\n"
+        "  *' update . '*) [ -z \"${GRAPHIFY_FAKE_UPDATE_OUTPUT:-}\" ] || "
+        "printf '%s\\n' \"$GRAPHIFY_FAKE_UPDATE_OUTPUT\"; exit \"${GRAPHIFY_FAKE_UPDATE_RC:-0}\" ;;\n"
+        "  *) exit 97 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def _graph_refresh_repo(tmp_path, name, *, with_graph=True):
+    repo = _git_repo(tmp_path, name)
+    (repo / "tools").mkdir()
+    shutil.copy2(os.path.join(ROOT, "tools", "graphify_guarded.py"),
+                 repo / "tools" / "graphify_guarded.py")
+    (repo / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    subprocess.run([_GIT, "add", ".gitignore", "tools/graphify_guarded.py"],
+                   cwd=str(repo), check=True)
+    subprocess.run([_GIT, "commit", "-qm", "guard baseline"], cwd=str(repo), check=True)
+    if with_graph:
+        (repo / "graphify-out").mkdir()
+        (repo / "graphify-out" / "graph.json").write_text(
+            '{"sentinel":"unchanged"}\n', encoding="utf-8")
+    return repo
+
+
+def _complete_graph_refresh_receipt(repo, *, state="clean"):
+    head = subprocess.run(
+        [_GIT, "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    receipt = repo / "graphify-out" / ".guarded_refresh.json"
+    shim = _receipt_shim(repo.parent, repo.name + "-preseed")
+    for phase in ("--receipt-pending", "--receipt-complete"):
+        completed = subprocess.run(
+            [sys.executable, str(shim), phase, str(receipt), head, state],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completed.returncode == 0, completed.stderr
+    return receipt
+
+
+def _fake_only_path(tmp_path, fake):
+    """Put controlled python/python3/py shims before any host interpreter."""
+    fake_bin = tmp_path / (fake.name + "-bin")
+    fake_bin.mkdir()
+    for name in ("python", "python3", "py"):
+        target = fake_bin / name
+        shutil.copy2(fake, target)
+        target.chmod(0o755)
+    return str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _graph_refresh_probe(tmp_path, filename, *, probe_rc=0, update_rc=7):
+    slug = filename.replace(" ", "_").replace("/", "_")
+    repo = _graph_refresh_repo(tmp_path, "gr_" + slug)
+    content = '{"extends":"base.json"}\n' if filename.endswith((".json", ".jsonc")) \
+        else "x = 1\n"
+    (repo / filename).write_text(content, encoding="utf-8")
+    fake = _fake_graphify_python(tmp_path, slug)
+    log = tmp_path / ("graphify-argv-" + slug + ".log")
+    (repo / "graphify-out" / ".graphify_python").write_text(
+        fake.as_posix(), encoding="utf-8")
+    env = _env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC=str(probe_rc),
+        GRAPHIFY_FAKE_UPDATE_RC=str(update_rc),
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    )
+    if probe_rc:
+        env["PATH"] = _fake_only_path(tmp_path, fake)
     p = _run_hook("graph-refresh.sh", cwd=repo, env=env)
     assert p.returncode == 0, "graph-refresh must ALWAYS fail open; got rc=%d" % p.returncode
-    return "graph-refresh:" in p.stderr
+    calls = []
+    if log.exists():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            fields = line.split("\t")
+            assert fields[0] == "CALL"
+            calls.append(fields[1:])
+    return p, calls, repo
+
+
+def _is_guard_probe(call):
+    return (
+        len(call) == 4
+        and call[:2] == ["-I", "-B"]
+        and call[2].replace("\\", "/").endswith("/tools/graphify_guarded.py")
+        and call[3] == "--probe"
+    )
+
+
+def _is_guard_update(call):
+    return (
+        len(call) == 5
+        and call[:2] == ["-I", "-B"]
+        and call[2].replace("\\", "/").endswith("/tools/graphify_guarded.py")
+        and call[3:] == ["update", "."]
+    )
+
+
+def _is_any_update(call):
+    return len(call) >= 2 and call[-2:] == ["update", "."]
 
 
 @_needs_shell
 def test_graph_refresh_detects_an_ordinary_changed_source_file(tmp_path):
     """Baseline — without this the 'quoted path' test below would pass on a hook that never
     detects anything at all."""
-    assert _graph_refresh_probe(tmp_path, "mod.py"), \
-        "graph-refresh did not react to a plainly-named changed .py"
+    p, calls, _ = _graph_refresh_probe(tmp_path, "mod.py")
+    assert "guarded 'graphify update .' exited 7" in p.stderr
+    assert any(_is_guard_probe(call) for call in calls)
+    assert any(_is_guard_update(call) for call in calls)
 
 
 @_needs_shell
@@ -239,29 +425,336 @@ def test_graph_refresh_detects_a_path_git_has_to_quote(tmp_path):
     ends in `"` rather than `.py`. With a bare `\\.py$` the refresh silently skipped exactly those
     files and the graph rotted for them with no signal. Same defect class as verify-green.sh."""
     for name in ("my probe.py", "pr\u00fcbe.py"):
-        assert _graph_refresh_probe(tmp_path, name), (
+        p, calls, _ = _graph_refresh_probe(tmp_path, name)
+        assert "guarded 'graphify update .' exited 7" in p.stderr and any(
+            _is_guard_update(call) for call in calls), (
             "graph-refresh missed %r — git quotes that porcelain path, so the extension test "
             "must tolerate a trailing quote" % name)
 
 
 @_needs_shell
-def test_graph_refresh_is_inert_without_a_graph_or_a_code_change(tmp_path):
-    """Scope, both halves: no graph.json at all, and a docs-only change, must both be no-ops."""
-    repo = _git_repo(tmp_path, "gr_nograph")
-    (repo / "mod.py").write_text("x = 1\n", encoding="utf-8")
+def test_graph_refresh_detects_json_config_changes(tmp_path):
+    """The guarded extractor fixes JSON semantics, so JSON config edits must reach it."""
+    p, calls, _ = _graph_refresh_probe(tmp_path, "tsconfig.json")
+    assert "guarded 'graphify update .' exited 7" in p.stderr
+    assert any(_is_guard_update(call) for call in calls)
+
+
+@_needs_shell
+def test_graph_refresh_detects_document_changes(tmp_path):
+    """Markdown is part of the graph corpus, so a documentation-only edit is not inert."""
+    p, calls, _ = _graph_refresh_probe(tmp_path, "notes.md")
+    assert "guarded 'graphify update .' exited 7" in p.stderr
+    assert any(_is_guard_update(call) for call in calls)
+
+
+@_needs_shell
+def test_graph_refresh_detects_a_source_rename_to_an_unindexed_extension(tmp_path):
+    """A rename-away must remove the old source nodes even though the new suffix is not indexed."""
+    repo = _graph_refresh_repo(tmp_path, "gr_rename_away")
+    (repo / "old.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run([_GIT, "add", "old.py"], cwd=str(repo), check=True)
+    subprocess.run([_GIT, "commit", "-qm", "tracked source"], cwd=str(repo), check=True)
+    subprocess.run([_GIT, "mv", "old.py", "old.unindexed"], cwd=str(repo), check=True)
+
+    fake = _fake_graphify_python(tmp_path, "rename_away")
+    log = tmp_path / "graphify-argv-rename-away.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(
+        fake.as_posix(), encoding="utf-8")
     p = _run_hook("graph-refresh.sh", cwd=repo, env=_env_with(
-        PYTHONPATH=_pythonpath_shim(tmp_path, "graphify", None, 7)))
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="7",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    ))
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert p.returncode == 0 and "guarded 'graphify update .' exited 7" in p.stderr
+    assert any(_is_guard_update(call) for call in calls)
+
+
+@_needs_shell
+def test_graph_refresh_probe_failure_prevents_graph_mutation_but_allows_stop(tmp_path):
+    """A wrong version/hash is loud and cannot fall through to the mutating command."""
+    p, calls, repo = _graph_refresh_probe(tmp_path, "mod.py", probe_rc=19, update_rc=0)
+    assert p.returncode == 0
+    assert "guard probe failed" in p.stderr
+    assert "graph not mutated" in p.stderr
+    assert "0.9.47" in p.stderr
+    assert calls and all(not _is_any_update(call) for call in calls)
+    assert (repo / "graphify-out" / "graph.json").read_text(encoding="utf-8") == \
+        '{"sentinel":"unchanged"}\n'
+
+
+@_needs_shell
+def test_graph_refresh_git_status_failure_is_loud_and_does_not_mutate(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_status_failure")
+    # rev-parse still resolves the worktree, but status cannot read an index
+    # path that is a directory. This avoids PATH/MSYS executable rewriting.
+    index = repo / ".git" / "index"
+    index.unlink()
+    index.mkdir()
+
+    p = _run_hook("graph-refresh.sh", cwd=repo)
+
+    assert p.returncode == 0
+    assert "git status failed" in p.stderr
+    assert "graph not mutated" in p.stderr
+    assert (repo / "graphify-out" / "graph.json").read_text(encoding="utf-8") == \
+        '{"sentinel":"unchanged"}\n'
+
+
+@_needs_shell
+def test_graph_refresh_success_is_quiet_and_uses_guarded_update(tmp_path):
+    p, calls, _ = _graph_refresh_probe(tmp_path, "mod.py", update_rc=0)
+    assert not p.stderr.strip()
+    assert sum(_is_guard_probe(call) for call in calls) == 1
+    updates = [call for call in calls if _is_any_update(call)]
+    assert len(updates) == 1 and _is_guard_update(updates[0])
+
+
+@_needs_shell
+def test_graph_refresh_runs_for_clean_commit_drift_and_finalizes_current_receipt(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_clean_commit")
+    _complete_graph_refresh_receipt(repo)
+    (repo / "notes.md").write_text("# Structurally new\n", encoding="utf-8")
+    subprocess.run([_GIT, "add", "notes.md"], cwd=repo, check=True)
+    subprocess.run([_GIT, "commit", "-qm", "clean drift"], cwd=repo, check=True)
+
+    fake = _fake_graphify_python(tmp_path, "clean_commit")
+    log = tmp_path / "graphify-argv-clean-commit.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    env = _env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="0",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    )
+
+    p = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert p.returncode == 0 and not p.stderr.strip()
+    assert sum(_is_any_update(call) for call in calls) == 1
+    receipt = json.loads(
+        (repo / "graphify-out" / ".guarded_refresh.json").read_text(encoding="utf-8")
+    )
+    head = subprocess.run(
+        [_GIT, "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert receipt["phase"] == "complete"
+    assert receipt["state"] == "clean" and receipt["head"] == head
+
+
+@_needs_shell
+def test_graph_refresh_runs_when_ignored_graph_bytes_no_longer_match_receipt(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_graph_replaced")
+    _complete_graph_refresh_receipt(repo)
+    (repo / "graphify-out" / "graph.json").write_text(
+        '{"replaced":true}\n', encoding="utf-8"
+    )
+    fake = _fake_graphify_python(tmp_path, "graph_replaced")
+    log = tmp_path / "graphify-argv-graph-replaced.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    env = _env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="0",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    )
+
+    p = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert p.returncode == 0 and not p.stderr.strip()
+    assert sum(_is_any_update(call) for call in calls) == 1
+
+
+@_needs_shell
+def test_graph_refresh_reconciles_dirty_refresh_then_clean_revert_at_same_head(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_dirty_revert")
+    (repo / "tracked.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run([_GIT, "add", "tracked.py"], cwd=repo, check=True)
+    subprocess.run([_GIT, "commit", "-qm", "tracked baseline"], cwd=repo, check=True)
+    _complete_graph_refresh_receipt(repo)
+    (repo / "tracked.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    fake = _fake_graphify_python(tmp_path, "dirty_revert")
+    log = tmp_path / "graphify-argv-dirty-revert.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    env = _env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="0",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    )
+    first = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+    assert first.returncode == 0 and not first.stderr.strip()
+    dirty_receipt = json.loads(
+        (repo / "graphify-out" / ".guarded_refresh.json").read_text(encoding="utf-8")
+    )
+    assert dirty_receipt["phase"] == "complete" and dirty_receipt["state"] == "dirty"
+
+    subprocess.run([_GIT, "restore", "tracked.py"], cwd=repo, check=True)
+    log.unlink()
+    second = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert second.returncode == 0 and not second.stderr.strip()
+    assert sum(_is_any_update(call) for call in calls) == 1
+    clean_receipt = json.loads(
+        (repo / "graphify-out" / ".guarded_refresh.json").read_text(encoding="utf-8")
+    )
+    assert clean_receipt["phase"] == "complete" and clean_receipt["state"] == "clean"
+
+
+@_needs_shell
+def test_graph_refresh_ignores_ambient_git_checkout_redirection(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_git_env_target")
+    other = _git_repo(tmp_path, "gr_git_env_other")
+    (repo / "mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+    fake = _fake_graphify_python(tmp_path, "git_env")
+    log = tmp_path / "graphify-argv-git-env.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    env = _env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="7",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+        GIT_DIR=str(other / ".git"),
+        GIT_WORK_TREE=str(other),
+    )
+
+    p = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
+    assert p.returncode == 0 and "guarded 'graphify update .' exited 7" in p.stderr
+    assert any(_is_guard_update(call) for call in calls)
+
+
+def test_graph_refresh_has_no_unbounded_update_fallback():
+    text = _read(".claude", "hooks", "graph-refresh.sh")
+    assert 'if [ -z "$TIMEOUT" ]; then' in text
+    assert "single-worker refresh cannot be bounded" in text
+    assert '"$TIMEOUT" --kill-after=5s 180s "$PY" -I -B "$RUNNER" update .' in text
+    assert '"$TIMEOUT" --kill-after=2s 15s "$GIT" ' in text
+    assert "GIT=$(type -P git" in text
+    assert 'case "${_name^^}" in GIT_*)' in text
+    assert '"$TIMEOUT" 180 "$PY"' not in text
+    assert '\n  "$PY" -I -B "$RUNNER" update .' not in text
+    refresh = next(
+        hook
+        for entry in _settings()["hooks"]["Stop"]
+        for hook in entry["hooks"]
+        if "graph-refresh.sh" in hook.get("command", "")
+    )
+    assert refresh["timeout"] >= 600
+
+
+@_needs_shell
+def test_graph_refresh_failure_includes_a_bounded_producer_diagnostic(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_diagnostic")
+    (repo / "mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+    fake = _fake_graphify_python(tmp_path, "diagnostic")
+    log = tmp_path / "graphify-argv-diagnostic.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    sentinel = "G018: producer lock deliberately held"
+    p = _run_hook("graph-refresh.sh", cwd=repo, env=_env_with(
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="2",
+        GRAPHIFY_FAKE_UPDATE_OUTPUT=sentinel,
+    ))
+    assert p.returncode == 0
+    assert "exited 2" in p.stderr and sentinel in p.stderr
+    assert "bounded producer log tail" in p.stderr
+
+
+@_needs_shell
+def test_graph_refresh_serializes_and_recovers_an_expired_transaction_lock(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_transaction_lock")
+    (repo / "mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+    fake = _fake_graphify_python(tmp_path, "transaction_lock")
+    call_log = tmp_path / "graphify-argv-transaction-lock.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    lock = repo / "graphify-out" / ".guarded_refresh.lock"
+    lock.mkdir()
+    (lock / "owner").write_text("0 malformed\n", encoding="utf-8")
+    env = _env_with(
+        GRAPHIFY_FAKE_LOG=str(call_log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="7",
+    )
+
+    current = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+    calls = [line.split("\t")[1:] for line in call_log.read_text(encoding="utf-8").splitlines()]
+    assert "another guarded refresh owns" in current.stderr
+    assert all(not _is_any_update(call) for call in calls)
+
+    old = 1_000_000_000
+    os.utime(lock, (old, old))
+    call_log.unlink()
+    recovered = _run_hook("graph-refresh.sh", cwd=repo, env=env)
+    calls = [line.split("\t")[1:] for line in call_log.read_text(encoding="utf-8").splitlines()]
+    assert "guarded 'graphify update .' exited 7" in recovered.stderr
+    assert any(_is_guard_update(call) for call in calls)
+
+
+@_needs_shell
+def test_graph_refresh_stale_lock_recovery_never_dereferences_a_link(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_linked_transaction_lock")
+    (repo / "mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+    fake = _fake_graphify_python(tmp_path, "linked_transaction_lock")
+    call_log = tmp_path / "graphify-argv-linked-transaction-lock.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(fake.as_posix(), encoding="utf-8")
+    outside = tmp_path / "external-lock-target"
+    outside.mkdir()
+    sentinel = outside / "owner"
+    sentinel.write_text("must survive\n", encoding="utf-8")
+    lock = repo / "graphify-out" / ".guarded_refresh.lock"
+    try:
+        lock.symlink_to(outside, target_is_directory=True)
+        os.utime(lock, (1_000_000_000, 1_000_000_000), follow_symlinks=False)
+    except (NotImplementedError, OSError):
+        pytest.skip("directory symlink timestamps are unavailable")
+
+    p = _run_hook("graph-refresh.sh", cwd=repo, env=_env_with(
+        GRAPHIFY_FAKE_LOG=str(call_log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_FAKE_UPDATE_RC="7",
+    ))
+    assert p.returncode == 0
+    if not list((repo / "graphify-out").glob(".guarded_refresh.lock.stale.*")):
+        pytest.skip("Git Bash stat did not expose the symlink object's stale timestamp")
+    assert sentinel.read_text(encoding="utf-8") == "must survive\n"
+
+
+@_needs_shell
+def test_graph_refresh_is_inert_without_a_graph_or_with_a_current_clean_receipt(tmp_path):
+    """No graph and matching clean endpoint bookkeeping are the two deliberate no-op states."""
+    repo = _graph_refresh_repo(tmp_path, "gr_nograph", with_graph=False)
+    (repo / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    p = _run_hook("graph-refresh.sh", cwd=repo)
     assert p.returncode == 0 and "graph-refresh:" not in p.stderr, \
         "ran the updater with no graphify-out/graph.json to update"
 
-    repo2 = _git_repo(tmp_path, "gr_docsonly")
-    (repo2 / "graphify-out").mkdir()
-    (repo2 / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
-    (repo2 / "notes.md").write_text("docs only\n", encoding="utf-8")
+    repo2 = _graph_refresh_repo(tmp_path, "gr_clean")
+    receipt = _complete_graph_refresh_receipt(repo2)
+    receipt_before = receipt.read_bytes()
+    fake = _fake_graphify_python(tmp_path, "current-clean")
+    log = tmp_path / "graphify-argv-current-clean.log"
+    (repo2 / "graphify-out" / ".graphify_python").write_text(
+        fake.as_posix(), encoding="utf-8"
+    )
     p2 = _run_hook("graph-refresh.sh", cwd=repo2, env=_env_with(
-        PYTHONPATH=_pythonpath_shim(tmp_path, "graphify", None, 7)))
+        GRAPHIFY_FAKE_LOG=str(log),
+        GRAPHIFY_FAKE_PROBE_RC="0",
+        GRAPHIFY_RECEIPT_PYTHON=sys.executable,
+    ))
+    calls = [line.split("\t")[1:] for line in log.read_text(encoding="utf-8").splitlines()]
     assert p2.returncode == 0 and "graph-refresh:" not in p2.stderr, \
-        "a docs-only turn triggered a graph rebuild"
+        "a current clean receipt triggered a redundant graph rebuild"
+    assert sum(_is_guard_probe(call) for call in calls) == 1
+    assert all(not _is_any_update(call) for call in calls)
+    assert receipt.read_bytes() == receipt_before
 
 
 # --------------------------------------------------------------------- scorecard-append.sh

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # SessionStart hook — brief the engineer: toolkit version, branch, working-tree state,
 # latest evidence snapshot, a pointer to the ASNE roster + commands + doctrine, and a
-# "rot watch" (vault ingest/lint age, graphify graph age, memory sizes) so knowledge decay
+# "rot watch" (vault ingest/lint age, graphify currency, memory sizes) so knowledge decay
 # is visible at session start instead of discovered months later.
 # Cheap (no pytest). Fail-open: any error -> emit nothing (or omit the metric), exit 0.
 set -u
-cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
+# Git for Windows treats environment names case-insensitively. Clear every case
+# variant before the first repository lookup so a caller cannot redirect the brief.
+for _name in $(compgen -e); do
+  case "${_name^^}" in GIT_*) unset "$_name" ;; esac
+done
+GIT=$(type -P git 2>/dev/null || true)
+[ -z "$GIT" ] && exit 0
+cd "$("$GIT" rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
 # Resolve an interpreter that RUNS — `command -v python` succeeds for the Microsoft Store stub,
 # which exits 9009, so the SessionStart brief emitted nothing at all. The original left PY EMPTY
 # when nothing was found (not `echo python`), and that is preserved: callers below test for it.
@@ -26,13 +33,13 @@ fi
 
 ver=$(grep -E '^version *= *"' pyproject.toml 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 export ASNE_VER="${ver:-?}"
-export ASNE_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
-export ASNE_DIRTY="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-export ASNE_LAST="$(git log -1 --oneline 2>/dev/null)"
+export ASNE_BRANCH="$("$GIT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+export ASNE_DIRTY="$("$GIT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+export ASNE_LAST="$("$GIT" log -1 --oneline 2>/dev/null)"
 export ASNE_SNAP="$(ls -1t *.snapshot.json 2>/dev/null | head -1)"
 # graphify-out/ is untracked, so in a git worktree it exists only in the MAIN checkout;
 # --git-common-dir points at the main .git from any worktree ('.git' in the main checkout).
-export ASNE_GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null || echo '')"
+export ASNE_GIT_COMMON="$("$GIT" rev-parse --git-common-dir 2>/dev/null || echo '')"
 
 "$PY" - <<'PYEOF' 2>/dev/null || true
 import datetime, json, os, re, time
@@ -91,12 +98,22 @@ def _main_root():
         pass
     return os.getcwd()
 
-def _graph_age():
+def _graph_status():
+    root = _main_root()
     try:
-        d = int((time.time() - os.path.getmtime(os.path.join(_main_root(), "graphify-out", "graph.json"))) // 86400)
-        return str(d) + "d old"
+        graph_path = os.path.join(root, "graphify-out", "graph.json")
+        topology_d = int((time.time() - os.path.getmtime(graph_path)) // 86400)
     except Exception:
         return "missing"
+    try:
+        from cisco_toolkit.selfcheck import _guarded_refresh_time
+        refreshed_at, error = _guarded_refresh_time(root)
+        if refreshed_at is None or error:
+            raise ValueError(error or "receipt absent")
+        d = int((time.time() - refreshed_at) // 86400)
+        return "completed at this clean HEAD; graph bytes match receipt (%dd ago; concurrent writers not excluded)" % d
+    except Exception:
+        return "topology write %dd old; guarded refresh currency unverified" % topology_d
 
 def _auto_memory():
     # auto-memory dir for THIS project (slug = abs path with :\/ -> -). Claude Code keys
@@ -146,7 +163,7 @@ brief = (
     f"- Toolkit version: {os.environ.get('ASNE_VER','?')} · branch: {os.environ.get('ASNE_BRANCH','?')} · uncommitted files: {os.environ.get('ASNE_DIRTY','0')}\n"
     f"- Last commit: {os.environ.get('ASNE_LAST','?')}\n"
     f"- Latest evidence snapshot: {snap}\n"
-    f"- Rot watch: vault /ingest {_days_since_op('ingest')} · vault /lint {_days_since_op('lint')} (weekly per MASTER_PLAN §6) · graphify graph {_graph_age()} · bridge {_bridge()}\n"
+    f"- Rot watch: vault /ingest {_days_since_op('ingest')} · vault /lint {_days_since_op('lint')} (weekly per MASTER_PLAN §6) · graphify graph {_graph_status()} · bridge {_bridge()}\n"
     f"- Memory: {_auto_memory()} · agent-memory: {_agent_memory()}\n"
     f"- Learnings ({_learnings()}): distilled verifiable engine facts - read docs/quality/learnings.md\n"
     "- Specialist roster (delegate to these): assessment-analyst, config-security-auditor, topology-reachability-analyst, design-author, mop-change-author, nrfu-validator, deliverable-qa-reviewer, release-captain\n"
