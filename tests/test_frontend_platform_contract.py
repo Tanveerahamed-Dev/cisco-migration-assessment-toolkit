@@ -24,8 +24,8 @@ DEVELOPMENT_PACKAGES = {
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "6.0.5",
-    "vite": "8.2.1",
+    "@vitejs/plugin-react": "6.1.0",
+    "vite": "8.2.2",
 }
 
 
