@@ -29,7 +29,7 @@ from urllib.parse import quote, unquote
 import pytest
 
 from cisco_toolkit.d10_eval_set import find_graph_json, load_graph_settled
-from tools.verify_graph_report import KNOWN_EXTERNAL_REPORT_RESIDUALS, audit_graph_report
+from tools.verify_graph_report import audit_graph_report
 
 # A real graph is ~7.5k nodes; the degenerate worktree partials observed were ~76-122. This floor
 # cleanly separates "the full owner-machine graph" (assert) from "a worktree stub" (skip) - it is a
@@ -691,13 +691,12 @@ def test_relation_kinds_within_known_vocabulary():
 
 
 def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
-    """Audit the report exactly without promoting an external-tool defect.
+    """Require an exact report audit from the guarded producer.
 
-    Graphifyy 0.9.6 overstates displayed communities when a community contains
-    only synthetic nodes and emits hub names that can collide with exporter
-    filenames.  The report is therefore a derivative, never the graph owner.
-    A future producer fix may make this PASS; until then, only the explicitly
-    reviewed fixed-code residuals are allowed.  Any new category is red.
+    The report remains a derivative, never the graph owner. The guarded 0.9.47
+    producer corrects the structural-only summary partition, and the refreshed
+    membership-signature sidecar binds saved labels to current communities.
+    There are no allowed report residuals; every category is red.
     """
     _graph, path = _load_graph()
     report = Path(path).with_name("GRAPH_REPORT.md")
@@ -705,12 +704,11 @@ def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
 
     result = audit_graph_report(path, report)
 
-    assert "graph_report_label_membership_binding_unavailable" in result.error_codes
     assert result.counts.get("graph_nodes", 0) >= _SUBSTANTIAL_FLOOR, (
-        "the stable graph/report/labels snapshot became degenerate after the initial owner-machine check"
+        "the stable graph/report/labels/signature snapshot became degenerate after the initial owner-machine check"
     )
-    assert set(result.error_codes) <= KNOWN_EXTERNAL_REPORT_RESIDUALS, (
-        "GRAPH_REPORT.md has an unreviewed integrity failure category; run "
+    assert not result.error_codes, (
+        "GRAPH_REPORT.md has an integrity failure; run "
         "`python -m tools.verify_graph_report graphify-out/graph.json "
         "graphify-out/GRAPH_REPORT.md` for the categorical receipt"
     )

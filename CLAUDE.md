@@ -184,12 +184,14 @@ rebuild can remove a deliberately deleted privacy-offending node and heal increm
 these two producer gaps. Reconcile the residual tests only when upstream makes explicit include/ignore policy
 authoritative over both special scans.
 
-Graphifyy 0.9.47's official JSON extractor also applies its array branch to keys other than `extends`, producing
-false `extends` edges. `tools/graphify_guarded.py` requires the exact distribution version, import path, and
-reviewed extractor SHA-256; applies the one-line key predicate only in memory; verifies the corrected SHA-256;
-and rebinds all five live 0.9.47 extractor aliases before entering the CLI. The official AST-cache namespace
+Graphifyy 0.9.47's official JSON extractor applies its array branch to keys other than `extends`, producing
+false `extends` edges, and its report summary counts structural-only communities as shown even though navigation
+and sections exclude them. `tools/graphify_guarded.py` requires the exact distribution version, import paths, and
+reviewed extractor/reporter SHA-256 identities; applies both one-line corrections only in memory; verifies both
+corrected SHA-256 identities; and rebinds all five live extractor aliases plus the reporter's live `generate`
+alias before entering the CLI. The official AST-cache namespace
 does not bind extractor bytes, so the launcher preserves but never reads or writes JSON cache entries (including
-mixed-case `.JSON` suffixes). `--probe` attests the exact overlay, isolated `-I` process, `-B` bytecode-write suppression,
+mixed-case `.JSON` suffixes). `--probe` attests the exact overlays, isolated `-I` process, `-B` bytecode-write suppression,
 case-fold-safe cache bypass, sanitized ambient `GRAPHIFY_*`/`GIT_*` controls and executable lookup, and one-worker
 boundary. Every producer also holds the same OS-backed output lock; recursive reparse points and regular-file
 hard links under `graphify-out/` are rejected. Any mismatch exits
@@ -201,7 +203,7 @@ reuse and parallel speed for semantic closure. The command allowlist also reject
 every producer verb not listed above. The Stop receipt is local bookkeeping for wrapper exit 0, matching observed
 HEAD/status endpoints, and the final graph digest. It is not signed source-to-output provenance, producer-warning or
 corpus closure, and cannot exclude a concurrent writer changing and restoring source bytes during extraction. This
-bounds that extractor correction only—it is not verification of the rest of the wheel or its transitive dependencies.
+bounds those two corrections only—it is not verification of the rest of the wheel or its transitive dependencies.
 
 Rules:
 - For codebase questions, run `py -3.12 -m graphify query "<question>"` first. Use `py -3.12 -m graphify path "<A>" "<B>"`
@@ -217,15 +219,13 @@ Rules:
 - Offline NAVIGATION (replaces the never-existent wiki): `py -3.12 -m graphify tree` → graphify-out/GRAPH_TREE.html
   (D3 collapsible tree) and `py -3.12 -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
   broad architecture review; `god_nodes` is the fastest map of the core abstractions. **The report is a
-  derivative, not an SSOT:** the verifier remains bound to observed Graphifyy 0.9.6 behavior that can count structural-only communities as “shown”,
-  can emit colliding/overlong community hub targets that do not match its collision-safe exporter, and its normal
-  watch/update path does not refresh the membership-signature sidecar needed to bind saved labels to the current
-  communities. Before using
-  report community coverage or navigation as evidence, run
-  `py -3.12 -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md`; the current
-  fixed report-residual BLOCK leaves the separately validated `graph.json` available for query/compiler use but
-  withholds those report claims. An input/graph-invalid receipt establishes no such validity. The verifier is deliberately
-  bound to the observed 0.9.6 file/stub predicate; reconcile it explicitly when the external producer changes.
+  derivative, not an SSOT:** unguarded Graphifyy 0.9.47 can count structural-only communities as “shown”; the guarded
+  producer corrects that summary formula in memory. Before using report summary coverage as evidence, run
+  `py -3.12 -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md` and require exact PASS.
+  An older/unpatched report remains BLOCK while the separately validated `graph.json` stays available for
+  query/compiler use. An input/graph-invalid receipt establishes no such validity. The verifier is
+  deliberately bound to the observed 0.9.47 file/stub predicate; reconcile it explicitly when the external producer
+  changes.
 - EGRESS — do NOT use in this air-gapped repo (they break the no-egress doctrine): `graphify add <url>` (fetches
   URLs), `graphify label` (calls an LLM — forbidden even via a local backend: it would plant LLM-derived
   nodes, breaking the AST-only invariant above, which the local-Ollama carve-out does not license), and the

@@ -1,4 +1,4 @@
-"""Executable contract for the narrow Graphify 0.9.47 producer overlay."""
+"""Executable contract for the narrow Graphify 0.9.47 producer overlays."""
 
 from __future__ import annotations
 
@@ -39,24 +39,37 @@ def _reviewed_install_available() -> bool:
         distribution = metadata.distribution(guard.DIST_NAME)
         if distribution.version != guard.EXPECTED_VERSION:
             return False
-        matches = [
-            item
-            for item in (distribution.files or ())
-            if str(item).replace("\\", "/") == guard.EXTRACTOR_RELATIVE_PATH
-        ]
-        if len(matches) != 1:
-            return False
-        source = Path(distribution.locate_file(matches[0])).read_bytes()
+        sources = {}
+        for relative_path in (
+            guard.EXTRACTOR_RELATIVE_PATH,
+            guard.REPORT_RELATIVE_PATH,
+        ):
+            matches = [
+                item
+                for item in (distribution.files or ())
+                if str(item).replace("\\", "/") == relative_path
+            ]
+            if len(matches) != 1:
+                return False
+            sources[relative_path] = Path(distribution.locate_file(matches[0])).read_bytes()
     except (metadata.PackageNotFoundError, OSError, TypeError, ValueError):
         return False
-    return hashlib.sha256(source).hexdigest() == guard.EXPECTED_SOURCE_SHA256
+    return (
+        hashlib.sha256(sources[guard.EXTRACTOR_RELATIVE_PATH]).hexdigest()
+        == guard.EXPECTED_SOURCE_SHA256
+        and hashlib.sha256(sources[guard.REPORT_RELATIVE_PATH]).hexdigest()
+        == guard.EXPECTED_REPORT_SOURCE_SHA256
+    )
 
 
 class _Distribution:
     def __init__(self, root: Path, *, version: str = guard.EXPECTED_VERSION) -> None:
         self.root = root
         self.version = version
-        self.files = [PurePosixPath(guard.EXTRACTOR_RELATIVE_PATH)]
+        self.files = [
+            PurePosixPath(guard.EXTRACTOR_RELATIVE_PATH),
+            PurePosixPath(guard.REPORT_RELATIVE_PATH),
+        ]
 
     def locate_file(self, relative: PurePosixPath) -> Path:
         return self.root / Path(*relative.parts)
@@ -84,12 +97,46 @@ def _configure_synthetic_hashes(monkeypatch, source: bytes) -> bytes:
     return patched
 
 
+def _synthetic_report_source() -> bytes:
+    return (
+        b"def generate(communities, non_empty, thin_count_summary):\n"
+        b"    shown_count = len(communities) - thin_count_summary\n"
+        b"    return shown_count\n"
+    )
+
+
+def _configure_synthetic_report_hashes(monkeypatch, source: bytes) -> bytes:
+    patched = source.replace(
+        guard._REPORT_SOURCE_SENTINEL,
+        guard._REPORT_PATCHED_SENTINEL,
+        1,
+    )
+    monkeypatch.setattr(guard, "EXPECTED_REPORT_SOURCE_BYTES", len(source))
+    monkeypatch.setattr(
+        guard,
+        "EXPECTED_REPORT_SOURCE_SHA256",
+        hashlib.sha256(source).hexdigest(),
+    )
+    monkeypatch.setattr(guard, "EXPECTED_REPORT_PATCHED_BYTES", len(patched))
+    monkeypatch.setattr(
+        guard,
+        "EXPECTED_REPORT_PATCHED_SHA256",
+        hashlib.sha256(patched).hexdigest(),
+    )
+    return patched
+
+
 def _overlay_harness(tmp_path, monkeypatch):
     source = _synthetic_source()
     _configure_synthetic_hashes(monkeypatch, source)
+    report_source = _synthetic_report_source()
+    _configure_synthetic_report_hashes(monkeypatch, report_source)
     source_path = tmp_path / Path(*guard.EXTRACTOR_RELATIVE_PATH.split("/"))
     source_path.parent.mkdir(parents=True)
     source_path.write_bytes(source)
+    report_source_path = tmp_path / Path(*guard.REPORT_RELATIVE_PATH.split("/"))
+    report_source_path.parent.mkdir(parents=True, exist_ok=True)
+    report_source_path.write_bytes(report_source)
 
     original = types.ModuleType(guard.EXTRACTOR_MODULE)
     original.__file__ = str(source_path)
@@ -109,11 +156,21 @@ def _overlay_harness(tmp_path, monkeypatch):
     models = types.ModuleType("graphify.extractors.models")
     models._JS_CACHE_BYPASS_SUFFIXES = facade._JS_CACHE_BYPASS_SUFFIXES
 
+    report = types.ModuleType(guard.REPORT_MODULE)
+    report.__file__ = str(report_source_path)
+    original_generate = lambda *_args: "original"  # noqa: E731
+    report.generate = original_generate
+
+    graphify_package = types.ModuleType("graphify")
+    graphify_package.report = report
+
     modules = {
         guard.EXTRACTOR_MODULE: original,
         "graphify.extractors": extractors,
         "graphify.extractors.models": models,
         "graphify.extract": facade,
+        "graphify": graphify_package,
+        guard.REPORT_MODULE: report,
     }
     monkeypatch.setitem(sys.modules, guard.EXTRACTOR_MODULE, original)
 
@@ -126,12 +183,24 @@ def _overlay_harness(tmp_path, monkeypatch):
     def import_module(name):
         return modules[name]
 
-    return source_path, source, extractors, facade, get_distribution, import_module
+    return (
+        source_path,
+        source,
+        report_source_path,
+        report_source,
+        extractors,
+        facade,
+        graphify_package,
+        report,
+        get_distribution,
+        import_module,
+    )
 
 
 def test_reviewed_graphify_identity_constants_are_exact():
     assert guard.DIST_NAME == "graphifyy"
     assert guard.EXPECTED_VERSION == "0.9.47"
+    assert guard.GUARD_CONTRACT == "graphify-producer-overlays/2"
     assert guard.EXTRACTOR_RELATIVE_PATH == "graphify/extractors/json_config.py"
     assert guard.EXPECTED_SOURCE_BYTES == 9_723
     assert guard.EXPECTED_SOURCE_SHA256 == (
@@ -140,6 +209,15 @@ def test_reviewed_graphify_identity_constants_are_exact():
     assert guard.EXPECTED_PATCHED_BYTES == 9_744
     assert guard.EXPECTED_PATCHED_SHA256 == (
         "cb6b660bd2dee3f58e9007d0eac27883cd3bb3fe5d8136c13e8d83b92b90e011"
+    )
+    assert guard.REPORT_RELATIVE_PATH == "graphify/report.py"
+    assert guard.EXPECTED_REPORT_SOURCE_BYTES == 14_395
+    assert guard.EXPECTED_REPORT_SOURCE_SHA256 == (
+        "382d844327181b652bbcd3ebd9cc3f2ab63bbce30e6eb5da80ced2b1575d1d0a"
+    )
+    assert guard.EXPECTED_REPORT_PATCHED_BYTES == 14_393
+    assert guard.EXPECTED_REPORT_PATCHED_SHA256 == (
+        "b6855a4111f7aec351022fc0d7ed96359216eb3b48c307ea025b8b41ef600bb9"
     )
     assert guard.WORKER_ENV == "GRAPHIFY_MAX_WORKERS"
     assert guard.GUARDED_MAX_WORKERS == "1"
@@ -206,6 +284,122 @@ def test_verified_patch_rejects_an_unreviewed_result(monkeypatch):
         guard._verified_patch(source)
 
 
+def test_verified_report_patch_is_exact_and_does_not_modify_installed_source(
+    tmp_path, monkeypatch
+):
+    source = _synthetic_report_source()
+    expected = _configure_synthetic_report_hashes(monkeypatch, source)
+    installed = tmp_path / "report.py"
+    installed.write_bytes(source)
+
+    patched = guard._verified_report_patch(guard._read_stable_source(installed))
+
+    assert patched == expected
+    assert installed.read_bytes() == source
+    assert guard._REPORT_SOURCE_SENTINEL not in patched
+    assert patched.count(guard._REPORT_PATCHED_SENTINEL) == 1
+
+
+@pytest.mark.parametrize(
+    "mutator,code",
+    [
+        (lambda payload: payload + b"# drift\n", "G004"),
+        (
+            lambda payload: payload.replace(guard._REPORT_SOURCE_SENTINEL, b"# missing"),
+            "G004",
+        ),
+        (
+            lambda payload: payload.replace(
+                guard._REPORT_SOURCE_SENTINEL,
+                guard._REPORT_SOURCE_SENTINEL + b"\n" + guard._REPORT_SOURCE_SENTINEL,
+            ),
+            "G004",
+        ),
+    ],
+)
+def test_verified_report_patch_rejects_source_drift(monkeypatch, mutator, code):
+    source = _synthetic_report_source()
+    _configure_synthetic_report_hashes(monkeypatch, source)
+    with pytest.raises(guard.GuardFailure, match=code):
+        guard._verified_report_patch(mutator(source))
+
+
+def test_verified_report_patch_rejects_an_unreviewed_result(monkeypatch):
+    source = _synthetic_report_source()
+    _configure_synthetic_report_hashes(monkeypatch, source)
+    monkeypatch.setattr(guard, "EXPECTED_REPORT_PATCHED_SHA256", "0" * 64)
+    with pytest.raises(guard.GuardFailure, match="G005"):
+        guard._verified_report_patch(source)
+
+
+@pytest.mark.skipif(
+    not _reviewed_install_available(),
+    reason="the exact official Graphifyy 0.9.47 extractor and reporter are not installed",
+)
+def test_real_report_overlay_changes_only_the_mixed_partition_summary():
+    import networkx as nx
+
+    distribution = metadata.distribution(guard.DIST_NAME)
+    report_path = guard._locate_report(distribution)
+    source = report_path.read_bytes()
+    patched = guard._verified_report_patch(source)
+
+    def compile_generate(payload):
+        module = types.ModuleType(guard.REPORT_MODULE)
+        module.__file__ = str(report_path)
+        module.__package__ = "graphify"
+        exec(compile(payload.decode("utf-8"), str(report_path), "exec"), module.__dict__)
+        return module.generate
+
+    original_generate = compile_generate(source)
+    corrected_generate = compile_generate(patched)
+
+    mixed = nx.Graph()
+    for node in ("shown_a", "shown_b", "shown_c", "thin"):
+        mixed.add_node(node, label=node, source_file=f"{node}.py")
+    mixed.add_node("structural", label="structural.py", source_file="structural.py")
+    communities = {
+        1: ["shown_a", "shown_b", "shown_c"],
+        2: ["thin"],
+        3: ["structural"],
+    }
+    arguments = (
+        mixed,
+        communities,
+        {},
+        {},
+        [],
+        [],
+        {"warning": "fixture"},
+        {},
+        ".",
+    )
+    original = original_generate(*arguments)
+    corrected = corrected_generate(*arguments)
+
+    assert "3 communities (2 shown, 1 thin omitted)" in original
+    assert "3 communities (1 shown, 1 thin omitted)" in corrected
+    assert original.replace("(2 shown, 1 thin omitted)", "(1 shown, 1 thin omitted)") == corrected
+    assert corrected.count("### Community ") == 1
+
+    all_structural = nx.Graph()
+    all_structural.add_node("only", label="only.py", source_file="only.py")
+    all_structural_arguments = (
+        all_structural,
+        {1: ["only"]},
+        {},
+        {},
+        [],
+        [],
+        {"warning": "fixture"},
+        {},
+        ".",
+    )
+    assert original_generate(*all_structural_arguments) == corrected_generate(
+        *all_structural_arguments
+    )
+
+
 def test_distribution_path_and_version_are_fail_closed(tmp_path):
     wrong_version = _Distribution(tmp_path, version="0.9.48")
     with pytest.raises(guard.GuardFailure, match="G002"):
@@ -216,6 +410,11 @@ def test_distribution_path_and_version_are_fail_closed(tmp_path):
     with pytest.raises(guard.GuardFailure, match="G003"):
         guard._locate_extractor(ambiguous)
 
+    ambiguous_report = _Distribution(tmp_path)
+    ambiguous_report.files.append(PurePosixPath(guard.REPORT_RELATIVE_PATH))
+    with pytest.raises(guard.GuardFailure, match="G003"):
+        guard._locate_report(ambiguous_report)
+
 
 def test_overlay_rebinds_every_live_0947_alias_and_changes_only_extends_arrays(
     tmp_path, monkeypatch
@@ -223,8 +422,12 @@ def test_overlay_rebinds_every_live_0947_alias_and_changes_only_extends_arrays(
     (
         source_path,
         source,
+        report_source_path,
+        report_source,
         extractors,
         facade,
+        graphify_package,
+        report,
         get_distribution,
         import_module,
     ) = _overlay_harness(tmp_path, monkeypatch)
@@ -245,20 +448,28 @@ def test_overlay_rebinds_every_live_0947_alias_and_changes_only_extends_arrays(
     assert receipt["aliases"] == 5
     assert receipt["ast_cache"] == "bypass-json-casefold"
     assert receipt["contract"] == guard.GUARD_CONTRACT
+    assert receipt["report"] == guard.REPORT_RELATIVE_PATH
+    assert receipt["report_aliases"] == 1
+    assert receipt["report_source_sha256"] == guard.EXPECTED_REPORT_SOURCE_SHA256
+    assert receipt["report_patched_sha256"] == guard.EXPECTED_REPORT_PATCHED_SHA256
     assert source_path.read_bytes() == source
+    assert report_source_path.read_bytes() == report_source
+    assert graphify_package.report is report
 
     value = types.SimpleNamespace(type="array")
     assert corrected(value, "extends") == "array"
     assert corrected(value, "required") == "other"
+    assert report.generate({1: [], 2: [], 3: []}, {1: [], 2: []}, 1) == 1
+    assert report.generate({1: []}, {}, 0) == 0
 
 
 @pytest.mark.parametrize("broken_alias", [
     "package_module", "package_function", "registry", "facade", "dispatch", "cache",
-    "cache_identity",
+    "cache_identity", "report_package", "report_generate",
 ])
 def test_overlay_rejects_unexpected_alias_topology(tmp_path, monkeypatch, broken_alias):
     harness = _overlay_harness(tmp_path, monkeypatch)
-    _, _, extractors, facade, get_distribution, import_module = harness
+    _, _, _, _, extractors, facade, graphify_package, report, get_distribution, import_module = harness
     if broken_alias == "package_module":
         extractors.json_config = types.ModuleType("wrong")
     elif broken_alias == "package_function":
@@ -271,8 +482,12 @@ def test_overlay_rejects_unexpected_alias_topology(tmp_path, monkeypatch, broken
         facade._DISPATCH[".json"] = lambda _path: None
     elif broken_alias == "cache":
         facade._JS_CACHE_BYPASS_SUFFIXES = frozenset({".js"})
-    else:
+    elif broken_alias == "cache_identity":
         facade._JS_CACHE_BYPASS_SUFFIXES = set(facade._JS_CACHE_BYPASS_SUFFIXES)
+    elif broken_alias == "report_package":
+        graphify_package.report = types.ModuleType("wrong")
+    else:
+        report.generate = None
 
     with pytest.raises(guard.GuardFailure, match="G006"):
         guard._prepare_overlay(
@@ -281,10 +496,13 @@ def test_overlay_rejects_unexpected_alias_topology(tmp_path, monkeypatch, broken
         )
 
 
-def test_overlay_rejects_an_import_from_a_different_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize("module_name", [guard.EXTRACTOR_MODULE, guard.REPORT_MODULE])
+def test_overlay_rejects_an_import_from_a_different_path(
+    tmp_path, monkeypatch, module_name
+):
     harness = _overlay_harness(tmp_path, monkeypatch)
-    _, _, _, _, get_distribution, import_module = harness
-    import_module(guard.EXTRACTOR_MODULE).__file__ = str(tmp_path / "elsewhere.py")
+    *_, get_distribution, import_module = harness
+    import_module(module_name).__file__ = str(tmp_path / "elsewhere.py")
     with pytest.raises(guard.GuardFailure, match="G006"):
         guard._prepare_overlay(
             distribution_getter=get_distribution,
@@ -300,6 +518,10 @@ def test_probe_output_is_fixed_machine_readable_receipt(monkeypatch, capsys):
         "extractor": guard.EXTRACTOR_RELATIVE_PATH,
         "max_workers": 1,
         "patched_sha256": guard.EXPECTED_PATCHED_SHA256,
+        "report": guard.REPORT_RELATIVE_PATH,
+        "report_aliases": 1,
+        "report_patched_sha256": guard.EXPECTED_REPORT_PATCHED_SHA256,
+        "report_source_sha256": guard.EXPECTED_REPORT_SOURCE_SHA256,
         "source_sha256": guard.EXPECTED_SOURCE_SHA256,
         "status": "pass",
         "version": guard.EXPECTED_VERSION,
@@ -642,7 +864,7 @@ def test_guard_failure_is_bounded_and_never_enters_graphify(monkeypatch, capsys)
     assert not invoked
     assert not captured.out
     assert captured.err == (
-        "graphify-guard: G004: the extractor bytes do not match the reviewed 0.9.47 source; "
+        "graphify-guard: G004: the Graphify bytes do not match the reviewed 0.9.47 sources; "
         "no Graphify command was run.\n"
     )
 
@@ -770,7 +992,7 @@ def test_graphify_runtime_failure_is_not_misreported_as_a_preflight_failure(monk
 
 @pytest.mark.skipif(
     not _reviewed_install_available(),
-    reason="the exact official Graphifyy 0.9.47 extractor is not installed",
+    reason="the exact official Graphifyy 0.9.47 extractor and reporter are not installed",
 )
 def test_real_guarded_cli_keeps_a_parallel_sized_json_batch_on_the_overlay(tmp_path):
     """Twenty files would spawn workers that reload the faulty disk module without the policy."""
@@ -820,6 +1042,12 @@ def test_real_guarded_cli_keeps_a_parallel_sized_json_batch_on_the_overlay(tmp_p
     )
     installed_source = Path(distribution.locate_file(relative))
     before = hashlib.sha256(installed_source.read_bytes()).hexdigest()
+    report_relative = next(
+        item for item in distribution.files or ()
+        if str(item).replace("\\", "/") == guard.REPORT_RELATIVE_PATH
+    )
+    installed_report_source = Path(distribution.locate_file(report_relative))
+    report_before = hashlib.sha256(installed_report_source.read_bytes()).hexdigest()
     env = dict(os.environ)
     env[guard.WORKER_ENV] = "8"  # the wrapper must replace this attempted bypass
     completed = subprocess.run(
@@ -848,3 +1076,4 @@ def test_real_guarded_cli_keeps_a_parallel_sized_json_batch_on_the_overlay(tmp_p
     assert not [edge for edge in links if edge.get("relation") == "extends"]
     assert poisoned_cache.read_bytes() == poisoned_bytes
     assert hashlib.sha256(installed_source.read_bytes()).hexdigest() == before
+    assert hashlib.sha256(installed_report_source.read_bytes()).hexdigest() == report_before
