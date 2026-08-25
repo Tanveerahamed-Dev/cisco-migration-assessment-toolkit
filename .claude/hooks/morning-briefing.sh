@@ -6,7 +6,12 @@
 # Patterns mirror session-brief.sh (worktree-aware root, inline python, fail-open).
 # Fail-open: any error on a metric -> that line is omitted/marked '?'; never blocks. exit 0.
 set -u
-cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
+for _name in $(compgen -e); do
+  case "${_name^^}" in GIT_*) unset "$_name" ;; esac
+done
+GIT=$(type -P git 2>/dev/null || true)
+[ -z "$GIT" ] && exit 0
+cd "$("$GIT" rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
 # Resolve an interpreter that RUNS — `command -v python` succeeds for the Microsoft Store stub,
 # which exits 9009 and turns this briefing into a silent no-op. Fail-open behaviour is unchanged.
 PY=""
@@ -19,12 +24,12 @@ if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
 
 ver=$(grep -E '^version *= *"' pyproject.toml 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 export ASNE_VER="${ver:-?}"
-export ASNE_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
-export ASNE_DIRTY="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-export ASNE_LAST="$(git log -1 --oneline 2>/dev/null)"
+export ASNE_BRANCH="$("$GIT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+export ASNE_DIRTY="$("$GIT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+export ASNE_LAST="$("$GIT" log -1 --oneline 2>/dev/null)"
 export ASNE_SNAP="$(ls -1t *.snapshot.json 2>/dev/null | head -1)"
-export ASNE_GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null || echo '')"
-export ASNE_COMMITS_7D="$(git log --since='7 days ago' --oneline 2>/dev/null | wc -l | tr -d ' ')"
+export ASNE_GIT_COMMON="$("$GIT" rev-parse --git-common-dir 2>/dev/null || echo '')"
+export ASNE_COMMITS_7D="$("$GIT" log --since='7 days ago' --oneline 2>/dev/null | wc -l | tr -d ' ')"
 export ASNE_TODAY="$(date +%Y-%m-%d 2>/dev/null || echo '')"
 export ASNE_BRIEF_MODE="${1:-}"   # "--session" -> emit SessionStart JSON; else raw markdown
 
@@ -60,11 +65,21 @@ def read(path):
         return ""
 
 def graph_age():
+    root = main_root()
     try:
-        d = int((time.time() - os.path.getmtime(os.path.join(main_root(), "graphify-out", "graph.json"))) // 86400)
-        return d, (f"{d}d old" + ("  [!] stale (>7d) - run: python -m graphify update ." if d > 7 else ""))
+        graph_path = os.path.join(root, "graphify-out", "graph.json")
+        topology_d = int((time.time() - os.path.getmtime(graph_path)) // 86400)
     except Exception:
-        return None, "missing"
+        return None, "missing", False
+    try:
+        from cisco_toolkit.selfcheck import _guarded_refresh_time
+        refreshed_at, error = _guarded_refresh_time(root)
+        if refreshed_at is None or error:
+            raise ValueError(error or "receipt absent")
+        d = int((time.time() - refreshed_at) // 86400)
+        return d, f"completed at this clean HEAD; graph bytes match receipt ({d}d ago; concurrent writers not excluded)", True
+    except Exception:
+        return topology_d, (f"topology write {topology_d}d old; guarded refresh currency unverified"), False
 
 def lessons_queue():
     # !lesson bullets + LIFETIME bridge-candidate tags. This brief is vault-free (no /ingest
@@ -167,7 +182,7 @@ def intel_status():
     except Exception:
         return ""
 
-gday, gtxt = graph_age()
+gday, gtxt, gverified = graph_age()
 les, bc_life = lessons_queue()
 oi = open_items()
 td, tf = todos()
@@ -179,8 +194,8 @@ intel_note = intel_status()
 actions = []
 if sc_verdict == "RED":
     actions.append(f"Agent-system self-check is RED — {sc_red or 'a guard/substrate check failed'} (fix before trusting the nerves)")
-if gday is not None and gday > 7:
-    actions.append("Graph is stale (>7d) — refresh: `python -m graphify update .`")
+if not gverified:
+    actions.append("Graph refresh currency is unverified — let the guarded Stop hook complete from a clean main checkout")
 # No "await promotion" action here: this brief is vault-free (no /ingest watermark), so it cannot
 # tell promoted from pending. The honest, watermarked pending count lives in the SessionStart
 # rot-watch (session-brief.sh -> cisco_toolkit.bridge_queue). The cumulative count cried wolf here:

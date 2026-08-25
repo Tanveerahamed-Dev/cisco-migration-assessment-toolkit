@@ -37,7 +37,10 @@ def test_root_agents_carries_verified_host_continuity() -> None:
     assert "PowerShell 5.1" in text
     assert "avoid `&&`" in text
     assert "merge commits" in text
-    assert "graphify hook uninstall then" in text
+    assert "tools/graphify_guarded.py" in text
+    assert "`.git/hooks/post-commit`" in text
+    assert "imports `graphify.watch` directly" in text
+    assert "tracked guard" in text
     assert "POSIX-form path" in text
 
 
@@ -121,3 +124,17 @@ def test_claude_shared_context_describes_current_hook_semantics() -> None:
     assert "A pytest timeout is" in hook
     assert "still RED and exits 2" in hook
     assert "fail OPEN on timeout" not in hook
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".claude/commands/ask.md",
+        ".claude/commands/architect-plan.md",
+        ".claude/agents/assessment-analyst.md",
+    ],
+)
+def test_active_graph_query_guidance_uses_the_owner_host_launcher(path: str) -> None:
+    text = _read(path)
+    assert "py -3.12 -m graphify" in text
+    assert "python -m graphify" not in text

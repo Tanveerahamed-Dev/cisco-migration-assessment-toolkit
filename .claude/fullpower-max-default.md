@@ -16,7 +16,7 @@ Run a DYNAMIC AGENTIC LOOP (evaluator-optimizer + orchestrator-workers + autonom
 
 4. ACT — surgical changes in the surrounding code's style. For code, work test-first: write the test from expected input/output, watch it fail, then implement until it passes (let the test, not your own assertion, be the judge).
 
-5. VERIFY BY REFUTATION — never grade your own work. A fresh pass (a verification subagent or a clean re-read of ground truth) must actively try to DISPROVE each claim before reporting it. Run the real tests / build / golden / `graphify update .` and show the ACTUAL output. Where the proof is runtime behaviour, run it — don't infer.
+5. VERIFY BY REFUTATION — never grade your own work. A fresh pass (a verification subagent or a clean re-read of ground truth) must actively try to DISPROVE each claim before reporting it. Run the real tests / build / golden; from the main checkout root run `py -3.12 -I -B tools/graphify_guarded.py update .`; and show the ACTUAL output. Where the proof is runtime behaviour, run it — don't infer.
 
 6. EVALUATE -> REFINE — check against the step-1 criteria. If any fails, feed the SPECIFIC failure back and LOOP to step 4. Iterate until all hold, then ask once, honestly: "is this genuinely complete and correct?" Only then declare done.
 
