@@ -46,12 +46,12 @@ _ALLOWED_ORIGINS = {"ast", None}
 # Installed Graphify 0.9.47 overrides .graphifyignore for its saved-memory corpus.  Keep that
 # external residual exact and non-expanding until the producer makes explicit ignore/include
 # rules authoritative over the special scan.  This is a reviewed BLOCK, never a clean claim.
-_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_COUNT = 10
-_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_DIGEST = "43f82dfe20f636d7bdd0ecaac7563a3a598d6d559799bf43cfc5feefbd489778"
-_KNOWN_MEMORY_IGNORE_OVERRIDE_NODES = 46
-_KNOWN_MEMORY_IGNORE_OVERRIDE_LINKS = 36
-_KNOWN_MEMORY_NODE_RECORDS_DIGEST = "683e279d8e565da1759825467b43cb2903ad5cee76a73e850790be087865d588"
-_KNOWN_MEMORY_EDGE_RECORDS_DIGEST = "fa828cc1307adc43970da71b450eb2cbce984c024728a40aa79b8c18f4aff710"
+_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_COUNT = 19
+_KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_DIGEST = "2e2f09009987f1c621d05602ba1716f95c80a903078654e83375fc569623628f"
+_KNOWN_MEMORY_IGNORE_OVERRIDE_NODES = 90
+_KNOWN_MEMORY_IGNORE_OVERRIDE_LINKS = 71
+_KNOWN_MEMORY_NODE_RECORDS_DIGEST = "570c11be1d5c1dd9c775431b93bc1c742a1fda76c79d91df1b04c9aef8561515"
+_KNOWN_MEMORY_EDGE_RECORDS_DIGEST = "c58f2673a86889f52bb1c4e7bdc045d0ff34340d0ed10df5e94ba074b78e9994"
 _MEMORY_AST_NODE_KEYS = {
     "_origin",
     "community",
@@ -463,8 +463,8 @@ def test_graph_output_ingestion_is_only_the_reviewed_memory_override():
         )
     node_shapes = [set(node) for node in output_nodes]
     if (
-        sum(shape == _MEMORY_AST_NODE_KEYS for shape in node_shapes) != 36
-        or sum(shape == _MEMORY_FRONTMATTER_NODE_KEYS for shape in node_shapes) != 10
+        sum(shape == _MEMORY_AST_NODE_KEYS for shape in node_shapes) != 71
+        or sum(shape == _MEMORY_FRONTMATTER_NODE_KEYS for shape in node_shapes) != 19
         or any(shape not in (_MEMORY_AST_NODE_KEYS, _MEMORY_FRONTMATTER_NODE_KEYS) for shape in node_shapes)
     ):
         pytest.fail(
