@@ -151,6 +151,25 @@
       ]
     },
     {
+      "id": "transition_assurance",
+      "layer": 7,
+      "trust_zone": "experimental_contract_only",
+      "paths": [
+        "cisco_toolkit/_transition_runtime_debug.py",
+        "cisco_toolkit/schemas/",
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_dsl.py",
+        "cisco_toolkit/transition_legacy.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_runtime_closure.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
+        "cisco_toolkit/transition_runtime_inventory.py",
+        "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_workload_review.py"
+      ]
+    },
+    {
       "id": "deliverables",
       "layer": 8,
       "trust_zone": "presentation",
@@ -332,6 +351,7 @@
     ["release_distribution", "governance"],
     ["release_distribution", "sanitized_knowledge"],
     ["release_distribution", "atlas_portable"],
+    ["release_distribution", "transition_assurance"],
     ["master_reference", "repo_source"],
     ["master_reference", "release_distribution"],
     ["canonical_snapshot", "analysis"],

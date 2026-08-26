@@ -326,6 +326,24 @@ def test_protocol_evidence_owners_are_derived_truth() -> None:
     }.issubset(allowed)
 
 
+def test_release2_transition_owners_remain_experimental_and_distribution_bound() -> None:
+    contract = load_contract()
+    transition = next(
+        component for component in contract["components"] if component["id"] == "transition_assurance"
+    )
+    assert transition["trust_zone"] == "experimental_contract_only"
+    assert component_for_path("cisco_toolkit/transition_contract.py", contract) == "transition_assurance"
+    assert (
+        component_for_path(
+            "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json", contract
+        )
+        == "transition_assurance"
+    )
+    assert ("release_distribution", "transition_assurance") in {
+        tuple(edge) for edge in contract["allowed_edges"]
+    }
+
+
 def test_master_reference_ci_fetches_review_basis_history() -> None:
     workflow = (SITE_ROOT.parent / ".github" / "workflows" / "master-reference-ci.yml").read_text(
         encoding="utf-8"
