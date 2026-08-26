@@ -4,6 +4,15 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-08-26] — Removed the cryptography 49 audit blocker without changing R2 authority
+
+- The exact-`782ec774` package lane was functionally green but correctly remained RED because `cryptography 49.0.0` is affected by `PYSEC-2026-3552` and the root dependency excluded the fixed 50.x line.
+- Changed the root bound to `cryptography>=50,<51`, proved the repository's private `_rust.pyd` binding and RFC 8032 Ed25519/serialization behavior under exact 50.0.1, and reran the strict audit to zero known vulnerabilities with only the pre-existing named `PYSEC-2026-2858` exception.
+- Regenerated runtime inventory, DSL TCB/pack, measurements, structural census, and budget proposal in one consistent Python 3.12.10/external-site environment. Runtime remains 339 files, 148 Python modules, 30 observed native modules, nine blind spots, `PARTIAL_NONPORTABLE_PROTOTYPE`, and same-checkout-only.
+- Preserved two invalid attempts separately: a venv launcher under child `-S` exposed only seven native modules and failed `RUNTIME_INVENTORY_WINDOWS_NATIVE_ANCHOR_INVALID`; an overlong external TEMP caused Windows fixture path errors. Neither result is counted as source evidence.
+- Clean precommit evidence collected all 1,209 focused tests: 1,204 passed and five tracked-clean-only discovery tests skipped; all six producer gates, privacy, Ruff, cryptography compatibility, and the strict dependency audit passed. The five skips must run again from the committed exact tree.
+- `!lesson` **An isolated dependency environment and the measured interpreter are separate identities.** Keep the base executable fixed, inject the isolated site explicitly, and bind every downstream producer to that same pair; otherwise exact evidence can reject itself before the intended authority interlock. `bridge-candidate`
+
 ## [2026-08-26] — Re-formed the incomplete R2 closeout on exact current main
 
 - Preserved both histories in two-parent merge `bf113644eedc39249a710fc7005226f560af8bb9`; `docs/ssot.md` was the sole shared path and retains the current Graphify owner contract plus every R2 owner and authority rule.
