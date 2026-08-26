@@ -31,9 +31,20 @@
 # re-materialization — here the pinned bytes happen to be CRLF, so the only safe rule is "do not
 # touch". Never "fix" trailing whitespace in these files either; it is publisher data and is hashed.
 reference-data/official-sources/** -text
+
+# Atlas R1/R2 manifests bind these source and asset bytes directly.  Keep their
+# checkout representation LF-exact on Windows as well as Linux; otherwise
+# core.autocrlf=true changes the measured source without changing the Git blob.
+cisco_toolkit/**/*.py text eol=lf
+cisco_toolkit/**/*.html text eol=lf
+cisco_toolkit/**/*.json text eol=lf
+tools/**/*.py text eol=lf
+webapp/backend/**/*.py text eol=lf
+webapp/frontend/src/api.ts text eol=lf
+
 # The installed-wheel/Atlas EoL fixture is an exact byte-for-byte copy of the
 # retained source above and is checked against the same SHA-256 at runtime.
-cisco_toolkit/data/eol-bulletins.json -text
+cisco_toolkit/data/eol-bulletins.json -text -eol
 
 # The built AssessHub SPA is TRACKED so the wheel's bytes can be bound to a commit (without it,
 # `distribution_verify --require-source-binding` exits 3 when shipped SPA members are outside the
