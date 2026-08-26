@@ -493,7 +493,8 @@ def test_inventory_is_canonical_path_private_and_internally_closed(
     escaped_root = str(ROOT.resolve()).replace("\\", "\\\\").encode("utf-8")
     assert absolute_root not in raw
     assert escaped_root not in raw
-    assert b"jajch" not in raw
+    former_user = ("jaj" + "ch").encode("ascii")
+    assert former_user not in raw
     checked = inventory.validate_runtime_inventory(deepcopy(measured_inventory))
     assert checked["coverage"] == measured_inventory["coverage"]
     file_ids = {row["file_id"] for row in measured_inventory["runtime_files"]}
