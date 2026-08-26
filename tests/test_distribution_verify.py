@@ -259,7 +259,7 @@ def test_transition_runtime_data_assets_are_explicit_package_data_and_required()
 
 def test_transition_qualification_crypto_is_an_explicit_base_dependency() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert "cryptography>=49,<50" in project["project"]["dependencies"]
+    assert "cryptography>=50,<51" in project["project"]["dependencies"]
 
 
 def test_privacy_boundary_rejects_tests_office_files_and_non_sample_snapshots():

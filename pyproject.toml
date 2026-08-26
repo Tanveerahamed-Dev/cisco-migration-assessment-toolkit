@@ -54,7 +54,7 @@ dependencies = [
     "python-multipart>=0.0.9,<1",
     # Atlas R2 qualification receipts verify Ed25519 signatures directly.  Keep this an explicit
     # dependency rather than relying on netmiko/paramiko to provide a security boundary transitively.
-    "cryptography>=49,<50",
+    "cryptography>=50,<51",
 ]
 
 [project.optional-dependencies]
