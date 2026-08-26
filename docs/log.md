@@ -4,6 +4,20 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-08-26] — Re-formed the incomplete R2 closeout on exact current main
+
+- Preserved both histories in two-parent merge `bf113644eedc39249a710fc7005226f560af8bb9`; `docs/ssot.md` was the sole shared path and retains the current Graphify owner contract plus every R2 owner and authority rule.
+- Regenerated the clone-bound runtime/measurement/census/budget chain and its exact test pins. Machine state remains experimental, partial, unapproved, source-unselected, same-checkout-only, non-promoting, and blocking R2.0 completion.
+- Kept the 2026-08-24 closeout and its 8,159-test broad timeout as historical evidence; current exact-tree results are additive and cannot overwrite it.
+- `!lesson` **Technical merge and independent approval are different facts.** PRs #534 and #531 are in main, but zero reviews and `REVIEW_REQUIRED` supply no qualification or acceptance authority. `bridge-candidate`
+- `!lesson` **A read-only query can still hydrate a partial clone.** Set `GIT_NO_LAZY_FETCH=1` before object reads against a promisor remote; one omitted guard populated blob `119ac777f8950dbe1f9edabea61854db074c237b` in up to three auxiliary PR529 object caches. No ref, index, or worktree changed, and the canonical R2/R3 and protected Enhancements repositories were unaffected. `bridge-candidate`
+
+## [2026-08-26] — BAR-040 failed closed before a scoreable R3 observation
+
+- One authorized observation exited `2` at P0 with `P0_BROWSER_CONTRACT_INCOMPLETE`; no output directory, receipt, P1/P2 result, or N1–N7 evidence exists, and the exact predicate remains unknown.
+- The earlier three reviewer GOs apply only to the frozen harness bytes. The one-observation authority is consumed; a retry requires corrected newly frozen bytes, three fresh reviews, custody validation, and explicit new authority.
+- `!lesson` **A reviewed harness is not a completed observation.** Preserve no-receipt failures as unknown evidence and never infer acceptance, rejection, or retry authority from them. `bridge-candidate`
+
 ## [2026-08-24] — Closed a work campaign without converting its blockers into a release claim
 
 - Recorded an incomplete experimental checkpoint with its exact merge lineage, machine-owned status, residual
