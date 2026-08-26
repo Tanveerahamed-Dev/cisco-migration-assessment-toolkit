@@ -59,7 +59,7 @@ _WINDOWS_EXECUTION_ENVIRONMENT_V5_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json"
 )
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:33fc92fd505b40b637f32b02856e67b9181f8e594989c376a226179ce6d811af"
+_TCB_CENSUS_DIGEST = "sha256:2aa546f1b9772acfeb2fcd9d1d45be475c2862f3c796844ab7472413542bf83e"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -577,7 +577,7 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
         "PARTIAL_NONPORTABLE_PROTOTYPE"
     )
     assert value["executable_prototype"]["runtime_inventory"] == {
-        "asset_digest": "sha256:1a299f0e1c2545f464f1dce92d11ce6cdb185c710cca03635c56066898f259c8",
+        "asset_digest": "sha256:447a4e27eb7bea4fe4ee32173fc16a10ba8d65474c578179975b4faa3a33719c",
         "blind_spot_count": 9,
         "claim_boundary": (
             "Exact-byte inventory of the observed isolated reference process and bounded "
