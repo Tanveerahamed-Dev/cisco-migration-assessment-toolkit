@@ -192,6 +192,21 @@ def measured_inventory() -> dict:
     )
 
 
+@pytest.fixture(scope="module")
+def native_edge_reference_inventory() -> dict:
+    raw = (ROOT / inventory.RUNTIME_INVENTORY_RESOURCE_PATH).read_bytes()
+    value = contract.parse_canonical_json_bytes(raw, require_canonical=True)
+    inventory.validate_runtime_inventory(value)
+    assert value["platform"]["sys_platform"] == "win32"
+    assert value["native_dependencies"]
+    assert {
+        "RESOLVED_DETERMINISTIC_REFERENCE_ROOT",
+        "RESOLVED_OBSERVED_PROCESS_MODULE",
+        "UNRESOLVED",
+    } <= {row["resolution"] for row in value["native_dependencies"]}
+    return value
+
+
 def test_reference_profile_executes_non_authoritative_dsl_and_raw_ed25519(
         measured_inventory: dict) -> None:
     profile = measured_inventory["profile"]
@@ -826,8 +841,8 @@ def test_inventory_rejects_unrecognized_runtime_file_role(
     ],
 )
 def test_inventory_enforces_closed_native_resolution_and_target_semantics(
-        measured_inventory: dict, mutation, code: str) -> None:
-    candidate = deepcopy(measured_inventory)
+        native_edge_reference_inventory: dict, mutation, code: str) -> None:
+    candidate = deepcopy(native_edge_reference_inventory)
     mutation(candidate)
     candidate["native_dependencies"].sort(key=lambda item: (
         item["requester_file_id"], item["import_kind"], item["import_name"],
@@ -838,8 +853,8 @@ def test_inventory_enforces_closed_native_resolution_and_target_semantics(
 
 
 def test_inventory_rejects_fictional_non_api_target_name_binding(
-        measured_inventory: dict) -> None:
-    candidate = deepcopy(measured_inventory)
+        native_edge_reference_inventory: dict) -> None:
+    candidate = deepcopy(native_edge_reference_inventory)
     edge = next(
         row for row in candidate["native_dependencies"]
         if row["resolution"] == "RESOLVED_DETERMINISTIC_REFERENCE_ROOT"
@@ -862,8 +877,8 @@ def test_inventory_rejects_fictional_non_api_target_name_binding(
 
 
 def test_inventory_rejects_native_edge_target_without_dependency_role(
-        measured_inventory: dict) -> None:
-    candidate = deepcopy(measured_inventory)
+        native_edge_reference_inventory: dict) -> None:
+    candidate = deepcopy(native_edge_reference_inventory)
     edge = next(
         row for row in candidate["native_dependencies"]
         if row["resolution"] == "RESOLVED_OBSERVED_PROCESS_MODULE"
@@ -1006,10 +1021,6 @@ def test_inventory_freezes_partial_claim_boundary_wording(
         lambda value: next(
             row for row in value["python_modules"] if row["origin_kind"] == "BUILTIN"
         ).update(classification="PROBE_NO_FILE"),
-        lambda value: next(
-            row for row in value["native_dependencies"]
-            if row["resolution"].startswith("RESOLVED_")
-        ).update(target_file_id=None),
         lambda value: value["native_scan_denominator"][0].update(
             status="SELF_ASSERTED_COMPLETE"
         ),
@@ -1025,6 +1036,18 @@ def test_runtime_inventory_schema_rejects_closed_domain_mutations(
         validator.validate(candidate)
 
 
+def test_runtime_inventory_schema_rejects_native_edge_closed_domain_mutation(
+        native_edge_reference_inventory: dict) -> None:
+    candidate = deepcopy(native_edge_reference_inventory)
+    next(
+        row for row in candidate["native_dependencies"]
+        if row["resolution"].startswith("RESOLVED_")
+    ).update(target_file_id=None)
+    validator = Draft202012Validator(json.loads(SCHEMA.read_bytes()))
+    with pytest.raises(ValidationError):
+        validator.validate(candidate)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -1033,7 +1056,6 @@ def test_runtime_inventory_schema_rejects_closed_domain_mutations(
         lambda value: value["python"].update(executable="C:/host/python.exe"),
         lambda value: value["runtime_files"][0].update(qualified=True),
         lambda value: value["python_modules"][0].update(ambient=True),
-        lambda value: value["native_dependencies"][0].update(executed=True),
         lambda value: value["native_scan_denominator"][0].update(qualified=True),
         lambda value: value["coverage"].update(promotion_eligible=True),
         lambda value: value["closure"].update(authority="SELF_ASSERTED"),
@@ -1044,6 +1066,16 @@ def test_inventory_nested_shapes_are_closed(
     candidate = deepcopy(measured_inventory)
     mutation(candidate)
     with pytest.raises(inventory.RuntimeInventoryError):
+        inventory.validate_runtime_inventory(candidate)
+
+
+def test_native_edge_shape_is_closed_against_reference_inventory(
+        native_edge_reference_inventory: dict) -> None:
+    candidate = deepcopy(native_edge_reference_inventory)
+    candidate["native_dependencies"][0].update(executed=True)
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="RUNTIME_INVENTORY_EDGE_ROW_INVALID"):
         inventory.validate_runtime_inventory(candidate)
 
 

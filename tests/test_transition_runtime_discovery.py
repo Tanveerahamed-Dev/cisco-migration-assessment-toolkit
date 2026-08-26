@@ -7,7 +7,7 @@ import inspect
 import json
 import multiprocessing
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import sys
 import time
@@ -439,6 +439,7 @@ def _install_fake_current_process_image_api(
         kernel32: SimpleNamespace) -> None:
     monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
     monkeypatch.setattr(discovery, "sys", _ModuleProxy(sys, platform="win32"))
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     monkeypatch.setattr(
         discovery.ctypes, "WinDLL", lambda *args, **kwargs: kernel32, raising=False
     )
@@ -459,10 +460,11 @@ def _prepare_fake_capture(
         "sys",
         _ModuleProxy(sys, platform="win32", executable=sys.executable),
     )
-    # Production should accept pathlib's concrete WindowsPath/PosixPath instances.  Pinning the
-    # constructor here lets the remaining unit assertions diagnose deeper evidence-boundary bugs
-    # even if an exact-type guard regresses independently.
-    monkeypatch.setattr(discovery, "Path", type(ROOT))
+    monkeypatch.setattr(
+        discovery,
+        "_capture_python_executable",
+        lambda: Path(sys.executable).resolve(strict=True),
+    )
     monkeypatch.setattr(
         discovery,
         "_resolve_local_no_reparse",
@@ -695,7 +697,7 @@ def test_current_process_image_helper_has_closed_shape_and_resolves_one_os_query
         "process": 0x1234,
         "flags": 0,
     }
-    assert resolve_calls == [(type(ROOT)(raw_image), False)]
+    assert resolve_calls == [(PureWindowsPath(raw_image), False)]
 
 
 @pytest.mark.parametrize(
@@ -765,6 +767,7 @@ def test_current_process_image_helper_stabilizes_api_and_path_failures(
 
 def test_capture_python_executable_uses_resolved_base_only_for_a_windows_venv(
         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     raw = {
         "prefix": r"C:\private-venv",
         "base_prefix": r"C:\Python312",
@@ -806,15 +809,16 @@ def test_capture_python_executable_uses_resolved_base_only_for_a_windows_venv(
     assert discovery._capture_python_executable() is resolved["base"]
     assert image_calls == 1
     assert resolve_calls == [
-        (type(ROOT)(raw["prefix"]), True),
-        (type(ROOT)(raw["base_prefix"]), True),
-        (type(ROOT)(raw["launcher"]), False),
-        (type(ROOT)(raw["base"]), False),
+        (PureWindowsPath(raw["prefix"]), True),
+        (PureWindowsPath(raw["base_prefix"]), True),
+        (PureWindowsPath(raw["launcher"]), False),
+        (PureWindowsPath(raw["base"]), False),
     ]
 
 
 def test_capture_python_executable_detects_nonvenv_from_resolved_prefixes_and_skips_base(
         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     class Runtime:
         platform = "win32"
         implementation = SimpleNamespace(name="cpython")
@@ -853,9 +857,9 @@ def test_capture_python_executable_detects_nonvenv_from_resolved_prefixes_and_sk
     assert discovery._capture_python_executable() is resolved_launcher
     assert image_calls == 1
     assert calls == [
-        (type(ROOT)(Runtime.prefix), True),
-        (type(ROOT)(Runtime.base_prefix), True),
-        (type(ROOT)(Runtime.executable), False),
+        (PureWindowsPath(Runtime.prefix), True),
+        (PureWindowsPath(Runtime.base_prefix), True),
+        (PureWindowsPath(Runtime.executable), False),
     ]
 
 
@@ -907,6 +911,7 @@ def test_capture_python_executable_stabilizes_malformed_runtime_metadata(
         invalid: Any,
         windows_venv: bool,
         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     raw: dict[str, Any] = {
         "prefix": r"C:\private-venv" if windows_venv else r"C:\Python312",
         "base_prefix": r"C:\Python312",
@@ -950,6 +955,7 @@ def test_capture_python_executable_stabilizes_malformed_runtime_metadata(
 
 def test_capture_python_executable_stabilizes_metadata_path_resolution_failure(
         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
     monkeypatch.setattr(discovery, "sys", SimpleNamespace(
         platform="win32",
@@ -985,6 +991,7 @@ def test_capture_python_executable_rejects_os_image_metadata_mismatch(
         windows_venv: bool,
         image_kind: str,
         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     raw_prefix = r"C:\private-venv" if windows_venv else r"C:\Python312"
     raw_base_prefix = r"C:\Python312"
     raw_launcher = (
@@ -1036,6 +1043,7 @@ def test_capture_python_executable_rejects_os_image_metadata_mismatch(
 
 def test_capture_python_executable_propagates_one_os_image_failure_without_fallback(
         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discovery, "Path", PureWindowsPath)
     monkeypatch.setattr(discovery, "os", _ModuleProxy(os, name="nt"))
     monkeypatch.setattr(discovery, "sys", SimpleNamespace(
         platform="win32",
