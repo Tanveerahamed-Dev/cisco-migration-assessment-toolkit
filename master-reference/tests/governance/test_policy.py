@@ -342,6 +342,9 @@ def test_release2_transition_owners_remain_experimental_and_distribution_bound()
     assert ("release_distribution", "transition_assurance") in {
         tuple(edge) for edge in contract["allowed_edges"]
     }
+    assert ("transition_assurance", "parse_model") in {
+        tuple(edge) for edge in contract["allowed_edges"]
+    }
 
 
 def test_master_reference_ci_fetches_review_basis_history() -> None:

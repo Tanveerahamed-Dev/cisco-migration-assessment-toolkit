@@ -316,6 +316,7 @@
     ["governance", "evidence_access"],
     ["governance", "evidence_intake"],
     ["governance", "release_distribution"],
+    ["transition_assurance", "parse_model"],
     ["deliverables", "parse_model"],
     ["deliverables", "canonical_snapshot"],
     ["deliverables", "analysis"],
