@@ -11,10 +11,53 @@ _REQUIRED_RUNTIME_ASSETS = (
     _ROOT / "webapp" / "frontend" / "dist" / "index.html",
     _ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json",
     _ROOT / "cisco_toolkit" / "data" / "registry_manifest.json",
+    _ROOT / "cisco_toolkit" / "data" / "qcp-001.experimental.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-executable-bundle.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-source-bundle.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-retrospective-after.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-retrospective-before.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r1-retrospective-comparison.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-structural-tcb-census.v1.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-dsl-prototype-denominator.v1.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-dsl-prototype-input.v1.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-dsl-prototype-pack.experimental.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-dsl-prototype-program.v1.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-dsl-prototype-tcb.v2.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-dsl-prototype-measurements.v1.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-runtime-inventory.reference.v1.json",
+    _ROOT / "cisco_toolkit" / "data" / "atlas-r2-tcb-budget-proposal.v1.json",
     _ROOT / "cisco_toolkit" / "data" / "oui_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "port_registry.tsv.gz",
     _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json",
     _ROOT / "cisco_toolkit" / "data" / "traffic-intents.example.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-transition-contract-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-structural-tcb-census-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-execution-evidence-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-tcb-budget-proposal-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-transition-runtime-closure-v2.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-transition-workload-review-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-debug-runtime-discovery-v2.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-debug-runtime-discovery-v3.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-debug-runtime-discovery-v4.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-debug-runtime-discovery-v5.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-execution-environment-manifest-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-execution-environment-manifest-v2.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-execution-environment-manifest-v3.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-execution-environment-manifest-v4.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-execution-environment-manifest-v5.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-r2-windows-runtime-discovery-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "schemas" / "atlas-transition-runtime-inventory-v1.schema.json",
+    _ROOT / "cisco_toolkit" / "transition_contract.py",
+    _ROOT / "cisco_toolkit" / "transition_pack.py",
+    _ROOT / "cisco_toolkit" / "transition_verifier.py",
+    _ROOT / "cisco_toolkit" / "transition_legacy.py",
+    _ROOT / "cisco_toolkit" / "transition_dsl.py",
+    _ROOT / "cisco_toolkit" / "transition_tcb_review.py",
+    _ROOT / "cisco_toolkit" / "transition_runtime_closure.py",
+    _ROOT / "cisco_toolkit" / "_transition_runtime_debug.py",
+    _ROOT / "cisco_toolkit" / "transition_runtime_discovery.py",
+    _ROOT / "cisco_toolkit" / "transition_runtime_inventory.py",
+    _ROOT / "cisco_toolkit" / "transition_workload_review.py",
     _ROOT / "reference-data" / "official-sources" / "cisco" / "eol-bulletins.json",
 )
 _missing = [str(path.relative_to(_ROOT)) for path in _REQUIRED_RUNTIME_ASSETS if not path.is_file()]
@@ -41,7 +84,7 @@ if _missing:
     raise RuntimeError(
         "refusing to build an incomplete distribution; missing runtime assets: "
         + ", ".join(_missing)
-        + ". Build the AssessHub frontend before packaging."
+        + ". Restore or generate every listed runtime asset before packaging."
     )
 
 _runtime_eol_evidence = _ROOT / "cisco_toolkit" / "data" / "eol-bulletins.json"

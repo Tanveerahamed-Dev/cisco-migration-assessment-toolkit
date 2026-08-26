@@ -1,0 +1,911 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-execution-evidence:1",
+  "title": "Atlas R2 declarative prototype and TCB budget-review evidence v1",
+  "description": "Closed structural schema for non-authoritative R2.0 DSL prototype evidence and independently supplied TCB budget-review material. Python validators remain authoritative for canonical bytes, digests, ordering, time ranges, signatures, trust, and cross-document joins.",
+  "$comment": "This schema conveys no qualification or promotion authority. It deliberately contains no measurement-evidence definition and no bundled trust root.",
+  "$ref": "#/$defs/boundDeclarativePrototypeReceipt",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,191}$"
+    },
+    "dslIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "positivePortableInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "nonNegativePortableInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "portableInteger": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "$ref": "#/$defs/portableInteger" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jsonValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "declarativeTruth": {
+      "enum": ["TRUE", "FALSE", "INCONCLUSIVE"],
+      "$comment": "Prototype three-valued logic only. These are not authoritative gate or evidence-status values."
+    },
+    "declarativeBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "digest", "value"],
+      "properties": {
+        "schema": { "const": "atlas.declarative-binding/1" },
+        "kind": { "enum": ["IDENTITY", "SCOPE", "TIME"] },
+        "digest": { "$ref": "#/$defs/digest" },
+        "value": { "$ref": "#/$defs/jsonValue" }
+      },
+      "$comment": "The Python validator recomputes digest over value."
+    },
+    "identityBinding": {
+      "allOf": [
+        { "$ref": "#/$defs/declarativeBinding" },
+        { "properties": { "kind": { "const": "IDENTITY" } } }
+      ]
+    },
+    "scopeBinding": {
+      "allOf": [
+        { "$ref": "#/$defs/declarativeBinding" },
+        { "properties": { "kind": { "const": "SCOPE" } } }
+      ]
+    },
+    "timeBinding": {
+      "allOf": [
+        { "$ref": "#/$defs/declarativeBinding" },
+        { "properties": { "kind": { "const": "TIME" } } }
+      ]
+    },
+    "declarativeInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "request_id", "identity", "scope", "time", "facts"],
+      "properties": {
+        "schema": { "const": "atlas.declarative-input/1" },
+        "request_id": { "type": "string" },
+        "identity": { "$ref": "#/$defs/identityBinding" },
+        "scope": { "$ref": "#/$defs/scopeBinding" },
+        "time": { "$ref": "#/$defs/timeBinding" },
+        "facts": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      }
+    },
+    "declarativePath": {
+      "type": "array",
+      "minItems": 1,
+      "prefixItems": [
+        { "enum": ["facts", "identity", "scope", "time"] }
+      ],
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "declarativeScopePath": {
+      "type": "array",
+      "minItems": 1,
+      "prefixItems": [
+        { "const": "scope" }
+      ],
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "allOfExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "args"],
+      "properties": {
+        "op": { "const": "ALL_OF" },
+        "args": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/declarativeExpression" }
+        }
+      }
+    },
+    "anyOfExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "args"],
+      "properties": {
+        "op": { "const": "ANY_OF" },
+        "args": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/declarativeExpression" }
+        }
+      }
+    },
+    "equalsExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "path", "value"],
+      "properties": {
+        "op": { "const": "EQUALS" },
+        "path": { "$ref": "#/$defs/declarativePath" },
+        "value": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "existsExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "path"],
+      "properties": {
+        "op": { "const": "EXISTS" },
+        "path": { "$ref": "#/$defs/declarativePath" }
+      }
+    },
+    "inSetExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "path", "values"],
+      "properties": {
+        "op": { "const": "IN_SET" },
+        "path": { "$ref": "#/$defs/declarativePath" },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/jsonValue" },
+          "$comment": "The Python compiler additionally requires canonical-byte sort order."
+        }
+      }
+    },
+    "matchScopeExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "fact_path", "scope_path"],
+      "properties": {
+        "op": { "const": "MATCH_SCOPE" },
+        "fact_path": { "$ref": "#/$defs/declarativePath" },
+        "scope_path": { "$ref": "#/$defs/declarativeScopePath" }
+      }
+    },
+    "notExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "arg"],
+      "properties": {
+        "op": { "const": "NOT" },
+        "arg": { "$ref": "#/$defs/declarativeExpression" }
+      }
+    },
+    "notEqualsExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "path", "value"],
+      "properties": {
+        "op": { "const": "NOT_EQUALS" },
+        "path": { "$ref": "#/$defs/declarativePath" },
+        "value": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "temporalMonitorExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "profile_path"],
+      "properties": {
+        "op": { "const": "TEMPORAL_MONITOR" },
+        "profile_path": { "$ref": "#/$defs/declarativePath" }
+      },
+      "$comment": "The R2.0 prototype always evaluates this operator as INCONCLUSIVE."
+    },
+    "declarativeExpression": {
+      "oneOf": [
+        { "$ref": "#/$defs/allOfExpression" },
+        { "$ref": "#/$defs/anyOfExpression" },
+        { "$ref": "#/$defs/equalsExpression" },
+        { "$ref": "#/$defs/existsExpression" },
+        { "$ref": "#/$defs/inSetExpression" },
+        { "$ref": "#/$defs/matchScopeExpression" },
+        { "$ref": "#/$defs/notExpression" },
+        { "$ref": "#/$defs/notEqualsExpression" },
+        { "$ref": "#/$defs/temporalMonitorExpression" }
+      ]
+    },
+    "declarativeRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["function", "rule_id", "when", "emit"],
+      "properties": {
+        "function": {
+          "enum": ["manifest", "resolve_applicability", "extract_atoms", "compile_obligations", "evaluate"]
+        },
+        "rule_id": { "$ref": "#/$defs/dslIdentifier" },
+        "when": { "$ref": "#/$defs/declarativeExpression" },
+        "emit": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "declarativeProgram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "program_id", "program_version", "abi_version", "pack_id", "pack_version", "rules"],
+      "properties": {
+        "schema": { "const": "atlas.declarative-program/1" },
+        "program_id": { "$ref": "#/$defs/dslIdentifier" },
+        "program_version": { "$ref": "#/$defs/dslIdentifier" },
+        "abi_version": { "const": "ATLAS_PACK_ABI/1" },
+        "pack_id": { "$ref": "#/$defs/dslIdentifier" },
+        "pack_version": { "$ref": "#/$defs/dslIdentifier" },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/declarativeRule" }
+        }
+      }
+    },
+    "declarativeResultEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "truth", "value"],
+      "properties": {
+        "rule_id": { "$ref": "#/$defs/dslIdentifier" },
+        "truth": { "$ref": "#/$defs/declarativeTruth" },
+        "value": { "$ref": "#/$defs/jsonValue" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "truth": { "enum": ["FALSE", "INCONCLUSIVE"] } },
+            "required": ["truth"]
+          },
+          "then": {
+            "properties": { "value": { "type": "null" } }
+          }
+        }
+      ]
+    },
+    "declarativeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "entries"],
+      "properties": {
+        "schema": { "const": "atlas.declarative-result/1" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/declarativeResultEntry" }
+        }
+      }
+    },
+    "dslLimitProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "Exact provisional guards used for this execution. Their presence in a prototype receipt is not independent budget approval.",
+      "required": [
+        "max_program_bytes",
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_rules",
+        "max_expression_depth",
+        "max_expression_nodes",
+        "max_operator_operands",
+        "max_path_segments",
+        "max_string_bytes",
+        "max_set_items",
+        "max_input_nodes",
+        "max_instruction_fuel"
+      ],
+      "properties": {
+        "max_program_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_rules": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_depth": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_operator_operands": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_path_segments": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_string_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_set_items": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "bindingDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "scope", "time"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/digest" },
+        "scope": { "$ref": "#/$defs/digest" },
+        "time": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "prototypeWorkUnits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program_bytes", "input_bytes", "input_nodes", "rules", "expression_nodes", "fuel_consumed", "result_bytes", "result_records"],
+      "properties": {
+        "program_bytes": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "input_bytes": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "input_nodes": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "rules": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "expression_nodes": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "fuel_consumed": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "result_bytes": { "$ref": "#/$defs/nonNegativePortableInteger" },
+        "result_records": { "$ref": "#/$defs/nonNegativePortableInteger" }
+      }
+    },
+    "prototypeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "enum": [
+            "ABI_FUNCTION_UNSUPPORTED",
+            "EXPRESSION_DEPTH_LIMIT",
+            "EXPRESSION_EVALUATION_INVALID",
+            "EXPRESSION_INVALID",
+            "EXPRESSION_NODE_LIMIT",
+            "EXPRESSION_SCHEMA_INVALID",
+            "INPUT_BINDING_DIGEST_MISMATCH",
+            "INPUT_BINDING_INVALID",
+            "INPUT_BYTE_LIMIT",
+            "INPUT_CANONICAL_INVALID",
+            "INPUT_FACTS_INVALID",
+            "INPUT_NODE_LIMIT",
+            "INPUT_SCHEMA_INVALID",
+            "INSTRUCTION_FUEL_LIMIT",
+            "OPERAND_CANONICAL_INVALID",
+            "OPERATOR_OPERAND_LIMIT",
+            "OPERATOR_OPERANDS_INVALID",
+            "OPERATOR_UNSUPPORTED",
+            "OUTPUT_BYTE_LIMIT",
+            "PATH_INVALID",
+            "PATH_ROOT_INVALID",
+            "PATH_SEGMENT_LIMIT",
+            "PRODUCER_AUTHORITY_FIELD_FORBIDDEN",
+            "PRODUCER_KEY_INVALID",
+            "PROGRAM_BYTE_LIMIT",
+            "PROGRAM_CANONICAL_INVALID",
+            "PROGRAM_IDENTIFIER_INVALID",
+            "PROGRAM_RULES_INVALID",
+            "PROGRAM_SCHEMA_INVALID",
+            "REPLAY_WITNESS_UNSUPPORTED_R2_0",
+            "RESULT_CANONICAL_INVALID",
+            "RULE_FUNCTION_UNSUPPORTED",
+            "RULE_LIMIT",
+            "RULE_SCHEMA_INVALID",
+            "RULE_SORTED_UNIQUE_REQUIRED",
+            "SET_INVALID",
+            "SET_ITEM_LIMIT",
+            "SET_SORTED_UNIQUE_REQUIRED",
+            "STRING_BYTE_LIMIT"
+          ]
+        }
+      }
+    },
+    "innerPrototypeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "interpreter_semantics_version",
+        "limit_profile",
+        "limit_profile_digest",
+        "outcome",
+        "authoritative",
+        "supplies_obligation_support",
+        "qualification_effect",
+        "authoritative_gate",
+        "promotion_eligible",
+        "execution_state",
+        "qualification_state",
+        "program_digest",
+        "input_digest",
+        "binding_digests",
+        "function",
+        "work_units",
+        "result",
+        "result_digest",
+        "error"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.declarative-prototype-receipt/1" },
+        "interpreter_semantics_version": { "const": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1" },
+        "limit_profile": { "$ref": "#/$defs/dslLimitProfile" },
+        "limit_profile_digest": { "$ref": "#/$defs/digest" },
+        "outcome": { "enum": ["EXECUTED_NONAUTHORITATIVE", "REFUSED_NONAUTHORITATIVE"] },
+        "authoritative": { "const": false },
+        "supplies_obligation_support": { "const": false },
+        "qualification_effect": { "const": "NONE" },
+        "authoritative_gate": { "type": "null" },
+        "promotion_eligible": { "const": false },
+        "execution_state": { "const": "CONTRACT_ONLY" },
+        "qualification_state": { "const": "EXPERIMENTAL" },
+        "program_digest": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "input_digest": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "binding_digests": {
+          "oneOf": [
+            { "$ref": "#/$defs/bindingDigests" },
+            { "type": "null" }
+          ]
+        },
+        "function": {
+          "oneOf": [
+            { "enum": ["manifest", "resolve_applicability", "extract_atoms", "compile_obligations", "evaluate", "replay_witness"] },
+            { "type": "null" }
+          ]
+        },
+        "work_units": { "$ref": "#/$defs/prototypeWorkUnits" },
+        "result": {
+          "oneOf": [
+            { "$ref": "#/$defs/declarativeResult" },
+            { "type": "null" }
+          ]
+        },
+        "result_digest": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "error": {
+          "oneOf": [
+            { "$ref": "#/$defs/prototypeError" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": { "const": "EXECUTED_NONAUTHORITATIVE" },
+            "program_digest": { "$ref": "#/$defs/digest" },
+            "input_digest": { "$ref": "#/$defs/digest" },
+            "binding_digests": { "$ref": "#/$defs/bindingDigests" },
+            "function": { "enum": ["manifest", "resolve_applicability", "extract_atoms", "compile_obligations", "evaluate"] },
+            "result": { "$ref": "#/$defs/declarativeResult" },
+            "result_digest": { "$ref": "#/$defs/digest" },
+            "error": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "outcome": { "const": "REFUSED_NONAUTHORITATIVE" },
+            "result": { "type": "null" },
+            "result_digest": { "type": "null" },
+            "error": { "$ref": "#/$defs/prototypeError" }
+          }
+        }
+      ]
+    },
+    "boundDeclarativePrototypeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_binding_state",
+        "pack_id",
+        "pack_version",
+        "pack_manifest_digest",
+        "tcb_manifest_digest",
+        "program_digest",
+        "supported_denominator_digest",
+        "interpreter_digest",
+        "inner_receipt_digest",
+        "inner_receipt",
+        "authoritative",
+        "supplies_obligation_support",
+        "qualification_effect",
+        "authoritative_gate",
+        "promotion_eligible"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.bound-declarative-prototype-receipt/1" },
+        "source_binding_state": { "const": "SAME_CHECKOUT_SELF_CHECK_ONLY" },
+        "pack_id": { "const": "ATLAS-R2-DSL-CONFORMANCE" },
+        "pack_version": { "const": "0.1.0-experimental" },
+        "pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+        "program_digest": { "$ref": "#/$defs/digest" },
+        "supported_denominator_digest": { "$ref": "#/$defs/digest" },
+        "interpreter_digest": { "$ref": "#/$defs/digest" },
+        "inner_receipt_digest": { "$ref": "#/$defs/digest" },
+        "inner_receipt": { "$ref": "#/$defs/innerPrototypeReceipt" },
+        "authoritative": { "const": false },
+        "supplies_obligation_support": { "const": false },
+        "qualification_effect": { "const": "NONE" },
+        "authoritative_gate": { "type": "null" },
+        "promotion_eligible": { "const": false }
+      }
+    },
+    "reviewedDeclarativeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "This wrapper can be minted only from an intact final R2 TCB budget freeze, not a detached review. R2.0 currently lacks the complete runtime and external authority needed to mint that freeze, so reviewed execution remains fail-closed unavailable.",
+      "required": [
+        "schema",
+        "pack_id",
+        "pack_version",
+        "pack_manifest_digest",
+        "tcb_manifest_digest",
+        "tcb_budget_freeze_digest",
+        "selected_source_commit",
+        "selected_source_tree",
+        "budget_review_receipt_digest",
+        "runtime_inventory_digest",
+        "dsl_interpreter_digest",
+        "program_digest",
+        "limit_profile_source",
+        "limit_profile_digest",
+        "inner_receipt_digest",
+        "inner_receipt",
+        "authoritative",
+        "supplies_obligation_support",
+        "qualification_effect",
+        "authoritative_gate",
+        "promotion_eligible"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.reviewed-declarative-receipt/1" },
+        "pack_id": { "$ref": "#/$defs/identifier" },
+        "pack_version": { "$ref": "#/$defs/identifier" },
+        "pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_budget_freeze_digest": { "$ref": "#/$defs/digest" },
+        "selected_source_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_source_tree": { "$ref": "#/$defs/gitObject" },
+        "budget_review_receipt_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "program_digest": { "$ref": "#/$defs/digest" },
+        "limit_profile_source": { "const": "VERIFIED_FINAL_R2_TCB_BUDGET_FREEZE" },
+        "limit_profile_digest": { "$ref": "#/$defs/digest" },
+        "inner_receipt_digest": { "$ref": "#/$defs/digest" },
+        "inner_receipt": { "$ref": "#/$defs/innerPrototypeReceipt" },
+        "authoritative": { "const": false },
+        "supplies_obligation_support": { "const": false },
+        "qualification_effect": { "const": "NONE" },
+        "authoritative_gate": { "type": "null" },
+        "promotion_eligible": { "const": false }
+      }
+    },
+    "dslResourceProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "This profile has budget-review meaning only after the detached receipt, signature, trust policy, key, time, subject, and expected bindings pass the Python verifier.",
+      "required": [
+        "schema",
+        "substrate",
+        "max_program_bytes",
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_rules",
+        "max_expression_depth",
+        "max_expression_nodes",
+        "max_operator_operands",
+        "max_path_segments",
+        "max_string_bytes",
+        "max_set_items",
+        "max_input_nodes",
+        "max_instruction_fuel"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.dsl-only-resource-profile/1" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" },
+        "max_program_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_rules": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_depth": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_operator_operands": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_path_segments": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_string_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_set_items": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "receiptContainerCeiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "formula", "interpreter_semantics_version", "max_output_bytes", "inner_envelope_overhead_bytes", "bound_wrapper_overhead_bytes", "reviewed_wrapper_overhead_bytes", "inner_receipt_ceiling_bytes", "bound_receipt_ceiling_bytes", "reviewed_receipt_ceiling_bytes"],
+      "properties": {
+        "schema": { "const": "atlas.dsl-receipt-container-ceiling/1" },
+        "formula": { "const": "MAX_OUTPUT_BYTES_PLUS_PROFILE_SPECIALIZED_CLOSED_CANONICAL_ENVELOPE_OVERHEAD/1" },
+        "interpreter_semantics_version": { "const": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "inner_envelope_overhead_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "bound_wrapper_overhead_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "reviewed_wrapper_overhead_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "inner_receipt_ceiling_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "bound_receipt_ceiling_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "reviewed_receipt_ceiling_bytes": { "$ref": "#/$defs/positivePortableInteger" }
+      }
+    },
+    "tcbBudgetReviewDecision": {
+      "enum": ["APPROVED", "REJECTED"]
+    },
+    "tcbBudgetReviewReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "receipt_id",
+        "purpose",
+        "selected_commit",
+        "selected_tree",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "approved_runtime_inventory_state",
+        "budget_proposal_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_pack_manifest_digest",
+        "tcb_budget_subject_digest",
+        "approved_core_sloc_budget",
+        "approved_pack_sloc_budget",
+        "approved_dsl_resource_profile",
+        "approved_receipt_container_ceiling",
+        "wasm_review_state",
+        "measurement_denominator_digest",
+        "decision",
+        "issued_at",
+        "valid_from",
+        "valid_until",
+        "reviewer_key_id"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.tcb-budget-review-receipt/2" },
+        "receipt_id": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "approved_runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+        "budget_proposal_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" },
+        "approved_core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+        "approved_pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+        "approved_dsl_resource_profile": { "$ref": "#/$defs/dslResourceProfile" },
+        "approved_receipt_container_ceiling": { "$ref": "#/$defs/receiptContainerCeiling" },
+        "wasm_review_state": { "const": "UNREVIEWED" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
+        "decision": { "$ref": "#/$defs/tcbBudgetReviewDecision" },
+        "issued_at": { "$ref": "#/$defs/timestamp" },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_until": { "$ref": "#/$defs/timestamp" },
+        "reviewer_key_id": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "tcbBudgetReviewSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "purpose", "payload_digest", "signer_key_id", "algorithm", "signature_base64"],
+      "properties": {
+        "schema": { "const": "atlas.tcb-budget-review-signature/2" },
+        "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
+        "payload_digest": { "$ref": "#/$defs/digest" },
+        "signer_key_id": { "$ref": "#/$defs/identifier" },
+        "algorithm": { "const": "Ed25519" },
+        "signature_base64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+      }
+    },
+    "tcbBudgetReviewTrustedKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "key_id", "public_key_digest", "reviewer_kind", "independent_from_budget_proposer", "independent_from_prototype_and_measurement_producer", "independent_from_release_builder", "authorizations", "allowed_source_revisions", "valid_from", "valid_until"],
+      "properties": {
+        "schema": { "const": "atlas.tcb-budget-review-trusted-key/2" },
+        "key_id": { "$ref": "#/$defs/identifier" },
+        "public_key_digest": { "$ref": "#/$defs/digest" },
+        "reviewer_kind": { "const": "INDEPENDENT_REVIEWER" },
+        "independent_from_budget_proposer": { "const": true },
+        "independent_from_prototype_and_measurement_producer": { "const": true },
+        "independent_from_release_builder": { "const": true },
+        "authorizations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/tcbBudgetReviewAuthorization" }
+        },
+        "allowed_source_revisions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["selected_commit", "selected_tree", "tcb_budget_subject_digest"],
+            "properties": {
+              "selected_commit": { "$ref": "#/$defs/gitObject" },
+              "selected_tree": { "$ref": "#/$defs/gitObject" },
+              "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_until": { "$ref": "#/$defs/timestamp" }
+      },
+      "$comment": "The Python validator additionally requires canonical sort order and a non-reversed validity range."
+    },
+    "tcbBudgetReviewAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "purpose", "target_schema_version", "reviewer_role", "substrate"],
+      "properties": {
+        "schema": { "const": "atlas.tcb-budget-review-authorization/2" },
+        "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
+        "target_schema_version": { "const": "atlas.tcb-budget-review-receipt/2" },
+        "reviewer_role": { "const": "TCB_BUDGET_AND_RESOURCE_CEILING_REVIEWER" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" }
+      }
+    },
+    "tcbBudgetReviewTrustPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "policy_kind", "policy_id", "policy_version", "purpose", "evaluated_at", "trusted_keys", "revoked_receipt_digests"],
+      "properties": {
+        "schema": { "const": "atlas.tcb-budget-review-trust-policy/2" },
+        "policy_kind": { "const": "EXTERNAL_INDEPENDENT_TCB_BUDGET_REVIEW_KEY_ALLOWLIST" },
+        "policy_id": { "$ref": "#/$defs/identifier" },
+        "policy_version": { "$ref": "#/$defs/identifier" },
+        "purpose": { "const": "ATLAS_R2_TCB_BUDGET_REVIEW" },
+        "evaluated_at": { "$ref": "#/$defs/timestamp" },
+        "trusted_keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/tcbBudgetReviewTrustedKey" }
+        },
+        "revoked_receipt_digests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        }
+      },
+      "$comment": "The Python validator additionally requires canonical key-id and revocation ordering."
+    },
+    "tcbBudgetReviewExpectedBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "selected_commit", "selected_tree", "structural_census_digest", "prototype_measurement_digest", "runtime_inventory_digest", "approved_runtime_inventory_state", "budget_proposal_digest", "dsl_interpreter_digest", "prototype_program_digest", "prototype_pack_manifest_digest", "tcb_budget_subject_digest", "measurement_denominator_digest"],
+      "properties": {
+        "schema": { "const": "atlas.tcb-budget-review-bindings/2" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "approved_runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+        "budget_proposal_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "r2TCBBudgetFreeze": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "Detached post-source-commit evidence only. The Python binder additionally requires exact evidence bytes, an intact independently verified review, and an exact final contract-only pack/frozen complete-runtime TCB pair. The final pack is derived from the reviewed prototype pack by changing only its TCB digest, avoiding a review/TCB/pack hash cycle. This object never qualifies QCP-001 or includes Release 3.",
+      "required": [
+        "schema",
+        "purpose",
+        "source_freeze_state",
+        "selected_source_commit",
+        "selected_source_tree",
+        "structural_census_digest",
+        "prototype_measurement_digest",
+        "runtime_inventory_digest",
+        "approved_runtime_inventory_state",
+        "budget_proposal_digest",
+        "measurement_denominator_digest",
+        "dsl_interpreter_digest",
+        "prototype_program_digest",
+        "prototype_pack_manifest_digest",
+        "tcb_budget_subject_digest",
+        "final_pack_manifest_digest",
+        "final_tcb_manifest_digest",
+        "review_receipt_digest",
+        "review_signature_digest",
+        "review_trust_policy_digest",
+        "review_public_key_digest",
+        "core_sloc_budget",
+        "pack_sloc_budget",
+        "dsl_resource_profile",
+        "receipt_container_ceiling",
+        "wasm_review_state",
+        "qcp_001",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.r2-tcb-budget-freeze/1" },
+        "purpose": { "const": "ATLAS_R2_TCB_BUDGET_FREEZE" },
+        "source_freeze_state": { "const": "DETACHED_POST_SOURCE_COMMIT_EVIDENCE" },
+        "selected_source_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_source_tree": { "$ref": "#/$defs/gitObject" },
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "approved_runtime_inventory_state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+        "budget_proposal_digest": { "$ref": "#/$defs/digest" },
+        "measurement_denominator_digest": { "$ref": "#/$defs/digest" },
+        "dsl_interpreter_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "tcb_budget_subject_digest": { "$ref": "#/$defs/digest" },
+        "final_pack_manifest_digest": { "$ref": "#/$defs/digest" },
+        "final_tcb_manifest_digest": { "$ref": "#/$defs/digest" },
+        "review_receipt_digest": { "$ref": "#/$defs/digest" },
+        "review_signature_digest": { "$ref": "#/$defs/digest" },
+        "review_trust_policy_digest": { "$ref": "#/$defs/digest" },
+        "review_public_key_digest": { "$ref": "#/$defs/digest" },
+        "core_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+        "pack_sloc_budget": { "$ref": "#/$defs/positivePortableInteger" },
+        "dsl_resource_profile": { "$ref": "#/$defs/dslResourceProfile" },
+        "receipt_container_ceiling": { "$ref": "#/$defs/receiptContainerCeiling" },
+        "wasm_review_state": { "const": "UNREVIEWED" },
+        "qcp_001": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "pack_id", "pack_version", "qualification_state", "execution_state", "qualification_effect", "promotion_eligible"],
+          "properties": {
+            "schema": { "const": "atlas.r2-qcp-001-freeze-status/1" },
+            "pack_id": { "const": "QCP-001" },
+            "pack_version": { "const": "0.1.0-experimental" },
+            "qualification_state": { "const": "EXPERIMENTAL" },
+            "execution_state": { "const": "CONTRACT_ONLY" },
+            "qualification_effect": { "const": "NONE" },
+            "promotion_eligible": { "const": false }
+          }
+        },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false },
+        "release3_included": { "const": false }
+      }
+    }
+  }
+}

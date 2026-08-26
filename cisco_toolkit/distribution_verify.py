@@ -78,6 +78,7 @@ import argparse
 import base64
 import configparser
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -237,6 +238,17 @@ _CONTENT_SCAN_EXEMPT = {
     "cisco_toolkit/data/port_registry.tsv.gz",
     *_OFFICIAL_SOURCE_FILES,
 }
+_R1_SOURCE_BUNDLE_MEMBER = "cisco_toolkit/data/atlas-r1-source-bundle.json"
+_R1_SOURCE_BUNDLE_SCHEMA = "atlas.release1-source-bundle/1"
+_R1_SOURCE_BUNDLE_MAX_FILES = 128
+_R1_SOURCE_BUNDLE_MAX_FILE_BYTES = 2 * 1024 * 1024
+_R1_SOURCE_BUNDLE_MAX_TOTAL_BYTES = 16 * 1024 * 1024
+_R1_SOURCE_BUNDLE_MAX_CHUNKS_PER_FILE = 4
+_R1_SOURCE_BUNDLE_MAX_DECOMPRESSED_FILE_BYTES = 8 * 1024 * 1024
+_R1_SOURCE_BUNDLE_GZIP_TEXT_PATHS = frozenset({
+    "cisco_toolkit/data/oui_registry.tsv.gz",
+    "cisco_toolkit/data/port_registry.tsv.gz",
+})
 _METADATA_SINGLETONS = {
     "Metadata-Version",
     "Name",
@@ -1043,17 +1055,11 @@ _HOST_TOKEN = re.compile(
 )
 
 
-def _content_privacy_errors(
+def _plain_content_privacy_errors(
     name: str,
     data: bytes,
     known_hostname_hashes: set[str],
 ) -> tuple[list[str], bool]:
-    """Return content-privacy errors and whether the payload was really scanned.
-
-    The second element is ``False`` for exempt members.  Those bytes are never
-    read for markers, so counting them as scanned would be the "not observed
-    became healthy" failure this proof exists to prevent.
-    """
     if name in _CONTENT_SCAN_EXEMPT:
         return [], False
     try:
@@ -1071,6 +1077,155 @@ def _content_privacy_errors(
     ):
         return [f"known private hostname appears in archive content: {name}"], True
     return [], True
+
+
+def _r1_source_bundle_privacy_errors(
+    container_name: str,
+    data: bytes,
+    known_hostname_hashes: set[str],
+) -> list[str]:
+    """Decode and scan every non-exempt payload hidden in the R1 JSON envelope.
+
+    Treating the outer base64 text as the payload made the archive scan vacuous:
+    client markers inside the executable source were invisible while the member
+    still incremented ``members_content_scanned``.  This parser is deliberately
+    independent of the runtime capsule loader because it runs on untrusted
+    release archives before installation.
+    """
+
+    invalid = f"embedded Release 1 source bundle is invalid: {container_name}"
+    try:
+        value = _strict_json_bytes(data, container_name)
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+        RecursionError,
+        MemoryError,
+    ):
+        return [invalid]
+    if set(value) != {"approved_head", "chunk_encoding", "files", "schema"}:
+        return [invalid]
+    files = value.get("files")
+    if (
+        value.get("schema") != _R1_SOURCE_BUNDLE_SCHEMA
+        or value.get("chunk_encoding") != "BASE64_RFC4648_512_KIB_RAW_CHUNKS"
+        or type(value.get("approved_head")) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", value["approved_head"]) is None
+        or type(files) is not list
+        or not files
+        or len(files) > _R1_SOURCE_BUNDLE_MAX_FILES
+    ):
+        return [invalid]
+
+    decoded: dict[str, bytes] = {}
+    for entry in files:
+        if type(entry) is not dict or set(entry) != {
+            "bytes", "content_base64_chunks", "path", "sha256"
+        }:
+            return [invalid]
+        path = entry.get("path")
+        chunks = entry.get("content_base64_chunks")
+        if (
+            type(path) is not str
+            or not path.startswith("cisco_toolkit/")
+            or path.startswith(("/", "\\"))
+            or "\\" in path
+            or ".." in path.split("/")
+            or path == _R1_SOURCE_BUNDLE_MEMBER
+            or path in decoded
+            or type(chunks) is not list
+            or not chunks
+            or len(chunks) > _R1_SOURCE_BUNDLE_MAX_CHUNKS_PER_FILE
+            or any(type(chunk) is not str for chunk in chunks)
+        ):
+            return [invalid]
+        try:
+            payload = b"".join(base64.b64decode(chunk, validate=True) for chunk in chunks)
+        except (TypeError, ValueError, MemoryError):
+            return [invalid]
+        expected_digest = entry.get("sha256")
+        if (
+            len(payload) > _R1_SOURCE_BUNDLE_MAX_FILE_BYTES
+            or type(entry.get("bytes")) is not int
+            or entry["bytes"] != len(payload)
+            or type(expected_digest) is not str
+            or expected_digest != "sha256:" + hashlib.sha256(payload).hexdigest()
+        ):
+            return [invalid]
+        decoded[path] = payload
+    if (
+        list(decoded) != sorted(decoded)
+        or sum(len(payload) for payload in decoded.values())
+        > _R1_SOURCE_BUNDLE_MAX_TOTAL_BYTES
+    ):
+        return [invalid]
+
+    errors: list[str] = []
+    for path, payload in decoded.items():
+        scan_name = path
+        scan_payload = payload
+        if path in _R1_SOURCE_BUNDLE_GZIP_TEXT_PATHS:
+            try:
+                with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as archive:
+                    scan_payload = archive.read(
+                        _R1_SOURCE_BUNDLE_MAX_DECOMPRESSED_FILE_BYTES + 1
+                    )
+            except (OSError, EOFError, MemoryError):
+                errors.append(
+                    f"embedded Release 1 gzip payload is invalid: {container_name}!{path}"
+                )
+                continue
+            if len(scan_payload) > _R1_SOURCE_BUNDLE_MAX_DECOMPRESSED_FILE_BYTES:
+                errors.append(
+                    f"embedded Release 1 gzip payload exceeds scan limit: "
+                    f"{container_name}!{path}"
+                )
+                continue
+            scan_name = path.removesuffix(".gz")
+        nested, scanned = _plain_content_privacy_errors(
+            scan_name,
+            scan_payload,
+            known_hostname_hashes,
+        )
+        if not scanned:
+            errors.append(
+                f"embedded Release 1 payload was exempt from privacy scan: "
+                f"{container_name}!{path}"
+            )
+            continue
+        errors.extend(
+            error.replace(f": {scan_name}", f": {container_name}!{path}")
+            for error in nested
+        )
+    return errors
+
+
+def _content_privacy_errors(
+    name: str,
+    data: bytes,
+    known_hostname_hashes: set[str],
+) -> tuple[list[str], bool]:
+    """Return content-privacy errors and whether the whole payload was scanned.
+
+    The second element is ``False`` for exempt members.  Those bytes are never
+    read for markers, so counting them as scanned would be the "not observed
+    became healthy" failure this proof exists to prevent.  The Release 1 source
+    envelope is semantic content: each base64 payload is decoded, validated and
+    scanned before the outer member may count as scanned.
+    """
+
+    errors, scanned = _plain_content_privacy_errors(
+        name,
+        data,
+        known_hostname_hashes,
+    )
+    if scanned and name == _R1_SOURCE_BUNDLE_MEMBER:
+        errors.extend(
+            _r1_source_bundle_privacy_errors(name, data, known_hostname_hashes)
+        )
+    return errors, scanned
 
 
 def _sha256_stream(stream) -> str:
@@ -1194,7 +1349,50 @@ def _expected_runtime_inventory(root: Path) -> dict[str, str]:
         "cisco_toolkit/data/oui_registry.tsv.gz",
         "cisco_toolkit/data/port_registry.tsv.gz",
         "cisco_toolkit/data/registry_manifest.json",
+        "cisco_toolkit/data/qcp-001.experimental.json",
+        "cisco_toolkit/data/atlas-r1-executable-bundle.json",
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-after.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-before.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-comparison.json",
+        "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-denominator.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-input.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-pack.experimental.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-program.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-tcb.v2.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
+        "cisco_toolkit/data/atlas-r2-runtime-inventory.reference.v1.json",
+        "cisco_toolkit/data/atlas-r2-tcb-budget-proposal.v1.json",
         "cisco_toolkit/data/traffic-intents.example.json",
+        "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v2.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v5.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v2.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-runtime-discovery-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json",
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_legacy.py",
+        "cisco_toolkit/transition_dsl.py",
+        "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_runtime_closure.py",
+        "cisco_toolkit/_transition_runtime_debug.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
+        "cisco_toolkit/transition_runtime_inventory.py",
+        "cisco_toolkit/transition_workload_review.py",
         "cisco_toolkit/blast_radius_explorer.html",
         "webapp/frontend/dist/index.html",
         "webapp/sample_data/sample_fleet.snapshot.json",

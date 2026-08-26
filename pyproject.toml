@@ -52,6 +52,9 @@ dependencies = [
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.27,<1",
     "python-multipart>=0.0.9,<1",
+    # Atlas R2 qualification receipts verify Ed25519 signatures directly.  Keep this an explicit
+    # dependency rather than relying on netmiko/paramiko to provide a security boundary transitively.
+    "cryptography>=49,<50",
 ]
 
 [project.optional-dependencies]
@@ -137,14 +140,46 @@ include-package-data = false
 include = ["cisco_toolkit*", "webapp", "webapp.backend"]
 
 [tool.setuptools.package-data]
-# Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load, and the
-# single-file explorer template, verified registry manifest, complete AssessHub SPA, and synthetic
-# demo snapshot. Every installed entry point is usable from an isolated wheel.
+# Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load,
+# transition schemas/QCP/census/DSL-prototype/pinned R1 replay resources, the single-file explorer template,
+# verified registry manifest, complete AssessHub SPA, and synthetic demo snapshot. Every installed
+# entry point and the R2.0 structural/replay library boundary is usable from an isolated wheel.
 cisco_toolkit = [
     "data/*.tsv.gz",
     "data/registry_manifest.json",
     "data/eol-bulletins.json",
     "data/traffic-intents.example.json",
+    "data/qcp-001.experimental.json",
+    "data/atlas-r1-executable-bundle.json",
+    "data/atlas-r1-source-bundle.json",
+    "data/atlas-r1-retrospective-after.json",
+    "data/atlas-r1-retrospective-before.json",
+    "data/atlas-r1-retrospective-comparison.json",
+    "data/atlas-r2-structural-tcb-census.v1.json",
+    "data/atlas-r2-dsl-prototype-denominator.v1.json",
+    "data/atlas-r2-dsl-prototype-input.v1.json",
+    "data/atlas-r2-dsl-prototype-pack.experimental.json",
+    "data/atlas-r2-dsl-prototype-program.v1.json",
+    "data/atlas-r2-dsl-prototype-tcb.v2.json",
+    "data/atlas-r2-dsl-prototype-measurements.v1.json",
+    "data/atlas-r2-runtime-inventory.reference.v1.json",
+    "data/atlas-r2-tcb-budget-proposal.v1.json",
+    "schemas/atlas-r2-execution-evidence-v1.schema.json",
+    "schemas/atlas-r2-tcb-budget-proposal-v1.schema.json",
+    "schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
+    "schemas/atlas-r2-transition-workload-review-v1.schema.json",
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v2.schema.json",
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json",
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json",
+    "schemas/atlas-r2-windows-debug-runtime-discovery-v5.schema.json",
+    "schemas/atlas-r2-windows-execution-environment-manifest-v1.schema.json",
+    "schemas/atlas-r2-windows-execution-environment-manifest-v2.schema.json",
+    "schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json",
+    "schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json",
+    "schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json",
+    "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json",
+    "schemas/atlas-transition-runtime-inventory-v1.schema.json",
+    "schemas/*.json",
     "blast_radius_explorer.html",
 ]
 webapp = ["frontend/dist/index.html", "frontend/dist/assets/*", "sample_data/*.json"]

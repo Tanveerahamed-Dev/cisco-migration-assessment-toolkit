@@ -59,6 +59,17 @@ def test_registry_owner_files_all_exist():
         "tests/test_unknown_evidence.py",
         "tests/test_traffic_assurance.py",
         "tests/test_traffic_assurance_excel.py",
+        # Release 2.0 proof-carrying transition structural-contract owners.
+        "cisco_toolkit/transition_contract.py",
+        "cisco_toolkit/transition_pack.py",
+        "cisco_toolkit/transition_verifier.py",
+        "cisco_toolkit/transition_legacy.py",
+        "cisco_toolkit/transition_dsl.py",
+        "cisco_toolkit/transition_tcb_review.py",
+        "cisco_toolkit/transition_runtime_closure.py",
+        "cisco_toolkit/transition_runtime_discovery.py",
+        "cisco_toolkit/_transition_runtime_debug.py",
+        "cisco_toolkit/transition_workload_review.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
@@ -96,6 +107,379 @@ def test_registry_owner_symbols_are_real():
     assert isinstance(getattr(cisco_toolkit, "__version__", None), str), "schema __version__ owner is gone"
     # manifest.py is the hash-chained chain-of-custody ledger the registry cites for run provenance.
     assert hasattr(manifest, "GENESIS"), "manifest.py no longer exposes the hash-chain GENESIS"
+
+
+def test_registry_transition_contract_owners_are_real_and_bounded():
+    """The R2.0 row resolves to its owners and retains its non-promotion boundaries."""
+    from cisco_toolkit import (
+        _transition_runtime_debug,
+        transition_contract,
+        transition_dsl,
+        transition_legacy,
+        transition_pack,
+        transition_runtime_closure,
+        transition_runtime_discovery,
+        transition_tcb_review,
+        transition_verifier,
+        transition_workload_review,
+    )
+
+    expected = {
+        transition_contract: (
+            "bind_transition_case_bytes",
+            "validate_transition_case",
+            "validate_qualification_denominator",
+        ),
+        transition_pack: (
+            "bind_pack_manifest_bytes",
+            "bind_tcb_manifest_bytes",
+            "verify_qualification_evidence",
+            "qcp_001_must_remain_experimental",
+        ),
+        transition_runtime_closure: (
+            "validate_transition_runtime_closure_evidence",
+            "bind_transition_runtime_closure_evidence_bytes",
+            "verify_transition_runtime_closure_review",
+            "require_verified_transition_runtime_closure_review",
+        ),
+        transition_runtime_discovery: (
+            "RuntimeClosureDiscoverySubject",
+            "CapturedIncompleteRuntimeClosureEvidence",
+            "validate_windows_runtime_discovery_trace",
+            "validate_windows_debug_runtime_discovery_trace",
+            "validate_windows_debug_runtime_discovery_v3_trace",
+            "validate_windows_debug_execution_environment_manifest",
+            "validate_windows_debug_execution_environment_v3_manifest",
+            "capture_windows_runtime_closure_incomplete",
+            "capture_windows_debug_runtime_closure_incomplete",
+            "capture_windows_debug_runtime_closure_v3_incomplete",
+        ),
+        _transition_runtime_debug: (
+            "DebugEventCapture",
+            "DebugEventRecord",
+            "WindowsDebugEventSession",
+        ),
+        transition_verifier: (
+            "verify_transition_case",
+            "map_authoritative_gate",
+            "compute_invalidation_receipt",
+        ),
+        transition_legacy: (
+            "verify_release1_semantic_bundle",
+            "adapt_release1_comparison_bytes",
+            "replay_release1_comparison_bytes",
+        ),
+        transition_dsl: (
+            "bind_packaged_dsl_prototype_bytes",
+            "run_bound_pack_abi",
+        ),
+        transition_tcb_review: (
+            "verify_tcb_budget_review_evidence",
+        ),
+        transition_workload_review: (
+            "bind_transition_workload_evidence_bytes",
+            "verify_transition_workload_review",
+            "require_verified_transition_workload_review",
+        ),
+    }
+    for module, names in expected.items():
+        for name in names:
+            assert callable(getattr(module, name, None)), f"{module.__name__}.{name} owner is missing"
+
+    row = next(
+        line
+        for line in _registry_text().splitlines()
+        if "Proof-carrying transition structural contract" in line
+    )
+    assets = (
+        "cisco_toolkit/schemas/atlas-transition-contract-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-structural-tcb-census-v1.schema.json",
+        "cisco_toolkit/data/qcp-001.experimental.json",
+        "cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-denominator.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-input.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-pack.experimental.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-program.v1.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-tcb.v2.json",
+        "cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json",
+        "cisco_toolkit/schemas/atlas-r2-execution-evidence-v1.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-runtime-closure-v2.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-transition-workload-review-v1.schema.json",
+        "cisco_toolkit/data/atlas-r1-executable-bundle.json",
+        "cisco_toolkit/data/atlas-r1-source-bundle.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-before.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-after.json",
+        "cisco_toolkit/data/atlas-r1-retrospective-comparison.json",
+    )
+    for relative in assets:
+        assert (ROOT / relative).is_file(), f"R2.0 SSOT asset is missing: {relative}"
+        assert relative.rsplit("/", 1)[-1] in row, f"R2.0 SSOT row does not cite {relative}"
+
+    for boundary in (
+        "closed three-state vocabularies",
+        "closed four-state vocabularies",
+        "EXPERIMENTAL",
+        "CONTRACT_ONLY",
+        "REFERENCE_NOT_REWRITE",
+        "AUDIT_ONLY",
+        "null Release 2 gate",
+        "no authenticated historical fixture",
+        "same-checkout self-check only",
+        "cannot execute QCP-001",
+        "not a Wasm runtime",
+        "sandbox claim",
+        "PARTIAL_NONPORTABLE_PROTOTYPE",
+        "COMPLETE_EXACT_RUNTIME_CLOSURE",
+        "runtime-closure `/2` module and schema are protocol structure only",
+        "Windows live discovery emits only non-authoritative `COLLECTED_INCOMPLETE` evidence",
+        "no closure-capable collector, capture corpus, or authority",
+        "No trust policy, reviewer key, signature, or signed closure-review receipt is bundled",
+        "do not change the runtime-inventory `/1` roster",
+        "freeze `/1` remains unchanged and blocked",
+        "Representative-workload evidence is non-authoritative",
+        "evidence state is never `ADEQUATE`",
+        "No representative-workload corpus, reviewer key, trust policy, or signed review receipt is bundled",
+        "existing freeze `/1` remains explicitly blocked",
+        "does not make runtime inventory `COMPLETE`",
+        "qualify a pack",
+        "authorize promotion",
+        "budgets, reviewed resource ceilings, independent review evidence, and selected commit remain pending/null",
+        "No R2.1+ or Release 3 capability",
+    ):
+        assert boundary in row, f"R2.0 SSOT row lost boundary {boundary!r}"
+
+    registry = " ".join(
+        line.lstrip("> ").strip() for line in _registry_text().splitlines()
+    )
+    for runtime_closure_authority_boundary in (
+        "review signature authenticates the canonical receipt, not its trust policy",
+        "Every authority use must obtain the current canonical policy bytes",
+        "digest argument proves only exact equality to the caller's selection",
+        "cannot establish external selection",
+        "policy issuer/namespace/succession",
+        "reviewer-key identity/custody",
+        "trusted time",
+        "global freshness or anti-rollback",
+        "artifact semantic truth",
+        "real-world capture completeness",
+        "Any authority gate must consume only that fresh return value",
+        "independently compare and bind its `bindings_digest`, `policy_digest`, and `evaluated_at`",
+        "gate-selected commit/tree, evidence digest and states, and mapped evidence digests",
+        "a retained `.complete` value is historical state, not authority",
+        "No such current policy, key, signature, or receipt is bundled",
+    ):
+        assert runtime_closure_authority_boundary in registry
+
+    for workload_authority_boundary in (
+        "workload-review `/1` signature authenticates the canonical receipt, not its replaceable trust policy",
+        "current canonical workload-policy bytes and exact digest",
+        "call `require_verified_transition_workload_review` again",
+        "rejects an evaluation-time rollback",
+        "current key authorization, subject authorization, receipt lifetime, and revocation",
+        "cannot authenticate policy selection, succession, custody, trusted time, global anti-rollback",
+        "must use only the fresh return value",
+        "Retained `.adequate` is historical state, not authority",
+        "No current workload policy, key, signature, receipt, or representative-workload corpus is bundled",
+    ):
+        assert workload_authority_boundary in registry
+
+    for tcb_budget_authority_boundary in (
+        "budget-review `/2` signature authenticates its canonical receipt, not the replaceable trust policy",
+        "does not by itself make the signed budget decision current authority",
+        "current canonical TCB-budget policy bytes and exact digest",
+        "call `require_verified_tcb_budget_review` again",
+        "rejects an evaluation-time rollback",
+        "current key authorization, source-subject authorization, receipt lifetime, and revocation",
+        "cannot authenticate policy selection, namespace or succession, custody, trusted time, global anti-rollback",
+        "must use only the fresh return value",
+        "serialized freeze retains the decision-time `review_trust_policy_digest`",
+        "separately held current review is ephemeral authorization",
+        "must never rewrite those historical bytes",
+        "No current TCB-budget policy, key, signature, receipt, independently approved budget, or positive freeze is bundled",
+    ):
+        assert tcb_budget_authority_boundary in registry
+
+
+def test_registry_windows_debug_v3_row_is_distinct_target_only_and_nonpromoting():
+    lines = _registry_text().splitlines()
+    v2 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows debug-event capture tranche" in line
+    )
+    v3 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows target-endpoint reconciliation tranche" in line
+    )
+
+    assert v2 != v3
+    assert "(`/2`, incomplete only)" in v2
+    assert "(`/3`, incomplete only)" in v3
+    assert "capture_windows_debug_runtime_closure_incomplete" in v2
+    assert "capture_windows_debug_runtime_closure_v3_incomplete" in v3
+
+    v2_assets = (
+        "atlas-r2-windows-debug-runtime-discovery-v2.schema.json",
+        "atlas-r2-windows-execution-environment-manifest-v2.schema.json",
+    )
+    v3_assets = (
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v3.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v3.schema.json",
+    )
+    for basename in v2_assets:
+        assert basename in v2
+        assert basename not in v3
+    for relative in v3_assets:
+        assert (ROOT / relative).is_file(), f"R2.0 /3 SSOT asset is missing: {relative}"
+        basename = relative.rsplit("/", 1)[-1]
+        assert basename in v3
+        assert basename not in v2
+
+    for unchanged_v2_boundary in (
+        "deliberately incomplete image-event observation",
+        "event-stream continuity, start/end reconciliation",
+        "OS loss counters remain null",
+    ):
+        assert unchanged_v2_boundary in v2
+
+    for v3_boundary in (
+        "sealed 12-artifact `/3` envelope",
+        "target_start_end_snapshot_reconciled=true",
+        "collector_sequence_kind=LOCAL_APPEND_ORDINAL",
+        "collector_ledger_contiguous=true",
+        "collector_sequence_gap_count=0",
+        "event_stream_contiguous=false",
+        "start_end_snapshot_reconciled=false",
+        "os_event_sequence_available=false",
+        "os_loss_counter_available=false",
+        "OS/global loss counters remain null",
+        "Endpoint equality cannot detect an omitted balanced load/unload pair",
+        "Later target teardown image activity remains serialized and debug-projected but is outside END checkpoint reconciliation",
+        "`LOAD_LIBRARY_AS_DATAFILE`",
+        "Only `process_tree_captured_before_first_instruction_through_final_descendant` and `execution_environment_argv_cwd_and_inputs_bound` may be true",
+        "Runtime inventory `/1` remains `PARTIAL_NONPORTABLE_PROTOTYPE`",
+        "`/2` remains unchanged",
+        "No budget, authority, signature, qualification, promotion, R2.1+, or Release 3 effect",
+    ):
+        assert v3_boundary in v3
+
+
+def test_registry_windows_debug_v4_row_binds_only_stable_on_disk_bytes_and_stays_nonpromoting():
+    lines = _registry_text().splitlines()
+    v3 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows target-endpoint reconciliation tranche" in line
+    )
+    v4 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows debug-file identity/on-disk-byte tranche" in line
+    )
+
+    assert v3 != v4
+    assert "(`/3`, incomplete only)" in v3
+    assert "(`/4`, incomplete only)" in v4
+    assert "capture_windows_debug_runtime_closure_v4_incomplete" in v4
+    assert "validate_windows_debug_runtime_discovery_v4_trace" in v4
+    assert "validate_windows_debug_execution_environment_v4_manifest" in v4
+
+    v4_assets = (
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v4.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v4.schema.json",
+    )
+    for relative in v4_assets:
+        assert (ROOT / relative).is_file(), f"R2.0 /4 SSOT asset is missing: {relative}"
+        basename = relative.rsplit("/", 1)[-1]
+        assert basename in v4
+        assert basename not in v3
+
+    for v4_boundary in (
+        "sealed 13-artifact `/4` envelope",
+        "borrowed debug-event image-handle trace",
+        "fixed capture fails closed unless every received CREATE_PROCESS or LOAD_DLL image row supplies a non-null debug-event `hFile`",
+        "joins one-to-one by source debug sequence and mapping tokens",
+        "borrows but never closes, retains, or transfers that handle",
+        "`FILE_ID_INFO`",
+        "exactly two equal SHA-256 whole-file reads from offset zero through that same handle",
+        "Raw paths and filenames are not disclosed",
+        "File identifiers are machine-local and can be reused over time",
+        "protective guards only, never approved budgets",
+        "stable handle-addressed **on-disk** bytes only",
+        "does not prove mapped or loaded memory bytes",
+        "Debug-event image handles can be null outside this fail-closed fixed capture",
+        "persistent_file_identity_and_loaded_bytes_bound=false",
+        "mapped_or_loaded_memory_bytes_bound=false",
+        "event_stream_contiguous=false",
+        "start_end_snapshot_reconciled=false",
+        "Only `process_tree_captured_before_first_instruction_through_final_descendant` and `execution_environment_argv_cwd_and_inputs_bound` may be true",
+        "Runtime inventory `/1` remains `PARTIAL_NONPORTABLE_PROTOTYPE`",
+        "`/2` and `/3` remain unchanged",
+        "No budget, authority, signature, qualification, promotion, R2.1+, or Release 3 effect",
+    ):
+        assert v4_boundary in v4
+
+
+def test_registry_windows_debug_v5_row_scopes_event_coincident_memory_and_stays_nonpromoting():
+    lines = _registry_text().splitlines()
+    v4 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows debug-file identity/on-disk-byte tranche" in line
+    )
+    v5 = next(
+        line
+        for line in lines
+        if "Release 2.0 Windows event-coincident mapped-image-byte tranche" in line
+    )
+
+    assert v4 != v5
+    assert "(`/4`, incomplete only)" in v4
+    assert "(`/5`, incomplete only)" in v5
+    assert "capture_windows_debug_runtime_closure_v5_incomplete" in v5
+    assert "validate_windows_debug_runtime_discovery_v5_trace" in v5
+    assert "validate_windows_debug_execution_environment_v5_manifest" in v5
+
+    v5_assets = (
+        "cisco_toolkit/schemas/atlas-r2-windows-debug-runtime-discovery-v5.schema.json",
+        "cisco_toolkit/schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json",
+    )
+    for relative in v5_assets:
+        assert (ROOT / relative).is_file(), f"R2.0 /5 SSOT asset is missing: {relative}"
+        basename = relative.rsplit("/", 1)[-1]
+        assert basename in v5
+        assert basename not in v4
+
+    for v5_boundary in (
+        "sealed 13-artifact `/5` envelope",
+        "fresh non-inheritable least-privilege query/read duplicate",
+        "retained CREATE_PROCESS debug-event `hProcess` for that process",
+        "closes the duplicate and event-owned file handle before `ContinueDebugEvent`",
+        "walks exactly `[mapping_base, mapping_base + SizeOfImage)` twice",
+        "Each pass must independently form",
+        "contiguous same-allocation-base partition",
+        "`MEM_COMMIT` + `MEM_IMAGE`",
+        "every `ReadProcessMemory` call must return its exact requested bytes",
+        "equal whole-span SHA-256 digests and equal retained PE-header prefixes",
+        "topology, protection, and per-region digest stability are not claimed",
+        "No raw path, filename, process handle, or runtime address is serialized",
+        "512 memory regions per image read pass, 16,384 total emitted memory regions across both passes",
+        "protective guards only, never approved budgets",
+        "mapped_or_loaded_memory_bytes_bound=true",
+        "event_coincident_mem_image_bytes_bound=true",
+        "received image event at its suspended pre-continue instant",
+        "persistent_file_identity_and_loaded_bytes_bound=false",
+        "runtime-closure envelope does not gain a broad loaded-byte closure bit",
+        "not disk/memory byte equality",
+        "point reads do not prove allocation exhaustion, lifetime immutability, or complete mapping history",
+        "manual/anonymous mappings",
+        "Only `process_tree_captured_before_first_instruction_through_final_descendant` and `execution_environment_argv_cwd_and_inputs_bound` may be true",
+        "Runtime inventory `/1` remains `PARTIAL_NONPORTABLE_PROTOTYPE`",
+        "`/2`, `/3`, and `/4` remain unchanged",
+        "No budget, authority, signature, qualification, promotion, R2.1+, or Release 3 effect",
+    ):
+        assert v5_boundary in v5
 
 
 def test_registry_cited_snapshot_keys_are_published_by_the_engine():

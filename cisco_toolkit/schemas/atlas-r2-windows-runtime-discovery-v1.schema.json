@@ -1,0 +1,655 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-windows-runtime-discovery:1",
+  "title": "Atlas R2.0 Windows runtime discovery artifacts v1",
+  "description": "Closed structural schema for three incomplete, non-authoritative Windows discovery artifacts produced from one bounded R2.0 prototype execution.",
+  "$comment": "These documents are point observations only. Job Object completion-port messages and K32 polling do not establish a gap-free process lifetime, load or unload history, exact runtime closure, an approved budget, qualification, promotion, or Release 3 authority. Python validation remains authoritative for canonical bytes, digests, contiguous row ordering, row-count joins, token joins, and cross-document equality.",
+  "oneOf": [
+    { "$ref": "#/$defs/processTrace" },
+    { "$ref": "#/$defs/mappingTrace" },
+    { "$ref": "#/$defs/lossReconciliation" }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "opaqueToken": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$"
+    },
+    "positivePortableInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "nonnegativePortableInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "portableInteger": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os_name", "sys_platform"],
+      "properties": {
+        "os_name": { "const": "nt" },
+        "sys_platform": { "const": "win32" }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative",
+        "closure_decision",
+        "complete_exact_runtime_closure",
+        "approved_budget",
+        "qualification_effect",
+        "promotion_eligible",
+        "release3_included"
+      ],
+      "properties": {
+        "authoritative": { "const": false },
+        "closure_decision": { "type": "null" },
+        "complete_exact_runtime_closure": { "const": false },
+        "approved_budget": { "type": "null" },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false },
+        "release3_included": { "const": false }
+      }
+    },
+    "captureProtocol": {
+      "const": "WINDOWS_JOB_OBJECT_K32_DISCOVERY/1"
+    },
+    "claimBoundary": {
+      "const": "Windows Job Object process messages and K32 polling checkpoints for one R2.0 prototype execution only; incomplete and non-authoritative, with no exact runtime-closure, budget, qualification, promotion, or Release 3 effect."
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_runtime_seconds",
+        "max_process_events",
+        "max_mapping_snapshots",
+        "max_mappings_per_snapshot",
+        "poll_interval_milliseconds"
+      ],
+      "properties": {
+        "max_runtime_seconds": { "type": "integer", "const": 30 },
+        "max_process_events": { "type": "integer", "const": 4096 },
+        "max_mapping_snapshots": { "type": "integer", "const": 256 },
+        "max_mappings_per_snapshot": { "type": "integer", "const": 4096 },
+        "poll_interval_milliseconds": { "type": "integer", "const": 25 }
+      },
+      "$comment": "Operational collection guards only; these values are not approved R2 TCB or pack budgets. Python validation joins each row count to these declared limits."
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "$ref": "#/$defs/portableInteger" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jsonValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "bindingDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "scope", "time"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/digest" },
+        "scope": { "$ref": "#/$defs/digest" },
+        "time": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "dslLimitProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_program_bytes",
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_rules",
+        "max_expression_depth",
+        "max_expression_nodes",
+        "max_operator_operands",
+        "max_path_segments",
+        "max_string_bytes",
+        "max_set_items",
+        "max_input_nodes",
+        "max_instruction_fuel"
+      ],
+      "properties": {
+        "max_program_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_rules": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_depth": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_expression_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_operator_operands": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_path_segments": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_string_bytes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_set_items": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_input_nodes": { "$ref": "#/$defs/positivePortableInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positivePortableInteger" }
+      },
+      "$comment": "Exact provisional execution guards from the embedded receipt, not an approved budget."
+    },
+    "workUnits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program_bytes",
+        "input_bytes",
+        "input_nodes",
+        "rules",
+        "expression_nodes",
+        "fuel_consumed",
+        "result_bytes",
+        "result_records"
+      ],
+      "properties": {
+        "program_bytes": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "input_bytes": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "input_nodes": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "rules": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "expression_nodes": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "fuel_consumed": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "result_bytes": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "result_records": { "$ref": "#/$defs/nonnegativePortableInteger" }
+      }
+    },
+    "resultEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "truth", "value"],
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,191}$"
+        },
+        "truth": { "enum": ["TRUE", "FALSE", "INCONCLUSIVE"] },
+        "value": { "$ref": "#/$defs/jsonValue" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "truth": { "enum": ["FALSE", "INCONCLUSIVE"] } },
+            "required": ["truth"]
+          },
+          "then": {
+            "properties": { "value": { "type": "null" } }
+          }
+        }
+      ]
+    },
+    "declarativeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "entries"],
+      "properties": {
+        "schema": { "const": "atlas.declarative-result/1" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resultEntry" }
+        }
+      }
+    },
+    "executedReceipt": {
+      "type": "object",
+      "const": {
+        "authoritative": false,
+        "authoritative_gate": null,
+        "binding_digests": {
+          "identity": "sha256:77aca46a8deb00ba293f1d3dfc44ad0cc220f9ab49c3ca7c754a1fd0f2991522",
+          "scope": "sha256:0829b4d3479b225950e08fdcbd0e0a40fa998a76eb128ecaa4ee6b1fc1930712",
+          "time": "sha256:6d30510e2d1277cce7e6fe92b2d1a2aff20dca3f5bb7eff59ca73df4f2af4a7d"
+        },
+        "error": null,
+        "execution_state": "CONTRACT_ONLY",
+        "function": "evaluate",
+        "input_digest": "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293",
+        "interpreter_semantics_version": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1",
+        "limit_profile": {
+          "max_expression_depth": 32,
+          "max_expression_nodes": 4096,
+          "max_input_bytes": 1048576,
+          "max_input_nodes": 16384,
+          "max_instruction_fuel": 32768,
+          "max_operator_operands": 256,
+          "max_output_bytes": 131072,
+          "max_path_segments": 32,
+          "max_program_bytes": 262144,
+          "max_rules": 1024,
+          "max_set_items": 1024,
+          "max_string_bytes": 65536
+        },
+        "limit_profile_digest": "sha256:fe54f5ca9b6e1a1257d42e81e8d44684e88df451254c55af2e75d2fd1753b520",
+        "outcome": "EXECUTED_NONAUTHORITATIVE",
+        "program_digest": "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b",
+        "promotion_eligible": false,
+        "qualification_effect": "NONE",
+        "qualification_state": "EXPERIMENTAL",
+        "result": {
+          "entries": [
+            {
+              "rule_id": "prototype.evaluate-functional",
+              "truth": "TRUE",
+              "value": {
+                "kind": "PROTOTYPE_EVALUATION",
+                "value": "matched"
+              }
+            },
+            {
+              "rule_id": "prototype.evaluate-temporal",
+              "truth": "INCONCLUSIVE",
+              "value": null
+            }
+          ],
+          "schema": "atlas.declarative-result/1"
+        },
+        "result_digest": "sha256:cd7870a1acf7369a649e99bceb91cd79f90e8c0aa816e52b6f239ccad41cb16d",
+        "schema": "atlas.declarative-prototype-receipt/1",
+        "supplies_obligation_support": false,
+        "work_units": {
+          "expression_nodes": 21,
+          "fuel_consumed": 38,
+          "input_bytes": 1134,
+          "input_nodes": 36,
+          "program_bytes": 2035,
+          "result_bytes": 246,
+          "result_records": 2,
+          "rules": 6
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "interpreter_semantics_version",
+        "limit_profile",
+        "limit_profile_digest",
+        "outcome",
+        "authoritative",
+        "supplies_obligation_support",
+        "qualification_effect",
+        "authoritative_gate",
+        "promotion_eligible",
+        "execution_state",
+        "qualification_state",
+        "program_digest",
+        "input_digest",
+        "binding_digests",
+        "function",
+        "work_units",
+        "result",
+        "result_digest",
+        "error"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.declarative-prototype-receipt/1" },
+        "interpreter_semantics_version": {
+          "const": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1"
+        },
+        "limit_profile": { "$ref": "#/$defs/dslLimitProfile" },
+        "limit_profile_digest": { "$ref": "#/$defs/digest" },
+        "outcome": { "const": "EXECUTED_NONAUTHORITATIVE" },
+        "authoritative": { "const": false },
+        "supplies_obligation_support": { "const": false },
+        "qualification_effect": { "const": "NONE" },
+        "authoritative_gate": { "type": "null" },
+        "promotion_eligible": { "const": false },
+        "execution_state": { "const": "CONTRACT_ONLY" },
+        "qualification_state": { "const": "EXPERIMENTAL" },
+        "program_digest": { "$ref": "#/$defs/digest" },
+        "input_digest": { "$ref": "#/$defs/digest" },
+        "binding_digests": { "$ref": "#/$defs/bindingDigests" },
+        "function": { "const": "evaluate" },
+        "work_units": { "$ref": "#/$defs/workUnits" },
+        "result": { "$ref": "#/$defs/declarativeResult" },
+        "result_digest": { "$ref": "#/$defs/digest" },
+        "error": { "type": "null" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program_digest",
+        "input_digest",
+        "receipt_digest",
+        "receipt",
+        "outcome",
+        "authoritative",
+        "promotion_eligible",
+        "crypto_provider_module",
+        "crypto_provider_path_digest",
+        "crypto_vector",
+        "crypto_verified"
+      ],
+      "properties": {
+        "program_digest": {
+          "const": "sha256:7f633a9ce454dbc833e53d71aef7fa0e0f00065b85278a128faa97377d476a4b"
+        },
+        "input_digest": {
+          "const": "sha256:bb7c21a11518d1b44e63a0431cc5c5271878fe700c5b6e02f604034115b64293"
+        },
+        "receipt_digest": {
+          "const": "sha256:657d2c01f4f387cdfbd11814efac52f48cdace97e71c1a16bde7b76d5476c6fa"
+        },
+        "receipt": { "$ref": "#/$defs/executedReceipt" },
+        "outcome": { "const": "EXECUTED_NONAUTHORITATIVE" },
+        "authoritative": { "const": false },
+        "promotion_eligible": { "const": false },
+        "crypto_provider_module": {
+          "const": "cryptography.hazmat.bindings._rust"
+        },
+        "crypto_provider_path_digest": { "$ref": "#/$defs/digest" },
+        "crypto_vector": { "const": "RFC8032-TEST-1-EMPTY-MESSAGE" },
+        "crypto_verified": { "const": true }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completion_port_associated",
+        "kill_on_job_close",
+        "breakaway_ok",
+        "silent_breakaway_ok",
+        "assigned_process_count",
+        "observed_process_count",
+        "active_process_zero_observed",
+        "target_exit_code"
+      ],
+      "properties": {
+        "completion_port_associated": { "const": true },
+        "kill_on_job_close": { "const": true },
+        "breakaway_ok": { "const": false },
+        "silent_breakaway_ok": { "const": false },
+        "assigned_process_count": { "const": 1 },
+        "observed_process_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 9007199254740991
+        },
+        "active_process_zero_observed": { "const": true },
+        "target_exit_code": { "const": 0 }
+      },
+      "$comment": "Job Object containment and termination guards are collection mechanics, not a security sandbox or deny-by-default execution policy."
+    },
+    "processEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "event", "process_token", "job_message_id"],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "event": {
+          "enum": [
+            "NEW_PROCESS",
+            "EXIT_PROCESS",
+            "ABNORMAL_EXIT_PROCESS",
+            "ACTIVE_PROCESS_ZERO"
+          ]
+        },
+        "process_token": {
+          "oneOf": [
+            { "$ref": "#/$defs/opaqueToken" },
+            { "type": "null" }
+          ]
+        },
+        "job_message_id": { "enum": [4, 6, 7, 8] }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "event": { "const": "ACTIVE_PROCESS_ZERO" },
+            "process_token": { "type": "null" },
+            "job_message_id": { "const": 4 }
+          }
+        },
+        {
+          "properties": {
+            "event": { "const": "NEW_PROCESS" },
+            "process_token": { "$ref": "#/$defs/opaqueToken" },
+            "job_message_id": { "const": 6 }
+          }
+        },
+        {
+          "properties": {
+            "event": { "const": "EXIT_PROCESS" },
+            "process_token": { "$ref": "#/$defs/opaqueToken" },
+            "job_message_id": { "const": 7 }
+          }
+        },
+        {
+          "properties": {
+            "event": { "const": "ABNORMAL_EXIT_PROCESS" },
+            "process_token": { "$ref": "#/$defs/opaqueToken" },
+            "job_message_id": { "const": 8 }
+          }
+        }
+      ]
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mapping_token",
+        "observed_path_digest",
+        "path_disclosure",
+        "mapping_kind"
+      ],
+      "properties": {
+        "mapping_token": { "$ref": "#/$defs/opaqueToken" },
+        "observed_path_digest": { "$ref": "#/$defs/digest" },
+        "path_disclosure": { "const": "DIGEST_ONLY_NO_RAW_PATH" },
+        "mapping_kind": { "const": "K32_ENUMERATED_IMAGE" }
+      }
+    },
+    "mappingSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "process_token", "status", "mappings"],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/nonnegativePortableInteger" },
+        "process_token": { "$ref": "#/$defs/opaqueToken" },
+        "status": { "const": "OBSERVED_NONEMPTY" },
+        "mappings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/mapping" },
+          "$comment": "Rows are mapping-token ordered by the producer; Python validation enforces strict ordering and uniqueness by token."
+        }
+      }
+    },
+    "processTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "limits",
+        "target",
+        "target_process_token",
+        "job",
+        "process_event_count",
+        "events"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.windows-job-process-trace/1" },
+        "capture_protocol": { "$ref": "#/$defs/captureProtocol" },
+        "platform": { "$ref": "#/$defs/platform" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "claim_boundary": { "$ref": "#/$defs/claimBoundary" },
+        "authority": { "$ref": "#/$defs/authority" },
+        "limits": { "$ref": "#/$defs/limits" },
+        "target": { "$ref": "#/$defs/target" },
+        "target_process_token": { "$ref": "#/$defs/opaqueToken" },
+        "job": { "$ref": "#/$defs/job" },
+        "process_event_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "contains": {
+            "properties": { "sequence": { "const": 0 } },
+            "required": ["sequence"]
+          },
+          "minContains": 1,
+          "maxContains": 1,
+          "items": { "$ref": "#/$defs/processEvent" },
+          "$comment": "Rows are contiguous and sequence ordered from zero; Python validation enforces ordering and exact equality with process_event_count and limits.max_process_events."
+        }
+      }
+    },
+    "mappingTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "method",
+        "semantics",
+        "history_complete",
+        "target_process_token",
+        "snapshot_count",
+        "mapping_row_count",
+        "distinct_mapping_count",
+        "snapshots"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.windows-k32-mapping-observation-trace/1" },
+        "capture_protocol": { "$ref": "#/$defs/captureProtocol" },
+        "platform": { "$ref": "#/$defs/platform" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "claim_boundary": { "$ref": "#/$defs/claimBoundary" },
+        "authority": { "$ref": "#/$defs/authority" },
+        "method": {
+          "const": "WINDOWS_K32_ENUM_PROCESS_MODULES_EX_POLLING/1"
+        },
+        "semantics": {
+          "const": "POLLING_CHECKPOINTS_NOT_LOAD_UNLOAD_HISTORY"
+        },
+        "history_complete": { "const": false },
+        "target_process_token": { "$ref": "#/$defs/opaqueToken" },
+        "snapshot_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "mapping_row_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "distinct_mapping_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "snapshots": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "contains": {
+            "properties": { "sequence": { "const": 0 } },
+            "required": ["sequence"]
+          },
+          "minContains": 1,
+          "maxContains": 1,
+          "items": { "$ref": "#/$defs/mappingSnapshot" },
+          "$comment": "Snapshots are contiguous and sequence ordered from zero; Python validation enforces ordering, exact count joins, and the declared per-snapshot guard."
+        }
+      }
+    },
+    "lossCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_messages_lost",
+        "process_events_lost",
+        "mapping_snapshots_lost",
+        "mapping_load_events_lost",
+        "mapping_unload_events_lost",
+        "k32_enumeration_failures"
+      ],
+      "properties": {
+        "job_messages_lost": { "type": "null" },
+        "process_events_lost": { "type": "null" },
+        "mapping_snapshots_lost": { "type": "null" },
+        "mapping_load_events_lost": { "type": "null" },
+        "mapping_unload_events_lost": { "type": "null" },
+        "k32_enumeration_failures": { "$ref": "#/$defs/nonnegativePortableInteger" }
+      },
+      "$comment": "The five loss counters remain unknown and therefore exactly null in v1. Only observed K32 enumeration failures are counted; no combination of counters upgrades this discovery lane to exact closure."
+    },
+    "lossReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capture_protocol",
+        "platform",
+        "selected_commit",
+        "selected_tree",
+        "claim_boundary",
+        "authority",
+        "target_process_token",
+        "process_event_count",
+        "mapping_snapshot_count",
+        "mapping_row_count",
+        "event_stream_contiguous",
+        "start_end_snapshot_reconciled",
+        "counters",
+        "limitations"
+      ],
+      "properties": {
+        "schema": { "const": "atlas.windows-discovery-loss-reconciliation/1" },
+        "capture_protocol": { "$ref": "#/$defs/captureProtocol" },
+        "platform": { "$ref": "#/$defs/platform" },
+        "selected_commit": { "$ref": "#/$defs/gitObject" },
+        "selected_tree": { "$ref": "#/$defs/gitObject" },
+        "claim_boundary": { "$ref": "#/$defs/claimBoundary" },
+        "authority": { "$ref": "#/$defs/authority" },
+        "target_process_token": { "$ref": "#/$defs/opaqueToken" },
+        "process_event_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "mapping_snapshot_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "mapping_row_count": { "$ref": "#/$defs/positivePortableInteger" },
+        "event_stream_contiguous": { "const": false },
+        "start_end_snapshot_reconciled": { "const": false },
+        "counters": { "$ref": "#/$defs/lossCounters" },
+        "limitations": {
+          "const": [
+            "JOB_OBJECT_NOT_A_SANDBOX_OR_DENY_BY_DEFAULT_EXECUTION_POLICY",
+            "JOB_COMPLETION_PORT_MESSAGES_DO_NOT_PROVE_GAP_FREE_PROCESS_LIFETIME_HISTORY",
+            "K32_POLLING_CHECKPOINTS_DO_NOT_PROVE_LOAD_OR_UNLOAD_HISTORY",
+            "UNKNOWN_LOSS_COUNTERS_PREVENT_CONTINUOUS_CAPTURE_OR_EXACT_CLOSURE",
+            "NO_FILE_IDENTITY_HANDLE_OR_LOADER_RESOLUTION_TRACE",
+            "NO_PLATFORM_BOOT_ATTESTATION_OR_EXECUTABLE_ALLOW_SET"
+          ]
+        }
+      }
+    }
+  }
+}
