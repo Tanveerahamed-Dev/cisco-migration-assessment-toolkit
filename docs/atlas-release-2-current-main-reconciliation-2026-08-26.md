@@ -27,13 +27,13 @@ Dependency-ordered regeneration changed only these generated artifacts and their
 | Artifact | Exact-byte SHA-256 |
 |---|---|
 | `cisco_toolkit/data/atlas-r2-runtime-inventory.reference.v1.json` | `447a4e27eb7bea4fe4ee32173fc16a10ba8d65474c578179975b4faa3a33719c` |
-| `cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json` | `5b78c03ce2b9d4f656958b458ca41d69b58f432f16770cd494fad83f7f602708` |
-| `cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json` | `2aa546f1b9772acfeb2fcd9d1d45be475c2862f3c796844ab7472413542bf83e` |
-| `cisco_toolkit/data/atlas-r2-tcb-budget-proposal.v1.json` | `5525821f5766cc91c9533ca66d34429379c6d3a5f08a720ef4150724565506eb` |
+| `cisco_toolkit/data/atlas-r2-dsl-prototype-measurements.v1.json` | `d6147f0a211b8cdd313b3e815d9f4d3df9561a75e93415c5aeb84fef30ea496d` |
+| `cisco_toolkit/data/atlas-r2-structural-tcb-census.v1.json` | `8fce258d323fb5aad3a904c3e7490e34504c250f56055d457dfdb033b53f8436` |
+| `cisco_toolkit/data/atlas-r2-tcb-budget-proposal.v1.json` | `1d483abd1e362cdb062e36fcb58939c1b0bd95522cd86be70d395ef76cdfbd65` |
 
 The packaged denominator, input, experimental pack, program, TCB manifest, and QCP-001 manifest remain byte-identical to the canonical R2 closeout and must be verified, not regenerated gratuitously. Their relevant SHA-256 values remain pack `78e8c9690f7833bf32f8347aac54aa8d9ab8f8b49543603f20f52d8fbee51a0e`, TCB manifest `b47c208c64448495f736dcb027bbca5571a6959a552ee38b068404ed29f2c9c9`, and QCP-001 `5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac`.
 
-Regeneration changed bindings and bounded reference measurements, not authority. QCP-001 remains `EXPERIMENTAL` / `CONTRACT_ONLY` with no qualification receipt. Measurements remain `authoritative=false`, `approved_budget=null`, and `promotion_eligible=false`. Runtime remains `PARTIAL_NONPORTABLE_PROTOTYPE` with `complete_exact_runtime_closure=false`. The census remains `PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW` and `BLOCKS_R2_0_COMPLETION`; selected commit remains null. The proposal remains non-authoritative and unapproved, selected commit/tree remain null, source binding remains `SAME_CHECKOUT_SELF_CHECK_ONLY`, and promotion remains false. Release 3 is not included in any of these artifacts.
+Regeneration changed bindings and bounded reference measurements, not authority. The final local post-repair observation refresh changed only timing/peak-memory observations and their downstream census/proposal digests; measured boundary outcomes and authority fields did not change. QCP-001 remains `EXPERIMENTAL` / `CONTRACT_ONLY` with no qualification receipt. Measurements remain `authoritative=false`, `approved_budget=null`, and `promotion_eligible=false`. Runtime remains `PARTIAL_NONPORTABLE_PROTOTYPE` with `complete_exact_runtime_closure=false`. The census remains `PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW` and `BLOCKS_R2_0_COMPLETION`; selected commit remains null. The proposal remains non-authoritative and unapproved, selected commit/tree remain null, source binding remains `SAME_CHECKOUT_SELF_CHECK_ONLY`, and promotion remains false. Release 3 is not included in any of these artifacts.
 
 ## Technical merge is not independent approval
 
