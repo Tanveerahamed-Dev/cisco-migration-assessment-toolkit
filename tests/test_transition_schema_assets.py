@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 from importlib import resources
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from typing import Any
@@ -18,6 +19,7 @@ from jsonschema.exceptions import ValidationError
 
 from cisco_toolkit import transition_contract as tc
 from cisco_toolkit import transition_dsl as dsl
+from cisco_toolkit import transition_legacy as legacy
 from cisco_toolkit import transition_pack as tp
 from cisco_toolkit import transition_runtime_discovery as rd
 from cisco_toolkit import transition_runtime_inventory as ri
@@ -1535,3 +1537,65 @@ def test_windows_debug_v2_through_v4_schema_bytes_are_unchanged() -> None:
         raw = _resource_bytes(resource)
         assert len(raw) == size
         assert hashlib.sha256(raw).hexdigest() == digest
+
+
+def test_byte_bound_checkout_owners_are_lf_exactly_attributed() -> None:
+    census = json.loads(_resource_bytes(_TCB_CENSUS_RESOURCE))
+    prototype = census["executable_prototype"]
+    owner_paths = {
+        item["path"] for item in legacy.LEGACY_R1_SOURCE_MANIFEST
+    }
+    owner_paths.update(
+        item["path"] for item in census["structural_core"]["sources"]
+    )
+    owner_paths.add(census["conditional_legacy_replay_tcb"]["adapter_source"]["path"])
+    owner_paths.add(prototype["interpreter_source"]["path"])
+    owner_paths.update(item["path"] for item in prototype["asset_bindings"])
+    owner_paths.update({
+        census["census_method"]["generator_path"],
+        prototype["measurement_tool"]["path"],
+        prototype["runtime_inventory_tool"]["path"],
+    })
+    owner_paths.update({
+        f"cisco_toolkit/{relative}"
+        for relative in (
+            _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V2_SCHEMA_RESOURCE,
+            _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V3_SCHEMA_RESOURCE,
+            _WINDOWS_DEBUG_RUNTIME_DISCOVERY_V4_SCHEMA_RESOURCE,
+            _WINDOWS_EXECUTION_ENVIRONMENT_V2_SCHEMA_RESOURCE,
+            _WINDOWS_EXECUTION_ENVIRONMENT_V3_SCHEMA_RESOURCE,
+            _WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE,
+        )
+    })
+    assert len(owner_paths) >= 36
+    assert {
+        "cisco_toolkit/transition_dsl.py",
+        "tools/measure_transition_dsl_prototype.py",
+        "webapp/backend/storage.py",
+        "webapp/frontend/src/api.ts",
+    } <= owner_paths
+
+    publisher_bytes = "cisco_toolkit/data/eol-bulletins.json"
+    queried_paths = sorted({*owner_paths, publisher_bytes})
+    git = shutil.which("git")
+    assert git is not None, "Git is required to verify checkout attribute semantics"
+    completed = subprocess.run(
+        [git, "check-attr", "-z", "text", "eol", "--", *queried_paths],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    fields = completed.stdout.split(b"\0")
+    assert fields.pop() == b""
+    assert len(fields) % 3 == 0
+    effective: dict[str, dict[str, str]] = {}
+    for index in range(0, len(fields), 3):
+        path, attribute, value = (
+            field.decode("utf-8", "strict") for field in fields[index:index + 3]
+        )
+        effective.setdefault(path, {})[attribute] = value
+
+    for path in owner_paths:
+        assert effective[path] == {"text": "set", "eol": "lf"}, path
+    assert effective[publisher_bytes] == {"text": "unset", "eol": "unset"}
