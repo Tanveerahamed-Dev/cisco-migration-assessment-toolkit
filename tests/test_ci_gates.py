@@ -13,6 +13,11 @@ import subprocess
 
 import pytest
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 CI lane
+    import tomli as tomllib
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _BASH = shutil.which("bash")
@@ -401,3 +406,27 @@ def test_pyproject_declares_xdist_so_a_fresh_dev_install_gets_the_gate_it_needs(
     dependency has to be declared, or a fresh `pip install -e .[dev]` reintroduces the problem."""
     pyproject = _read("pyproject.toml")
     assert "pytest-xdist" in pyproject, "pytest-xdist is not declared in [dev]"
+
+
+def test_pyproject_declares_jsonschema_for_direct_test_imports():
+    """A fresh ``.[dev]`` install must collect every directly imported schema-contract test."""
+    importers = []
+    tests_root = os.path.join(ROOT, "tests")
+    direct_import = re.compile(
+        r"(?m)^(?:from\s+jsonschema(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s+import|"
+        r"import\s+jsonschema(?:\s|$))"
+    )
+    for directory, _, filenames in os.walk(tests_root):
+        for filename in filenames:
+            if not filename.startswith("test_") or not filename.endswith(".py"):
+                continue
+            path = os.path.join(directory, filename)
+            if direct_import.search(_read(os.path.relpath(path, ROOT))):
+                importers.append(os.path.relpath(path, ROOT).replace(os.sep, "/"))
+
+    assert importers, "precondition: no top-level test directly imports jsonschema"
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    dev_dependencies = project["optional-dependencies"]["dev"]
+    assert "jsonschema==4.26.0" in dev_dependencies, (
+        f"{sorted(importers)} directly import jsonschema, but the reviewed pin is absent from [dev]"
+    )
