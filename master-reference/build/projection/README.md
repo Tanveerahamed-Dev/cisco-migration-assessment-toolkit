@@ -33,9 +33,13 @@ Output layout:
   metadata is also the single physical store for symbol dossiers: the root
   index carries a source-bound, ordered upper-ID route that binary-searches one
   bounded metadata module for `loadRecord("symbol", stableId)`.
-- `search/index-*.mjs` and `search/shards/*.mjs` — a bounded exact-token index.
-  Stable IDs make every indexed record directly reachable; broad postings are
-  deterministically capped and disclose their complete match denominator.
+- `search/index-*.mjs`, `search/shards/*.mjs`, and
+  `search/documents/*.mjs` — a bounded exact-token index. Stable IDs make every
+  indexed record directly reachable; broad postings are deterministically
+  capped and disclose their complete match denominator. Term shards retain
+  ordered document ordinals, while a separately receipted, gapless module table
+  stores each projected search document once and resolves only the modules a
+  query needs.
 - `source/index-*.mjs` and `source/chunks/*.mjs` — bounded line/UTF-8-fragment
   chunks. Ordered chunks reconstruct every safe file byte-for-byte, while a
   stable line link loads only the chunk containing that line.
@@ -60,7 +64,8 @@ The generated directory is a release product, not authored source. Ignore only
 
 The projection manifest records executable raw-byte ceilings for the landing
 identity module, every metadata module, every dossier module, search shards and
-indexes, source chunks and indexes, and graph summaries/shards/indexes. Metadata
+document shards/indexes, source chunks and indexes, and graph
+summaries/shards/indexes. Metadata
 and dossier modules split recursively at 256 KiB. A single record above the
 ceiling is serialized once, split into content-hashed UTF-8 fragment modules,
 and reassembled only when its metadata group or stable-ID dossier is requested.

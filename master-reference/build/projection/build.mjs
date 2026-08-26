@@ -200,6 +200,7 @@ const SEARCH_GROUPS = [
 const SEARCH_POSTING_LIMIT = 64;
 const SEARCH_QUERY_TOKEN_LIMIT = 8;
 const SEARCH_SHARD_MAX_BYTES = 256 * 1024;
+const SEARCH_DOCUMENT_SHARD_MAX_BYTES = 256 * 1024;
 const SEARCH_INDEX_MAX_BYTES = 512 * 1024;
 const SOURCE_CHUNK_MAX_BYTES = 256 * 1024;
 const SOURCE_INDEX_MAX_BYTES = 2 * 1024 * 1024;
@@ -2697,6 +2698,7 @@ function splitSearchBucket(entries, prefix, splitPrefixes, shards) {
 
 async function writeSearchProjection(staging, groups) {
   const postings = new Map();
+  const documentsByKey = new Map();
   const groupRecordCounts = {};
   const indexedRecordCounts = {};
   for (const group of SEARCH_GROUPS) {
@@ -2707,12 +2709,18 @@ async function writeSearchProjection(staging, groups) {
       const projected = searchDocument(group, record);
       if (!projected) continue;
       indexed += 1;
+      const documentKey = `${group}:${projected.document.id}`;
+      const priorDocument = documentsByKey.get(documentKey);
+      if (priorDocument && stableJson(priorDocument) !== stableJson(projected.document)) {
+        throw new Error(`search document key resolves to different projected content: ${documentKey}`);
+      }
+      documentsByKey.set(documentKey, projected.document);
       // The stable ID is always indexed even when an adapter emits no other
       // lexical field. This is the lossless reachability denominator.
       const terms = new Set([...projected.terms, projected.document.id.toLowerCase()]);
       for (const term of terms) {
         const byDocument = postings.get(term) ?? new Map();
-        byDocument.set(`${group}:${projected.document.id}`, projected.document);
+        byDocument.set(documentKey, projected.document);
         postings.set(term, byDocument);
       }
     }
@@ -2745,7 +2753,35 @@ async function writeSearchProjection(staging, groups) {
       throw new Error(`search stable-ID reachability lost ${indexedRecordCounts[group] - (reachableExactIds.get(group)?.size ?? 0)} ${group} record(s)`);
     }
   }
-  const baseBuckets = Map.groupBy(entries, ([term]) => fnv1a(term).slice(0, 3));
+  const expectedDocumentCount = Object.values(indexedRecordCounts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const orderedDocuments = [...documentsByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right));
+  const orderedDocumentKeys = orderedDocuments.map(([key]) => key);
+  if (orderedDocuments.length !== expectedDocumentCount) {
+    throw new Error(
+      `search document denominator lost ${expectedDocumentCount - orderedDocuments.length} record(s)`,
+    );
+  }
+  const documentOrdinalByKey = new Map(
+    orderedDocuments.map(([key], ordinal) => [key, ordinal]),
+  );
+  const compactEntries = entries.map(([term, posting]) => [
+    term,
+    {
+      totalMatches: posting.totalMatches,
+      records: posting.records.map((record) => {
+        const ordinal = documentOrdinalByKey.get(`${record.kind}:${record.id}`);
+        if (!Number.isSafeInteger(ordinal)) {
+          throw new Error(`search posting lacks a normalized document: ${record.kind}:${record.id}`);
+        }
+        return ordinal;
+      }),
+    },
+  ]);
+  const baseBuckets = Map.groupBy(compactEntries, ([term]) => fnv1a(term).slice(0, 3));
   const splitPrefixes = new Set();
   const shards = [];
   for (const [prefix, bucketEntries] of [...baseBuckets.entries()].sort(([left], [right]) => left.localeCompare(right))) {
@@ -2753,6 +2789,7 @@ async function writeSearchProjection(staging, groups) {
   }
 
   await mkdir(join(staging, "search", "shards"), { recursive: true });
+  await mkdir(join(staging, "search", "documents"), { recursive: true });
   const shardEntries = [];
   for (const shard of shards.sort((left, right) => left.prefix.localeCompare(right.prefix))) {
     const digest = sha256(shard.bytes);
@@ -2767,11 +2804,79 @@ async function writeSearchProjection(staging, groups) {
     });
   }
 
+  const documentPieces = [];
+  const emptyDocumentModuleBytes = Buffer.byteLength(moduleText("documents", []), "utf8");
+  let pendingDocuments = [];
+  let pendingDocumentBytes = emptyDocumentModuleBytes;
+  for (const [, document] of orderedDocuments) {
+    const serializedBytes = Buffer.byteLength(stableJson(document), "utf8");
+    const increment = serializedBytes + (pendingDocuments.length ? 1 : 0);
+    if (
+      pendingDocumentBytes + increment > SEARCH_DOCUMENT_SHARD_MAX_BYTES &&
+      pendingDocuments.length
+    ) {
+      const bytes = Buffer.from(moduleText("documents", pendingDocuments), "utf8");
+      if (bytes.byteLength > SEARCH_DOCUMENT_SHARD_MAX_BYTES) {
+        throw new Error("search document shard accounting exceeded byte ceiling");
+      }
+      documentPieces.push({ documents: pendingDocuments, bytes });
+      pendingDocuments = [];
+      pendingDocumentBytes = emptyDocumentModuleBytes;
+    }
+    if (pendingDocumentBytes + serializedBytes > SEARCH_DOCUMENT_SHARD_MAX_BYTES) {
+      throw new Error(`search document exceeds ${SEARCH_DOCUMENT_SHARD_MAX_BYTES} bytes`);
+    }
+    pendingDocumentBytes += serializedBytes + (pendingDocuments.length ? 1 : 0);
+    pendingDocuments.push(document);
+  }
+  if (pendingDocuments.length) {
+    documentPieces.push({
+      documents: pendingDocuments,
+      bytes: Buffer.from(moduleText("documents", pendingDocuments), "utf8"),
+    });
+  }
+  const documentShardEntries = [];
+  let startOrdinal = 0;
+  for (const [index, piece] of documentPieces.entries()) {
+    if (piece.bytes.byteLength > SEARCH_DOCUMENT_SHARD_MAX_BYTES) {
+      throw new Error("search document shard accounting exceeded byte ceiling");
+    }
+    const digest = sha256(piece.bytes);
+    const modulePath = `search/documents/${String(index).padStart(5, "0")}-${digest.slice(0, 16)}.mjs`;
+    await writeFile(join(staging, ...modulePath.split("/")), piece.bytes);
+    const endOrdinal = startOrdinal + piece.documents.length - 1;
+    documentShardEntries.push({
+      startOrdinal,
+      endOrdinal,
+      module: modulePath,
+      bytes: piece.bytes.byteLength,
+      sha256: digest,
+      recordCount: piece.documents.length,
+    });
+    startOrdinal = endOrdinal + 1;
+  }
+  if (startOrdinal !== orderedDocuments.length) {
+    throw new Error("search document shard denominator is inconsistent");
+  }
+
   const loaderLines = shardEntries.map(
     (entry) => `  ${JSON.stringify(entry.prefix)}: () => import(${JSON.stringify(`./${entry.module.replace("search/", "")}`)}),`,
   ).join("\n");
+  const documentLoaderLines = documentShardEntries.map(
+    (entry) => `  () => import(${JSON.stringify(`./${entry.module.replace("search/", "")}`)}),`,
+  ).join("\n");
+  const compactDocumentRoutes = documentShardEntries.map(
+    ({ startOrdinal: start, endOrdinal: end, recordCount }) => ({
+      startOrdinal: start,
+      endOrdinal: end,
+      recordCount,
+    }),
+  );
   const searchIndexBytes = Buffer.from(
     `export const searchManifest = ${stableJson({
+      documentCount: orderedDocuments.length,
+      documentKeysDigest: digestObject(orderedDocumentKeys),
+      documentShardCount: documentShardEntries.length,
       groupRecordCounts,
       indexedRecordCounts,
       postingLimit: SEARCH_POSTING_LIMIT,
@@ -2782,6 +2887,9 @@ async function writeSearchProjection(staging, groups) {
     })};\n` +
       `const splitPrefixes = new Set(${stableJson([...splitPrefixes].sort())});\n` +
       `const shardLoaders = Object.freeze({\n${loaderLines}\n});\n` +
+      `const documentShardRoutes = Object.freeze(${stableJson(compactDocumentRoutes)});\n` +
+      `const documentLoaders = Object.freeze([\n${documentLoaderLines}\n]);\n` +
+      "if (documentShardRoutes.length !== searchManifest.documentShardCount || documentLoaders.length !== documentShardRoutes.length || documentShardRoutes.some((route, index) => !Number.isSafeInteger(route.startOrdinal) || !Number.isSafeInteger(route.endOrdinal) || !Number.isSafeInteger(route.recordCount) || route.recordCount < 1 || route.endOrdinal !== route.startOrdinal + route.recordCount - 1 || route.startOrdinal !== (index === 0 ? 0 : documentShardRoutes[index - 1].endOrdinal + 1)) || (documentShardRoutes.at(-1)?.endOrdinal ?? -1) !== searchManifest.documentCount - 1) throw new Error(\"search document shard route is absent or inconsistent\");\n" +
       `${fnv1a.toString()}\n` +
       "function bucketFor(term) {\n" +
       "  const hash = fnv1a(term);\n" +
@@ -2789,20 +2897,36 @@ async function writeSearchProjection(staging, groups) {
       "  while (splitPrefixes.has(prefix)) prefix = hash.slice(0, prefix.length + 1);\n" +
       "  return prefix;\n" +
       "}\n" +
+      "function documentShardFor(ordinal) {\n" +
+      "  if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= searchManifest.documentCount) return -1;\n" +
+      "  let low = 0;\n" +
+      "  let high = documentShardRoutes.length;\n" +
+      "  while (low < high) { const midpoint = low + Math.floor((high - low) / 2); if (documentShardRoutes[midpoint].endOrdinal < ordinal) low = midpoint + 1; else high = midpoint; }\n" +
+      "  return low < documentShardRoutes.length && documentShardRoutes[low].startOrdinal <= ordinal ? low : -1;\n" +
+      "}\n" +
+      "async function loadDocuments(ordinals) {\n" +
+      "  const shardIndexes = [...new Set(ordinals.map(documentShardFor))];\n" +
+      "  if (shardIndexes.some((index) => index < 0)) throw new Error(\"search posting references an invalid document ordinal\");\n" +
+      "  const loaded = new Map(await Promise.all(shardIndexes.map(async (index) => { const module = await documentLoaders[index](); const documents = module.documents ?? module.default; if (!Array.isArray(documents) || documents.length !== documentShardRoutes[index].recordCount) throw new Error(\"search document shard is malformed\"); return [index, documents]; })));\n" +
+      "  return new Map(ordinals.map((ordinal) => { const shardIndex = documentShardFor(ordinal); const route = documentShardRoutes[shardIndex]; const document = loaded.get(shardIndex)?.[ordinal - route.startOrdinal]; if (!document || typeof document.id !== \"string\" || typeof document.kind !== \"string\") throw new Error(\"search document ordinal is unresolved\"); return [ordinal, document]; }));\n" +
+      "}\n" +
       "export async function searchTerms(tokens) {\n" +
       `  const allTokens = [...new Set(tokens.map((token) => String(token).trim().toLowerCase()).filter(Boolean))];\n  const normalized = allTokens.slice(0, ${SEARCH_QUERY_TOKEN_LIMIT});\n` +
       "  const buckets = [...new Set(normalized.map(bucketFor))];\n" +
       "  const modules = new Map();\n" +
       "  await Promise.all(buckets.map(async (bucket) => { const loader = shardLoaders[bucket]; if (loader) modules.set(bucket, await loader()); }));\n" +
-      "  const merged = new Map();\n" +
+      "  const scores = new Map();\n" +
       "  const truncatedTerms = [];\n" +
       "  for (const token of normalized) {\n" +
       "    const posting = modules.get(bucketFor(token))?.terms?.[token];\n" +
       "    if (!posting) continue;\n" +
       "    if (posting.totalMatches > posting.records.length) truncatedTerms.push({ term: token, totalMatches: posting.totalMatches, returned: posting.records.length });\n" +
-      "    for (const record of posting.records) { const key = `${record.kind}:${record.id}`; const current = merged.get(key); merged.set(key, { ...record, score: (current?.score ?? 0) + 2 }); }\n" +
+      "    for (const ordinal of posting.records) { if (!Number.isSafeInteger(ordinal)) throw new Error(\"search posting contains a malformed document ordinal\"); scores.set(ordinal, (scores.get(ordinal) ?? 0) + 2); }\n" +
       "  }\n" +
-      "  return { records: [...merged.values()].sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)).slice(0, 64), truncatedTerms, ignoredTokenCount: Math.max(0, allTokens.length - normalized.length) };\n" +
+      `  if (scores.size > ${SEARCH_QUERY_TOKEN_LIMIT * SEARCH_POSTING_LIMIT}) throw new Error("search result amplification exceeds the bounded query denominator");\n` +
+      "  const documents = await loadDocuments([...scores.keys()]);\n" +
+      "  const records = [...scores.entries()].map(([ordinal, score]) => ({ ...documents.get(ordinal), score })).sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)).slice(0, 64);\n" +
+      "  return { records, truncatedTerms, ignoredTokenCount: Math.max(0, allTokens.length - normalized.length) };\n" +
       "}\n",
     "utf8",
   );
@@ -2815,12 +2939,16 @@ async function writeSearchProjection(staging, groups) {
   return {
     index: { module: indexModule, bytes: searchIndexBytes.byteLength, sha256: indexDigest },
     shards: shardEntries,
+    documentShards: documentShardEntries,
+    documentCount: orderedDocuments.length,
+    documentKeysDigest: digestObject(orderedDocumentKeys),
     groupRecordCounts,
     indexedRecordCounts,
     postingLimit: SEARCH_POSTING_LIMIT,
     queryTokenLimit: SEARCH_QUERY_TOKEN_LIMIT,
     termCount: entries.length,
     maxShardBytes: Math.max(0, ...shardEntries.map((entry) => entry.bytes)),
+    maxDocumentShardBytes: Math.max(0, ...documentShardEntries.map((entry) => entry.bytes)),
   };
 }
 
@@ -4604,7 +4732,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     disclosure: {
       metadataDerivation: "compiler_structural",
       metadataCoverage: "every_manifest_group_except_lines_and_source_text",
-      searchLoading: "query_token_hash_selective_bounded_shards",
+      searchLoading: "query_token_hash_selective_bounded_shards_with_normalized_document_table",
       sourceLoading: "per_file_bounded_line_and_byte_chunks",
       graphLoading: "bounded_summary_then_selected_community_shards",
       oversizedRecordLoading: "lossless_content_hashed_utf8_fragments_reassembled_on_demand",
@@ -4747,6 +4875,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     budgets: {
       identityModuleMaxBytes: IDENTITY_MODULE_MAX_BYTES,
       searchShardMaxBytes: SEARCH_SHARD_MAX_BYTES,
+      searchDocumentShardMaxBytes: SEARCH_DOCUMENT_SHARD_MAX_BYTES,
       searchIndexMaxBytes: SEARCH_INDEX_MAX_BYTES,
       sourceChunkMaxBytes: SOURCE_CHUNK_MAX_BYTES,
       sourceIndexMaxBytes: SOURCE_INDEX_MAX_BYTES,
