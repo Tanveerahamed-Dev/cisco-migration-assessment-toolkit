@@ -6,11 +6,14 @@ sat outside the coverage measurement. "Suite green" is only meaningful if what s
 gated actually is; these tests fail the moment a gate un-wires.
 """
 import configparser
+import importlib.util
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -23,6 +26,36 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 C
     import tomli as tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+_INSTALLED_TRANSITION_OWNER_PATH = Path(
+    ROOT,
+    ".github",
+    "scripts",
+    "run_installed_transition_smoke.py",
+)
+_INSTALLED_TRANSITION_OWNER_COMMAND = (
+    'python -I -B "$env:GITHUB_WORKSPACE\\.github\\scripts\\'
+    'run_installed_transition_smoke.py" '
+    '--python "$env:TRANSITION_TEST_PYTHON" '
+    '--smoke "$env:TRANSITION_SMOKE_SCRIPT" '
+    '--source-smoke "$env:GITHUB_WORKSPACE\\tools\\'
+    'smoke_installed_transition_runtime.py" '
+    '--workspace "$env:GITHUB_WORKSPACE"'
+)
+
+
+def _load_installed_transition_owner():
+    spec = importlib.util.spec_from_file_location(
+        "_run_installed_transition_smoke",
+        _INSTALLED_TRANSITION_OWNER_PATH,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+installed_transition_owner = _load_installed_transition_owner()
 
 _BASH = shutil.which("bash")
 _GIT = shutil.which("git")
@@ -697,6 +730,8 @@ def _assert_ci_owns_installed_transition_smoke(ci):
         "checkout source unexpectedly satisfied the installed smoke",
         "-m pip check",
         "tools\\smoke_installed_transition_runtime.py",
+        '"TRANSITION_TEST_PYTHON=$venvPython" >> $env:GITHUB_ENV',
+        '"TRANSITION_SMOKE_SCRIPT=$smoke" >> $env:GITHUB_ENV',
         "$env:PYTHONPATH = $env:GITHUB_WORKSPACE",
         "$env:PYTHONPATH = \"\"",
         "$negativeProbe = [System.Diagnostics.ProcessStartInfo]::new()",
@@ -725,7 +760,7 @@ def _assert_ci_owns_installed_transition_smoke(ci):
         "$wheels.Count -ne 1",
         "Get-ChildItem -File -LiteralPath",
         ") $wheels[0].FullName",
-        "& $env:TRANSITION_TEST_PYTHON -I -B $env:TRANSITION_SMOKE_SCRIPT",
+        ".github\\scripts\\run_installed_transition_smoke.py",
         "distributions-${{ github.sha }}",
         "-I -B",
         "working-directory: ${{ runner.temp }}",
@@ -734,12 +769,43 @@ def _assert_ci_owns_installed_transition_smoke(ci):
     assert not missing, f"installed-transition runtime job lost required contracts: {missing}"
     assert 'PYTHONPATH: ""' in job and 'PYTHONNOUSERSITE: "1"' in job
     assert job.count("--only-binary=:all:") == 2
-    assert job.count("-I -B") >= 2
+    assert job.count("-I -B") == 2
     assert "$negativeExit = $LASTEXITCODE" not in job
     assert "$negativeOutput = @(& $venvPython" not in job
     assert "$PSNativeCommandUseErrorActionPreference" not in job
-    assert job.count("$env:PYTHONPATH = $env:GITHUB_WORKSPACE") == 2
+    assert job.count("$env:PYTHONPATH = $env:GITHUB_WORKSPACE") == 1
     assert job.count("working-directory: ${{ runner.temp }}") == 3
+    job_root_lines = tuple(
+        line
+        for line in job.splitlines()
+        if line.startswith("    ") and not line.startswith("     ")
+    )
+    assert job_root_lines == (
+        "    name: Installed transition runtime · pinned Windows profile",
+        "    needs: package",
+        "    runs-on: windows-2025",
+        "    env:",
+        "    steps:",
+    ), (
+        "the installed-transition runtime job root must contain only its exact owned keys"
+    )
+
+    positive_steps = [
+        body
+        for name, body in _workflow_named_steps(ci)
+        if name == "Run the dedicated smoke outside the checkout against site-packages"
+    ]
+    assert len(positive_steps) == 1, "the installed-runtime positive smoke step drifted"
+    positive_step = positive_steps[0]
+    expected_positive_step = (
+        "        working-directory: ${{ runner.temp }}\n"
+        "        shell: pwsh\n"
+        f"        run: {_INSTALLED_TRANSITION_OWNER_COMMAND}\n"
+    )
+    assert positive_step == expected_positive_step, (
+        "the positive smoke must retain the built-in pwsh failure boundary and its "
+        "sole active command"
+    )
     ordered = (
         '$negativeProbe.ArgumentList.Add("-I")',
         '$negativeProbe.ArgumentList.Add("-B")',
@@ -811,9 +877,9 @@ def test_ci_owns_the_outside_checkout_installed_transition_smoke():
         ("--only-binary=:all:", ""),
         (") $wheels[0].FullName", ") $env:GITHUB_WORKSPACE"),
         (
-            "& $env:TRANSITION_TEST_PYTHON -I -B $env:TRANSITION_SMOKE_SCRIPT",
-            "& $env:TRANSITION_TEST_PYTHON -I -B "
-            "$env:GITHUB_WORKSPACE\\tools\\smoke_installed_transition_runtime.py",
+            '--smoke "$env:TRANSITION_SMOKE_SCRIPT"',
+            '--smoke "$env:GITHUB_WORKSPACE\\tools\\'
+            'smoke_installed_transition_runtime.py"',
         ),
     ],
 )
@@ -824,6 +890,410 @@ def test_installed_transition_ci_contract_rejects_mutations(needle, replacement)
     mutated = ci[:offset] + replacement + ci[offset + len(needle):]
     with pytest.raises(AssertionError):
         _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+def test_installed_transition_ci_contract_rejects_commented_positive_smoke():
+    """Retaining every old token in a comment must not satisfy the executable gate."""
+    ci = _read(".github", "workflows", "ci.yml")
+    active = f"        run: {_INSTALLED_TRANSITION_OWNER_COMMAND}"
+    assert ci.count(active) == 1
+    mutated = ci.replace(active, f"        # run: {_INSTALLED_TRANSITION_OWNER_COMMAND}")
+    assert _INSTALLED_TRANSITION_OWNER_COMMAND in mutated
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "    if: ${{ false }}\n",
+        "    if : ${{ false }}\n",
+        '    "if": ${{ false }}\n',
+        "    'if': ${{ false }}\n",
+        '    "i\\u0066": ${{ false }}\n',
+        "    ? if\n    : ${{ false }}\n",
+        "    continue-on-error: true\n",
+        '    "continue-on-error": true\n',
+    ],
+)
+def test_installed_transition_ci_contract_rejects_disabled_or_softened_job(addition):
+    ci = _read(".github", "workflows", "ci.yml")
+    marker = "    runs-on: windows-2025\n"
+    assert ci.count(marker) == 1
+    mutated = ci.replace(marker, marker + addition)
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "        if: ${{ false }}\n",
+        "        if : ${{ false }}\n",
+        '        "if": ${{ false }}\n',
+        "        continue-on-error: true\n",
+    ],
+)
+def test_installed_transition_ci_contract_rejects_disabled_or_softened_step(addition):
+    ci = _read(".github", "workflows", "ci.yml")
+    marker = (
+        "      - name: Run the dedicated smoke outside the checkout against "
+        "site-packages\n"
+    )
+    assert ci.count(marker) == 1
+    mutated = ci.replace(marker, marker + addition)
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+def test_installed_transition_ci_contract_rejects_custom_failure_swallowing_shell():
+    ci = _read(".github", "workflows", "ci.yml")
+    positive_step = (
+        "        working-directory: ${{ runner.temp }}\n"
+        "        shell: pwsh\n"
+        f"        run: {_INSTALLED_TRANSITION_OWNER_COMMAND}\n"
+    )
+    assert ci.count(positive_step) == 1
+    mutated_step = positive_step.replace(
+        "        shell: pwsh\n",
+        '        shell: pwsh -Command "& \'{0}\'; exit 0"\n',
+    )
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(ci.replace(positive_step, mutated_step))
+
+
+def _installed_transition_receipt(module_path: Path) -> dict:
+    receipt = {
+        "dsl_prototype_source_binding_state": "SAME_CHECKOUT_SELF_CHECK_ONLY",
+        "dsl_temporal_truth": "INCONCLUSIVE",
+        "distribution_version": "0.test",
+        "historical_source_roster_verified": False,
+        "module_path": str(module_path),
+        "r2_authoritative_gate": None,
+        "r2_promotion_eligible": False,
+        "replay_state": "CANONICAL_SEMANTIC_PAYLOAD_IDENTICAL",
+        "runtime_inventory_file_count": 1,
+        "runtime_matches_reference": True,
+        "structural_tcb_budget_state": (
+            "PROTOTYPE_MEASURED_PARTIAL_RUNTIME_TCB_PENDING_INDEPENDENT_REVIEW"
+        ),
+        "v5_validator_empty_artifacts_refused": True,
+    }
+    for field in (
+        "before_digest",
+        "dsl_prototype_evaluate_digest",
+        "dsl_prototype_replay_digest",
+        "executable_bundle_digest",
+        "measurement_digest",
+        "qcp_digest",
+        "replayed_payload_digest",
+        "runtime_inventory_digest",
+        "runtime_profile_digest",
+        "semantic_bundle_digest",
+        "v5_environment_schema_digest",
+        "v5_runtime_schema_digest",
+    ):
+        receipt[field] = f"sha256:{'0' * 64}"
+    return receipt
+
+
+def _installed_transition_owner_fixture(
+    tmp_path: Path,
+    body: str,
+) -> tuple[Path, Path, Path, Path]:
+    workspace = tmp_path / "checkout"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    source_smoke = workspace / "tools" / "smoke_installed_transition_runtime.py"
+    source_smoke.parent.mkdir()
+    source_smoke.write_text(body, encoding="utf-8")
+    smoke = outside / "smoke.py"
+    smoke.write_bytes(source_smoke.read_bytes())
+    return workspace, outside, smoke, source_smoke
+
+
+def _run_installed_transition_owner_cli(
+    python: Path | str,
+    smoke: Path,
+    source_smoke: Path,
+    workspace: Path,
+    *,
+    cwd: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(_INSTALLED_TRANSITION_OWNER_PATH),
+            "--python",
+            str(python),
+            "--smoke",
+            str(smoke),
+            "--source-smoke",
+            str(source_smoke),
+            "--workspace",
+            str(workspace),
+        ],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+
+
+def test_installed_transition_owner_executes_isolated_smoke_and_requires_receipt(
+    tmp_path,
+):
+    module_path = tmp_path / "site-packages" / "cisco_toolkit" / "transition_legacy.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("# installed fixture\n", encoding="utf-8")
+    receipt = _installed_transition_receipt(module_path)
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "assert sys.flags.isolated == 1\n"
+        "assert sys.dont_write_bytecode\n"
+        f"assert os.environ['PYTHONPATH'] == {str(tmp_path / 'checkout')!r}\n"
+        f"assert {str(tmp_path / 'checkout')!r} not in sys.path\n"
+        f"assert Path.cwd() == Path({str(tmp_path / 'outside')!r})\n"
+        f"print({json.dumps(receipt)!r})\n",
+    )
+
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.splitlines()[-1]) == receipt
+    assert completed.stderr == ""
+
+
+def test_installed_transition_owner_propagates_child_failure(tmp_path):
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        "import sys\nprint('smoke failed decisively', file=sys.stderr)\nraise SystemExit(23)\n",
+    )
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 23
+    assert "smoke failed decisively" in completed.stderr
+
+
+def test_installed_transition_owner_rejects_zero_without_receipt(tmp_path):
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        "raise SystemExit(0)\n",
+    )
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 2
+    assert "zero without a receipt" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("dsl_prototype_source_binding_state", "BOUND"),
+        ("dsl_temporal_truth", "CONCLUSIVE"),
+        ("historical_source_roster_verified", True),
+        ("r2_authoritative_gate", "EVIDENCE_COMPLETE"),
+        ("r2_promotion_eligible", True),
+        ("replay_state", "DRIFTED"),
+        ("runtime_matches_reference", 1),
+        ("structural_tcb_budget_state", "APPROVED"),
+        ("runtime_inventory_file_count", 0),
+        ("v5_validator_empty_artifacts_refused", False),
+        ("distribution_version", ""),
+        ("unexpected", "field"),
+        ("distribution_version", None),
+    ],
+)
+def test_installed_transition_owner_rejects_receipt_drift(tmp_path, field, bad_value):
+    module_path = tmp_path / "site-packages" / "cisco_toolkit" / "transition_legacy.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("# installed fixture\n", encoding="utf-8")
+    receipt = _installed_transition_receipt(module_path)
+    if bad_value is None:
+        del receipt[field]
+    else:
+        receipt[field] = bad_value
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        f"print({json.dumps(receipt)!r})\n",
+    )
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 2
+    assert "receipt" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "before_digest",
+        "dsl_prototype_evaluate_digest",
+        "dsl_prototype_replay_digest",
+        "executable_bundle_digest",
+        "measurement_digest",
+        "qcp_digest",
+        "replayed_payload_digest",
+        "runtime_inventory_digest",
+        "runtime_profile_digest",
+        "semantic_bundle_digest",
+        "v5_environment_schema_digest",
+        "v5_runtime_schema_digest",
+    ],
+)
+def test_installed_transition_owner_rejects_every_malformed_digest(tmp_path, field):
+    module_path = tmp_path / "site-packages" / "cisco_toolkit" / "transition_legacy.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("# installed fixture\n", encoding="utf-8")
+    receipt = _installed_transition_receipt(module_path)
+    receipt[field] = f"sha256:{'g' * 64}"
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        f"print({json.dumps(receipt)!r})\n",
+    )
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 2
+    assert "digest bindings" in completed.stderr
+
+
+def test_installed_transition_owner_rejects_duplicate_receipt_keys(tmp_path):
+    module_path = tmp_path / "site-packages" / "cisco_toolkit" / "transition_legacy.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("# installed fixture\n", encoding="utf-8")
+    serialized = json.dumps(_installed_transition_receipt(module_path))
+    ambiguous = serialized[:-1] + ', "r2_promotion_eligible": true}'
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        f"print({ambiguous!r})\n",
+    )
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 2
+    assert "repeats JSON key: r2_promotion_eligible" in completed.stderr
+
+
+def test_installed_transition_owner_rejects_checkout_module_receipt(tmp_path):
+    module_path = tmp_path / "checkout" / "cisco_toolkit" / "transition_legacy.py"
+    receipt = _installed_transition_receipt(module_path)
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        f"print({json.dumps(receipt)!r})\n",
+    )
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("# checkout fixture\n", encoding="utf-8")
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 2
+    assert "names a checkout module" in completed.stderr
+
+
+def test_installed_transition_owner_rejects_unreviewed_smoke_copy(tmp_path):
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        "raise SystemExit(0)\n",
+    )
+    smoke.write_text("print('substituted smoke')\n", encoding="utf-8")
+    completed = _run_installed_transition_owner_cli(
+        sys.executable,
+        smoke,
+        source_smoke,
+        workspace,
+        cwd=outside,
+    )
+    assert completed.returncode == 2
+    assert "differ from the reviewed checkout source" in completed.stderr
+
+
+@pytest.mark.parametrize("inside", ["python", "smoke", "cwd"])
+def test_installed_transition_owner_rejects_checkout_execution_paths(tmp_path, inside):
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        "raise SystemExit(0)\n",
+    )
+    python = Path(sys.executable)
+    cwd = outside
+    if inside == "python":
+        python = workspace / "python.exe"
+        python.write_bytes(b"fixture")
+    elif inside == "smoke":
+        smoke = workspace / "smoke.py"
+        smoke.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    else:
+        cwd = workspace
+
+    with pytest.raises(
+        installed_transition_owner.SmokeOwnershipError,
+        match="must remain outside the checkout",
+    ):
+        installed_transition_owner.run_smoke(
+            python,
+            smoke,
+            source_smoke,
+            workspace,
+            cwd=cwd,
+            timeout_seconds=30,
+        )
+
+
+def test_installed_transition_owner_times_out_a_hung_smoke(tmp_path, capsys):
+    workspace, outside, smoke, source_smoke = _installed_transition_owner_fixture(
+        tmp_path,
+        "import time\nprint('smoke entered', flush=True)\ntime.sleep(10)\n",
+    )
+    with pytest.raises(
+        installed_transition_owner.SmokeOwnershipError,
+        match="exceeded 1 seconds",
+    ):
+        installed_transition_owner.run_smoke(
+            sys.executable,
+            smoke,
+            source_smoke,
+            workspace,
+            cwd=outside,
+            timeout_seconds=1,
+        )
+    assert "smoke entered" in capsys.readouterr().out
 
 
 def test_installed_transition_smoke_rejects_checkout_module_origin(

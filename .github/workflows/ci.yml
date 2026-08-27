@@ -445,9 +445,4 @@ jobs:
       - name: Run the dedicated smoke outside the checkout against site-packages
         working-directory: ${{ runner.temp }}
         shell: pwsh
-        run: |
-          $env:PYTHONPATH = $env:GITHUB_WORKSPACE
-          & $env:TRANSITION_TEST_PYTHON -I -B $env:TRANSITION_SMOKE_SCRIPT
-          if ($LASTEXITCODE -ne 0) {
-            throw "installed transition-runtime smoke failed"
-          }
+        run: python -I -B "$env:GITHUB_WORKSPACE\.github\scripts\run_installed_transition_smoke.py" --python "$env:TRANSITION_TEST_PYTHON" --smoke "$env:TRANSITION_SMOKE_SCRIPT" --source-smoke "$env:GITHUB_WORKSPACE\tools\smoke_installed_transition_runtime.py" --workspace "$env:GITHUB_WORKSPACE"
