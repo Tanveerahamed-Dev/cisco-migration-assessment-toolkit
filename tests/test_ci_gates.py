@@ -699,13 +699,32 @@ def _assert_ci_owns_installed_transition_smoke(ci):
         "tools\\smoke_installed_transition_runtime.py",
         "$env:PYTHONPATH = $env:GITHUB_WORKSPACE",
         "$env:PYTHONPATH = \"\"",
-        "$PSNativeCommandUseErrorActionPreference = $false",
-        "$previousNativeCommandErrorPreference",
+        "$negativeProbe = [System.Diagnostics.ProcessStartInfo]::new()",
+        "$negativeProbe.FileName = $venvPython",
+        "$negativeProbe.UseShellExecute = $false",
+        "$negativeProbe.CreateNoWindow = $true",
+        "$negativeProbe.RedirectStandardOutput = $true",
+        "$negativeProbe.RedirectStandardError = $true",
+        '$negativeProbe.ArgumentList.Add("-I")',
+        '$negativeProbe.ArgumentList.Add("-B")',
+        "$negativeProbe.ArgumentList.Add($smoke)",
+        "$negativeProcess = [System.Diagnostics.Process]::new()",
+        "$negativeProcess.StartInfo = $negativeProbe",
+        "if (-not $negativeProcess.Start())",
+        "$negativeProcess.Start()",
+        "failed to start the pre-install smoke",
+        "$negativeProcess.StandardOutput.ReadToEndAsync()",
+        "$negativeProcess.StandardError.ReadToEndAsync()",
+        "$negativeProcess.WaitForExit()",
+        "$negativeStdout = $negativeStdoutTask.Result",
+        "$negativeStderr = $negativeStderrTask.Result",
+        "$negativeExit = $negativeProcess.ExitCode",
+        "$negativeOutput = @($negativeStdout, $negativeStderr)",
+        "$negativeProcess.Dispose()",
         "--constraint",
         "$wheels.Count -ne 1",
         "Get-ChildItem -File -LiteralPath",
         ") $wheels[0].FullName",
-        "$negativeOutput = @(& $venvPython -I -B $smoke 2>&1)",
         "& $env:TRANSITION_TEST_PYTHON -I -B $env:TRANSITION_SMOKE_SCRIPT",
         "distributions-${{ github.sha }}",
         "-I -B",
@@ -715,9 +734,29 @@ def _assert_ci_owns_installed_transition_smoke(ci):
     assert not missing, f"installed-transition runtime job lost required contracts: {missing}"
     assert 'PYTHONPATH: ""' in job and 'PYTHONNOUSERSITE: "1"' in job
     assert job.count("--only-binary=:all:") == 2
-    assert job.count("-I -B") >= 3
+    assert job.count("-I -B") >= 2
+    assert "$negativeExit = $LASTEXITCODE" not in job
+    assert "$negativeOutput = @(& $venvPython" not in job
+    assert "$PSNativeCommandUseErrorActionPreference" not in job
     assert job.count("$env:PYTHONPATH = $env:GITHUB_WORKSPACE") == 2
     assert job.count("working-directory: ${{ runner.temp }}") == 3
+    ordered = (
+        '$negativeProbe.ArgumentList.Add("-I")',
+        '$negativeProbe.ArgumentList.Add("-B")',
+        "$negativeProbe.ArgumentList.Add($smoke)",
+        "$negativeProcess.Start()",
+        "$negativeProcess.StandardOutput.ReadToEndAsync()",
+        "$negativeProcess.StandardError.ReadToEndAsync()",
+        "$negativeProcess.WaitForExit()",
+        "$negativeStdout = $negativeStdoutTask.Result",
+        "$negativeStderr = $negativeStderrTask.Result",
+        "$negativeExit = $negativeProcess.ExitCode",
+    )
+    positions = tuple(job.index(token) for token in ordered)
+    assert positions == tuple(sorted(positions))
+    hostile_path = job.rfind("$env:PYTHONPATH = $env:GITHUB_WORKSPACE", 0, positions[0])
+    cleared_path = job.find('$env:PYTHONPATH = ""', positions[-1])
+    assert hostile_path >= 0 and cleared_path > positions[-1]
 
 
 def test_ci_owns_the_outside_checkout_installed_transition_smoke():
@@ -736,8 +775,35 @@ def test_ci_owns_the_outside_checkout_installed_transition_smoke():
         ),
         ("$env:PYTHONPATH = $env:GITHUB_WORKSPACE", "$env:PYTHONPATH = \"\""),
         (
-            "$PSNativeCommandUseErrorActionPreference = $false",
-            "$PSNativeCommandUseErrorActionPreference = $true",
+            "$negativeProbe.FileName = $venvPython",
+            "$negativeProbe.FileName = python",
+        ),
+        (
+            "$negativeProbe.UseShellExecute = $false",
+            "$negativeProbe.UseShellExecute = $true",
+        ),
+        ('$negativeProbe.ArgumentList.Add("-I")', '$negativeProbe.ArgumentList.Add("-E")'),
+        ('$negativeProbe.ArgumentList.Add("-B")', '$negativeProbe.ArgumentList.Add("-I")'),
+        (
+            "$negativeProbe.ArgumentList.Add($smoke)",
+            '$negativeProbe.ArgumentList.Add("tools\\smoke_installed_transition_runtime.py")',
+        ),
+        (
+            "$negativeProbe.RedirectStandardError = $true",
+            "$negativeProbe.RedirectStandardError = $false",
+        ),
+        (
+            "$negativeProcess.StandardError.ReadToEndAsync()",
+            "$negativeProcess.StandardError.ReadToEnd()",
+        ),
+        ("$negativeProcess.WaitForExit()", "$negativeProcess.Refresh()"),
+        (
+            "$negativeProcess.StartInfo = $negativeProbe",
+            "$negativeOutput = @(& $venvPython -I -B $smoke 2>&1)",
+        ),
+        (
+            "$negativeExit = $negativeProcess.ExitCode",
+            "$negativeExit = $LASTEXITCODE",
         ),
         ("--constraint", "--no-deps"),
         ("distributions-${{ github.sha }}", "distributions-unbound"),

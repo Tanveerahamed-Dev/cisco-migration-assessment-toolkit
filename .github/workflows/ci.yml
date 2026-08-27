@@ -383,18 +383,33 @@ jobs:
             throw "failed to provision the pinned transition-runtime test profile"
           }
           $env:PYTHONPATH = $env:GITHUB_WORKSPACE
-          $previousNativeCommandErrorPreference = $PSNativeCommandUseErrorActionPreference
-          $PSNativeCommandUseErrorActionPreference = $false
+          $negativeProbe = [System.Diagnostics.ProcessStartInfo]::new()
+          $negativeProbe.FileName = $venvPython
+          $negativeProbe.UseShellExecute = $false
+          $negativeProbe.CreateNoWindow = $true
+          $negativeProbe.RedirectStandardOutput = $true
+          $negativeProbe.RedirectStandardError = $true
+          $negativeProbe.ArgumentList.Add("-I")
+          $negativeProbe.ArgumentList.Add("-B")
+          $negativeProbe.ArgumentList.Add($smoke)
+          $negativeProcess = [System.Diagnostics.Process]::new()
+          $negativeProcess.StartInfo = $negativeProbe
           try {
-            $negativeOutput = @(& $venvPython -I -B $smoke 2>&1)
-            $negativeExit = $LASTEXITCODE
+            if (-not $negativeProcess.Start()) {
+              throw "failed to start the pre-install smoke"
+            }
+            $negativeStdoutTask = $negativeProcess.StandardOutput.ReadToEndAsync()
+            $negativeStderrTask = $negativeProcess.StandardError.ReadToEndAsync()
+            $negativeProcess.WaitForExit()
+            $negativeStdout = $negativeStdoutTask.Result
+            $negativeStderr = $negativeStderrTask.Result
+            $negativeExit = $negativeProcess.ExitCode
           }
           finally {
-            $PSNativeCommandUseErrorActionPreference = (
-              $previousNativeCommandErrorPreference
-            )
+            $negativeProcess.Dispose()
           }
           $env:PYTHONPATH = ""
+          $negativeOutput = @($negativeStdout, $negativeStderr)
           $negativeOutput | ForEach-Object { Write-Host $_ }
           if ($negativeExit -eq 0) {
             throw "checkout source unexpectedly satisfied the installed smoke"
