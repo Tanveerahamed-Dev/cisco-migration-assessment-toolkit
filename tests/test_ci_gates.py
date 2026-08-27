@@ -7,11 +7,15 @@ gated actually is; these tests fail the moment a gate un-wires.
 """
 import configparser
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 
 import pytest
+
+from tools import build_release1_replay_capsule as release1_replay
+from tools import smoke_installed_transition_runtime as installed_transition_smoke
 
 try:
     import tomllib
@@ -408,8 +412,59 @@ def test_pyproject_declares_xdist_so_a_fresh_dev_install_gets_the_gate_it_needs(
     assert "pytest-xdist" in pyproject, "pytest-xdist is not declared in [dev]"
 
 
+def _requirement_name(requirement):
+    name = re.split(r"[<>=!~;\[\s]", requirement, maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _noncomment_requirements(relative_path):
+    return [
+        line
+        for raw_line in _read(relative_path).splitlines()
+        if (line := raw_line.split("#", 1)[0].strip())
+    ]
+
+
+def _assert_no_runtime_requirement_includes(requirements):
+    directives = [item for item in requirements if item.startswith("-")]
+    assert not directives, (
+        f"application requirements contain resolver directives or delegated owners: {directives}"
+    )
+
+
+def _assert_jsonschema_dependency_contract(
+    *,
+    dev_dependencies,
+    runtime_dependencies,
+    release_requirements,
+    runtime_requirements,
+    compatibility_requirements,
+    ci,
+):
+    _assert_no_runtime_requirement_includes(runtime_requirements)
+    dev_jsonschema = [
+        item for item in dev_dependencies if _requirement_name(item) == "jsonschema"
+    ]
+    release_jsonschema = [
+        item for item in release_requirements if _requirement_name(item) == "jsonschema"
+    ]
+    assert dev_jsonschema == release_jsonschema == ["jsonschema==4.26.0"]
+    assert "jsonschema" not in {_requirement_name(item) for item in runtime_dependencies}, (
+        "jsonschema is a schema-test tool and must not become an application dependency"
+    )
+    assert "jsonschema" not in {_requirement_name(item) for item in runtime_requirements}, (
+        "jsonschema is a schema-test tool and must not enter requirements.txt"
+    )
+    assert compatibility_requirements == ["-e .[dev]"], (
+        "requirements-dev.txt must remain a single compatibility path to the canonical [dev] owner"
+    )
+    assert "python -m pip install -r requirements-dev.txt" in ci, (
+        "the default CI suite no longer exercises the advertised requirements-dev.txt path"
+    )
+
+
 def test_pyproject_declares_jsonschema_for_direct_test_imports():
-    """A fresh ``.[dev]`` install must collect every directly imported schema-contract test."""
+    """Every advertised dev install must collect directly imported schema-contract tests."""
     importers = []
     tests_root = os.path.join(ROOT, "tests")
     direct_import = re.compile(
@@ -426,7 +481,289 @@ def test_pyproject_declares_jsonschema_for_direct_test_imports():
 
     assert importers, "precondition: no top-level test directly imports jsonschema"
     project = tomllib.loads(_read("pyproject.toml"))["project"]
-    dev_dependencies = project["optional-dependencies"]["dev"]
-    assert "jsonschema==4.26.0" in dev_dependencies, (
-        f"{sorted(importers)} directly import jsonschema, but the reviewed pin is absent from [dev]"
+    _assert_jsonschema_dependency_contract(
+        dev_dependencies=project["optional-dependencies"]["dev"],
+        runtime_dependencies=project["dependencies"],
+        release_requirements=_noncomment_requirements(
+            os.path.join("master-reference", "requirements-release.txt")
+        ),
+        runtime_requirements=_noncomment_requirements("requirements.txt"),
+        compatibility_requirements=_noncomment_requirements("requirements-dev.txt"),
+        ci=_read(".github", "workflows", "ci.yml"),
     )
+    assert importers
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "dev_pin",
+        "release_pin",
+        "pyproject_runtime",
+        "requirements_runtime",
+        "requirements_include",
+        "requirements_attached_include",
+        "compatibility",
+        "ci",
+    ],
+)
+def test_jsonschema_dependency_contract_rejects_mutations(mutation):
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    values = {
+        "dev_dependencies": list(project["optional-dependencies"]["dev"]),
+        "runtime_dependencies": list(project["dependencies"]),
+        "release_requirements": _noncomment_requirements(
+            os.path.join("master-reference", "requirements-release.txt")
+        ),
+        "runtime_requirements": _noncomment_requirements("requirements.txt"),
+        "compatibility_requirements": _noncomment_requirements("requirements-dev.txt"),
+        "ci": _read(".github", "workflows", "ci.yml"),
+    }
+    if mutation == "dev_pin":
+        values["dev_dependencies"].remove("jsonschema==4.26.0")
+    elif mutation == "release_pin":
+        index = values["release_requirements"].index("jsonschema==4.26.0")
+        values["release_requirements"][index] = "jsonschema==4.25.1"
+    elif mutation == "pyproject_runtime":
+        values["runtime_dependencies"].append("jsonschema==4.26.0")
+    elif mutation == "requirements_runtime":
+        values["runtime_requirements"].append("jsonschema==4.26.0")
+    elif mutation == "requirements_include":
+        values["runtime_requirements"].append(
+            "-r master-reference/requirements-release.txt"
+        )
+    elif mutation == "requirements_attached_include":
+        values["runtime_requirements"].append(
+            "-rmaster-reference/requirements-release.txt"
+        )
+    elif mutation == "compatibility":
+        values["compatibility_requirements"].append("jsonschema==4.26.0")
+    else:
+        values["ci"] = values["ci"].replace(
+            "python -m pip install -r requirements-dev.txt",
+            'python -m pip install -e ".[dev]"',
+        )
+    with pytest.raises(AssertionError):
+        _assert_jsonschema_dependency_contract(**values)
+
+
+def _assert_transition_profile_is_test_only(rows, runtime_dependencies, runtime_requirements):
+    _assert_no_runtime_requirement_includes(runtime_requirements)
+    profile = {row["name"]: row["version"] for row in rows}
+    assert set(profile) - {"openpyxl"} == {
+        "defusedxml", "lxml", "numpy", "pillow", "setuptools",
+    }
+    replay_only = set(profile) - {"openpyxl"}
+    assert replay_only.isdisjoint({_requirement_name(item) for item in runtime_dependencies}), (
+        "historical replay-only distributions leaked into application dependencies"
+    )
+    assert replay_only.isdisjoint({_requirement_name(item) for item in runtime_requirements}), (
+        "historical replay-only distributions leaked into requirements.txt"
+    )
+    assert "openpyxl>=3.1,<4" in runtime_dependencies, (
+        "the one profile overlap is the independently owned application openpyxl dependency"
+    )
+
+
+def test_transition_runtime_test_profile_is_exact_and_test_only():
+    """The installed replay gate owns one exact test profile without changing app metadata."""
+    rows = release1_replay.verify_transition_runtime_test_profile(
+        Path(ROOT, "tools", "requirements-transition-runtime-test.txt").read_bytes(),
+        Path(ROOT, "cisco_toolkit", "data", "atlas-r1-executable-bundle.json").read_bytes(),
+    )
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    _assert_transition_profile_is_test_only(
+        rows,
+        project["dependencies"],
+        _noncomment_requirements("requirements.txt"),
+    )
+
+
+@pytest.mark.parametrize(
+    "runtime_owner",
+    [
+        "pyproject",
+        "requirements",
+        "requirements_include",
+        "requirements_attached_include",
+        "requirements_editable",
+    ],
+)
+def test_transition_runtime_test_profile_rejects_runtime_leakage(runtime_owner):
+    rows = release1_replay.verify_transition_runtime_test_profile(
+        Path(ROOT, "tools", "requirements-transition-runtime-test.txt").read_bytes(),
+        Path(ROOT, "cisco_toolkit", "data", "atlas-r1-executable-bundle.json").read_bytes(),
+    )
+    project_dependencies = list(
+        tomllib.loads(_read("pyproject.toml"))["project"]["dependencies"]
+    )
+    runtime_requirements = _noncomment_requirements("requirements.txt")
+    if runtime_owner == "pyproject":
+        project_dependencies.append("lxml==6.1.1")
+    elif runtime_owner == "requirements":
+        runtime_requirements.append("lxml==6.1.1")
+    elif runtime_owner == "requirements_include":
+        runtime_requirements.append(
+            "-r tools/requirements-transition-runtime-test.txt"
+        )
+    elif runtime_owner == "requirements_attached_include":
+        runtime_requirements.append(
+            "-rtools/requirements-transition-runtime-test.txt"
+        )
+    else:
+        runtime_requirements.append("-e .")
+    with pytest.raises(AssertionError):
+        _assert_transition_profile_is_test_only(
+            rows,
+            project_dependencies,
+            runtime_requirements,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "extra",
+        "drifted",
+        "order",
+        "duplicate",
+        "non_exact",
+        "bom",
+        "crlf",
+        "bare_cr",
+        "invalid_utf8",
+        "empty",
+    ],
+)
+def test_transition_runtime_test_profile_rejects_mutations(mutation):
+    original = Path(ROOT, "tools", "requirements-transition-runtime-test.txt").read_bytes()
+    if mutation == "missing":
+        changed = original.replace(b"numpy==2.5.1\n", b"")
+    elif mutation == "extra":
+        changed = original + b"unexpected-replay-package==1.0\n"
+    elif mutation == "drifted":
+        changed = original.replace(b"lxml==6.1.1", b"lxml==6.1.2")
+    elif mutation == "order":
+        changed = original.replace(
+            b"defusedxml==0.7.1\nlxml==6.1.1",
+            b"lxml==6.1.1\ndefusedxml==0.7.1",
+        )
+    elif mutation == "duplicate":
+        changed = original + b"LXML==6.1.1\n"
+    elif mutation == "non_exact":
+        changed = original.replace(b"numpy==2.5.1", b"numpy>=2.5.1")
+    elif mutation == "bom":
+        changed = b"\xef\xbb\xbf" + original
+    elif mutation == "crlf":
+        changed = original.replace(b"\n", b"\r\n")
+    elif mutation == "bare_cr":
+        changed = original.replace(b"\n", b"\r", 1)
+    elif mutation == "invalid_utf8":
+        changed = original + b"\xff"
+    else:
+        changed = b"# comments only\n"
+    with pytest.raises(RuntimeError):
+        release1_replay.verify_transition_runtime_test_profile(
+            changed,
+            Path(
+                ROOT,
+                "cisco_toolkit",
+                "data",
+                "atlas-r1-executable-bundle.json",
+            ).read_bytes(),
+        )
+
+
+def _assert_ci_owns_installed_transition_smoke(ci):
+    match = re.search(
+        r"(?ms)^  installed-transition-runtime:\n"
+        r"(?P<job>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        ci,
+    )
+    assert match is not None, "the installed-transition runtime job is absent"
+    job = match.group("job")
+    required = (
+        "name: Installed transition runtime · pinned Windows profile",
+        "needs: package",
+        "runs-on: windows-latest",
+        'python-version: "3.12.10"',
+        "architecture: x64",
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "tools\\requirements-transition-runtime-test.txt",
+        "tools/build_release1_replay_capsule.py --check-runtime-profile",
+        "python -m venv",
+        "No module named 'cisco_toolkit'",
+        "checkout source unexpectedly satisfied the installed smoke",
+        "-m pip check",
+        "tools\\smoke_installed_transition_runtime.py",
+        "$env:PYTHONPATH = $env:GITHUB_WORKSPACE",
+        "$env:PYTHONPATH = \"\"",
+        "--constraint",
+        "$wheels.Count -ne 1",
+        "Get-ChildItem -File -LiteralPath",
+        ") $wheels[0].FullName",
+        "$negativeOutput = @(& $venvPython -I -B $smoke 2>&1)",
+        "& $env:TRANSITION_TEST_PYTHON -I -B $env:TRANSITION_SMOKE_SCRIPT",
+        "distributions-${{ github.sha }}",
+        "-I -B",
+        "working-directory: ${{ runner.temp }}",
+    )
+    missing = [token for token in required if token not in job]
+    assert not missing, f"installed-transition runtime job lost required contracts: {missing}"
+    assert 'PYTHONPATH: ""' in job and 'PYTHONNOUSERSITE: "1"' in job
+    assert job.count("--only-binary=:all:") == 2
+    assert job.count("-I -B") >= 3
+    assert job.count("$env:PYTHONPATH = $env:GITHUB_WORKSPACE") == 2
+    assert job.count("working-directory: ${{ runner.temp }}") == 3
+
+
+def test_ci_owns_the_outside_checkout_installed_transition_smoke():
+    """The exact-profile smoke must execute on its pinned Windows runtime, not just exist."""
+    _assert_ci_owns_installed_transition_smoke(_read(".github", "workflows", "ci.yml"))
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    [
+        ("needs: package", "needs: test"),
+        (
+            "tools/build_release1_replay_capsule.py --check-runtime-profile",
+            "Write-Host profile-unchecked",
+        ),
+        ("$env:PYTHONPATH = $env:GITHUB_WORKSPACE", "$env:PYTHONPATH = \"\""),
+        ("--constraint", "--no-deps"),
+        ("distributions-${{ github.sha }}", "distributions-unbound"),
+        ("-I -B", "-B"),
+        ("--only-binary=:all:", ""),
+        (") $wheels[0].FullName", ") $env:GITHUB_WORKSPACE"),
+        (
+            "& $env:TRANSITION_TEST_PYTHON -I -B $env:TRANSITION_SMOKE_SCRIPT",
+            "& $env:TRANSITION_TEST_PYTHON -I -B "
+            "$env:GITHUB_WORKSPACE\\tools\\smoke_installed_transition_runtime.py",
+        ),
+    ],
+)
+def test_installed_transition_ci_contract_rejects_mutations(needle, replacement):
+    ci = _read(".github", "workflows", "ci.yml")
+    offset = ci.rfind(needle)
+    assert offset >= 0
+    mutated = ci[:offset] + replacement + ci[offset + len(needle):]
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+def test_installed_transition_smoke_rejects_checkout_module_origin(
+    monkeypatch,
+    tmp_path,
+):
+    checkout_module = Path(ROOT, "cisco_toolkit", "transition_legacy.py")
+    site_packages = tmp_path / "Lib" / "site-packages"
+    monkeypatch.setattr(installed_transition_smoke.legacy, "__file__", str(checkout_module))
+    monkeypatch.setattr(
+        installed_transition_smoke.site,
+        "getsitepackages",
+        lambda: [str(site_packages)],
+    )
+    with pytest.raises(RuntimeError, match="was not imported from site-packages"):
+        installed_transition_smoke._installed_module_path()

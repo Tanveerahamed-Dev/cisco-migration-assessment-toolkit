@@ -7,10 +7,12 @@ from copy import deepcopy
 import hashlib
 import importlib.util
 from importlib import resources
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 import pytest
@@ -1539,7 +1541,7 @@ def test_windows_debug_v2_through_v4_schema_bytes_are_unchanged() -> None:
         assert hashlib.sha256(raw).hexdigest() == digest
 
 
-def test_byte_bound_checkout_owners_are_lf_exactly_attributed() -> None:
+def _transition_byte_owner_paths() -> set[str]:
     census = json.loads(_resource_bytes(_TCB_CENSUS_RESOURCE))
     prototype = census["executable_prototype"]
     owner_paths = {
@@ -1567,26 +1569,92 @@ def test_byte_bound_checkout_owners_are_lf_exactly_attributed() -> None:
             _WINDOWS_EXECUTION_ENVIRONMENT_V4_SCHEMA_RESOURCE,
         )
     })
-    assert len(owner_paths) >= 36
-    assert {
-        "cisco_toolkit/transition_dsl.py",
-        "tools/measure_transition_dsl_prototype.py",
-        "webapp/backend/storage.py",
-        "webapp/frontend/src/api.ts",
-    } <= owner_paths
+    owner_paths.update({
+        ".gitattributes",
+        "tools/requirements-transition-runtime-test.txt",
+    })
+    return owner_paths
 
-    publisher_bytes = "cisco_toolkit/data/eol-bulletins.json"
-    queried_paths = sorted({*owner_paths, publisher_bytes})
+
+def _path_set_receipt(paths: set[str]) -> dict[str, Any]:
+    encoded = b"".join(path.encode("utf-8") + b"\0" for path in sorted(paths))
+    return {
+        "tracked_path_count": len(paths),
+        "tracked_path_set_sha256": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _git_capture(
+    repository: Path,
+    *arguments: str,
+    input_bytes: bytes | None = None,
+    environment: dict[str, str] | None = None,
+) -> bytes:
     git = shutil.which("git")
-    assert git is not None, "Git is required to verify checkout attribute semantics"
+    assert git is not None, "Git is required to verify byte-custody semantics"
     completed = subprocess.run(
-        [git, "check-attr", "-z", "text", "eol", "--", *queried_paths],
-        cwd=Path(__file__).resolve().parents[1],
+        [git, *arguments],
+        cwd=repository,
+        input=input_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
+        env=environment,
     )
-    fields = completed.stdout.split(b"\0")
+    return completed.stdout
+
+
+def _marked_policy_rules(raw: bytes, marker: str) -> list[str]:
+    text = raw.decode("utf-8", "strict")
+    assert "\r" not in text, ".gitattributes policy owner must be LF-only"
+    lines = text.splitlines()
+    begin = f"# BEGIN {marker}"
+    end = f"# END {marker}"
+    assert lines.count(begin) == lines.count(end) == 1, f"{marker} sentinels drifted"
+    start = lines.index(begin)
+    finish = lines.index(end)
+    assert start < finish, f"{marker} sentinels are reversed"
+    rules = [line for line in lines[start + 1:finish] if line and not line.startswith("#")]
+    assert all(line == line.strip() for line in rules), f"{marker} rules are not canonical"
+    return rules
+
+
+def _head_paths_matching(repository: Path, patterns: list[str]) -> set[str]:
+    paths: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="atlas-byte-custody-index-") as temporary:
+        environment = os.environ.copy()
+        environment["GIT_INDEX_FILE"] = str(Path(temporary, "index"))
+        _git_capture(repository, "read-tree", "HEAD", environment=environment)
+        for pattern in patterns:
+            raw = _git_capture(
+                repository,
+                "ls-files",
+                "-z",
+                "--",
+                f":(top,glob){pattern}",
+                environment=environment,
+            )
+            paths.update(
+                item.decode("utf-8", "strict")
+                for item in raw.split(b"\0")
+                if item
+            )
+    return paths
+
+
+def _effective_text_attributes(
+    repository: Path,
+    paths: set[str],
+    *,
+    source: str | None,
+) -> dict[str, dict[str, str]]:
+    arguments = ["check-attr", "-z", "--stdin"]
+    if source is not None:
+        arguments.append(f"--source={source}")
+    arguments.extend(("text", "eol", "filter", "ident", "working-tree-encoding"))
+    payload = b"".join(path.encode("utf-8") + b"\0" for path in sorted(paths))
+    raw = _git_capture(repository, *arguments, input_bytes=payload)
+    fields = raw.split(b"\0")
     assert fields.pop() == b""
     assert len(fields) % 3 == 0
     effective: dict[str, dict[str, str]] = {}
@@ -1595,7 +1663,332 @@ def test_byte_bound_checkout_owners_are_lf_exactly_attributed() -> None:
             field.decode("utf-8", "strict") for field in fields[index:index + 3]
         )
         effective.setdefault(path, {})[attribute] = value
+    assert set(effective) == paths
+    return effective
 
-    for path in owner_paths:
-        assert effective[path] == {"text": "set", "eol": "lf"}, path
-    assert effective[publisher_bytes] == {"text": "unset", "eol": "unset"}
+
+def _verify_byte_custody_policy(
+    repository: Path,
+    policy: dict[str, Any],
+    owner_paths: set[str],
+) -> None:
+    assert policy["schema"] == "atlas.r2-byte-custody-policy/1"
+    assert policy["path_set_digest_algorithm"] == "SORTED_UTF8_NUL_TERMINATED_SHA256"
+    policy_path = policy["policy_owner"]
+    worktree_policy = Path(repository, policy_path).read_bytes()
+    head_policy = _git_capture(repository, "cat-file", "blob", f"HEAD:{policy_path}")
+
+    for raw, source in ((head_policy, "HEAD"), (worktree_policy, "worktree")):
+        separate_publisher = policy.get("separate_publisher_policy")
+        if separate_publisher is not None:
+            lines = raw.decode("utf-8", "strict").splitlines()
+            assert lines.count(separate_publisher["rule"]) == 1, (
+                f"separate publisher-byte policy drifted in {source}"
+            )
+        assert _marked_policy_rules(raw, "ATLAS_R1_R2_BYTE_CUSTODY_POLICY") == policy[
+            "lf_rules"
+        ], f"LF policy rule projection drifted in {source}"
+        assert _marked_policy_rules(raw, "ATLAS_R1_R2_PUBLISHER_BYTE_EXCEPTIONS") == policy[
+            "publisher_byte_rules"
+        ], f"publisher policy rule projection drifted in {source}"
+
+    lf_candidates = _head_paths_matching(
+        repository,
+        [rule.split(maxsplit=1)[0] for rule in policy["lf_rules"]],
+    )
+    publisher_paths = _head_paths_matching(
+        repository,
+        [rule.split(maxsplit=1)[0] for rule in policy["publisher_byte_rules"]],
+    )
+    lf_paths = lf_candidates - publisher_paths
+    assert _path_set_receipt(lf_paths) == policy["lf_scope"], (
+        f"LF scope receipt drifted: {_path_set_receipt(lf_paths)!r}"
+    )
+    assert _path_set_receipt(publisher_paths) == policy["publisher_byte_scope"], (
+        f"publisher scope receipt drifted: {_path_set_receipt(publisher_paths)!r}"
+    )
+    domain_paths = _head_paths_matching(repository, policy["policy_domains"])
+    for source in ("HEAD", None):
+        domain_attributes = _effective_text_attributes(
+            repository,
+            domain_paths,
+            source=source,
+        )
+        effective_lf_paths = {
+            path
+            for path, attributes in domain_attributes.items()
+            if attributes["text"] == "set" and attributes["eol"] == "lf"
+        }
+        assert effective_lf_paths == lf_paths, (
+            f"effective LF policy scope drifted in {source or 'worktree'}: "
+            f"added={sorted(effective_lf_paths - lf_paths)!r}, "
+            f"removed={sorted(lf_paths - effective_lf_paths)!r}"
+        )
+    assert _path_set_receipt(owner_paths) == policy["derived_byte_owner_scope"], (
+        f"derived byte-owner receipt drifted: {_path_set_receipt(owner_paths)!r}"
+    )
+    assert owner_paths <= lf_paths, sorted(owner_paths - lf_paths)
+    broader_paths = lf_paths - owner_paths
+    assert _path_set_receipt(broader_paths) == policy["broader_declared_lf_scope"], (
+        f"broader LF scope receipt drifted: {_path_set_receipt(broader_paths)!r}"
+    )
+
+    for path in sorted(lf_paths):
+        raw = _git_capture(repository, "cat-file", "blob", f"HEAD:{path}")
+        filtered = _git_capture(repository, "cat-file", "--filters", f"HEAD:{path}")
+        worktree = Path(repository, *path.split("/")).read_bytes()
+        head_oid = _git_capture(repository, "rev-parse", f"HEAD:{path}").strip()
+        clean_oid = _git_capture(
+            repository,
+            "hash-object",
+            f"--path={path}",
+            "--stdin",
+            input_bytes=worktree,
+        ).strip()
+        assert b"\r" not in raw, f"raw HEAD blob contains CR bytes: {path}"
+        assert raw == filtered, f"raw and filtered bytes diverged: {path}"
+        assert raw == worktree, f"raw and worktree bytes diverged: {path}"
+        assert head_oid == clean_oid, f"worktree clean-filter bytes diverged: {path}"
+
+    for path in sorted(publisher_paths):
+        raw = _git_capture(repository, "cat-file", "blob", f"HEAD:{path}")
+        filtered = _git_capture(repository, "cat-file", "--filters", f"HEAD:{path}")
+        worktree = Path(repository, *path.split("/")).read_bytes()
+        head_oid = _git_capture(repository, "rev-parse", f"HEAD:{path}").strip()
+        clean_oid = _git_capture(
+            repository,
+            "hash-object",
+            f"--path={path}",
+            "--stdin",
+            input_bytes=worktree,
+        ).strip()
+        assert raw == filtered, f"publisher raw and filtered bytes diverged: {path}"
+        assert raw == worktree, f"publisher raw and worktree bytes diverged: {path}"
+        assert head_oid == clean_oid, (
+            f"publisher worktree clean-filter bytes diverged: {path}"
+        )
+
+    expected_lf_attributes = {
+        "text": "set",
+        "eol": "lf",
+        "filter": "unspecified",
+        "ident": "unspecified",
+        "working-tree-encoding": "unspecified",
+    }
+    expected_publisher_attributes = {
+        "text": "unset",
+        "eol": "unset",
+        "filter": "unspecified",
+        "ident": "unspecified",
+        "working-tree-encoding": "unspecified",
+    }
+    queried_paths = lf_paths | publisher_paths
+    for source in ("HEAD", None):
+        effective = _effective_text_attributes(repository, queried_paths, source=source)
+        source_name = source or "worktree"
+        for path in lf_paths:
+            assert effective[path] == expected_lf_attributes, (
+                path,
+                source_name,
+                effective[path],
+            )
+        for path in publisher_paths:
+            assert effective[path] == expected_publisher_attributes, (
+                path,
+                source_name,
+                effective[path],
+            )
+
+
+def test_byte_bound_checkout_owners_are_lf_exactly_attributed() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    policy = json.loads(
+        Path(repository, "tests", "fixtures", "atlas-r2-byte-custody-policy.v1.json")
+        .read_text(encoding="utf-8")
+    )
+    owner_paths = _transition_byte_owner_paths()
+    assert len(owner_paths) == 38
+    assert {
+        "cisco_toolkit/transition_dsl.py",
+        "tools/measure_transition_dsl_prototype.py",
+        "webapp/backend/storage.py",
+        "webapp/frontend/src/api.ts",
+    } <= owner_paths
+    _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+def _byte_custody_probe_repository(tmp_path: Path) -> tuple[Path, dict[str, Any], set[str]]:
+    repository = tmp_path / "byte-custody-probe"
+    repository.mkdir()
+    _git_capture(repository, "init", "--quiet")
+    _git_capture(repository, "config", "user.email", "byte-custody@example.invalid")
+    _git_capture(repository, "config", "user.name", "Byte Custody Probe")
+    _git_capture(repository, "config", "core.autocrlf", "false")
+    (repository / "owned").mkdir()
+    (repository / ".gitattributes").write_bytes(
+        b"# BEGIN ATLAS_R1_R2_BYTE_CUSTODY_POLICY\n"
+        b".gitattributes text eol=lf\n"
+        b"owned/**/*.py text eol=lf\n"
+        b"# END ATLAS_R1_R2_BYTE_CUSTODY_POLICY\n"
+        b"# BEGIN ATLAS_R1_R2_PUBLISHER_BYTE_EXCEPTIONS\n"
+        b"owned/publisher.py -text -eol\n"
+        b"# END ATLAS_R1_R2_PUBLISHER_BYTE_EXCEPTIONS\n"
+    )
+    (repository / "owned" / "source.py").write_bytes(b"value = 1\n")
+    (repository / "owned" / "extra.py").write_bytes(b"marker = '$Id$'\n")
+    (repository / "owned" / "publisher.py").write_bytes(b"publisher\r\nbytes\r\n")
+    _git_capture(repository, "add", ".gitattributes", "owned")
+    _git_capture(repository, "commit", "--quiet", "-m", "baseline")
+
+    lf_paths = {".gitattributes", "owned/source.py", "owned/extra.py"}
+    publisher_paths = {"owned/publisher.py"}
+    owner_paths = {".gitattributes", "owned/source.py"}
+    policy = {
+        "schema": "atlas.r2-byte-custody-policy/1",
+        "policy_owner": ".gitattributes",
+        "path_set_digest_algorithm": "SORTED_UTF8_NUL_TERMINATED_SHA256",
+        "lf_rules": [
+            ".gitattributes text eol=lf",
+            "owned/**/*.py text eol=lf",
+        ],
+        "policy_domains": [".gitattributes", "owned/**"],
+        "publisher_byte_rules": ["owned/publisher.py -text -eol"],
+        "lf_scope": _path_set_receipt(lf_paths),
+        "derived_byte_owner_scope": _path_set_receipt(owner_paths),
+        "broader_declared_lf_scope": _path_set_receipt(lf_paths - owner_paths),
+        "publisher_byte_scope": _path_set_receipt(publisher_paths),
+    }
+    return repository, policy, owner_paths
+
+
+def test_byte_custody_policy_allows_exact_publisher_crlf(tmp_path: Path) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    publisher = _git_capture(
+        repository,
+        "cat-file",
+        "blob",
+        "HEAD:owned/publisher.py",
+    )
+    assert b"\r\n" in publisher
+    _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+@pytest.mark.parametrize("raw", [b"value = 2\r\n", b"value = 2\r"])
+def test_byte_custody_policy_rejects_cr_in_raw_head_blob(
+    tmp_path: Path,
+    raw: bytes,
+) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    blob = _git_capture(
+        repository,
+        "hash-object",
+        "-w",
+        "--no-filters",
+        "--stdin",
+        input_bytes=raw,
+    ).decode("ascii").strip()
+    _git_capture(
+        repository,
+        "update-index",
+        "--cacheinfo",
+        "100644",
+        blob,
+        "owned/source.py",
+    )
+    _git_capture(repository, "commit", "--quiet", "-m", "inject raw CR")
+    with pytest.raises(AssertionError, match="raw HEAD blob contains CR"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+def test_byte_custody_policy_rejects_worktree_divergence(tmp_path: Path) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    (repository / "owned" / "source.py").write_bytes(b"value = 2\n")
+    with pytest.raises(AssertionError, match="raw and worktree bytes diverged"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+def test_byte_custody_policy_rejects_filter_divergence(tmp_path: Path) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    attributes = (repository / ".gitattributes").read_bytes()
+    (repository / ".gitattributes").write_bytes(attributes + b"owned/extra.py ident\n")
+    _git_capture(repository, "add", ".gitattributes")
+    _git_capture(repository, "commit", "--quiet", "-m", "inject ident filter")
+    with pytest.raises(AssertionError, match="raw and filtered bytes diverged"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+def test_byte_custody_policy_rejects_clean_filter_divergence(tmp_path: Path) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    _git_capture(
+        repository,
+        "config",
+        "filter.cleanonly.clean",
+        "git hash-object --stdin",
+    )
+    attributes = (repository / ".gitattributes").read_bytes()
+    (repository / ".gitattributes").write_bytes(
+        attributes + b"owned/source.py filter=cleanonly\n"
+    )
+    _git_capture(repository, "add", ".gitattributes")
+    _git_capture(repository, "commit", "--quiet", "-m", "inject clean filter")
+    with pytest.raises(AssertionError, match="worktree clean-filter bytes diverged"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+@pytest.mark.parametrize("mutation", ["remove", "broaden"])
+def test_byte_custody_policy_rejects_rule_projection_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    attributes = (repository / ".gitattributes").read_text(encoding="utf-8")
+    if mutation == "remove":
+        attributes = attributes.replace("owned/**/*.py text eol=lf\n", "")
+    else:
+        attributes = attributes.replace("owned/**/*.py", "**/*.py")
+    (repository / ".gitattributes").write_text(attributes, encoding="utf-8", newline="\n")
+    with pytest.raises(AssertionError, match="LF policy rule projection drifted"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+def test_byte_custody_policy_rejects_unreceipted_matching_path(tmp_path: Path) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    (repository / "owned" / "new.py").write_bytes(b"new = True\n")
+    _git_capture(repository, "add", "owned/new.py")
+    _git_capture(repository, "commit", "--quiet", "-m", "expand matching scope")
+    with pytest.raises(AssertionError, match="LF scope receipt drifted"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+def test_byte_custody_policy_rejects_out_of_block_policy_broadening(
+    tmp_path: Path,
+) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    (repository / "owned" / "new.txt").write_bytes(b"new policy subject\n")
+    attributes = (repository / ".gitattributes").read_bytes()
+    (repository / ".gitattributes").write_bytes(
+        attributes + b"owned/**/*.txt text eol=lf\n"
+    )
+    _git_capture(repository, "add", ".gitattributes", "owned/new.txt")
+    _git_capture(repository, "commit", "--quiet", "-m", "broaden outside owner block")
+    with pytest.raises(AssertionError, match="effective LF policy scope drifted"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)
+
+
+@pytest.mark.parametrize("mutation", ["remove", "move", "add"])
+def test_byte_custody_policy_rejects_publisher_exception_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repository, policy, owner_paths = _byte_custody_probe_repository(tmp_path)
+    attributes = (repository / ".gitattributes").read_text(encoding="utf-8")
+    rule = "owned/publisher.py -text -eol"
+    if mutation == "remove":
+        attributes = attributes.replace(rule + "\n", "")
+    elif mutation == "move":
+        attributes = attributes.replace(rule, "owned/source.py -text -eol")
+    else:
+        attributes = attributes.replace(rule, rule + "\nowned/extra.py -text -eol")
+    (repository / ".gitattributes").write_text(attributes, encoding="utf-8", newline="\n")
+    with pytest.raises(AssertionError, match="publisher policy rule projection drifted"):
+        _verify_byte_custody_policy(repository, policy, owner_paths)

@@ -190,8 +190,36 @@ def test_sbom_scopes_first_party_records_and_unresolved_python_declarations() ->
     assert properties["atlas:pythonDeclarationUniqueNames"] == "2"
     assert properties["atlas:licenseDeclared"] == "3"
     assert properties["atlas:licenseUnknown"] == "5"
-    assert properties["atlas:legacyLicenseCountScope"] == ("all-component-records-including-unresolved-declarations")
+    assert properties["atlas:legacyLicenseCountScope"] == (
+        "all-component-records-including-unresolved-declarations"
+    )
     assert properties["atlas:releaseGate"].startswith("BLOCK:")
+
+
+def test_sbom_marks_transition_runtime_profile_as_test_only() -> None:
+    sbom = build_cyclonedx(
+        _sources(
+            requirement_lines={
+                "tools/requirements-transition-runtime-test.txt": "lxml==6.1.1\n",
+            },
+        ),
+        "a" * 40,
+        "b" * 64,
+    )
+    matching = [
+        (component, properties)
+        for component, properties in _component_properties(sbom)
+        if component.get("name") == "lxml"
+        and properties.get("atlas:declarationOrigin")
+        == "tools/requirements-transition-runtime-test.txt"
+    ]
+    assert len(matching) == 1
+    component, properties = matching[0]
+    assert "version" not in component
+    assert properties["atlas:declarationScope"] == (
+        "test-only:transition-runtime-reference"
+    )
+    assert properties["atlas:resolution"] == "declared-unlocked"
 
 
 def test_missing_project_license_stays_explicitly_unknown() -> None:

@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,13 @@ COMPARISON_RESOURCE = "atlas-r1-retrospective-comparison.json"
 SOURCE_CHUNK_BYTES = 512 * 1024
 COMPARISON_DIGEST = "e92dbe997b92b3c6d1e3017408ac1a32e7364e14f61edd9202a67d9710a87c70"
 COMPARISON_BYTES = 51_678
+TRANSITION_RUNTIME_TEST_PROFILE = Path(__file__).with_name(
+    "requirements-transition-runtime-test.txt"
+)
+_EXACT_PROFILE_PIN = re.compile(
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)=="
+    r"(?P<version>[A-Za-z0-9][A-Za-z0-9._+!-]*)"
+)
 BEFORE_RAW = (
     b'{"collected_at":"2026-08-22T00:00:00.000000Z","devices":{"leaf-1":{}},'
     b'"script_version":"V3.23.0"}'
@@ -37,16 +45,117 @@ AFTER_RAW = (
     b'"script_version":"V3.23.0"}'
 )
 
+def _normalise_distribution_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def parse_transition_runtime_test_profile(raw: bytes) -> list[dict[str, str]]:
+    """Parse the test-only replay profile without invoking pip or packaging code."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("transition-runtime test profile is not UTF-8") from exc
+    if text.startswith("\ufeff"):
+        raise RuntimeError("transition-runtime test profile must not contain a UTF-8 BOM")
+    if "\r" in text:
+        raise RuntimeError("transition-runtime test profile must use LF line endings")
+
+    rows: list[dict[str, str]] = []
+    names: set[str] = set()
+    for line_number, raw_line in enumerate(text.split("\n"), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _EXACT_PROFILE_PIN.fullmatch(line)
+        if match is None:
+            raise RuntimeError(
+                "transition-runtime test profile line "
+                f"{line_number} is not one exact name==version pin: {line!r}"
+            )
+        name = _normalise_distribution_name(match.group("name"))
+        if name in names:
+            raise RuntimeError(
+                f"transition-runtime test profile repeats distribution {name!r}"
+            )
+        names.add(name)
+        rows.append({"name": name, "version": match.group("version")})
+    if not rows:
+        raise RuntimeError("transition-runtime test profile is empty")
+    return rows
+
+
+def _manifest_runtime_profile(raw: bytes) -> list[dict[str, str]]:
+    try:
+        manifest = json.loads(raw)
+        distributions = manifest["runtime_profile"]["external_distributions"]
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            "packaged Release 1 manifest has no valid external distribution profile"
+        ) from exc
+    if not isinstance(distributions, list) or not distributions:
+        raise RuntimeError("packaged Release 1 external distribution profile is empty")
+
+    rows: list[dict[str, str]] = []
+    names: set[str] = set()
+    for index, item in enumerate(distributions):
+        if not isinstance(item, dict) or set(item) != {"name", "version"}:
+            raise RuntimeError(
+                f"packaged Release 1 distribution row {index} is not name/version exact"
+            )
+        name_value = item["name"]
+        version = item["version"]
+        if not isinstance(name_value, str) or not isinstance(version, str):
+            raise RuntimeError(
+                f"packaged Release 1 distribution row {index} is not string-valued"
+            )
+        name = _normalise_distribution_name(name_value)
+        if name in names:
+            raise RuntimeError(
+                f"packaged Release 1 profile repeats distribution {name!r}"
+            )
+        names.add(name)
+        rows.append({"name": name, "version": version})
+    return rows
+
+
+def verify_transition_runtime_test_profile(
+    lock_raw: bytes,
+    manifest_raw: bytes,
+) -> list[dict[str, str]]:
+    """Require the provisioning lock and packaged replay profile to be identical."""
+    actual = parse_transition_runtime_test_profile(lock_raw)
+    expected = _manifest_runtime_profile(manifest_raw)
+    if actual == expected:
+        return actual
+
+    actual_by_name = {row["name"]: row["version"] for row in actual}
+    expected_by_name = {row["name"]: row["version"] for row in expected}
+    actual_names = set(actual_by_name)
+    expected_names = set(expected_by_name)
+    detail = {
+        "missing": sorted(expected_names - actual_names),
+        "extra": sorted(actual_names - expected_names),
+        "drifted": sorted(
+            name
+            for name in actual_names & expected_names
+            if actual_by_name[name] != expected_by_name[name]
+        ),
+        "order_mismatch": (
+            not (expected_names - actual_names or actual_names - expected_names)
+            and [row["name"] for row in actual] != [row["name"] for row in expected]
+        ),
+    }
+    raise RuntimeError(
+        "transition-runtime test profile differs from the packaged reference profile: "
+        + json.dumps(detail, sort_keys=True, separators=(",", ":"))
+    )
+
+
 _REFERENCE_RUNTIME_PROFILE = {
     "cache_tag": "cpython-312",
-    "external_distributions": [
-        {"name": "defusedxml", "version": "0.7.1"},
-        {"name": "lxml", "version": "6.1.1"},
-        {"name": "numpy", "version": "2.5.1"},
-        {"name": "openpyxl", "version": "3.1.5"},
-        {"name": "pillow", "version": "12.3.0"},
-        {"name": "setuptools", "version": "83.0.0"},
-    ],
+    "external_distributions": parse_transition_runtime_test_profile(
+        TRANSITION_RUNTIME_TEST_PROFILE.read_bytes()
+    ),
     "implementation": "CPython",
     "platform_machine": "AMD64",
     "platform_system": "Windows",
@@ -295,9 +404,22 @@ def main() -> int:
         action="store_true",
         help="replace generated resources after every staged proof succeeds",
     )
+    parser.add_argument(
+        "--check-runtime-profile",
+        action="store_true",
+        help="only reconcile the test-only provisioning lock to the packaged profile",
+    )
     args = parser.parse_args()
+    if args.update and args.check_runtime_profile:
+        parser.error("--update and --check-runtime-profile are mutually exclusive")
     repository = Path(__file__).resolve().parents[1]
     data = repository / "cisco_toolkit" / "data"
+    if args.check_runtime_profile:
+        verify_transition_runtime_test_profile(
+            TRANSITION_RUNTIME_TEST_PROFILE.read_bytes(),
+            (data / MANIFEST_RESOURCE).read_bytes(),
+        )
+        return 0
     with tempfile.TemporaryDirectory(prefix="atlas-r1-build-") as temporary:
         outputs = _stage(repository, Path(temporary))
     if args.update:

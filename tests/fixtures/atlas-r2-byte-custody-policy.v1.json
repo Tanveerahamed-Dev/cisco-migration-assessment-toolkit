@@ -1,0 +1,46 @@
+{
+  "schema": "atlas.r2-byte-custody-policy/1",
+  "policy_owner": ".gitattributes",
+  "path_set_digest_algorithm": "SORTED_UTF8_NUL_TERMINATED_SHA256",
+  "lf_rules": [
+    ".gitattributes text eol=lf",
+    "cisco_toolkit/**/*.py text eol=lf",
+    "cisco_toolkit/**/*.html text eol=lf",
+    "cisco_toolkit/**/*.json text eol=lf",
+    "tools/**/*.py text eol=lf",
+    "tools/requirements-transition-runtime-test.txt text eol=lf",
+    "webapp/backend/**/*.py text eol=lf",
+    "webapp/frontend/src/api.ts text eol=lf"
+  ],
+  "policy_domains": [
+    ".gitattributes",
+    "cisco_toolkit/**",
+    "tools/**",
+    "webapp/backend/**",
+    "webapp/frontend/src/**"
+  ],
+  "publisher_byte_rules": [
+    "cisco_toolkit/data/eol-bulletins.json -text -eol"
+  ],
+  "separate_publisher_policy": {
+    "rule": "reference-data/official-sources/** -text",
+    "scope_owner": "reference-data/official-sources/manifest.json",
+    "reason": "Retained publisher files have their own exact-byte manifest and repository/distribution integrity gates; they are outside the Atlas R1/R2 LF-policy denominator."
+  },
+  "lf_scope": {
+    "tracked_path_count": 168,
+    "tracked_path_set_sha256": "sha256:820cc6b97231b05264179b3c4e3c263b203a34cfe3a45779d647fd6f246f367c"
+  },
+  "derived_byte_owner_scope": {
+    "tracked_path_count": 38,
+    "tracked_path_set_sha256": "sha256:ad1a4aa63df21b9bb4aba798350165eede0a665d43978d80dd38333177b4389b"
+  },
+  "broader_declared_lf_scope": {
+    "tracked_path_count": 130,
+    "tracked_path_set_sha256": "sha256:d3a71ab01b80a5f4f4fe5f3af4fe2ed2a13a160f4f0427ee6076b23b4a8e4bcd"
+  },
+  "publisher_byte_scope": {
+    "tracked_path_count": 1,
+    "tracked_path_set_sha256": "sha256:5738a3536a2746a163cb6c93a47ee16ec0d31c1428c524cc3789dfd8d0e0242c"
+  }
+}

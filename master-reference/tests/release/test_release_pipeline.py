@@ -610,6 +610,10 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     )
     _write(repo / "requirements.txt", b"alpha-py>=1,<2\n")
     _write(repo / "requirements-dev.txt", b"pytest>=8,<10\n")
+    _write(
+        repo / "tools" / "requirements-transition-runtime-test.txt",
+        b"lxml==6.1.1\n",
+    )
     _write(repo / "webapp" / "requirements.txt", b"fastapi>=0.110,<1\n")
     _write(
         repo / "master-reference" / "requirements-release.txt",
@@ -660,6 +664,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "pyproject.toml",
         "requirements.txt",
         "requirements-dev.txt",
+        "tools/requirements-transition-runtime-test.txt",
         "master-reference/requirements-release.txt",
         "webapp/requirements.txt",
         "master-reference/governance/architecture.json",
