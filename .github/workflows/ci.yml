@@ -343,7 +343,7 @@ jobs:
   installed-transition-runtime:
     name: Installed transition runtime · pinned Windows profile
     needs: package
-    runs-on: windows-latest
+    runs-on: windows-2025
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"

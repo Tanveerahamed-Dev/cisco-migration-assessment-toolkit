@@ -686,7 +686,7 @@ def _assert_ci_owns_installed_transition_smoke(ci):
     required = (
         "name: Installed transition runtime · pinned Windows profile",
         "needs: package",
-        "runs-on: windows-latest",
+        "runs-on: windows-2025",
         'python-version: "3.12.10"',
         "architecture: x64",
         "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
@@ -727,6 +727,7 @@ def test_ci_owns_the_outside_checkout_installed_transition_smoke():
     ("needle", "replacement"),
     [
         ("needs: package", "needs: test"),
+        ("runs-on: windows-2025", "runs-on: windows-latest"),
         (
             "tools/build_release1_replay_capsule.py --check-runtime-profile",
             "Write-Host profile-unchecked",
