@@ -383,8 +383,17 @@ jobs:
             throw "failed to provision the pinned transition-runtime test profile"
           }
           $env:PYTHONPATH = $env:GITHUB_WORKSPACE
-          $negativeOutput = @(& $venvPython -I -B $smoke 2>&1)
-          $negativeExit = $LASTEXITCODE
+          $previousNativeCommandErrorPreference = $PSNativeCommandUseErrorActionPreference
+          $PSNativeCommandUseErrorActionPreference = $false
+          try {
+            $negativeOutput = @(& $venvPython -I -B $smoke 2>&1)
+            $negativeExit = $LASTEXITCODE
+          }
+          finally {
+            $PSNativeCommandUseErrorActionPreference = (
+              $previousNativeCommandErrorPreference
+            )
+          }
           $env:PYTHONPATH = ""
           $negativeOutput | ForEach-Object { Write-Host $_ }
           if ($negativeExit -eq 0) {
