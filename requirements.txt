@@ -1,4 +1,4 @@
-# Runtime dependencies for COLLECT_PARSE_V3_23_0.py (everything else is stdlib).
+# Source-runtime compatibility dependencies; pyproject.toml [project].dependencies is canonical.
 # Install with:  python -m pip install -r requirements.txt
 netmiko>=4.1,<5
 openpyxl>=3.1,<4
@@ -11,3 +11,7 @@ python-pptx>=0.6,<2
 fastapi>=0.110,<1
 uvicorn[standard]>=0.27,<1
 python-multipart>=0.0.9,<1
+
+# Atlas R2 qualification receipts verify Ed25519 signatures directly. This
+# compatibility path mirrors pyproject.toml's explicit security boundary.
+cryptography>=50,<51

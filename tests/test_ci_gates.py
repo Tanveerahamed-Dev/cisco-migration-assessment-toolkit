@@ -465,6 +465,90 @@ def _assert_no_runtime_requirement_includes(requirements):
     )
 
 
+_TRANSITION_CRYPTO_REQUIREMENT = "cryptography>=50,<51"
+
+
+def _assert_transition_crypto_runtime_owners(runtime_dependencies, runtime_requirements):
+    _assert_no_runtime_requirement_includes(runtime_requirements)
+    project_crypto = [
+        item for item in runtime_dependencies if _requirement_name(item) == "cryptography"
+    ]
+    requirements_crypto = [
+        item for item in runtime_requirements if _requirement_name(item) == "cryptography"
+    ]
+    assert project_crypto == [_TRANSITION_CRYPTO_REQUIREMENT], (
+        "pyproject.toml must own exactly the reviewed transition cryptography boundary: "
+        f"{project_crypto}"
+    )
+    assert requirements_crypto == [_TRANSITION_CRYPTO_REQUIREMENT], (
+        "requirements.txt must mirror exactly the reviewed transition cryptography boundary: "
+        f"{requirements_crypto}"
+    )
+
+
+def test_transition_crypto_boundary_is_owned_by_both_runtime_manifests():
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    _assert_transition_crypto_runtime_owners(
+        project["dependencies"],
+        _noncomment_requirements("requirements.txt"),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "pyproject_missing",
+        "pyproject_lower_drift",
+        "pyproject_duplicate",
+        "requirements_missing",
+        "requirements_lower_drift",
+        "requirements_no_lower_bound",
+        "requirements_upper_drift",
+        "requirements_duplicate",
+        "requirements_delegation",
+        "both_lower_drift",
+    ],
+)
+def test_transition_crypto_runtime_owner_contract_rejects_mutations(mutation):
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    runtime_dependencies = list(project["dependencies"])
+    runtime_requirements = _noncomment_requirements("requirements.txt")
+
+    if mutation == "pyproject_missing":
+        runtime_dependencies.remove(_TRANSITION_CRYPTO_REQUIREMENT)
+    elif mutation == "pyproject_lower_drift":
+        index = runtime_dependencies.index(_TRANSITION_CRYPTO_REQUIREMENT)
+        runtime_dependencies[index] = "cryptography>=49,<51"
+    elif mutation == "pyproject_duplicate":
+        runtime_dependencies.append("Cryptography>=50,<51")
+    elif mutation == "requirements_missing":
+        runtime_requirements.remove(_TRANSITION_CRYPTO_REQUIREMENT)
+    elif mutation == "requirements_lower_drift":
+        index = runtime_requirements.index(_TRANSITION_CRYPTO_REQUIREMENT)
+        runtime_requirements[index] = "cryptography>=49,<51"
+    elif mutation == "requirements_no_lower_bound":
+        index = runtime_requirements.index(_TRANSITION_CRYPTO_REQUIREMENT)
+        runtime_requirements[index] = "cryptography<51"
+    elif mutation == "requirements_upper_drift":
+        index = runtime_requirements.index(_TRANSITION_CRYPTO_REQUIREMENT)
+        runtime_requirements[index] = "cryptography>=50,<52"
+    elif mutation == "requirements_duplicate":
+        runtime_requirements.append("Cryptography>=50,<51")
+    elif mutation == "requirements_delegation":
+        runtime_requirements.append("-r constraints.txt")
+    else:
+        project_index = runtime_dependencies.index(_TRANSITION_CRYPTO_REQUIREMENT)
+        runtime_dependencies[project_index] = "cryptography>=49,<51"
+        requirements_index = runtime_requirements.index(_TRANSITION_CRYPTO_REQUIREMENT)
+        runtime_requirements[requirements_index] = "cryptography>=49,<51"
+
+    with pytest.raises(AssertionError):
+        _assert_transition_crypto_runtime_owners(
+            runtime_dependencies,
+            runtime_requirements,
+        )
+
+
 def _assert_jsonschema_dependency_contract(
     *,
     dev_dependencies,
