@@ -212,7 +212,7 @@
               "runtime_inventory": {
                 "properties": {
                   "blind_spot_count": { "minimum": 1 },
-                  "claim_boundary": { "const": "Exact-byte inventory of the observed isolated reference process and bounded static PE resolutions only; not portable closure, all-branch coverage, qualification, or promotion authority." },
+                  "claim_boundary": { "const": "Exact-byte inventory of the observed isolated reference process and bounded static PE resolutions only; assumes no compromised same-logon process with handle-duplication, debug, or memory-injection rights; not portable closure, all-branch coverage, qualification, or promotion authority." },
                   "complete_exact_runtime_closure": { "const": false },
                   "state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" }
                 }

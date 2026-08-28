@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import platform
 import sys
 from typing import Any, Mapping
 
@@ -297,6 +298,35 @@ def _build() -> dict[str, bytes]:
         raise RuntimeError(
             "reference runtime inventory must be regenerated for the current prototype bytes"
         )
+    runtime_python = runtime_value["python"]
+    executable_rows = [
+        row
+        for row in runtime_value["runtime_files"]
+        if row.get("file_id") == runtime_python.get("executable_file_id")
+    ]
+    try:
+        selected_executable = runtime_inventory._probe_executable(
+            Path(sys.executable).resolve(strict=True)
+        )
+        executable = selected_executable.read_bytes()
+    except (OSError, RuntimeError, runtime_inventory.RuntimeInventoryError):
+        raise RuntimeError("reference runtime inventory toolchain is unavailable") from None
+    if (
+            len(executable_rows) != 1
+            or runtime_python.get("implementation") != "cpython"
+            or runtime_value.get("platform") != {"os_name": "nt", "sys_platform": "win32"}
+            or platform.python_implementation() != "CPython"
+            or platform.system() != "Windows"
+            or platform.python_version() != runtime_python.get("version")
+            or sys.implementation.cache_tag != runtime_python.get("cache_tag")
+    ):
+        raise RuntimeError("reference runtime inventory toolchain is invalid")
+    executable_row = executable_rows[0]
+    if (
+            len(executable) != executable_row.get("bytes")
+            or contract.bytes_digest(executable) != executable_row.get("digest")
+    ):
+        raise RuntimeError("reference runtime inventory toolchain does not match this interpreter")
     transitive_dependencies = [
         {
             "component_id": row["file_id"],
@@ -308,7 +338,6 @@ def _build() -> dict[str, bytes]:
     transitive_dependencies.sort(key=lambda item: (
         item["component_id"], item["component_version"], item["content_digest"]
     ))
-    executable = Path(sys.executable).resolve().read_bytes()
     tcb = {
         "schema": pack.TCB_MANIFEST_SCHEMA,
         "manifest_id": "atlas-r2-dsl-prototype-tcb.001",
@@ -335,9 +364,7 @@ def _build() -> dict[str, bytes]:
         "toolchains": [
             {
                 "component_id": "CPython",
-                "component_version": (
-                    f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-                ),
+                "component_version": runtime_python["version"],
                 "content_digest": contract.bytes_digest(executable),
             }
         ],

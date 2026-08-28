@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
 
 from cisco_toolkit import transition_contract as contract  # noqa: E402
 from cisco_toolkit import transition_dsl as dsl  # noqa: E402
+from cisco_toolkit import transition_runtime_inventory as runtime_inventory  # noqa: E402
 
 
 SCHEMA = "atlas.dsl-prototype-measurements/1"
@@ -830,8 +831,49 @@ def _baseline_execution(
     }
 
 
-def _reference_environment() -> dict[str, Any]:
-    executable = Path(sys.executable).resolve().read_bytes()
+def _reference_environment(repository: Path) -> dict[str, Any]:
+    runtime_path = repository / runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH
+    try:
+        runtime_raw = runtime_path.read_bytes()
+        runtime = json.loads(runtime_raw)
+        runtime_inventory.validate_runtime_inventory(runtime)
+        python = runtime["python"]
+        executable_rows = [
+            row
+            for row in runtime["runtime_files"]
+            if row.get("file_id") == python.get("executable_file_id")
+        ]
+        selected_executable = runtime_inventory._probe_executable(
+            Path(sys.executable).resolve(strict=True)
+        )
+        executable = selected_executable.read_bytes()
+    except (
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            OSError,
+            runtime_inventory.RuntimeInventoryError,
+    ):
+        raise RuntimeError("reference runtime inventory environment is invalid") from None
+    if (
+            type(runtime) is not dict
+            or contract.canonical_json_bytes(runtime) != runtime_raw
+            or len(executable_rows) != 1
+            or python.get("implementation") != "cpython"
+            or runtime.get("platform") != {"os_name": "nt", "sys_platform": "win32"}
+            or platform.python_implementation() != "CPython"
+            or platform.system() != "Windows"
+            or platform.python_version() != python.get("version")
+            or sys.implementation.cache_tag != python.get("cache_tag")
+    ):
+        raise RuntimeError("reference runtime inventory environment is invalid")
+    executable_row = executable_rows[0]
+    if (
+            len(executable) != executable_row.get("bytes")
+            or contract.bytes_digest(executable) != executable_row.get("digest")
+    ):
+        raise RuntimeError("reference runtime inventory environment does not match this interpreter")
     return {
         "runtime": {
             "implementation": platform.python_implementation(),
@@ -888,7 +930,7 @@ def _build(repository: Path, *, reference: Mapping[str, Any] | None = None) -> b
         "claim_scope": "REFERENCE_MEASUREMENT_ONLY_NO_BUDGET_OR_QUALIFICATION_EFFECT",
     }
     if reference is None:
-        environment = _reference_environment()
+        environment = _reference_environment(repository)
     else:
         environment = reference.get("reference_environment")
         if type(environment) is not dict:

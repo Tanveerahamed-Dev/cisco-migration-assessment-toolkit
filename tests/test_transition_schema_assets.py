@@ -32,6 +32,7 @@ _SCHEMA_RESOURCE = "schemas/atlas-transition-contract-v1.schema.json"
 _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
+_RUNTIME_INVENTORY_RESOURCE = "data/atlas-r2-runtime-inventory.reference.v1.json"
 _WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json"
 )
@@ -63,7 +64,7 @@ _WINDOWS_EXECUTION_ENVIRONMENT_V5_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json"
 )
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:a9a5cf9b261d7823860dc7ed33ab8af96b8fa19c59275e10ae1e04b70af6b7d3"
+_TCB_CENSUS_DIGEST = "sha256:17dc20726a9d5f773ac347e04343cd723ad4e573afa13436ef695ccb22fe8506"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -539,13 +540,22 @@ def test_qcp_pending_references_cannot_cross_the_activation_boundary() -> None:
 def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze() -> None:
     raw = _resource_bytes(_TCB_CENSUS_RESOURCE)
     value = json.loads(raw)
+    runtime = json.loads(_resource_bytes(_RUNTIME_INVENTORY_RESOURCE))
     schema = json.loads(_resource_bytes(_TCB_CENSUS_SCHEMA_RESOURCE))
 
     assert tc.bytes_digest(raw) == _TCB_CENSUS_DIGEST
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(value)
     assert tp.r2_structural_tcb_census() == value
-    assert value["structural_core"]["executable_statements"] == 6335
+    assert value["structural_core"]["executable_statements"] == 7084
+    runtime_python = runtime["python"]
+    runtime_executable = next(
+        row
+        for row in runtime["runtime_files"]
+        if row["file_id"] == runtime_python["executable_file_id"]
+    )
+    assert value["reference_toolchain"]["executable_bytes"] == runtime_executable["bytes"]
+    assert value["reference_toolchain"]["executable_sha256"] == runtime_executable["digest"]
     assert value["census_method"]["measurement_scope"] == (
         "REFERENCE_ENVIRONMENT_OBSERVATION_WITH_PORTABLE_SOURCE_DIGEST_CHECK"
     )
@@ -581,19 +591,20 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
         "PARTIAL_NONPORTABLE_PROTOTYPE"
     )
     assert value["executable_prototype"]["runtime_inventory"] == {
-        "asset_digest": "sha256:f278e884b608903f2bd4c1da3b4eb11d318eb68c8864c2555bbf08009212e7b0",
+        "asset_digest": "sha256:119db47cffd2f30c129cac0d292faa14fece30ca519f69c986066eb246016888",
         "blind_spot_count": 9,
         "claim_boundary": (
             "Exact-byte inventory of the observed isolated reference process and bounded "
-            "static PE resolutions only; not portable closure, all-branch coverage, "
-            "qualification, or promotion authority."
+            "static PE resolutions only; assumes no compromised same-logon process with "
+            "handle-duplication, debug, or memory-injection rights; not portable closure, "
+            "all-branch coverage, qualification, or promotion authority."
         ),
         "complete_exact_runtime_closure": False,
-        "native_dependency_edge_count": 10062,
-        "python_module_count": 148,
-        "runtime_file_count": 339,
+        "native_dependency_edge_count": 10074,
+        "python_module_count": 154,
+        "runtime_file_count": 346,
         "state": "PARTIAL_NONPORTABLE_PROTOTYPE",
-        "unresolved_native_dependency_edge_count": 8194,
+        "unresolved_native_dependency_edge_count": 8198,
     }
     assert value["executable_prototype"]["runtime_inventory_tool"]["path"] == (
         "tools/build_transition_runtime_inventory.py"
