@@ -648,7 +648,7 @@ def test_memory_residual_receipts_reject_substitution_extra_and_path_aliases():
 
 
 def test_authored_build_directory_pruning_is_the_reviewed_external_residual():
-    """Pin Graphify 0.9.6's build-directory noise prune until upstream makes it overridable."""
+    """Pin Graphify 0.9.51's build-directory noise prune until upstream makes it overridable."""
     graph, path = _load_graph()
     repo_root = Path(path).resolve().parent.parent
     try:
