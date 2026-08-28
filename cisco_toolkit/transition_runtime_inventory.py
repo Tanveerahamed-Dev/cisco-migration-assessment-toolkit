@@ -2223,6 +2223,10 @@ def _probe_child_with_cache(
             stderr=standard_stream,
             creationflags=creationflags,
             close_fds=True,
+            # POSIX communicate() reads pipe file descriptors directly.  Keep the
+            # protocol streams unbuffered so readline() cannot hide trailing bytes
+            # in a BufferedReader that communicate() would then bypass.
+            bufsize=0,
         )
     except BaseException as exc:
         _discard_probe_guards(job, pipe, timeout_seconds=timeout_seconds)

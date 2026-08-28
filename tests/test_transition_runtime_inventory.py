@@ -1942,9 +1942,17 @@ payload = {
     "_probe_custody": {"nonce": probe_nonce, "pid": os.getpid()},
     "python": {"executable": os.path.realpath(sys.executable)},
 }
-emit_payload(payload)
-sys.stdout.buffer.write(b"unexpected\n")
-sys.stdout.buffer.flush()
+encoded = json.dumps(
+    payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+).encode("ascii")
+if probe_channel is not None:
+    framed = len(encoded).to_bytes(4, "big") + encoded + b"unexpected\n"
+    target_fd = probe_channel.fileno()
+else:
+    framed = b"ATLAS_RUNTIME_PROBE_V3\t" + encoded + b"\nunexpected\n"
+    target_fd = sys.stdout.buffer.fileno()
+if os.write(target_fd, framed) != len(framed):
+    raise SystemExit(84)
 wait_stop()
 '''
     expected_code = (
