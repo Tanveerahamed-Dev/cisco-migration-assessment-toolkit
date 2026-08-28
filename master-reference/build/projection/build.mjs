@@ -3345,15 +3345,22 @@ async function writeSourceProjection({
     throw new Error("compiler consequential-claim census is inconsistent");
   }
 
-  const loaderLines = Object.entries(sourceFiles).map(([path, descriptor]) =>
-    `[${JSON.stringify(path)}, Object.freeze([${descriptor.chunks.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("source/", "")}`)})`).join(",")}])],`,
+  const sourceFileEntries = Object.entries(Object.fromEntries(
+    Object.entries(sourceFiles).sort(([left], [right]) => left.localeCompare(right)),
+  ));
+  const loaderLines = sourceFileEntries.map(([, descriptor]) =>
+    `Object.freeze([${descriptor.chunks.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("source/", "")}`)})`).join(",")}]),`,
   ).join("");
   const sourceIndexBytes = Buffer.from(
-    `export const sourceFiles = Object.freeze(Object.fromEntries(${stableJson(Object.entries(sourceFiles))}));\n` +
-      `const sourceChunkLoaders = Object.freeze(Object.fromEntries([\n${loaderLines}\n]));\n` +
+    `export const sourceFiles = Object.freeze(Object.fromEntries(${stableJson(sourceFileEntries)}));\n` +
+      "const sourceFilePaths = Object.freeze(Object.keys(sourceFiles));\n" +
+      `const sourceChunkLoaders = Object.freeze([\n${loaderLines}\n]);\n` +
+      "if (sourceChunkLoaders.length !== sourceFilePaths.length || sourceChunkLoaders.some((loaders, index) => { const descriptor = sourceFiles[sourceFilePaths[index]]; return descriptor?.path !== sourceFilePaths[index] || !Number.isSafeInteger(descriptor.chunkCount) || descriptor.chunkCount !== descriptor.chunks.length || loaders.length !== descriptor.chunks.length || loaders.some((loader) => typeof loader !== \"function\") || descriptor.chunks.some((chunk, chunkIndex) => chunk.chunkIndex !== chunkIndex); })) throw new Error(\"source chunk loader route is absent or inconsistent\");\n" +
+      "const sourceFileOrdinals = new Map(sourceFilePaths.map((path, index) => [path, index]));\n" +
       "export function getSourceFile(path) { return Object.hasOwn(sourceFiles, path) ? sourceFiles[path] : null; }\n" +
       "export async function loadSourceChunk(path, chunkIndex) {\n" +
-      "  const loader = Object.hasOwn(sourceChunkLoaders, path) ? sourceChunkLoaders[path]?.[chunkIndex] : null;\n" +
+      "  const ordinal = typeof path === \"string\" ? sourceFileOrdinals.get(path) : undefined;\n" +
+      "  const loader = ordinal === undefined || !Number.isSafeInteger(chunkIndex) || chunkIndex < 0 ? null : sourceChunkLoaders[ordinal]?.[chunkIndex];\n" +
       "  if (!loader) return null;\n" +
       "  const module = await loader();\n" +
       "  return module.sourceChunk ?? module.default;\n" +

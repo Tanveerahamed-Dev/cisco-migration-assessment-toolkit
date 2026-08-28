@@ -15,7 +15,7 @@
       "properties": {
         "profile_id": { "const": "ATLAS-R2-DSL-PROTOTYPE-REFERENCE" },
         "profile_version": { "const": "1.0.0" },
-        "probe_protocol": { "const": "ISOLATED_CHILD_NATIVE_HANDSHAKE/1" },
+        "probe_protocol": { "enum": ["ISOLATED_CHILD_OS_ATTRIBUTED_NAMED_PIPE_JOB_HANDSHAKE/3", "ISOLATED_CHILD_STDIO_HANDSHAKE/3"] },
         "probe_script_digest": { "$ref": "#/$defs/digest" },
         "python_flags": { "const": ["-I", "-S", "-B", "-X", "pycache_prefix=$FRESH_EMPTY_PROBE_CACHE"] },
         "environment_policy": { "const": "FIXED_MINIMAL_NO_PATH_WITH_FRESH_PYCACHE_PREFIX" },
@@ -149,7 +149,7 @@
             ]
           }
         },
-        "claim_boundary": { "const": "Exact-byte inventory of the observed isolated reference process and bounded static PE resolutions only; not portable closure, all-branch coverage, qualification, or promotion authority." }
+        "claim_boundary": { "const": "Exact-byte inventory of the observed isolated reference process and bounded static PE resolutions only; assumes no compromised same-logon process with handle-duplication, debug, or memory-injection rights; not portable closure, all-branch coverage, qualification, or promotion authority." }
       }
     }
   },
@@ -165,6 +165,11 @@
       },
       "then": {
         "properties": {
+          "profile": {
+            "properties": {
+              "probe_protocol": { "const": "ISOLATED_CHILD_OS_ATTRIBUTED_NAMED_PIPE_JOB_HANDSHAKE/3" }
+            }
+          },
           "native_scan_denominator": {
             "items": {
               "properties": {
@@ -238,6 +243,11 @@
       },
       "else": {
         "properties": {
+          "profile": {
+            "properties": {
+              "probe_protocol": { "const": "ISOLATED_CHILD_STDIO_HANDSHAKE/3" }
+            }
+          },
           "native_scan_denominator": {
             "items": {
               "properties": {

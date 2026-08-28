@@ -4,12 +4,14 @@ from collections import Counter
 from copy import deepcopy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import py_compile
 import shutil
 import struct
 import subprocess
 import sys
+import time
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -577,6 +579,10 @@ def test_runtime_inventory_schema_enums_match_validator_domains() -> None:
     assert set(
         schema["properties"]["coverage"]["properties"]["native_snapshot_method"]["enum"]
     ) == inventory._NATIVE_SNAPSHOT_METHODS
+    assert set(schema["properties"]["profile"]["properties"]["probe_protocol"]["enum"]) == {
+        inventory.RUNTIME_INVENTORY_WINDOWS_PROBE_PROTOCOL,
+        inventory.RUNTIME_INVENTORY_STDIO_PROBE_PROTOCOL,
+    }
     assert set(schema["properties"]["closure"]["properties"]["blind_spots"]["items"]["enum"]) == (
         inventory._BLIND_SPOTS
     )
@@ -588,6 +594,26 @@ def test_runtime_inventory_schema_enums_match_validator_domains() -> None:
     assert closure_schema["properties"]["claim_boundary"]["const"] == (
         inventory.RUNTIME_INVENTORY_CLAIM_BOUNDARY
     )
+
+
+def test_runtime_inventory_probe_protocol_is_bound_to_platform(
+        measured_inventory: dict) -> None:
+    expected = inventory._expected_probe_protocol(
+        measured_inventory["platform"]["sys_platform"]
+    )
+    assert measured_inventory["profile"]["probe_protocol"] == expected
+    candidate = deepcopy(measured_inventory)
+    candidate["profile"]["probe_protocol"] = (
+        inventory.RUNTIME_INVENTORY_STDIO_PROBE_PROTOCOL
+        if expected == inventory.RUNTIME_INVENTORY_WINDOWS_PROBE_PROTOCOL
+        else inventory.RUNTIME_INVENTORY_WINDOWS_PROBE_PROTOCOL
+    )
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="RUNTIME_INVENTORY_PROFILE_INVALID"):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
 
 
 @pytest.mark.parametrize(
@@ -1222,7 +1248,7 @@ def test_pending_prototype_tcb_allowlists_every_measured_runtime_file_exactly() 
         row["component_id"], row["component_version"], row["content_digest"]
     ))
     assert tcb["transitive_dependencies"] == expected
-    assert len(expected) == runtime_value["coverage"]["runtime_file_count"] == 339
+    assert len(expected) == runtime_value["coverage"]["runtime_file_count"] == 346
     assert tcb["runtime_inventory_state"] == "PARTIAL_NONPORTABLE_PROTOTYPE"
 
 
@@ -1310,18 +1336,821 @@ def test_probe_child_enforces_asset_ceiling_during_read(tmp_path: Path) -> None:
 
     with pytest.raises(
             inventory.RuntimeInventoryError,
-            match="REFERENCE_PROBE_HANDSHAKE_INVALID"):
+            match=(
+                "REFERENCE_PROBE_PIPE_READ_FAILED"
+                if sys.platform == "win32"
+                else "REFERENCE_PROBE_HANDSHAKE_INVALID"
+            )):
         inventory._probe_child_with_cache(
             ROOT,
             program,
             input_path,
-            Path(sys.executable).resolve(strict=True),
+            inventory._probe_executable(Path(sys.executable).resolve(strict=True)),
             inventory._find_distribution_import_root("cryptography"),
             pycache_prefix,
             timeout_seconds=inventory.DEFAULT_PROBE_TIMEOUT_SECONDS,
             max_file_bytes=max_file_bytes,
         )
     assert not any(pycache_prefix.iterdir())
+
+
+def _probe_payload_line(payload: object) -> bytes:
+    return (
+        inventory._PROBE_SENTINEL.encode("ascii")
+        + json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+        + b"\n"
+    )
+
+
+def test_probe_ready_and_payload_framing_is_exact_and_canonical() -> None:
+    assert inventory._parse_probe_ready(
+        inventory._PROBE_READY_SENTINEL.encode("ascii") + b"4100"
+    ) == 4100
+    assert inventory._parse_probe_ready_line(
+        inventory._PROBE_READY_SENTINEL.encode("ascii") + b"4100\n"
+    ) == 4100
+    for malformed in (
+            b"ATLAS_RUNTIME_PROBE_READY_V3\t0\n",
+            b"ATLAS_RUNTIME_PROBE_READY_V3\t04100\n",
+            b"ATLAS_RUNTIME_PROBE_READY_V3\t4100\r\n",
+            b"ATLAS_RUNTIME_PROBE_READY_V1\t4100\n"):
+        with pytest.raises(
+                inventory.RuntimeInventoryError,
+                match="REFERENCE_PROBE_READY_IDENTITY_INVALID"):
+            inventory._parse_probe_ready_line(malformed)
+
+    payload = {
+        "_probe_custody": {"nonce": "a" * 64, "pid": 4100},
+        "python": {"executable": "python.exe"},
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    assert inventory._parse_probe_payload_bytes(encoded) == payload
+    assert inventory._parse_probe_payload_line(_probe_payload_line(payload)) == payload
+    noncanonical = (
+        inventory._PROBE_SENTINEL.encode("ascii")
+        + b'{"python": {"executable": "python.exe"}}\n'
+    )
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PAYLOAD_INVALID"):
+        inventory._parse_probe_payload_line(noncanonical)
+
+
+class _FakeFramePipe(inventory._WindowsProbePipe):
+    __slots__ = ("reads",)
+
+    def __init__(self, reads: list[bytes]) -> None:
+        self.reads = list(reads)
+
+    def _read_exact(self, size: int, deadline: float, timeout_code: str) -> bytes:
+        value = self.reads.pop(0)
+        assert len(value) == size
+        return value
+
+
+@pytest.mark.parametrize("declared", [0, inventory.DEFAULT_MAX_PROBE_OUTPUT_BYTES + 1])
+def test_probe_pipe_frame_rejects_invalid_length_before_reading_body(
+        declared: int) -> None:
+    pipe = _FakeFramePipe([declared.to_bytes(4, "big"), b"must-not-be-read"])
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PIPE_FRAME_INVALID"):
+        pipe.read_frame(
+            time.monotonic() + 1,
+            max_bytes=inventory.DEFAULT_MAX_PROBE_OUTPUT_BYTES,
+            timeout_code="TEST_TIMEOUT",
+        )
+    assert pipe.reads == [b"must-not-be-read"]
+
+
+def test_probe_pipe_frame_accepts_exact_bounded_body() -> None:
+    pipe = _FakeFramePipe([b"\x00\x00\x00\x03", b"abc"])
+    assert pipe.read_frame(
+        time.monotonic() + 1,
+        max_bytes=3,
+        timeout_code="TEST_TIMEOUT",
+    ) == b"abc"
+    assert pipe.reads == []
+
+
+@pytest.mark.parametrize(
+    "custody",
+    [
+        None,
+        {},
+        {"nonce": "a" * 64, "pid": True},
+        {"nonce": "a" * 64, "pid": 4101},
+        {"nonce": "b" * 64, "pid": 4100},
+        {"nonce": "\u00e9" * 64, "pid": 4100},
+        {"nonce": "A" * 64, "pid": 4100},
+        {"nonce": "a" * 63, "pid": 4100},
+        {"nonce": "a" * 64, "pid": 4100, "extra": 1},
+    ],
+)
+def test_probe_custody_rejects_missing_spoofed_or_replayed_join(custody: object) -> None:
+    payload = {"_probe_custody": custody, "python": {"executable": "python.exe"}}
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PROCESS_IDENTITY_INVALID"):
+        inventory._validate_probe_custody(
+            payload,
+            expected_pid=4100,
+            expected_nonce="a" * 64,
+        )
+
+
+def test_probe_custody_is_transient_and_stripped_before_inventory_validation() -> None:
+    payload = {
+        "_probe_custody": {"nonce": "a" * 64, "pid": 4100},
+        "python": {"executable": "python.exe"},
+    }
+    checked = inventory._validate_probe_custody(
+        payload,
+        expected_pid=4100,
+        expected_nonce="a" * 64,
+    )
+    assert checked == {"python": {"executable": "python.exe"}}
+    assert "_probe_custody" in payload
+
+
+def test_probe_ready_gate_precedes_every_measured_import_and_clears_inheritance() -> None:
+    source = inventory._CHILD_PROBE
+    ready = source.index("ATLAS_RUNTIME_PROBE_READY_V3")
+    pipe_open = source.index("raw_probe_handle = kernel32.CreateFileW")
+    go_read = source.index("go_line = probe_read_frame")
+    project_path = source.index("sys.path.insert(0, project_root)")
+    project_import = source.index("from cisco_toolkit import transition_contract")
+    cryptography_import = source.index("import cryptography\n")
+    assert source.index("os.set_handle_inheritable") < pipe_open < ready < go_read
+    assert source.index("os.set_inheritable") < project_path
+    assert go_read < project_path < project_import < cryptography_import
+
+
+class _FakeProbeJob:
+    def __init__(self, state: inventory._WindowsProbeJobState) -> None:
+        self._state = state
+        self.terminated = False
+        self.closed = False
+
+    def state(self) -> inventory._WindowsProbeJobState:
+        return self._state
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def close(self) -> bool:
+        self.closed = True
+        return True
+
+
+@pytest.mark.parametrize(
+    ("state", "active"),
+    [
+        (inventory._WindowsProbeJobState(2, 1, 1, (4100,)), True),
+        (inventory._WindowsProbeJobState(1, 1, 0, (4101,)), True),
+        (inventory._WindowsProbeJobState(1, 0, 0, ()), True),
+        (inventory._WindowsProbeJobState(1, 1, 0, (4100,)), False),
+    ],
+)
+def test_probe_job_state_rejects_spawn_exit_or_membership_drift(
+        state: inventory._WindowsProbeJobState, active: bool) -> None:
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_JOB_STATE_INVALID"):
+        inventory._validate_probe_job_state(
+            _FakeProbeJob(state),  # type: ignore[arg-type]
+            expected_pid=4100,
+            active=active,
+        )
+
+
+def test_probe_job_exit_wait_accepts_only_bounded_accounting_transition() -> None:
+    states = [
+        inventory._WindowsProbeJobState(1, 1, 0, (4100,)),
+        inventory._WindowsProbeJobState(1, 0, 0, ()),
+    ]
+
+    class _SequencedJob:
+        def state(self) -> inventory._WindowsProbeJobState:
+            return states.pop(0)
+
+    inventory._wait_for_probe_job_exit(
+        _SequencedJob(),  # type: ignore[arg-type]
+        expected_pid=4100,
+        deadline=time.monotonic() + 1,
+    )
+    assert states == []
+
+
+def test_probe_job_close_retains_handle_until_close_succeeds() -> None:
+    outcomes = [False, True]
+
+    class _Kernel:
+        def CloseHandle(self, handle: int) -> bool:
+            assert handle == 9200
+            return outcomes.pop(0)
+
+    job = object.__new__(inventory._WindowsProbeJob)
+    job._handle = 9200
+    job._kernel32 = _Kernel()
+    assert job.close() is False
+    assert job._handle == 9200
+    assert job.close() is True
+    assert job._handle is None
+
+
+class _FakeCleanupStream:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeCleanupProcess:
+    def __init__(self) -> None:
+        self.stdin = _FakeCleanupStream()
+        self.stdout = _FakeCleanupStream()
+        self.stderr = _FakeCleanupStream()
+        self.killed = False
+        self.wait_timeouts: list[float] = []
+
+    def poll(self) -> None:
+        return None
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout: float) -> None:
+        self.wait_timeouts.append(timeout)
+        time.sleep(min(timeout, 0.02))
+        raise subprocess.TimeoutExpired("probe", timeout)
+
+    def communicate(self, *args, **kwargs) -> None:
+        raise AssertionError("cleanup must never drain inherited pipes")
+
+
+def test_probe_cleanup_is_bounded_and_never_communicates() -> None:
+    process = _FakeCleanupProcess()
+    job = _FakeProbeJob(inventory._WindowsProbeJobState(1, 1, 0, (4100,)))
+    started = time.monotonic()
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_CLEANUP_FAILED"):
+        inventory._discard_probe_process(
+            process,  # type: ignore[arg-type]
+            job,  # type: ignore[arg-type]
+            None,
+            [],
+            timeout_seconds=1,
+        )
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5
+    assert process.killed is True
+    assert process.wait_timeouts and 0 < process.wait_timeouts[0] <= 1
+    assert job.terminated is True and job.closed is True
+    assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+
+
+class _FinishedCleanupProcess(_FakeCleanupProcess):
+    def poll(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        raise AssertionError("finished process must not be killed")
+
+    def wait(self, timeout: float) -> int:
+        self.wait_timeouts.append(timeout)
+        return 0
+
+
+class _FaultingCleanupPipe:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def cancel(self, deadline: float) -> bool:
+        self.events.append("pipe.cancel")
+        return False
+
+    def close(self) -> bool:
+        self.events.append("pipe.close")
+        return False
+
+
+class _OrderedCleanupJob(_FakeProbeJob):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__(inventory._WindowsProbeJobState(1, 0, 0, ()))
+        self.events = events
+
+    def terminate(self) -> None:
+        self.events.append("job.terminate")
+        super().terminate()
+
+    def close(self) -> bool:
+        self.events.append("job.close")
+        return super().close()
+
+
+def test_probe_cleanup_attempts_every_owner_and_closes_job_last() -> None:
+    events: list[str] = []
+    process = _FinishedCleanupProcess()
+    job = _OrderedCleanupJob(events)
+    pipe = _FaultingCleanupPipe(events)
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_CLEANUP_FAILED"):
+        inventory._discard_probe_process(
+            process,  # type: ignore[arg-type]
+            job,  # type: ignore[arg-type]
+            pipe,  # type: ignore[arg-type]
+            [],
+            timeout_seconds=1,
+        )
+    assert events == ["job.terminate", "pipe.cancel", "pipe.close", "job.close"]
+    assert job.closed is True
+    assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+
+
+class _RejectingProbeJob(_FakeProbeJob):
+    def assign(self, process: subprocess.Popen[bytes]) -> None:
+        raise inventory.RuntimeInventoryError("REFERENCE_PROBE_JOB_ASSIGNMENT_FAILED")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows pre-import Job gate")
+def test_windows_job_assignment_failure_never_releases_project_imports(
+        tmp_path: Path, monkeypatch) -> None:
+    job = _RejectingProbeJob(inventory._WindowsProbeJobState(0, 0, 0, ()))
+    monkeypatch.setattr(inventory, "_create_probe_job", lambda: job)
+    pycache_prefix = tmp_path / "pycache"
+    pycache_prefix.mkdir()
+    executable = inventory._probe_executable(Path(sys.executable).resolve(strict=True))
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_JOB_ASSIGNMENT_FAILED"):
+        inventory._probe_child_with_cache(
+            ROOT,
+            ROOT / dsl.DSL_PROTOTYPE_PROGRAM_PATH,
+            ROOT / dsl.DSL_PROTOTYPE_INPUT_PATH,
+            executable,
+            inventory._find_distribution_import_root("cryptography"),
+            pycache_prefix,
+            timeout_seconds=2,
+            max_file_bytes=inventory.DEFAULT_MAX_FILE_BYTES,
+        )
+    assert job.terminated is True and job.closed is True
+    assert not any(pycache_prefix.iterdir())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named-pipe custody")
+def test_windows_probe_pipe_uses_kernel_client_pid_and_is_reusable() -> None:
+    pipe = inventory._WindowsProbePipe()
+    pipe_name = pipe.name
+    pipe.begin_connect()
+    claimed_pid = 2_147_483_646
+    child_code = r'''
+import ctypes
+from ctypes import wintypes
+import msvcrt
+import os
+import sys
+
+def read_exact(handle, size):
+    chunks = []
+    while size:
+        chunk = handle.read(size)
+        if not chunk:
+            raise SystemExit(2)
+        chunks.append(chunk)
+        size -= len(chunk)
+    return b"".join(chunks)
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.CreateFileW.argtypes = (
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+)
+kernel32.CreateFileW.restype = wintypes.HANDLE
+raw_handle = kernel32.CreateFileW(
+    sys.argv[1], 0x00100003, 0, None, 3, 0x00110000, None
+)
+if raw_handle in (None, ctypes.c_void_p(-1).value):
+    raise SystemExit(4)
+fd = msvcrt.open_osfhandle(int(raw_handle), os.O_BINARY | os.O_RDWR)
+handle = os.fdopen(fd, "r+b", buffering=0)
+raw = b"ATLAS_RUNTIME_PROBE_READY_V3\t" + sys.argv[2].encode("ascii")
+handle.write(len(raw).to_bytes(4, "big") + raw)
+size = int.from_bytes(read_exact(handle, 4), "big")
+if read_exact(handle, size) != b"ATLAS_RUNTIME_PROBE_STOP_V3":
+    raise SystemExit(3)
+handle.close()
+'''
+    executable = inventory._probe_executable(Path(sys.executable).resolve(strict=True))
+    process = subprocess.Popen(
+        [str(executable), "-I", "-S", "-B", "-c", child_code, pipe_name, str(claimed_pid)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    deadline = time.monotonic() + 5
+    try:
+        assert pipe.finish_connect(deadline) == process.pid
+        ready_pid = inventory._parse_probe_ready(pipe.read_frame(
+            deadline, max_bytes=128, timeout_code="TEST_TIMEOUT"
+        ))
+        assert ready_pid == claimed_pid != process.pid
+        with pytest.raises(
+                inventory.RuntimeInventoryError,
+                match="REFERENCE_PROBE_PIPE_CLIENT_IDENTITY_INVALID"):
+            inventory._validate_probe_pipe_client(pipe, expected_pid=ready_pid)
+        pipe.write_frame(
+            inventory._PROBE_STOP_SENTINEL, deadline, timeout_code="TEST_TIMEOUT"
+        )
+        pipe.require_eof(deadline)
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        assert pipe.cancel(time.monotonic() + 2)
+        assert pipe.close()
+    replacement = inventory._WindowsProbePipe(pipe_name)
+    assert replacement.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named-pipe custody")
+def test_windows_probe_pipe_first_instance_rejects_squatting_and_recovers() -> None:
+    pipe_name = inventory._PROBE_PIPE_PREFIX + "f" * 64
+    first = inventory._WindowsProbePipe(pipe_name)
+    try:
+        with pytest.raises(
+                inventory.RuntimeInventoryError,
+                match="REFERENCE_PROBE_PIPE_CREATE_FAILED"):
+            inventory._WindowsProbePipe(pipe_name)
+    finally:
+        assert first.close()
+    replacement = inventory._WindowsProbePipe(pipe_name)
+    assert replacement.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named-pipe custody")
+def test_windows_probe_pipe_connect_timeout_cancels_without_quarantine() -> None:
+    before = len(inventory._PROBE_PIPE_QUARANTINE)
+    pipe = inventory._WindowsProbePipe()
+    pipe_name = pipe.name
+    pipe.begin_connect()
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PIPE_CONNECT_TIMEOUT"):
+        pipe.finish_connect(time.monotonic() + 0.02)
+    assert len(inventory._PROBE_PIPE_QUARANTINE) == before
+    assert pipe.close()
+    replacement = inventory._WindowsProbePipe(pipe_name)
+    assert replacement.close()
+
+
+_PROBE_TEST_PRELUDE = r'''
+import os
+import sys
+import json
+
+def probe_read_exact(handle, size):
+    chunks = []
+    while size:
+        chunk = handle.read(size)
+        if not chunk:
+            raise SystemExit(84)
+        chunks.append(chunk)
+        size -= len(chunk)
+    return b"".join(chunks)
+
+def probe_read_frame(handle, maximum):
+    size = int.from_bytes(probe_read_exact(handle, 4), "big")
+    if size < 1 or size > maximum:
+        raise SystemExit(84)
+    return probe_read_exact(handle, size)
+
+def probe_write_frame(handle, raw):
+    framed = len(raw).to_bytes(4, "big") + raw
+    offset = 0
+    while offset < len(framed):
+        written = handle.write(framed[offset:])
+        if not written:
+            raise SystemExit(84)
+        offset += written
+
+probe_channel = None
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    for probe_stream in (sys.stdin, sys.stdout, sys.stderr):
+        probe_handle = msvcrt.get_osfhandle(probe_stream.fileno())
+        os.set_handle_inheritable(probe_handle, False)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    raw_probe_handle = kernel32.CreateFileW(
+        sys.argv[7], 0x00100003, 0, None, 3, 0x00110000, None
+    )
+    if raw_probe_handle in (None, ctypes.c_void_p(-1).value):
+        raise SystemExit(84)
+    probe_fd = msvcrt.open_osfhandle(
+        int(raw_probe_handle), os.O_BINARY | os.O_RDWR
+    )
+    probe_channel = os.fdopen(probe_fd, "r+b", buffering=0)
+    probe_handle = msvcrt.get_osfhandle(probe_channel.fileno())
+    os.set_handle_inheritable(probe_handle, False)
+    for target_fd, std_handle_id in ((1, 0xFFFFFFF5), (2, 0xFFFFFFF4)):
+        os.dup2(probe_channel.fileno(), target_fd, inheritable=False)
+        assert kernel32.SetStdHandle(
+            std_handle_id, msvcrt.get_osfhandle(target_fd)
+        )
+    probe_write_frame(
+        probe_channel,
+        b"ATLAS_RUNTIME_PROBE_READY_V3\t" + str(os.getpid()).encode("ascii"),
+    )
+    go_line = probe_read_frame(probe_channel, 128)
+else:
+    for probe_stream in (sys.stdin, sys.stdout, sys.stderr):
+        os.set_inheritable(probe_stream.fileno(), False)
+    sys.stdout.buffer.write(
+        b"ATLAS_RUNTIME_PROBE_READY_V3\t" + str(os.getpid()).encode("ascii") + b"\n"
+    )
+    sys.stdout.buffer.flush()
+    go_line = sys.stdin.buffer.readline(96).removesuffix(b"\n")
+go_prefix = b"ATLAS_RUNTIME_PROBE_GO_V3\t"
+if not go_line.startswith(go_prefix) or len(go_line) != len(go_prefix) + 64:
+    raise SystemExit(84)
+probe_nonce = go_line[len(go_prefix):].decode("ascii")
+
+def emit_payload(payload):
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    if probe_channel is not None:
+        probe_write_frame(probe_channel, encoded)
+    else:
+        sys.stdout.buffer.write(b"ATLAS_RUNTIME_PROBE_V3\t" + encoded + b"\n")
+        sys.stdout.buffer.flush()
+
+def wait_stop():
+    if probe_channel is not None:
+        if probe_read_frame(probe_channel, 64) != b"ATLAS_RUNTIME_PROBE_STOP_V3":
+            raise SystemExit(82)
+        probe_channel.close()
+    elif sys.stdin.buffer.read(1) != b"\n":
+        raise SystemExit(82)
+'''
+
+
+def _run_custom_probe(
+        tmp_path: Path,
+        monkeypatch,
+        script: str,
+        *,
+        timeout_seconds: int = 2,
+        ) -> tuple[dict, list[Path], list[str], str]:
+    pycache_prefix = tmp_path / "pycache"
+    pycache_prefix.mkdir()
+    monkeypatch.setattr(inventory, "_CHILD_PROBE", script)
+    executable = inventory._probe_executable(Path(sys.executable).resolve(strict=True))
+    return inventory._probe_child_with_cache(
+        ROOT,
+        ROOT / dsl.DSL_PROTOTYPE_PROGRAM_PATH,
+        ROOT / dsl.DSL_PROTOTYPE_INPUT_PATH,
+        executable,
+        inventory._find_distribution_import_root("cryptography"),
+        pycache_prefix,
+        timeout_seconds=timeout_seconds,
+        max_file_bytes=inventory.DEFAULT_MAX_FILE_BYTES,
+    )
+
+
+def test_probe_rejects_trailing_stdout_after_valid_root_payload(
+        tmp_path: Path, monkeypatch) -> None:
+    action = r'''
+payload = {
+    "_probe_custody": {"nonce": probe_nonce, "pid": os.getpid()},
+    "python": {"executable": os.path.realpath(sys.executable)},
+}
+emit_payload(payload)
+sys.stdout.buffer.write(b"unexpected\n")
+sys.stdout.buffer.flush()
+wait_stop()
+'''
+    expected_code = (
+        "REFERENCE_PROBE_PIPE_TRAILING_DATA"
+        if sys.platform == "win32"
+        else "REFERENCE_PROBE_FAILED"
+    )
+    with pytest.raises(inventory.RuntimeInventoryError, match=expected_code):
+        _run_custom_probe(tmp_path, monkeypatch, _PROBE_TEST_PRELUDE + action)
+
+
+def test_probe_rejects_stderr_after_valid_root_payload(
+        tmp_path: Path, monkeypatch) -> None:
+    action = r'''
+payload = {
+    "_probe_custody": {"nonce": probe_nonce, "pid": os.getpid()},
+    "python": {"executable": os.path.realpath(sys.executable)},
+}
+emit_payload(payload)
+sys.stderr.buffer.write(b"unexpected\n")
+sys.stderr.buffer.flush()
+wait_stop()
+'''
+    expected_code = (
+        "REFERENCE_PROBE_PIPE_TRAILING_DATA"
+        if sys.platform == "win32"
+        else "REFERENCE_PROBE_FAILED"
+    )
+    with pytest.raises(inventory.RuntimeInventoryError, match=expected_code):
+        _run_custom_probe(tmp_path, monkeypatch, _PROBE_TEST_PRELUDE + action)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows handle custody behavior")
+def test_windows_preexisting_stdout_handle_writer_is_detached_from_protocol(
+        tmp_path: Path, monkeypatch) -> None:
+    marker = tmp_path / "startup-stdout-handle.txt"
+    status = tmp_path / "external-writer-status.txt"
+    canary = b"ATLAS_RUNTIME_PROBE_V3\tEXTERNAL_WRITER_CANARY\n"
+    helper_code = f'''
+import ctypes
+from ctypes import wintypes
+from pathlib import Path
+import time
+
+marker = Path({str(marker)!r})
+status = Path({str(status)!r})
+deadline = time.monotonic() + 10
+pid_raw = handle_raw = None
+while time.monotonic() < deadline:
+    try:
+        candidate = marker.read_text(encoding="ascii").split(",")
+        if len(candidate) == 2 and all(item.isdigit() for item in candidate):
+            pid_raw, handle_raw = candidate
+            break
+    except OSError:
+        pass
+    time.sleep(0.005)
+if pid_raw is None or handle_raw is None:
+    status.write_text("NO_MARKER", encoding="ascii")
+    raise SystemExit(2)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+kernel32.DuplicateHandle.argtypes = (
+    wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+    ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+)
+kernel32.DuplicateHandle.restype = wintypes.BOOL
+kernel32.WriteFile.argtypes = (
+    wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+)
+kernel32.WriteFile.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+kernel32.CloseHandle.restype = wintypes.BOOL
+target = kernel32.OpenProcess(0x0040, False, int(pid_raw))
+duplicate = wintypes.HANDLE()
+ok = bool(target) and bool(kernel32.DuplicateHandle(
+    target,
+    wintypes.HANDLE(int(handle_raw)),
+    kernel32.GetCurrentProcess(),
+    ctypes.byref(duplicate),
+    0,
+    False,
+    0x00000002,
+))
+written = wintypes.DWORD()
+raw = {canary!r}
+if ok:
+    buffer = ctypes.create_string_buffer(raw)
+    ok = bool(kernel32.WriteFile(
+        duplicate, buffer, len(raw), ctypes.byref(written), None
+    )) and written.value == len(raw)
+if duplicate:
+    kernel32.CloseHandle(duplicate)
+if target:
+    kernel32.CloseHandle(target)
+status.write_text("WRITE_OK" if ok else "WRITE_FAILED", encoding="ascii")
+raise SystemExit(0 if ok else 3)
+'''
+    executable = inventory._probe_executable(Path(sys.executable).resolve(strict=True))
+    helper = subprocess.Popen(
+        [str(executable), "-I", "-S", "-B", "-c", helper_code],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert helper.poll() is None
+    bootstrap = f'''
+    from pathlib import Path
+    import time
+    startup_stdout_handle = msvcrt.get_osfhandle(sys.stdout.fileno())
+    Path({str(marker)!r}).write_text(
+        str(os.getpid()) + "," + str(startup_stdout_handle), encoding="ascii"
+    )
+    external_status = Path({str(status)!r})
+    external_deadline = time.monotonic() + 5
+    external_value = None
+    while time.monotonic() < external_deadline:
+        try:
+            candidate = external_status.read_text(encoding="ascii")
+            if candidate in {{"WRITE_OK", "WRITE_FAILED", "NO_MARKER"}}:
+                external_value = candidate
+                break
+        except OSError:
+            pass
+        time.sleep(0.005)
+    if external_value != "WRITE_OK":
+        raise SystemExit(85)
+'''
+    needle = '    raw_probe_handle = kernel32.CreateFileW(\n'
+    assert needle in _PROBE_TEST_PRELUDE
+    script = _PROBE_TEST_PRELUDE.replace(needle, bootstrap + needle, 1)
+    action = r'''
+payload = {
+    "_probe_custody": {"nonce": probe_nonce, "pid": os.getpid()},
+    "python": {"executable": os.path.realpath(sys.executable)},
+}
+emit_payload(payload)
+wait_stop()
+'''
+    try:
+        payload, _paths, _blind_spots, _method = _run_custom_probe(
+            tmp_path,
+            monkeypatch,
+            script + action,
+            timeout_seconds=8,
+        )
+        assert payload["python"]["executable"] == os.path.realpath(str(executable))
+        stdout, stderr = helper.communicate(timeout=5)
+        assert helper.returncode == 0, (stdout, stderr)
+        assert status.read_text(encoding="ascii") == "WRITE_OK"
+    finally:
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=5)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job containment behavior")
+def test_windows_single_process_job_blocks_inherited_stdout_split_writer(
+        tmp_path: Path, monkeypatch) -> None:
+    marker = tmp_path / "descendant-ran.txt"
+    action = f'''
+import json
+import subprocess
+import time
+payload = {{
+    "_probe_custody": {{"nonce": probe_nonce, "pid": os.getpid()}},
+    "python": {{"executable": os.path.realpath(sys.executable)}},
+}}
+line = b"ATLAS_RUNTIME_PROBE_V3\\t" + json.dumps(
+    payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+).encode("ascii") + b"\\n"
+descendant_code = (
+    "from pathlib import Path;import sys,time;"
+    + "Path(" + {str(marker)!r} + ").write_text('ran',encoding='utf-8');"
+    + "sys.stdout.buffer.write(" + repr(line) + ");sys.stdout.buffer.flush();time.sleep(60)"
+)
+try:
+    subprocess.Popen(
+        [sys.executable, "-I", "-S", "-B", "-c", descendant_code],
+        stdin=sys.stdin,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        close_fds=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+except OSError:
+    pass
+time.sleep(60)
+'''
+    started = time.monotonic()
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_HANDSHAKE_TIMEOUT"):
+        _run_custom_probe(
+            tmp_path,
+            monkeypatch,
+            _PROBE_TEST_PRELUDE + action,
+            timeout_seconds=1,
+        )
+    assert time.monotonic() - started < 4
+    assert not marker.exists()
 
 
 def _mock_windows_runtime(

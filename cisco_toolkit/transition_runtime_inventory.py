@@ -24,12 +24,14 @@ import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import secrets
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Mapping, Sequence
 import unicodedata
 
@@ -39,7 +41,10 @@ from .transition_contract import bytes_digest, canonical_json_bytes
 RUNTIME_INVENTORY_SCHEMA = "atlas.transition-runtime-inventory/1"
 RUNTIME_INVENTORY_PROFILE_ID = "ATLAS-R2-DSL-PROTOTYPE-REFERENCE"
 RUNTIME_INVENTORY_PROFILE_VERSION = "1.0.0"
-RUNTIME_INVENTORY_PROBE_PROTOCOL = "ISOLATED_CHILD_NATIVE_HANDSHAKE/1"
+RUNTIME_INVENTORY_WINDOWS_PROBE_PROTOCOL = (
+    "ISOLATED_CHILD_OS_ATTRIBUTED_NAMED_PIPE_JOB_HANDSHAKE/3"
+)
+RUNTIME_INVENTORY_STDIO_PROBE_PROTOCOL = "ISOLATED_CHILD_STDIO_HANDSHAKE/3"
 RUNTIME_INVENTORY_PARTIAL_CLOSURE_STATE = "PARTIAL_NONPORTABLE_PROTOTYPE"
 # Reserved rejected v1 literal retained for stable fail-closed diagnostics and callers that
 # explicitly test migration refusal.  It is not a schema member or representable v1 state.
@@ -71,8 +76,9 @@ RUNTIME_INVENTORY_ROOT_IDENTITY_CONTRACT = {
 }
 RUNTIME_INVENTORY_CLAIM_BOUNDARY = (
     "Exact-byte inventory of the observed isolated reference process and bounded static "
-    "PE resolutions only; not portable closure, all-branch coverage, qualification, or "
-    "promotion authority."
+    "PE resolutions only; assumes no compromised same-logon process with handle-duplication, "
+    "debug, or memory-injection rights; not portable closure, all-branch coverage, qualification, "
+    "or promotion authority."
 )
 RUNTIME_INVENTORY_COMPLETE_CLAIM_BOUNDARY = (
     "Structurally complete exact-runtime closure review subject with no declared blind spots or "
@@ -85,8 +91,15 @@ DEFAULT_MAX_MODULES = 4096
 DEFAULT_MAX_IMPORTS_PER_FILE = 4096
 DEFAULT_MAX_FILE_BYTES = 128 * 1024 * 1024
 DEFAULT_PROBE_TIMEOUT_SECONDS = 30
+DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS = 2
+DEFAULT_MAX_PROBE_OUTPUT_BYTES = 32 * 1024 * 1024
 
-_PROBE_SENTINEL = "ATLAS_RUNTIME_PROBE_V1\t"
+_PROBE_READY_SENTINEL = "ATLAS_RUNTIME_PROBE_READY_V3\t"
+_PROBE_GO_SENTINEL = "ATLAS_RUNTIME_PROBE_GO_V3\t"
+_PROBE_SENTINEL = "ATLAS_RUNTIME_PROBE_V3\t"
+_PROBE_STOP_SENTINEL = b"ATLAS_RUNTIME_PROBE_STOP_V3"
+_PROBE_PIPE_PREFIX = r"\\.\pipe\atlas-runtime-probe-"
+_PROBE_PIPE_QUARANTINE: list[tuple[int, Any]] = []
 _SHA256_HEX_LENGTH = 64
 _NATIVE_SUFFIXES = frozenset({".dll", ".exe", ".pyd", ".so", ".dylib"})
 _EXTENSION_SUFFIXES = frozenset({".pyd", ".so", ".dylib"})
@@ -328,6 +341,603 @@ class _WindowsProcessIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class _WindowsProbeJobState:
+    total_processes: int
+    active_processes: int
+    terminated_processes: int
+    process_ids: tuple[int, ...]
+
+
+class _WindowsProbeJob:
+    """Own one non-breakaway, single-process Windows Job Object."""
+
+    __slots__ = ("_accounting_type", "_handle", "_kernel32", "_process_list_type")
+
+    def __init__(self) -> None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_ulonglong),
+                    ("WriteOperationCount", ctypes.c_ulonglong),
+                    ("OtherOperationCount", ctypes.c_ulonglong),
+                    ("ReadTransferCount", ctypes.c_ulonglong),
+                    ("WriteTransferCount", ctypes.c_ulonglong),
+                    ("OtherTransferCount", ctypes.c_ulonglong),
+                ]
+
+            class _BasicLimitInformation(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                    ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class _ExtendedLimitInformation(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimitInformation),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            class _BasicAccountingInformation(ctypes.Structure):
+                _fields_ = [
+                    ("TotalUserTime", ctypes.c_longlong),
+                    ("TotalKernelTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                    ("TotalPageFaultCount", wintypes.DWORD),
+                    ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD),
+                    ("TotalTerminatedProcesses", wintypes.DWORD),
+                ]
+
+            class _BasicProcessIdList(ctypes.Structure):
+                _fields_ = [
+                    ("NumberOfAssignedProcesses", wintypes.DWORD),
+                    ("NumberOfProcessIdsInList", wintypes.DWORD),
+                    ("ProcessIdList", ctypes.c_size_t * 2),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel32.SetInformationJobObject.argtypes = (
+                wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            )
+            kernel32.SetInformationJobObject.restype = wintypes.BOOL
+            kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+            kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+            kernel32.QueryInformationJobObject.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            )
+            kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+            kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            kernel32.TerminateJobObject.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+        except (AttributeError, ImportError, OSError, TypeError):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_API_UNAVAILABLE") from None
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_CREATE_FAILED")
+        try:
+            limits = _ExtendedLimitInformation()
+            limits.BasicLimitInformation.LimitFlags = 0x00000008 | 0x00002000
+            limits.BasicLimitInformation.ActiveProcessLimit = 1
+            if not kernel32.SetInformationJobObject(
+                    job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                raise RuntimeInventoryError("REFERENCE_PROBE_JOB_CONFIGURATION_FAILED")
+        except BaseException:
+            kernel32.CloseHandle(job)
+            raise
+        self._kernel32 = kernel32
+        self._handle = job
+        self._accounting_type = _BasicAccountingInformation
+        self._process_list_type = _BasicProcessIdList
+
+    def assign(self, process: subprocess.Popen[bytes]) -> None:
+        try:
+            process_handle = int(getattr(process, "_handle"))
+        except (AttributeError, TypeError, ValueError):
+            raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID") from None
+        if process_handle < 1 or not self._kernel32.AssignProcessToJobObject(
+                self._handle, process_handle):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_ASSIGNMENT_FAILED")
+
+    def state(self) -> _WindowsProbeJobState:
+        import ctypes
+        from ctypes import wintypes
+
+        accounting = self._accounting_type()
+        returned = wintypes.DWORD()
+        if not self._kernel32.QueryInformationJobObject(
+                self._handle,
+                1,
+                ctypes.byref(accounting),
+                ctypes.sizeof(accounting),
+                ctypes.byref(returned)):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_QUERY_FAILED")
+        process_list = self._process_list_type()
+        if not self._kernel32.QueryInformationJobObject(
+                self._handle,
+                3,
+                ctypes.byref(process_list),
+                ctypes.sizeof(process_list),
+                ctypes.byref(returned)):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_QUERY_FAILED")
+        listed = int(process_list.NumberOfProcessIdsInList)
+        assigned = int(process_list.NumberOfAssignedProcesses)
+        if listed > len(process_list.ProcessIdList) or listed != assigned:
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+        process_ids = tuple(int(process_list.ProcessIdList[index]) for index in range(listed))
+        if any(pid < 1 for pid in process_ids) or len(set(process_ids)) != len(process_ids):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+        return _WindowsProbeJobState(
+            total_processes=int(accounting.TotalProcesses),
+            active_processes=int(accounting.ActiveProcesses),
+            terminated_processes=int(accounting.TotalTerminatedProcesses),
+            process_ids=tuple(sorted(process_ids)),
+        )
+
+    def terminate(self) -> None:
+        if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_TERMINATION_FAILED")
+
+    def close(self) -> bool:
+        handle = self._handle
+        if not handle:
+            return True
+        try:
+            closed = bool(self._kernel32.CloseHandle(handle))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+        if closed:
+            self._handle = None
+        return closed
+
+
+class _WindowsProbePipe:
+    """Own one first-instance, local-only, OS-attributed named-pipe connection.
+
+    The kernel client PID attributes connection establishment, not each later write.  The emitted
+    claim boundary therefore excludes a compromised same-logon process with handle-duplication,
+    debugging, or memory-injection rights instead of presenting this evidence producer as a
+    same-principal sandbox.
+    """
+
+    __slots__ = ("_connected", "_handle", "_kernel32", "_pending", "_winapi", "name")
+
+    def __init__(self, name: str | None = None) -> None:
+        if _PROBE_PIPE_QUARANTINE:
+            raise RuntimeInventoryError("REFERENCE_PROBE_CLEANUP_FAILED")
+        try:
+            import _winapi
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+            kernel32.GetNamedPipeClientProcessId.argtypes = (
+                wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+            )
+            kernel32.GetNamedPipeClientProcessId.restype = wintypes.BOOL
+            kernel32.CreateNamedPipeW.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+            )
+            kernel32.CreateNamedPipeW.restype = wintypes.HANDLE
+            kernel32.GetHandleInformation.argtypes = (
+                wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+            )
+            kernel32.GetHandleInformation.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CancelIoEx.argtypes = (wintypes.HANDLE, ctypes.c_void_p)
+            kernel32.CancelIoEx.restype = wintypes.BOOL
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.LocalFree.argtypes = (wintypes.HLOCAL,)
+            kernel32.LocalFree.restype = wintypes.HLOCAL
+            advapi32.OpenProcessToken.argtypes = (
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.HANDLE),
+            )
+            advapi32.OpenProcessToken.restype = wintypes.BOOL
+            advapi32.GetTokenInformation.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            )
+            advapi32.GetTokenInformation.restype = wintypes.BOOL
+            advapi32.IsValidSid.argtypes = (ctypes.c_void_p,)
+            advapi32.IsValidSid.restype = wintypes.BOOL
+            advapi32.ConvertSidToStringSidW.argtypes = (
+                ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR),
+            )
+            advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+            advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(wintypes.DWORD),
+            )
+            advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = (
+                wintypes.BOOL
+            )
+        except (AttributeError, ImportError, OSError, TypeError):
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_API_UNAVAILABLE") from None
+        pipe_name = name or (_PROBE_PIPE_PREFIX + secrets.token_hex(32))
+        if (
+                not pipe_name.startswith(_PROBE_PIPE_PREFIX)
+                or len(pipe_name) != len(_PROBE_PIPE_PREFIX) + _SHA256_HEX_LENGTH
+                or any(item not in "0123456789abcdef" for item in pipe_name[-64:])
+        ):
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_NAME_INVALID")
+        class _SidAndAttributes(ctypes.Structure):
+            _fields_ = (("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD))
+
+        class _TokenGroupsOne(ctypes.Structure):
+            _fields_ = (
+                ("GroupCount", wintypes.DWORD),
+                ("Groups", _SidAndAttributes * 1),
+            )
+
+        class _SecurityAttributes(ctypes.Structure):
+            _fields_ = (
+                ("nLength", wintypes.DWORD),
+                ("lpSecurityDescriptor", ctypes.c_void_p),
+                ("bInheritHandle", wintypes.BOOL),
+            )
+
+        token = wintypes.HANDLE()
+        sid_string = wintypes.LPWSTR()
+        security_descriptor = ctypes.c_void_p()
+        handle: int | None = None
+        try:
+            if not advapi32.OpenProcessToken(
+                    kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+            required = wintypes.DWORD()
+            ctypes.set_last_error(0)
+            first = advapi32.GetTokenInformation(
+                token, 28, None, 0, ctypes.byref(required)
+            )
+            if first or ctypes.get_last_error() != 122 or required.value < 1:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+            token_buffer = ctypes.create_string_buffer(required.value)
+            if not advapi32.GetTokenInformation(
+                    token,
+                    28,
+                    token_buffer,
+                    required,
+                    ctypes.byref(required)):
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+            groups = ctypes.cast(
+                token_buffer, ctypes.POINTER(_TokenGroupsOne)
+            ).contents
+            logon_sid = groups.Groups[0].Sid
+            if groups.GroupCount != 1 or not logon_sid or not advapi32.IsValidSid(logon_sid):
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+            if not advapi32.ConvertSidToStringSidW(
+                    logon_sid, ctypes.byref(sid_string)):
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+            sddl = f"D:P(A;;0x0012019f;;;{sid_string.value})"
+            if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl,
+                    1,
+                    ctypes.byref(security_descriptor),
+                    None):
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+            security_attributes = _SecurityAttributes(
+                ctypes.sizeof(_SecurityAttributes), security_descriptor, False
+            )
+            raw_handle = kernel32.CreateNamedPipeW(
+                pipe_name,
+                0x00000003 | 0x40000000 | 0x00080000,
+                0x00000008,
+                1,
+                65_536,
+                65_536,
+                0,
+                ctypes.byref(security_attributes),
+            )
+            invalid_handle = ctypes.c_void_p(-1).value
+            if raw_handle in {None, invalid_handle}:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_CREATE_FAILED")
+            handle = int(raw_handle)
+            handle_flags = wintypes.DWORD()
+            if (
+                    not kernel32.GetHandleInformation(handle, ctypes.byref(handle_flags))
+                    or handle_flags.value & 0x00000001
+            ):
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED")
+        except RuntimeInventoryError:
+            if handle is not None:
+                kernel32.CloseHandle(handle)
+            raise
+        except (AttributeError, OSError, TypeError, ValueError):
+            if handle is not None:
+                kernel32.CloseHandle(handle)
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_SECURITY_FAILED") from None
+        finally:
+            if security_descriptor:
+                kernel32.LocalFree(security_descriptor)
+            if sid_string:
+                kernel32.LocalFree(sid_string)
+            if token:
+                kernel32.CloseHandle(token)
+        assert handle is not None
+        self._connected = False
+        self._handle: int | None = handle
+        self._kernel32 = kernel32
+        self._pending: Any = None
+        self._winapi = _winapi
+        self.name = pipe_name
+
+    @staticmethod
+    def _wait_milliseconds(deadline: float) -> int:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            return 0
+        return max(1, min(0xFFFFFFFE, int(remaining * 1000.0) + 1))
+
+    def begin_connect(self) -> None:
+        if self._pending is not None or self._connected or not self._handle:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        try:
+            self._pending = self._winapi.ConnectNamedPipe(
+                self._handle, overlapped=True
+            )
+        except OSError as exc:
+            if exc.winerror == self._winapi.ERROR_PIPE_CONNECTED:
+                self._connected = True
+                return
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_CONNECT_FAILED") from None
+
+    def _cancel_pending(self, deadline: float) -> bool:
+        pending = self._pending
+        if pending is None:
+            return True
+        try:
+            self._kernel32.CancelIoEx(self._handle, None)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        try:
+            status = self._winapi.WaitForSingleObject(
+                pending.event, self._wait_milliseconds(deadline)
+            )
+        except (OSError, TypeError, ValueError):
+            self._quarantine_pending(pending)
+            return False
+        if status != self._winapi.WAIT_OBJECT_0:
+            self._quarantine_pending(pending)
+            return False
+        try:
+            _count, error = pending.GetOverlappedResult(False)
+        except OSError as exc:
+            error = exc.winerror
+        if error == getattr(self._winapi, "ERROR_IO_INCOMPLETE", 996):
+            self._quarantine_pending(pending)
+            return False
+        self._pending = None
+        return True
+
+    def _quarantine_pending(self, pending: Any) -> None:
+        handle = self._handle
+        if handle:
+            _PROBE_PIPE_QUARANTINE.append((int(handle), pending))
+        self._handle = None
+        self._pending = None
+        self._connected = False
+
+    def _finish_pending(
+            self,
+            deadline: float,
+            *,
+            timeout_code: str,
+            failure_code: str) -> tuple[int, int, Any]:
+        pending = self._pending
+        if pending is None:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        try:
+            status = self._winapi.WaitForSingleObject(
+                pending.event, self._wait_milliseconds(deadline)
+            )
+        except (OSError, TypeError, ValueError):
+            raise RuntimeInventoryError(failure_code) from None
+        if status == self._winapi.WAIT_TIMEOUT:
+            cleanup_deadline = time.monotonic() + DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS
+            if not self._cancel_pending(cleanup_deadline):
+                raise RuntimeInventoryError("REFERENCE_PROBE_CLEANUP_FAILED")
+            raise RuntimeInventoryError(timeout_code)
+        if status != self._winapi.WAIT_OBJECT_0:
+            raise RuntimeInventoryError(failure_code)
+        try:
+            count, error = pending.GetOverlappedResult(False)
+        except OSError as exc:
+            count, error = 0, exc.winerror
+        if error == getattr(self._winapi, "ERROR_IO_INCOMPLETE", 996):
+            self._pending = pending
+            cleanup_deadline = time.monotonic() + DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS
+            if not self._cancel_pending(cleanup_deadline):
+                raise RuntimeInventoryError("REFERENCE_PROBE_CLEANUP_FAILED")
+            raise RuntimeInventoryError(failure_code)
+        self._pending = None
+        return int(count), int(error), pending
+
+    def finish_connect(self, deadline: float) -> int:
+        if not self._connected:
+            _count, error, _pending = self._finish_pending(
+                deadline,
+                timeout_code="REFERENCE_PROBE_PIPE_CONNECT_TIMEOUT",
+                failure_code="REFERENCE_PROBE_PIPE_CONNECT_FAILED",
+            )
+            if error not in {0, self._winapi.ERROR_PIPE_CONNECTED}:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_CONNECT_FAILED")
+            self._connected = True
+        return self.client_pid()
+
+    def client_pid(self) -> int:
+        if not self._connected or not self._handle:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            client_pid = wintypes.DWORD()
+            if not self._kernel32.GetNamedPipeClientProcessId(
+                    self._handle, ctypes.byref(client_pid)):
+                raise OSError
+            pid = int(client_pid.value)
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_CLIENT_IDENTITY_INVALID") from None
+        if pid < 1:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_CLIENT_IDENTITY_INVALID")
+        return pid
+
+    def _read_exact(self, size: int, deadline: float, timeout_code: str) -> bytes:
+        handle = self._handle
+        if not handle:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            try:
+                pending, error = self._winapi.ReadFile(
+                    handle, min(remaining, 65_536), overlapped=True
+                )
+            except OSError:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED") from None
+            if error not in {0, self._winapi.ERROR_IO_PENDING}:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED")
+            self._pending = pending
+            count, error, completed = self._finish_pending(
+                deadline,
+                timeout_code=timeout_code,
+                failure_code="REFERENCE_PROBE_PIPE_READ_FAILED",
+            )
+            if error != 0 or count < 1 or count > remaining:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED")
+            chunk = bytes(completed.getbuffer())[:count]
+            if len(chunk) != count:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED")
+            chunks.append(chunk)
+            remaining -= count
+        return b"".join(chunks)
+
+    def read_frame(self, deadline: float, *, max_bytes: int, timeout_code: str) -> bytes:
+        header = self._read_exact(4, deadline, timeout_code)
+        size = int.from_bytes(header, "big")
+        if size < 1 or size > max_bytes:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_FRAME_INVALID")
+        return self._read_exact(size, deadline, timeout_code)
+
+    def write_frame(self, raw: bytes, deadline: float, *, timeout_code: str) -> None:
+        if type(raw) is not bytes or not raw or len(raw) > DEFAULT_MAX_PROBE_OUTPUT_BYTES:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_FRAME_INVALID")
+        handle = self._handle
+        if not handle:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        framed = len(raw).to_bytes(4, "big") + raw
+        offset = 0
+        while offset < len(framed):
+            try:
+                pending, error = self._winapi.WriteFile(
+                    handle, framed[offset:], overlapped=True
+                )
+            except OSError:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_WRITE_FAILED") from None
+            if error not in {0, self._winapi.ERROR_IO_PENDING}:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_WRITE_FAILED")
+            self._pending = pending
+            count, error, _completed = self._finish_pending(
+                deadline,
+                timeout_code=timeout_code,
+                failure_code="REFERENCE_PROBE_PIPE_WRITE_FAILED",
+            )
+            if error != 0 or count < 1 or count > len(framed) - offset:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_WRITE_FAILED")
+            offset += count
+
+    def require_quiet(self) -> None:
+        handle = self._handle
+        if not handle:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        try:
+            available = int(self._winapi.PeekNamedPipe(handle)[0])
+        except OSError:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED") from None
+        if available != 0:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_TRAILING_DATA")
+
+    def require_eof(self, deadline: float) -> None:
+        handle = self._handle
+        if not handle:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+        try:
+            pending, error = self._winapi.ReadFile(handle, 1, overlapped=True)
+        except OSError as exc:
+            if exc.winerror == self._winapi.ERROR_BROKEN_PIPE:
+                return
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED") from None
+        if error == self._winapi.ERROR_BROKEN_PIPE:
+            return
+        if error not in {0, self._winapi.ERROR_IO_PENDING}:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED")
+        self._pending = pending
+        count, error, _completed = self._finish_pending(
+            deadline,
+            timeout_code="REFERENCE_PROBE_PIPE_EOF_TIMEOUT",
+            failure_code="REFERENCE_PROBE_PIPE_READ_FAILED",
+        )
+        if error == self._winapi.ERROR_BROKEN_PIPE and count == 0:
+            return
+        if error == 0 and count > 0:
+            raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_TRAILING_DATA")
+        raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_READ_FAILED")
+
+    def cancel(self, deadline: float) -> bool:
+        return self._cancel_pending(deadline)
+
+    def close(self) -> bool:
+        handle = self._handle
+        if not handle or self._pending is not None:
+            return not handle and self._pending is None
+        try:
+            self._winapi.CloseHandle(handle)
+        except (OSError, TypeError, ValueError):
+            return False
+        self._handle = None
+        self._connected = False
+        return True
+
+
+@dataclass(frozen=True, slots=True)
 class _RootToken:
     root_id: str
     path: Path
@@ -354,10 +964,136 @@ def _runtime_file_id(path_token: str, digest: str) -> str:
 
 
 _CHILD_PROBE = r'''
-import json
 import os
-import stat
 import sys
+
+try:
+    if os.name == "nt":
+        import msvcrt
+        for probe_stream in (sys.stdin, sys.stdout, sys.stderr):
+            probe_handle = msvcrt.get_osfhandle(probe_stream.fileno())
+            os.set_handle_inheritable(probe_handle, False)
+            if os.get_handle_inheritable(probe_handle):
+                raise OSError
+    else:
+        for probe_stream in (sys.stdin, sys.stdout, sys.stderr):
+            os.set_inheritable(probe_stream.fileno(), False)
+            if os.get_inheritable(probe_stream.fileno()):
+                raise OSError
+except (AttributeError, OSError, ValueError):
+    raise SystemExit(84) from None
+
+def probe_read_exact(handle, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = handle.read(remaining)
+        if not chunk:
+            raise SystemExit(84)
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+def probe_read_frame(handle, maximum):
+    size = int.from_bytes(probe_read_exact(handle, 4), "big")
+    if size < 1 or size > maximum:
+        raise SystemExit(84)
+    return probe_read_exact(handle, size)
+
+def probe_write_frame(handle, raw):
+    framed = len(raw).to_bytes(4, "big") + raw
+    offset = 0
+    while offset < len(framed):
+        written = handle.write(framed[offset:])
+        if not written:
+            raise SystemExit(84)
+        offset += written
+
+probe_channel = None
+if os.name == "nt":
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        probe_pipe_name = sys.argv[7]
+        probe_pipe_prefix = r"\\.\pipe\atlas-runtime-probe-"
+        pipe_suffix = probe_pipe_name[len(probe_pipe_prefix):]
+        if (
+            not probe_pipe_name.startswith(probe_pipe_prefix)
+            or len(pipe_suffix) != 64
+            or any(item not in "0123456789abcdef" for item in pipe_suffix)
+        ):
+            raise OSError
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.SetStdHandle.argtypes = (wintypes.DWORD, wintypes.HANDLE)
+        kernel32.SetStdHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        raw_probe_handle = kernel32.CreateFileW(
+            probe_pipe_name,
+            0x00100003,
+            0,
+            None,
+            3,
+            0x00110000,
+            None,
+        )
+        if raw_probe_handle in (None, ctypes.c_void_p(-1).value):
+            raise OSError
+        try:
+            probe_fd = msvcrt.open_osfhandle(
+                int(raw_probe_handle), os.O_BINARY | os.O_RDWR
+            )
+        except (OSError, ValueError):
+            kernel32.CloseHandle(raw_probe_handle)
+            raise
+        probe_channel = os.fdopen(probe_fd, "r+b", buffering=0)
+        probe_channel_handle = msvcrt.get_osfhandle(probe_channel.fileno())
+        os.set_handle_inheritable(probe_channel_handle, False)
+        if os.get_handle_inheritable(probe_channel_handle):
+            raise OSError
+        for probe_fd_target, std_handle_id in ((1, 0xFFFFFFF5), (2, 0xFFFFFFF4)):
+            os.dup2(probe_fd, probe_fd_target, inheritable=False)
+            std_handle = msvcrt.get_osfhandle(probe_fd_target)
+            if (
+                os.get_handle_inheritable(std_handle)
+                or not kernel32.SetStdHandle(std_handle_id, std_handle)
+            ):
+                raise OSError
+        probe_write_frame(
+            probe_channel,
+            b"ATLAS_RUNTIME_PROBE_READY_V3\t" + str(os.getpid()).encode("ascii"),
+        )
+        go_line = probe_read_frame(probe_channel, 128)
+    except (AttributeError, IndexError, OSError, ValueError):
+        raise SystemExit(84) from None
+else:
+    sys.stdout.buffer.write(
+        b"ATLAS_RUNTIME_PROBE_READY_V3\t" + str(os.getpid()).encode("ascii") + b"\n"
+    )
+    sys.stdout.buffer.flush()
+    go_line = sys.stdin.buffer.readline(96).removesuffix(b"\n")
+
+go_prefix = b"ATLAS_RUNTIME_PROBE_GO_V3\t"
+if len(go_line) != len(go_prefix) + 64 or not go_line.startswith(go_prefix):
+    raise SystemExit(84)
+probe_nonce_raw = go_line[len(go_prefix):]
+if any(item not in b"0123456789abcdef" for item in probe_nonce_raw):
+    raise SystemExit(84)
+probe_nonce = probe_nonce_raw.decode("ascii")
+
+import json
+import stat
 
 (
     project_root,
@@ -464,6 +1200,7 @@ for name in sorted(sys.modules):
 
 flags = sys.flags
 payload = {
+    "_probe_custody": {"nonce": probe_nonce, "pid": os.getpid()},
     "python": {
         "implementation": sys.implementation.name,
         "version": ".".join(str(item) for item in sys.version_info[:3]),
@@ -548,12 +1285,19 @@ payload = {
     },
     "modules": module_rows,
 }
-sys.stdout.write("ATLAS_RUNTIME_PROBE_V1\t" + json.dumps(
+encoded_payload = json.dumps(
     payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-) + "\n")
-sys.stdout.flush()
-if sys.stdin.buffer.read(1) != b"\n":
-    raise SystemExit(82)
+).encode("ascii")
+if probe_channel is not None:
+    probe_write_frame(probe_channel, encoded_payload)
+    if probe_read_frame(probe_channel, 64) != b"ATLAS_RUNTIME_PROBE_STOP_V3":
+        raise SystemExit(82)
+    probe_channel.close()
+else:
+    sys.stdout.buffer.write(b"ATLAS_RUNTIME_PROBE_V3\t" + encoded_payload + b"\n")
+    sys.stdout.buffer.flush()
+    if sys.stdin.buffer.read(1) != b"\n":
+        raise SystemExit(82)
 '''
 
 
@@ -917,11 +1661,42 @@ def _probe_executable(executable: Path) -> Path:
     return executable
 
 
-def _read_probe_line(stream: Any, result: list[bytes]) -> None:
+def _read_probe_line(stream: Any, result: list[bytes], max_bytes: int) -> None:
     try:
-        result.append(stream.readline())
+        result.append(stream.readline(max_bytes + 1))
     except (OSError, ValueError):
         result.append(b"")
+
+
+def _wait_for_probe_line(
+        stream: Any,
+        readers: list[threading.Thread],
+        *,
+        timeout_seconds: float,
+        max_bytes: int,
+        timeout_code: str) -> bytes:
+    line_result: list[bytes] = []
+    reader = threading.Thread(
+        target=_read_probe_line,
+        args=(stream, line_result, max_bytes),
+        daemon=True,
+    )
+    readers.append(reader)
+    reader.start()
+    reader.join(timeout_seconds)
+    if reader.is_alive() or not line_result:
+        raise RuntimeInventoryError(timeout_code)
+    raw_line = line_result[0]
+    if len(raw_line) > max_bytes or not raw_line.endswith(b"\n"):
+        raise RuntimeInventoryError("REFERENCE_PROBE_HANDSHAKE_INVALID")
+    return raw_line
+
+
+def _remaining_probe_time(deadline: float, timeout_code: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0.0:
+        raise RuntimeInventoryError(timeout_code)
+    return remaining
 
 
 def _windows_process_identity(process_handle: int) -> _WindowsProcessIdentity:
@@ -1083,9 +1858,11 @@ def _validate_windows_process_identity(
         raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
 
 
-def _snapshot_windows_process_modules(
+def _validated_windows_probe_process(
         process: subprocess.Popen[bytes],
-        expected_executable: Path) -> tuple[list[Path], list[str], str]:
+        expected_executable: Path,
+        expected_identity: _WindowsProcessIdentity | None = None,
+        ) -> tuple[int, _WindowsProcessIdentity]:
     try:
         process_handle = int(getattr(process, "_handle"))
     except (AttributeError, TypeError, ValueError):
@@ -1097,24 +1874,39 @@ def _snapshot_windows_process_modules(
             or process.poll() is not None
     ):
         raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
-    before = _windows_process_identity(process_handle)
+    identity = _windows_process_identity(process_handle)
     _validate_windows_process_identity(
-        before,
+        identity,
         expected_pid=process.pid,
         expected_executable=expected_executable,
+    )
+    if expected_identity is not None and (
+            identity.pid != expected_identity.pid
+            or identity.creation_time != expected_identity.creation_time
+            or _normalized_path(identity.image_path)
+            != _normalized_path(expected_identity.image_path)
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
+    return process_handle, identity
+
+
+def _snapshot_windows_process_modules(
+        process: subprocess.Popen[bytes],
+        expected_executable: Path,
+        expected_identity: _WindowsProcessIdentity | None = None,
+        ) -> tuple[list[Path], list[str], str]:
+    process_handle, before = _validated_windows_probe_process(
+        process, expected_executable, expected_identity
     )
     result = _windows_process_modules(process_handle)
-    after = _windows_process_identity(process_handle)
-    _validate_windows_process_identity(
-        after,
-        expected_pid=process.pid,
-        expected_executable=expected_executable,
+    after_handle, after = _validated_windows_probe_process(
+        process, expected_executable, expected_identity
     )
     if (
-            before.pid != after.pid
+            process_handle != after_handle
+            or before.pid != after.pid
             or before.creation_time != after.creation_time
             or _normalized_path(before.image_path) != _normalized_path(after.image_path)
-            or process.poll() is not None
     ):
         raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
     return result
@@ -1122,9 +1914,13 @@ def _snapshot_windows_process_modules(
 
 def _snapshot_process_modules(
         process: subprocess.Popen[bytes],
-        expected_executable: Path) -> tuple[list[Path], list[str], str]:
+        expected_executable: Path,
+        expected_windows_identity: _WindowsProcessIdentity | None = None,
+        ) -> tuple[list[Path], list[str], str]:
     if sys.platform == "win32":
-        return _snapshot_windows_process_modules(process, expected_executable)
+        return _snapshot_windows_process_modules(
+            process, expected_executable, expected_windows_identity
+        )
     if sys.platform.startswith("linux"):
         return _linux_process_modules(process.pid)
     return [], ["PROCESS_NATIVE_MODULE_ENUMERATION_NOT_IMPLEMENTED_FOR_PLATFORM"], "UNSUPPORTED"
@@ -1148,16 +1944,235 @@ def _validate_probe_executable_identity(
     return payload
 
 
-def _discard_probe_process(process: subprocess.Popen[bytes]) -> None:
+def _parse_probe_ready_line(raw_line: bytes) -> int:
+    if not raw_line.endswith(b"\n"):
+        raise RuntimeInventoryError("REFERENCE_PROBE_READY_IDENTITY_INVALID")
+    return _parse_probe_ready(raw_line[:-1])
+
+
+def _parse_probe_ready(raw: bytes) -> int:
+    prefix = _PROBE_READY_SENTINEL.encode("ascii")
+    if not raw.startswith(prefix):
+        raise RuntimeInventoryError("REFERENCE_PROBE_READY_IDENTITY_INVALID")
+    raw_pid = raw[len(prefix):]
+    if not raw_pid or not raw_pid.isdigit():
+        raise RuntimeInventoryError("REFERENCE_PROBE_READY_IDENTITY_INVALID")
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        raise RuntimeInventoryError("REFERENCE_PROBE_READY_IDENTITY_INVALID") from None
+    if pid < 1 or str(pid).encode("ascii") != raw_pid:
+        raise RuntimeInventoryError("REFERENCE_PROBE_READY_IDENTITY_INVALID")
+    return pid
+
+
+def _parse_probe_payload_line(raw_line: bytes) -> object:
+    prefix = _PROBE_SENTINEL.encode("ascii")
+    if not raw_line.startswith(prefix) or not raw_line.endswith(b"\n"):
+        raise RuntimeInventoryError("REFERENCE_PROBE_HANDSHAKE_INVALID")
+    return _parse_probe_payload_bytes(raw_line[len(prefix):-1])
+
+
+def _parse_probe_payload_bytes(encoded: bytes) -> object:
+    try:
+        payload = json.loads(encoded.decode("ascii"))
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    except (UnicodeDecodeError, ValueError, TypeError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID") from None
+    if encoded != canonical:
+        raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID")
+    return payload
+
+
+def _validate_probe_custody(
+        payload: object,
+        *,
+        expected_pid: int,
+        expected_nonce: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID")
+    checked = dict(payload)
+    custody = checked.pop("_probe_custody", None)
+    nonce = custody.get("nonce") if type(custody) is dict else None
+    if (
+            type(custody) is not dict
+            or set(custody) != {"nonce", "pid"}
+            or type(custody.get("pid")) is not int
+            or custody["pid"] != expected_pid
+            or type(nonce) is not str
+            or len(nonce) != 64
+            or any(char not in "0123456789abcdef" for char in nonce)
+            or not secrets.compare_digest(nonce, expected_nonce)
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
+    return checked
+
+
+def _create_probe_job() -> _WindowsProbeJob | None:
+    if sys.platform != "win32":
+        return None
+    return _WindowsProbeJob()
+
+
+def _create_probe_pipe() -> _WindowsProbePipe | None:
+    if sys.platform != "win32":
+        return None
+    return _WindowsProbePipe()
+
+
+def _validate_probe_pipe_client(
+        pipe: _WindowsProbePipe,
+        *,
+        expected_pid: int) -> None:
+    if pipe.client_pid() != expected_pid:
+        raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_CLIENT_IDENTITY_INVALID")
+
+
+def _validate_probe_job_state(
+        job: _WindowsProbeJob,
+        *,
+        expected_pid: int,
+        active: bool) -> None:
+    state = job.state()
+    expected_ids = (expected_pid,) if active else ()
+    expected_active = 1 if active else 0
+    if (
+            state.total_processes != 1
+            or state.active_processes != expected_active
+            or state.terminated_processes != 0
+            or state.process_ids != expected_ids
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+
+
+def _wait_for_probe_job_exit(
+        job: _WindowsProbeJob,
+        *,
+        expected_pid: int,
+        deadline: float) -> None:
+    while True:
+        state = job.state()
+        if state == _WindowsProbeJobState(1, 0, 0, ()):
+            return
+        if (
+                state.total_processes != 1
+                or state.terminated_processes != 0
+                or state.active_processes not in {0, 1}
+                or state.process_ids not in {(), (expected_pid,)}
+                or state.active_processes != len(state.process_ids)
+        ):
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+        time.sleep(min(0.005, remaining))
+
+
+def _discard_probe_process(
+        process: subprocess.Popen[bytes],
+        job: _WindowsProbeJob | None,
+        pipe: _WindowsProbePipe | None,
+        readers: Sequence[threading.Thread],
+        *,
+        timeout_seconds: int) -> None:
+    cleanup_seconds = min(
+        max(float(timeout_seconds), 0.001),
+        float(DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS),
+    )
+    deadline = time.monotonic() + cleanup_seconds
+    cleanup_failed = False
+    if job is not None:
+        try:
+            job.terminate()
+        except BaseException:
+            pass
+    if pipe is not None:
+        try:
+            if not pipe.cancel(deadline):
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
     try:
         if process.poll() is None:
             process.kill()
-    except OSError:
+    except BaseException:
         pass
+    remaining = max(0.001, deadline - time.monotonic())
     try:
-        process.communicate()
-    except (OSError, ValueError):
-        pass
+        process.wait(timeout=remaining)
+    except BaseException:
+        cleanup_failed = True
+    try:
+        process_alive = process.poll() is None
+    except BaseException:
+        process_alive = True
+    if process_alive:
+        cleanup_failed = True
+    for reader in readers:
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining > 0.0:
+            reader.join(remaining)
+    stdout_reader_alive = any(reader.is_alive() for reader in readers)
+    if stdout_reader_alive:
+        cleanup_failed = True
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is None or (stream is process.stdout and stdout_reader_alive):
+            continue
+        try:
+            stream.close()
+        except BaseException:
+            cleanup_failed = True
+    if pipe is not None:
+        try:
+            if not pipe.close():
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
+    if job is not None:
+        try:
+            if not job.close():
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
+    if cleanup_failed:
+        raise RuntimeInventoryError("REFERENCE_PROBE_CLEANUP_FAILED")
+
+
+def _discard_probe_guards(
+        job: _WindowsProbeJob | None,
+        pipe: _WindowsProbePipe | None,
+        *,
+        timeout_seconds: int) -> None:
+    cleanup_seconds = min(
+        max(float(timeout_seconds), 0.001),
+        float(DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS),
+    )
+    deadline = time.monotonic() + cleanup_seconds
+    cleanup_failed = False
+    if pipe is not None:
+        try:
+            if not pipe.cancel(deadline):
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
+        try:
+            if not pipe.close():
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
+    if job is not None:
+        try:
+            if not job.close():
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
+    if cleanup_failed:
+        raise RuntimeInventoryError("REFERENCE_PROBE_CLEANUP_FAILED")
 
 
 def _probe_child_with_cache(
@@ -1170,6 +2185,15 @@ def _probe_child_with_cache(
         *,
         timeout_seconds: int,
         max_file_bytes: int) -> tuple[dict[str, Any], list[Path], list[str], str]:
+    job = _create_probe_job()
+    pipe: _WindowsProbePipe | None = None
+    try:
+        pipe = _create_probe_pipe()
+        if pipe is not None:
+            pipe.begin_connect()
+    except BaseException:
+        _discard_probe_guards(job, pipe, timeout_seconds=timeout_seconds)
+        raise
     command = [
         str(python_executable),
         "-I",
@@ -1185,61 +2209,183 @@ def _probe_child_with_cache(
         str(distribution_import_root),
         str(pycache_prefix),
         str(max_file_bytes),
+        pipe.name if pipe is not None else "",
     ]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    standard_stream = subprocess.DEVNULL if pipe is not None else subprocess.PIPE
     try:
         process = subprocess.Popen(
             command,
             cwd=project_root,
             env=_sanitized_probe_environment(pycache_prefix),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdin=standard_stream,
+            stdout=standard_stream,
+            stderr=standard_stream,
             creationflags=creationflags,
+            close_fds=True,
         )
-    except OSError:
-        raise RuntimeInventoryError("REFERENCE_PROBE_START_FAILED") from None
-    assert process.stdout is not None
-    assert process.stderr is not None
-    assert process.stdin is not None
-    line_result: list[bytes] = []
-    reader = threading.Thread(target=_read_probe_line, args=(process.stdout, line_result), daemon=True)
-    reader.start()
-    reader.join(timeout_seconds)
-    if reader.is_alive() or not line_result:
-        process.kill()
-        process.communicate()
-        raise RuntimeInventoryError("REFERENCE_PROBE_HANDSHAKE_TIMEOUT")
-    raw_line = line_result[0]
-    if not raw_line.startswith(_PROBE_SENTINEL.encode("ascii")):
-        process.kill()
-        process.communicate()
-        raise RuntimeInventoryError("REFERENCE_PROBE_HANDSHAKE_INVALID")
+    except BaseException as exc:
+        _discard_probe_guards(job, pipe, timeout_seconds=timeout_seconds)
+        if isinstance(exc, OSError):
+            raise RuntimeInventoryError("REFERENCE_PROBE_START_FAILED") from None
+        raise
+    if pipe is None:
+        assert process.stdout is not None
+        assert process.stderr is not None
+        assert process.stdin is not None
+    readers: list[threading.Thread] = []
+    probe_deadline = time.monotonic() + timeout_seconds
     try:
-        payload = json.loads(raw_line[len(_PROBE_SENTINEL):])
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        process.kill()
-        process.communicate()
-        raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID") from None
-    try:
-        checked_payload = _validate_probe_executable_identity(payload, python_executable)
+        pipe_client_pid: int | None = None
+        if pipe is not None:
+            if sys.platform != "win32" or job is None:
+                raise RuntimeInventoryError("REFERENCE_PROBE_PIPE_STATE_INVALID")
+            pipe_client_pid = pipe.finish_connect(probe_deadline)
+            if pipe_client_pid != process.pid:
+                raise RuntimeInventoryError(
+                    "REFERENCE_PROBE_PIPE_CLIENT_IDENTITY_INVALID"
+                )
+            ready_pid = _parse_probe_ready(pipe.read_frame(
+                probe_deadline,
+                max_bytes=128,
+                timeout_code="REFERENCE_PROBE_READY_TIMEOUT",
+            ))
+        else:
+            assert process.stdout is not None
+            ready_line = _wait_for_probe_line(
+                process.stdout,
+                readers,
+                timeout_seconds=_remaining_probe_time(
+                    probe_deadline, "REFERENCE_PROBE_READY_TIMEOUT"
+                ),
+                max_bytes=128,
+                timeout_code="REFERENCE_PROBE_READY_TIMEOUT",
+            )
+            ready_pid = _parse_probe_ready_line(ready_line)
+        if ready_pid != process.pid:
+            raise RuntimeInventoryError("REFERENCE_PROBE_READY_IDENTITY_INVALID")
+        root_identity: _WindowsProcessIdentity | None = None
+        if sys.platform == "win32":
+            if job is None or pipe is None or pipe_client_pid is None:
+                raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+            _, root_identity = _validated_windows_probe_process(process, python_executable)
+            job.assign(process)
+            _validate_probe_job_state(job, expected_pid=ready_pid, active=True)
+            _validated_windows_probe_process(
+                process, python_executable, root_identity
+            )
+            _validate_probe_pipe_client(pipe, expected_pid=ready_pid)
+        elif job is not None or pipe is not None:
+            raise RuntimeInventoryError("REFERENCE_PROBE_JOB_STATE_INVALID")
+
+        probe_nonce = secrets.token_hex(32)
+        go_frame = _PROBE_GO_SENTINEL.encode("ascii") + probe_nonce.encode("ascii")
+        if pipe is not None:
+            pipe.write_frame(
+                go_frame,
+                probe_deadline,
+                timeout_code="REFERENCE_PROBE_HANDSHAKE_TIMEOUT",
+            )
+            encoded_payload = pipe.read_frame(
+                probe_deadline,
+                max_bytes=DEFAULT_MAX_PROBE_OUTPUT_BYTES,
+                timeout_code="REFERENCE_PROBE_HANDSHAKE_TIMEOUT",
+            )
+            payload = _parse_probe_payload_bytes(encoded_payload)
+        else:
+            assert process.stdin is not None
+            try:
+                process.stdin.write(go_frame + b"\n")
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                raise RuntimeInventoryError("REFERENCE_PROBE_HANDSHAKE_INVALID") from None
+            raw_line = _wait_for_probe_line(
+                process.stdout,
+                readers,
+                timeout_seconds=_remaining_probe_time(
+                    probe_deadline, "REFERENCE_PROBE_HANDSHAKE_TIMEOUT"
+                ),
+                max_bytes=DEFAULT_MAX_PROBE_OUTPUT_BYTES,
+                timeout_code="REFERENCE_PROBE_HANDSHAKE_TIMEOUT",
+            )
+            payload = _parse_probe_payload_line(raw_line)
+        custody_payload = _validate_probe_custody(
+            payload,
+            expected_pid=ready_pid,
+            expected_nonce=probe_nonce,
+        )
+        checked_payload = _validate_probe_executable_identity(
+            custody_payload, python_executable
+        )
+        if job is not None:
+            assert root_identity is not None
+            _validated_windows_probe_process(
+                process, python_executable, root_identity
+            )
+            _validate_probe_job_state(job, expected_pid=ready_pid, active=True)
+            assert pipe is not None
+            _validate_probe_pipe_client(pipe, expected_pid=ready_pid)
         native_paths, native_blind_spots, snapshot_method = _snapshot_process_modules(
             process,
             python_executable,
+            root_identity,
         )
-    except RuntimeInventoryError:
-        _discard_probe_process(process)
+        if job is not None:
+            _validate_probe_job_state(job, expected_pid=ready_pid, active=True)
+            assert pipe is not None
+            _validate_probe_pipe_client(pipe, expected_pid=ready_pid)
+            pipe.require_quiet()
+            pipe.write_frame(
+                _PROBE_STOP_SENTINEL,
+                probe_deadline,
+                timeout_code="REFERENCE_PROBE_COMPLETION_FAILED",
+            )
+        else:
+            assert process.stdin is not None
+            try:
+                process.stdin.write(b"\n")
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                raise RuntimeInventoryError("REFERENCE_PROBE_COMPLETION_FAILED") from None
+        if pipe is not None:
+            pipe.require_eof(probe_deadline)
+            try:
+                process.wait(timeout=_remaining_probe_time(
+                    probe_deadline, "REFERENCE_PROBE_COMPLETION_FAILED"
+                ))
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                raise RuntimeInventoryError("REFERENCE_PROBE_COMPLETION_FAILED") from None
+            if process.returncode != 0:
+                raise RuntimeInventoryError("REFERENCE_PROBE_FAILED")
+        else:
+            try:
+                remaining_stdout, stderr = process.communicate(timeout=_remaining_probe_time(
+                    probe_deadline, "REFERENCE_PROBE_COMPLETION_FAILED"
+                ))
+            except (BrokenPipeError, OSError, subprocess.TimeoutExpired, ValueError):
+                raise RuntimeInventoryError("REFERENCE_PROBE_COMPLETION_FAILED") from None
+            if process.returncode != 0 or remaining_stdout or stderr:
+                raise RuntimeInventoryError("REFERENCE_PROBE_FAILED")
+        if job is not None:
+            _wait_for_probe_job_exit(
+                job, expected_pid=ready_pid, deadline=probe_deadline
+            )
+    except BaseException:
+        _discard_probe_process(
+            process,
+            job,
+            pipe,
+            readers,
+            timeout_seconds=timeout_seconds,
+        )
         raise
-    try:
-        process.stdin.write(b"\n")
-        process.stdin.flush()
-        _, stderr = process.communicate(timeout=timeout_seconds)
-    except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
-        process.kill()
-        process.communicate()
-        raise RuntimeInventoryError("REFERENCE_PROBE_COMPLETION_FAILED") from None
-    if process.returncode != 0 or stderr:
-        raise RuntimeInventoryError("REFERENCE_PROBE_FAILED")
+    cleanup_failed = False
+    if pipe is not None and not pipe.close():
+        cleanup_failed = True
+    if job is not None and not job.close():
+        cleanup_failed = True
+    if cleanup_failed:
+        raise RuntimeInventoryError("REFERENCE_PROBE_CLEANUP_FAILED")
     return checked_payload, native_paths, native_blind_spots, snapshot_method
 
 
@@ -1744,7 +2890,9 @@ def build_reference_runtime_inventory(
         "profile": {
             "profile_id": RUNTIME_INVENTORY_PROFILE_ID,
             "profile_version": RUNTIME_INVENTORY_PROFILE_VERSION,
-            "probe_protocol": RUNTIME_INVENTORY_PROBE_PROTOCOL,
+            "probe_protocol": _expected_probe_protocol(
+                payload["platform"]["sys_platform"]
+            ),
             "probe_script_digest": bytes_digest(_CHILD_PROBE.encode("utf-8")),
             "python_flags": [
                 "-I", "-S", "-B", "-X", "pycache_prefix=$FRESH_EMPTY_PROBE_CACHE"
@@ -1899,6 +3047,12 @@ def _expected_snapshot_contract(sys_platform: str) -> tuple[str, bool]:
     return "UNSUPPORTED", False
 
 
+def _expected_probe_protocol(sys_platform: str) -> str:
+    if sys_platform == "win32":
+        return RUNTIME_INVENTORY_WINDOWS_PROBE_PROTOCOL
+    return RUNTIME_INVENTORY_STDIO_PROBE_PROTOCOL
+
+
 def validate_runtime_inventory(value: Any) -> dict[str, Any]:
     """Validate the closed v1 evidence shape without upgrading its authority."""
 
@@ -1923,10 +3077,16 @@ def validate_runtime_inventory(value: Any) -> dict[str, Any]:
             "root_identity_contract", "working_directory", "prototype",
             "structural_core_probe", "crypto_probe"}:
         raise RuntimeInventoryError("RUNTIME_INVENTORY_PROFILE_INVALID")
+    sys_platform_value = platform_value.get("sys_platform")
+    expected_probe_protocol = (
+        _expected_probe_protocol(sys_platform_value)
+        if isinstance(sys_platform_value, str) and sys_platform_value
+        else None
+    )
     if (
             profile.get("profile_id") != RUNTIME_INVENTORY_PROFILE_ID
             or profile.get("profile_version") != RUNTIME_INVENTORY_PROFILE_VERSION
-            or profile.get("probe_protocol") != RUNTIME_INVENTORY_PROBE_PROTOCOL
+            or profile.get("probe_protocol") != expected_probe_protocol
             or profile.get("probe_script_digest") != bytes_digest(_CHILD_PROBE.encode("utf-8"))
             or profile.get("python_flags") != [
                 "-I", "-S", "-B", "-X", "pycache_prefix=$FRESH_EMPTY_PROBE_CACHE"
@@ -2292,6 +3452,7 @@ def validate_runtime_inventory(value: Any) -> dict[str, Any]:
                 "VIRTUAL_API_SET_UNRESOLVED", "RESOLVED_REVIEWED_API_SET_HOST"}:
             raise RuntimeInventoryError("RUNTIME_INVENTORY_EDGE_RESOLUTION_INCONSISTENT")
         if target_required:
+            assert target_file_id is not None
             target = file_rows_by_id[target_file_id]
             if "STATIC_NATIVE_DEPENDENCY" not in target["roles"]:
                 raise RuntimeInventoryError("RUNTIME_INVENTORY_EDGE_TARGET_ROLE_INVALID")

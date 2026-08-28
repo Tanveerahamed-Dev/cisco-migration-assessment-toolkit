@@ -207,23 +207,49 @@ async function mutateCompilerGroup(input, group, mutate, { reconcileCount = true
   const manifestPath = join(input, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const groupDescriptor = manifest.groups[group];
-  assert.equal(groupDescriptor.chunks.length, 1, "fixture mutation helper expects one compiler chunk");
-  const chunkDescriptor = groupDescriptor.chunks[0];
-  const envelope = JSON.parse(await readFile(join(input, ...chunkDescriptor.path.split("/")), "utf8"));
+  const envelopes = await Promise.all(groupDescriptor.chunks.map(async (chunkDescriptor) =>
+    JSON.parse(await readFile(join(input, ...chunkDescriptor.path.split("/")), "utf8"))));
+  assert.ok(envelopes.length > 0, "fixture mutation helper expects a nonempty compiler group");
+  const envelope = {
+    ...envelopes[0],
+    chunk_index: 0,
+    chunk_count: 1,
+    records: envelopes.flatMap((item) => item.records),
+  };
   await mutate(envelope);
   if (envelope.records.every((record) => typeof record?.id === "string")) {
     envelope.records.sort((left, right) => left.id.localeCompare(right.id));
   }
   envelope.record_count = envelope.records.length;
   envelope.records_digest = digestObject(envelope.records.map((record) => record.id));
+  const partitions = group === "source_text"
+    ? envelope.records.map((record) => [record])
+    : [envelope.records];
+  const chunks = [];
+  for (const [index, partition] of partitions.entries()) {
+    const chunkEnvelope = {
+      ...envelope,
+      chunk_index: index,
+      chunk_count: partitions.length,
+      record_count: partition.length,
+      records_digest: digestObject(partition.map((record) => record.id)),
+      records: partition,
+    };
+    chunks.push({
+      ...await writeDescriptor(
+        input,
+        `chunks/${group}/${String(index).padStart(5, "0")}.json`,
+        chunkEnvelope,
+      ),
+      record_count: partition.length,
+    });
+  }
   manifest.groups[group] = {
     ...groupDescriptor,
     record_count: envelope.records.length,
     records_digest: envelope.records_digest,
-    chunks: [{
-      ...await writeVerifiedValue(input, chunkDescriptor, envelope),
-      record_count: envelope.records.length,
-    }],
+    chunk_count: chunks.length,
+    chunks,
   };
   if (reconcileCount) {
     const completeness = JSON.parse(
@@ -360,6 +386,7 @@ async function makeCompilerFixture(root) {
   await mkdir(input, { recursive: true });
   const denseTail = "x".repeat(300_000);
   const exact = Buffer.from(`def hello():\r\n    return "Atlas"${denseTail}\r\n`, "utf8");
+  const secondExact = Buffer.from("\n", "utf8");
   const lines = [
     { number: 1, text: "def hello():", terminator: "\r\n" },
     { number: 2, text: `    return "Atlas"${denseTail}`, terminator: "\r\n" },
@@ -370,6 +397,7 @@ async function makeCompilerFixture(root) {
   }));
   const safeId = fixtureStableId("urn:atlas:file:safe");
   const privateId = fixtureStableId("urn:atlas:file:private");
+  const secondId = fixtureStableId("urn:atlas:file:second");
   const sourceCommit = "d".repeat(40);
   const fixtureClaimPredicates = [
     "repository.source_commit",
@@ -442,6 +470,25 @@ async function makeCompilerFixture(root) {
         parser_mode: "metadata",
         unresolved_reasons: [],
       },
+      {
+        id: secondId,
+        path: "0-second.txt",
+        language: "text",
+        media_type: "text/plain",
+        roles: ["source"],
+        size_bytes: secondExact.byteLength,
+        line_count: 1,
+        nonblank_line_count: 0,
+        content_digest: sha256(secondExact),
+        git_blob_oid: "f".repeat(40),
+        content_source: "selected_commit_git_blob",
+        privacy_exposure: "full",
+        privacy_reasons: [],
+        parse_status: "not_parsed",
+        parser: "none",
+        parser_mode: "metadata",
+        unresolved_reasons: ["blank_fixture_has_no_structural_parse"],
+      },
     ],
     lines: lines.map((line, index) => ({
       id: `urn:atlas:line:${index + 1}`,
@@ -486,6 +533,24 @@ async function makeCompilerFixture(root) {
         git_blob_oid: "a".repeat(40),
         line_count: 2,
         lines,
+      },
+      {
+        id: "urn:atlas:source-text:second",
+        file_id: secondId,
+        path: "0-second.txt",
+        encoding: "utf-8",
+        byte_count: secondExact.byteLength,
+        content_digest: sha256(secondExact),
+        source_basis: "selected_commit_git_blob",
+        git_blob_oid: "f".repeat(40),
+        line_count: 1,
+        lines: [{
+          number: 1,
+          text: "",
+          terminator: "\n",
+          text_digest: sha256(Buffer.from("", "utf8")),
+          line_digest: sha256(secondExact),
+        }],
       },
     ],
     symbols: [
@@ -802,23 +867,36 @@ async function makeCompilerFixture(root) {
       continue;
     }
     const canonicalGroupRecords = [...groupRecords].sort((left, right) => left.id.localeCompare(right.id));
-    const envelope = {
-      schema_version: "1.2.0",
-      record_type: group,
-      source_commit: "d".repeat(40),
-      source_tree_digest: "e".repeat(64),
-      chunk_index: 0,
-      chunk_count: 1,
-      record_count: canonicalGroupRecords.length,
-      records_digest: digestObject(canonicalGroupRecords.map((record) => record.id)),
-      records: canonicalGroupRecords,
-    };
-    const descriptor = await writeDescriptor(input, `chunks/${group}/00000.json`, envelope);
+    const partitions = group === "source_text"
+      ? canonicalGroupRecords.map((record) => [record])
+      : [canonicalGroupRecords];
+    const chunks = [];
+    for (const [index, partition] of partitions.entries()) {
+      const envelope = {
+        schema_version: "1.2.0",
+        record_type: group,
+        source_commit: "d".repeat(40),
+        source_tree_digest: "e".repeat(64),
+        chunk_index: index,
+        chunk_count: partitions.length,
+        record_count: partition.length,
+        records_digest: digestObject(partition.map((record) => record.id)),
+        records: partition,
+      };
+      chunks.push({
+        ...await writeDescriptor(
+          input,
+          `chunks/${group}/${String(index).padStart(5, "0")}.json`,
+          envelope,
+        ),
+        record_count: partition.length,
+      });
+    }
     groups[group] = {
       record_count: canonicalGroupRecords.length,
-      chunk_count: 1,
+      chunk_count: chunks.length,
       records_digest: digestObject(canonicalGroupRecords.map((record) => record.id)),
-      chunks: [{ ...descriptor, record_count: canonicalGroupRecords.length }],
+      chunks,
     };
   }
   const graphifyValue = {
@@ -888,7 +966,7 @@ async function makeCompilerFixture(root) {
     tracked_worktree_dirty: false,
     hard_failure: false,
     fatal_errors: [],
-    census: { tracked_files: 2, classified_files: 2, full_exposure_files: 1, metadata_only_files: 1 },
+    census: { tracked_files: 3, classified_files: 3, full_exposure_files: 2, metadata_only_files: 1 },
     parsing: { expected_nonblank_lines: 2, line_records: 2 },
     semantic_accounting: {
       safe_parsed_sources: 1,
@@ -909,8 +987,8 @@ async function makeCompilerFixture(root) {
     },
     record_counts: Object.fromEntries(Object.entries(records).map(([name, value]) => [name, value.length])),
     invariants: [
-      { name: "every_tracked_file_classified", expected: 2, actual: 2, passed: true },
-      { name: "every_safe_text_file_has_exact_source_record", expected: 1, actual: 1, passed: true },
+      { name: "every_tracked_file_classified", expected: 3, actual: 3, passed: true },
+      { name: "every_safe_text_file_has_exact_source_record", expected: 2, actual: 2, passed: true },
       { name: "every_safe_line_structurally_mapped", expected: 2, actual: 2, passed: true },
       { name: "every_safe_parsed_source_has_one_structural_root", expected: 1, actual: 1, passed: true },
       { name: "every_gui_surface_has_standardized_evidence_honest_dossier", expected: 2, actual: 2, passed: true },
@@ -952,7 +1030,7 @@ async function makeCompilerFixture(root) {
     groups,
   };
   await writeFile(join(input, "manifest.json"), `${stableJson(manifest)}\n`, "utf8");
-  return { input, exact, records };
+  return { input, exact, secondExact, records };
 }
 
 async function trackedConsequentialClaimFixture() {
@@ -1942,7 +2020,7 @@ test("symbol metadata routes reject self-receipted binding, count, order, digest
 test("projection is deterministic, lazy, privacy-gated, and exact-source preserving", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-test-"));
   try {
-    const { input, exact, records } = await makeCompilerFixture(scratch);
+    const { input, exact, secondExact, records } = await makeCompilerFixture(scratch);
     const outputA = join(scratch, "projection-a");
     const outputB = join(scratch, "projection-b");
     const manifestA = await buildProjection({ input, output: outputA });
@@ -1956,10 +2034,30 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     const indexB = await readFile(join(outputB, "index.mjs"), "utf8");
     const identityA = await readFile(join(outputA, "identity.mjs"), "utf8");
     const identityB = await readFile(join(outputB, "identity.mjs"), "utf8");
+    const sourceIndexPathA = join(outputA, ...manifestA.sourceIndex.module.split("/"));
+    const sourceIndexPathB = join(outputB, ...manifestB.sourceIndex.module.split("/"));
+    const sourceIndexA = await readFile(sourceIndexPathA, "utf8");
+    const sourceIndexB = await readFile(sourceIndexPathB, "utf8");
     assert.equal(indexA, indexB, "same compiler corpus must produce byte-identical index modules");
     assert.equal(identityA, identityB, "same compiler corpus must produce byte-identical identity modules");
+    assert.equal(
+      sourceIndexA,
+      sourceIndexB,
+      "same compiler corpus must produce byte-identical source indexes",
+    );
     assert.equal(manifestA.index.sha256, manifestB.index.sha256);
     assert.equal(manifestA.identity.sha256, manifestB.identity.sha256);
+    assert.equal(manifestA.sourceIndex.sha256, sha256(Buffer.from(sourceIndexA, "utf8")));
+    const tamperedSourceIndex = sourceIndexB.replace(
+      "const sourceChunkLoaders = Object.freeze([\n",
+      "const sourceChunkLoaders = Object.freeze([\nObject.freeze([]),",
+    );
+    assert.notEqual(tamperedSourceIndex, sourceIndexB);
+    await writeFile(sourceIndexPathB, tamperedSourceIndex, "utf8");
+    await assert.rejects(
+      import(`${pathToFileURL(sourceIndexPathB).href}?route-drift=1`),
+      /source chunk loader route is absent or inconsistent/,
+    );
     assert.equal(manifestA.identity.bytes, Buffer.byteLength(identityA));
     assert.ok(
       manifestA.identity.bytes <= manifestA.budgets.identityModuleMaxBytes,
@@ -1974,7 +2072,7 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       false,
       "symbol dossiers must route to the canonical metadata store instead of a duplicate module family",
     );
-    assert.equal(manifestA.sourceFileCount, 1, "metadata-only file must have no source descriptor");
+    assert.equal(manifestA.sourceFileCount, 2, "metadata-only file must have no source descriptor");
     assert.ok(manifestA.sourceModules.length > 1, "dense source must be split into multiple bounded chunks");
     const expectedMetadataCounts = Object.fromEntries(
       Object.entries(records)
@@ -2050,10 +2148,25 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       assert.equal((await loaded.loadMetadata(group)).length, expected, `${group} projection denominator drifted`);
     }
     const source = await loaded.loadSource("app/example.py");
-    assert.equal(source.chunkCount, manifestA.sourceModules.length);
+    const secondSource = await loaded.loadSource("0-second.txt");
+    assert.equal(
+      source.chunkCount + secondSource.chunkCount,
+      manifestA.sourceModules.length,
+    );
     const chunks = await Promise.all(source.chunks.map((chunk) => loaded.loadSourceChunk(source.path, chunk.chunkIndex)));
+    assert.equal(await loaded.loadSourceChunk("missing.py", 0), null);
+    assert.equal(await loaded.loadSourceChunk(source.path, -1), null);
+    assert.equal(await loaded.loadSourceChunk(source.path, 0.5), null);
     const segments = chunks.flatMap((chunk) => chunk.segments);
     assert.equal(segments.map((line) => `${line.text}${line.terminator}`).join(""), exact.toString("utf8"));
+    const secondChunks = await Promise.all(secondSource.chunks.map(
+      (chunk) => loaded.loadSourceChunk(secondSource.path, chunk.chunkIndex),
+    ));
+    assert.equal(
+      secondChunks.flatMap((chunk) => chunk.segments)
+        .map((line) => `${line.text}${line.terminator}`).join(""),
+      secondExact.toString("utf8"),
+    );
     assert.equal(segments[0].containingSymbolId, fixtureStableId("urn:atlas:symbol:hello"));
     assert.equal(segments[0].structuralMappingBasis, "symbol_range");
     assert.equal(segments[0].explanationDepth, 3);
@@ -2063,6 +2176,8 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.deepEqual(segments[0].securityAndPrivacyEffect, { semantic_effect: "none", source_exposure: "full" });
     const lineWindow = await loaded.loadSourceWindow("app/example.py", 2);
     assert.ok(lineWindow.segments.some((line) => line.number === 2));
+    const secondWindow = await loaded.loadSourceWindow("0-second.txt", 1);
+    assert.ok(secondWindow.segments.some((line) => line.number === 1));
     const symbol = await loaded.loadRecord("symbol", fixtureStableId("urn:atlas:symbol:hello"));
     assert.equal(symbol.purpose, "Return the Atlas greeting.");
     assert.equal(symbol.explanationDepth, 4);
@@ -2221,7 +2336,7 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.ok(manifestA.graph.summary.bytes <= manifestA.budgets.graphShardMaxBytes);
     assert.ok(manifestA.graph.index.bytes <= manifestA.budgets.graphIndexMaxBytes);
     const files = await loaded.loadMetadata("files");
-    assert.equal(files.length, 2);
+    assert.equal(files.length, 3);
     assert.equal(loaded.projection.releaseClass, "exact_commit");
     assert.equal(await loaded.loadSource("assets/private.bin"), null);
   } finally {
@@ -3192,7 +3307,7 @@ test("projection rejects duplicate source paths and duplicate path-line coordina
       });
       await assert.rejects(
         buildProjection({ input, output: join(scratch, "projection") }),
-        /compiler group descriptor is malformed/,
+        /duplicate or invalid source-text path/,
       );
     } finally {
       await rm(scratch, { recursive: true, force: true });
