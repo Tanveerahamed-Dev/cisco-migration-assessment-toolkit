@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:schema:r2-tcb-budget-proposal:1",
+  "title": "Atlas R2 non-authoritative TCB budget proposal v1",
+  "description": "Deterministically derived engineering proposal for external independent review. It conveys no approval, qualification, promotion, or Release 3 authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "proposal_id",
+    "source_binding_state",
+    "selected_source_commit",
+    "selected_source_tree",
+    "bindings",
+    "core_budget_proposal",
+    "pack_budget_proposal",
+    "dsl_resource_profile_proposal",
+    "receipt_container_ceiling_proposal",
+    "boundary_evidence",
+    "measurement_gaps",
+    "runtime_closure",
+    "approval",
+    "qcp_001",
+    "freeze_overlay_schema",
+    "authoritative",
+    "qualification_effect",
+    "promotion_eligible",
+    "release3_included"
+  ],
+  "properties": {
+    "schema": { "const": "atlas.r2-tcb-budget-proposal/1" },
+    "proposal_id": { "const": "atlas-r2-tcb-budget-proposal.001" },
+    "source_binding_state": { "const": "SAME_CHECKOUT_SELF_CHECK_ONLY" },
+    "selected_source_commit": { "type": "null" },
+    "selected_source_tree": { "type": "null" },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["structural_census_digest", "prototype_measurement_digest", "runtime_inventory_digest", "prototype_program_digest", "prototype_pack_manifest_digest"],
+      "properties": {
+        "structural_census_digest": { "$ref": "#/$defs/digest" },
+        "prototype_measurement_digest": { "$ref": "#/$defs/digest" },
+        "runtime_inventory_digest": { "$ref": "#/$defs/digest" },
+        "prototype_program_digest": { "$ref": "#/$defs/digest" },
+        "prototype_pack_manifest_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "core_budget_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["census_method", "measured_executable_statements", "formula", "headroom_ratio_numerator", "headroom_ratio_denominator", "rounding_quantum", "proposed_core_sloc_budget", "headroom_statements", "headroom_basis_points"],
+      "properties": {
+        "census_method": { "const": "atlas.python-executable-statement-census/1" },
+        "measured_executable_statements": { "$ref": "#/$defs/positiveInteger" },
+        "formula": { "const": "CEIL_TO_MULTIPLE(CEIL(MEASURED*110/100),256)/1" },
+        "headroom_ratio_numerator": { "const": 110 },
+        "headroom_ratio_denominator": { "const": 100 },
+        "rounding_quantum": { "const": 256 },
+        "proposed_core_sloc_budget": { "$ref": "#/$defs/positiveInteger" },
+        "headroom_statements": { "$ref": "#/$defs/positiveInteger" },
+        "headroom_basis_points": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "pack_budget_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["census_method", "declarative_rule_records", "expression_operator_nodes", "measured_semantic_statements", "formula", "proposed_pack_sloc_budget", "headroom_semantic_statements", "headroom_basis_points"],
+      "properties": {
+        "census_method": { "const": "DECLARATIVE_SEMANTIC_STATEMENT_COUNT/1" },
+        "declarative_rule_records": { "$ref": "#/$defs/positiveInteger" },
+        "expression_operator_nodes": { "$ref": "#/$defs/positiveInteger" },
+        "measured_semantic_statements": { "$ref": "#/$defs/positiveInteger" },
+        "formula": { "const": "NEXT_POWER_OF_TWO(MEASURED_SEMANTIC_STATEMENTS)/1" },
+        "proposed_pack_sloc_budget": { "$ref": "#/$defs/positiveInteger" },
+        "headroom_semantic_statements": { "$ref": "#/$defs/nonNegativeInteger" },
+        "headroom_basis_points": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "dsl_resource_profile_proposal": { "$ref": "#/$defs/dslResourceProfile" },
+    "receipt_container_ceiling_proposal": { "$ref": "#/$defs/receiptContainerCeiling" },
+    "boundary_evidence": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "uniqueItems": true,
+      "prefixItems": [
+        { "$ref": "#/$defs/maxProgramBytesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxInputBytesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxOutputBytesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxRulesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxExpressionDepthBoundaryEvidence" },
+        { "$ref": "#/$defs/maxExpressionNodesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxOperatorOperandsBoundaryEvidence" },
+        { "$ref": "#/$defs/maxPathSegmentsBoundaryEvidence" },
+        { "$ref": "#/$defs/maxStringBytesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxSetItemsBoundaryEvidence" },
+        { "$ref": "#/$defs/maxInputNodesBoundaryEvidence" },
+        { "$ref": "#/$defs/maxInstructionFuelBoundaryEvidence" }
+      ],
+      "items": false
+    },
+    "measurement_gaps": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" }
+    },
+    "runtime_closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "complete_exact_runtime_closure", "blind_spot_count", "claim_boundary"],
+      "properties": {
+        "state": { "enum": ["PARTIAL_NONPORTABLE_PROTOTYPE", "COMPLETE_EXACT_RUNTIME_CLOSURE"] },
+        "complete_exact_runtime_closure": { "type": "boolean" },
+        "blind_spot_count": { "$ref": "#/$defs/nonNegativeInteger" },
+        "claim_boundary": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "state": { "const": "PARTIAL_NONPORTABLE_PROTOTYPE" },
+            "complete_exact_runtime_closure": { "const": false },
+            "blind_spot_count": { "$ref": "#/$defs/positiveInteger" }
+          }
+        },
+        {
+          "properties": {
+            "state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" },
+            "complete_exact_runtime_closure": { "const": true },
+            "blind_spot_count": { "const": 0 }
+          }
+        }
+      ]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "approved", "review_receipt_digest", "blockers"],
+      "properties": {
+        "state": { "const": "NON_AUTHORITATIVE_PROPOSAL_PENDING_EXTERNAL_DECISION" },
+        "approved": { "const": false },
+        "review_receipt_digest": { "type": "null" },
+        "blockers": {
+          "oneOf": [
+            {
+              "const": [
+                "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
+                "EXTERNAL_INDEPENDENT_NUMERIC_APPROVAL_ABSENT",
+                "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
+                "SELECTED_SOURCE_COMMIT_AND_TREE_BINDING_ABSENT",
+                "SIGNED_REVIEW_RECEIPT_AND_TRUST_POLICY_ABSENT"
+              ]
+            },
+            {
+              "const": [
+                "EXTERNAL_INDEPENDENT_NUMERIC_APPROVAL_ABSENT",
+                "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
+                "SELECTED_SOURCE_COMMIT_AND_TREE_BINDING_ABSENT",
+                "SIGNED_REVIEW_RECEIPT_AND_TRUST_POLICY_ABSENT"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "qcp_001": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pack_id", "pack_version", "qualification_state", "execution_state", "qualification_effect", "promotion_eligible"],
+      "properties": {
+        "pack_id": { "const": "QCP-001" },
+        "pack_version": { "const": "0.1.0-experimental" },
+        "qualification_state": { "const": "EXPERIMENTAL" },
+        "execution_state": { "const": "CONTRACT_ONLY" },
+        "qualification_effect": { "const": "NONE" },
+        "promotion_eligible": { "const": false }
+      }
+    },
+    "freeze_overlay_schema": { "const": "atlas.r2-tcb-budget-freeze/1" },
+    "authoritative": { "const": false },
+    "qualification_effect": { "const": "NONE" },
+    "promotion_eligible": { "const": false },
+    "release3_included": { "const": false }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime_closure": {
+            "properties": { "state": { "const": "COMPLETE_EXACT_RUNTIME_CLOSURE" } },
+            "required": ["state"]
+          }
+        },
+        "required": ["runtime_closure"]
+      },
+      "then": {
+        "properties": {
+          "approval": {
+            "properties": {
+              "blockers": {
+                "const": [
+                  "EXTERNAL_INDEPENDENT_NUMERIC_APPROVAL_ABSENT",
+                  "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
+                  "SELECTED_SOURCE_COMMIT_AND_TREE_BINDING_ABSENT",
+                  "SIGNED_REVIEW_RECEIPT_AND_TRUST_POLICY_ABSENT"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "approval": {
+            "properties": {
+              "blockers": {
+                "const": [
+                  "COMPLETE_EXACT_RUNTIME_CLOSURE_ABSENT",
+                  "EXTERNAL_INDEPENDENT_NUMERIC_APPROVAL_ABSENT",
+                  "REPRESENTATIVE_WORKLOAD_ADEQUACY_EVIDENCE_ABSENT",
+                  "SELECTED_SOURCE_COMMIT_AND_TREE_BINDING_ABSENT",
+                  "SIGNED_REVIEW_RECEIPT_AND_TRUST_POLICY_ABSENT"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "dslResourceProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "substrate", "max_program_bytes", "max_input_bytes", "max_output_bytes", "max_rules", "max_expression_depth", "max_expression_nodes", "max_operator_operands", "max_path_segments", "max_string_bytes", "max_set_items", "max_input_nodes", "max_instruction_fuel"],
+      "properties": {
+        "schema": { "const": "atlas.dsl-only-resource-profile/1" },
+        "substrate": { "const": "DECLARATIVE_DSL_ONLY" },
+        "max_program_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_input_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_output_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_rules": { "$ref": "#/$defs/positiveInteger" },
+        "max_expression_depth": { "$ref": "#/$defs/positiveInteger" },
+        "max_expression_nodes": { "$ref": "#/$defs/positiveInteger" },
+        "max_operator_operands": { "$ref": "#/$defs/positiveInteger" },
+        "max_path_segments": { "$ref": "#/$defs/positiveInteger" },
+        "max_string_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "max_set_items": { "$ref": "#/$defs/positiveInteger" },
+        "max_input_nodes": { "$ref": "#/$defs/positiveInteger" },
+        "max_instruction_fuel": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "receiptContainerCeiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "formula", "interpreter_semantics_version", "max_output_bytes", "inner_envelope_overhead_bytes", "bound_wrapper_overhead_bytes", "reviewed_wrapper_overhead_bytes", "inner_receipt_ceiling_bytes", "bound_receipt_ceiling_bytes", "reviewed_receipt_ceiling_bytes"],
+      "properties": {
+        "schema": { "const": "atlas.dsl-receipt-container-ceiling/1" },
+        "formula": { "const": "MAX_OUTPUT_BYTES_PLUS_PROFILE_SPECIALIZED_CLOSED_CANONICAL_ENVELOPE_OVERHEAD/1" },
+        "interpreter_semantics_version": { "const": "ATLAS_DECLARATIVE_DSL_SEMANTICS/1" },
+        "max_output_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "inner_envelope_overhead_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "bound_wrapper_overhead_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "reviewed_wrapper_overhead_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "inner_receipt_ceiling_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "bound_receipt_ceiling_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "reviewed_receipt_ceiling_bytes": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "boundaryEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "proposed_ceiling", "derivation", "measurement_row_digest", "n_minus_1_outcome", "n_outcome", "n_plus_1_outcome", "n_plus_1_error"],
+      "properties": {
+        "dimension": { "enum": ["max_program_bytes", "max_input_bytes", "max_output_bytes", "max_rules", "max_expression_depth", "max_expression_nodes", "max_operator_operands", "max_path_segments", "max_string_bytes", "max_set_items", "max_input_nodes", "max_instruction_fuel"] },
+        "proposed_ceiling": { "$ref": "#/$defs/positiveInteger" },
+        "derivation": { "const": "RETAIN_SHIPPED_VALUE_WITH_EXECUTED_N_MINUS_1_AND_N_AND_FIXED_FAIL_CLOSED_N_PLUS_1/1" },
+        "measurement_row_digest": { "$ref": "#/$defs/digest" },
+        "n_minus_1_outcome": { "const": "EXECUTED_NONAUTHORITATIVE" },
+        "n_outcome": { "const": "EXECUTED_NONAUTHORITATIVE" },
+        "n_plus_1_outcome": { "const": "REFUSED_NONAUTHORITATIVE" },
+        "n_plus_1_error": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" }
+      }
+    },
+    "maxProgramBytesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_program_bytes" }, "n_plus_1_error": { "const": "PROGRAM_BYTE_LIMIT" } } }]
+    },
+    "maxInputBytesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_input_bytes" }, "n_plus_1_error": { "const": "INPUT_BYTE_LIMIT" } } }]
+    },
+    "maxOutputBytesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_output_bytes" }, "n_plus_1_error": { "const": "OUTPUT_BYTE_LIMIT" } } }]
+    },
+    "maxRulesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_rules" }, "n_plus_1_error": { "const": "RULE_LIMIT" } } }]
+    },
+    "maxExpressionDepthBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_expression_depth" }, "n_plus_1_error": { "const": "EXPRESSION_DEPTH_LIMIT" } } }]
+    },
+    "maxExpressionNodesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_expression_nodes" }, "n_plus_1_error": { "const": "EXPRESSION_NODE_LIMIT" } } }]
+    },
+    "maxOperatorOperandsBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_operator_operands" }, "n_plus_1_error": { "const": "OPERATOR_OPERAND_LIMIT" } } }]
+    },
+    "maxPathSegmentsBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_path_segments" }, "n_plus_1_error": { "const": "PATH_SEGMENT_LIMIT" } } }]
+    },
+    "maxStringBytesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_string_bytes" }, "n_plus_1_error": { "const": "STRING_BYTE_LIMIT" } } }]
+    },
+    "maxSetItemsBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_set_items" }, "n_plus_1_error": { "const": "SET_ITEM_LIMIT" } } }]
+    },
+    "maxInputNodesBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_input_nodes" }, "n_plus_1_error": { "const": "INPUT_NODE_LIMIT" } } }]
+    },
+    "maxInstructionFuelBoundaryEvidence": {
+      "allOf": [{ "$ref": "#/$defs/boundaryEvidence" }, { "properties": { "dimension": { "const": "max_instruction_fuel" }, "n_plus_1_error": { "const": "INSTRUCTION_FUEL_LIMIT" } } }]
+    }
+  }
+}

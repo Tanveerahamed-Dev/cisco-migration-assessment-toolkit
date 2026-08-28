@@ -31,9 +31,29 @@
 # re-materialization — here the pinned bytes happen to be CRLF, so the only safe rule is "do not
 # touch". Never "fix" trailing whitespace in these files either; it is publisher data and is hashed.
 reference-data/official-sources/** -text
+
+# Atlas R1/R2 manifests bind these source and asset bytes directly.  Keep their
+# checkout representation LF-exact on Windows as well as Linux; otherwise
+# core.autocrlf=true changes the measured source without changing the Git blob.
+# The policy deliberately covers the complete implementation directories, not
+# only today's derived owner set.  Its broader path set is receipt-ratcheted so
+# a scope addition, removal, or broadening requires an explicit owner update.
+# BEGIN ATLAS_R1_R2_BYTE_CUSTODY_POLICY
+.gitattributes text eol=lf
+cisco_toolkit/**/*.py text eol=lf
+cisco_toolkit/**/*.html text eol=lf
+cisco_toolkit/**/*.json text eol=lf
+tools/**/*.py text eol=lf
+tools/requirements-transition-runtime-test.txt text eol=lf
+webapp/backend/**/*.py text eol=lf
+webapp/frontend/src/api.ts text eol=lf
+# END ATLAS_R1_R2_BYTE_CUSTODY_POLICY
+
 # The installed-wheel/Atlas EoL fixture is an exact byte-for-byte copy of the
 # retained source above and is checked against the same SHA-256 at runtime.
-cisco_toolkit/data/eol-bulletins.json -text
+# BEGIN ATLAS_R1_R2_PUBLISHER_BYTE_EXCEPTIONS
+cisco_toolkit/data/eol-bulletins.json -text -eol
+# END ATLAS_R1_R2_PUBLISHER_BYTE_EXCEPTIONS
 
 # The built AssessHub SPA is TRACKED so the wheel's bytes can be bound to a commit (without it,
 # `distribution_verify --require-source-binding` exits 3 when shipped SPA members are outside the

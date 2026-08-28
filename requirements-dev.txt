@@ -1,10 +1,7 @@
-# Development / test dependencies (the runtime needs only netmiko + openpyxl).
-# Install with:  python -m pip install -r requirements-dev.txt
-pytest>=8,<10
-netmiko>=4.1,<5
-openpyxl>=3.1,<4
-ruff>=0.5        # report-only lint (config in ruff.toml); not needed to run the tool
-mypy>=1.8        # report-only type baseline (config in mypy.ini); not needed to run the tool
-ntc-templates>=4 # reference TextFSM parsers for the parser cross-check harness
-                 # (tests/test_parser_crosscheck.py skips cleanly when absent); not needed to run the tool
-pytest-cov>=5,<8 # coverage measurement for the CI coverage job; not needed to run the tool or the suite
+# Compatibility entry point for the canonical development contract.
+# Install from the repository root with:
+#   python -m pip install -r requirements-dev.txt
+#
+# Do not duplicate dependency pins here.  pyproject.toml
+# [project.optional-dependencies].dev is the only development/test owner.
+-e .[dev]

@@ -31,6 +31,7 @@ PYTHON_DECLARATIONS = (
     "pyproject.toml",
     "requirements.txt",
     "requirements-dev.txt",
+    "tools/requirements-transition-runtime-test.txt",
     "master-reference/requirements-release.txt",
     "webapp/requirements.txt",
 )
@@ -561,7 +562,12 @@ def _python_components(
         except UnicodeDecodeError as exc:
             raise ReleaseInputError(f"could not read dependency declaration {relative}: {exc}") from exc
         for raw in lines:
-            component = _requirement_component(raw, relative, "declared")
+            scope = (
+                "test-only:transition-runtime-reference"
+                if relative == "tools/requirements-transition-runtime-test.txt"
+                else "declared"
+            )
+            component = _requirement_component(raw, relative, scope)
             if component:
                 components.append(component)
         declarations.append({"manifest": relative, "bom-ref": root_ref})

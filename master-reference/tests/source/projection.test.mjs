@@ -2147,6 +2147,42 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       }
       assert.equal(manifestA.search.indexedRecordCounts[group], records[group].length);
     }
+    const expectedSearchDocumentCount = Object.values(manifestA.search.indexedRecordCounts)
+      .reduce((total, count) => total + count, 0);
+    assert.equal(manifestA.search.documentCount, expectedSearchDocumentCount);
+    assert.match(manifestA.search.documentKeysDigest, /^[0-9a-f]{64}$/);
+    assert.equal(
+      manifestA.search.documentShards.reduce((total, entry) => total + entry.recordCount, 0),
+      expectedSearchDocumentCount,
+      "the normalized search document table must retain the exact indexed-record denominator",
+    );
+    assert.deepEqual(
+      manifestA.search.documentShards.map((entry) => [entry.startOrdinal, entry.endOrdinal]),
+      manifestA.search.documentShards.map((entry, index) => [
+        index === 0 ? 0 : manifestA.search.documentShards[index - 1].endOrdinal + 1,
+        entry.startOrdinal + entry.recordCount - 1,
+      ]),
+      "normalized search document ordinals must be gapless and uniquely routed",
+    );
+    const searchTermModule = await import(
+      `${pathToFileURL(join(outputA, ...manifestA.search.shards[0].module.split("/"))).href}?search-terms=1`,
+    );
+    assert.ok(
+      Object.values(searchTermModule.terms).every((posting) =>
+        posting.records.every((ordinal) => Number.isSafeInteger(ordinal) && ordinal >= 0)
+      ),
+      "search term shards must carry only normalized document ordinals",
+    );
+    const searchDocumentModule = await import(
+      `${pathToFileURL(join(outputA, ...manifestA.search.documentShards[0].module.split("/"))).href}?search-documents=1`,
+    );
+    assert.equal(
+      searchDocumentModule.documents.length,
+      manifestA.search.documentShards[0].recordCount,
+    );
+    assert.ok(searchDocumentModule.documents.every((document) =>
+      typeof document.id === "string" && typeof document.kind === "string"
+    ));
     assert.equal(
       Object.hasOwn(manifestA.search.groupRecordCounts, "consequential_claim_facets"),
       false,
@@ -2175,6 +2211,9 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.deepEqual(reachedNodes.map((record) => record.id).sort(), records.graph_nodes.map((record) => record.id).sort());
     assert.deepEqual(reachedEdges.map((record) => record.id).sort(), records.graph_edges.map((record) => record.id).sort());
     assert.ok(manifestA.search.shards.every((entry) => entry.bytes <= manifestA.budgets.searchShardMaxBytes));
+    assert.ok(manifestA.search.documentShards.every((entry) =>
+      entry.bytes <= manifestA.budgets.searchDocumentShardMaxBytes
+    ));
     assert.ok(manifestA.search.index.bytes <= manifestA.budgets.searchIndexMaxBytes);
     assert.ok(manifestA.sourceModules.every((entry) => entry.bytes <= manifestA.budgets.sourceChunkMaxBytes));
     assert.ok(manifestA.sourceIndex.bytes <= manifestA.budgets.sourceIndexMaxBytes);

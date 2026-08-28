@@ -1,0 +1,10 @@
+# TEST ONLY: exact external distribution profile for the pinned Release 1 replay.
+# The packaged cisco_toolkit/data/atlas-r1-executable-bundle.json runtime_profile
+# is mechanically reconciled to this provisioning owner by the replay producer.
+# These packages must not be copied into application runtime metadata.
+defusedxml==0.7.1
+lxml==6.1.1
+numpy==2.5.1
+openpyxl==3.1.5
+pillow==12.3.0
+setuptools==83.0.0

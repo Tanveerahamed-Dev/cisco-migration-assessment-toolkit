@@ -4,6 +4,51 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-08-26] — Removed the cryptography 49 audit blocker without changing R2 authority
+
+- The exact-`782ec774` package lane was functionally green but correctly remained RED because `cryptography 49.0.0` is affected by `PYSEC-2026-3552` and the root dependency excluded the fixed 50.x line.
+- Changed the root bound to `cryptography>=50,<51`, proved the repository's private `_rust.pyd` binding and RFC 8032 Ed25519/serialization behavior under exact 50.0.1, and reran the strict audit to zero known vulnerabilities with only the pre-existing named `PYSEC-2026-2858` exception.
+- Regenerated runtime inventory, DSL TCB/pack, measurements, structural census, and budget proposal in one consistent Python 3.12.10/external-site environment. Runtime remains 339 files, 148 Python modules, 30 observed native modules, nine blind spots, `PARTIAL_NONPORTABLE_PROTOTYPE`, and same-checkout-only.
+- Preserved two invalid attempts separately: a venv launcher under child `-S` exposed only seven native modules and failed `RUNTIME_INVENTORY_WINDOWS_NATIVE_ANCHOR_INVALID`; an overlong external TEMP caused Windows fixture path errors. Neither result is counted as source evidence.
+- Clean precommit evidence collected all 1,209 focused tests: 1,204 passed and five tracked-clean-only discovery tests skipped; all six producer gates, privacy, Ruff, cryptography compatibility, and the strict dependency audit passed. The five skips must run again from the committed exact tree.
+- `!lesson` **An isolated dependency environment and the measured interpreter are separate identities.** Keep the base executable fixed, inject the isolated site explicitly, and bind every downstream producer to that same pair; otherwise exact evidence can reject itself before the intended authority interlock. `bridge-candidate`
+
+## [2026-08-26] — Re-formed the incomplete R2 closeout on exact current main
+
+- Preserved both histories in two-parent merge `bf113644eedc39249a710fc7005226f560af8bb9`; `docs/ssot.md` was the sole shared path and retains the current Graphify owner contract plus every R2 owner and authority rule.
+- Regenerated the clone-bound runtime/measurement/census/budget chain and its exact test pins. Machine state remains experimental, partial, unapproved, source-unselected, same-checkout-only, non-promoting, and blocking R2.0 completion.
+- Kept the 2026-08-24 closeout and its 8,159-test broad timeout as historical evidence; current exact-tree results are additive and cannot overwrite it.
+- Broad packaging and Master Reference diagnostics found and fixed two integration defects before final verification: a privacy self-test embedded its own configured client marker, and the architecture contract left all 28 transition modules/schemas unowned. The source-safe marker construction now passes the real repository privacy scan; `transition_assurance` now owns the exact experimental/contract-only surface and declares both its parse-model and release-distribution dependencies.
+- The exact integrated Master Reference build then failed closed at the unchanged 248 MiB Sites ceiling: 13,251 projection members compressed to 271,971,626 bytes, 11,924,778 bytes over budget. Exact current main had previously built at 244,964,702 deployment bytes with 15,082,146 bytes of headroom, so this was integration-induced rather than an environmental or pre-existing-main failure.
+- Preserved every search document and posting while removing repeated payload copies: 226,237 canonically ordered documents now live once in bounded, content-hashed document shards; 1,385,320 ordered posting references carry validated ordinals. The projection records the exact document denominator, ordered-key digest, gapless ordinal routes, independent 256 KiB document-shard budget, and 512-result query amplification ceiling. Focused projection and compression/deployment contract suites pass; the exact full-corpus deployment receipt remains the authority for final size.
+- `!lesson` **A conflict-free merge can still violate a derived deployment budget.** Re-form both lineages, regenerate the complete exact-tree projection, and treat the first broad postbuild failure as product evidence; do not raise the platform limit or exclude source to make the receipt green. `bridge-candidate`
+- `!lesson` **Technical merge and independent approval are different facts.** PRs #534 and #531 are in main, but zero reviews and `REVIEW_REQUIRED` supply no qualification or acceptance authority. `bridge-candidate`
+- `!lesson` **A read-only query can still hydrate a partial clone.** Set `GIT_NO_LAZY_FETCH=1` before object reads against a promisor remote; one omitted guard populated blob `119ac777f8950dbe1f9edabea61854db074c237b` in up to three auxiliary PR529 object caches. No ref, index, or worktree changed, and the canonical R2/R3 and protected Enhancements repositories were unaffected. `bridge-candidate`
+
+## [2026-08-26] — BAR-040 failed closed before a scoreable R3 observation
+
+- One authorized observation exited `2` at P0 with `P0_BROWSER_CONTRACT_INCOMPLETE`; no output directory, receipt, P1/P2 result, or N1–N7 evidence exists, and the exact predicate remains unknown.
+- The earlier three reviewer GOs apply only to the frozen harness bytes. The one-observation authority is consumed; a retry requires corrected newly frozen bytes, three fresh reviews, custody validation, and explicit new authority.
+- `!lesson` **A reviewed harness is not a completed observation.** Preserve no-receipt failures as unknown evidence and never infer acceptance, rejection, or retry authority from them. `bridge-candidate`
+
+## [2026-08-24] — Closed a work campaign without converting its blockers into a release claim
+
+- Recorded an incomplete experimental checkpoint with its exact merge lineage, machine-owned status, residual
+  authority ledger, and a separately dependency-held discovery entry decision. R2.1-R2.6 remain deferred, and
+  no qualification, portability, promotion, or shipment claim was introduced.
+- `!lesson` **Closing a work campaign is not closing the product or its verifier gate.** Administrative state,
+  machine evidence, qualification, and shipment are different axes; record each independently so a completed
+  checklist cannot relabel an incomplete evidence state. `bridge-candidate`
+- `!lesson` **Green checks and mergeability do not manufacture independent approval.** Read the actual review
+  ledger and branch rule, preserve an absent reviewer as an external blocker, and continue only work whose truth
+  does not depend on pretending the protected change landed. `bridge-candidate`
+- `!lesson` **Regenerate derivative evidence only after selecting the source generation it describes.** Run
+  dependency-ordered producers from the exact integrated tree, then bind package, archive, graph, report,
+  relation, memory, and vault receipts to that same generation. `bridge-candidate`
+- `!lesson` **Clone-bound provenance must stay with its clone.** A root/HEAD receipt copied into an older dirty
+  checkout looks portable but asserts false custody; preserve the dirty checkout and keep canonical generated
+  evidence beside the standalone source that produced it. `bridge-candidate`
+
 ## [2026-07-26] — Closed the gate-refusal audit gap; every defect found afterwards was in a claim about the work, not the work
 
 - Shipped **#494** (refusals now append a durable `refuse` row to the ledger's audit array; `enforce`
