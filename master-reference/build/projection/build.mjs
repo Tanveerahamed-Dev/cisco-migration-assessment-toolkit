@@ -3346,8 +3346,8 @@ async function writeSourceProjection({
   }
 
   const loaderLines = Object.entries(sourceFiles).map(([path, descriptor]) =>
-    `  [${JSON.stringify(path)}, Object.freeze([${descriptor.chunks.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("source/", "")}`)})`).join(",")}])],`,
-  ).join("\n");
+    `[${JSON.stringify(path)}, Object.freeze([${descriptor.chunks.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("source/", "")}`)})`).join(",")}])],`,
+  ).join("");
   const sourceIndexBytes = Buffer.from(
     `export const sourceFiles = Object.freeze(Object.fromEntries(${stableJson(Object.entries(sourceFiles))}));\n` +
       `const sourceChunkLoaders = Object.freeze(Object.fromEntries([\n${loaderLines}\n]));\n` +
