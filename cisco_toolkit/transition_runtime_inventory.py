@@ -298,6 +298,8 @@ _CRYPTO_PROVIDER_MODULE = "cryptography.hazmat.bindings._rust"
 _WINDOWS_CRYPTO_PROVIDER_PATH_TOKEN = (
     "$PYTHON_SITE_PACKAGES/cryptography/hazmat/bindings/_rust.pyd"
 )
+_WINDOWS_CPYTHON_EXECUTABLE_PATH_TOKEN = "$PYTHON_BASE/python.exe"
+_WINDOWS_CPYTHON_STABLE_ABI_RUNTIME_PATH_TOKEN = "$PYTHON_BASE/python3.dll"
 _CRYPTO_PROVIDER_BASE_FILE_ROLES = frozenset({
     "NATIVE_EXTENSION_MODULE",
     "THIRD_PARTY_DISTRIBUTION_MODULE",
@@ -3613,15 +3615,32 @@ def validate_runtime_inventory(value: Any) -> dict[str, Any]:
             or sum("CPYTHON_EXECUTABLE" in row["roles"] for row in file_rows) != 1
     ):
         raise RuntimeInventoryError("RUNTIME_INVENTORY_EXECUTABLE_BINDING_INVALID")
+    windows_runtime_rows = [
+        row for row in file_rows
+        if "CPYTHON_RUNTIME_LIBRARY" in row["roles"]
+    ]
+    expected_windows_runtime_path_token = (
+        f"$PYTHON_BASE/python{version_parts[0]}{version_parts[1]}.dll"
+    )
+    allowed_windows_runtime_path_tokens = {
+        _WINDOWS_CPYTHON_STABLE_ABI_RUNTIME_PATH_TOKEN,
+        expected_windows_runtime_path_token,
+    }
+    windows_runtime_path_tokens = {
+        row["path_token"] for row in windows_runtime_rows
+    }
     if platform_value["sys_platform"] == "win32" and (
-            "OBSERVED_PROCESS_NATIVE_MODULE" not in executable_row["roles"]
+            executable_row["path_token"] != _WINDOWS_CPYTHON_EXECUTABLE_PATH_TOKEN
+            or "OBSERVED_PROCESS_NATIVE_MODULE" not in executable_row["roles"]
             or provider_file_row["path_token"]
             != _WINDOWS_CRYPTO_PROVIDER_PATH_TOKEN
             or not _CRYPTO_PROVIDER_REQUIRED_FILE_ROLES
             <= set(provider_file_row["roles"])
-            or not any(
-                _CPYTHON_RUNTIME_REQUIRED_FILE_ROLES <= set(row["roles"])
-                for row in file_rows
+            or expected_windows_runtime_path_token not in windows_runtime_path_tokens
+            or not windows_runtime_path_tokens <= allowed_windows_runtime_path_tokens
+            or any(
+                not _CPYTHON_RUNTIME_REQUIRED_FILE_ROLES <= set(row["roles"])
+                for row in windows_runtime_rows
             )
             or any(
                 _WINDOWS_OBSERVED_NATIVE_ANCHOR_ROLES & set(row["roles"])

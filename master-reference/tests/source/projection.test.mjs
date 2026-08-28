@@ -2157,6 +2157,11 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.equal(await loaded.loadSourceChunk("missing.py", 0), null);
     assert.equal(await loaded.loadSourceChunk(source.path, -1), null);
     assert.equal(await loaded.loadSourceChunk(source.path, 0.5), null);
+    for (const inheritedKey of ["toString", "constructor", "__proto__", "valueOf"]) {
+      assert.equal(await loaded.loadSource(inheritedKey), null);
+      assert.equal(await loaded.loadSourceChunk(inheritedKey, 0), null);
+      assert.equal(await loaded.loadSourceWindow(inheritedKey, 1), null);
+    }
     const segments = chunks.flatMap((chunk) => chunk.segments);
     assert.equal(segments.map((line) => `${line.text}${line.terminator}`).join(""), exact.toString("utf8"));
     const secondChunks = await Promise.all(secondSource.chunks.map(

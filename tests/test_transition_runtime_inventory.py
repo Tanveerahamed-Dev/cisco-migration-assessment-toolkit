@@ -534,6 +534,9 @@ def test_runtime_inventory_json_schema_matches_the_code_boundary(
         measured_inventory: dict) -> None:
     schema = json.loads(SCHEMA.read_bytes())
     Draft202012Validator.check_schema(schema)
+    assert "validate_runtime_inventory remains mandatory and authoritative" in schema["$comment"]
+    assert "path-token uniqueness" in schema["$comment"]
+    assert "file-ID and digest derivation" in schema["$comment"]
     validator = Draft202012Validator(schema)
     validator.validate(measured_inventory)
     hostile = deepcopy(measured_inventory)
@@ -1188,6 +1191,59 @@ def test_windows_inventory_cannot_strip_observed_executable_anchor(
         Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
 
 
+def test_windows_inventory_rejects_rechained_executable_anchor_teleportation(
+        measured_inventory: dict) -> None:
+    if measured_inventory["platform"]["sys_platform"] != "win32":
+        pytest.skip("the executable observed-native anchor is Windows-specific")
+    candidate = deepcopy(measured_inventory)
+    executable = next(
+        row for row in candidate["runtime_files"]
+        if row["file_id"] == candidate["python"]["executable_file_id"]
+    )
+    unrelated = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == "$WINDOWS_ROOT/System32/kernel32.dll"
+    )
+    executable["roles"].remove("CPYTHON_EXECUTABLE")
+    unrelated["roles"].append("CPYTHON_EXECUTABLE")
+    executable["roles"].sort()
+    unrelated["roles"].sort()
+    candidate["python"]["executable_file_id"] = unrelated["file_id"]
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="RUNTIME_INVENTORY_WINDOWS_NATIVE_ANCHOR_INVALID"):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
+
+
+def test_windows_inventory_schema_rejects_duplicate_executable_anchor_path_alias(
+        measured_inventory: dict) -> None:
+    if measured_inventory["platform"]["sys_platform"] != "win32":
+        pytest.skip("the executable observed-native anchor is Windows-specific")
+    candidate = deepcopy(measured_inventory)
+    executable = next(
+        row for row in candidate["runtime_files"]
+        if row["file_id"] == candidate["python"]["executable_file_id"]
+    )
+    unrelated = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == "$WINDOWS_ROOT/System32/kernel32.dll"
+    )
+    executable["roles"].remove("CPYTHON_EXECUTABLE")
+    unrelated["path_token"] = "$PYTHON_BASE/python.exe"
+    unrelated["roles"].append("CPYTHON_EXECUTABLE")
+    executable["roles"].sort()
+    unrelated["roles"].sort()
+    candidate["python"]["executable_file_id"] = unrelated["file_id"]
+
+    with pytest.raises(inventory.RuntimeInventoryError):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
+
+
 def test_windows_inventory_requires_bound_crypto_provider_runtime_roles(
         measured_inventory: dict) -> None:
     if measured_inventory["platform"]["sys_platform"] != "win32":
@@ -1219,6 +1275,96 @@ def test_windows_inventory_requires_nonvacuous_cpython_runtime_anchor(
     assert runtime_rows
     for row in runtime_rows:
         row["roles"].remove("CPYTHON_RUNTIME_LIBRARY")
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="RUNTIME_INVENTORY_WINDOWS_NATIVE_ANCHOR_INVALID"):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
+
+
+def test_windows_inventory_requires_versioned_cpython_runtime_anchor(
+        measured_inventory: dict) -> None:
+    if measured_inventory["platform"]["sys_platform"] != "win32":
+        pytest.skip("the measured CPython runtime anchor is Windows-specific")
+    candidate = deepcopy(measured_inventory)
+    major, minor, _patch = candidate["python"]["version"].split(".")
+    versioned_runtime = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == f"$PYTHON_BASE/python{major}{minor}.dll"
+    )
+    versioned_runtime["roles"].remove("CPYTHON_RUNTIME_LIBRARY")
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="RUNTIME_INVENTORY_WINDOWS_NATIVE_ANCHOR_INVALID"):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
+
+
+def test_windows_inventory_schema_binds_runtime_anchor_to_python_minor(
+        measured_inventory: dict) -> None:
+    if measured_inventory["platform"]["sys_platform"] != "win32":
+        pytest.skip("the measured CPython runtime anchor is Windows-specific")
+    candidate = deepcopy(measured_inventory)
+    major, minor, _patch = candidate["python"]["version"].split(".")
+    versioned_runtime = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == f"$PYTHON_BASE/python{major}{minor}.dll"
+    )
+    stable_runtime = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == "$PYTHON_BASE/python3.dll"
+    )
+    versioned_runtime["roles"].remove("CPYTHON_RUNTIME_LIBRARY")
+    stable_runtime["path_token"] = f"$PYTHON_BASE/python{major}{int(minor) + 1}.dll"
+
+    with pytest.raises(inventory.RuntimeInventoryError):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
+
+
+def test_windows_inventory_schema_rejects_duplicate_stable_runtime_alias(
+        measured_inventory: dict) -> None:
+    if measured_inventory["platform"]["sys_platform"] != "win32":
+        pytest.skip("the measured CPython runtime anchor is Windows-specific")
+    candidate = deepcopy(measured_inventory)
+    stable_runtime = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == "$PYTHON_BASE/python3.dll"
+    )
+    duplicate = deepcopy(stable_runtime)
+    duplicate["file_id"] = f"runtime-file.{'0' * 64}"
+    candidate["runtime_files"].append(duplicate)
+
+    with pytest.raises(inventory.RuntimeInventoryError):
+        inventory.validate_runtime_inventory(candidate)
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(SCHEMA.read_bytes())).validate(candidate)
+
+
+def test_windows_inventory_rejects_rechained_runtime_library_teleportation(
+        measured_inventory: dict) -> None:
+    if measured_inventory["platform"]["sys_platform"] != "win32":
+        pytest.skip("the measured CPython runtime anchor is Windows-specific")
+    candidate = deepcopy(measured_inventory)
+    runtime_rows = [
+        row for row in candidate["runtime_files"]
+        if "CPYTHON_RUNTIME_LIBRARY" in row["roles"]
+    ]
+    unrelated = next(
+        row for row in candidate["runtime_files"]
+        if row["path_token"] == "$WINDOWS_ROOT/System32/kernel32.dll"
+    )
+    assert runtime_rows
+    for row in runtime_rows:
+        row["roles"].remove("CPYTHON_RUNTIME_LIBRARY")
+        row["roles"].sort()
+    unrelated["roles"].append("CPYTHON_RUNTIME_LIBRARY")
+    unrelated["roles"].sort()
 
     with pytest.raises(
             inventory.RuntimeInventoryError,

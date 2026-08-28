@@ -3366,7 +3366,7 @@ async function writeSourceProjection({
       "  return module.sourceChunk ?? module.default;\n" +
       "}\n" +
       "export async function loadSourceWindow(path, line) {\n" +
-      "  const descriptor = sourceFiles[path];\n" +
+      "  const descriptor = getSourceFile(path);\n" +
       "  if (!descriptor) return null;\n" +
       "  const target = Number.isInteger(line) && line > 0 ? line : 1;\n" +
       "  const index = descriptor.chunks.findIndex((chunk) => chunk.startLine <= target && chunk.endLine >= target);\n" +
