@@ -1322,3 +1322,358 @@ def test_probe_child_enforces_asset_ceiling_during_read(tmp_path: Path) -> None:
             max_file_bytes=max_file_bytes,
         )
     assert not any(pycache_prefix.iterdir())
+
+
+def _mock_windows_runtime(
+        monkeypatch,
+        *,
+        executable: Path,
+        base_executable: Path,
+        prefix: Path,
+        base_prefix: Path) -> None:
+    monkeypatch.setattr(inventory.sys, "executable", str(executable))
+    monkeypatch.setattr(inventory.sys, "_base_executable", str(base_executable))
+    monkeypatch.setattr(inventory.sys, "prefix", str(prefix))
+    monkeypatch.setattr(inventory.sys, "base_prefix", str(base_prefix))
+
+
+def test_windows_current_venv_redirector_selects_verified_base(
+        tmp_path: Path, monkeypatch) -> None:
+    venv = tmp_path / "venv"
+    scripts = venv / "Scripts"
+    base_prefix = tmp_path / "base"
+    scripts.mkdir(parents=True)
+    base_prefix.mkdir()
+    redirector = scripts / "python.exe"
+    base = base_prefix / "python.exe"
+    redirector.write_bytes(b"redirector")
+    base.write_bytes(b"interpreter")
+    (venv / "pyvenv.cfg").write_text("home = base\n", encoding="utf-8")
+    _mock_windows_runtime(
+        monkeypatch,
+        executable=redirector,
+        base_executable=base,
+        prefix=venv,
+        base_prefix=base_prefix,
+    )
+
+    assert inventory._windows_probe_executable(redirector.resolve(strict=True)) == base.resolve(
+        strict=True
+    )
+
+
+def test_windows_direct_interpreter_remains_unchanged(tmp_path: Path, monkeypatch) -> None:
+    base_prefix = tmp_path / "base"
+    base_prefix.mkdir()
+    executable = base_prefix / "python.exe"
+    executable.write_bytes(b"interpreter")
+    _mock_windows_runtime(
+        monkeypatch,
+        executable=executable,
+        base_executable=executable,
+        prefix=base_prefix,
+        base_prefix=base_prefix,
+    )
+
+    assert inventory._windows_probe_executable(executable.resolve(strict=True)) == executable.resolve(
+        strict=True
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_base",
+        "outside_base_prefix",
+        "wrong_basename",
+        "missing_config",
+        "inconsistent_prefix",
+    ],
+)
+def test_windows_current_venv_redirector_identity_fails_closed(
+        tmp_path: Path, monkeypatch, mutation: str) -> None:
+    venv = tmp_path / "venv"
+    scripts = venv / "Scripts"
+    base_prefix = tmp_path / "base"
+    scripts.mkdir(parents=True)
+    base_prefix.mkdir()
+    redirector = scripts / "python.exe"
+    base = base_prefix / "python.exe"
+    redirector.write_bytes(b"redirector")
+    base.write_bytes(b"interpreter")
+    (venv / "pyvenv.cfg").write_text("home = base\n", encoding="utf-8")
+    if mutation == "missing_base":
+        base = base_prefix / "missing-python.exe"
+    elif mutation == "outside_base_prefix":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        base = outside / "python.exe"
+        base.write_bytes(b"spoof")
+    elif mutation == "wrong_basename":
+        base = base_prefix / "pythonw.exe"
+        base.write_bytes(b"spoof")
+    elif mutation == "missing_config":
+        (venv / "pyvenv.cfg").unlink()
+    elif mutation == "inconsistent_prefix":
+        venv = tmp_path / "other-venv"
+        venv.mkdir()
+        (venv / "pyvenv.cfg").write_text("home = base\n", encoding="utf-8")
+    _mock_windows_runtime(
+        monkeypatch,
+        executable=redirector,
+        base_executable=base,
+        prefix=venv,
+        base_prefix=base_prefix,
+    )
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED"):
+        inventory._windows_probe_executable(redirector.resolve(strict=True))
+
+
+def test_windows_foreign_venv_redirector_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    current_root = tmp_path / "current"
+    current_root.mkdir()
+    current = current_root / "python.exe"
+    current.write_bytes(b"interpreter")
+    foreign = tmp_path / "foreign"
+    scripts = foreign / "Scripts"
+    scripts.mkdir(parents=True)
+    redirector = scripts / "python.exe"
+    redirector.write_bytes(b"redirector")
+    (foreign / "pyvenv.cfg").write_text("home = elsewhere\n", encoding="utf-8")
+    _mock_windows_runtime(
+        monkeypatch,
+        executable=current,
+        base_executable=current,
+        prefix=current_root,
+        base_prefix=current_root,
+    )
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED"):
+        inventory._windows_probe_executable(redirector.resolve(strict=True))
+
+
+class _FakeWindowsProcess:
+    def __init__(self, *, pid: int = 4100, process_handle: object = 9200,
+                 polls: list[int | None] | None = None) -> None:
+        self.pid = pid
+        self._handle = process_handle
+        self._polls = list(polls or [None, None])
+
+    def poll(self) -> int | None:
+        return self._polls.pop(0)
+
+
+def test_windows_snapshot_uses_original_handle_and_stable_identity(
+        tmp_path: Path, monkeypatch) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"interpreter")
+    identity = inventory._WindowsProcessIdentity(4100, 123456, executable, True)
+    identities = [identity, identity]
+    identity_handles: list[int] = []
+    module_handles: list[int] = []
+
+    def fake_identity(process_handle: int) -> inventory._WindowsProcessIdentity:
+        identity_handles.append(process_handle)
+        return identities.pop(0)
+
+    def fake_modules(process_handle: int) -> tuple[list[Path], list[str], str]:
+        module_handles.append(process_handle)
+        return [executable], [], "WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1"
+
+    monkeypatch.setattr(inventory, "_windows_process_identity", fake_identity)
+    monkeypatch.setattr(inventory, "_windows_process_modules", fake_modules)
+
+    result = inventory._snapshot_windows_process_modules(
+        _FakeWindowsProcess(),  # type: ignore[arg-type]
+        executable,
+    )
+
+    assert result == ([executable], [], "WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1")
+    assert identity_handles == [9200, 9200]
+    assert module_handles == [9200]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "mismatched_pid",
+        "mismatched_image",
+        "exited_before",
+        "changed_pid",
+        "changed_image",
+        "changed_creation_time",
+        "exited_after",
+    ],
+)
+def test_windows_snapshot_rejects_spoofed_stale_or_exited_identity(
+        tmp_path: Path, monkeypatch, mutation: str) -> None:
+    executable = tmp_path / "python.exe"
+    other = tmp_path / "other.exe"
+    executable.write_bytes(b"interpreter")
+    other.write_bytes(b"other")
+    before = inventory._WindowsProcessIdentity(4100, 123456, executable, True)
+    after = before
+    if mutation == "mismatched_pid":
+        before = inventory._WindowsProcessIdentity(4101, 123456, executable, True)
+    elif mutation == "mismatched_image":
+        before = inventory._WindowsProcessIdentity(4100, 123456, other, True)
+    elif mutation == "exited_before":
+        before = inventory._WindowsProcessIdentity(4100, 123456, executable, False)
+    elif mutation == "changed_pid":
+        after = inventory._WindowsProcessIdentity(4101, 123456, executable, True)
+    elif mutation == "changed_image":
+        after = inventory._WindowsProcessIdentity(4100, 123456, other, True)
+    elif mutation == "changed_creation_time":
+        after = inventory._WindowsProcessIdentity(4100, 123457, executable, True)
+    elif mutation == "exited_after":
+        after = inventory._WindowsProcessIdentity(4100, 123456, executable, False)
+    identities = [before, after]
+    monkeypatch.setattr(
+        inventory,
+        "_windows_process_identity",
+        lambda process_handle: identities.pop(0),
+    )
+    monkeypatch.setattr(
+        inventory,
+        "_windows_process_modules",
+        lambda process_handle: ([], [], "WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1"),
+    )
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PROCESS_IDENTITY_INVALID"):
+        inventory._snapshot_windows_process_modules(
+            _FakeWindowsProcess(),  # type: ignore[arg-type]
+            executable,
+        )
+
+
+@pytest.mark.parametrize("polls", [[7], [None, 7]])
+def test_windows_snapshot_rejects_process_exit_at_poll_boundary(
+        tmp_path: Path, monkeypatch, polls: list[int | None]) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"interpreter")
+    identity = inventory._WindowsProcessIdentity(4100, 123456, executable, True)
+    monkeypatch.setattr(inventory, "_windows_process_identity", lambda process_handle: identity)
+    monkeypatch.setattr(
+        inventory,
+        "_windows_process_modules",
+        lambda process_handle: ([], [], "WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1"),
+    )
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PROCESS_IDENTITY_INVALID"):
+        inventory._snapshot_windows_process_modules(
+            _FakeWindowsProcess(polls=polls),  # type: ignore[arg-type]
+            executable,
+        )
+
+
+@pytest.mark.parametrize("process_handle", [None, 0, "not-a-handle"])
+def test_windows_snapshot_rejects_invalid_original_handle(
+        tmp_path: Path, process_handle: object) -> None:
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"interpreter")
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_PROCESS_IDENTITY_INVALID"):
+        inventory._snapshot_windows_process_modules(
+            _FakeWindowsProcess(process_handle=process_handle),  # type: ignore[arg-type]
+            executable,
+        )
+
+
+def test_probe_payload_executable_identity_rejects_spoofed_path(tmp_path: Path) -> None:
+    executable = tmp_path / "python.exe"
+    spoofed = tmp_path / "spoofed.exe"
+    executable.write_bytes(b"interpreter")
+    spoofed.write_bytes(b"spoof")
+
+    with pytest.raises(
+            inventory.RuntimeInventoryError,
+            match="REFERENCE_PROBE_EXECUTABLE_IDENTITY_MISMATCH"):
+        inventory._validate_probe_executable_identity(
+            {"python": {"executable": str(spoofed)}},
+            executable,
+        )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows venv redirector behavior")
+def test_windows_venv_redirector_pid_differs_but_verified_base_pid_matches(
+        tmp_path: Path) -> None:
+    venv = tmp_path / "redirector-venv"
+    base = Path(sys._base_executable).resolve(strict=True)
+    created = subprocess.run(
+        [str(base), "-I", "-B", "-m", "venv", "--without-pip", str(venv)],
+        check=False,
+        capture_output=True,
+        timeout=inventory.DEFAULT_PROBE_TIMEOUT_SECONDS,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert created.returncode == 0, created.stderr
+    redirector = (venv / "Scripts/python.exe").resolve(strict=True)
+    distribution_root = inventory._find_distribution_import_root("cryptography")
+    child_code = (
+        "import json,os,sys;from pathlib import Path;"
+        "root=Path(sys.argv[1]);sys.path[:0]=[str(root),sys.argv[2]];"
+        "from cisco_toolkit import transition_dsl as dsl;"
+        "from cisco_toolkit import transition_runtime_inventory as ri;"
+        "requested=Path(sys.executable).resolve(strict=True);"
+        "effective=ri._probe_executable(requested);"
+        "value=ri.build_reference_runtime_inventory("
+        "root,dsl.DSL_PROTOTYPE_PROGRAM_PATH,dsl.DSL_PROTOTYPE_INPUT_PATH);"
+        "observed=[row for row in value['runtime_files'] "
+        "if 'OBSERVED_PROCESS_NATIVE_MODULE' in row['roles']];"
+        "tokens=[row['path_token'] for row in observed];"
+        "print(json.dumps({'pid':os.getpid(),'requested':str(requested),"
+        "'effective':str(effective),'count':value['coverage']['observed_native_module_count'],"
+        "'executable':any('CPYTHON_EXECUTABLE' in row['roles'] for row in observed),"
+        "'runtime':any('CPYTHON_RUNTIME_LIBRARY' in row['roles'] for row in observed),"
+        "'rust':any(token.endswith('/cryptography/hazmat/bindings/_rust.pyd') "
+        "for token in tokens),'cffi':any('_cffi_backend' in token for token in tokens),"
+        "'stdlib_pyd':any(token.startswith('$PYTHON_BASE/DLLs/') "
+        "and token.endswith('.pyd') for token in tokens),"
+        "'closure':value['closure']['state']}))"
+    )
+
+    def measured_child(executable: Path) -> tuple[subprocess.Popen[bytes], dict]:
+        process = subprocess.Popen(
+            [
+                str(executable),
+                "-I",
+                "-B",
+                "-c",
+                child_code,
+                str(ROOT),
+                str(distribution_root),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        stdout, stderr = process.communicate(timeout=inventory.DEFAULT_PROBE_TIMEOUT_SECONDS)
+        assert process.returncode == 0
+        assert stderr == b""
+        return process, json.loads(stdout)
+
+    redirector_process, redirector_value = measured_child(redirector)
+    direct_process, direct_value = measured_child(base)
+
+    assert redirector_process.pid != redirector_value["pid"]
+    assert Path(redirector_value["requested"]) == redirector
+    assert Path(redirector_value["effective"]) == base
+    assert direct_process.pid == direct_value["pid"]
+    assert Path(direct_value["requested"]) == base
+    assert Path(direct_value["effective"]) == base
+    assert redirector_value["count"] == direct_value["count"]
+    assert all(redirector_value[key] is True for key in (
+        "executable", "runtime", "rust", "cffi", "stdlib_pyd",
+    ))
+    assert redirector_value["closure"] == "PARTIAL_NONPORTABLE_PROTOTYPE"

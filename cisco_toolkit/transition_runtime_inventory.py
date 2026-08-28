@@ -320,6 +320,14 @@ class PEImportScan:
 
 
 @dataclass(frozen=True, slots=True)
+class _WindowsProcessIdentity:
+    pid: int
+    creation_time: int
+    image_path: Path
+    running: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _RootToken:
     root_id: str
     path: Path
@@ -855,6 +863,60 @@ def _sanitized_probe_environment(pycache_prefix: Path) -> dict[str, str]:
     return environment
 
 
+def _windows_probe_executable(executable: Path) -> Path:
+    """Bypass only the current, runtime-verified Windows venv redirector."""
+
+    try:
+        current = Path(sys.executable).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED") from None
+    if _normalized_path(executable) != _normalized_path(current):
+        try:
+            foreign_venv = (
+                executable.parent.name.casefold() == "scripts"
+                and (executable.parent.parent / "pyvenv.cfg").is_file()
+            )
+        except OSError:
+            raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED") from None
+        if foreign_venv:
+            raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED")
+        return executable
+
+    raw_base = getattr(sys, "_base_executable", None)
+    if not isinstance(raw_base, str) or not raw_base:
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED")
+    try:
+        base = Path(raw_base).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED") from None
+    if _normalized_path(base) == _normalized_path(executable):
+        return executable
+
+    try:
+        prefix = Path(sys.prefix).resolve(strict=True)
+        base_prefix = Path(sys.base_prefix).resolve(strict=True)
+        venv_config = (prefix / "pyvenv.cfg").resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED") from None
+    if (
+            not executable.is_file()
+            or not base.is_file()
+            or not venv_config.is_file()
+            or _normalized_path(prefix) == _normalized_path(base_prefix)
+            or _normalized_path(executable.parent) != _normalized_path(prefix / "Scripts")
+            or _normalized_path(base.parent) != _normalized_path(base_prefix)
+            or executable.name.casefold() != base.name.casefold()
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_SELECTION_FAILED")
+    return base
+
+
+def _probe_executable(executable: Path) -> Path:
+    if sys.platform == "win32":
+        return _windows_probe_executable(executable)
+    return executable
+
+
 def _read_probe_line(stream: Any, result: list[bytes]) -> None:
     try:
         result.append(stream.readline())
@@ -862,15 +924,77 @@ def _read_probe_line(stream: Any, result: list[bytes]) -> None:
         result.append(b"")
 
 
-def _windows_process_modules(pid: int) -> tuple[list[Path], list[str], str]:
+def _windows_process_identity(process_handle: int) -> _WindowsProcessIdentity:
     try:
         import ctypes
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        open_process = kernel32.OpenProcess
-        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-        open_process.restype = wintypes.HANDLE
+        handle = wintypes.HANDLE(process_handle)
+        get_process_id = kernel32.GetProcessId
+        get_process_id.argtypes = (wintypes.HANDLE,)
+        get_process_id.restype = wintypes.DWORD
+        wait_for_process = kernel32.WaitForSingleObject
+        wait_for_process.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        wait_for_process.restype = wintypes.DWORD
+        query_image = kernel32.QueryFullProcessImageNameW
+        query_image.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        query_image.restype = wintypes.BOOL
+        get_process_times = kernel32.GetProcessTimes
+        get_process_times.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        )
+        get_process_times.restype = wintypes.BOOL
+
+        pid = int(get_process_id(handle))
+        wait_status = int(wait_for_process(handle, 0))
+        if pid < 1 or wait_status not in {0x00000000, 0x00000102}:
+            raise OSError
+        buffer = ctypes.create_unicode_buffer(32768)
+        buffer_size = wintypes.DWORD(len(buffer))
+        if not query_image(handle, 0, buffer, ctypes.byref(buffer_size)):
+            raise OSError
+        if buffer_size.value < 1 or buffer_size.value >= len(buffer):
+            raise OSError
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel_time = wintypes.FILETIME()
+        user_time = wintypes.FILETIME()
+        if not get_process_times(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time)):
+            raise OSError
+        creation_time = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+        image_path = Path(buffer.value).resolve(strict=True)
+        return _WindowsProcessIdentity(
+            pid=pid,
+            creation_time=creation_time,
+            image_path=image_path,
+            running=wait_status == 0x00000102,
+        )
+    except (AttributeError, ImportError, OSError, TypeError, ValueError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID") from None
+
+
+def _windows_process_modules(process_handle: int) -> tuple[list[Path], list[str], str]:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        process = wintypes.HANDLE(process_handle)
         enum_modules = kernel32.K32EnumProcessModulesEx
         enum_modules.argtypes = (
             wintypes.HANDLE,
@@ -888,40 +1012,31 @@ def _windows_process_modules(pid: int) -> tuple[list[Path], list[str], str]:
             wintypes.DWORD,
         )
         module_name.restype = wintypes.DWORD
-        close_handle = kernel32.CloseHandle
-        close_handle.argtypes = (wintypes.HANDLE,)
-        close_handle.restype = wintypes.BOOL
-        process = open_process(0x0400 | 0x0010, False, pid)
-        if not process:
-            raise OSError
-        try:
-            capacity = 256
-            while True:
-                modules = (wintypes.HMODULE * capacity)()
-                needed = wintypes.DWORD()
-                if not enum_modules(
-                        process,
-                        modules,
-                        ctypes.sizeof(modules),
-                        ctypes.byref(needed),
-                        0x03):
-                    raise OSError
-                count = needed.value // ctypes.sizeof(wintypes.HMODULE)
-                if count <= capacity:
-                    break
-                if count > DEFAULT_MAX_FILES:
-                    raise RuntimeInventoryError("NATIVE_PROCESS_MODULE_COUNT_EXCEEDED")
-                capacity = count + 32
-            paths: list[Path] = []
-            for handle in modules[:count]:
-                buffer = ctypes.create_unicode_buffer(32768)
-                length = module_name(process, handle, buffer, len(buffer))
-                if length < 1 or length >= len(buffer) - 1:
-                    raise OSError
-                paths.append(Path(buffer.value))
-            return paths, [], "WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1"
-        finally:
-            close_handle(process)
+        capacity = 256
+        while True:
+            modules = (wintypes.HMODULE * capacity)()
+            needed = wintypes.DWORD()
+            if not enum_modules(
+                    process,
+                    modules,
+                    ctypes.sizeof(modules),
+                    ctypes.byref(needed),
+                    0x03):
+                raise OSError
+            count = needed.value // ctypes.sizeof(wintypes.HMODULE)
+            if count <= capacity:
+                break
+            if count > DEFAULT_MAX_FILES:
+                raise RuntimeInventoryError("NATIVE_PROCESS_MODULE_COUNT_EXCEEDED")
+            capacity = count + 32
+        paths: list[Path] = []
+        for module in modules[:count]:
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = module_name(process, module, buffer, len(buffer))
+            if length < 1 or length >= len(buffer) - 1:
+                raise OSError
+            paths.append(Path(buffer.value))
+        return paths, [], "WINDOWS_K32_PROCESS_MODULE_SNAPSHOT/1"
     except RuntimeInventoryError:
         raise
     except (AttributeError, ImportError, OSError, TypeError, ValueError):
@@ -952,12 +1067,97 @@ def _linux_process_modules(pid: int) -> tuple[list[Path], list[str], str]:
     )
 
 
-def _snapshot_process_modules(pid: int) -> tuple[list[Path], list[str], str]:
+def _validate_windows_process_identity(
+        identity: _WindowsProcessIdentity,
+        *,
+        expected_pid: int,
+        expected_executable: Path) -> None:
+    if (
+            type(identity.pid) is not int
+            or identity.pid != expected_pid
+            or type(identity.creation_time) is not int
+            or identity.creation_time < 1
+            or identity.running is not True
+            or _normalized_path(identity.image_path) != _normalized_path(expected_executable)
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
+
+
+def _snapshot_windows_process_modules(
+        process: subprocess.Popen[bytes],
+        expected_executable: Path) -> tuple[list[Path], list[str], str]:
+    try:
+        process_handle = int(getattr(process, "_handle"))
+    except (AttributeError, TypeError, ValueError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID") from None
+    if (
+            process_handle < 1
+            or type(process.pid) is not int
+            or process.pid < 1
+            or process.poll() is not None
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
+    before = _windows_process_identity(process_handle)
+    _validate_windows_process_identity(
+        before,
+        expected_pid=process.pid,
+        expected_executable=expected_executable,
+    )
+    result = _windows_process_modules(process_handle)
+    after = _windows_process_identity(process_handle)
+    _validate_windows_process_identity(
+        after,
+        expected_pid=process.pid,
+        expected_executable=expected_executable,
+    )
+    if (
+            before.pid != after.pid
+            or before.creation_time != after.creation_time
+            or _normalized_path(before.image_path) != _normalized_path(after.image_path)
+            or process.poll() is not None
+    ):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PROCESS_IDENTITY_INVALID")
+    return result
+
+
+def _snapshot_process_modules(
+        process: subprocess.Popen[bytes],
+        expected_executable: Path) -> tuple[list[Path], list[str], str]:
     if sys.platform == "win32":
-        return _windows_process_modules(pid)
+        return _snapshot_windows_process_modules(process, expected_executable)
     if sys.platform.startswith("linux"):
-        return _linux_process_modules(pid)
+        return _linux_process_modules(process.pid)
     return [], ["PROCESS_NATIVE_MODULE_ENUMERATION_NOT_IMPLEMENTED_FOR_PLATFORM"], "UNSUPPORTED"
+
+
+def _validate_probe_executable_identity(
+        payload: object,
+        expected_executable: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID")
+    python_value = payload.get("python")
+    raw_executable = python_value.get("executable") if isinstance(python_value, dict) else None
+    if not isinstance(raw_executable, str) or not raw_executable:
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_IDENTITY_MISMATCH")
+    try:
+        reported_executable = Path(raw_executable).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_IDENTITY_MISMATCH") from None
+    if _normalized_path(reported_executable) != _normalized_path(expected_executable):
+        raise RuntimeInventoryError("REFERENCE_PROBE_EXECUTABLE_IDENTITY_MISMATCH")
+    return payload
+
+
+def _discard_probe_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if process.poll() is None:
+            process.kill()
+    except OSError:
+        pass
+    try:
+        process.communicate()
+    except (OSError, ValueError):
+        pass
 
 
 def _probe_child_with_cache(
@@ -1021,7 +1221,15 @@ def _probe_child_with_cache(
         process.kill()
         process.communicate()
         raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID") from None
-    native_paths, native_blind_spots, snapshot_method = _snapshot_process_modules(process.pid)
+    try:
+        checked_payload = _validate_probe_executable_identity(payload, python_executable)
+        native_paths, native_blind_spots, snapshot_method = _snapshot_process_modules(
+            process,
+            python_executable,
+        )
+    except RuntimeInventoryError:
+        _discard_probe_process(process)
+        raise
     try:
         process.stdin.write(b"\n")
         process.stdin.flush()
@@ -1032,9 +1240,7 @@ def _probe_child_with_cache(
         raise RuntimeInventoryError("REFERENCE_PROBE_COMPLETION_FAILED") from None
     if process.returncode != 0 or stderr:
         raise RuntimeInventoryError("REFERENCE_PROBE_FAILED")
-    if not isinstance(payload, dict):
-        raise RuntimeInventoryError("REFERENCE_PROBE_PAYLOAD_INVALID")
-    return payload, native_paths, native_blind_spots, snapshot_method
+    return checked_payload, native_paths, native_blind_spots, snapshot_method
 
 
 def _probe_child(
@@ -1264,11 +1470,12 @@ def build_reference_runtime_inventory(
         raise RuntimeInventoryError("INVENTORY_LIMIT_INVALID")
     try:
         root = Path(project_root).resolve(strict=True)
-        executable = Path(python_executable or sys.executable).resolve(strict=True)
+        requested_executable = Path(python_executable or sys.executable).resolve(strict=True)
     except OSError:
         raise RuntimeInventoryError("REFERENCE_ROOT_OR_EXECUTABLE_INVALID") from None
-    if not root.is_dir() or not executable.is_file():
+    if not root.is_dir() or not requested_executable.is_file():
         raise RuntimeInventoryError("REFERENCE_ROOT_OR_EXECUTABLE_INVALID")
+    executable = _probe_executable(requested_executable)
     if (
             not program_relative_path
             or not input_relative_path
