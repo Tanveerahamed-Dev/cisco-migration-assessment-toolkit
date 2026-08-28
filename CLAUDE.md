@@ -170,11 +170,11 @@ alternate production graph. An unguarded `graphify update .` from a worktree bui
 (That is the P3-E1 trap: the
 "122-node / file-granular / `affected "fn()"` returns No node match" reading came from a worktree run;
 the real main-checkout graph is thousands of nodes and **function-granular** — `affected "parse_qos_config()"`,
-`explain`, `path` all resolve function symbols as advertised. Verified Graphifyy 0.9.47.) NB the
+`explain`, `path` all resolve function symbols as advertised. Verified Graphifyy 0.9.51.) NB the
 extractor indexes functions, classes and docstrings, NOT module-level assignments: a constant such as
 `_RACE_RETRIES` is not a node, so `affected` on one returns nothing and that is a scope limit, not a stale graph.
 
-Installed Graphifyy 0.9.47 also has two separately reviewed corpus/coverage residuals that local ignore syntax cannot
+Installed Graphifyy 0.9.51 also has two separately reviewed corpus/coverage residuals that local ignore syntax cannot
 override. Its special saved-memory scan bypasses `.graphifyignore`/CLI excludes and can re-ingest
 `graphify-out/memory/*.md`; its hard-coded noise pruning skips every directory named `build`, including authored
 `master-reference/build/*.mjs` release owners. These are exact external BLOCK categories
@@ -184,7 +184,7 @@ rebuild can remove a deliberately deleted privacy-offending node and heal increm
 these two producer gaps. Reconcile the residual tests only when upstream makes explicit include/ignore policy
 authoritative over both special scans.
 
-Graphifyy 0.9.47's official JSON extractor applies its array branch to keys other than `extends`, producing
+Graphifyy 0.9.51's official JSON extractor applies its array branch to keys other than `extends`, producing
 false `extends` edges, and its report summary counts structural-only communities as shown even though navigation
 and sections exclude them. `tools/graphify_guarded.py` requires the exact distribution version, import paths, and
 reviewed extractor/reporter SHA-256 identities; applies both one-line corrections only in memory; verifies both
@@ -195,7 +195,7 @@ mixed-case `.JSON` suffixes). `--probe` attests the exact overlays, isolated `-I
 case-fold-safe cache bypass, sanitized ambient `GRAPHIFY_*`/`GIT_*` controls and executable lookup, and one-worker
 boundary. Every producer also holds the same OS-backed output lock; recursive reparse points and regular-file
 hard links under `graphify-out/` are rejected. Any mismatch exits
-before a Graphify command can mutate the graph, and the installed package remains unchanged. Because 0.9.47's
+before a Graphify command can mutate the graph, and the installed package remains unchanged. Because 0.9.51's
 parallel AST workers reload the on-disk
 module, the launcher fixes `GRAPHIFY_MAX_WORKERS=1` and rejects `--max-workers`; guarded extraction trades cache
 reuse and parallel speed for semantic closure. The command allowlist also rejects generic/semantic `extract`,
@@ -219,12 +219,12 @@ Rules:
 - Offline NAVIGATION (replaces the never-existent wiki): `py -3.12 -m graphify tree` → graphify-out/GRAPH_TREE.html
   (D3 collapsible tree) and `py -3.12 -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
   broad architecture review; `god_nodes` is the fastest map of the core abstractions. **The report is a
-  derivative, not an SSOT:** unguarded Graphifyy 0.9.47 can count structural-only communities as “shown”; the guarded
+  derivative, not an SSOT:** unguarded Graphifyy 0.9.51 can count structural-only communities as “shown”; the guarded
   producer corrects that summary formula in memory. Before using report summary coverage as evidence, run
   `py -3.12 -m tools.verify_graph_report graphify-out/graph.json graphify-out/GRAPH_REPORT.md` and require exact PASS.
   An older/unpatched report remains BLOCK while the separately validated `graph.json` stays available for
   query/compiler use. An input/graph-invalid receipt establishes no such validity. The verifier is
-  deliberately bound to the observed 0.9.47 file/stub predicate; reconcile it explicitly when the external producer
+  deliberately bound to the observed 0.9.51 file/stub predicate; reconcile it explicitly when the external producer
   changes.
 - EGRESS — do NOT use in this air-gapped repo (they break the no-egress doctrine): `graphify add <url>` (fetches
   URLs), `graphify label` (calls an LLM — forbidden even via a local backend: it would plant LLM-derived

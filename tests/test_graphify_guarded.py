@@ -1,4 +1,4 @@
-"""Executable contract for the narrow Graphify 0.9.47 producer overlays."""
+"""Executable contract for the narrow Graphify 0.9.51 producer overlays."""
 
 from __future__ import annotations
 
@@ -199,8 +199,8 @@ def _overlay_harness(tmp_path, monkeypatch):
 
 def test_reviewed_graphify_identity_constants_are_exact():
     assert guard.DIST_NAME == "graphifyy"
-    assert guard.EXPECTED_VERSION == "0.9.47"
-    assert guard.GUARD_CONTRACT == "graphify-producer-overlays/2"
+    assert guard.EXPECTED_VERSION == "0.9.51"
+    assert guard.GUARD_CONTRACT == "graphify-producer-overlays/3"
     assert guard.EXTRACTOR_RELATIVE_PATH == "graphify/extractors/json_config.py"
     assert guard.EXPECTED_SOURCE_BYTES == 9_723
     assert guard.EXPECTED_SOURCE_SHA256 == (
@@ -334,7 +334,7 @@ def test_verified_report_patch_rejects_an_unreviewed_result(monkeypatch):
 
 @pytest.mark.skipif(
     not _reviewed_install_available(),
-    reason="the exact official Graphifyy 0.9.47 extractor and reporter are not installed",
+    reason="the exact official Graphifyy 0.9.51 extractor and reporter are not installed",
 )
 def test_real_report_overlay_changes_only_the_mixed_partition_summary():
     import networkx as nx
@@ -416,7 +416,7 @@ def test_distribution_path_and_version_are_fail_closed(tmp_path):
         guard._locate_report(ambiguous_report)
 
 
-def test_overlay_rebinds_every_live_0947_alias_and_changes_only_extends_arrays(
+def test_overlay_rebinds_every_live_0951_alias_and_changes_only_extends_arrays(
     tmp_path, monkeypatch
 ):
     (
@@ -864,7 +864,7 @@ def test_guard_failure_is_bounded_and_never_enters_graphify(monkeypatch, capsys)
     assert not invoked
     assert not captured.out
     assert captured.err == (
-        "graphify-guard: G004: the Graphify bytes do not match the reviewed 0.9.47 sources; "
+        "graphify-guard: G004: the Graphify bytes do not match the reviewed 0.9.51 sources; "
         "no Graphify command was run.\n"
     )
 
@@ -992,7 +992,7 @@ def test_graphify_runtime_failure_is_not_misreported_as_a_preflight_failure(monk
 
 @pytest.mark.skipif(
     not _reviewed_install_available(),
-    reason="the exact official Graphifyy 0.9.47 extractor and reporter are not installed",
+    reason="the exact official Graphifyy 0.9.51 extractor and reporter are not installed",
 )
 def test_real_guarded_cli_keeps_a_parallel_sized_json_batch_on_the_overlay(tmp_path):
     """Twenty files would spawn workers that reload the faulty disk module without the policy."""
@@ -1005,7 +1005,7 @@ def test_real_guarded_cli_keeps_a_parallel_sized_json_batch_on_the_overlay(tmp_p
             encoding="utf-8",
         )
 
-    # Seed the official v0.9.47-s2 AST cache with a false relation for the
+    # Seed the official v0.9.51-s2 AST cache with a false relation for the
     # identical bytes. The guard must preserve but never replay this entry.
     from graphify.cache import save_cached
 
@@ -1031,7 +1031,7 @@ def test_real_guarded_cli_keeps_a_parallel_sized_json_batch_on_the_overlay(tmp_p
         cache_root=source_root,
     )
     poisoned_cache = next(
-        (source_root / "graphify-out" / "cache" / "ast" / "v0.9.47-s2").glob("*.json")
+        (source_root / "graphify-out" / "cache" / "ast" / "v0.9.51-s2").glob("*.json")
     )
     poisoned_bytes = poisoned_cache.read_bytes()
 

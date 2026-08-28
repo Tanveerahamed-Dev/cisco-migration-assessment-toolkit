@@ -43,7 +43,7 @@ _SUBSTANTIAL_FLOOR = 1000
 # it to silence a surprise. Owner of the doctrine: CLAUDE.md graphify section.
 _ALLOWED_ORIGINS = {"ast", None}
 
-# Installed Graphify 0.9.47 overrides .graphifyignore for its saved-memory corpus.  Keep that
+# Installed Graphify 0.9.51 overrides .graphifyignore for its saved-memory corpus.  Keep that
 # external residual exact and non-expanding until the producer makes explicit ignore/include
 # rules authoritative over the special scan.  This is a reviewed BLOCK, never a clean claim.
 _KNOWN_MEMORY_IGNORE_OVERRIDE_SOURCE_COUNT = 19
@@ -409,7 +409,7 @@ def test_no_llm_derived_nodes():
 
 
 def test_graph_output_ingestion_is_only_the_reviewed_memory_override():
-    """Bound Graphify 0.9.47's ignore override without promoting corpus/privacy closure."""
+    """Bound Graphify 0.9.51's ignore override without promoting corpus/privacy closure."""
     graph, path = _load_graph()
     invalid_structural_fields = _invalid_structural_provenance_field_count(graph)
     if invalid_structural_fields:
@@ -862,7 +862,7 @@ def test_extends_source_semantic_guard_rejects_unrelated_json_arrays(tmp_path, a
 def test_graph_report_is_exact_or_only_has_reviewed_external_residuals():
     """Require an exact report audit from the guarded producer.
 
-    The report remains a derivative, never the graph owner. The guarded 0.9.47
+    The report remains a derivative, never the graph owner. The guarded 0.9.51
     producer corrects the structural-only summary partition, and the refreshed
     membership-signature sidecar binds saved labels to current communities.
     There are no allowed report residuals; every category is red.

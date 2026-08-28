@@ -479,7 +479,7 @@ def test_graph_refresh_probe_failure_prevents_graph_mutation_but_allows_stop(tmp
     assert p.returncode == 0
     assert "guard probe failed" in p.stderr
     assert "graph not mutated" in p.stderr
-    assert "0.9.47" in p.stderr
+    assert "0.9.51" in p.stderr
     assert calls and all(not _is_any_update(call) for call in calls)
     assert (repo / "graphify-out" / "graph.json").read_text(encoding="utf-8") == \
         '{"sentinel":"unchanged"}\n'
