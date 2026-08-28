@@ -134,6 +134,62 @@ def _file_binding(repository: Path, relative: str, role: str) -> dict[str, Any]:
     }
 
 
+def _runtime_reference_toolchain(repository: Path) -> dict[str, Any]:
+    """Bind census toolchain identity to the runtime inventory's observed interpreter."""
+
+    path = repository / runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw)
+        runtime_inventory.validate_runtime_inventory(value)
+        python = value["python"]
+        executable_rows = [
+            row
+            for row in value["runtime_files"]
+            if row.get("file_id") == python.get("executable_file_id")
+        ]
+        selected_executable = runtime_inventory._probe_executable(
+            Path(sys.executable).resolve(strict=True)
+        )
+        executable_raw = selected_executable.read_bytes()
+    except (
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            OSError,
+            runtime_inventory.RuntimeInventoryError,
+    ):
+        raise RuntimeError("reference runtime inventory toolchain is invalid") from None
+    if (
+            type(value) is not dict
+            or _canonical(value) != raw
+            or len(executable_rows) != 1
+            or python.get("implementation") != "cpython"
+            or value.get("platform") != {"os_name": "nt", "sys_platform": "win32"}
+            or platform.python_implementation() != "CPython"
+            or platform.system() != "Windows"
+            or platform.python_version() != python.get("version")
+            or sys.implementation.cache_tag != python.get("cache_tag")
+    ):
+        raise RuntimeError("reference runtime inventory toolchain is invalid")
+    executable = executable_rows[0]
+    if (
+            len(executable_raw) != executable.get("bytes")
+            or _digest(executable_raw) != executable.get("digest")
+    ):
+        raise RuntimeError("reference runtime inventory toolchain does not match this interpreter")
+    return {
+        "cache_tag": sys.implementation.cache_tag,
+        "executable_bytes": len(executable_raw),
+        "executable_sha256": _digest(executable_raw),
+        "implementation": "CPython",
+        "platform_machine": platform.machine(),
+        "platform_system": "Windows",
+        "python_version": platform.python_version(),
+    }
+
+
 def _prototype_evidence(repository: Path) -> dict[str, Any]:
     raw_by_path = {
         path: (repository / path).read_bytes()
@@ -383,16 +439,7 @@ def _build(repository: Path, *, reference: dict[str, Any] | None = None) -> byte
         runtime_dependencies = [
             _distribution(name) for name in REFERENCE_DISTRIBUTIONS
         ]
-        executable_raw = Path(sys.executable).read_bytes()
-        reference_toolchain = {
-            "cache_tag": sys.implementation.cache_tag,
-            "executable_bytes": len(executable_raw),
-            "executable_sha256": _digest(executable_raw),
-            "implementation": platform.python_implementation(),
-            "platform_machine": platform.machine(),
-            "platform_system": platform.system(),
-            "python_version": platform.python_version(),
-        }
+        reference_toolchain = _runtime_reference_toolchain(repository)
     else:
         measured_core, legacy_count, driver_count = _reference_statement_counts(reference)
         core_counts = dict(measured_core)

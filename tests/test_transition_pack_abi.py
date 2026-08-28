@@ -25,6 +25,31 @@ from tools import census_transition_tcb as tcb_census
 _SIGNATURE_DOMAIN = b"ATLAS-TRANSITION-QUALIFICATION\x00v1\x00"
 
 
+def test_prototype_tcb_toolchain_matches_selected_runtime_inventory_executable() -> None:
+    package = resources.files("cisco_toolkit")
+    tcb = tc.parse_canonical_json_bytes(
+        package.joinpath("data/atlas-r2-dsl-prototype-tcb.v2.json").read_bytes(),
+        require_canonical=True,
+    )
+    runtime = tc.parse_canonical_json_bytes(
+        package.joinpath("data/atlas-r2-runtime-inventory.reference.v1.json").read_bytes(),
+        require_canonical=True,
+    )
+    runtime_inventory.validate_runtime_inventory(runtime)
+    python = runtime["python"]
+    executable = next(
+        row
+        for row in runtime["runtime_files"]
+        if row["file_id"] == python["executable_file_id"]
+    )
+
+    assert tcb["toolchains"] == [{
+        "component_id": "CPython",
+        "component_version": python["version"],
+        "content_digest": executable["digest"],
+    }]
+
+
 def test_workload_review_is_structural_tcb_authority_not_runtime_inventory_v1() -> None:
     relative = "cisco_toolkit/transition_workload_review.py"
     role = "REPRESENTATIVE_WORKLOAD_REVIEW_AUTHORITY_BOUNDARY"

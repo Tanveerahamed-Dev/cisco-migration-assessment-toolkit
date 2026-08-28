@@ -32,6 +32,7 @@ _SCHEMA_RESOURCE = "schemas/atlas-transition-contract-v1.schema.json"
 _QCP_RESOURCE = "data/qcp-001.experimental.json"
 _TCB_CENSUS_RESOURCE = "data/atlas-r2-structural-tcb-census.v1.json"
 _TCB_CENSUS_SCHEMA_RESOURCE = "schemas/atlas-r2-structural-tcb-census-v1.schema.json"
+_RUNTIME_INVENTORY_RESOURCE = "data/atlas-r2-runtime-inventory.reference.v1.json"
 _WINDOWS_RUNTIME_DISCOVERY_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-runtime-discovery-v1.schema.json"
 )
@@ -63,7 +64,7 @@ _WINDOWS_EXECUTION_ENVIRONMENT_V5_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json"
 )
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:c94fea960eb39cb32508de475038306d24b0ef2a1928da8b42f716f7834ac386"
+_TCB_CENSUS_DIGEST = "sha256:17dc20726a9d5f773ac347e04343cd723ad4e573afa13436ef695ccb22fe8506"
 
 
 def _resource_bytes(relative: str) -> bytes:
@@ -539,6 +540,7 @@ def test_qcp_pending_references_cannot_cross_the_activation_boundary() -> None:
 def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze() -> None:
     raw = _resource_bytes(_TCB_CENSUS_RESOURCE)
     value = json.loads(raw)
+    runtime = json.loads(_resource_bytes(_RUNTIME_INVENTORY_RESOURCE))
     schema = json.loads(_resource_bytes(_TCB_CENSUS_SCHEMA_RESOURCE))
 
     assert tc.bytes_digest(raw) == _TCB_CENSUS_DIGEST
@@ -546,6 +548,14 @@ def test_structural_tcb_census_is_exact_schema_valid_and_honestly_blocks_freeze(
     Draft202012Validator(schema).validate(value)
     assert tp.r2_structural_tcb_census() == value
     assert value["structural_core"]["executable_statements"] == 7084
+    runtime_python = runtime["python"]
+    runtime_executable = next(
+        row
+        for row in runtime["runtime_files"]
+        if row["file_id"] == runtime_python["executable_file_id"]
+    )
+    assert value["reference_toolchain"]["executable_bytes"] == runtime_executable["bytes"]
+    assert value["reference_toolchain"]["executable_sha256"] == runtime_executable["digest"]
     assert value["census_method"]["measurement_scope"] == (
         "REFERENCE_ENVIRONMENT_OBSERVATION_WITH_PORTABLE_SOURCE_DIGEST_CHECK"
     )

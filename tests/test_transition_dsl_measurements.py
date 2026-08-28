@@ -12,6 +12,7 @@ import pytest
 
 from cisco_toolkit import transition_contract as contract
 from cisco_toolkit import transition_dsl as dsl
+from cisco_toolkit import transition_runtime_inventory as runtime_inventory
 from tools import measure_transition_dsl_prototype as measurement
 
 
@@ -225,6 +226,28 @@ def test_exact_assets_interpreter_limits_tool_and_denominator_are_digest_bound()
         bindings["interpreter_source"]["digest"]
         == tcb["dsl_interpreter"]["content_digest"]
     )
+
+
+def test_reference_runtime_matches_selected_runtime_inventory_executable() -> None:
+    artifact = _artifact()
+    runtime_raw = (ROOT / runtime_inventory.RUNTIME_INVENTORY_RESOURCE_PATH).read_bytes()
+    runtime = contract.parse_canonical_json_bytes(runtime_raw, require_canonical=True)
+    runtime_inventory.validate_runtime_inventory(runtime)
+    python = runtime["python"]
+    executable = next(
+        row
+        for row in runtime["runtime_files"]
+        if row["file_id"] == python["executable_file_id"]
+    )
+
+    assert artifact["reference_environment"]["runtime"] == {
+        "implementation": "CPython",
+        "python_version": python["version"],
+        "cache_tag": python["cache_tag"],
+        "executable_path_kind": "REFERENCE_ABSOLUTE_PATH_REDACTED",
+        "executable_raw_bytes": executable["bytes"],
+        "executable_digest": executable["digest"],
+    }
 
 
 def test_all_twelve_default_dimensions_have_actual_n_minus_1_n_n_plus_1_evidence() -> None:
