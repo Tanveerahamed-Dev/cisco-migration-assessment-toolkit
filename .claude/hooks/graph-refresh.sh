@@ -5,7 +5,7 @@
 # (AST-only, no API cost) so codebase queries stay accurate. This is MAINTENANCE,
 # not a gate: it ALWAYS exits 0 (fail-open) — a stale or un-updatable graph must
 # never block a turn. The guard itself fails closed before graph mutation unless
-# the reviewed Graphifyy 0.9.47 JSON extractor can be corrected in memory.
+# the reviewed Graphifyy 0.9.51 JSON extractor can be corrected in memory.
 set -u
 
 # Git's own environment overrides -C/cwd and can redirect status, HEAD, ignore
@@ -78,7 +78,7 @@ if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
   done
 fi
 if [ -z "$PY" ]; then
-  echo "graph-refresh: guard probe failed (requires graphifyy 0.9.47 and json_config.py SHA-256 d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945); graph not mutated and may be stale — allowing stop (fail-open)." >&2
+  echo "graph-refresh: guard probe failed (requires graphifyy 0.9.51 and json_config.py SHA-256 d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945); graph not mutated and may be stale — allowing stop (fail-open)." >&2
   exit 0
 fi
 

@@ -55,7 +55,7 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Install reviewed Graphify producer for its exact-runtime integration
         if: matrix.python-version == '3.12'
-        run: python -m pip install "graphifyy==0.9.47"
+        run: python -m pip install "graphifyy==0.9.51"
       - name: Require the reviewed Graphify version, extractor bytes, and alias topology
         if: matrix.python-version == '3.12'
         run: python -I -B tools/graphify_guarded.py --probe

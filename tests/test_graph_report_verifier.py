@@ -8,6 +8,7 @@ import pytest
 
 from tools.verify_graph_report import (
     KNOWN_EXTERNAL_REPORT_RESIDUALS,
+    PRODUCER_COMPATIBILITY,
     _parse_graph,
     _parse_labels,
     audit_graph_report,
@@ -170,7 +171,11 @@ def test_exact_partition_and_report_pass():
     assert result.counts["communities_structural_only"] == 1
 
 
-def test_membership_signatures_match_graphify_0947_sorted_ids_nul_sha256_first16():
+def test_verifier_producer_compatibility_is_exact_graphify_0951():
+    assert PRODUCER_COMPATIBILITY == "graphifyy/0.9.51"
+
+
+def test_membership_signatures_match_graphify_0951_sorted_ids_nul_sha256_first16():
     assert partition_graph(_base_graph()).membership_signatures == {
         0: "13e228567e8249fc",
         1: "4658d6abbbaf7748",
@@ -483,7 +488,7 @@ def test_import_cycles_section_is_present_iff_graph_has_code_or_import_edge(
     assert result.error_codes == expected_errors
 
 
-def test_file_node_predicate_matches_graphify_0947_degree_and_qualified_suffix_semantics():
+def test_file_node_predicate_matches_graphify_0951_degree_and_qualified_suffix_semantics():
     graph = {
         "directed": False,
         "multigraph": False,
@@ -514,7 +519,7 @@ def test_file_node_predicate_matches_graphify_0947_degree_and_qualified_suffix_s
     assert partition.shown_ids == frozenset()
 
 
-def test_graphify_0947_file_predicate_does_not_normalize_a_trailing_separator():
+def test_graphify_0951_file_predicate_does_not_normalize_a_trailing_separator():
     graph = {
         "directed": False,
         "multigraph": False,

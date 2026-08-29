@@ -3,12 +3,12 @@
 
 ``graphify-out/graph.json`` is the repository's structural owner and compiler
 input.  ``GRAPH_REPORT.md`` is an external-tool derivative.  The guarded
-Graphifyy 0.9.47 producer corrects an upstream summary formula that otherwise
+Graphifyy 0.9.51 producer corrects an upstream summary formula that otherwise
 counts structural-only communities as displayed.  This verifier prevents that
 defect from recurring and binds saved community labels to the producer's
 membership-signature sidecar.
 
-The compatibility predicate below deliberately mirrors Graphifyy 0.9.47
+The compatibility predicate below deliberately mirrors Graphifyy 0.9.51
 ``graphify.analyze._is_file_node`` behavior.  It is local code,
 not a runtime import from mutable site-packages.  A producer upgrade must
 reconcile this contract explicitly.
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA = "graph-report-audit/1"
-PRODUCER_COMPATIBILITY = "graphifyy/0.9.47"
+PRODUCER_COMPATIBILITY = "graphifyy/0.9.51"
 
 MAX_GRAPH_BYTES = 64 * 1024 * 1024
 MAX_REPORT_BYTES = 16 * 1024 * 1024
@@ -420,7 +420,7 @@ def _community_id(value: Any) -> int:
 
 
 def _is_producer_file_node_label(label: str, source_file: str) -> bool:
-    """Mirror Graphifyy 0.9.47's basename-or-qualified-suffix predicate."""
+    """Mirror Graphifyy 0.9.51's basename-or-qualified-suffix predicate."""
     normalized_source = source_file.replace("\\", "/")
     if label == normalized_source.rsplit("/", 1)[-1]:
         return True
@@ -430,7 +430,7 @@ def _is_producer_file_node_label(label: str, source_file: str) -> bool:
 
 
 def _is_file_node(attrs: dict[str, Any], degree: int) -> bool:
-    """Mirror graphifyy 0.9.47 ``analyze._is_file_node`` exactly."""
+    """Mirror graphifyy 0.9.51 ``analyze._is_file_node`` exactly."""
     label = attrs.get("label", "")
     if not isinstance(label, str):
         _fail("graph_report_graph_invalid")
@@ -706,7 +706,7 @@ def _parse_report(
     if any(_CONTAINER_START_RE.match(line) and _NESTED_ATX_RE.search(line) for line in lines):
         _fail("graph_report_format_invalid")
 
-    # Graphify 0.9.47 emits a closed ATX-heading vocabulary. Reject every other
+    # Graphify 0.9.51 emits a closed ATX-heading vocabulary. Reject every other
     # rendered heading instead of trying to interpret arbitrary inline Markdown.
     h1_rows: list[tuple[int, str]] = []
     h2_rows: list[tuple[int, str]] = []
@@ -847,7 +847,7 @@ def _parse_report(
     if section_rows != expected_section_rows:
         errors.add("graph_report_community_section_content_mismatch")
 
-    # Graphifyy 0.9.47 emits this reconciliation under ``## Knowledge Gaps``,
+    # Graphifyy 0.9.51 emits this reconciliation under ``## Knowledge Gaps``,
     # not inside the Communities section.  Require exactly one owned statement
     # anywhere rather than accidentally accepting a section-local lookalike.
     thin_candidates = [line for line in lines if "thin communities" in line]

@@ -33,7 +33,7 @@ GRAPHIFY_GUARD_IDENTITY = {
     "aliases": 5,
     "ast_cache": "bypass-json-casefold",
     "bytecode_writes": "disabled",
-    "contract": "graphify-producer-overlays/2",
+    "contract": "graphify-producer-overlays/3",
     "environment": "graphify-git-path-sanitized",
     "extractor": "graphify/extractors/json_config.py",
     "isolated": True,
@@ -45,7 +45,7 @@ GRAPHIFY_GUARD_IDENTITY = {
     "report_source_sha256": "382d844327181b652bbcd3ebd9cc3f2ab63bbce30e6eb5da80ced2b1575d1d0a",
     "source_sha256": "d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945",
     "status": "pass",
-    "version": "0.9.47",
+    "version": "0.9.51",
 }
 
 # The non-vacuity guards: each must exist AND actually assert something. A guard deleted or emptied is RED.

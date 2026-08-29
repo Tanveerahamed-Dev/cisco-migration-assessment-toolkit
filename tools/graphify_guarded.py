@@ -1,10 +1,10 @@
-"""Run Graphify 0.9.47 with two reviewed producer corrections in memory.
+"""Run Graphify 0.9.51 with two reviewed producer corrections in memory.
 
-Graphifyy 0.9.47's JSON extractor emits ``extends`` edges for every array-valued
+Graphifyy 0.9.51's JSON extractor emits ``extends`` edges for every array-valued
 property.  Its report summary also counts structural-only communities as shown,
 although its navigation and sections exclude them.  This launcher accepts only
 the reviewed upstream extractor and reporter bytes, changes those two faulty
-expressions in memory, verifies both results, and rebinds the live 0.9.47 aliases
+expressions in memory, verifies both results, and rebinds the live 0.9.51 aliases
 before Graphify's CLI is entered.
 Because parallel AST workers reload the on-disk module, the launcher also owns
 ``GRAPHIFY_MAX_WORKERS=1`` and rejects command-line worker overrides.
@@ -30,9 +30,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-GUARD_CONTRACT = "graphify-producer-overlays/2"
+GUARD_CONTRACT = "graphify-producer-overlays/3"
 DIST_NAME = "graphifyy"
-EXPECTED_VERSION = "0.9.47"
+EXPECTED_VERSION = "0.9.51"
 EXTRACTOR_MODULE = "graphify.extractors.json_config"
 EXTRACTOR_RELATIVE_PATH = "graphify/extractors/json_config.py"
 EXPECTED_SOURCE_BYTES = 9_723
@@ -58,9 +58,9 @@ _MAX_REVIEWED_SOURCE_BYTES = 32_768
 
 _ERROR_MESSAGES = {
     "G001": "graphifyy distribution metadata is unavailable",
-    "G002": "graphifyy version is not the reviewed 0.9.47 release",
+    "G002": "graphifyy version is not the reviewed 0.9.51 release",
     "G003": "a reviewed Graphify source path is unavailable or ambiguous",
-    "G004": "the Graphify bytes do not match the reviewed 0.9.47 sources",
+    "G004": "the Graphify bytes do not match the reviewed 0.9.51 sources",
     "G005": "an in-memory correction does not match the reviewed result",
     "G006": "an imported Graphify path or alias topology is unexpected",
     "G007": "an in-memory Graphify overlay could not be installed",
@@ -320,7 +320,7 @@ def _prepare_overlay(
     if not callable(corrected_generate):
         raise GuardFailure("G007")
 
-    # Rebind every public/live 0.9.47 function alias. The dispatcher mapping is
+    # Rebind every public/live 0.9.51 function alias. The dispatcher mapping is
     # the extraction owner; the others keep direct imports coherent.
     sys.modules[EXTRACTOR_MODULE] = overlay
     extractors_package.json_config = overlay
@@ -330,10 +330,10 @@ def _prepare_overlay(
     dispatch[".json"] = corrected_extract_json
     original_report_module.generate = corrected_generate
 
-    # 0.9.47's AST cache namespace identifies only the package version/schema,
+    # 0.9.51's AST cache namespace identifies only the package version/schema,
     # not these corrected extractor bytes. Never read or write ambiguous JSON
     # entries; preserve them on disk for reversibility and re-extract JSON here.
-    # Dispatch case-folds suffixes, while the cache bypass in 0.9.47 compares
+    # Dispatch case-folds suffixes, while the cache bypass in 0.9.51 compares
     # the raw suffix. Cover all ASCII case variants so FOO.JSON cannot replay
     # an ambiguous entry that foo.json would bypass.
     cache_bypass_suffixes.update(_JSON_SUFFIX_VARIANTS)
@@ -809,7 +809,7 @@ def _handle_refresh_receipt(
 
 
 def _validate_arguments(arguments: Sequence[str]) -> None:
-    """Keep the guarded surface offline, local, and exact for Graphifyy 0.9.47."""
+    """Keep the guarded surface offline, local, and exact for Graphifyy 0.9.51."""
 
     if not arguments or arguments[0] not in {"update", "watch", "extract"}:
         raise GuardFailure("G011")
