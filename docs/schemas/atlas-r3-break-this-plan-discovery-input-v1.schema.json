@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas.r3-break-this-plan-discovery-input/1",
+  "title": "Atlas R3 Break This Plan synthetic discovery input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "prototype_mode",
+    "source_class",
+    "case_id",
+    "product_boundary",
+    "unresolved_dependency_ids",
+    "authority_placeholders",
+    "synthetic_snapshot",
+    "requirements",
+    "candidates"
+  ],
+  "properties": {
+    "schema": {"const": "atlas.r3-break-this-plan-discovery-input/1"},
+    "prototype_mode": {"const": "R3_DISCOVERY_SYNTHETIC_ONLY"},
+    "source_class": {"const": "SYNTHETIC_TEST_ONLY"},
+    "case_id": {"$ref": "#/$defs/caseIdentifier"},
+    "product_boundary": {"$ref": "#/$defs/productBoundary"},
+    "unresolved_dependency_ids": {"$ref": "#/$defs/unresolvedDependencies"},
+    "authority_placeholders": {"$ref": "#/$defs/authorityPlaceholders"},
+    "synthetic_snapshot": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/requirement"},
+      "contains": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {"kind": {"const": "PRESERVE_SYNTHETIC_FLOW"}}
+      },
+      "minContains": 1
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/candidate"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,127}$",
+      "maxLength": 128,
+      "not": {
+        "pattern": "(?:^|[._:/+@-])(?:approval|approved|authoritative|authority|best|eligible|feasible|gate|go|pass|promote|promotion|qualification|qualified|rank|readiness|ready|safe|score|select|selected|winner)(?:$|[._:/+@-])"
+      }
+    },
+    "assumptionIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^assumption\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "candidateIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^candidate\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "caseIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^qdp001-fixture:[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "requirementIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^requirement\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "stepIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^step\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "dependencySubset": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 11,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "R3-DEP-001",
+          "R3-DEP-002",
+          "R3-DEP-003",
+          "R3-DEP-004",
+          "R3-DEP-005",
+          "R3-DEP-006",
+          "R3-DEP-007",
+          "R3-DEP-008",
+          "R3-DEP-009",
+          "R3-DEP-010",
+          "R3-DEP-011"
+        ]
+      }
+    },
+    "unresolvedDependencies": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "prefixItems": [
+        {"const": "R3-DEP-001"},
+        {"const": "R3-DEP-002"},
+        {"const": "R3-DEP-003"},
+        {"const": "R3-DEP-004"},
+        {"const": "R3-DEP-005"},
+        {"const": "R3-DEP-006"},
+        {"const": "R3-DEP-007"},
+        {"const": "R3-DEP-008"},
+        {"const": "R3-DEP-009"},
+        {"const": "R3-DEP-010"},
+        {"const": "R3-DEP-011"}
+      ],
+      "items": false
+    },
+    "productBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["qcp_001", "release_2", "release_3", "runtime"],
+      "properties": {
+        "qcp_001": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["execution_state", "qualification_state"],
+          "properties": {
+            "execution_state": {"const": "CONTRACT_ONLY"},
+            "qualification_state": {"const": "EXPERIMENTAL"}
+          }
+        },
+        "release_2": {"const": "CLOSED_INCOMPLETE_EXPERIMENTAL_CHECKPOINT"},
+        "release_3": {"const": "DISCOVERY_PLANNING_ONLY"},
+        "runtime": {"const": "PARTIAL_NONPORTABLE_PROTOTYPE"}
+      }
+    },
+    "authorityPlaceholders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004"],
+      "properties": {
+        "R2-AUTH-001": {"type": "null"},
+        "R2-AUTH-002": {"type": "null"},
+        "R2-AUTH-004": {"type": "null"}
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirement_id",
+        "kind",
+        "src",
+        "dst",
+        "owner",
+        "dependency_ids"
+      ],
+      "properties": {
+        "requirement_id": {"$ref": "#/$defs/requirementIdentifier"},
+        "kind": {"enum": ["PRESERVE_SYNTHETIC_FLOW", "HUMAN_ONLY_UNEVALUATED"]},
+        "src": {"type": ["string", "null"], "maxLength": 256},
+        "dst": {"type": ["string", "null"], "maxLength": 256},
+        "owner": {"const": "SYNTHETIC_TEST_OWNER"},
+        "dependency_ids": {"$ref": "#/$defs/dependencySubset"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "PRESERVE_SYNTHETIC_FLOW"}}},
+          "then": {
+            "properties": {
+              "src": {"type": "string", "minLength": 1},
+              "dst": {"type": "string", "minLength": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "src": {"type": "null"},
+              "dst": {"type": "null"}
+            }
+          }
+        }
+      ]
+    },
+    "assumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assumption_id", "state", "dependency_ids"],
+      "properties": {
+        "assumption_id": {"$ref": "#/$defs/assumptionIdentifier"},
+        "state": {"enum": ["SYNTHETIC_ASSERTED", "UNRESOLVED"]},
+        "dependency_ids": {"$ref": "#/$defs/dependencySubset"}
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "action", "parameters"],
+      "properties": {
+        "step_id": {"$ref": "#/$defs/stepIdentifier"},
+        "action": {"$ref": "#/$defs/identifier"},
+        "parameters": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {
+            "oneOf": [
+              {"type": "string", "minLength": 1, "maxLength": 256},
+              {"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991}
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"action": {"const": "fail_node"}}},
+          "then": {
+            "properties": {
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {"id": {"type": ["string", "integer"]}}
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"action": {"const": "fail_site"}}},
+          "then": {
+            "properties": {
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {"id": {"type": ["string", "integer"]}}
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"action": {"const": "shut_link"}}},
+          "then": {
+            "properties": {
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["host", "interface"],
+                "properties": {
+                  "host": {"type": ["string", "integer"]},
+                  "interface": {"type": ["string", "integer"]}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"action": {"const": "move_fhrp_active"}}},
+          "then": {
+            "properties": {
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["group", "ifname", "to_host"],
+                "properties": {
+                  "group": {"type": ["string", "integer"]},
+                  "ifname": {"type": ["string", "integer"]},
+                  "to_host": {"type": ["string", "integer"]}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "not": {
+                  "enum": ["fail_node", "fail_site", "shut_link", "move_fhrp_active"]
+                }
+              }
+            }
+          },
+          "then": {"properties": {"parameters": {"maxProperties": 0}}}
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "source_class", "assumptions", "steps"],
+      "properties": {
+        "candidate_id": {"$ref": "#/$defs/candidateIdentifier"},
+        "source_class": {"const": "SYNTHETIC_TEST_ONLY"},
+        "assumptions": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/assumption"}
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/step"}
+        }
+      }
+    }
+  }
+}

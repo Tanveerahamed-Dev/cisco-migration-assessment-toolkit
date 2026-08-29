@@ -142,3 +142,19 @@ The single planned authority-debt issue title is:
 `Atlas roadmap R3 start gate - R2 closed incomplete; authority debt preserved`
 
 The issue must link the remote R2 closeout evidence, retain the dependency ledger, and remain open while R3 discovery proceeds. It must not be used as evidence that Release 2 landed or that Release 3 crossed a product gate.
+
+## 2026-08-29 bounded QDP-001 reconciliation
+
+The first executable discovery slice is now specified by
+`docs/atlas-release-3-break-this-plan-discovery-contract-2026-08-29.md`. It is a non-shipping,
+synthetic-only adapter over the existing cutover simulator. It can expose and replay one exact
+synthetic blocked-flow counterexample or abstain; it cannot rank or select candidates, emit a
+positive feasibility result, compile a TransitionCase, invoke a machine gate, collect workload or
+runtime evidence, or consume authority.
+
+This slice narrows none of `R3-DEP-001` through `R3-DEP-011`. Every request carries the complete
+unresolved dependency census and null placeholders for `R2-AUTH-001`, `R2-AUTH-002`, and
+`R2-AUTH-004`. QCP-001 remains `EXPERIMENTAL` / `CONTRACT_ONLY`, runtime remains
+`PARTIAL_NONPORTABLE_PROTOTYPE`, Release 2 remains
+`CLOSED_INCOMPLETE_EXPERIMENTAL_CHECKPOINT`, and Release 3 remains
+`DISCOVERY_PLANNING_ONLY`.
