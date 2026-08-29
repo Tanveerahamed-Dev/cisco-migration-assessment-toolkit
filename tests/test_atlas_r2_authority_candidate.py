@@ -83,6 +83,12 @@ EXPECTED_AUTH_002_STAGE_B_FIELDS = {
     "workload_input_set_digest",
 }
 
+LEGACY_8C_COMMIT = "8c79277661f3728406409c95c664a9105050db81"
+LEGACY_8C_TREE = "49b782307712750ea454d0e623f287c00cf2b587"
+LEGACY_8C_PACKAGE_MANIFEST_SHA256 = "sha256:5589a57572fd8dae7e7f94d65eed816d63f527de8d1f7bc20f59428b6a85cf5f"
+LEGACY_8C_SOURCE_FREEZE_SHA256 = "sha256:854a27a2b81fee7f92993e4f11122cb7d1219f9f344a3ecb8ee9437ce06120dd"
+LEGACY_8C_SOURCE_TAR_SHA256 = "sha256:ce66e2ee8a76a1e9381270387acb350296b0205f0d22df99508d20c45473869c"
+
 
 def _git(repository: Path, *arguments: str, environment: dict[str, str] | None = None) -> str:
     completed = subprocess.run(
@@ -123,6 +129,11 @@ def git_repository(tmp_path: Path) -> Path:
     (repository / "src").mkdir()
     (repository / "src" / "main.py").write_bytes(b"print('atlas')\n")
     (repository / "script.sh").write_bytes(b"#!/bin/sh\nprintf 'atlas\\n'\n")
+    consumer_path = repository / candidate.DECISION_CONSUMER_SOURCE_PATH
+    consumer_path.parent.mkdir(parents=True, exist_ok=True)
+    consumer_path.write_bytes(
+        (Path(__file__).resolve().parents[1] / candidate.DECISION_CONSUMER_SOURCE_PATH).read_bytes()
+    )
     for role, relative in candidate.MACHINE_OWNED_CANDIDATE_BINDINGS:
         path = repository / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -282,7 +293,10 @@ def test_build_and_verify_modes_are_deterministic_and_exact(
         assert (first / name).read_bytes() == (second / name).read_bytes()
 
     manifest = _object(first / candidate.PACKAGE_MANIFEST)
-    assert manifest["package_status"] == "DECISION_TEMPLATE_READY_NON_AUTHORITATIVE_CANDIDATE"
+    assert manifest["schema"] == candidate.PACKAGE_SCHEMA
+    assert manifest["package_status"] == (
+        "DECISION_TEMPLATE_AND_STRUCTURAL_BINDER_SOURCE_BOUND_NON_AUTHORITATIVE_CANDIDATE"
+    )
     assert manifest["closed_member_set"] == list(candidate.PACKAGE_MEMBERS)
     assert manifest["manifest_self_digest"] is None
     assert manifest["member_count"] == len(candidate.PACKAGE_MEMBERS)
@@ -335,6 +349,10 @@ def test_every_packet_preserves_incomplete_release_boundaries_and_null_authority
         _object(package / "R2-AUTH-004.json"),
         _object(package / candidate.PACKAGE_MANIFEST),
     ]
+    freeze = documents[0]
+    consumer_source = next(
+        row for row in freeze["source"]["blobs"] if row["path"] == candidate.DECISION_CONSUMER_SOURCE_PATH
+    )
     for value in documents:
         assert value["release_boundaries"] == {
             "candidate_selection": "PENDING_ACCOUNTABLE_SELECTION",
@@ -362,9 +380,16 @@ def test_every_packet_preserves_incomplete_release_boundaries_and_null_authority
     }
     for name in ("R2-AUTH-001.json", "R2-AUTH-002.json", "R2-AUTH-004.json"):
         packet = _object(package / name)
+        assert packet["schema"] == candidate.DECISION_PACKET_SCHEMA
         assert packet["authoritative"] is False
         assert packet["packet_status"] == ("DECISION_TEMPLATE_READY_WITH_UNRESOLVED_ACCOUNTABLE_INPUTS")
-        assert packet["decision_consumption_state"] == ("TEMPLATE_ONLY_NO_DECISION_RECEIPT_VERIFIER")
+        assert packet["decision_consumption_state"] == candidate.DECISION_CONSUMPTION_STATE
+        assert packet["decision_consumer"] == {
+            "binding_status": candidate.DECISION_CONSUMPTION_STATE,
+            "consumer_source": consumer_source,
+            "decision_effect": "NONE",
+            "result_schema": candidate.DECISION_CONSUMER_RESULT_SCHEMA,
+        }
         assert packet["accountable_decision"] == {
             "accountable_owner": None,
             "approval": None,
@@ -386,6 +411,19 @@ def test_every_packet_preserves_incomplete_release_boundaries_and_null_authority
         assert receipt_contract["receipt_schema"] == candidate.DECISION_RECEIPT_SCHEMA
         assert receipt_contract["package_mutation_forbidden"] is True
         assert receipt_contract["status"] == "DETACHED_RECEIPT_REQUIRED_NOT_SUPPLIED"
+        assert packet["structural_signing_contract"] == {
+            "canonical_encoding": "ATLAS_CANONICAL_JSON/1",
+            "detached_signature_field_semantics": ("SHA256_OF_EXACT_RAW_DETACHED_SIGNATURE_ARTIFACT"),
+            "payload_digest_algorithm": "SHA-256",
+            "payload_digest_scope": "CANONICAL_SIGNING_PAYLOAD_BYTES_ONLY",
+            "self_binding_null_fields": ["detached_signature", "payload_digest"],
+            "signature_artifact_encoding": "OPAQUE_EXACT_BYTES",
+            "signing_domain_hex": candidate.DECISION_SIGNING_DOMAIN_HEX,
+            "signing_material_construction": ("SIGNING_DOMAIN_BYTES_CONCAT_CANONICAL_SIGNING_PAYLOAD_BYTES"),
+            "signing_payload_schema": candidate.DECISION_SIGNING_PAYLOAD_SCHEMA,
+            "structural_verification_effect": "NONE",
+        }
+        assert receipt_contract["structural_signing_contract_ref"] == ("PACKET_STRUCTURAL_SIGNING_CONTRACT")
         assert receipt_contract["allowed_choices"] == packet["smallest_accountable_choice"]["options"]
         assert set(receipt_contract["required_receipt_fields"]) == receipt_fields_by_packet[name]
         assert set(receipt_contract["receipt_values"]) == receipt_fields_by_packet[name]
@@ -473,6 +511,7 @@ def test_every_packet_preserves_incomplete_release_boundaries_and_null_authority
     assert stage_b["decision_id"] == "R2-AUTH-002-D2"
     assert stage_b["options"] == ["ADEQUATE", "INADEQUATE", "ABSTAIN"]
     assert stage_b["prerequisite_binding_rule"] == ("MUST_BIND_IMMUTABLE_R2_AUTH_002_D1_STAGE_A_RECEIPT_SHA256")
+    assert stage_b["structural_signing_contract_ref"] == "PACKET_STRUCTURAL_SIGNING_CONTRACT"
     assert set(stage_b["required_receipt_fields"]) == (EXPECTED_BASE_RECEIPT_FIELDS | EXPECTED_AUTH_002_STAGE_B_FIELDS)
     assert set(stage_b["receipt_values"]) == (EXPECTED_BASE_RECEIPT_FIELDS | EXPECTED_AUTH_002_STAGE_B_FIELDS)
     assert all(value is None for value in stage_b["receipt_values"].values())
@@ -759,6 +798,81 @@ def test_required_machine_owned_candidate_path_cannot_be_omitted(
         _build(git_repository, tmp_path / "refused")
 
 
+def test_legacy_v1_package_without_structural_consumer_remains_verifiable(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    _git(git_repository, "rm", "--", candidate.DECISION_CONSUMER_SOURCE_PATH)
+    _git(git_repository, "commit", "-q", "-m", "legacy package without structural consumer")
+    package = tmp_path / "legacy-v1"
+    commit, tree = _subject(git_repository)
+    with pytest.raises(
+        candidate.CandidatePackageError,
+        match="STRUCTURAL_DECISION_CONSUMER_REQUIRED_FOR_NEW_PACKAGE",
+    ):
+        candidate.build_package(
+            git_repository,
+            package,
+            expected_commit=commit,
+            expected_tree=tree,
+        )
+    snapshot = candidate._snapshot(git_repository, commit, tree)
+    expected = candidate._expected_package(snapshot)
+    package.mkdir()
+    for name, raw in expected.items():
+        (package / name).write_bytes(raw)
+    manifest = _object(package / candidate.PACKAGE_MANIFEST)
+    assert manifest["schema"] == candidate.PACKAGE_SCHEMA_V1
+    assert manifest["package_status"] == "DECISION_TEMPLATE_READY_NON_AUTHORITATIVE_CANDIDATE"
+    for name in ("R2-AUTH-001.json", "R2-AUTH-002.json", "R2-AUTH-004.json"):
+        packet = _object(package / name)
+        assert packet["schema"] == candidate.DECISION_PACKET_SCHEMA_V1
+        assert packet["decision_consumption_state"] == candidate.LEGACY_DECISION_CONSUMPTION_STATE
+        assert "decision_consumer" not in packet
+        assert "structural_signing_contract" not in packet
+        assert "structural_signing_contract_ref" not in packet["detached_decision_receipt_contract"]
+    assert b"provides no decision-receipt consumer or authority verifier" in (package / "README.md").read_bytes()
+    candidate.verify_package(
+        git_repository,
+        package,
+        expected_commit=commit,
+        expected_tree=tree,
+    )
+
+
+def test_known_8c_legacy_package_hashes_remain_stable(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    legacy_repository = tmp_path / "legacy-8c-repository"
+    completed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
+            "clone",
+            "-q",
+            "--no-hardlinks",
+            str(repository),
+            str(legacy_repository),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    _git(legacy_repository, "config", "core.autocrlf", "false")
+    _git(legacy_repository, "config", "core.eol", "lf")
+    _git(legacy_repository, "config", "core.safecrlf", "true")
+    _git(legacy_repository, "checkout", "--detach", "-q", LEGACY_8C_COMMIT)
+    snapshot = candidate._snapshot(legacy_repository, LEGACY_8C_COMMIT, LEGACY_8C_TREE)
+    expected = candidate._expected_package(snapshot)
+    assert candidate.bytes_digest(expected[candidate.PACKAGE_MANIFEST]) == (LEGACY_8C_PACKAGE_MANIFEST_SHA256)
+    assert candidate.bytes_digest(expected["source-freeze.json"]) == LEGACY_8C_SOURCE_FREEZE_SHA256
+    assert candidate.bytes_digest(expected["source.tar"]) == LEGACY_8C_SOURCE_TAR_SHA256
+    assert json.loads(expected[candidate.PACKAGE_MANIFEST])["schema"] == candidate.PACKAGE_SCHEMA_V1
+
+
 @pytest.mark.parametrize(
     ("role", "mutate", "error"),
     (
@@ -805,13 +919,15 @@ def test_ssot_registry_and_protocol_claim_boundaries_are_pinned() -> None:
     assert "**Atlas Release 2 exact authority-candidate package**" in ssot
     assert "`tools/build_atlas_r2_authority_candidate.py`" in ssot
     assert "local Git object database" in ssot
-    assert "It does not prove remote origin" in ssot
+    assert "do not prove remote origin" in ssot
     for boundary in (
         "CLOSED_INCOMPLETE_EXPERIMENTAL_CHECKPOINT",
         "EXPERIMENTAL` / `CONTRACT_ONLY",
         "PARTIAL_NONPORTABLE_PROTOTYPE",
         "DISCOVERY_PLANNING_ONLY",
-        "decision-template-ready, not decision-consumption-ready",
+        "decision-template-ready and structural-binder-source-bound",
+        "atlas.r2-authority-candidate-package/2",
+        "SHA256_OF_EXACT_RAW_DETACHED_SIGNATURE_ARTIFACT",
         "R2-AUTH-001-PRECONDITION-D1",
         "R2-AUTH-002-D1",
         "APPROVE_PROFILE_P1_FOR_IMPLEMENTATION",

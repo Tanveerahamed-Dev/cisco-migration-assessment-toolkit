@@ -88,11 +88,46 @@ none of those external values. Receipt authentication, current policy selection,
 time, revocation, and separation remain governed by `R2-AUTH-004`; a merely well-shaped receipt is
 not authority.
 
-The current package is decision-template-ready, not decision-consumption-ready. It includes no
-parser or authority verifier for a later `atlas.r2-authority-decision-receipt/1`. A versioned
-consumer must define canonical field types, signing domain, non-null and choice-specific rules,
-expiry, current-policy and revocation revalidation, separation checks, and Stage A-to-Stage B
-bindings before any detached receipt can affect a gate.
+The current package is decision-template-ready and structural-binder-source-bound, but not
+authority-consumption-ready. Its exact source freeze contains
+`tools/bind_atlas_r2_authority_decision.py`, a policy-neutral consumer for a later
+`atlas.r2-authority-decision-receipt/1`. The generated packet binds that source path by Git blob,
+byte count, and SHA-256.
+
+The structural-binder successor uses `atlas.r2-authority-candidate-package/2` and
+`atlas.r2-authority-decision-packet/2`. The same tool's verifier retains an explicit legacy `/1` path when
+the exact source subject has no structural binder, so prior immutable `/1` package bytes remain
+verifiable and no old receipt or package identity transfers to `/2`.
+
+The binder:
+
+- requires strict canonical JSON and the packet's exact receipt-field census and allowed choice;
+- binds the caller-pinned repository namespace, candidate commit/tree, package-manifest and
+  source-freeze digests, authority ID, and decision ID;
+- resolves the flat receipt's two circular slots by retaining them and setting exactly
+  `payload_digest` and `detached_signature` to JSON `null` inside the closed
+  `atlas.r2-authority-decision-signing-payload/1` wrapper;
+- defines `payload_digest` as SHA-256 of those canonical wrapper bytes only; defines signing
+  material as the fixed domain bytes
+  `41544c41532d52322d415554484f524954592d4445434953494f4e2d5349474e494e4700763100`
+  followed by the canonical wrapper bytes; and defines the receipt's `detached_signature` field as
+  the `sha256:` digest of a separately supplied opaque exact-byte signature artifact, not inline
+  base64 or raw signature bytes (machine token
+  `SHA256_OF_EXACT_RAW_DETACHED_SIGNATURE_ARTIFACT`);
+- binds the exact raw detached-signature and public-key artifacts plus exact bytes, byte counts,
+  and SHA-256 values for every other declared digest artifact;
+- rejoins post-verification packet and source-freeze reads to the independently pinned package
+  manifest; and
+- emits only `STRUCTURALLY_BOUND_EXTERNAL_AUTHORITY_UNVERIFIED` with `decision_effect: NONE`.
+
+This structural result does not authenticate the declared signature algorithm or signature, select
+or authenticate a governing policy, establish accountable identity, custody, trusted time,
+revocation, separation, effective receipt selection/conflict resolution, approval, adequacy, or
+runtime closure. Its emitted JSON and Python type are recomputable content-binding conveniences,
+not unforgeable proof that validation ran. A separate externally governed authority consumer must
+close those domains before any detached receipt can affect a gate. R2-AUTH-002 Stage B additionally
+requires a specialized semantic consumer that freshly verifies Stage A authorization and reconciles
+corpus/execution counts, strata, criteria, custody, gaps, and outcome evidence.
 
 ## R2-AUTH-001 precondition packet
 

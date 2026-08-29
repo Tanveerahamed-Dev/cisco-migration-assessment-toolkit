@@ -32,10 +32,18 @@ PACKAGE_MEMBERS = (
     "source.tar",
 )
 PACKAGE_FILES = frozenset((*PACKAGE_MEMBERS, PACKAGE_MANIFEST))
-PACKAGE_SCHEMA = "atlas.r2-authority-candidate-package/1"
+PACKAGE_SCHEMA_V1 = "atlas.r2-authority-candidate-package/1"
+PACKAGE_SCHEMA = "atlas.r2-authority-candidate-package/2"
 SOURCE_FREEZE_SCHEMA = "atlas.r2-authority-candidate-source-freeze/1"
-DECISION_PACKET_SCHEMA = "atlas.r2-authority-decision-packet/1"
+DECISION_PACKET_SCHEMA_V1 = "atlas.r2-authority-decision-packet/1"
+DECISION_PACKET_SCHEMA = "atlas.r2-authority-decision-packet/2"
 DECISION_RECEIPT_SCHEMA = "atlas.r2-authority-decision-receipt/1"
+LEGACY_DECISION_CONSUMPTION_STATE = "TEMPLATE_ONLY_NO_DECISION_RECEIPT_VERIFIER"
+DECISION_CONSUMPTION_STATE = "STRUCTURAL_BINDER_SOURCE_BOUND_EXTERNAL_AUTHORITY_UNVERIFIED"
+DECISION_CONSUMER_SOURCE_PATH = "tools/bind_atlas_r2_authority_decision.py"
+DECISION_CONSUMER_RESULT_SCHEMA = "atlas.r2-authority-decision-structural-binding/1"
+DECISION_SIGNING_PAYLOAD_SCHEMA = "atlas.r2-authority-decision-signing-payload/1"
+DECISION_SIGNING_DOMAIN_HEX = "41544c41532d52322d415554484f524954592d4445434953494f4e2d5349474e494e4700763100"
 MACHINE_OWNED_CANDIDATE_BINDINGS = (
     (
         "REFERENCE_RUNTIME_INVENTORY_V1",
@@ -557,6 +565,38 @@ def _machine_owned_bindings(snapshot: GitSnapshot) -> list[dict[str, Any]]:
     return bindings
 
 
+def _has_decision_consumer(snapshot: GitSnapshot) -> bool:
+    return any(row["path"] == DECISION_CONSUMER_SOURCE_PATH for row in snapshot.blobs)
+
+
+def _decision_consumer_binding(snapshot: GitSnapshot) -> dict[str, Any]:
+    by_path = {row["path"]: row for row in snapshot.blobs}
+    row = by_path.get(DECISION_CONSUMER_SOURCE_PATH)
+    if row is None:
+        _fail("REQUIRED_DECISION_CONSUMER_PATH_MISSING", DECISION_CONSUMER_SOURCE_PATH)
+    return {
+        "binding_status": DECISION_CONSUMPTION_STATE,
+        "consumer_source": dict(row),
+        "decision_effect": "NONE",
+        "result_schema": DECISION_CONSUMER_RESULT_SCHEMA,
+    }
+
+
+def _structural_signing_contract() -> dict[str, Any]:
+    return {
+        "canonical_encoding": "ATLAS_CANONICAL_JSON/1",
+        "detached_signature_field_semantics": ("SHA256_OF_EXACT_RAW_DETACHED_SIGNATURE_ARTIFACT"),
+        "payload_digest_algorithm": "SHA-256",
+        "payload_digest_scope": "CANONICAL_SIGNING_PAYLOAD_BYTES_ONLY",
+        "self_binding_null_fields": ["detached_signature", "payload_digest"],
+        "signature_artifact_encoding": "OPAQUE_EXACT_BYTES",
+        "signing_domain_hex": DECISION_SIGNING_DOMAIN_HEX,
+        "signing_material_construction": ("SIGNING_DOMAIN_BYTES_CONCAT_CANONICAL_SIGNING_PAYLOAD_BYTES"),
+        "signing_payload_schema": DECISION_SIGNING_PAYLOAD_SCHEMA,
+        "structural_verification_effect": "NONE",
+    }
+
+
 def _release_boundaries() -> dict[str, Any]:
     return {
         "candidate_selection": "PENDING_ACCOUNTABLE_SELECTION",
@@ -649,6 +689,24 @@ def _decision_packet(
     receipt_fields = tuple(sorted((*BASE_DECISION_RECEIPT_FIELDS, *receipt_binding_fields)))
     if len(receipt_fields) != len(set(receipt_fields)):
         _fail("DUPLICATE_DECISION_RECEIPT_FIELD", authority_id)
+    has_consumer = _has_decision_consumer(snapshot)
+    binding_rules = {
+        "authority_id": "MUST_EQUAL_PACKET_AUTHORITY_ID",
+        "candidate_commit": "MUST_EQUAL_PROPOSED_CANDIDATE_COMMIT",
+        "candidate_tree": "MUST_EQUAL_PROPOSED_CANDIDATE_TREE",
+        "decision_id": "MUST_EQUAL_SMALLEST_ACCOUNTABLE_CHOICE_ID",
+        "package_manifest_sha256": "MUST_DIGEST_EXACT_PACKAGE_MANIFEST_BYTES",
+        "source_freeze_sha256": "MUST_EQUAL_PROPOSED_CANDIDATE_SOURCE_FREEZE_SHA256",
+    }
+    if has_consumer:
+        binding_rules.update(
+            {
+                "detached_signature": "MUST_EQUAL_SHA256_OF_EXACT_RAW_DETACHED_SIGNATURE_ARTIFACT",
+                "payload_digest": "MUST_EQUAL_SHA256_OF_CANONICAL_SIGNING_PAYLOAD_BYTES",
+                "public_key_digest": "MUST_EQUAL_SHA256_OF_EXACT_RAW_PUBLIC_KEY_ARTIFACT",
+                "signature_algorithm": "DECLARED_IDENTIFIER_STRUCTURALLY_BOUND_NOT_AUTHENTICATED",
+            }
+        )
     packet = {
         "accountable_decision": _empty_authority(),
         "authority_id": authority_id,
@@ -662,20 +720,20 @@ def _decision_packet(
             "state": "PENDING_ACCOUNTABLE_SELECTION",
         },
         "claim_boundary": (
-            "Decision-template-ready non-authoritative packet only; every external or accountable "
-            "field remains null or unresolved and no listed option is a recorded decision."
+            "Decision-template and structural-binder-source-bound non-authoritative packet only; every "
+            "external or accountable field remains null or unresolved, no listed option is a "
+            "recorded decision, and structural binding has zero decision effect."
+            if has_consumer
+            else "Decision-template-ready non-authoritative packet only; every external or "
+            "accountable field remains null or unresolved and no listed option is a recorded "
+            "decision."
         ),
-        "decision_consumption_state": "TEMPLATE_ONLY_NO_DECISION_RECEIPT_VERIFIER",
+        "decision_consumption_state": (
+            DECISION_CONSUMPTION_STATE if has_consumer else LEGACY_DECISION_CONSUMPTION_STATE
+        ),
         "detached_decision_receipt_contract": {
             "allowed_choices": list(choice_options),
-            "binding_rules": {
-                "authority_id": "MUST_EQUAL_PACKET_AUTHORITY_ID",
-                "candidate_commit": "MUST_EQUAL_PROPOSED_CANDIDATE_COMMIT",
-                "candidate_tree": "MUST_EQUAL_PROPOSED_CANDIDATE_TREE",
-                "decision_id": "MUST_EQUAL_SMALLEST_ACCOUNTABLE_CHOICE_ID",
-                "package_manifest_sha256": "MUST_DIGEST_EXACT_PACKAGE_MANIFEST_BYTES",
-                "source_freeze_sha256": "MUST_EQUAL_PROPOSED_CANDIDATE_SOURCE_FREEZE_SHA256",
-            },
+            "binding_rules": binding_rules,
             "canonical_json_required": True,
             "package_mutation_forbidden": True,
             "receipt_schema": DECISION_RECEIPT_SCHEMA,
@@ -694,7 +752,7 @@ def _decision_packet(
         },
         "release_boundaries": _release_boundaries(),
         "required_evidence": list(required_evidence),
-        "schema": DECISION_PACKET_SCHEMA,
+        "schema": DECISION_PACKET_SCHEMA if has_consumer else DECISION_PACKET_SCHEMA_V1,
         "smallest_accountable_choice": {
             "choice_id": choice_id,
             "decision_id": choice_id,
@@ -705,11 +763,22 @@ def _decision_packet(
         "title": title,
         "unresolved_accountable_inputs": dict(unresolved_inputs),
     }
+    if has_consumer:
+        packet["decision_consumer"] = _decision_consumer_binding(snapshot)
+        packet["structural_signing_contract"] = _structural_signing_contract()
+        packet["detached_decision_receipt_contract"]["structural_signing_contract_ref"] = (
+            "PACKET_STRUCTURAL_SIGNING_CONTRACT"
+        )
     if additional_fields:
         overlap = set(packet) & set(additional_fields)
         if overlap:
             _fail("DECISION_PACKET_ADDITIONAL_FIELD_COLLISION", sorted(overlap)[0])
         packet.update(additional_fields)
+    if has_consumer:
+        two_stage = packet.get("two_stage_decision_contract")
+        stage_b = two_stage.get("stage_b") if type(two_stage) is dict else None
+        if type(stage_b) is dict:
+            stage_b["structural_signing_contract_ref"] = "PACKET_STRUCTURAL_SIGNING_CONTRACT"
     return packet
 
 
@@ -947,6 +1016,15 @@ def _authority_004(snapshot: GitSnapshot, source_freeze_digest: str) -> dict[str
 
 
 def _readme(snapshot: GitSnapshot) -> bytes:
+    receipt_consumer_boundary = (
+        "no receipt, key, or signature. Its exact source freeze includes a policy-neutral structural "
+        "receipt binder that verifies canonical/package/artifact bindings and always emits zero "
+        "decision effect. It is not a signature, policy, custody, trusted-time, revocation, "
+        "separation, or authority verifier.\n\n"
+        if _has_decision_consumer(snapshot)
+        else "only a receipt template, generates no key or signature, and provides no "
+        "decision-receipt consumer or authority verifier.\n\n"
+    )
     return (
         "# Atlas Release 2 authority candidate package\n\n"
         "Status: `PENDING_ACCOUNTABLE_SELECTION` and non-authoritative.\n\n"
@@ -962,9 +1040,8 @@ def _readme(snapshot: GitSnapshot) -> bytes:
         "source-freeze SHA-256 values, candidate commit/tree, authority and decision IDs, reason, "
         "accountable principal and organization, authority basis, issued time, signer key, public-key "
         "digest, signature algorithm, payload digest, and detached signature. This package contains "
-        "only a receipt template, generates no key or signature, and provides no decision-receipt "
-        "consumer or authority verifier.\n\n"
-        "QCP-001 remains `EXPERIMENTAL` / `CONTRACT_ONLY`; runtime remains "
+        + receipt_consumer_boundary
+        + "QCP-001 remains `EXPERIMENTAL` / `CONTRACT_ONLY`; runtime remains "
         "`PARTIAL_NONPORTABLE_PROTOTYPE`; Release 3 remains `DISCOVERY_PLANNING_ONLY`.\n\n"
         "`source-freeze.json` enumerates every Git blob in the proposed commit. `source.tar` is a "
         "deterministic tar of every listed Git blob and deliberately ignores export-ignore attributes. "
@@ -986,6 +1063,7 @@ def _member_rows(members: Mapping[str, bytes]) -> list[dict[str, Any]]:
 
 
 def _manifest(snapshot: GitSnapshot, members: Mapping[str, bytes]) -> dict[str, Any]:
+    has_consumer = _has_decision_consumer(snapshot)
     return {
         "authority": _empty_authority(),
         "candidate_selection": {
@@ -997,11 +1075,15 @@ def _manifest(snapshot: GitSnapshot, members: Mapping[str, bytes]) -> dict[str, 
         "manifest_self_digest": None,
         "member_count": len(PACKAGE_MEMBERS),
         "members": _member_rows(members),
-        "package_status": "DECISION_TEMPLATE_READY_NON_AUTHORITATIVE_CANDIDATE",
+        "package_status": (
+            "DECISION_TEMPLATE_AND_STRUCTURAL_BINDER_SOURCE_BOUND_NON_AUTHORITATIVE_CANDIDATE"
+            if has_consumer
+            else "DECISION_TEMPLATE_READY_NON_AUTHORITATIVE_CANDIDATE"
+        ),
         "proposed_candidate_commit": snapshot.subject.commit,
         "proposed_candidate_tree": snapshot.subject.tree,
         "release_boundaries": _release_boundaries(),
-        "schema": PACKAGE_SCHEMA,
+        "schema": PACKAGE_SCHEMA if has_consumer else PACKAGE_SCHEMA_V1,
     }
 
 
@@ -1031,10 +1113,15 @@ def _parse_canonical_object(raw: bytes, path: str) -> dict[str, Any]:
     return value
 
 
-def _validate_actual_manifest(package: Path, raw: bytes) -> dict[str, Any]:
+def _validate_actual_manifest(
+    package: Path,
+    raw: bytes,
+    *,
+    expected_schema: str,
+) -> dict[str, Any]:
     manifest = _parse_canonical_object(raw, PACKAGE_MANIFEST)
     if (
-        manifest.get("schema") != PACKAGE_SCHEMA
+        manifest.get("schema") != expected_schema
         or manifest.get("closed_member_set") != list(PACKAGE_MEMBERS)
         or manifest.get("member_count") != len(PACKAGE_MEMBERS)
         or manifest.get("manifest_self_digest") is not None
@@ -1064,7 +1151,12 @@ def _validate_directory(package: Path) -> None:
 
 def _verify_expected_bytes(package: Path, expected: Mapping[str, bytes]) -> None:
     _validate_directory(package)
-    _validate_actual_manifest(package, (package / PACKAGE_MANIFEST).read_bytes())
+    expected_manifest = _parse_canonical_object(expected[PACKAGE_MANIFEST], PACKAGE_MANIFEST)
+    _validate_actual_manifest(
+        package,
+        (package / PACKAGE_MANIFEST).read_bytes(),
+        expected_schema=expected_manifest["schema"],
+    )
     for path in (*PACKAGE_MEMBERS, PACKAGE_MANIFEST):
         if (package / path).read_bytes() != expected[path]:
             _fail("PACKAGE_MEMBER_DRIFT", path)
@@ -1080,6 +1172,8 @@ def build_package(
     """Build a new candidate package without changing Git or overwriting any path."""
 
     snapshot = _snapshot(repository, expected_commit, expected_tree)
+    if not _has_decision_consumer(snapshot):
+        _fail("STRUCTURAL_DECISION_CONSUMER_REQUIRED_FOR_NEW_PACKAGE")
     output = output.resolve(strict=False)
     if output.exists() or output.is_symlink():
         _fail("OUTPUT_PATH_ALREADY_EXISTS")
