@@ -7,6 +7,13 @@ per change, with verification evidence) lives in
 ## [Unreleased]
 
 ### Added
+- **QDP-001 “Break This Plan” bounded discovery adapter.** A non-shipping, synthetic-only tool now
+  evaluates every declared ordered cutover candidate through the existing cutover simulator and
+  emits only a digest-bound replayable positively observed-discard counterexample or an explicit abstention.
+  Canonical schemas, an unsafe-middle fixture, complete candidate/dependency accounting, null-only
+  R2 authority placeholders, and adversarial replay/vacuity tests prevent clean simulation, path
+  loss, absence-derived route loss, L2 election projections, unsupported steps, or candidate-set narrowing from becoming
+  feasibility, ranking, selection, translation, qualification, preview, promotion, or release.
 - **Evidence-bound Traffic Assurance and governed Unknown Evidence.** Full assessment runs can
   opt into `--traffic-intents` with a finite catalog of exact IPv4 TCP/UDP five-tuples. The
   canonical snapshot/workbook result composes requested forward/return RIB projection, stateless

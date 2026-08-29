@@ -1,0 +1,382 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas.r3-break-this-plan-discovery-result/1",
+  "title": "Atlas R3 Break This Plan non-authoritative discovery result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "banner",
+    "authoritative",
+    "authoritative_gate",
+    "decision_effect",
+    "qualification_state",
+    "promotion_eligible",
+    "feasibility_verdict",
+    "selected_candidate",
+    "translation_checked",
+    "translation_state",
+    "preview_eligible",
+    "case_id",
+    "input_digest",
+    "candidate_set_digest",
+    "requirements_digest",
+    "product_boundary_digest",
+    "baseline_projection_digest",
+    "semantics_digest",
+    "product_boundary",
+    "unresolved_dependency_ids",
+    "authority_placeholders",
+    "limit_profile",
+    "candidate_results",
+    "next_evidence_requests",
+    "next_observation",
+    "global_limitations",
+    "r2_closure_handoffs"
+  ],
+  "properties": {
+    "schema": {"const": "atlas.r3-break-this-plan-discovery-result/1"},
+    "banner": {"const": "R3 DISCOVERY PROTOTYPE — NON-AUTHORITATIVE"},
+    "authoritative": {"const": false},
+    "authoritative_gate": {"type": "null"},
+    "decision_effect": {"const": "NONE"},
+    "qualification_state": {"const": "EXPERIMENTAL"},
+    "promotion_eligible": {"const": false},
+    "feasibility_verdict": {"type": "null"},
+    "selected_candidate": {"type": "null"},
+    "translation_checked": {"const": false},
+    "translation_state": {"const": "TRANSLATION_NOT_ESTABLISHED"},
+    "preview_eligible": {"const": false},
+    "case_id": {"$ref": "#/$defs/caseIdentifier"},
+    "input_digest": {"$ref": "#/$defs/digest"},
+    "candidate_set_digest": {"$ref": "#/$defs/digest"},
+    "requirements_digest": {"$ref": "#/$defs/digest"},
+    "product_boundary_digest": {"$ref": "#/$defs/digest"},
+    "baseline_projection_digest": {"$ref": "#/$defs/digest"},
+    "semantics_digest": {"$ref": "#/$defs/digest"},
+    "product_boundary": {"$ref": "#/$defs/productBoundary"},
+    "unresolved_dependency_ids": {"$ref": "#/$defs/unresolvedDependencies"},
+    "authority_placeholders": {"$ref": "#/$defs/authorityPlaceholders"},
+    "limit_profile": {"$ref": "#/$defs/limitProfile"},
+    "candidate_results": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/candidateResult"}
+    },
+    "next_evidence_requests": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "next_observation": {"type": "null"},
+    "global_limitations": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"const": "DISCOVERY_PLANNING_ONLY"},
+        {"const": "NO_CANDIDATE_RANKING_OR_SELECTION"},
+        {"const": "NO_EXTERNAL_OBSERVATION_AUTHORIZED"},
+        {"const": "NO_POSITIVE_FEASIBILITY_OR_COMPLETENESS_CERTIFICATE"},
+        {"const": "NO_QDP_TO_QCP_TRANSLATION"},
+        {"const": "SYNTHETIC_TEST_ONLY"}
+      ],
+      "items": false
+    },
+    "r2_closure_handoffs": {"$ref": "#/$defs/closureHandoffs"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:/+@-]{0,127}$",
+      "maxLength": 128,
+      "not": {
+        "pattern": "(?:^|[._:/+@-])(?:approval|approved|authoritative|authority|best|eligible|feasible|gate|go|pass|promote|promotion|qualification|qualified|rank|readiness|ready|safe|score|select|selected|winner)(?:$|[._:/+@-])"
+      }
+    },
+    "candidateIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^candidate\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "caseIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^qdp001-fixture:[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "requirementIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^requirement\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "stepIdentifier": {
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"pattern": "^step\\.[a-z0-9._:/+@-]+$"}
+      ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "unresolvedDependencies": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "prefixItems": [
+        {"const": "R3-DEP-001"},
+        {"const": "R3-DEP-002"},
+        {"const": "R3-DEP-003"},
+        {"const": "R3-DEP-004"},
+        {"const": "R3-DEP-005"},
+        {"const": "R3-DEP-006"},
+        {"const": "R3-DEP-007"},
+        {"const": "R3-DEP-008"},
+        {"const": "R3-DEP-009"},
+        {"const": "R3-DEP-010"},
+        {"const": "R3-DEP-011"}
+      ],
+      "items": false
+    },
+    "productBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["qcp_001", "release_2", "release_3", "runtime"],
+      "properties": {
+        "qcp_001": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["execution_state", "qualification_state"],
+          "properties": {
+            "execution_state": {"const": "CONTRACT_ONLY"},
+            "qualification_state": {"const": "EXPERIMENTAL"}
+          }
+        },
+        "release_2": {"const": "CLOSED_INCOMPLETE_EXPERIMENTAL_CHECKPOINT"},
+        "release_3": {"const": "DISCOVERY_PLANNING_ONLY"},
+        "runtime": {"const": "PARTIAL_NONPORTABLE_PROTOTYPE"}
+      }
+    },
+    "authorityPlaceholders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004"],
+      "properties": {
+        "R2-AUTH-001": {"type": "null"},
+        "R2-AUTH-002": {"type": "null"},
+        "R2-AUTH-004": {"type": "null"}
+      }
+    },
+    "limitProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "max_assumptions_per_candidate",
+        "max_candidates",
+        "max_counterexamples",
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_requirements",
+        "max_step_parameters",
+        "max_steps_per_candidate",
+        "max_witness_bytes"
+      ],
+      "properties": {
+        "profile_id": {"const": "ATLAS_R3_QDP001_DISCOVERY_LIMITS/1"},
+        "max_assumptions_per_candidate": {"const": 32},
+        "max_candidates": {"const": 4},
+        "max_counterexamples": {"const": 128},
+        "max_input_bytes": {"const": 1048576},
+        "max_output_bytes": {"const": 1048576},
+        "max_requirements": {"const": 32},
+        "max_step_parameters": {"const": 8},
+        "max_steps_per_candidate": {"const": 16},
+        "max_witness_bytes": {"const": 65536}
+      }
+    },
+    "counterexample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "candidate_digest",
+        "candidate_id",
+        "candidate_set_digest",
+        "case_id",
+        "input_digest",
+        "observation_digest",
+        "product_boundary_digest",
+        "reason_code",
+        "requirement_id",
+        "requirements_digest",
+        "semantics_digest",
+        "step_id",
+        "step_index",
+        "witness_digest"
+      ],
+      "properties": {
+        "schema": {"const": "atlas.r3-break-this-plan-counterexample/1"},
+        "candidate_digest": {"$ref": "#/$defs/digest"},
+        "candidate_id": {"$ref": "#/$defs/candidateIdentifier"},
+        "candidate_set_digest": {"$ref": "#/$defs/digest"},
+        "case_id": {"$ref": "#/$defs/identifier"},
+        "input_digest": {"$ref": "#/$defs/digest"},
+        "observation_digest": {"$ref": "#/$defs/digest"},
+        "product_boundary_digest": {"$ref": "#/$defs/digest"},
+        "reason_code": {"const": "DEFINITIVE_OBSERVED_DISCARD_SYNTHETIC_FLOW"},
+        "requirement_id": {"$ref": "#/$defs/requirementIdentifier"},
+        "requirements_digest": {"$ref": "#/$defs/digest"},
+        "semantics_digest": {"$ref": "#/$defs/digest"},
+        "step_id": {"$ref": "#/$defs/stepIdentifier"},
+        "step_index": {"type": "integer", "minimum": 0, "maximum": 15},
+        "witness_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "candidateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_digest",
+        "candidate_id",
+        "checked_flow_requirements",
+        "checked_steps",
+        "counterexamples",
+        "limitations",
+        "reason_code",
+        "result_kind",
+        "simulation_projection_digest"
+      ],
+      "properties": {
+        "candidate_digest": {"$ref": "#/$defs/digest"},
+        "candidate_id": {"$ref": "#/$defs/candidateIdentifier"},
+        "checked_flow_requirements": {"type": "integer", "minimum": 1, "maximum": 32},
+        "checked_steps": {"type": "integer", "minimum": 0, "maximum": 16},
+        "counterexamples": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/counterexample"}
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "BASELINE_EVIDENCE_INCOMPLETE",
+              "BASELINE_REQUIREMENT_CONFLICT",
+              "BLOCKED_FLOW_OUTSIDE_REQUIREMENT_SET",
+              "BLOCKED_FLOW_SHAPE_UNSUPPORTED",
+              "BLOCKED_FLOW_WITHOUT_POSITIVE_OBSERVED_DISCARD",
+              "ELECTION_PROJECTION_NOT_CONTINUITY_EVIDENCE",
+              "HUMAN_REQUIREMENT_UNEVALUATED",
+              "L2_CONTINUITY_NOT_ASSESSED",
+              "NOOP_STEP_NOT_EVALUABLE",
+              "NO_COUNTEREXAMPLE_OBSERVED_IS_NOT_SUPPORT",
+              "NO_POSITIVE_SUPPORT_OR_COMPLETENESS_CERTIFICATE",
+              "PATH_LOSS_IS_INCONCLUSIVE",
+              "SIMULATION_NOT_EVALUABLE",
+              "SIMULATOR_IGNORED_STEP_PARAMETERS",
+              "SYNTHETIC_MODEL_ONLY",
+              "UNRESOLVED_ASSUMPTION"
+            ]
+          }
+        },
+        "reason_code": {
+          "enum": [
+            "REPLAYABLE_OBSERVED_DISCARD_SYNTHETIC_FLOW",
+            "NOT_EVALUABLE",
+            "MODEL_CONFLICT",
+            "ABSTAIN_EVIDENCE_INCOMPLETE"
+          ]
+        },
+        "result_kind": {"enum": ["COUNTEREXAMPLE", "ABSTENTION"]},
+        "simulation_projection_digest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"result_kind": {"const": "COUNTEREXAMPLE"}}},
+          "then": {
+            "properties": {
+              "reason_code": {"const": "REPLAYABLE_OBSERVED_DISCARD_SYNTHETIC_FLOW"},
+              "counterexamples": {"minItems": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "counterexamples": {"maxItems": 0},
+              "reason_code": {
+                "enum": [
+                  "NOT_EVALUABLE",
+                  "MODEL_CONFLICT",
+                  "ABSTAIN_EVIDENCE_INCOMPLETE"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "closureHandoffs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004"],
+      "properties": {
+        "R2-AUTH-001": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["evidence_collection_started", "protocol_owner", "selection_receipt"],
+          "properties": {
+            "evidence_collection_started": {"const": false},
+            "protocol_owner": {
+              "const": "docs/atlas-release-2-authority-candidate-protocol-2026-08-29.md"
+            },
+            "selection_receipt": {"type": "null"}
+          }
+        },
+        "R2-AUTH-002": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocol_owner",
+            "stage_a_plan_receipt",
+            "stage_b_adequacy_receipt",
+            "workload_evidence_collection_started"
+          ],
+          "properties": {
+            "protocol_owner": {
+              "const": "docs/atlas-release-2-authority-candidate-protocol-2026-08-29.md"
+            },
+            "stage_a_plan_receipt": {"type": "null"},
+            "stage_b_adequacy_receipt": {"type": "null"},
+            "workload_evidence_collection_started": {"const": false}
+          }
+        },
+        "R2-AUTH-004": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "implementation_approval_receipt",
+            "operational_designation_receipt",
+            "profile_state",
+            "protocol_owner",
+            "real_keys_or_signatures_created"
+          ],
+          "properties": {
+            "implementation_approval_receipt": {"type": "null"},
+            "operational_designation_receipt": {"type": "null"},
+            "profile_state": {"const": "PROPOSED_UNAPPROVED"},
+            "protocol_owner": {
+              "const": "docs/atlas-release-2-authority-candidate-protocol-2026-08-29.md"
+            },
+            "real_keys_or_signatures_created": {"const": false}
+          }
+        }
+      }
+    }
+  }
+}
