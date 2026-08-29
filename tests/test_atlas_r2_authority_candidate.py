@@ -128,7 +128,9 @@ def git_repository(tmp_path: Path) -> Path:
     (repository / "README.md").write_bytes(b"# exact source\n")
     (repository / "src").mkdir()
     (repository / "src" / "main.py").write_bytes(b"print('atlas')\n")
-    (repository / "script.sh").write_bytes(b"#!/bin/sh\nprintf 'atlas\\n'\n")
+    script_path = repository / "script.sh"
+    script_path.write_bytes(b"#!/bin/sh\nprintf 'atlas\\n'\n")
+    script_path.chmod(0o755)
     consumer_path = repository / candidate.DECISION_CONSUMER_SOURCE_PATH
     consumer_path.parent.mkdir(parents=True, exist_ok=True)
     consumer_path.write_bytes(
@@ -842,6 +844,14 @@ def test_legacy_v1_package_without_structural_consumer_remains_verifiable(
 
 def test_known_8c_legacy_package_hashes_remain_stable(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[1]
+    legacy_object = subprocess.run(
+        ["git", "cat-file", "-e", f"{LEGACY_8C_COMMIT}^{{commit}}"],
+        cwd=repository,
+        capture_output=True,
+        check=False,
+    )
+    if legacy_object.returncode != 0:
+        pytest.skip("legacy 8c commit object is absent from this shallow checkout")
     legacy_repository = tmp_path / "legacy-8c-repository"
     completed = subprocess.run(
         [

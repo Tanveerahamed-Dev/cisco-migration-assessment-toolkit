@@ -68,7 +68,6 @@ def exact_candidate(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
             }
         path.write_bytes(candidate.canonical_json_bytes(value))
     _git(repository, "add", ".")
-    _git(repository, "update-index", "--chmod=+x", "README.md")
     environment = {
         **candidate._git_environment(),
         "GIT_AUTHOR_DATE": "2026-08-29T00:00:00+00:00",
@@ -207,6 +206,8 @@ def test_successor_package_binds_and_exercises_this_exact_binder_source(
     tmp_path: Path,
 ) -> None:
     repository = Path(__file__).resolve().parents[1]
+    if _git(repository, "rev-parse", "--is-shallow-repository") == "true":
+        pytest.skip("exact successor package integration requires a non-shallow repository")
     commit = _git(repository, "rev-parse", "HEAD")
     tree = _git(repository, "rev-parse", "HEAD^{tree}")
     package = tmp_path / "successor-package"
