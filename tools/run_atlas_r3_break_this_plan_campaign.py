@@ -179,10 +179,14 @@ MAX_CASES = 8
 MAX_INPUT_BYTES = 9_437_184
 MAX_OUTPUT_BYTES = 8_388_608
 MAX_OPERATOR_REPORT_BYTES = 1_048_576
+MAX_COUNTEREXAMPLES_PER_CASE = 128
+MAX_COUNTEREXAMPLES_PER_CAMPAIGN = MAX_CASES * MAX_COUNTEREXAMPLES_PER_CASE
 LIMIT_PROFILE = {
     "max_campaign_input_bytes": MAX_INPUT_BYTES,
     "max_campaign_output_bytes": MAX_OUTPUT_BYTES,
     "max_cases": MAX_CASES,
+    "max_counterexamples_per_campaign": MAX_COUNTEREXAMPLES_PER_CAMPAIGN,
+    "max_counterexamples_per_case": MAX_COUNTEREXAMPLES_PER_CASE,
     "max_operator_report_bytes": MAX_OPERATOR_REPORT_BYTES,
     "nested_discovery_limit_profile": EXPECTED_DISCOVERY_LIMIT_PROFILE,
     "profile_id": "ATLAS_R3_QDP001_SYNTHETIC_CAMPAIGN_LIMITS/1",
@@ -774,8 +778,12 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
             witnesses = candidate_result.get("counterexamples")
             if type(witnesses) is not list:
                 _reject("CAMPAIGN_COUNTEREXAMPLE_ACCOUNTING_INVALID")
+            if case_counterexamples + len(witnesses) > MAX_COUNTEREXAMPLES_PER_CASE:
+                _reject("CAMPAIGN_CASE_COUNTEREXAMPLE_BOUND_EXCEEDED")
             case_counterexamples += len(witnesses)
             counterexample_count += len(witnesses)
+            if counterexample_count > MAX_COUNTEREXAMPLES_PER_CAMPAIGN:
+                _reject("CAMPAIGN_COUNTEREXAMPLE_BOUND_EXCEEDED")
             for witness in witnesses:
                 try:
                     witness_raw = canonical_json_bytes(witness)

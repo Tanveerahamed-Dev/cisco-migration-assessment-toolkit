@@ -536,6 +536,78 @@ def test_partial_child_candidate_omission_is_rejected(
     )
 
 
+def test_per_case_counterexample_aggregate_n_and_n_plus_one_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][-1]])
+    case = value["cases"][0]
+    unsafe = deepcopy(case["candidates"][-1])
+    unsafe["assumptions"] = []
+    case["candidates"] = []
+    for suffix in ("alpha", "beta", "gamma"):
+        candidate_value = deepcopy(unsafe)
+        candidate_value["candidate_id"] = f"candidate.{suffix}"
+        case["candidates"].append(candidate_value)
+    raw = _canonical(value)
+    original_analyze = discovery.analyze_request_bytes
+    counts = [43, 43, 42]
+
+    def expanded_analyze(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original_analyze(request_raw), require_canonical=True
+        )
+        for candidate_result, count in zip(
+            result["candidate_results"], counts, strict=True
+        ):
+            template = candidate_result["counterexamples"][0]
+            witnesses = []
+            for index in range(count):
+                witness = deepcopy(template)
+                witness["observation_digest"] = bytes_digest(
+                    f"{candidate_result['candidate_id']}:{index}".encode("ascii")
+                )
+                body = {
+                    key: item
+                    for key, item in witness.items()
+                    if key != "witness_digest"
+                }
+                witness["witness_digest"] = canonical_digest(body)
+                witnesses.append(witness)
+            candidate_result["counterexamples"] = witnesses
+        return canonical_json_bytes(result)
+
+    def closed_replay(_request_raw: bytes, witness_raw: bytes) -> bytes:
+        witness = parse_canonical_json_bytes(witness_raw, require_canonical=True)
+        return canonical_json_bytes(
+            {
+                "authoritative": False,
+                "candidate_digest": witness["candidate_digest"],
+                "decision_effect": "NONE",
+                "input_digest": witness["input_digest"],
+                "replayed": True,
+                "schema": "atlas.r3-break-this-plan-counterexample-replay/1",
+                "semantics_digest": witness["semantics_digest"],
+                "witness_digest": witness["witness_digest"],
+            }
+        )
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", expanded_analyze)
+    monkeypatch.setattr(discovery, "replay_counterexample_bytes", closed_replay)
+    result_raw = campaign.analyze_campaign_bytes(raw)
+    result = parse_canonical_json_bytes(result_raw, require_canonical=True)
+    assert result["summary"]["counterexample_count"] == 128
+    assert result["summary"]["replayed_counterexample_count"] == 128
+    assert len(result["case_reports"][0]["replay_receipts"]) == 128
+    _input_validator, result_validator = _schemas()
+    result_validator.validate(result)
+
+    counts[:] = [43, 43, 43]
+    _error(
+        "CAMPAIGN_CASE_COUNTEREXAMPLE_BOUND_EXCEEDED",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
 def test_cli_is_stdout_only_from_an_arbitrary_directory(tmp_path: Path) -> None:
     json_run = subprocess.run(
         [sys.executable, "-B", str(SCRIPT), "--fixture"],

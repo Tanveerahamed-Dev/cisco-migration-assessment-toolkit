@@ -139,6 +139,8 @@
         "max_campaign_input_bytes",
         "max_campaign_output_bytes",
         "max_cases",
+        "max_counterexamples_per_campaign",
+        "max_counterexamples_per_case",
         "max_operator_report_bytes",
         "nested_discovery_limit_profile",
         "profile_id"
@@ -147,6 +149,8 @@
         "max_campaign_input_bytes": {"const": 9437184},
         "max_campaign_output_bytes": {"const": 8388608},
         "max_cases": {"const": 8},
+        "max_counterexamples_per_campaign": {"const": 1024},
+        "max_counterexamples_per_case": {"const": 128},
         "max_operator_report_bytes": {"const": 1048576},
         "nested_discovery_limit_profile": {
           "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/limitProfile"

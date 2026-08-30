@@ -162,6 +162,7 @@ a green/pass/safe state.
 - canonical campaign result: 8,388,608 bytes;
 - Markdown operator report: 1,048,576 bytes;
 - cases: 8;
+- emitted/replayed counterexamples: 128 per case and 1,024 per campaign;
 - nested case/candidate/step/witness bounds: unchanged from the v1 discovery adapter.
 
 Any exceeded bound refuses the whole campaign. No row, limitation, witness, or case is silently
