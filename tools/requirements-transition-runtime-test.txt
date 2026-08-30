@@ -3,8 +3,8 @@
 # is mechanically reconciled to this provisioning owner by the replay producer.
 # These packages must not be copied into application runtime metadata.
 defusedxml==0.7.1
-lxml==6.1.1
+lxml==6.1.2
 numpy==2.5.1
 openpyxl==3.1.5
 pillow==12.3.0
-setuptools==83.0.0
+setuptools==84.0.0
