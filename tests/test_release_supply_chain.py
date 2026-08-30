@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -178,6 +179,83 @@ def test_main_selfhosted_runs_only_after_main_integration_with_bounded_job_timeo
     assert frontend.count("runs-on: [self-hosted, Windows, X64]") == 1
     assert frontend.count("timeout-minutes: 45") == 1
     assert "timeout-minutes: 120" not in frontend
+    expected_frontend_runs = [
+        "run: npm --prefix webapp/frontend run verify:node",
+        "run: npm --prefix webapp/frontend ci",
+        "run: npm --prefix webapp/frontend test -- --maxWorkers=4",
+        "run: npm --prefix webapp/frontend run build",
+        "run: Set-Location webapp/frontend; npx playwright install chromium",
+        "run: Set-Location webapp/frontend; npm run test:e2e",
+    ]
+    actual_frontend_runs = [
+        line.strip() for line in frontend.splitlines() if line.strip().startswith("run:")
+    ]
+    assert actual_frontend_runs == expected_frontend_runs
+    frontend_manifest = json.loads(
+        (ROOT / "webapp" / "frontend" / "package.json").read_text(encoding="utf-8")
+    )
+    assert frontend_manifest["scripts"]["test"] == "vitest run"
+    expected_unit_test_step = (
+        "      - name: Frontend unit tests\n"
+        "        env:\n"
+        '          VITEST_MAX_WORKERS: "4"\n'
+        "        run: npm --prefix webapp/frontend test -- --maxWorkers=4"
+    )
+    assert frontend.count(expected_unit_test_step) == 1
+    assert frontend.count("env:") == 2
+    assert frontend.count('VITEST_MAX_WORKERS: "4"') == 1
+    assert 'E2E_PORT: "42973"' in frontend
+    assert "VITEST_" not in frontend.replace('VITEST_MAX_WORKERS: "4"', "")
+    for forbidden in (
+        "--retry",
+        "--pool",
+        "--testNamePattern",
+        "--passWithNoTests",
+    ):
+        assert forbidden not in frontend
+    vitest_config = (ROOT / "webapp" / "frontend" / "vite.config.ts").read_text(
+        encoding="utf-8"
+    )
+    assert sorted(path.name for path in (ROOT / "webapp" / "frontend").glob("vite.config.*")) == [
+        "vite.config.ts"
+    ]
+    assert not list((ROOT / "webapp" / "frontend").glob("vitest.config.*"))
+    assert not list((ROOT / "webapp" / "frontend").glob("vitest.workspace.*"))
+    expected_vitest_test_config = """  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
+    css: false,
+    coverage: {
+      provider: "v8",
+      reporter: ["text-summary", "text"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.test.{ts,tsx}", "src/test/**", "src/main.tsx"],
+    },
+  },"""
+    assert vitest_config.count(expected_vitest_test_config) == 1
+    assert len(re.findall(r"(?m)^\s*test\s*:", vitest_config)) == 1
+    assert vitest_config.count("export default defineConfig({") == 1
+    assert vitest_config.rstrip().endswith("});")
+    assert "..." not in vitest_config
+    assert re.search(r"(?:^|[,{]\s*)\[[^\]\r\n]+\]\s*:", vitest_config) is None
+    for forbidden_field in (
+        "bail",
+        "dangerouslyIgnoreUnhandledErrors",
+        "fileParallelism",
+        "hookTimeout",
+        "isolate",
+        "maxWorkers",
+        "minWorkers",
+        "passWithNoTests",
+        "pool",
+        "poolOptions",
+        "retry",
+        "testNamePattern",
+        "testTimeout",
+    ):
+        assert re.search(rf"\b{re.escape(forbidden_field)}\s*:", vitest_config) is None
 
 
 def test_publish_promotes_release_assets_without_rebuilding():

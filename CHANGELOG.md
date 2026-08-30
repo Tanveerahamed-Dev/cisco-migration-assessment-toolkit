@@ -46,6 +46,15 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Self-hosted frontend verification now bounds Vitest fork fan-out without weakening the gate.**
+  Exact-main run `33286607459` passed 11 files and 57 tests, then failed when 13 default-pool
+  fork workers timed out before their files could execute; build and browser E2E therefore remained
+  correctly skipped. The persistent-runner workflow now runs the unchanged frontend unit suite with
+  both the CLI and Vitest's late worker-environment override pinned to four. A structural ratchet binds
+  the exact commands/config and rejects retries, filters,
+  alternate pools, failure swallowing, or adjacent command drift. Application tests, the hosted test
+  path, job timeouts, and release state are unchanged; completion still requires a fresh exact-main
+  post-merge pass, and the failed run remains negative evidence.
 - **Self-hosted main verification gets bounded measured headroom for the unchanged full suite.** Two
   exact-main runs reached 94% and were canceled at the Python job's 90-minute ceiling; the first
   explicitly logged `KeyboardInterrupt`, and frontend, setup, Ruff, and privacy passed in both.

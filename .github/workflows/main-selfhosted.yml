@@ -70,8 +70,15 @@ jobs:
         run: npm --prefix webapp/frontend run verify:node
       - name: Install exact frontend dependencies
         run: npm --prefix webapp/frontend ci
-      - name: Frontend test + type-check
-        run: npm --prefix webapp/frontend test
+      # Exact-main run 33286607459 passed 11 files / 57 tests, then 13 default-pool
+      # fork workers timed out before their files could execute. Keep the same tests,
+      # isolation, and fail-closed behavior while bounding process fan-out on this
+      # persistent host. Vitest applies its worker environment override after CLI/config
+      # resolution, so pin both surfaces; do not replace them with retries or filters.
+      - name: Frontend unit tests
+        env:
+          VITEST_MAX_WORKERS: "4"
+        run: npm --prefix webapp/frontend test -- --maxWorkers=4
       - name: Production build
         run: npm --prefix webapp/frontend run build
       - name: Ensure Playwright chromium
