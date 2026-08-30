@@ -103,7 +103,7 @@ The original v1 semantics digest omitted repository modules that influence `cuto
 transitive calls. The strengthened discovery semantics profile `/2` now binds exact bytes for:
 
 - the discovery adapter;
-- `cutover_sim.py`, `fib.py`, `failover.py`, and `whatif.py`;
+- `cutover_sim.py`, `fib.py`, `textutils.py`, `failover.py`, and `whatif.py`;
 - `transition_contract.py`;
 - both discovery schemas;
 - the fixed discovery limit profile; and
@@ -153,8 +153,10 @@ The result includes:
 
 `--operator-report` renders the same freshly computed result as deterministic UTF-8 Markdown. It
 shows every case and candidate, result kind, reason, checked-step count, replay count, and applicable
-limitation. It never renders raw simulator paths, narratives, election objects, readiness output, or
-a green/pass/safe state.
+limitation. It also lists every next-evidence identifier and each replayed witness's exact candidate,
+step, requirement, witness digest, and campaign replay binding. The limitation and abstention census
+adds fixed plain-language meanings without changing the machine codes. It never renders raw simulator
+paths, narratives, election objects, readiness output, or a green/pass/safe state.
 
 ## Bounds
 
@@ -191,6 +193,7 @@ collection. A currently valid externally effective
 
 - canonical and schema-valid input/result;
 - exact case, candidate, limitation, abstention, counterexample, and replay accounting;
+- mandatory unresolved/human next-evidence retention and non-removable base negative limitations;
 - all-abstention rendering that explicitly forbids a support inference;
 - campaign narrowing and cross-campaign replay-binding changes;
 - full child-result binding when only limitations change;

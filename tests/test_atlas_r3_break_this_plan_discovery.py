@@ -180,6 +180,7 @@ def test_replay_semantics_bind_the_closed_repo_dependency_set(
         "discovery_result_schema",
         "failover",
         "fib",
+        "textutils",
         "transition_contract",
         "whatif",
     }
@@ -204,6 +205,28 @@ def test_replay_semantics_bind_the_closed_repo_dependency_set(
     _error(
         "WITNESS_NOT_REPLAYED",
         lambda: discovery.replay_counterexample_bytes(request_raw, old_witness_raw),
+    )
+
+
+def test_interface_normalization_source_change_invalidates_prior_witness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_raw = FIXTURE.read_bytes()
+    _old_raw, old_result = _result(request_raw)
+    old_witness = _candidate(old_result, "candidate.unsafe-middle")["counterexamples"][0]
+    changed_textutils = tmp_path / "textutils.py"
+    changed_textutils.write_bytes(
+        Path(discovery.textutils.__file__).read_bytes()
+        + b"\n# interface normalization semantic change\n"
+    )
+    monkeypatch.setattr(discovery.textutils, "__file__", str(changed_textutils))
+    _new_raw, new_result = _result(request_raw)
+    assert new_result["semantics_digest"] != old_result["semantics_digest"]
+    _error(
+        "WITNESS_NOT_REPLAYED",
+        lambda: discovery.replay_counterexample_bytes(
+            request_raw, _canonical(old_witness)
+        ),
     )
 
 def test_cli_is_bounded_stdout_only_and_matches_library_bytes(tmp_path: Path) -> None:

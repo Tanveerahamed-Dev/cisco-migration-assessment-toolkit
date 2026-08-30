@@ -58,6 +58,7 @@ _DISCOVERY_SOURCE_PATHS = {
     "discovery_result_schema": _DISCOVERY_RESULT_SCHEMA_PATH,
     "failover": _REPOSITORY_ROOT / "cisco_toolkit" / "failover.py",
     "fib": _REPOSITORY_ROOT / "cisco_toolkit" / "fib.py",
+    "textutils": _REPOSITORY_ROOT / "cisco_toolkit" / "textutils.py",
     "transition_contract": _REPOSITORY_ROOT / "cisco_toolkit" / "transition_contract.py",
     "whatif": _REPOSITORY_ROOT / "cisco_toolkit" / "whatif.py",
 }
@@ -148,6 +149,29 @@ LIMITATION_CODES = frozenset(
         "UNRESOLVED_ASSUMPTION",
     }
 )
+LIMITATION_EXPLANATIONS = {
+    "BASELINE_EVIDENCE_INCOMPLETE": "A required baseline flow was not positively computed as reached.",
+    "BASELINE_REQUIREMENT_CONFLICT": "The synthetic baseline already conflicts with a declared requirement.",
+    "BLOCKED_FLOW_OUTSIDE_REQUIREMENT_SET": "A blocked flow was not one of the declared requirements.",
+    "BLOCKED_FLOW_SHAPE_UNSUPPORTED": "The observed loss did not match the closed witness shape.",
+    "BLOCKED_FLOW_WITHOUT_POSITIVE_OBSERVED_DISCARD": "The loss lacked a positive observed-discard basis.",
+    "ELECTION_PROJECTION_NOT_CONTINUITY_EVIDENCE": "An election projection does not prove continuity or survival.",
+    "HUMAN_REQUIREMENT_UNEVALUATED": "A declared human-only requirement remains unresolved.",
+    "L2_CONTINUITY_NOT_ASSESSED": "Layer-2 continuity was not assessed by this synthetic model.",
+    "NOOP_STEP_NOT_EVALUABLE": "A declared step produced no modeled mutation and cannot support a conclusion.",
+    "NO_COUNTEREXAMPLE_OBSERVED_IS_NOT_SUPPORT": "No observed counterexample is not evidence that the candidate works.",
+    "NO_POSITIVE_SUPPORT_OR_COMPLETENESS_CERTIFICATE": "The result supplies neither candidate support nor search completeness.",
+    "PATH_LOSS_IS_INCONCLUSIVE": "Path disappearance without a positive discard observation is inconclusive.",
+    "SIMULATION_NOT_EVALUABLE": "The simulator could not evaluate the complete declared candidate.",
+    "SIMULATOR_IGNORED_STEP_PARAMETERS": "At least one step parameter was not consumed by the simulator.",
+    "SYNTHETIC_MODEL_ONLY": "The result is synthetic and is not field or workload evidence.",
+    "UNRESOLVED_ASSUMPTION": "A candidate assumption remains explicitly unresolved.",
+}
+ABSTENTION_EXPLANATIONS = {
+    "ABSTAIN_EVIDENCE_INCOMPLETE": "Required evidence or assumptions remain incomplete.",
+    "MODEL_CONFLICT": "The synthetic baseline conflicts with the declared requirement.",
+    "NOT_EVALUABLE": "The complete candidate could not be evaluated as declared.",
+}
 _FORBIDDEN_IDENTIFIER_TOKENS = frozenset(
     {
         "approval",
@@ -622,9 +646,19 @@ def _validate_child_result_boundary(
         for item in candidate["assumptions"]
         if item["state"] == "UNRESOLVED"
     } | {item["requirement_id"] for item in case["requirements"]}
+    mandatory_evidence_requests = {
+        item["assumption_id"]
+        for candidate in case["candidates"]
+        for item in candidate["assumptions"]
+        if item["state"] == "UNRESOLVED"
+    } | {
+        item["requirement_id"]
+        for item in case["requirements"]
+        if item["kind"] == "HUMAN_ONLY_UNEVALUATED"
+    }
     for item in evidence_requests:
         _identifier(item, "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
-    if not set(evidence_requests) <= allowed_evidence_requests:
+    if not mandatory_evidence_requests <= set(evidence_requests) <= allowed_evidence_requests:
         _reject("CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
 
     candidate_results = obj["candidate_results"]
@@ -671,6 +705,19 @@ def _validate_child_result_boundary(
             or any(item not in LIMITATION_CODES for item in limitations)
         ):
             _reject("CAMPAIGN_LIMITATION_ACCOUNTING_INVALID")
+        mandatory_limitations = {
+            "NO_POSITIVE_SUPPORT_OR_COMPLETENESS_CERTIFICATE",
+            "SYNTHETIC_MODEL_ONLY",
+        }
+        if any(item["state"] == "UNRESOLVED" for item in input_candidate["assumptions"]):
+            mandatory_limitations.add("UNRESOLVED_ASSUMPTION")
+        if any(
+            item["kind"] == "HUMAN_ONLY_UNEVALUATED"
+            for item in case["requirements"]
+        ):
+            mandatory_limitations.add("HUMAN_REQUIREMENT_UNEVALUATED")
+        if not mandatory_limitations <= set(limitations):
+            _reject("CAMPAIGN_MANDATORY_LIMITATION_MISSING")
         witnesses = row["counterexamples"]
         if (
             type(witnesses) is not list
@@ -966,6 +1013,11 @@ def render_operator_report_bytes(raw: bytes) -> bytes:
     ]
     for case_report in result["case_reports"]:
         case_result = case_report["discovery_result"]
+        witness_by_digest = {
+            witness["witness_digest"]: witness
+            for candidate in case_result["candidate_results"]
+            for witness in candidate["counterexamples"]
+        }
         replay_by_candidate = Counter(
             row["replay_receipt"]["candidate_digest"]
             for row in case_report["replay_receipts"]
@@ -987,12 +1039,36 @@ def render_operator_report_bytes(raw: bytes) -> bytes:
                 f"`{candidate['reason_code']}` | {candidate['checked_steps']} | "
                 f"{replay_count} | {limitations} |"
             )
+        lines.extend(["", "**Next evidence requests**"])
+        if case_result["next_evidence_requests"]:
+            lines.append(
+                ", ".join(
+                    f"`{item}`" for item in case_result["next_evidence_requests"]
+                )
+            )
+        else:
+            lines.append("None emitted; this is not candidate support or evidence completeness.")
+        lines.extend(["", "**Replayed witnesses**"])
+        if case_report["replay_receipts"]:
+            for envelope in case_report["replay_receipts"]:
+                receipt = envelope["replay_receipt"]
+                witness = witness_by_digest[receipt["witness_digest"]]
+                lines.append(
+                    "- Candidate "
+                    f"`{witness['candidate_id']}` · step `{witness['step_id']}` · requirement "
+                    f"`{witness['requirement_id']}` · witness `{witness['witness_digest']}` · "
+                    "campaign replay binding "
+                    f"`{envelope['campaign_replay_binding_digest']}`"
+                )
+        else:
+            lines.append("None; no counterexample replay was accepted for this case.")
         lines.append("")
 
     lines.extend(["## Observed limitation frequency", ""])
     if result["limitation_counts"]:
         lines.extend(
-            f"- `{row['code']}`: {row['count']} candidate(s)"
+            f"- `{row['code']}`: {row['count']} candidate(s) — "
+            f"{LIMITATION_EXPLANATIONS[row['code']]}"
             for row in result["limitation_counts"]
         )
     else:
@@ -1000,7 +1076,8 @@ def render_operator_report_bytes(raw: bytes) -> bytes:
     lines.extend(["", "## Abstention reason frequency", ""])
     if result["abstention_reason_counts"]:
         lines.extend(
-            f"- `{row['code']}`: {row['count']} candidate(s)"
+            f"- `{row['code']}`: {row['count']} candidate(s) — "
+            f"{ABSTENTION_EXPLANATIONS[row['code']]}"
             for row in result["abstention_reason_counts"]
         )
     else:

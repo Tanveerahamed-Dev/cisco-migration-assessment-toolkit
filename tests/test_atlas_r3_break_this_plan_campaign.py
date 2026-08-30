@@ -96,6 +96,8 @@ def test_fixture_and_result_are_canonical_schema_valid_and_nonpromoting() -> Non
     value = _campaign()
     assert fixture_raw == _canonical(value)
     input_validator, result_validator = _schemas()
+    assert set(campaign.LIMITATION_EXPLANATIONS) == set(campaign.LIMITATION_CODES)
+    assert set(campaign.ABSTENTION_EXPLANATIONS) == set(campaign.ABSTENTION_REASON_CODES)
     input_validator.validate(value)
 
     result_raw, result = _result(value)
@@ -273,6 +275,22 @@ def test_operator_report_is_complete_readable_and_never_launders_abstention() ->
     _, result = _result(value)
     for row in result["limitation_counts"]:
         assert f"`{row['code']}`: {row['count']} candidate(s)" in report
+        assert campaign.LIMITATION_EXPLANATIONS[row["code"]] in report
+    unsafe_case = next(
+        row for row in result["case_reports"] if row["case_id"].endswith("unsafe-middle")
+    )
+    unsafe_witness = unsafe_case["discovery_result"]["candidate_results"][2][
+        "counterexamples"
+    ][0]
+    unsafe_binding = unsafe_case["replay_receipts"][0][
+        "campaign_replay_binding_digest"
+    ]
+    assert f"step `{unsafe_witness['step_id']}`" in report
+    assert f"requirement `{unsafe_witness['requirement_id']}`" in report
+    assert f"witness `{unsafe_witness['witness_digest']}`" in report
+    assert f"campaign replay binding `{unsafe_binding}`" in report
+    assert "`assumption.qcp-applicability`" in report
+    assert "`requirement.human-change-window`" in report
     assert "R2-AUTH-002" in report and "Stage A plan and Stage B adequacy receipts are `null`" in report
     assert "R2-AUTH-004" in report and "real keys/signatures created = `false`" in report
     for forbidden_raw_projection in (
@@ -481,6 +499,37 @@ def test_child_result_authority_handoff_limitation_and_binding_drift_refuse(
     expect_mutation(
         "CAMPAIGN_CASE_SEMANTICS_INVALID",
         lambda result: result.__setitem__("semantics_digest", "sha256:" + "0" * 64),
+    )
+
+    def remove_mandatory_limitation(result: dict) -> None:
+        result["candidate_results"][0]["limitations"].remove(
+            "NO_POSITIVE_SUPPORT_OR_COMPLETENESS_CERTIFICATE"
+        )
+
+    expect_mutation(
+        "CAMPAIGN_MANDATORY_LIMITATION_MISSING",
+        remove_mandatory_limitation,
+    )
+
+
+def test_mandatory_human_next_evidence_request_cannot_be_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][1]])
+    raw = _canonical(value)
+    original = discovery.analyze_request_bytes
+
+    def omitted_request(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original(request_raw), require_canonical=True
+        )
+        result["next_evidence_requests"] = []
+        return canonical_json_bytes(result)
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", omitted_request)
+    _error(
+        "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID",
+        lambda: campaign.analyze_campaign_bytes(raw),
     )
 
 

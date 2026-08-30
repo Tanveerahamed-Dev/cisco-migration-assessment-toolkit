@@ -42,7 +42,7 @@ _RESULT_SCHEMA_PATH = (
 sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from cisco_toolkit import cutover_sim, fib  # noqa: E402
-from cisco_toolkit import failover, transition_contract, whatif  # noqa: E402
+from cisco_toolkit import failover, textutils, transition_contract, whatif  # noqa: E402
 from cisco_toolkit.transition_contract import (  # noqa: E402
     TransitionContractError,
     bytes_digest,
@@ -479,6 +479,7 @@ def _semantic_source_paths() -> dict[str, tuple[str | None, str]]:
         "discovery_result_schema": (str(_RESULT_SCHEMA_PATH), "RESULT_SCHEMA_UNREADABLE"),
         "failover": (failover.__file__, "FAILOVER_SOURCE_UNREADABLE"),
         "fib": (fib.__file__, "FIB_SOURCE_UNREADABLE"),
+        "textutils": (textutils.__file__, "TEXTUTILS_SOURCE_UNREADABLE"),
         "transition_contract": (
             transition_contract.__file__,
             "TRANSITION_CONTRACT_SOURCE_UNREADABLE",

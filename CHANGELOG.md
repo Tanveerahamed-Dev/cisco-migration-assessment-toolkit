@@ -13,8 +13,8 @@ per change, with verification evidence) lives in
   candidate, abstention, counterexample, replay, and limitation counts in canonical JSON or
   deterministic Markdown. Campaign replay bindings cover the complete ordered case set and full
   child results, so case narrowing or limitation-only drift changes the binding. The underlying
-  discovery semantics digest now closes its repository dependency set over failover, what-if,
-  transition-contract, schemas, and interpreter identity as well as the adapter, FIB, simulator,
+  discovery semantics digest now closes its repository dependency set over interface normalization,
+  failover, what-if, transition-contract, schemas, and interpreter identity as well as the adapter, FIB, simulator,
   and limits. Four tracked adversarial cases produce five explicit abstentions and one replayed
   synthetic counterexample; those fixture counts are not a score or support claim. All R2/QCP/runtime/R3
   non-promotion states and null R2-AUTH-001/002/004 handoffs remain fixed.

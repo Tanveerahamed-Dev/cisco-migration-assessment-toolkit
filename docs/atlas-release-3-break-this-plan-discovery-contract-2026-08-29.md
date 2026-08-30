@@ -104,7 +104,8 @@ The adapter performs the following deterministic sequence:
 3. Establish non-vacuous baseline coverage for every flow requirement using
    `fib.trace_fib_path(..., disclose=True)`.
 4. Bind the input, candidate set, requirements, product boundary, adapter source, simulator source,
-   FIB/failover/what-if/transition-contract sources, request/result schemas, fixed limit profile,
+   FIB/interface-normalization/failover/what-if/transition-contract sources, request/result schemas,
+   fixed limit profile,
    and exact Python implementation/version by SHA-256.
 5. Call `simulate_cutover` once per candidate using exactly the declared flow pairs and ordered
    candidate steps.
@@ -207,8 +208,8 @@ after a witness is found, an incomplete path treated as a block, an unsupported 
 or a null authority field filled by prose. Each is fail-closed in v1.
 
 The 2026-08-30 semantic-dependency closure strengthens the existing v1 digest without changing its
-schema shape. The original digest omitted transitive `failover.py`, `whatif.py`, and
-`transition_contract.py` behavior plus the request/result schemas. Those exact source bytes and the
+schema shape. The original digest omitted transitive `failover.py`, `whatif.py`, `textutils.py`,
+and `transition_contract.py` behavior plus the request/result schemas. Those exact source bytes and the
 interpreter identity are now bound, so a prior witness cannot replay after a bound source/schema
 change. The separate campaign capsule additionally binds each replay to the full child result,
 including limitations; see
