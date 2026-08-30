@@ -127,6 +127,14 @@ replay binding even if the narrow v1 witness itself remains byte-identical. This
 signature, authenticated receipt, independent review, trusted time, revocation proof, or custody
 attestation.
 
+Before accepting a child result, the campaign independently recomputes the expected discovery
+semantics digest from the fixed repository path set and exact limits, rejoins the complete ordered
+candidate ID/digest census and requirements/input/product digests to the case, checks every schema
+bound, and validates every witness step and requirement against its input candidate. Replay receipts
+have an exact closed shape and must retain `authoritative=false`, `decision_effect=NONE`, the expected
+semantics, and exact candidate/input/witness bindings. The campaign does not take its expected null
+R2 handoff from the child helper; it owns the fixed null/false structure and rejects lockstep drift.
+
 ## Result and operator report
 
 The canonical result schema is
@@ -161,7 +169,7 @@ truncated.
 
 ## R2 closure-ready handoffs remain unresolved
 
-The campaign copies the byte-semantic handoff object only after every child result agrees exactly:
+The campaign emits its independent fixed-null handoff object only after every child result equals it:
 
 - `R2-AUTH-001`: selection receipt remains `null`; evidence collection remains not started.
 - `R2-AUTH-002`: Stage A plan and Stage B adequacy receipts remain `null`; workload evidence

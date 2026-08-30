@@ -418,7 +418,7 @@ def test_replay_failure_and_mixed_discovery_semantics_refuse_whole_campaign(
     monkeypatch.setattr(discovery, "analyze_request_bytes", mixed_semantics)
     all_abstention = _campaign_with_cases(_campaign()["cases"][:3])
     _error(
-        "CAMPAIGN_DISCOVERY_SEMANTICS_DRIFT",
+        "CAMPAIGN_CASE_SEMANTICS_INVALID",
         lambda: campaign.analyze_campaign_bytes(_canonical(all_abstention)),
     )
 
@@ -465,6 +465,74 @@ def test_child_result_authority_handoff_limitation_and_binding_drift_refuse(
     expect_mutation(
         "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID",
         lambda result: result.__setitem__("next_evidence_requests", ["selected"]),
+    )
+    expect_mutation(
+        "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID",
+        lambda result: result.__setitem__("candidate_results", []),
+    )
+    expect_mutation(
+        "CAMPAIGN_LIMITATION_ACCOUNTING_INVALID",
+        lambda result: result["candidate_results"][0].__setitem__("limitations", []),
+    )
+    expect_mutation(
+        "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID",
+        lambda result: result["candidate_results"][0].__setitem__("checked_steps", 999),
+    )
+    expect_mutation(
+        "CAMPAIGN_CASE_SEMANTICS_INVALID",
+        lambda result: result.__setitem__("semantics_digest", "sha256:" + "0" * 64),
+    )
+
+
+def test_lockstep_child_handoff_and_forged_replay_authority_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _canonical(_campaign())
+    forged_handoffs = deepcopy(campaign.EXPECTED_R2_CLOSURE_HANDOFFS)
+    forged_handoffs["R2-AUTH-002"]["stage_a_plan_receipt"] = "synthetic"
+    monkeypatch.setattr(discovery, "_closure_handoffs", lambda: deepcopy(forged_handoffs))
+    _error("CAMPAIGN_CASE_HANDOFF_DRIFT", lambda: campaign.analyze_campaign_bytes(raw))
+
+    monkeypatch.undo()
+    original_replay = discovery.replay_counterexample_bytes
+
+    def authority_laundered_replay(request_raw: bytes, witness_raw: bytes) -> bytes:
+        replay = parse_canonical_json_bytes(
+            original_replay(request_raw, witness_raw), require_canonical=True
+        )
+        replay["authoritative"] = True
+        replay["decision_effect"] = "SELECT"
+        return canonical_json_bytes(replay)
+
+    monkeypatch.setattr(
+        discovery,
+        "replay_counterexample_bytes",
+        authority_laundered_replay,
+    )
+    _error(
+        "CAMPAIGN_REPLAY_RECEIPT_BINDING_INVALID",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
+def test_partial_child_candidate_omission_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][-1]])
+    raw = _canonical(value)
+    original = discovery.analyze_request_bytes
+
+    def omitted_candidate(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original(request_raw), require_canonical=True
+        )
+        result["candidate_results"].pop(0)
+        return canonical_json_bytes(result)
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", omitted_candidate)
+    _error(
+        "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID",
+        lambda: campaign.analyze_campaign_bytes(raw),
     )
 
 

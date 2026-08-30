@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import os
+import platform
 import re
 import stat
 import sys
@@ -38,6 +39,28 @@ _RESULT_SCHEMA_PATH = (
     / "schemas"
     / "atlas-r3-break-this-plan-campaign-result-v1.schema.json"
 )
+_DISCOVERY_INPUT_SCHEMA_PATH = (
+    _REPOSITORY_ROOT
+    / "docs"
+    / "schemas"
+    / "atlas-r3-break-this-plan-discovery-input-v1.schema.json"
+)
+_DISCOVERY_RESULT_SCHEMA_PATH = (
+    _REPOSITORY_ROOT
+    / "docs"
+    / "schemas"
+    / "atlas-r3-break-this-plan-discovery-result-v1.schema.json"
+)
+_DISCOVERY_SOURCE_PATHS = {
+    "adapter": _REPOSITORY_ROOT / "tools" / "run_atlas_r3_break_this_plan_discovery.py",
+    "cutover_sim": _REPOSITORY_ROOT / "cisco_toolkit" / "cutover_sim.py",
+    "discovery_input_schema": _DISCOVERY_INPUT_SCHEMA_PATH,
+    "discovery_result_schema": _DISCOVERY_RESULT_SCHEMA_PATH,
+    "failover": _REPOSITORY_ROOT / "cisco_toolkit" / "failover.py",
+    "fib": _REPOSITORY_ROOT / "cisco_toolkit" / "fib.py",
+    "transition_contract": _REPOSITORY_ROOT / "cisco_toolkit" / "transition_contract.py",
+    "whatif": _REPOSITORY_ROOT / "cisco_toolkit" / "whatif.py",
+}
 sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from cisco_toolkit.transition_contract import (  # noqa: E402
@@ -56,7 +79,101 @@ ERROR_SCHEMA = "atlas.r3-break-this-plan-campaign-error/1"
 
 CAMPAIGN_BANNER = "R3 SYNTHETIC CAMPAIGN — NON-AUTHORITATIVE"
 CAMPAIGN_MODE = "R3_DISCOVERY_SYNTHETIC_CAMPAIGN_ONLY"
-SOURCE_CLASS = discovery.SOURCE_CLASS
+DISCOVERY_BANNER = "R3 DISCOVERY PROTOTYPE — NON-AUTHORITATIVE"
+SOURCE_CLASS = "SYNTHETIC_TEST_ONLY"
+TRANSLATION_STATE = "TRANSLATION_NOT_ESTABLISHED"
+PRODUCT_BOUNDARY = {
+    "qcp_001": {
+        "execution_state": "CONTRACT_ONLY",
+        "qualification_state": "EXPERIMENTAL",
+    },
+    "release_2": "CLOSED_INCOMPLETE_EXPERIMENTAL_CHECKPOINT",
+    "release_3": "DISCOVERY_PLANNING_ONLY",
+    "runtime": "PARTIAL_NONPORTABLE_PROTOTYPE",
+}
+UNRESOLVED_DEPENDENCY_IDS = tuple(f"R3-DEP-{index:03d}" for index in range(1, 12))
+AUTHORITY_IDS = ("R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004")
+EXPECTED_DISCOVERY_LIMIT_PROFILE = {
+    "max_assumptions_per_candidate": 32,
+    "max_candidates": 4,
+    "max_counterexamples": 128,
+    "max_input_bytes": 1_048_576,
+    "max_output_bytes": 1_048_576,
+    "max_requirements": 32,
+    "max_step_parameters": 8,
+    "max_steps_per_candidate": 16,
+    "max_witness_bytes": 65_536,
+    "profile_id": "ATLAS_R3_QDP001_DISCOVERY_LIMITS/1",
+}
+EXPECTED_R2_CLOSURE_HANDOFFS = {
+    "R2-AUTH-001": {
+        "evidence_collection_started": False,
+        "protocol_owner": "docs/atlas-release-2-authority-candidate-protocol-2026-08-29.md",
+        "selection_receipt": None,
+    },
+    "R2-AUTH-002": {
+        "protocol_owner": "docs/atlas-release-2-authority-candidate-protocol-2026-08-29.md",
+        "stage_a_plan_receipt": None,
+        "stage_b_adequacy_receipt": None,
+        "workload_evidence_collection_started": False,
+    },
+    "R2-AUTH-004": {
+        "implementation_approval_receipt": None,
+        "operational_designation_receipt": None,
+        "profile_state": "PROPOSED_UNAPPROVED",
+        "protocol_owner": "docs/atlas-release-2-authority-candidate-protocol-2026-08-29.md",
+        "real_keys_or_signatures_created": False,
+    },
+}
+ABSTENTION_REASON_CODES = frozenset(
+    {"ABSTAIN_EVIDENCE_INCOMPLETE", "MODEL_CONFLICT", "NOT_EVALUABLE"}
+)
+LIMITATION_CODES = frozenset(
+    {
+        "BASELINE_EVIDENCE_INCOMPLETE",
+        "BASELINE_REQUIREMENT_CONFLICT",
+        "BLOCKED_FLOW_OUTSIDE_REQUIREMENT_SET",
+        "BLOCKED_FLOW_SHAPE_UNSUPPORTED",
+        "BLOCKED_FLOW_WITHOUT_POSITIVE_OBSERVED_DISCARD",
+        "ELECTION_PROJECTION_NOT_CONTINUITY_EVIDENCE",
+        "HUMAN_REQUIREMENT_UNEVALUATED",
+        "L2_CONTINUITY_NOT_ASSESSED",
+        "NOOP_STEP_NOT_EVALUABLE",
+        "NO_COUNTEREXAMPLE_OBSERVED_IS_NOT_SUPPORT",
+        "NO_POSITIVE_SUPPORT_OR_COMPLETENESS_CERTIFICATE",
+        "PATH_LOSS_IS_INCONCLUSIVE",
+        "SIMULATION_NOT_EVALUABLE",
+        "SIMULATOR_IGNORED_STEP_PARAMETERS",
+        "SYNTHETIC_MODEL_ONLY",
+        "UNRESOLVED_ASSUMPTION",
+    }
+)
+_FORBIDDEN_IDENTIFIER_TOKENS = frozenset(
+    {
+        "approval",
+        "approved",
+        "authoritative",
+        "authority",
+        "best",
+        "eligible",
+        "feasible",
+        "gate",
+        "go",
+        "pass",
+        "promote",
+        "promotion",
+        "qualification",
+        "qualified",
+        "rank",
+        "readiness",
+        "ready",
+        "safe",
+        "score",
+        "select",
+        "selected",
+        "winner",
+    }
+)
 
 MAX_CASES = 8
 MAX_INPUT_BYTES = 9_437_184
@@ -67,7 +184,7 @@ LIMIT_PROFILE = {
     "max_campaign_output_bytes": MAX_OUTPUT_BYTES,
     "max_cases": MAX_CASES,
     "max_operator_report_bytes": MAX_OPERATOR_REPORT_BYTES,
-    "nested_discovery_limit_profile": discovery.LIMIT_PROFILE,
+    "nested_discovery_limit_profile": EXPECTED_DISCOVERY_LIMIT_PROFILE,
     "profile_id": "ATLAS_R3_QDP001_SYNTHETIC_CAMPAIGN_LIMITS/1",
 }
 
@@ -145,6 +262,38 @@ _CANDIDATE_RESULT_KEYS = frozenset(
         "simulation_projection_digest",
     }
 )
+_WITNESS_KEYS = frozenset(
+    {
+        "candidate_digest",
+        "candidate_id",
+        "candidate_set_digest",
+        "case_id",
+        "input_digest",
+        "observation_digest",
+        "product_boundary_digest",
+        "reason_code",
+        "requirement_id",
+        "requirements_digest",
+        "schema",
+        "semantics_digest",
+        "step_id",
+        "step_index",
+        "witness_digest",
+    }
+)
+_REPLAY_RECEIPT_KEYS = frozenset(
+    {
+        "authoritative",
+        "candidate_digest",
+        "decision_effect",
+        "input_digest",
+        "replayed",
+        "schema",
+        "semantics_digest",
+        "witness_digest",
+    }
+)
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,127}$")
 _CAMPAIGN_ID = re.compile(r"^qdp001-campaign:[a-z0-9][a-z0-9._:/+@-]{0,110}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -172,14 +321,37 @@ def _exact_object(value: Any, keys: frozenset[str], code: str) -> dict[str, Any]
     return value
 
 
+def _lexical_tokens(value: str) -> set[str]:
+    expanded = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    expanded = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", expanded)
+    return {part for part in re.split(r"[^a-z0-9]+", expanded.casefold()) if part}
+
+
+def _identifier(value: Any, code: str) -> str:
+    if type(value) is not str or not _IDENTIFIER.fullmatch(value):
+        _reject(code)
+    if _lexical_tokens(value) & _FORBIDDEN_IDENTIFIER_TOKENS:
+        _reject(code)
+    return value
+
+
+def _namespaced_identifier(value: Any, prefix: str, code: str) -> str:
+    checked = _identifier(value, code)
+    if checked != checked.casefold() or not checked.startswith(prefix) or len(checked) == len(prefix):
+        _reject(code)
+    return checked
+
+
+def _digest(value: Any, code: str) -> str:
+    if type(value) is not str or not _DIGEST.fullmatch(value):
+        _reject(code)
+    return value
+
+
 def _validate_campaign_id(value: Any) -> str:
     if type(value) is not str or not _CAMPAIGN_ID.fullmatch(value):
         _reject("CAMPAIGN_ID_INVALID")
-    try:
-        discovery._identifier(value, "CAMPAIGN_ID_INVALID")
-    except discovery.BreakThisPlanDiscoveryError:
-        _reject("CAMPAIGN_ID_INVALID")
-    return value
+    return _identifier(value, "CAMPAIGN_ID_INVALID")
 
 
 def _validate_input(value: Any) -> dict[str, Any]:
@@ -189,14 +361,14 @@ def _validate_input(value: Any) -> dict[str, Any]:
     if obj["prototype_mode"] != CAMPAIGN_MODE or obj["source_class"] != SOURCE_CLASS:
         _reject("SYNTHETIC_CAMPAIGN_BOUNDARY_REQUIRED")
     campaign_id = _validate_campaign_id(obj["campaign_id"])
-    if obj["product_boundary"] != discovery.PRODUCT_BOUNDARY:
+    if obj["product_boundary"] != PRODUCT_BOUNDARY:
         _reject("PRODUCT_BOUNDARY_DRIFT")
-    if obj["unresolved_dependency_ids"] != list(discovery.UNRESOLVED_DEPENDENCY_IDS):
+    if obj["unresolved_dependency_ids"] != list(UNRESOLVED_DEPENDENCY_IDS):
         _reject("DEPENDENCY_BOUNDARY_INVALID")
     placeholders = obj["authority_placeholders"]
-    if type(placeholders) is not dict or list(placeholders) != list(discovery.AUTHORITY_IDS):
+    if type(placeholders) is not dict or list(placeholders) != list(AUTHORITY_IDS):
         _reject("AUTHORITY_PLACEHOLDERS_INVALID")
-    if any(placeholders[item] is not None for item in discovery.AUTHORITY_IDS):
+    if any(placeholders[item] is not None for item in AUTHORITY_IDS):
         _reject("AUTHORITY_VALUES_FORBIDDEN")
     cases = obj["cases"]
     if type(cases) is not list or not cases or len(cases) > MAX_CASES:
@@ -209,25 +381,20 @@ def _validate_input(value: Any) -> dict[str, Any]:
         case_id = case.get("case_id")
         if type(case_id) is not str:
             _reject("CAMPAIGN_CASE_INVALID")
-        try:
-            discovery._namespaced_identifier(
-                case_id, "qdp001-fixture:", "CAMPAIGN_CASE_INVALID"
-            )
-        except discovery.BreakThisPlanDiscoveryError:
-            _reject("CAMPAIGN_CASE_INVALID")
+        _namespaced_identifier(case_id, "qdp001-fixture:", "CAMPAIGN_CASE_INVALID")
         checked_cases.append(case)
         case_ids.append(case_id)
     if case_ids != sorted(set(case_ids)):
         _reject("CAMPAIGN_CASES_NOT_SORTED_UNIQUE")
     return {
-        "authority_placeholders": {item: None for item in discovery.AUTHORITY_IDS},
+        "authority_placeholders": {item: None for item in AUTHORITY_IDS},
         "campaign_id": campaign_id,
         "cases": checked_cases,
-        "product_boundary": discovery.PRODUCT_BOUNDARY,
+        "product_boundary": PRODUCT_BOUNDARY,
         "prototype_mode": CAMPAIGN_MODE,
         "schema": INPUT_SCHEMA,
         "source_class": SOURCE_CLASS,
-        "unresolved_dependency_ids": list(discovery.UNRESOLVED_DEPENDENCY_IDS),
+        "unresolved_dependency_ids": list(UNRESOLVED_DEPENDENCY_IDS),
     }
 
 
@@ -236,6 +403,45 @@ def _source_digest(path: Path, code: str) -> str:
         return bytes_digest(path.resolve().read_bytes())
     except OSError:
         _reject(code)
+
+
+def _expected_discovery_semantics_digest() -> str:
+    if (
+        discovery.SOURCE_CLASS != SOURCE_CLASS
+        or discovery.PROTOTYPE_BANNER != DISCOVERY_BANNER
+        or discovery.TRANSLATION_STATE != TRANSLATION_STATE
+        or discovery.PRODUCT_BOUNDARY != PRODUCT_BOUNDARY
+        or tuple(discovery.UNRESOLVED_DEPENDENCY_IDS) != UNRESOLVED_DEPENDENCY_IDS
+        or tuple(discovery.AUTHORITY_IDS) != AUTHORITY_IDS
+        or discovery.LIMIT_PROFILE != EXPECTED_DISCOVERY_LIMIT_PROFILE
+        or discovery.ABSTENTION_REASON_CODES != ABSTENTION_REASON_CODES
+        or discovery.LIMITATION_CODES != LIMITATION_CODES
+    ):
+        _reject("DISCOVERY_CONTRACT_CONSTANT_DRIFT")
+    source_digests = {
+        source_id: _source_digest(path, "DISCOVERY_SEMANTIC_SOURCE_UNREADABLE")
+        for source_id, path in _DISCOVERY_SOURCE_PATHS.items()
+    }
+    expected = canonical_digest(
+        {
+            "counterexample_projection": "DEFINITIVE_OBSERVED_DISCARD_SYNTHETIC_FLOW/1",
+            "limit_profile_digest": canonical_digest(EXPECTED_DISCOVERY_LIMIT_PROFILE),
+            "python_implementation": platform.python_implementation().casefold(),
+            "python_version": (
+                f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            ),
+            "semantic_dependency_profile": "ATLAS_R3_QDP001_DISCOVERY_SEMANTICS/2",
+            "simulator_contract": "cutover_sim/1",
+            "source_digests": source_digests,
+        }
+    )
+    try:
+        actual = discovery._semantics_digest()
+    except (discovery.BreakThisPlanDiscoveryError, OSError, TypeError, ValueError):
+        _reject("DISCOVERY_SEMANTICS_UNAVAILABLE")
+    if actual != expected:
+        _reject("DISCOVERY_SEMANTICS_IMPLEMENTATION_DRIFT")
+    return expected
 
 
 def _campaign_semantics_digest(discovery_semantics_digests: list[str]) -> str:
@@ -261,30 +467,134 @@ def _count_rows(counter: Counter[str]) -> list[dict[str, Any]]:
     return [{"code": code, "count": counter[code]} for code in sorted(counter)]
 
 
-def _validate_child_result_boundary(result: Any) -> dict[str, Any]:
+def _validate_witness(
+    witness: Any,
+    *,
+    candidate_result: dict[str, Any],
+    input_candidate: dict[str, Any],
+    case: dict[str, Any],
+    result: dict[str, Any],
+    expected_semantics: str,
+) -> dict[str, Any]:
+    obj = _exact_object(witness, _WITNESS_KEYS, "CAMPAIGN_WITNESS_INVALID")
+    if (
+        obj["schema"] != "atlas.r3-break-this-plan-counterexample/1"
+        or obj["reason_code"] != "DEFINITIVE_OBSERVED_DISCARD_SYNTHETIC_FLOW"
+        or obj["candidate_id"] != input_candidate["candidate_id"]
+        or obj["candidate_digest"] != candidate_result["candidate_digest"]
+        or obj["candidate_set_digest"] != result["candidate_set_digest"]
+        or obj["case_id"] != case["case_id"]
+        or obj["input_digest"] != result["input_digest"]
+        or obj["product_boundary_digest"] != result["product_boundary_digest"]
+        or obj["requirements_digest"] != result["requirements_digest"]
+        or obj["semantics_digest"] != expected_semantics
+    ):
+        _reject("CAMPAIGN_WITNESS_BINDING_INVALID")
+    for key in (
+        "candidate_digest",
+        "candidate_set_digest",
+        "input_digest",
+        "observation_digest",
+        "product_boundary_digest",
+        "requirements_digest",
+        "semantics_digest",
+        "witness_digest",
+    ):
+        _digest(obj[key], "CAMPAIGN_WITNESS_DIGEST_INVALID")
+    step_index = obj["step_index"]
+    if (
+        type(step_index) is not int
+        or type(step_index) is bool
+        or step_index < 0
+        or step_index >= len(input_candidate["steps"])
+        or obj["step_id"] != input_candidate["steps"][step_index]["step_id"]
+    ):
+        _reject("CAMPAIGN_WITNESS_STEP_INVALID")
+    flow_requirement_ids = {
+        item["requirement_id"]
+        for item in case["requirements"]
+        if item["kind"] == "PRESERVE_SYNTHETIC_FLOW"
+    }
+    if obj["requirement_id"] not in flow_requirement_ids:
+        _reject("CAMPAIGN_WITNESS_REQUIREMENT_INVALID")
+    body = {key: value for key, value in obj.items() if key != "witness_digest"}
+    if obj["witness_digest"] != canonical_digest(body):
+        _reject("CAMPAIGN_WITNESS_DIGEST_MISMATCH")
+    return obj
+
+
+def _validate_replay_receipt(
+    replay: Any,
+    *,
+    witness: dict[str, Any],
+    candidate_result: dict[str, Any],
+    result: dict[str, Any],
+    expected_semantics: str,
+) -> dict[str, Any]:
+    obj = _exact_object(replay, _REPLAY_RECEIPT_KEYS, "CAMPAIGN_REPLAY_RECEIPT_INVALID")
+    if (
+        obj["authoritative"] is not False
+        or obj["decision_effect"] != "NONE"
+        or obj["replayed"] is not True
+        or obj["schema"] != "atlas.r3-break-this-plan-counterexample-replay/1"
+        or obj["candidate_digest"] != candidate_result["candidate_digest"]
+        or obj["input_digest"] != result["input_digest"]
+        or obj["semantics_digest"] != expected_semantics
+        or obj["witness_digest"] != witness["witness_digest"]
+    ):
+        _reject("CAMPAIGN_REPLAY_RECEIPT_BINDING_INVALID")
+    for key in ("candidate_digest", "input_digest", "semantics_digest", "witness_digest"):
+        _digest(obj[key], "CAMPAIGN_REPLAY_RECEIPT_DIGEST_INVALID")
+    return obj
+
+
+def _validate_child_result_boundary(
+    result: Any,
+    *,
+    case: dict[str, Any],
+    case_raw: bytes,
+    expected_semantics: str,
+) -> dict[str, Any]:
     obj = _exact_object(result, _DISCOVERY_RESULT_KEYS, "CAMPAIGN_CASE_RESULT_INVALID")
     fixed = {
         "authoritative": False,
         "authoritative_gate": None,
-        "banner": discovery.PROTOTYPE_BANNER,
+        "banner": DISCOVERY_BANNER,
         "decision_effect": "NONE",
         "feasibility_verdict": None,
-        "limit_profile": discovery.LIMIT_PROFILE,
+        "limit_profile": EXPECTED_DISCOVERY_LIMIT_PROFILE,
         "next_observation": None,
         "preview_eligible": False,
         "promotion_eligible": False,
         "qualification_state": "EXPERIMENTAL",
-        "schema": discovery.RESULT_SCHEMA,
+        "schema": "atlas.r3-break-this-plan-discovery-result/1",
         "selected_candidate": None,
         "translation_checked": False,
-        "translation_state": discovery.TRANSLATION_STATE,
+        "translation_state": TRANSLATION_STATE,
     }
     if any(obj[key] != expected for key, expected in fixed.items()):
         _reject("CAMPAIGN_CASE_NONPROMOTION_BOUNDARY_DRIFT")
+    if obj["case_id"] != case["case_id"] or obj["input_digest"] != bytes_digest(case_raw):
+        _reject("CAMPAIGN_CASE_INPUT_BINDING_INVALID")
+    if (
+        obj["product_boundary"] != PRODUCT_BOUNDARY
+        or obj["product_boundary_digest"] != canonical_digest(PRODUCT_BOUNDARY)
+    ):
+        _reject("CAMPAIGN_CASE_PRODUCT_BOUNDARY_DRIFT")
+    if obj["authority_placeholders"] != {item: None for item in AUTHORITY_IDS}:
+        _reject("CAMPAIGN_CASE_AUTHORITY_DRIFT")
+    if obj["unresolved_dependency_ids"] != list(UNRESOLVED_DEPENDENCY_IDS):
+        _reject("CAMPAIGN_CASE_DEPENDENCY_DRIFT")
     if obj["global_limitations"] != GLOBAL_LIMITATIONS[:6]:
         _reject("CAMPAIGN_CASE_LIMITATION_BOUNDARY_DRIFT")
-    if obj["r2_closure_handoffs"] != discovery._closure_handoffs():
+    if obj["r2_closure_handoffs"] != EXPECTED_R2_CLOSURE_HANDOFFS:
         _reject("CAMPAIGN_CASE_HANDOFF_DRIFT")
+    if obj["candidate_set_digest"] != canonical_digest(case["candidates"]):
+        _reject("CAMPAIGN_CANDIDATE_SET_BINDING_INVALID")
+    if obj["requirements_digest"] != canonical_digest(case["requirements"]):
+        _reject("CAMPAIGN_REQUIREMENTS_BINDING_INVALID")
+    if obj["semantics_digest"] != expected_semantics:
+        _reject("CAMPAIGN_CASE_SEMANTICS_INVALID")
     for key in (
         "baseline_projection_digest",
         "candidate_set_digest",
@@ -293,8 +603,8 @@ def _validate_child_result_boundary(result: Any) -> dict[str, Any]:
         "requirements_digest",
         "semantics_digest",
     ):
-        if type(obj[key]) is not str or not _DIGEST.fullmatch(obj[key]):
-            _reject("CAMPAIGN_CASE_DIGEST_INVALID")
+        _digest(obj[key], "CAMPAIGN_CASE_DIGEST_INVALID")
+
     evidence_requests = obj["next_evidence_requests"]
     if (
         type(evidence_requests) is not list
@@ -302,72 +612,104 @@ def _validate_child_result_boundary(result: Any) -> dict[str, Any]:
         or any(type(item) is not str for item in evidence_requests)
     ):
         _reject("CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
-    try:
-        for item in evidence_requests:
-            discovery._identifier(item, "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
-    except discovery.BreakThisPlanDiscoveryError:
+    allowed_evidence_requests = {
+        item["assumption_id"]
+        for candidate in case["candidates"]
+        for item in candidate["assumptions"]
+        if item["state"] == "UNRESOLVED"
+    } | {item["requirement_id"] for item in case["requirements"]}
+    for item in evidence_requests:
+        _identifier(item, "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
+    if not set(evidence_requests) <= allowed_evidence_requests:
         _reject("CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
+
     candidate_results = obj["candidate_results"]
-    if type(candidate_results) is not list or not candidate_results:
+    if type(candidate_results) is not list or len(candidate_results) != len(case["candidates"]):
         _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
-    for candidate_result in candidate_results:
+    flow_requirement_count = sum(
+        1 for item in case["requirements"] if item["kind"] == "PRESERVE_SYNTHETIC_FLOW"
+    )
+    expected_candidate_ids = [item["candidate_id"] for item in case["candidates"]]
+    if [item.get("candidate_id") for item in candidate_results if type(item) is dict] != (
+        expected_candidate_ids
+    ):
+        _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
+    for row_value, input_candidate in zip(
+        candidate_results, case["candidates"], strict=True
+    ):
         row = _exact_object(
-            candidate_result,
+            row_value,
             _CANDIDATE_RESULT_KEYS,
             "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID",
         )
-        if row["result_kind"] not in {"ABSTENTION", "COUNTEREXAMPLE"}:
-            _reject("CAMPAIGN_RESULT_KIND_INVALID")
-        try:
-            discovery._namespaced_identifier(
-                row["candidate_id"], "candidate.", "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID"
-            )
-        except discovery.BreakThisPlanDiscoveryError:
-            _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
-        for key in (
-            "candidate_digest",
-            "simulation_projection_digest",
+        _namespaced_identifier(
+            row["candidate_id"], "candidate.", "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID"
+        )
+        if row["candidate_digest"] != canonical_digest(input_candidate):
+            _reject("CAMPAIGN_CANDIDATE_BINDING_INVALID")
+        for key in ("candidate_digest", "simulation_projection_digest"):
+            _digest(row[key], "CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
+        if (
+            type(row["checked_flow_requirements"]) is not int
+            or type(row["checked_flow_requirements"]) is bool
+            or row["checked_flow_requirements"] != flow_requirement_count
+            or type(row["checked_steps"]) is not int
+            or type(row["checked_steps"]) is bool
+            or not 0 <= row["checked_steps"] <= len(input_candidate["steps"])
+            or row["checked_steps"] > EXPECTED_DISCOVERY_LIMIT_PROFILE["max_steps_per_candidate"]
         ):
-            if type(row[key]) is not str or not _DIGEST.fullmatch(row[key]):
-                _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
+            _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
         limitations = row["limitations"]
         if (
             type(limitations) is not list
+            or not 2 <= len(limitations) <= len(LIMITATION_CODES)
             or limitations != sorted(set(limitations))
-            or any(type(item) is not str for item in limitations)
-            or any(item not in discovery.LIMITATION_CODES for item in limitations)
+            or any(item not in LIMITATION_CODES for item in limitations)
         ):
             _reject("CAMPAIGN_LIMITATION_ACCOUNTING_INVALID")
         witnesses = row["counterexamples"]
-        if type(witnesses) is not list:
+        if (
+            type(witnesses) is not list
+            or len(witnesses) > EXPECTED_DISCOVERY_LIMIT_PROFILE["max_counterexamples"]
+        ):
             _reject("CAMPAIGN_COUNTEREXAMPLE_ACCOUNTING_INVALID")
         if row["result_kind"] == "COUNTEREXAMPLE":
             if (
-                row["reason_code"]
-                != "REPLAYABLE_OBSERVED_DISCARD_SYNTHETIC_FLOW"
+                row["reason_code"] != "REPLAYABLE_OBSERVED_DISCARD_SYNTHETIC_FLOW"
                 or not witnesses
             ):
                 _reject("CAMPAIGN_COUNTEREXAMPLE_ACCOUNTING_INVALID")
         elif (
-            row["reason_code"]
-            not in discovery.ABSTENTION_REASON_CODES
+            row["result_kind"] != "ABSTENTION"
+            or row["reason_code"] not in ABSTENTION_REASON_CODES
             or witnesses
         ):
             _reject("CAMPAIGN_ABSTENTION_ACCOUNTING_INVALID")
-        for key in ("checked_flow_requirements", "checked_steps"):
-            if type(row[key]) is not int or type(row[key]) is bool or row[key] < 0:
-                _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
+        checked_witnesses = [
+            _validate_witness(
+                witness,
+                candidate_result=row,
+                input_candidate=input_candidate,
+                case=case,
+                result=obj,
+                expected_semantics=expected_semantics,
+            )
+            for witness in witnesses
+        ]
+        witness_digests = [item["witness_digest"] for item in checked_witnesses]
+        if len(witness_digests) != len(set(witness_digests)):
+            _reject("CAMPAIGN_COUNTEREXAMPLE_ACCOUNTING_INVALID")
     return obj
 
 
 def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
+    expected_discovery_semantics = _expected_discovery_semantics_digest()
     case_reports: list[dict[str, Any]] = []
     case_bindings: list[dict[str, str]] = []
     limitation_counts: Counter[str] = Counter()
     abstention_reason_counts: Counter[str] = Counter()
     next_evidence_requests: set[str] = set()
     discovery_semantics: set[str] = set()
-    closure_handoffs: dict[str, Any] | None = None
     candidate_count = 0
     abstention_candidate_count = 0
     counterexample_candidate_count = 0
@@ -379,7 +721,10 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
         try:
             result_raw = discovery.analyze_request_bytes(case_raw)
             result = _validate_child_result_boundary(
-                parse_canonical_json_bytes(result_raw, require_canonical=True)
+                parse_canonical_json_bytes(result_raw, require_canonical=True),
+                case=case,
+                case_raw=case_raw,
+                expected_semantics=expected_discovery_semantics,
             )
         except BreakThisPlanCampaignError:
             raise
@@ -388,31 +733,11 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
             TransitionContractError,
             TypeError,
             ValueError,
+            KeyError,
         ):
             _reject("CAMPAIGN_CASE_REANALYSIS_FAILED")
-        if type(result) is not dict or result.get("case_id") != case["case_id"]:
-            _reject("CAMPAIGN_CASE_RESULT_INVALID")
-        if result["input_digest"] != bytes_digest(case_raw):
-            _reject("CAMPAIGN_CASE_INPUT_BINDING_INVALID")
-        if result.get("product_boundary") != value["product_boundary"]:
-            _reject("CAMPAIGN_CASE_PRODUCT_BOUNDARY_DRIFT")
-        if result.get("authority_placeholders") != value["authority_placeholders"]:
-            _reject("CAMPAIGN_CASE_AUTHORITY_DRIFT")
-        if result.get("unresolved_dependency_ids") != value["unresolved_dependency_ids"]:
-            _reject("CAMPAIGN_CASE_DEPENDENCY_DRIFT")
-        current_handoffs = result.get("r2_closure_handoffs")
-        if type(current_handoffs) is not dict:
-            _reject("CAMPAIGN_CASE_HANDOFF_INVALID")
-        if closure_handoffs is None:
-            closure_handoffs = current_handoffs
-        elif current_handoffs != closure_handoffs:
-            _reject("CAMPAIGN_CASE_HANDOFF_DRIFT")
-
-        semantics_digest = result.get("semantics_digest")
-        if type(semantics_digest) is not str:
-            _reject("CAMPAIGN_CASE_SEMANTICS_INVALID")
-        discovery_semantics.add(semantics_digest)
-        next_evidence_requests.update(result.get("next_evidence_requests", []))
+        discovery_semantics.add(result["semantics_digest"])
+        next_evidence_requests.update(result["next_evidence_requests"])
 
         replay_receipts: list[dict[str, Any]] = []
         case_candidate_count = 0
@@ -424,8 +749,6 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
         if type(candidate_results) is not list or not candidate_results:
             _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
         for candidate_result in candidate_results:
-            if type(candidate_result) is not dict:
-                _reject("CAMPAIGN_CANDIDATE_ACCOUNTING_INVALID")
             case_candidate_count += 1
             candidate_count += 1
             kind = candidate_result.get("result_kind")
@@ -457,21 +780,23 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
                 try:
                     witness_raw = canonical_json_bytes(witness)
                     replay_raw = discovery.replay_counterexample_bytes(case_raw, witness_raw)
-                    replay = parse_canonical_json_bytes(replay_raw, require_canonical=True)
+                    replay = _validate_replay_receipt(
+                        parse_canonical_json_bytes(replay_raw, require_canonical=True),
+                        witness=witness,
+                        candidate_result=candidate_result,
+                        result=result,
+                        expected_semantics=expected_discovery_semantics,
+                    )
+                except BreakThisPlanCampaignError:
+                    raise
                 except (
                     discovery.BreakThisPlanDiscoveryError,
                     TransitionContractError,
                     TypeError,
                     ValueError,
+                    KeyError,
                 ):
                     _reject("CAMPAIGN_COUNTEREXAMPLE_REPLAY_FAILED")
-                if (
-                    type(replay) is not dict
-                    or replay.get("replayed") is not True
-                    or replay.get("witness_digest") != witness.get("witness_digest")
-                    or replay.get("input_digest") != result.get("input_digest")
-                ):
-                    _reject("CAMPAIGN_COUNTEREXAMPLE_REPLAY_INVALID")
                 replay_receipts.append(
                     {
                         "replay_receipt": replay,
@@ -507,7 +832,7 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
             }
         )
 
-    if closure_handoffs is None or replayed_counterexample_count != counterexample_count:
+    if replayed_counterexample_count != counterexample_count:
         _reject("CAMPAIGN_TOTAL_ACCOUNTING_INVALID")
     case_set_digest = canonical_digest(case_bindings)
     for case_report in case_reports:
@@ -521,7 +846,7 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
                 }
             )
     discovery_semantics_digests = sorted(discovery_semantics)
-    if len(discovery_semantics_digests) != 1:
+    if discovery_semantics_digests != [expected_discovery_semantics]:
         _reject("CAMPAIGN_DISCOVERY_SEMANTICS_DRIFT")
     summary = {
         "abstention_candidate_count": abstention_candidate_count,
@@ -558,12 +883,12 @@ def _analyze(value: dict[str, Any], *, input_digest: str) -> dict[str, Any]:
         "product_boundary": value["product_boundary"],
         "promotion_eligible": False,
         "qualification_state": "EXPERIMENTAL",
-        "r2_closure_handoffs": closure_handoffs,
+        "r2_closure_handoffs": EXPECTED_R2_CLOSURE_HANDOFFS,
         "schema": RESULT_SCHEMA,
         "selected_candidate": None,
         "summary": summary,
         "translation_checked": False,
-        "translation_state": discovery.TRANSLATION_STATE,
+        "translation_state": TRANSLATION_STATE,
         "unresolved_dependency_ids": value["unresolved_dependency_ids"],
     }
 
