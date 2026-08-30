@@ -46,6 +46,12 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Self-hosted main verification gets bounded measured headroom for the unchanged full suite.** Two
+  exact-main runs reached 94% and were canceled at the Python job's 90-minute ceiling; the first
+  explicitly logged `KeyboardInterrupt`, and frontend, setup, Ruff, and privacy passed in both.
+  The Python job timeout is now 120 minutes, with completion pending exact-main post-merge evidence.
+  Test selection, commands, the push-to-main trust boundary, and the frontend timeout are unchanged;
+  manual dispatch was removed so unmerged refs cannot execute on the persistent runner.
 - **Webapp checks can now be required without deadlocking unrelated pull requests.**
   Pull requests always start `webapp-ci`; a fail-closed, tested three-dot path classifier moves
   relevance filtering to the four job conditions, where GitHub reports irrelevant jobs as skipped

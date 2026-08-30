@@ -116,8 +116,8 @@ def test_no_workflow_that_handles_pull_requests_can_select_self_hosted_runners()
     persistent local machine holding credentials or private state. A future workflow file with a
     `pull_request` trigger would evade a named list, so this sweeps EVERY workflow: any file
     whose non-comment body engages with pull_request events at all must not select self-hosted
-    runners. Push-to-main / dispatch-only workflows (e.g. main-selfhosted.yml) may use the
-    fleet: they run only code that was already reviewed and merged."""
+    runners. Push-to-main workflows may use the fleet after review and merge; any manual-dispatch
+    trust boundary needs a separate workflow-specific guard."""
     offenders = []
     for path in sorted(WORKFLOWS.glob("*.yml")):
         body = "\n".join(
@@ -136,6 +136,48 @@ def test_no_workflow_that_handles_pull_requests_can_select_self_hosted_runners()
     assert any("self-hosted" in "\n".join(
         line for line in b.splitlines() if not line.lstrip().startswith("#")
     ) for b in bodies.values()), "no self-hosted workflow found — the sweep proves nothing"
+
+
+def test_main_selfhosted_runs_only_after_main_integration_with_bounded_job_timeouts():
+    body = _workflow("main-selfhosted.yml")
+    uncommented = "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith("#")
+    )
+    events = re.search(r"(?ms)^on:\n.*?(?=^permissions:)", uncommented)
+    permissions = re.search(r"(?ms)^permissions:\n.*?(?=^concurrency:)", uncommented)
+    concurrency = re.search(r"(?ms)^concurrency:\n.*?(?=^jobs:)", uncommented)
+    assert events and events.group(0).strip() == "on:\n  push:\n    branches: [main]"
+    assert permissions and permissions.group(0).strip() == "permissions:\n  contents: read"
+    assert concurrency and concurrency.group(0).strip() == (
+        "concurrency:\n  group: mainsh-${{ github.ref }}\n  cancel-in-progress: true"
+    )
+    assert len(re.findall(r"(?m)^on:$", uncommented)) == 1
+    assert len(re.findall(r"(?m)^permissions:$", uncommented)) == 1
+    assert len(re.findall(r"(?m)^concurrency:$", uncommented)) == 1
+    assert "continue-on-error:" not in uncommented
+    assert "|| true" not in uncommented
+
+    suite, frontend = uncommented.split("  frontend:", 1)
+    assert suite.count("runs-on: [self-hosted, Windows, X64]") == 1
+    assert suite.count("timeout-minutes: 120") == 1
+    assert "timeout-minutes: 45" not in suite
+    runner_python = '& "$env:RUNNER_TEMP\\ci-venv\\Scripts\\python.exe"'
+    expected_runs = [
+        'run: py -3.12 -m venv "$env:RUNNER_TEMP\\ci-venv"',
+        f"run: '{runner_python} -m pip install --upgrade pip'",
+        f"""run: '{runner_python} -m pip install -e ".[dev]"'""",
+        f"run: '{runner_python} -m ruff check .'",
+        f"run: '{runner_python} .github/scripts/verify_repository_privacy.py'",
+        f"run: '{runner_python} -m pytest'",
+    ]
+    actual_runs = [
+        line.strip() for line in suite.splitlines() if line.strip().startswith("run:")
+    ]
+    assert actual_runs == expected_runs
+
+    assert frontend.count("runs-on: [self-hosted, Windows, X64]") == 1
+    assert frontend.count("timeout-minutes: 45") == 1
+    assert "timeout-minutes: 120" not in frontend
 
 
 def test_publish_promotes_release_assets_without_rebuilding():
