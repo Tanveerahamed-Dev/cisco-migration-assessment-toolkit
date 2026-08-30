@@ -26,6 +26,70 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "cisco_toolkit/schemas/atlas-transition-runtime-inventory-v1.schema.json"
 
 
+def _terminate_redirector_tree_for_test(
+        process: subprocess.Popen[bytes],
+        taskkill: Path,
+        *,
+        cleanup_timeout_seconds: float) -> None:
+    """Best-effort tree kill plus mandatory bounded launcher reap/drain for this test."""
+
+    taskkill_error: BaseException | None = None
+    try:
+        terminated = subprocess.run(
+            [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            timeout=cleanup_timeout_seconds,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        taskkill_error = exc
+    else:
+        if terminated.returncode != 0:
+            taskkill_error = RuntimeError(
+                f"taskkill returned {terminated.returncode}"
+            )
+
+    # CPython's Windows venv launcher waits for its child in a kill-on-close Job
+    # (PC/venvlauncher.c).  Reaping the launcher is therefore the bounded fallback
+    # if taskkill cannot start, times out, or returns a failure.
+    kill_error: OSError | None = None
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError as exc:
+            if process.poll() is None:
+                kill_error = exc
+
+    drain_error: BaseException | None = None
+    for _ in range(2):
+        try:
+            process.communicate(timeout=cleanup_timeout_seconds)
+        except (OSError, subprocess.SubprocessError) as exc:
+            drain_error = exc
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError as kill_exc:
+                    if process.poll() is None:
+                        kill_error = kill_exc
+            continue
+        drain_error = None
+        break
+
+    if process.poll() is None:
+        raise AssertionError("redirector launcher remained alive after bounded cleanup")
+    if drain_error is not None:
+        raise AssertionError("redirector pipes did not drain after bounded cleanup")
+    if kill_error is not None:
+        raise AssertionError("redirector launcher could not be force-reaped")
+    if taskkill_error is not None:
+        raise AssertionError(
+            f"descendant-tree cleanup failed before launcher reap: "
+            f"{type(taskkill_error).__name__}"
+        )
+
+
 def _minimal_pe(*, normal: str = "KERNEL32.dll", delay: str = "USER32.dll") -> bytes:
     raw = bytearray(0x900)
     raw[:2] = b"MZ"
@@ -2603,6 +2667,20 @@ def test_windows_venv_redirector_pid_differs_but_verified_base_pid_matches(
     assert created.returncode == 0, created.stderr
     redirector = (venv / "Scripts/python.exe").resolve(strict=True)
     distribution_root = inventory._find_distribution_import_root("cryptography")
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    assert system_root is not None
+    taskkill = (Path(system_root).resolve(strict=True) / "System32/taskkill.exe").resolve(
+        strict=True
+    )
+    # This is the test-harness watchdog, not the product probe deadline.  The child
+    # enforces DEFAULT_PROBE_TIMEOUT_SECONDS around its nested runtime probe before
+    # stable reads, digesting, canonicalization, and stdout delivery.  The outer
+    # process therefore needs a distinct bounded budget that strictly contains the
+    # nested deadline and cleanup allowance.
+    outer_child_timeout_seconds = (
+        inventory.DEFAULT_PROBE_TIMEOUT_SECONDS * 2
+        + inventory.DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS
+    )
     child_code = (
         "import json,os,sys;from pathlib import Path;"
         "root=Path(sys.argv[1]);sys.path[:0]=[str(root),sys.argv[2]];"
@@ -2641,7 +2719,15 @@ def test_windows_venv_redirector_pid_differs_but_verified_base_pid_matches(
             stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        stdout, stderr = process.communicate(timeout=inventory.DEFAULT_PROBE_TIMEOUT_SECONDS)
+        try:
+            stdout, stderr = process.communicate(timeout=outer_child_timeout_seconds)
+        except subprocess.TimeoutExpired:
+            _terminate_redirector_tree_for_test(
+                process,
+                taskkill,
+                cleanup_timeout_seconds=inventory.DEFAULT_PROBE_CLEANUP_TIMEOUT_SECONDS,
+            )
+            raise
         assert process.returncode == 0
         assert stderr == b""
         return process, json.loads(stdout)
@@ -2660,3 +2746,123 @@ def test_windows_venv_redirector_pid_differs_but_verified_base_pid_matches(
         "executable", "runtime", "rust", "cffi", "stdlib_pyd",
     ))
     assert redirector_value["closure"] == "PARTIAL_NONPORTABLE_PROTOTYPE"
+
+
+@pytest.mark.parametrize("taskkill_failure", ("timeout", "oserror", "nonzero"))
+def test_redirector_cleanup_reaps_launcher_when_taskkill_fails(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        taskkill_failure: str) -> None:
+    class FakeProcess:
+        pid = 12345
+        returncode: int | None = None
+        kill_calls = 0
+        communicate_calls = 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = 1
+
+        def communicate(self, *, timeout: float) -> tuple[bytes, bytes]:
+            assert timeout == 2
+            self.communicate_calls += 1
+            return b"", b""
+
+    process = FakeProcess()
+
+    def failed_taskkill(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if taskkill_failure == "timeout":
+            raise subprocess.TimeoutExpired(["taskkill"], 2)
+        if taskkill_failure == "oserror":
+            raise OSError("taskkill unavailable")
+        return subprocess.CompletedProcess(["taskkill"], 1, b"", b"failed")
+
+    monkeypatch.setattr(subprocess, "run", failed_taskkill)
+    with pytest.raises(AssertionError, match="descendant-tree cleanup failed"):
+        _terminate_redirector_tree_for_test(
+            process,  # type: ignore[arg-type]
+            tmp_path / "taskkill.exe",
+            cleanup_timeout_seconds=2,
+        )
+    assert process.kill_calls == 1
+    assert process.communicate_calls == 1
+    assert process.returncode == 1
+
+
+def test_redirector_cleanup_retries_bounded_pipe_drain(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path) -> None:
+    class FakeProcess:
+        pid = 12345
+        returncode: int | None = None
+        kill_calls = 0
+        communicate_calls = 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = 1
+
+        def communicate(self, *, timeout: float) -> tuple[bytes, bytes]:
+            assert timeout == 2
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(["redirector"], timeout)
+            return b"", b""
+
+    process = FakeProcess()
+
+    def successful_taskkill(
+            *_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        process.returncode = 1
+        return subprocess.CompletedProcess(["taskkill"], 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", successful_taskkill)
+    _terminate_redirector_tree_for_test(
+        process,  # type: ignore[arg-type]
+        tmp_path / "taskkill.exe",
+        cleanup_timeout_seconds=2,
+    )
+    assert process.communicate_calls == 2
+    assert process.returncode == 1
+
+
+def test_redirector_cleanup_fails_if_pipes_never_drain(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path) -> None:
+    class FakeProcess:
+        pid = 12345
+        returncode = 1
+        communicate_calls = 0
+
+        def poll(self) -> int:
+            return self.returncode
+
+        def kill(self) -> None:
+            raise AssertionError("completed launcher must not be killed again")
+
+        def communicate(self, *, timeout: float) -> tuple[bytes, bytes]:
+            assert timeout == 2
+            self.communicate_calls += 1
+            raise subprocess.TimeoutExpired(["redirector"], timeout)
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["taskkill"], 0, b"", b""
+        ),
+    )
+    with pytest.raises(AssertionError, match="pipes did not drain"):
+        _terminate_redirector_tree_for_test(
+            process,  # type: ignore[arg-type]
+            tmp_path / "taskkill.exe",
+            cleanup_timeout_seconds=2,
+        )
+    assert process.communicate_calls == 2
