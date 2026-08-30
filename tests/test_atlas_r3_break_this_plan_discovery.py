@@ -170,6 +170,65 @@ def test_counterexample_replay_is_exact_and_rejects_teleportation() -> None:
     )
 
 
+def test_replay_semantics_bind_the_closed_repo_dependency_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_sources = {
+        "adapter",
+        "cutover_sim",
+        "discovery_input_schema",
+        "discovery_result_schema",
+        "failover",
+        "fib",
+        "textutils",
+        "transition_contract",
+        "whatif",
+    }
+    source_paths = discovery._semantic_source_paths()
+    assert set(source_paths) == expected_sources
+    for path, _error_code in source_paths.values():
+        assert type(path) is str and Path(path).is_file()
+
+    request_raw = FIXTURE.read_bytes()
+    _old_raw, old_result = _result(request_raw)
+    old_witness = _candidate(old_result, "candidate.unsafe-middle")["counterexamples"][0]
+    old_witness_raw = _canonical(old_witness)
+
+    changed_failover = tmp_path / "failover.py"
+    changed_failover.write_bytes(Path(discovery.failover.__file__).read_bytes() + b"\n# semantic change\n")
+    monkeypatch.setattr(discovery.failover, "__file__", str(changed_failover))
+    _new_raw, new_result = _result(request_raw)
+    assert new_result["semantics_digest"] != old_result["semantics_digest"]
+    new_witness = _candidate(new_result, "candidate.unsafe-middle")["counterexamples"][0]
+    assert new_witness["semantics_digest"] == new_result["semantics_digest"]
+    assert new_witness["witness_digest"] != old_witness["witness_digest"]
+    _error(
+        "WITNESS_NOT_REPLAYED",
+        lambda: discovery.replay_counterexample_bytes(request_raw, old_witness_raw),
+    )
+
+
+def test_interface_normalization_source_change_invalidates_prior_witness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_raw = FIXTURE.read_bytes()
+    _old_raw, old_result = _result(request_raw)
+    old_witness = _candidate(old_result, "candidate.unsafe-middle")["counterexamples"][0]
+    changed_textutils = tmp_path / "textutils.py"
+    changed_textutils.write_bytes(
+        Path(discovery.textutils.__file__).read_bytes()
+        + b"\n# interface normalization semantic change\n"
+    )
+    monkeypatch.setattr(discovery.textutils, "__file__", str(changed_textutils))
+    _new_raw, new_result = _result(request_raw)
+    assert new_result["semantics_digest"] != old_result["semantics_digest"]
+    _error(
+        "WITNESS_NOT_REPLAYED",
+        lambda: discovery.replay_counterexample_bytes(
+            request_raw, _canonical(old_witness)
+        ),
+    )
+
 def test_cli_is_bounded_stdout_only_and_matches_library_bytes(tmp_path: Path) -> None:
     before = sorted(tmp_path.iterdir())
     completed = subprocess.run(
@@ -626,6 +685,14 @@ def test_adapter_cannot_import_or_emit_authoritative_gate_surfaces() -> None:
 def test_result_schema_rejects_laundered_limitations() -> None:
     _encoded, result = _result()
     schema = json.loads(RESULT_SCHEMA.read_text(encoding="utf-8"))
+    candidate_schema = schema["$defs"]["candidateResult"]
+    assert set(candidate_schema["properties"]["limitations"]["items"]["enum"]) == set(
+        discovery.LIMITATION_CODES
+    )
+    assert set(candidate_schema["properties"]["reason_code"]["enum"]) == (
+        set(discovery.ABSTENTION_REASON_CODES)
+        | {"REPLAYABLE_OBSERVED_DISCARD_SYNTHETIC_FLOW"}
+    )
     laundered = deepcopy(result)
     laundered["candidate_results"][0]["limitations"] = ["GO", "PASS"]
     assert list(Draft202012Validator(schema).iter_errors(laundered))

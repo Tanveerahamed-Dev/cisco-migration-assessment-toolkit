@@ -28,16 +28,16 @@
     "reason": "Retained publisher files have their own exact-byte manifest and repository/distribution integrity gates; they are outside the Atlas R1/R2 LF-policy denominator."
   },
   "lf_scope": {
-    "tracked_path_count": 171,
-    "tracked_path_set_sha256": "sha256:0c497de348c41bc539bdf8ccc02d71f409a628c1e3fa871ad4c5839e031b0d9b"
+    "tracked_path_count": 172,
+    "tracked_path_set_sha256": "sha256:cf696248bdd32d9d3b5a6373efdeb9860b9db480b80af6e950dac69a48f45821"
   },
   "derived_byte_owner_scope": {
     "tracked_path_count": 38,
     "tracked_path_set_sha256": "sha256:ad1a4aa63df21b9bb4aba798350165eede0a665d43978d80dd38333177b4389b"
   },
   "broader_declared_lf_scope": {
-    "tracked_path_count": 133,
-    "tracked_path_set_sha256": "sha256:a9bafeba2e4fa121efc58eafdee7e952656ccd124ec75e2be1e6f23c995398a9"
+    "tracked_path_count": 134,
+    "tracked_path_set_sha256": "sha256:a3a0ea64391bede8cdfb4ed000a8e3e324b052f5794d473355a15411a4994506"
   },
   "publisher_byte_scope": {
     "tracked_path_count": 1,
