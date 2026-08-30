@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas.r3-break-this-plan-campaign-result/1",
+  "title": "Atlas R3 Break This Plan non-authoritative synthetic campaign result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "banner",
+    "authoritative",
+    "authoritative_gate",
+    "decision_effect",
+    "qualification_state",
+    "promotion_eligible",
+    "feasibility_verdict",
+    "selected_candidate",
+    "translation_checked",
+    "translation_state",
+    "preview_eligible",
+    "campaign_id",
+    "campaign_input_digest",
+    "case_set_digest",
+    "campaign_semantics_digest",
+    "discovery_semantics_digests",
+    "product_boundary",
+    "unresolved_dependency_ids",
+    "authority_placeholders",
+    "limit_profile",
+    "summary",
+    "case_reports",
+    "limitation_counts",
+    "abstention_reason_counts",
+    "next_evidence_requests",
+    "next_observation",
+    "operator_interpretation",
+    "global_limitations",
+    "r2_closure_handoffs"
+  ],
+  "properties": {
+    "schema": {"const": "atlas.r3-break-this-plan-campaign-result/1"},
+    "banner": {"const": "R3 SYNTHETIC CAMPAIGN — NON-AUTHORITATIVE"},
+    "authoritative": {"const": false},
+    "authoritative_gate": {"type": "null"},
+    "decision_effect": {"const": "NONE"},
+    "qualification_state": {"const": "EXPERIMENTAL"},
+    "promotion_eligible": {"const": false},
+    "feasibility_verdict": {"type": "null"},
+    "selected_candidate": {"type": "null"},
+    "translation_checked": {"const": false},
+    "translation_state": {"const": "TRANSLATION_NOT_ESTABLISHED"},
+    "preview_eligible": {"const": false},
+    "campaign_id": {
+      "type": "string",
+      "pattern": "^qdp001-campaign:[a-z0-9][a-z0-9._:/+@-]{0,110}$"
+    },
+    "campaign_input_digest": {"$ref": "#/$defs/digest"},
+    "case_set_digest": {"$ref": "#/$defs/digest"},
+    "campaign_semantics_digest": {"$ref": "#/$defs/digest"},
+    "discovery_semantics_digests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/digest"}
+    },
+    "product_boundary": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/productBoundary"
+    },
+    "unresolved_dependency_ids": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/unresolvedDependencies"
+    },
+    "authority_placeholders": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/authorityPlaceholders"
+    },
+    "limit_profile": {"$ref": "#/$defs/limitProfile"},
+    "summary": {"$ref": "#/$defs/summary"},
+    "case_reports": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/caseReport"}
+    },
+    "limitation_counts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/limitationCount"}
+    },
+    "abstention_reason_counts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/abstentionReasonCount"}
+    },
+    "next_evidence_requests": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "next_observation": {"type": "null"},
+    "operator_interpretation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["abstention", "campaign", "counterexample", "limitations"],
+      "properties": {
+        "abstention": {"const": "NO_SUPPORT_OR_SAFETY_INFERENCE"},
+        "campaign": {"const": "NO_RANKING_SELECTION_FEASIBILITY_OR_COMPLETENESS"},
+        "counterexample": {"const": "REPRODUCED_SYNTHETIC_OBSERVED_DISCARD_ONLY"},
+        "limitations": {"const": "RETAIN_WITH_EACH_CANDIDATE"}
+      }
+    },
+    "global_limitations": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {"const": "DISCOVERY_PLANNING_ONLY"},
+        {"const": "NO_CANDIDATE_RANKING_OR_SELECTION"},
+        {"const": "NO_EXTERNAL_OBSERVATION_AUTHORIZED"},
+        {"const": "NO_POSITIVE_FEASIBILITY_OR_COMPLETENESS_CERTIFICATE"},
+        {"const": "NO_QDP_TO_QCP_TRANSLATION"},
+        {"const": "SYNTHETIC_TEST_ONLY"},
+        {"const": "CAMPAIGN_AGGREGATION_DOES_NOT_ADD_EVIDENCE"},
+        {"const": "REPLAY_IS_SYNTHETIC_REPRODUCTION_ONLY"}
+      ],
+      "items": false
+    },
+    "r2_closure_handoffs": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/closureHandoffs"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "limitProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_campaign_input_bytes",
+        "max_campaign_output_bytes",
+        "max_cases",
+        "max_operator_report_bytes",
+        "nested_discovery_limit_profile",
+        "profile_id"
+      ],
+      "properties": {
+        "max_campaign_input_bytes": {"const": 9437184},
+        "max_campaign_output_bytes": {"const": 8388608},
+        "max_cases": {"const": 8},
+        "max_operator_report_bytes": {"const": 1048576},
+        "nested_discovery_limit_profile": {
+          "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/limitProfile"
+        },
+        "profile_id": {"const": "ATLAS_R3_QDP001_SYNTHETIC_CAMPAIGN_LIMITS/1"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "abstention_candidate_count",
+        "candidate_count",
+        "case_count",
+        "counterexample_candidate_count",
+        "counterexample_count",
+        "replay_failure_count",
+        "replayed_counterexample_count"
+      ],
+      "properties": {
+        "abstention_candidate_count": {"type": "integer", "minimum": 0, "maximum": 32},
+        "candidate_count": {"type": "integer", "minimum": 1, "maximum": 32},
+        "case_count": {"type": "integer", "minimum": 1, "maximum": 8},
+        "counterexample_candidate_count": {"type": "integer", "minimum": 0, "maximum": 32},
+        "counterexample_count": {"type": "integer", "minimum": 0, "maximum": 1024},
+        "replay_failure_count": {"const": 0},
+        "replayed_counterexample_count": {"type": "integer", "minimum": 0, "maximum": 1024}
+      }
+    },
+    "caseSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "abstention_candidate_count",
+        "candidate_count",
+        "counterexample_candidate_count",
+        "counterexample_count",
+        "replayed_counterexample_count"
+      ],
+      "properties": {
+        "abstention_candidate_count": {"type": "integer", "minimum": 0, "maximum": 4},
+        "candidate_count": {"type": "integer", "minimum": 1, "maximum": 4},
+        "counterexample_candidate_count": {"type": "integer", "minimum": 0, "maximum": 4},
+        "counterexample_count": {"type": "integer", "minimum": 0, "maximum": 128},
+        "replayed_counterexample_count": {"type": "integer", "minimum": 0, "maximum": 128}
+      }
+    },
+    "replayReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative",
+        "candidate_digest",
+        "decision_effect",
+        "input_digest",
+        "replayed",
+        "schema",
+        "semantics_digest",
+        "witness_digest"
+      ],
+      "properties": {
+        "authoritative": {"const": false},
+        "candidate_digest": {"$ref": "#/$defs/digest"},
+        "decision_effect": {"const": "NONE"},
+        "input_digest": {"$ref": "#/$defs/digest"},
+        "replayed": {"const": true},
+        "schema": {"const": "atlas.r3-break-this-plan-counterexample-replay/1"},
+        "semantics_digest": {"$ref": "#/$defs/digest"},
+        "witness_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "replayReceiptEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_replay_binding_digest",
+        "replay_receipt",
+        "replay_receipt_digest"
+      ],
+      "properties": {
+        "campaign_replay_binding_digest": {"$ref": "#/$defs/digest"},
+        "replay_receipt": {"$ref": "#/$defs/replayReceipt"},
+        "replay_receipt_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "caseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "case_summary",
+        "discovery_result",
+        "discovery_result_digest",
+        "input_digest",
+        "replay_receipts"
+      ],
+      "properties": {
+        "case_id": {"type": "string", "pattern": "^qdp001-fixture:[a-z0-9._:/+@-]+$"},
+        "case_summary": {"$ref": "#/$defs/caseSummary"},
+        "discovery_result": {"$ref": "urn:atlas:r3:break-this-plan:discovery-result:1"},
+        "discovery_result_digest": {"$ref": "#/$defs/digest"},
+        "input_digest": {"$ref": "#/$defs/digest"},
+        "replay_receipts": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/replayReceiptEnvelope"}
+        }
+      }
+    },
+    "limitationCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": {
+          "$ref": "urn:atlas:r3:break-this-plan:discovery-result:1#/$defs/candidateResult/properties/limitations/items"
+        },
+        "count": {"type": "integer", "minimum": 1, "maximum": 32}
+      }
+    },
+    "abstentionReasonCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": {
+          "enum": ["ABSTAIN_EVIDENCE_INCOMPLETE", "MODEL_CONFLICT", "NOT_EVALUABLE"]
+        },
+        "count": {"type": "integer", "minimum": 1, "maximum": 32}
+      }
+    }
+  }
+}

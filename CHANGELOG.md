@@ -7,6 +7,17 @@ per change, with verification evidence) lives in
 ## [Unreleased]
 
 ### Added
+- **QDP-001 multi-case synthetic adversarial campaign and operator report.** A separate bounded,
+  stdout-only capsule now runs up to eight complete canonical discovery cases, preserves every
+  candidate outcome, automatically replays every emitted witness, and reports exact case,
+  candidate, abstention, counterexample, replay, and limitation counts in canonical JSON or
+  deterministic Markdown. Campaign replay bindings cover the complete ordered case set and full
+  child results, so case narrowing or limitation-only drift changes the binding. The underlying
+  discovery semantics digest now closes its repository dependency set over failover, what-if,
+  transition-contract, schemas, and interpreter identity as well as the adapter, FIB, simulator,
+  and limits. Four tracked adversarial cases produce five explicit abstentions and one replayed
+  synthetic counterexample; those fixture counts are not a score or support claim. All R2/QCP/runtime/R3
+  non-promotion states and null R2-AUTH-001/002/004 handoffs remain fixed.
 - **QDP-001 “Break This Plan” bounded discovery adapter.** A non-shipping, synthetic-only tool now
   evaluates every declared ordered cutover candidate through the existing cutover simulator and
   emits only a digest-bound replayable positively observed-discard counterexample or an explicit abstention.

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas.r3-break-this-plan-campaign-input/1",
+  "title": "Atlas R3 Break This Plan synthetic campaign input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "campaign_id",
+    "prototype_mode",
+    "source_class",
+    "product_boundary",
+    "unresolved_dependency_ids",
+    "authority_placeholders",
+    "cases"
+  ],
+  "properties": {
+    "schema": {"const": "atlas.r3-break-this-plan-campaign-input/1"},
+    "campaign_id": {
+      "type": "string",
+      "minLength": 18,
+      "maxLength": 128,
+      "pattern": "^qdp001-campaign:[a-z0-9][a-z0-9._:/+@-]{0,110}$",
+      "not": {
+        "pattern": "(?:^|[._:/+@-])(?:approval|approved|authoritative|authority|best|eligible|feasible|gate|go|pass|promote|promotion|qualification|qualified|rank|readiness|ready|safe|score|select|selected|winner)(?:$|[._:/+@-])"
+      }
+    },
+    "prototype_mode": {"const": "R3_DISCOVERY_SYNTHETIC_CAMPAIGN_ONLY"},
+    "source_class": {"const": "SYNTHETIC_TEST_ONLY"},
+    "product_boundary": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-input:1#/$defs/productBoundary"
+    },
+    "unresolved_dependency_ids": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-input:1#/$defs/unresolvedDependencies"
+    },
+    "authority_placeholders": {
+      "$ref": "urn:atlas:r3:break-this-plan:discovery-input:1#/$defs/authorityPlaceholders"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "urn:atlas:r3:break-this-plan:discovery-input:1"}
+    }
+  }
+}

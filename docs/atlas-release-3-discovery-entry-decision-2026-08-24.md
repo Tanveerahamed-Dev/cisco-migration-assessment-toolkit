@@ -158,3 +158,20 @@ unresolved dependency census and null placeholders for `R2-AUTH-001`, `R2-AUTH-0
 `PARTIAL_NONPORTABLE_PROTOTYPE`, Release 2 remains
 `CLOSED_INCOMPLETE_EXPERIMENTAL_CHECKPOINT`, and Release 3 remains
 `DISCOVERY_PLANNING_ONLY`.
+
+## 2026-08-30 synthetic campaign reconciliation
+
+`docs/atlas-release-3-break-this-plan-campaign-contract-2026-08-30.md` adds a bounded campaign
+capsule over the unchanged single-case analysis/replay API. It runs four canonical adversarial
+cases, preserves all six candidate outcomes, automatically replays every emitted witness, binds the
+complete child-result and limitation set, and renders a deterministic operator report. It adds no
+network model, candidate selection, feasibility result, external observation, or machine gate.
+
+The child semantics digest now binds all repository modules and schemas that directly or
+transitively influence the discovery projection. Campaign replay bindings additionally change when
+the case set narrows or only an operator-visible limitation changes. These are deterministic
+source/result custody improvements, not authentication, completeness, qualification, or authority.
+
+Every dependency and authority boundary above remains unchanged. In particular, the synthetic
+campaign is not representative-workload evidence for `R2-AUTH-002`, and its digests are not
+trust/custody mechanics or receipts for `R2-AUTH-004`.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import platform
 import re
 import stat
 import sys
@@ -26,9 +27,22 @@ _FIXTURE_PATH = (
     / "atlas-r3-break-this-plan"
     / "unsafe-middle.synthetic.json"
 )
+_INPUT_SCHEMA_PATH = (
+    _REPOSITORY_ROOT
+    / "docs"
+    / "schemas"
+    / "atlas-r3-break-this-plan-discovery-input-v1.schema.json"
+)
+_RESULT_SCHEMA_PATH = (
+    _REPOSITORY_ROOT
+    / "docs"
+    / "schemas"
+    / "atlas-r3-break-this-plan-discovery-result-v1.schema.json"
+)
 sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from cisco_toolkit import cutover_sim, fib  # noqa: E402
+from cisco_toolkit import failover, transition_contract, whatif  # noqa: E402
 from cisco_toolkit.transition_contract import (  # noqa: E402
     TransitionContractError,
     bytes_digest,
@@ -118,6 +132,29 @@ _ACTION_PARAMETER_KEYS = {
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,127}$")
 _ASSUMPTION_STATES = frozenset({"SYNTHETIC_ASSERTED", "UNRESOLVED"})
 _REQUIREMENT_KINDS = frozenset({"PRESERVE_SYNTHETIC_FLOW", "HUMAN_ONLY_UNEVALUATED"})
+ABSTENTION_REASON_CODES = frozenset(
+    {"ABSTAIN_EVIDENCE_INCOMPLETE", "MODEL_CONFLICT", "NOT_EVALUABLE"}
+)
+LIMITATION_CODES = frozenset(
+    {
+        "BASELINE_EVIDENCE_INCOMPLETE",
+        "BASELINE_REQUIREMENT_CONFLICT",
+        "BLOCKED_FLOW_OUTSIDE_REQUIREMENT_SET",
+        "BLOCKED_FLOW_SHAPE_UNSUPPORTED",
+        "BLOCKED_FLOW_WITHOUT_POSITIVE_OBSERVED_DISCARD",
+        "ELECTION_PROJECTION_NOT_CONTINUITY_EVIDENCE",
+        "HUMAN_REQUIREMENT_UNEVALUATED",
+        "L2_CONTINUITY_NOT_ASSESSED",
+        "NOOP_STEP_NOT_EVALUABLE",
+        "NO_COUNTEREXAMPLE_OBSERVED_IS_NOT_SUPPORT",
+        "NO_POSITIVE_SUPPORT_OR_COMPLETENESS_CERTIFICATE",
+        "PATH_LOSS_IS_INCONCLUSIVE",
+        "SIMULATION_NOT_EVALUABLE",
+        "SIMULATOR_IGNORED_STEP_PARAMETERS",
+        "SYNTHETIC_MODEL_ONLY",
+        "UNRESOLVED_ASSUMPTION",
+    }
+)
 _FORBIDDEN_UNTRUSTED_KEY_TOKENS = frozenset(
     {
         "approval",
@@ -434,16 +471,37 @@ def _source_digest(path: str | None, code: str) -> str:
         _reject(code)
 
 
-def _semantics_digest() -> str:
-    profile = {
-        "adapter_source_digest": _source_digest(__file__, "ADAPTER_SOURCE_UNREADABLE"),
-        "counterexample_projection": "DEFINITIVE_OBSERVED_DISCARD_SYNTHETIC_FLOW/1",
-        "fib_source_digest": _source_digest(fib.__file__, "FIB_SOURCE_UNREADABLE"),
-        "limit_profile_digest": canonical_digest(LIMIT_PROFILE),
-        "simulator_contract": "cutover_sim/1",
-        "simulator_source_digest": _source_digest(
-            cutover_sim.__file__, "SIMULATOR_SOURCE_UNREADABLE"
+def _semantic_source_paths() -> dict[str, tuple[str | None, str]]:
+    return {
+        "adapter": (__file__, "ADAPTER_SOURCE_UNREADABLE"),
+        "cutover_sim": (cutover_sim.__file__, "SIMULATOR_SOURCE_UNREADABLE"),
+        "discovery_input_schema": (str(_INPUT_SCHEMA_PATH), "INPUT_SCHEMA_UNREADABLE"),
+        "discovery_result_schema": (str(_RESULT_SCHEMA_PATH), "RESULT_SCHEMA_UNREADABLE"),
+        "failover": (failover.__file__, "FAILOVER_SOURCE_UNREADABLE"),
+        "fib": (fib.__file__, "FIB_SOURCE_UNREADABLE"),
+        "transition_contract": (
+            transition_contract.__file__,
+            "TRANSITION_CONTRACT_SOURCE_UNREADABLE",
         ),
+        "whatif": (whatif.__file__, "WHATIF_SOURCE_UNREADABLE"),
+    }
+
+
+def _semantics_digest() -> str:
+    source_digests = {
+        source_id: _source_digest(path, error_code)
+        for source_id, (path, error_code) in _semantic_source_paths().items()
+    }
+    profile = {
+        "counterexample_projection": "DEFINITIVE_OBSERVED_DISCARD_SYNTHETIC_FLOW/1",
+        "limit_profile_digest": canonical_digest(LIMIT_PROFILE),
+        "python_implementation": platform.python_implementation().casefold(),
+        "python_version": (
+            f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        ),
+        "semantic_dependency_profile": "ATLAS_R3_QDP001_DISCOVERY_SEMANTICS/2",
+        "simulator_contract": "cutover_sim/1",
+        "source_digests": source_digests,
     }
     return canonical_digest(profile)
 
