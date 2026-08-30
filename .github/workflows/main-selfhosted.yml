@@ -4,9 +4,10 @@ name: main-selfhosted
 #
 # Deliberately NOT triggered by pull_request: the repository's standing security rule
 # (see the ci.yml header) is that PR code executes only on GitHub-hosted, ephemeral
-# runners, never on a persistent local machine. Push-to-main and workflow_dispatch run
-# only code that has already been reviewed and merged, which is the trust boundary this
-# workflow respects. This job supplements the hosted matrix (it does not replace it and
+# runners, never on a persistent local machine. This workflow executes only after the
+# subject is present on main. Ordinary review/merge and explicit admin exceptions are
+# separately governed; this post-merge verifier does not prove review or approval.
+# This job supplements the hosted matrix (it does not replace it and
 # is not a required protection context); it exists so main keeps continuous verification
 # when hosted minutes are exhausted.
 #
@@ -18,7 +19,6 @@ name: main-selfhosted
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,7 +31,11 @@ jobs:
   suite:
     name: Main suite · py3.12 · self-hosted-windows
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 90
+    # Exact-main runs 33274394182 and 33278292400 both reached 94% before cancellation
+    # at the 90-minute job ceiling; the first explicitly logged KeyboardInterrupt.
+    # Keep the complete gate intact and give the measured Windows runtime bounded
+    # headroom. Completion still requires a successful exact-main post-merge run.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The venv lives in RUNNER_TEMP, never inside the checkout: the privacy gate scans the
