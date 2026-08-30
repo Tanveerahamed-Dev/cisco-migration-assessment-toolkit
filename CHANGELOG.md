@@ -79,6 +79,15 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **The Windows redirector test harness now contains the nested runtime-probe deadline.** Exact-main
+  run `33292999786` passed 8,439 Python tests but failed when the redirector child exceeded an outer
+  30-second watchdog that also wrapped its own 30-second product probe plus post-probe inventory work.
+  The test-only outer budget is now a bounded 62 seconds (`2 × 30s + 2s cleanup`), and a timeout
+  terminates the whole redirector descendant tree before bounded pipe drain, with force-reap/drain
+  fallback and regression coverage for taskkill failure-handling paths. The product probe remains fail-closed
+  at 30 seconds; runtime behavior and existing runtime-result expectations are unchanged, while harness
+  cleanup assertions are added. Evidence collection and release state remain unchanged. The failed full
+  run remains negative evidence, and closure requires a fresh exact-main pass.
 - **Graphify MCP startup now resolves a real interpreter instead of trusting the Windows Store
   `python` alias.** The tracked MCP configuration launches a small cross-platform Node resolver that
   prefers the repository's local Graphify interpreter pin, verifies `graphify.serve` is importable,
