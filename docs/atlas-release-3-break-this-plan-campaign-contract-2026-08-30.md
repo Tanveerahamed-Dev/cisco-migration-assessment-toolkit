@@ -20,10 +20,12 @@ set of complete canonical synthetic cases and receive:
 - an exact limitation and abstention-frequency census; and
 - a deterministic Markdown operator report that keeps negative and unresolved states visible.
 
-The campaign capsule is `tools/run_atlas_r3_break_this_plan_campaign.py`. It calls only the existing
-`analyze_request_bytes` and `replay_counterexample_bytes` discovery boundaries. It does not import
-`cutover_sim`, FIB, failover, R2 verification, runtime discovery, workload review, or TCB-review
-owners directly. It writes only to stdout and cannot collect evidence, access a network, write a
+The campaign capsule is `tools/run_atlas_r3_break_this_plan_campaign.py`. Its result path calls the
+existing `analyze_request_bytes` and `replay_counterexample_bytes` discovery boundaries. Before it
+accepts a public child return, it also invokes the discovery module's fixed `_analyze` owner once on
+the same validated case as a same-process equality cross-check. It does not import `cutover_sim`,
+FIB, failover, R2 verification, runtime discovery, workload review, or TCB-review owners directly.
+It writes only to stdout and cannot collect evidence, access a network, write a
 device, create a key or signature, rank or select a candidate, compile a TransitionCase, invoke an
 authoritative gate, or change a release state.
 
@@ -113,7 +115,7 @@ Changing any bound source or schema changes the child `semantics_digest`; an ear
 fails exact replay. This is source/runtime identity, not installed-distribution, memory-image,
 platform, provenance, or authority proof.
 
-The campaign adds a stronger result-custody layer. `case_set_digest` binds the ordered set of each
+The campaign adds a stronger, explicitly scoped result-binding layer. `case_set_digest` binds the ordered set of each
 exact case input digest and full child discovery-result digest. The latter includes every candidate,
 result kind, reason, limitation, witness, checked count, and simulation-projection digest.
 Each replay envelope then carries `campaign_replay_binding_digest` over:
@@ -127,10 +129,21 @@ replay binding even if the narrow v1 witness itself remains byte-identical. This
 signature, authenticated receipt, independent review, trusted time, revocation proof, or custody
 attestation.
 
+The replay binding is deliberately not a whole-result digest: it does not include the top-level
+campaign summary, global limitations, operator interpretation, campaign-level next-evidence union,
+R2 handoffs, or campaign-semantics digest. Whole-result integrity for this fixed package is carried by
+the canonical `campaign-result.json` SHA-256 in `campaign-package-manifest.json`; neither hash is
+authenticated custody or authority.
+
 Before accepting a child result, the campaign independently recomputes the expected discovery
 semantics digest from the fixed repository path set and exact limits, rejoins the complete ordered
 candidate ID/digest census and requirements/input/product digests to the case, checks every schema
-bound, and validates every witness step and requirement against its input candidate. Replay receipts
+bound, and validates every witness step and requirement against its input candidate. It then runs a
+second exact child analysis through the fixed in-process discovery implementation and requires the
+full mapping to match. That catches a substituted public return that removes a baseline-derived
+next-evidence request, contextual limitation, or counterexample. This is same-process agreement, not
+independent execution, installed-code provenance, memory-image integrity, authenticated custody, or
+review. Replay receipts
 have an exact closed shape and must retain `authoritative=false`, `decision_effect=NONE`, the expected
 semantics, and exact candidate/input/witness bindings. The campaign does not take its expected null
 R2 handoff from the child helper; it owns the fixed null/false structure and rejects lockstep drift.
@@ -194,6 +207,10 @@ collection. A currently valid externally effective
 - canonical and schema-valid input/result;
 - exact case, candidate, limitation, abstention, counterexample, and replay accounting;
 - mandatory unresolved/human next-evidence retention and non-removable base negative limitations;
+- exact baseline-derived next-evidence retention, including refusal of omissions and unsupported
+  additions;
+- full-result recomputation that refuses contextual-limitation and counterexample suppression at
+  the public child-return seam;
 - all-abstention rendering that explicitly forbids a support inference;
 - campaign narrowing and cross-campaign replay-binding changes;
 - full child-result binding when only limitations change;

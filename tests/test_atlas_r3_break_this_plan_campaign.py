@@ -533,6 +533,145 @@ def test_mandatory_human_next_evidence_request_cannot_be_omitted(
     )
 
 
+@pytest.mark.parametrize(
+    ("case_index", "replacement"),
+    [
+        (0, []),
+        (2, ["requirement.preserve-service-flow"]),
+    ],
+)
+def test_baseline_requests_are_exactly_rederived_instead_of_trusted_from_child(
+    monkeypatch: pytest.MonkeyPatch,
+    case_index: int,
+    replacement: list[str],
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][case_index]])
+    raw = _canonical(value)
+    original = discovery.analyze_request_bytes
+
+    def changed_requests(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original(request_raw), require_canonical=True
+        )
+        result["next_evidence_requests"] = replacement
+        return canonical_json_bytes(result)
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", changed_requests)
+    _error(
+        "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_index", "removed"),
+    [
+        (0, {"BASELINE_EVIDENCE_INCOMPLETE", "BASELINE_REQUIREMENT_CONFLICT"}),
+        (2, {"PATH_LOSS_IS_INCONCLUSIVE"}),
+        (3, {"L2_CONTINUITY_NOT_ASSESSED"}),
+    ],
+)
+def test_contextual_limitations_are_recomputed_instead_of_trusted_from_child(
+    monkeypatch: pytest.MonkeyPatch,
+    case_index: int,
+    removed: set[str],
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][case_index]])
+    raw = _canonical(value)
+    original = discovery.analyze_request_bytes
+
+    def weakened_limitations(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original(request_raw), require_canonical=True
+        )
+        for candidate_result in result["candidate_results"]:
+            candidate_result["limitations"] = [
+                item for item in candidate_result["limitations"] if item not in removed
+            ]
+        return canonical_json_bytes(result)
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", weakened_limitations)
+    _error(
+        "CAMPAIGN_CASE_RECOMPUTATION_MISMATCH",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
+def test_counterexample_suppression_is_recomputed_instead_of_structurally_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][-1]])
+    raw = _canonical(value)
+    original = discovery.analyze_request_bytes
+
+    def suppressed_counterexample(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original(request_raw), require_canonical=True
+        )
+        candidate_result = result["candidate_results"][-1]
+        candidate_result["counterexamples"] = []
+        candidate_result["reason_code"] = "ABSTAIN_EVIDENCE_INCOMPLETE"
+        candidate_result["result_kind"] = "ABSTENTION"
+        return canonical_json_bytes(result)
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", suppressed_counterexample)
+    _error(
+        "CAMPAIGN_CASE_RECOMPUTATION_MISMATCH",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
+@pytest.mark.parametrize("mutation", ["checked_steps", "reason_code"])
+def test_child_result_context_cannot_be_relabelled_while_remaining_structurally_valid(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    value = _campaign_with_cases(
+        [_campaign()["cases"][-1] if mutation == "checked_steps" else _campaign()["cases"][0]]
+    )
+    raw = _canonical(value)
+    original = discovery.analyze_request_bytes
+
+    def relabelled(request_raw: bytes) -> bytes:
+        result = parse_canonical_json_bytes(
+            original(request_raw), require_canonical=True
+        )
+        candidate_result = result["candidate_results"][-1]
+        if mutation == "checked_steps":
+            candidate_result["checked_steps"] = 0
+        else:
+            candidate_result["reason_code"] = "ABSTAIN_EVIDENCE_INCOMPLETE"
+        return canonical_json_bytes(result)
+
+    monkeypatch.setattr(discovery, "analyze_request_bytes", relabelled)
+    _error(
+        "CAMPAIGN_CASE_RECOMPUTATION_MISMATCH",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
+def test_malformed_second_recomputation_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _campaign_with_cases([_campaign()["cases"][0]])
+    raw = _canonical(value)
+    original = discovery._analyze
+    calls = 0
+
+    def malformed_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original(*args, **kwargs)
+        return []
+
+    monkeypatch.setattr(discovery, "_analyze", malformed_second)
+    _error(
+        "CAMPAIGN_CASE_RECOMPUTATION_FAILED",
+        lambda: campaign.analyze_campaign_bytes(raw),
+    )
+
+
 def test_lockstep_child_handoff_and_forged_replay_authority_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -598,13 +737,11 @@ def test_per_case_counterexample_aggregate_n_and_n_plus_one_bounds(
         candidate_value["candidate_id"] = f"candidate.{suffix}"
         case["candidates"].append(candidate_value)
     raw = _canonical(value)
-    original_analyze = discovery.analyze_request_bytes
+    original_internal = discovery._analyze
     counts = [43, 43, 42]
 
-    def expanded_analyze(request_raw: bytes) -> bytes:
-        result = parse_canonical_json_bytes(
-            original_analyze(request_raw), require_canonical=True
-        )
+    def expanded_mapping(value: dict, *, input_digest: str) -> dict:
+        result = original_internal(value, input_digest=input_digest)
         for candidate_result, count in zip(
             result["candidate_results"], counts, strict=True
         ):
@@ -623,6 +760,11 @@ def test_per_case_counterexample_aggregate_n_and_n_plus_one_bounds(
                 witness["witness_digest"] = canonical_digest(body)
                 witnesses.append(witness)
             candidate_result["counterexamples"] = witnesses
+        return result
+
+    def expanded_analyze(request_raw: bytes) -> bytes:
+        request = parse_canonical_json_bytes(request_raw, require_canonical=True)
+        result = expanded_mapping(request, input_digest=bytes_digest(request_raw))
         return canonical_json_bytes(result)
 
     def closed_replay(_request_raw: bytes, witness_raw: bytes) -> bytes:
@@ -641,6 +783,7 @@ def test_per_case_counterexample_aggregate_n_and_n_plus_one_bounds(
         )
 
     monkeypatch.setattr(discovery, "analyze_request_bytes", expanded_analyze)
+    monkeypatch.setattr(discovery, "_analyze", expanded_mapping)
     monkeypatch.setattr(discovery, "replay_counterexample_bytes", closed_replay)
     result_raw = campaign.analyze_campaign_bytes(raw)
     result = parse_canonical_json_bytes(result_raw, require_canonical=True)
@@ -695,4 +838,6 @@ def test_campaign_source_does_not_add_a_network_model_or_authority_consumer() ->
     ):
         assert forbidden not in source
     assert "discovery.analyze_request_bytes" in source
+    assert "discovery._analyze" in source
+    assert "discovery._baseline_projection" not in source
     assert "discovery.replay_counterexample_bytes" in source

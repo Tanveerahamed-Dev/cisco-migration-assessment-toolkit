@@ -203,7 +203,11 @@ const SEARCH_SHARD_MAX_BYTES = 256 * 1024;
 const SEARCH_DOCUMENT_SHARD_MAX_BYTES = 256 * 1024;
 const SEARCH_INDEX_MAX_BYTES = 512 * 1024;
 const SOURCE_CHUNK_MAX_BYTES = 256 * 1024;
-const SOURCE_INDEX_MAX_BYTES = 2 * 1024 * 1024;
+// The exact-source route index is metadata-only but scales with every safe tracked
+// file and source chunk.  The 1,091-file QDP-001 integration crossed the original
+// 2 MiB ceiling; 3 MiB preserves a small explicit bound without changing source
+// chunk, search-shard, compressed-family, or expanded-deployment budgets.
+const SOURCE_INDEX_MAX_BYTES = 3 * 1024 * 1024;
 const SOURCE_FRAGMENT_TEXT_BYTES = 64 * 1024;
 const GRAPH_SHARD_MAX_BYTES = 256 * 1024;
 const GRAPH_INDEX_MAX_BYTES = 512 * 1024;
