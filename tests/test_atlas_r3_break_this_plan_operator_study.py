@@ -216,7 +216,7 @@ def test_exact_package_builds_deterministically_and_verifies(tmp_path: Path) -> 
     assert run.stdout.startswith("PASS:")
 
 
-def test_campaign_is_recomputed_with_runtime_bound_result_digest() -> None:
+def test_campaign_is_recomputed_with_runtime_bound_artifact_digests() -> None:
     first = _campaign()
     second = _campaign()
     assert first["input_raw"] == second["input_raw"]
@@ -231,7 +231,10 @@ def test_campaign_is_recomputed_with_runtime_bound_result_digest() -> None:
     assert first["result"]["campaign_semantics_digest"] == campaign_runner._campaign_semantics_digest(
         [expected_discovery_semantics]
     )
-    assert _sha(first["report_raw"]) == ("sha256:257fa730cc30f0ea7a8904c0bc4f0bbda708e01b4b707eadddf769ef4e92b947")
+    report_digest = _sha(first["report_raw"])
+    assert report_digest == first["manifest"]["files"]["operator-report.md"]["digest"]
+    assert report_digest == builder.EXPECTED_FILE_DIGESTS["operator-report.md"]
+    assert campaign_runner.render_operator_report_bytes(first["input_raw"]) == first["report_raw"]
 
 
 def test_researcher_campaign_bytes_are_exact_replay_inputs(tmp_path: Path) -> None:
