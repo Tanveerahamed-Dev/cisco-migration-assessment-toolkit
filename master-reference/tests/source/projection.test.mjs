@@ -2336,6 +2336,11 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     ));
     assert.ok(manifestA.search.index.bytes <= manifestA.budgets.searchIndexMaxBytes);
     assert.ok(manifestA.sourceModules.every((entry) => entry.bytes <= manifestA.budgets.sourceChunkMaxBytes));
+    assert.equal(
+      manifestA.budgets.sourceIndexMaxBytes,
+      3 * 1024 * 1024,
+      "the reviewed exact-source route-index capacity must remain explicit",
+    );
     assert.ok(manifestA.sourceIndex.bytes <= manifestA.budgets.sourceIndexMaxBytes);
     assert.ok(manifestA.graph.shards.every((entry) => entry.bytes <= manifestA.budgets.graphShardMaxBytes));
     assert.ok(manifestA.graph.summary.bytes <= manifestA.budgets.graphShardMaxBytes);

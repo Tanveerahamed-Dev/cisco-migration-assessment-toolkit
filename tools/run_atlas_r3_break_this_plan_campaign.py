@@ -640,25 +640,24 @@ def _validate_child_result_boundary(
         or any(type(item) is not str for item in evidence_requests)
     ):
         _reject("CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
-    allowed_evidence_requests = {
-        item["assumption_id"]
-        for candidate in case["candidates"]
-        for item in candidate["assumptions"]
-        if item["state"] == "UNRESOLVED"
-    } | {item["requirement_id"] for item in case["requirements"]}
-    mandatory_evidence_requests = {
-        item["assumption_id"]
-        for candidate in case["candidates"]
-        for item in candidate["assumptions"]
-        if item["state"] == "UNRESOLVED"
-    } | {
-        item["requirement_id"]
-        for item in case["requirements"]
-        if item["kind"] == "HUMAN_ONLY_UNEVALUATED"
-    }
+    try:
+        recomputed = discovery._analyze(  # noqa: SLF001
+            case, input_digest=bytes_digest(case_raw)
+        )
+    except (
+        discovery.BreakThisPlanDiscoveryError,
+        OSError,
+        TransitionContractError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        _reject("CAMPAIGN_CASE_RECOMPUTATION_FAILED")
+    if type(recomputed) is not dict:
+        _reject("CAMPAIGN_CASE_RECOMPUTATION_FAILED")
     for item in evidence_requests:
         _identifier(item, "CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
-    if not mandatory_evidence_requests <= set(evidence_requests) <= allowed_evidence_requests:
+    if evidence_requests != recomputed.get("next_evidence_requests"):
         _reject("CAMPAIGN_CASE_EVIDENCE_REQUESTS_INVALID")
 
     candidate_results = obj["candidate_results"]
@@ -750,6 +749,8 @@ def _validate_child_result_boundary(
         witness_digests = [item["witness_digest"] for item in checked_witnesses]
         if len(witness_digests) != len(set(witness_digests)):
             _reject("CAMPAIGN_COUNTEREXAMPLE_ACCOUNTING_INVALID")
+    if obj != recomputed:
+        _reject("CAMPAIGN_CASE_RECOMPUTATION_MISMATCH")
     return obj
 
 
