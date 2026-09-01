@@ -196,7 +196,9 @@ def parse_json_bytes(raw: bytes, *, max_bytes: int = MAX_RESPONSE_BYTES) -> Any:
         )
     except StudyScoringError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except RecursionError as exc:
+        raise StudyScoringError("JSON_NESTING_OR_NODE_LIMIT") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise StudyScoringError("JSON_INVALID") from exc
     stack: list[tuple[Any, int]] = [(value, 0)]
     visited = 0

@@ -216,14 +216,21 @@ def test_exact_package_builds_deterministically_and_verifies(tmp_path: Path) -> 
     assert run.stdout.startswith("PASS:")
 
 
-def test_campaign_is_recomputed_from_source_with_repaired_digest() -> None:
+def test_campaign_is_recomputed_with_runtime_bound_result_digest() -> None:
     first = _campaign()
     second = _campaign()
     assert first["input_raw"] == second["input_raw"]
     assert first["result_raw"] == second["result_raw"]
     assert first["report_raw"] == second["report_raw"]
     assert _sha(first["input_raw"]) == scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
-    assert _sha(first["result_raw"]) == ("sha256:a99002bb88fa410642ff0917d98e676f48b12bbc5a404ba588fde5995e8b331a")
+    result_digest = _sha(first["result_raw"])
+    assert result_digest == first["manifest"]["files"]["campaign-result.json"]["digest"]
+    assert result_digest == builder.EXPECTED_FILE_DIGESTS["campaign-result.json"]
+    expected_discovery_semantics = campaign_runner._expected_discovery_semantics_digest()
+    assert first["result"]["discovery_semantics_digests"] == [expected_discovery_semantics]
+    assert first["result"]["campaign_semantics_digest"] == campaign_runner._campaign_semantics_digest(
+        [expected_discovery_semantics]
+    )
     assert _sha(first["report_raw"]) == ("sha256:257fa730cc30f0ea7a8904c0bc4f0bbda708e01b4b707eadddf769ef4e92b947")
 
 
@@ -454,7 +461,19 @@ def test_answer_key_is_digest_bound_and_empty_subset_exploit_is_refused(tmp_path
     assert exc.value.code == "ANSWER_KEY_INVALID"
 
 
-def test_deep_duplicate_and_oversized_json_fail_with_stable_errors() -> None:
+def test_deep_duplicate_and_oversized_json_fail_with_stable_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scoring.json,
+            "loads",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RecursionError()),
+        )
+        with pytest.raises(scoring.StudyScoringError) as exc:
+            scoring.parse_json_bytes(b"{}")
+        assert exc.value.code == "JSON_NESTING_OR_NODE_LIMIT"
+
     deep = ("[" * 2_000 + "0" + "]" * 2_000).encode("ascii")
     with pytest.raises(scoring.StudyScoringError) as exc:
         scoring.parse_json_bytes(deep)
