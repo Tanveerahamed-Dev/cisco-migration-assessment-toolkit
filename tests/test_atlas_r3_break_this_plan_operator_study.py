@@ -74,7 +74,14 @@ def _build(tmp_path: Path, name: str = "kit") -> Path:
     return output
 
 
-def _score(kit: Path, phase_a: dict, phase_b: dict, answer: dict | None = None) -> dict:
+def _score(
+    kit: Path,
+    phase_a: dict,
+    phase_b: dict,
+    answer: dict | None = None,
+    *,
+    run_class: str = scoring.RUN_CLASS_SYNTHETIC,
+) -> dict:
     answer_value = answer or _json(kit / "researcher-capsule" / "answer-key.json")
     answer_raw = scoring.canonical_json_bytes(answer_value)
     manifest = _json(kit / "study-manifest.json")
@@ -87,24 +94,27 @@ def _score(kit: Path, phase_a: dict, phase_b: dict, answer: dict | None = None) 
         expected_answer_key_digest=expected,
         phase_a_lock_verified=True,
         phase_b_lock_verified=True,
+        run_class=run_class,
     )
 
 
 def _run_config(tmp_path: Path, participant: str = "SYNTHETIC-DRY-RUN") -> Path:
     value = {
         "schema": builder.RUN_CONFIG_SCHEMA,
-        "run_id": "run.synthetic-p0",
+        "run_class": scoring.RUN_CLASS_SYNTHETIC,
+        "run_id": "run.0123456789abcdef",
         "participant_code": participant,
-        "participant_contact": "Internal study moderator via the approved team channel.",
-        "withdrawal_contact": "Internal study owner via the approved team channel.",
-        "accessibility_contact": "Accessibility coordinator via the approved team channel.",
-        "purpose": "Evaluate comprehension of one synthetic non-authoritative plan report.",
+        "participant_contact_ref": "contact.000000000001",
+        "withdrawal_contact_ref": "contact.000000000002",
+        "accessibility_contact_ref": "contact.000000000003",
+        "purpose_profile": scoring.PURPOSE_PROFILE,
         "session_cap_minutes": 60,
-        "data_use": "Use responses only for this formative QDP-001 information-model study.",
-        "data_storage": "Store encrypted on the approved internal study workspace.",
-        "data_access": "Limit access to the moderator and two independent reviewers.",
-        "data_retention": "Retain through study reconciliation, then follow internal policy.",
-        "data_deletion": "Honor withdrawal and deletion requests under internal policy.",
+        "data_use_profile": scoring.DATA_USE_PROFILE,
+        "storage_profile": scoring.STORAGE_PROFILE,
+        "access_profile": scoring.ACCESS_PROFILE,
+        "retention_days": 30,
+        "deletion_profile": scoring.DELETION_PROFILE,
+        "data_policy_ref": "policy.000000000001",
         "recording_planned": False,
     }
     path = tmp_path / "run-config.json"
@@ -124,9 +134,7 @@ def _stage_chain(tmp_path: Path) -> dict[str, Path]:
     )
     fixture = master / "researcher-capsule" / "fixtures"
     phase_a_response = tmp_path / "phase-a-response.json"
-    phase_a_response.write_bytes(
-        (fixture / "response-n.phase-a.json").read_bytes()
-    )
+    phase_a_response.write_bytes((fixture / "response-n.phase-a.json").read_bytes())
     phase_a_lock = tmp_path / "phase-a-lock.json"
     builder.lock_response(
         master,
@@ -147,9 +155,7 @@ def _stage_chain(tmp_path: Path) -> dict[str, Path]:
         allow_dirty_test_preview=True,
     )
     phase_b_response = tmp_path / "phase-b-response.json"
-    phase_b_response.write_bytes(
-        (fixture / "response-n.phase-b.json").read_bytes()
-    )
+    phase_b_response.write_bytes((fixture / "response-n.phase-b.json").read_bytes())
     phase_b_lock = tmp_path / "phase-b-lock.json"
     builder.lock_response(
         master,
@@ -183,23 +189,15 @@ def _reseal_directory(root: Path, manifest_name: str) -> None:
     for name in sorted(set(manifest["files"]) | {manifest_name}):
         raw = root.joinpath(*Path(name).parts).read_bytes()
         rows.append(f"{hashlib.sha256(raw).hexdigest()}  {name}")
-    (root / "SHA256SUMS.txt").write_text(
-        "\n".join(rows) + "\n", encoding="ascii", newline="\n"
-    )
+    (root / "SHA256SUMS.txt").write_text("\n".join(rows) + "\n", encoding="ascii", newline="\n")
 
 
 def test_exact_package_builds_deterministically_and_verifies(tmp_path: Path) -> None:
     first = _build(tmp_path, "first")
     second = _build(tmp_path, "second")
-    first_files = {
-        item.relative_to(first).as_posix(): item.read_bytes()
-        for item in first.rglob("*")
-        if item.is_file()
-    }
+    first_files = {item.relative_to(first).as_posix(): item.read_bytes() for item in first.rglob("*") if item.is_file()}
     second_files = {
-        item.relative_to(second).as_posix(): item.read_bytes()
-        for item in second.rglob("*")
-        if item.is_file()
+        item.relative_to(second).as_posix(): item.read_bytes() for item in second.rglob("*") if item.is_file()
     }
     assert first_files == second_files
     run = subprocess.run(
@@ -220,12 +218,8 @@ def test_campaign_is_recomputed_from_source_with_repaired_digest() -> None:
     assert first["result_raw"] == second["result_raw"]
     assert first["report_raw"] == second["report_raw"]
     assert _sha(first["input_raw"]) == scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
-    assert _sha(first["result_raw"]) == (
-        "sha256:a99002bb88fa410642ff0917d98e676f48b12bbc5a404ba588fde5995e8b331a"
-    )
-    assert _sha(first["report_raw"]) == (
-        "sha256:257fa730cc30f0ea7a8904c0bc4f0bbda708e01b4b707eadddf769ef4e92b947"
-    )
+    assert _sha(first["result_raw"]) == ("sha256:a99002bb88fa410642ff0917d98e676f48b12bbc5a404ba588fde5995e8b331a")
+    assert _sha(first["report_raw"]) == ("sha256:257fa730cc30f0ea7a8904c0bc4f0bbda708e01b4b707eadddf769ef4e92b947")
 
 
 def test_researcher_campaign_bytes_are_exact_replay_inputs(tmp_path: Path) -> None:
@@ -235,18 +229,14 @@ def test_researcher_campaign_bytes_are_exact_replay_inputs(tmp_path: Path) -> No
     result_path = kit / "researcher-capsule" / "campaign-result.json"
     assert input_path.read_bytes() == campaign["input_raw"]
     assert result_path.read_bytes() == campaign["result_raw"]
-    assert campaign_runner.analyze_campaign_bytes(input_path.read_bytes()) == (
-        result_path.read_bytes()
-    )
+    assert campaign_runner.analyze_campaign_bytes(input_path.read_bytes()) == (result_path.read_bytes())
 
 
 def test_phase_a_is_contextually_blinded_and_aliases_do_not_collapse(tmp_path: Path) -> None:
     kit = _build(tmp_path)
     manifest = _json(kit / "study-manifest.json")
     phase_a = "\n".join(
-        item.read_text(encoding="utf-8")
-        for item in (kit / "participant-phase-a").rglob("*")
-        if item.is_file()
+        item.read_text(encoding="utf-8") for item in (kit / "participant-phase-a").rglob("*") if item.is_file()
     )
     for token in manifest["phase_a_forbidden_tokens"]:
         assert token not in phase_a
@@ -259,6 +249,12 @@ def test_phase_a_is_contextually_blinded_and_aliases_do_not_collapse(tmp_path: P
         "forbidden_claims",
     ):
         assert priming_token not in phase_a
+    assert not builder._phase_a_semantic_cue(phase_a.encode("utf-8"))
+    assert manifest["phase_a_forbidden_cue_patterns"] == list(builder.PHASE_A_FORBIDDEN_CUE_PATTERNS)
+    assert manifest["known_residuals"] == list(builder.EXPECTED_KNOWN_RESIDUALS)
+    residual_text = "\n".join(manifest["known_residuals"])
+    for current_world_claim in ("NOT_PUSHED", "NOT_MERGED", "HAS_BEEN_RUN"):
+        assert current_world_claim not in residual_text
     assert "Node A reaches the required destination network" in phase_a
     assert not any(
         item.suffix.lower() in {".json", ".csv"}
@@ -270,13 +266,51 @@ def test_phase_a_is_contextually_blinded_and_aliases_do_not_collapse(tmp_path: P
         for item in root.rglob("*")
     )
 
+
+def test_standalone_phase_a_includes_no_later_answer_or_boundary_manifest(
+    tmp_path: Path,
+) -> None:
+    master = _build(tmp_path)
+    phase_a = tmp_path / "phase-a"
+    builder.release_phase_a(
+        master,
+        _run_config(tmp_path),
+        phase_a,
+        allow_dirty_test_preview=True,
+    )
+    manifest = _json(phase_a / "stage-manifest.json")
+    assert set(manifest) == set(builder.STAGE_MANIFEST_KEYS)
+    for key in (
+        "authoritative",
+        "decision_effect",
+        "authentication",
+        "custody_proved",
+        "trusted_time",
+    ):
+        assert key not in manifest
+    complete_phase_a = {
+        path.relative_to(phase_a).as_posix(): path.read_bytes() for path in phase_a.rglob("*") if path.is_file()
+    }
+    assert not any(builder._phase_a_semantic_cue(raw) for raw in complete_phase_a.values())
+    assert "Download Phase A response" in (phase_a / "03-response.html").read_text(encoding="utf-8")
+    assert "Download locked Phase A response" not in (phase_a / "03-response.html").read_text(encoding="utf-8")
+    participant_information = (phase_a / "PARTICIPANT-INFORMATION.md").read_text(encoding="utf-8")
+    for expected in (
+        "Understand how people reason about one synthetic migration plan.",
+        "contact.000000000001",
+        "contact.000000000002",
+        "contact.000000000003",
+        "Use responses only to evaluate this formative plan-reasoning study.",
+        "Store responses in an encrypted internal study workspace.",
+        "Limit response access to the moderator and two assigned narrative reviewers.",
+        "Retention: 30 days.",
+        "policy.000000000001",
+    ):
+        assert expected in participant_information
+
     campaign = _campaign()
     aliases = builder._aliases(campaign["input"], campaign["result"])
-    step_total = sum(
-        len(candidate["steps"])
-        for case in campaign["input"]["cases"]
-        for candidate in case["candidates"]
-    )
+    step_total = sum(len(candidate["steps"]) for case in campaign["input"]["cases"] for candidate in case["candidates"])
     requirement_total = sum(len(case["requirements"]) for case in campaign["input"]["cases"])
     assert len(aliases["contextual_aliases"]["steps"]) == step_total
     assert len(aliases["contextual_aliases"]["requirements"]) == requirement_total
@@ -289,9 +323,10 @@ def test_phase_a_is_contextually_blinded_and_aliases_do_not_collapse(tmp_path: P
     truth = builder._ground_truth(reversed_aliases, reversed_result)
     witness = truth["witness"]
     contextual = reversed_aliases["contextual_aliases"]
-    assert truth["phase_a"]["unsafe_step_alias"] == contextual["steps"][
-        f"{witness['case_id']}|{witness['candidate_id']}|{witness['step_id']}"
-    ]
+    assert (
+        truth["phase_a"]["unsafe_step_alias"]
+        == contextual["steps"][f"{witness['case_id']}|{witness['candidate_id']}|{witness['step_id']}"]
+    )
 
 
 def test_browser_equivalent_n_passes_but_n_minus_one_and_n_plus_one_fail(
@@ -307,14 +342,34 @@ def test_browser_equivalent_n_passes_but_n_minus_one_and_n_plus_one_fail(
     assert exact["automated_critical_checks_pass"] is True
     assert exact["participant_pass"] is None
     assert exact["operator_acceptance"] is False
+    assert exact["primary_cohort_structural_conditions_met"] is True
+    assert exact["declared_primary_cohort_conditions_met"] is False
+    assert exact["primary_cohort_eligible"] is None
+    assert exact["human_participant_established"] is None
+    assert exact["disposition"] == "SYNTHETIC_DRY_RUN_TOOLING_ONLY"
+
+    declared_human_a = deepcopy(phase_a)
+    declared_human_b = deepcopy(phase_b)
+    declared_human_a["participant_code"] = "p.0123456789ab"
+    declared_human_b["participant_code"] = "p.0123456789ab"
+    declared_human = _score(
+        kit,
+        declared_human_a,
+        declared_human_b,
+        run_class=scoring.RUN_CLASS_HUMAN,
+    )
+    assert declared_human["automated_critical_checks_pass"] is True
+    assert declared_human["declared_primary_cohort_conditions_met"] is True
+    assert declared_human["primary_cohort_eligible"] is None
+    assert declared_human["human_participant_established"] is None
+    assert declared_human["disposition"] == ("AUTOMATED_CHECKS_PASS_HUMAN_ORIGIN_AND_MANUAL_REVIEW_UNVERIFIED")
 
     missing = _score(kit, phase_a, _json(fixture / "response-n-minus-1.phase-b.json"))
     extra = _score(kit, phase_a, _json(fixture / "response-n-plus-1.phase-b.json"))
     assert missing["automated_critical_checks_pass"] is False
     assert extra["automated_critical_checks_pass"] is False
     assert any(
-        row["check_id"] == "phase_b_global_limitations" and not row["passed"]
-        for row in missing["automated_checks"]
+        row["check_id"] == "phase_b_global_limitations" and not row["passed"] for row in missing["automated_checks"]
     )
 
 
@@ -328,7 +383,7 @@ def test_hostile_identity_is_not_echoed_and_assistance_is_separate_from_comprehe
     score = _score(kit, hostile, phase_b)
     assert score["participant_code"] is None
     assert score["automated_critical_checks_pass"] is False
-    assert score["primary_cohort_eligible"] is False
+    assert score["primary_cohort_eligible"] is None
 
     phase_a = _json(fixture / "response-n.phase-a.json")
     assisted_a = deepcopy(phase_a)
@@ -336,8 +391,9 @@ def test_hostile_identity_is_not_echoed_and_assistance_is_separate_from_comprehe
     assisted_a["prompt_code"] = assisted_b["prompt_code"] = "P1"
     assisted = _score(kit, assisted_a, assisted_b)
     assert assisted["automated_critical_checks_pass"] is True
-    assert assisted["primary_cohort_eligible"] is False
-    assert assisted["disposition"] == "CONTAMINATED_OR_ASSISTED_NOT_PRIMARY_COHORT"
+    assert assisted["primary_cohort_eligible"] is None
+    assert assisted["primary_cohort_structural_conditions_met"] is False
+    assert assisted["disposition"] == "SYNTHETIC_DRY_RUN_TOOLING_ONLY"
 
     malformed_a = deepcopy(phase_a)
     malformed_b = deepcopy(phase_b)
@@ -346,12 +402,8 @@ def test_hostile_identity_is_not_echoed_and_assistance_is_separate_from_comprehe
     malformed_a["prior_exposure"] = {"not": "a closed value"}
     malformed = _score(kit, malformed_a, malformed_b)
     assert malformed["automated_technical_checks_pass"] is False
-    assert malformed["primary_cohort_eligible"] is False
-    assert {
-        row["check_id"]
-        for row in malformed["automated_checks"]
-        if not row["passed"]
-    } >= {
+    assert malformed["primary_cohort_eligible"] is None
+    assert {row["check_id"] for row in malformed["automated_checks"] if not row["passed"]} >= {
         "phase_a_prompt_code_domain",
         "phase_b_prompt_code_domain",
         "phase_a_prior_exposure_domain",
@@ -361,7 +413,7 @@ def test_hostile_identity_is_not_echoed_and_assistance_is_separate_from_comprehe
     declined["voluntary_consent"] = False
     declined_score = _score(kit, declined, phase_b)
     assert declined_score["automated_critical_checks_pass"] is False
-    assert declined_score["primary_cohort_eligible"] is False
+    assert declined_score["primary_cohort_eligible"] is None
 
 
 def test_answer_key_is_digest_bound_and_empty_subset_exploit_is_refused(tmp_path: Path) -> None:
@@ -410,19 +462,11 @@ def test_deep_duplicate_and_oversized_json_fail_with_stable_errors() -> None:
     assert exc.value.code == "JSON_BYTE_LIMIT_OR_EMPTY"
 
     def worksheet(payload: bytes) -> bytes:
-        return (
-            b"# hostile worksheet\n\n"
-            + builder.WORKSHEET_FENCE.encode("utf-8")
-            + b"\n"
-            + payload
-            + b"\n```\n"
-        )
+        return b"# hostile worksheet\n\n" + builder.WORKSHEET_FENCE.encode("utf-8") + b"\n" + payload + b"\n```\n"
 
     for payload in (deep, b'{"a":1,"a":2}'):
         with pytest.raises(builder.StudyBuildError) as exc:
-            builder.parse_worksheet_response_bytes(
-                worksheet(payload), expected_phase="A"
-            )
+            builder.parse_worksheet_response_bytes(worksheet(payload), expected_phase="A")
         assert exc.value.code == "WORKSHEET_RESPONSE_INVALID"
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.parse_worksheet_response_bytes(
@@ -472,9 +516,7 @@ def test_html_source_accessibility_and_offline_contract(tmp_path: Path) -> None:
         assert 'maxlength="8192"' in text and 'minlength="20"' in text
         assert 'role="status"' in text
         assert "Array.from(field.value.trim()).length" in text
-    report = (kit / "participant-phase-b" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    report = (kit / "participant-phase-b" / "index.html").read_text(encoding="utf-8")
     assert 'scope="col"' in report and 'scope="row"' in report
     assert "Accessible case and candidate results" in report
     assert "Meaning unavailable" not in report
@@ -491,12 +533,8 @@ def test_html_source_accessibility_and_offline_contract(tmp_path: Path) -> None:
         "workload collection started <code>false</code>",
     ):
         assert str(value) in semantic_report
-    phase_b_response = (kit / "participant-phase-b" / "05-response.html").read_text(
-        encoding="utf-8"
-    )
-    focus_stops = len(
-        re.findall(r"<(?:input|select|textarea|button)\b", phase_b_response)
-    )
+    phase_b_response = (kit / "participant-phase-b" / "05-response.html").read_text(encoding="utf-8")
+    focus_stops = len(re.findall(r"<(?:input|select|textarea|button)\b", phase_b_response))
     assert focus_stops <= 64
     assert "Reuse the exact participant code from Phase A" in phase_b_response
     for root in (kit / "participant-phase-a", kit / "participant-phase-b"):
@@ -505,9 +543,7 @@ def test_html_source_accessibility_and_offline_contract(tmp_path: Path) -> None:
         assert "%~dp0index.html" in (root / "START.cmd").read_text(encoding="utf-8")
         response = next(root.glob("*response.html"))
         assert "RESPONSE-WORKSHEET.md" in response.read_text(encoding="utf-8")
-    worksheet_b = (kit / "participant-phase-b" / "RESPONSE-WORKSHEET.md").read_text(
-        encoding="utf-8"
-    )
+    worksheet_b = (kit / "participant-phase-b" / "RESPONSE-WORKSHEET.md").read_text(encoding="utf-8")
     for value in scoring.EXPECTED_REPLAY_NONCLAIMS + scoring.EXPECTED_FORBIDDEN_CLAIM_KEYS:
         assert value in worksheet_b
     assert builder.WORKSHEET_FENCE in worksheet_b
@@ -578,9 +614,7 @@ def test_fixed_nonpromotion_and_technical_evidence_are_retained(tmp_path: Path) 
         "R2-AUTH-004": None,
     }
     assert manifest["collection_started"] is False
-    evidence = (kit / "researcher-capsule" / "technical-evidence.md").read_text(
-        encoding="utf-8"
-    )
+    evidence = (kit / "researcher-capsule" / "technical-evidence.md").read_text(encoding="utf-8")
     for text in (
         "Exact local source",
         builder.BASE_CAMPAIGN_MERGE,
@@ -599,9 +633,7 @@ def test_source_files_are_lint_clean_and_builder_refuses_existing_output(tmp_pat
         builder.build(existing, source_identity=_test_source())
     assert exc.value.code == "OUTPUT_ALREADY_EXISTS"
     assert builder.STUDY_ID == scoring.EXPECTED_STUDY_ID
-    assert builder.EXPECTED_FILE_DIGESTS["campaign-input.json"] == (
-        scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
-    )
+    assert builder.EXPECTED_FILE_DIGESTS["campaign-input.json"] == (scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST)
     assert scoring.EXPECTED_ANSWER_KEY_DIGEST != "sha256:" + "0" * 64
 
 
@@ -614,9 +646,7 @@ def test_no_javascript_round_trip_matches_browser_model_and_scorer(
     for phase, name in (("A", "response-n.phase-a.json"), ("B", "response-n.phase-b.json")):
         response = _json(fixture / name)
         worksheet = builder.response_to_worksheet_bytes(phase, response)
-        canonical, value = builder.parse_worksheet_response_bytes(
-            worksheet, expected_phase=phase
-        )
+        canonical, value = builder.parse_worksheet_response_bytes(worksheet, expected_phase=phase)
         assert value == response
         assert canonical == scoring.canonical_json_bytes(response)
         path = tmp_path / f"response-{phase}.md"
@@ -624,6 +654,24 @@ def test_no_javascript_round_trip_matches_browser_model_and_scorer(
         _raw, scorer_value = scoring.load_response_file(path)
         assert scorer_value == response
         parsed[phase] = value
+
+    ordered_b = _json(fixture / "response-n.phase-b.json")
+    report_order_b = deepcopy(ordered_b)
+    report_order_b["global_limitations"].reverse()
+    report_order_b["replay_nonclaims"].reverse()
+    for mapping_name in ("candidate_limitations", "next_evidence_by_case"):
+        for values in report_order_b[mapping_name].values():
+            values.reverse()
+    report_order_worksheet = builder.response_to_worksheet_bytes("B", report_order_b)
+    crlf_worksheet = report_order_worksheet.replace(b"\n", b"\r\n")
+    canonical_b, normalized_b = builder.parse_worksheet_response_bytes(crlf_worksheet, expected_phase="B")
+    assert normalized_b == ordered_b
+    assert canonical_b == scoring.canonical_json_bytes(ordered_b)
+    crlf_path = tmp_path / "response-B-crlf-report-order.md"
+    crlf_path.write_bytes(crlf_worksheet)
+    preserved_raw, scorer_normalized_b = scoring.load_response_file(crlf_path)
+    assert preserved_raw == crlf_worksheet
+    assert scorer_normalized_b == ordered_b
     browser_score = _score(
         kit,
         _json(fixture / "response-n.phase-a.json"),
@@ -631,6 +679,15 @@ def test_no_javascript_round_trip_matches_browser_model_and_scorer(
     )
     worksheet_score = _score(kit, parsed["A"], parsed["B"])
     assert worksheet_score == browser_score
+    assert _score(kit, parsed["A"], scorer_normalized_b) == browser_score
+
+    duplicate_b = deepcopy(ordered_b)
+    duplicate_b["global_limitations"].append(duplicate_b["global_limitations"][0])
+    duplicate_worksheet = builder.response_to_worksheet_bytes("B", duplicate_b)
+    _duplicate_raw, normalized_duplicate_b = builder.parse_worksheet_response_bytes(
+        duplicate_worksheet, expected_phase="B"
+    )
+    assert _score(kit, parsed["A"], normalized_duplicate_b)["automated_critical_checks_pass"] is False
 
     n_a = _json(fixture / "response-n.phase-a.json")
     for name in (
@@ -639,23 +696,15 @@ def test_no_javascript_round_trip_matches_browser_model_and_scorer(
     ):
         browser_b = _json(fixture / name)
         worksheet = builder.response_to_worksheet_bytes("B", browser_b)
-        _canonical, worksheet_b = builder.parse_worksheet_response_bytes(
-            worksheet, expected_phase="B"
-        )
+        _canonical, worksheet_b = builder.parse_worksheet_response_bytes(worksheet, expected_phase="B")
         assert _score(kit, n_a, worksheet_b) == _score(kit, n_a, browser_b)
         assert _score(kit, n_a, worksheet_b)["automated_critical_checks_pass"] is False
 
     hostile_a = _json(fixture / "response-hostile.phase-a.json")
     hostile_worksheet = builder.response_to_worksheet_bytes("A", hostile_a)
-    _canonical, parsed_hostile = builder.parse_worksheet_response_bytes(
-        hostile_worksheet, expected_phase="A"
-    )
-    assert _score(kit, parsed_hostile, parsed["B"]) == _score(
-        kit, hostile_a, parsed["B"]
-    )
-    assert _score(kit, parsed_hostile, parsed["B"])[
-        "automated_critical_checks_pass"
-    ] is False
+    _canonical, parsed_hostile = builder.parse_worksheet_response_bytes(hostile_worksheet, expected_phase="A")
+    assert _score(kit, parsed_hostile, parsed["B"]) == _score(kit, hostile_a, parsed["B"])
+    assert _score(kit, parsed_hostile, parsed["B"])["automated_critical_checks_pass"] is False
 
     blank = builder._phase_a_worksheet(_campaign()).encode("utf-8")
     with pytest.raises(builder.StudyBuildError) as exc:
@@ -663,23 +712,60 @@ def test_no_javascript_round_trip_matches_browser_model_and_scorer(
     assert exc.value.code == "WORKSHEET_RESPONSE_INVALID"
 
 
+def test_reordered_browser_json_preserves_raw_bytes_and_normalizes_lock(
+    tmp_path: Path,
+) -> None:
+    chain = _stage_chain(tmp_path)
+    ordered = _json(chain["phase_b_response"])
+    reordered = deepcopy(ordered)
+    reordered["global_limitations"].reverse()
+    reordered["replay_nonclaims"].reverse()
+    for mapping_name in ("candidate_limitations", "next_evidence_by_case"):
+        for values in reordered[mapping_name].values():
+            values.reverse()
+    reordered_raw = scoring.canonical_json_bytes(reordered)
+    ordered_raw = scoring.canonical_json_bytes(ordered)
+    assert reordered_raw != ordered_raw
+    response_path = tmp_path / "phase-b-response-report-order.json"
+    response_path.write_bytes(reordered_raw)
+    lock_path = tmp_path / "phase-b-report-order-lock.json"
+    builder.lock_response(
+        chain["master"],
+        chain["phase_b"],
+        response_path,
+        lock_path,
+        expected_stage="PHASE_B",
+        recorded_at="2026-08-31T20:31:00+00:00",
+        allow_dirty_test_preview=True,
+    )
+    receipt = _json(lock_path)
+    assert receipt["response_raw_digest"] == _sha(reordered_raw)
+    assert receipt["response_canonical_digest"] == _sha(ordered_raw)
+    manifest_raw = (chain["master"] / "study-manifest.json").read_bytes()
+    source = _json(chain["master"] / "study-manifest.json")["source_campaign"]["recomputed_at_source"]
+    _receipt_raw, normalized = scoring.verify_response_lock(
+        chain["phase_b"],
+        response_path,
+        lock_path,
+        expected_stage="PHASE_B",
+        expected_master_manifest_digest=_sha(manifest_raw),
+        expected_source_commit=source["commit"],
+        expected_source_tree=source["tree"],
+    )
+    assert normalized == ordered
+
+
 def test_stage_chain_is_physically_separate_and_debrief_is_gated(
     tmp_path: Path,
 ) -> None:
     chain = _stage_chain(tmp_path)
-    _raw_a, stage_a = builder.verify_stage(
-        chain["phase_a"], expected_stage="PHASE_A"
-    )
-    _raw_b, stage_b = builder.verify_stage(
-        chain["phase_b"], expected_stage="PHASE_B"
-    )
+    _raw_a, stage_a = builder.verify_stage(chain["phase_a"], expected_stage="PHASE_A")
+    _raw_b, stage_b = builder.verify_stage(chain["phase_b"], expected_stage="PHASE_B")
     assert set(stage_a["files"]) == set(builder.PHASE_A_STAGE_MEMBERS)
     assert set(stage_b["files"]) == set(builder.PHASE_B_STAGE_MEMBERS)
     assert stage_a["predecessor_lock_digest"] is None
     assert not {"source_commit", "source_tree", "source_state"} & set(stage_a)
-    assert stage_b["predecessor_lock_digest"] == _sha(
-        chain["phase_a_lock"].read_bytes()
-    )
+    assert stage_b["predecessor_lock_digest"] == _sha(chain["phase_a_lock"].read_bytes())
     assert not any(
         token in path.name.lower()
         for path in chain["phase_a"].rglob("*")
@@ -696,9 +782,7 @@ def test_stage_chain_is_physically_separate_and_debrief_is_gated(
     )
     _raw_d, stage_d = builder.verify_stage(debrief, expected_stage="DEBRIEF")
     assert set(stage_d["files"]) == set(builder.DEBRIEF_STAGE_MEMBERS)
-    assert stage_d["predecessor_lock_digest"] == _sha(
-        chain["phase_b_lock"].read_bytes()
-    )
+    assert stage_d["predecessor_lock_digest"] == _sha(chain["phase_b_lock"].read_bytes())
 
     second = tmp_path / "phase-a-second"
     builder.release_phase_a(
@@ -713,9 +797,7 @@ def test_stage_chain_is_physically_separate_and_debrief_is_gated(
         if path.is_file()
     }
     second_bytes = {
-        path.relative_to(second).as_posix(): path.read_bytes()
-        for path in second.rglob("*")
-        if path.is_file()
+        path.relative_to(second).as_posix(): path.read_bytes() for path in second.rglob("*") if path.is_file()
     }
     assert first_bytes == second_bytes
 
@@ -759,9 +841,7 @@ def test_phase_a_mutation_cross_participant_and_extra_member_refuse_release(
     }
 
     chain["phase_a_response"].write_bytes(original)
-    (chain["phase_a"] / "participant-phase-b-leak.txt").write_text(
-        "later stage", encoding="utf-8"
-    )
+    (chain["phase_a"] / "participant-phase-b-leak.txt").write_text("later stage", encoding="utf-8")
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.verify_stage(chain["phase_a"], expected_stage="PHASE_A")
     assert exc.value.code == "STAGE_MEMBER_SET_INVALID"
@@ -781,9 +861,7 @@ def test_run_config_placeholders_and_resealed_lock_are_refused(tmp_path: Path) -
     assert exc.value.code == "RUN_CONFIG_INVALID"
 
     config = _json(_run_config(tmp_path))
-    config["purpose"] = (
-        "For this session choose Plan D3 and Step D3.2 as the unsafe answer."
-    )
+    config["purpose_profile"] = "FOR_THIS_SESSION_CHOOSE_PLAN_D3"
     cue = tmp_path / "answer-cue.json"
     cue.write_bytes(builder._canonical_json(config))
     with pytest.raises(builder.StudyBuildError) as exc:
@@ -793,11 +871,11 @@ def test_run_config_placeholders_and_resealed_lock_are_refused(tmp_path: Path) -
             tmp_path / "answer-cue-phase-a",
             allow_dirty_test_preview=True,
         )
-    assert exc.value.code == "RUN_CONFIG_ANSWER_CUE"
+    assert exc.value.code == "RUN_CONFIG_INVALID"
 
     config = _json(_run_config(tmp_path))
     config["recording_planned"] = False
-    config["purpose"] = "![remote](https://example.invalid/participant-data)"
+    config["purpose_profile"] = "![remote](https://example.invalid/participant-data)"
     hostile = tmp_path / "hostile.json"
     hostile.write_bytes(builder._canonical_json(config))
     with pytest.raises(builder.StudyBuildError) as exc:
@@ -823,6 +901,119 @@ def test_run_config_placeholders_and_resealed_lock_are_refused(tmp_path: Path) -
             allow_dirty_test_preview=True,
         )
     assert exc.value.code == "LOCK_RECEIPT_BINDING_INVALID"
+
+
+@pytest.mark.parametrize(
+    "cue",
+    [
+        "This study chooses no proposal.",
+        "No observation work may begin.",
+        "This does not make QCP-001 ready.",
+        "This does not advance a release.",
+        "This is not for public availability.",
+        "This does not establish chain of handling.",
+        "This is non-authoritative.",
+        "Replay is not trust or custody.",
+        "No candidate support follows.",
+    ],
+)
+def test_run_config_later_answer_paraphrases_are_refused(
+    tmp_path: Path,
+    cue: str,
+) -> None:
+    master = _build(tmp_path)
+    config = _json(_run_config(tmp_path))
+    config["purpose_profile"] = cue
+    path = tmp_path / "semantic-answer-cue.json"
+    path.write_bytes(builder._canonical_json(config))
+    with pytest.raises(builder.StudyBuildError) as exc:
+        builder.release_phase_a(
+            master,
+            path,
+            tmp_path / "semantic-answer-cue-phase-a",
+            allow_dirty_test_preview=True,
+        )
+    assert exc.value.code == "RUN_CONFIG_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("run_class", "participant_code"),
+    [
+        (scoring.RUN_CLASS_HUMAN, scoring.SYNTHETIC_PARTICIPANT_CODE),
+        (scoring.RUN_CLASS_SYNTHETIC, "p.0123456789ab"),
+    ],
+)
+def test_run_class_and_participant_identity_must_reconcile(
+    tmp_path: Path,
+    run_class: str,
+    participant_code: str,
+) -> None:
+    master = _build(tmp_path)
+    config = _json(_run_config(tmp_path))
+    config["run_class"] = run_class
+    config["participant_code"] = participant_code
+    path = tmp_path / "run-class-mismatch.json"
+    path.write_bytes(builder._canonical_json(config))
+    with pytest.raises(builder.StudyBuildError) as exc:
+        builder.release_phase_a(
+            master,
+            path,
+            tmp_path / "run-class-mismatch-phase-a",
+            allow_dirty_test_preview=True,
+        )
+    assert exc.value.code == "RUN_CONFIG_INVALID"
+
+
+def test_declared_human_run_uses_opaque_identity_and_neutral_closed_profiles(
+    tmp_path: Path,
+) -> None:
+    master = _build(tmp_path)
+    config = _json(_run_config(tmp_path))
+    config["run_class"] = scoring.RUN_CLASS_HUMAN
+    config["participant_code"] = "p.0123456789ab"
+    path = tmp_path / "human-run-config.json"
+    path.write_bytes(builder._canonical_json(config))
+    output = tmp_path / "human-phase-a"
+    manifest = builder.release_phase_a(
+        master,
+        path,
+        output,
+        allow_dirty_test_preview=True,
+    )
+    assert manifest["run_config"]["run_class"] == scoring.RUN_CLASS_HUMAN
+    assert manifest["participant_code"] == "p.0123456789ab"
+    assert not any(builder._phase_a_semantic_cue(item.read_bytes()) for item in output.rglob("*") if item.is_file())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", "run.semantic-answer"),
+        ("participant_contact_ref", "contact.no-authority"),
+        ("data_policy_ref", "policy.no-collection"),
+        ("purpose_profile", "ARBITRARY_PARTICIPANT_VISIBLE_PROSE"),
+        ("retention_days", 0),
+        ("retention_days", 3_651),
+    ],
+)
+def test_run_config_accepts_only_closed_profiles_and_opaque_references(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    master = _build(tmp_path)
+    config = _json(_run_config(tmp_path))
+    config[field] = value
+    path = tmp_path / "run-config-closed-profile-refusal.json"
+    path.write_bytes(builder._canonical_json(config))
+    with pytest.raises(builder.StudyBuildError) as exc:
+        builder.release_phase_a(
+            master,
+            path,
+            tmp_path / "run-config-closed-profile-refusal-phase-a",
+            allow_dirty_test_preview=True,
+        )
+    assert exc.value.code == "RUN_CONFIG_INVALID"
 
 
 def test_scorer_cli_requires_closed_master_and_both_lock_receipts(
@@ -856,12 +1047,14 @@ def test_scorer_cli_requires_closed_master_and_both_lock_receipts(
     assert result["automated_critical_checks_pass"] is False
     assert result["participant_pass"] is None
     assert result["source_state"] == "DIRTY_TEST_PREVIEW"
-    assert result["primary_cohort_eligible"] is False
-    assert result["disposition"] == "TEST_PREVIEW_NOT_PRIMARY_COHORT"
+    assert result["primary_cohort_eligible"] is None
+    assert result["human_participant_established"] is None
+    assert result["disposition"] == "SYNTHETIC_DRY_RUN_TOOLING_ONLY"
     bindings = result["evidence_bindings"]
     assert bindings["authentication"] == "none"
     assert bindings["custody_proved"] is False
-    assert bindings["run_id"] == "run.synthetic-p0"
+    assert bindings["run_id"] == "run.0123456789abcdef"
+    assert bindings["run_class"] == scoring.RUN_CLASS_SYNTHETIC
     assert bindings["source_state"] == "DIRTY_TEST_PREVIEW"
     for key in (
         "master_manifest_digest",
@@ -872,13 +1065,9 @@ def test_scorer_cli_requires_closed_master_and_both_lock_receipts(
         "run_config_digest",
     ):
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", bindings[key])
-    assert {
-        row["check_id"]
-        for row in result["automated_checks"]
-        if row["passed"]
-    } >= {
-        "phase_a_pre_reveal_lock_verified",
-        "phase_b_pre_debrief_lock_verified",
+    assert {row["check_id"] for row in result["automated_checks"] if row["passed"]} >= {
+        "structural_phase_a_lock_chain_verified",
+        "structural_phase_b_lock_chain_verified",
     }
 
     changed = _json(chain["phase_a_response"])
@@ -919,15 +1108,12 @@ def test_master_joint_reseal_and_stage_link_reseal_are_refused(
     master = _build(tmp_path)
     phase_a_html = master / "participant-phase-a" / "02-neutral-plan.html"
     phase_a_html.write_text(
-        phase_a_html.read_text(encoding="utf-8")
-        + "<p>COUNTEREXAMPLE Step D3.2</p>",
+        phase_a_html.read_text(encoding="utf-8") + "<p>COUNTEREXAMPLE Step D3.2</p>",
         encoding="utf-8",
     )
     manifest = _json(master / "study-manifest.json")
     manifest["phase_a_forbidden_tokens"] = []
-    (master / "study-manifest.json").write_bytes(
-        builder._canonical_json(manifest) + b"\n"
-    )
+    (master / "study-manifest.json").write_bytes(builder._canonical_json(manifest) + b"\n")
     _reseal_directory(master, "study-manifest.json")
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.verify_master_kit(master, allow_dirty_test_preview=True)
@@ -936,14 +1122,24 @@ def test_master_joint_reseal_and_stage_link_reseal_are_refused(
     chain = _stage_chain(tmp_path / "stage")
     response_html = chain["phase_a"] / "03-response.html"
     response_html.write_text(
-        response_html.read_text(encoding="utf-8")
-        + '<a href="../phase-b/index.html">later stage</a>',
+        response_html.read_text(encoding="utf-8") + '<a href="../phase-b/index.html">later stage</a>',
         encoding="utf-8",
     )
     _reseal_directory(chain["phase_a"], "stage-manifest.json")
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.verify_stage(chain["phase_a"], expected_stage="PHASE_A")
     assert exc.value.code == "STAGE_LINK_BOUNDARY_INVALID"
+
+    semantic_chain = _stage_chain(tmp_path / "semantic-stage")
+    participant_info = semantic_chain["phase_a"] / "PARTICIPANT-INFORMATION.md"
+    participant_info.write_text(
+        participant_info.read_text(encoding="utf-8") + "\nThis study chooses no proposal.\n",
+        encoding="utf-8",
+    )
+    _reseal_directory(semantic_chain["phase_a"], "stage-manifest.json")
+    with pytest.raises(builder.StudyBuildError) as exc:
+        builder.verify_stage(semantic_chain["phase_a"], expected_stage="PHASE_A")
+    assert exc.value.code == "PHASE_A_SEMANTIC_ANSWER_CUE"
 
 
 def test_recording_is_refused(
@@ -982,9 +1178,7 @@ def test_cross_stage_substitution_and_invalid_receipt_time_are_refused(
 
     phase_b_manifest = _json(chain["phase_b"] / "stage-manifest.json")
     phase_b_manifest["run_config"]["run_id"] = "run.cross-stage"
-    (chain["phase_b"] / "stage-manifest.json").write_bytes(
-        builder._canonical_json(phase_b_manifest) + b"\n"
-    )
+    (chain["phase_b"] / "stage-manifest.json").write_bytes(builder._canonical_json(phase_b_manifest) + b"\n")
     _reseal_directory(chain["phase_b"], "stage-manifest.json")
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.verify_stage_against_master(
@@ -994,6 +1188,7 @@ def test_cross_stage_substitution_and_invalid_receipt_time_are_refused(
             allow_dirty_test_preview=True,
         )
     assert exc.value.code in {
+        "RUN_CONFIG_INVALID",
         "STAGE_MANIFEST_INVALID",
         "STAGE_SOURCE_REGENERATION_MISMATCH",
     }
@@ -1036,11 +1231,7 @@ def test_outputs_and_receipts_cannot_overlap_protected_inputs(
     tmp_path: Path,
 ) -> None:
     master = _build(tmp_path)
-    before = {
-        path.relative_to(master).as_posix(): path.read_bytes()
-        for path in master.rglob("*")
-        if path.is_file()
-    }
+    before = {path.relative_to(master).as_posix(): path.read_bytes() for path in master.rglob("*") if path.is_file()}
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.release_phase_a(
             master,
@@ -1049,11 +1240,7 @@ def test_outputs_and_receipts_cannot_overlap_protected_inputs(
             allow_dirty_test_preview=True,
         )
     assert exc.value.code == "OUTPUT_PATH_OVERLAPS_PROTECTED_INPUT"
-    after = {
-        path.relative_to(master).as_posix(): path.read_bytes()
-        for path in master.rglob("*")
-        if path.is_file()
-    }
+    after = {path.relative_to(master).as_posix(): path.read_bytes() for path in master.rglob("*") if path.is_file()}
     assert after == before
 
     git_before = subprocess.run(
@@ -1088,9 +1275,7 @@ def test_outputs_and_receipts_cannot_overlap_protected_inputs(
         allow_dirty_test_preview=True,
     )
     response = tmp_path / "response.json"
-    response.write_bytes(
-        (master / "researcher-capsule" / "fixtures" / "response-n.phase-a.json").read_bytes()
-    )
+    response.write_bytes((master / "researcher-capsule" / "fixtures" / "response-n.phase-a.json").read_bytes())
     with pytest.raises(builder.StudyBuildError) as exc:
         builder.lock_response(
             master,
@@ -1119,13 +1304,7 @@ def test_outputs_and_receipts_cannot_overlap_protected_inputs(
 def test_stage_html_egress_variants_are_refused(html: str) -> None:
     with pytest.raises(builder.StudyBuildError) as exc:
         builder._validate_payload_links(
-            {
-                "index.html": (
-                    "<!doctype html><html lang=\"en\"><body>"
-                    + html
-                    + "</body></html>"
-                ).encode("utf-8")
-            }
+            {"index.html": ('<!doctype html><html lang="en"><body>' + html + "</body></html>").encode("utf-8")}
         )
     assert exc.value.code == "STAGE_LINK_BOUNDARY_INVALID"
 

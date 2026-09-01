@@ -22,14 +22,10 @@ from typing import Any
 SCORE_SCHEMA = "atlas.r3-qdp001-operator-study-score/1"
 RESPONSE_SCHEMA = "atlas.r3-qdp001-operator-study-response/1"
 EXPECTED_STUDY_ID = "qdp001-operator-study:break-this-plan:synthetic:v2"
-EXPECTED_CAMPAIGN_INPUT_DIGEST = (
-    "sha256:c3b1de269c2bc2f9622268b10909316b8c4cf30527836799312c98ad3f73a7d7"
-)
+EXPECTED_CAMPAIGN_INPUT_DIGEST = "sha256:c3b1de269c2bc2f9622268b10909316b8c4cf30527836799312c98ad3f73a7d7"
 # Filled from the source-derived answer key. This is an exact-source consistency
 # anchor, not authentication against an actor able to rewrite the source itself.
-EXPECTED_ANSWER_KEY_DIGEST = (
-    "sha256:c71b39d7f77686204cb30116b9ec9eec45f195198f5ee347c2b4ec372ff0cb2d"
-)
+EXPECTED_ANSWER_KEY_DIGEST = "sha256:c71b39d7f77686204cb30116b9ec9eec45f195198f5ee347c2b4ec372ff0cb2d"
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 STUDY_MANIFEST_SCHEMA = "atlas.r3-qdp001-operator-study-kit/1"
 STAGE_MANIFEST_SCHEMA = "atlas.r3-qdp001-operator-study-stage/1"
@@ -40,7 +36,20 @@ MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_PACKAGE_FILES = 256
 MAX_PACKAGE_DEPTH = 12
 MAX_PACKAGE_TOTAL_BYTES = 64 * 1024 * 1024
-PARTICIPANT_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+RUN_CLASS_HUMAN = "HUMAN_FORMATIVE_RUN"
+RUN_CLASS_SYNTHETIC = "SYNTHETIC_DRY_RUN_TOOLING_ONLY"
+RUN_CLASSES = frozenset({RUN_CLASS_HUMAN, RUN_CLASS_SYNTHETIC})
+SYNTHETIC_PARTICIPANT_CODE = "SYNTHETIC-DRY-RUN"
+PARTICIPANT_CODE = re.compile(r"^(?:SYNTHETIC-DRY-RUN|p\.[0-9a-f]{12})$")
+HUMAN_PARTICIPANT_CODE = re.compile(r"^p\.[0-9a-f]{12}$")
+RUN_ID = re.compile(r"^run\.[0-9a-f]{16}$")
+CONTACT_REFERENCE = re.compile(r"^contact\.[0-9a-f]{12}$")
+POLICY_REFERENCE = re.compile(r"^policy\.[0-9a-f]{12}$")
+PURPOSE_PROFILE = "SYNTHETIC_PLAN_REASONING"
+DATA_USE_PROFILE = "FORMATIVE_STUDY_EVALUATION_ONLY"
+STORAGE_PROFILE = "ENCRYPTED_INTERNAL_STUDY_WORKSPACE"
+ACCESS_PROFILE = "MODERATOR_AND_TWO_ASSIGNED_NARRATIVE_REVIEWERS"
+DELETION_PROFILE = "DELETE_AFTER_RETENTION_OR_EARLIER_VALID_WITHDRAWAL"
 EXPECTED_REPLAY_NONCLAIMS = sorted(
     [
         "CANDIDATE_SELECTION",
@@ -183,9 +192,7 @@ def parse_json_bytes(raw: bytes, *, max_bytes: int = MAX_RESPONSE_BYTES) -> Any:
         value = json.loads(
             text,
             object_pairs_hook=_reject_duplicate_pairs,
-            parse_constant=lambda _value: (_ for _ in ()).throw(
-                StudyScoringError("NONFINITE_JSON_NUMBER")
-            ),
+            parse_constant=lambda _value: (_ for _ in ()).throw(StudyScoringError("NONFINITE_JSON_NUMBER")),
         )
     except StudyScoringError:
         raise
@@ -203,6 +210,31 @@ def parse_json_bytes(raw: bytes, *, max_bytes: int = MAX_RESPONSE_BYTES) -> Any:
         elif type(item) is list:
             stack.extend((child, depth + 1) for child in item)
     return value
+
+
+def normalize_response_set_order(value: Any) -> Any:
+    """Canonicalize order-only response differences without hiding invalid members.
+
+    The response schema gives these arrays set semantics through ``uniqueItems``.  Browser
+    controls sort them before download, while a no-JavaScript participant may faithfully
+    copy the visible report order.  Sorting string-only arrays preserves duplicates and
+    unsupported members so schema and N-1/N+1 checks still fail.
+    """
+
+    if type(value) is not dict or value.get("phase") != "B":
+        return deepcopy(value)
+    normalized = deepcopy(value)
+
+    def sorted_strings(item: Any) -> Any:
+        return sorted(item) if type(item) is list and all(type(row) is str for row in item) else item
+
+    for key in ("global_limitations", "replay_nonclaims"):
+        normalized[key] = sorted_strings(normalized.get(key))
+    for key in ("candidate_limitations", "next_evidence_by_case"):
+        mapping = normalized.get(key)
+        if type(mapping) is dict:
+            normalized[key] = {name: sorted_strings(rows) for name, rows in mapping.items()}
+    return normalized
 
 
 def _bounded_file_bytes(path: Path, *, max_bytes: int) -> bytes:
@@ -235,8 +267,7 @@ def _bounded_file_bytes(path: Path, *, max_bytes: int) -> bytes:
         raise StudyScoringError("JSON_FILE_UNREADABLE") from exc
     raw = b"".join(chunks)
     identities = {
-        (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
-        for item in (path_info, before, after, final_info)
+        (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns) for item in (path_info, before, after, final_info)
     }
     if (
         len(identities) != 1
@@ -257,16 +288,19 @@ def load_json_file(path: Path, *, max_bytes: int = MAX_RESPONSE_BYTES) -> tuple[
 def load_response_file(path: Path) -> tuple[bytes, Any]:
     raw = _bounded_file_bytes(path, max_bytes=MAX_RESPONSE_BYTES)
     if WORKSHEET_FENCE.encode("utf-8") not in raw:
-        return raw, parse_json_bytes(raw)
+        return raw, normalize_response_set_order(parse_json_bytes(raw))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise StudyScoringError("WORKSHEET_INVALID") from exc
+    text = text.replace("\r\n", "\n")
+    if "\r" in text:
+        raise StudyScoringError("WORKSHEET_INVALID")
     marker = WORKSHEET_FENCE + "\n"
     if text.count(marker) != 1 or text.count("\n```\n") != 1:
         raise StudyScoringError("WORKSHEET_INVALID")
     payload = text.split(marker, 1)[1].split("\n```", 1)[0].encode("utf-8")
-    value = parse_json_bytes(payload)
+    value = normalize_response_set_order(parse_json_bytes(payload))
     if "__REQUIRED_RESPONSE__" in payload.decode("utf-8", errors="ignore"):
         raise StudyScoringError("WORKSHEET_PLACEHOLDER")
     return raw, value
@@ -301,17 +335,12 @@ def _directory_files(root: Path) -> set[str]:
             relative = item.relative_to(root)
             if len(relative.parts) > MAX_PACKAGE_DEPTH:
                 raise StudyScoringError("PACKAGE_TRAVERSAL_LIMIT")
-            if item.is_symlink() or bool(
-                getattr(info, "st_file_attributes", 0) & reparse
-            ):
+            if item.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse):
                 raise StudyScoringError("PACKAGE_REPARSE_FORBIDDEN")
             if stat.S_ISREG(info.st_mode):
                 count += 1
                 total_bytes += info.st_size
-                if (
-                    count > MAX_PACKAGE_FILES
-                    or total_bytes > MAX_PACKAGE_TOTAL_BYTES
-                ):
+                if count > MAX_PACKAGE_FILES or total_bytes > MAX_PACKAGE_TOTAL_BYTES:
                     raise StudyScoringError("PACKAGE_TRAVERSAL_LIMIT")
                 name = relative.as_posix()
                 _safe_member(name)
@@ -330,13 +359,9 @@ def verify_master_package(
     *,
     allow_dirty_test_preview: bool = False,
 ) -> tuple[bytes, dict[str, Any]]:
-    manifest_raw, manifest = load_json_file(
-        root / "study-manifest.json", max_bytes=MAX_DOCUMENT_BYTES
-    )
+    manifest_raw, manifest = load_json_file(root / "study-manifest.json", max_bytes=MAX_DOCUMENT_BYTES)
     source_state = (
-        manifest.get("source_campaign", {})
-        .get("recomputed_at_source", {})
-        .get("source_state")
+        manifest.get("source_campaign", {}).get("recomputed_at_source", {}).get("source_state")
         if type(manifest) is dict
         else None
     )
@@ -346,12 +371,11 @@ def verify_master_package(
         or manifest.get("study_id") != EXPECTED_STUDY_ID
         or manifest.get("status")
         != (
-            "READY_TO_RUN_NO_PARTICIPANT_RESULT"
+            "MASTER_KIT_VERIFIED_RUN_CONFIGURATION_AND_TARGET_PREFLIGHT_REQUIRED_NO_PARTICIPANT_RESULT"
             if source_state == "EXACT_CLEAN_COMMIT"
             else "DIRTY_TEST_PREVIEW_NOT_DELIVERABLE"
         )
-        or manifest.get("deliverable")
-        != (source_state == "EXACT_CLEAN_COMMIT")
+        or manifest.get("deliverable") != (source_state == "EXACT_CLEAN_COMMIT")
         or manifest.get("authoritative") is not False
         or manifest.get("decision_effect") != "NONE"
         or manifest.get("human_participant_count") != 0
@@ -359,24 +383,17 @@ def verify_master_package(
         or manifest.get("qualification_effect") != "NONE"
         or manifest.get("promotion_effect") != "NONE"
         or manifest.get("collection_started") is not False
-        or manifest.get("authority_placeholders")
-        != {"R2-AUTH-001": None, "R2-AUTH-002": None, "R2-AUTH-004": None}
+        or manifest.get("authority_placeholders") != {"R2-AUTH-001": None, "R2-AUTH-002": None, "R2-AUTH-004": None}
         or manifest.get("synthetic_dry_run_is_human_study") is not False
-        or manifest.get(
-            "participant_deliveries_exclude_campaign_result_answer_key_and_researcher_machine_data"
-        )
+        or type(manifest.get("phase_a_forbidden_cue_patterns")) is not list
+        or type(manifest.get("known_residuals")) is not list
+        or manifest.get("participant_deliveries_exclude_campaign_result_answer_key_and_researcher_machine_data")
         is not True
-        or manifest.get("source_campaign", {})
-        .get("file_digests", {})
-        .get("campaign-input.json")
+        or manifest.get("source_campaign", {}).get("file_digests", {}).get("campaign-input.json")
         != EXPECTED_CAMPAIGN_INPUT_DIGEST
-        or manifest.get("source_campaign", {}).get("subject")
-        != "TRACKED_FIXTURE_RECOMPUTED_AT_EXACT_SOURCE"
+        or manifest.get("source_campaign", {}).get("subject") != "TRACKED_FIXTURE_RECOMPUTED_AT_EXACT_SOURCE"
         or source_state not in {"EXACT_CLEAN_COMMIT", "DIRTY_TEST_PREVIEW"}
-        or (
-            source_state != "EXACT_CLEAN_COMMIT"
-            and not allow_dirty_test_preview
-        )
+        or (source_state != "EXACT_CLEAN_COMMIT" and not allow_dirty_test_preview)
     ):
         raise StudyScoringError("STUDY_MANIFEST_INVALID")
     rows = manifest.get("files")
@@ -394,9 +411,7 @@ def verify_master_package(
         )
         if row != {"bytes": len(raw), "digest": _sha256(raw)}:
             raise StudyScoringError("PACKAGE_FILE_BINDING_INVALID")
-    sums_raw = _bounded_file_bytes(
-        root / "SHA256SUMS.txt", max_bytes=MAX_RESPONSE_BYTES
-    )
+    sums_raw = _bounded_file_bytes(root / "SHA256SUMS.txt", max_bytes=MAX_RESPONSE_BYTES)
     try:
         actual = sums_raw.decode("ascii").splitlines()
     except UnicodeDecodeError as exc:
@@ -411,10 +426,7 @@ def verify_master_package(
     if actual != expected:
         raise StudyScoringError("PACKAGE_CHECKSUM_LIST_INVALID")
     answer = rows.get("researcher-capsule/answer-key.json")
-    if (
-        type(answer) is not dict
-        or answer.get("digest") != EXPECTED_ANSWER_KEY_DIGEST
-    ):
+    if type(answer) is not dict or answer.get("digest") != EXPECTED_ANSWER_KEY_DIGEST:
         raise StudyScoringError("ANSWER_KEY_SOURCE_ANCHOR_INVALID")
     return manifest_raw, manifest
 
@@ -438,9 +450,7 @@ def _check(
 
 def _all_false(value: Any, expected_keys: list[str]) -> bool:
     return (
-        type(value) is dict
-        and set(value) == set(expected_keys)
-        and all(value[key] is False for key in expected_keys)
+        type(value) is dict and set(value) == set(expected_keys) and all(value[key] is False for key in expected_keys)
     )
 
 
@@ -460,12 +470,15 @@ def score_responses(
     phase_a_lock_verified: bool = False,
     phase_b_lock_verified: bool = False,
     source_state: str = "EXACT_CLEAN_COMMIT",
+    run_class: str | None = None,
     evidence_bindings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score structured fields and leave semantic narratives for human review."""
 
     if type(phase_a) is not dict or type(phase_b) is not dict or type(answer_key) is not dict:
         raise StudyScoringError("SCORING_INPUT_SHAPE_INVALID")
+    phase_a = normalize_response_set_order(phase_a)
+    phase_b = normalize_response_set_order(phase_b)
     required_key_fields = {
         "schema",
         "study_id",
@@ -481,9 +494,7 @@ def score_responses(
         or answer_key_digest != expected_answer_key_digest
         or DIGEST_PATTERN.fullmatch(expected_answer_key_digest) is None
         or set(answer_key) != required_key_fields
-        or answer_key.get("schema") != (
-        "atlas.r3-qdp001-operator-study-answer-key/1"
-        )
+        or answer_key.get("schema") != ("atlas.r3-qdp001-operator-study-answer-key/1")
         or type(answer_key.get("study_id")) is not str
         or answer_key["study_id"] != EXPECTED_STUDY_ID
         or type(answer_key.get("campaign_input_digest")) is not str
@@ -511,19 +522,19 @@ def score_responses(
     _check(rows, "phase_b_exact_shape", set(phase_b), set(PHASE_B_KEYS))
     _check(
         rows,
-        "phase_a_pre_reveal_lock_verified",
+        "structural_phase_a_lock_chain_verified",
         phase_a_lock_verified,
         True,
     )
     _check(
         rows,
-        "phase_b_pre_debrief_lock_verified",
+        "structural_phase_b_lock_chain_verified",
         phase_b_lock_verified,
         True,
     )
     _check(
         rows,
-        "exact_source_for_human_run",
+        "exact_source_structurally_bound",
         source_state,
         "EXACT_CLEAN_COMMIT",
     )
@@ -555,10 +566,7 @@ def score_responses(
             )
 
     participant_code = phase_a.get("participant_code")
-    participant_code_valid = (
-        type(participant_code) is str
-        and PARTICIPANT_CODE.fullmatch(participant_code) is not None
-    )
+    participant_code_valid = type(participant_code) is str and PARTICIPANT_CODE.fullmatch(participant_code) is not None
     _check(
         rows,
         "participant_code_safe",
@@ -566,27 +574,31 @@ def score_responses(
         True,
     )
     _check(rows, "participant_code_same", phase_b.get("participant_code"), participant_code)
+    run_class_valid = run_class in RUN_CLASSES
+    synthetic_identity = participant_code == SYNTHETIC_PARTICIPANT_CODE
+    run_class_identity_valid = (run_class == RUN_CLASS_SYNTHETIC and synthetic_identity) or (
+        run_class == RUN_CLASS_HUMAN and participant_code_valid and not synthetic_identity
+    )
+    _check(rows, "run_class_domain", run_class_valid, True)
+    _check(rows, "run_class_participant_identity_consistent", run_class_identity_valid, True)
     _check(
         rows,
         "phase_a_prompt_code_domain",
-        type(phase_a.get("prompt_code")) is str
-        and phase_a.get("prompt_code") in {"P0", "P1", "P2", "P3"},
+        type(phase_a.get("prompt_code")) is str and phase_a.get("prompt_code") in {"P0", "P1", "P2", "P3"},
         True,
         critical=False,
     )
     _check(
         rows,
         "phase_b_prompt_code_domain",
-        type(phase_b.get("prompt_code")) is str
-        and phase_b.get("prompt_code") in {"P0", "P1", "P2", "P3"},
+        type(phase_b.get("prompt_code")) is str and phase_b.get("prompt_code") in {"P0", "P1", "P2", "P3"},
         True,
         critical=False,
     )
     _check(
         rows,
         "phase_a_prior_exposure_domain",
-        type(phase_a.get("prior_exposure")) is str
-        and phase_a.get("prior_exposure") in {"NO", "YES", "UNKNOWN"},
+        type(phase_a.get("prior_exposure")) is str and phase_a.get("prior_exposure") in {"NO", "YES", "UNKNOWN"},
         True,
         critical=False,
     )
@@ -602,7 +614,7 @@ def score_responses(
         phase_a.get("data_handling_acknowledged"),
         True,
     )
-    primary_cohort_eligible = (
+    primary_cohort_structural_conditions_met = (
         source_state == "EXACT_CLEAN_COMMIT"
         and phase_a_lock_verified
         and phase_b_lock_verified
@@ -613,6 +625,9 @@ def score_responses(
         and phase_a.get("prompt_code") == "P0"
         and phase_b.get("prompt_code") == "P0"
         and phase_a.get("prior_exposure") == "NO"
+    )
+    declared_primary_cohort_conditions_met = (
+        run_class == RUN_CLASS_HUMAN and run_class_identity_valid and primary_cohort_structural_conditions_met
     )
 
     for field, expected in answer_key["phase_a"].items():
@@ -640,8 +655,7 @@ def score_responses(
         "study_id": study_id,
         "participant_code": (
             participant_code
-            if type(participant_code) is str
-            and PARTICIPANT_CODE.fullmatch(participant_code) is not None
+            if type(participant_code) is str and PARTICIPANT_CODE.fullmatch(participant_code) is not None
             else None
         ),
         "response_digests": {
@@ -654,21 +668,33 @@ def score_responses(
         "automated_passed_count": passed_count,
         "automated_critical_checks_pass": critical_pass,
         "automated_technical_checks_pass": technical_pass,
-        "primary_cohort_eligible": primary_cohort_eligible,
+        "run_class": run_class,
+        "synthetic_dry_run_tooling_only": run_class == RUN_CLASS_SYNTHETIC,
+        "primary_cohort_structural_conditions_met": primary_cohort_structural_conditions_met,
+        "declared_primary_cohort_conditions_met": declared_primary_cohort_conditions_met,
+        "primary_cohort_eligible": None,
+        "human_participant_established": None,
         "source_state": source_state,
         "manual_review_required": [field for field, _value in manual_fields]
-        + ["cross_response_narrative_contradiction_review"],
+        + [
+            "human_origin_and_uncontaminated_sequence_review",
+            "cross_response_narrative_contradiction_review",
+        ],
         "participant_pass": None,
         "operator_acceptance": False,
         "qualification_effect": "NONE",
         "promotion_effect": "NONE",
         "disposition": (
-            "TEST_PREVIEW_NOT_PRIMARY_COHORT"
+            "SYNTHETIC_DRY_RUN_TOOLING_ONLY"
+            if run_class == RUN_CLASS_SYNTHETIC
+            else "TEST_PREVIEW_NOT_PRIMARY_COHORT"
             if source_state != "EXACT_CLEAN_COMMIT"
-            else "CONTAMINATED_OR_ASSISTED_NOT_PRIMARY_COHORT"
-            if not primary_cohort_eligible
+            else "RUN_CLASS_UNVERIFIED_NOT_PRIMARY_COHORT"
+            if not run_class_valid or not run_class_identity_valid
+            else "DECLARED_PRIMARY_COHORT_CONDITIONS_NOT_MET"
+            if not declared_primary_cohort_conditions_met
             else (
-                "AUTOMATED_CHECKS_PASS_MANUAL_REVIEW_REQUIRED"
+                "AUTOMATED_CHECKS_PASS_HUMAN_ORIGIN_AND_MANUAL_REVIEW_UNVERIFIED"
                 if technical_pass
                 else "AUTOMATED_CHECKS_FAIL"
             )
@@ -685,11 +711,6 @@ _STAGE_KEYS = frozenset(
         "schema",
         "stage",
         "study_id",
-        "authoritative",
-        "decision_effect",
-        "authentication",
-        "custody_proved",
-        "trusted_time",
         "run_id",
         "participant_code",
         "campaign_input_digest",
@@ -700,6 +721,13 @@ _STAGE_KEYS = frozenset(
         "files",
     }
 )
+_POST_REVEAL_STAGE_KEYS = _STAGE_KEYS | {
+    "authoritative",
+    "decision_effect",
+    "authentication",
+    "custody_proved",
+    "trusted_time",
+}
 _LOCK_KEYS = frozenset(
     {
         "schema",
@@ -732,18 +760,20 @@ _LOCK_KEYS = frozenset(
 _RUN_CONFIG_KEYS = frozenset(
     {
         "schema",
+        "run_class",
         "run_id",
         "participant_code",
-        "participant_contact",
-        "withdrawal_contact",
-        "accessibility_contact",
-        "purpose",
+        "participant_contact_ref",
+        "withdrawal_contact_ref",
+        "accessibility_contact_ref",
+        "purpose_profile",
         "session_cap_minutes",
-        "data_use",
-        "data_storage",
-        "data_access",
-        "data_retention",
-        "data_deletion",
+        "data_use_profile",
+        "storage_profile",
+        "access_profile",
+        "retention_days",
+        "deletion_profile",
+        "data_policy_ref",
         "recording_planned",
     }
 )
@@ -777,12 +807,8 @@ def _verify_stage_package(
     *,
     expected_stage: str,
 ) -> tuple[bytes, dict[str, Any]]:
-    manifest_raw, manifest = load_json_file(
-        root / "stage-manifest.json", max_bytes=MAX_DOCUMENT_BYTES
-    )
-    expected_members = (
-        _PHASE_A_MEMBERS if expected_stage == "PHASE_A" else _PHASE_B_MEMBERS
-    )
+    manifest_raw, manifest = load_json_file(root / "stage-manifest.json", max_bytes=MAX_DOCUMENT_BYTES)
+    expected_members = _PHASE_A_MEMBERS if expected_stage == "PHASE_A" else _PHASE_B_MEMBERS
     predecessor = manifest.get("predecessor_lock_digest") if type(manifest) is dict else None
     run_config = manifest.get("run_config") if type(manifest) is dict else None
     try:
@@ -797,38 +823,69 @@ def _verify_stage_package(
         run_config_raw = b""
     if (
         type(manifest) is not dict
-        or set(manifest) != set(_STAGE_KEYS)
+        or set(manifest) != set(_STAGE_KEYS if expected_stage == "PHASE_A" else _POST_REVEAL_STAGE_KEYS)
         or manifest.get("schema") != STAGE_MANIFEST_SCHEMA
         or manifest.get("stage") != expected_stage
         or manifest.get("study_id") != EXPECTED_STUDY_ID
         or manifest.get("campaign_input_digest") != EXPECTED_CAMPAIGN_INPUT_DIGEST
-        or manifest.get("authoritative") is not False
-        or manifest.get("decision_effect") != "NONE"
-        or manifest.get("authentication") != "none"
-        or manifest.get("custody_proved") is not False
-        or manifest.get("trusted_time") is not False
+        or (
+            expected_stage != "PHASE_A"
+            and (
+                manifest.get("authoritative") is not False
+                or manifest.get("decision_effect") != "NONE"
+                or manifest.get("authentication") != "none"
+                or manifest.get("custody_proved") is not False
+                or manifest.get("trusted_time") is not False
+            )
+        )
         or type(run_config) is not dict
         or set(run_config) != set(_RUN_CONFIG_KEYS)
-        or run_config.get("schema")
-        != "atlas.r3-qdp001-operator-study-run-config/1"
+        or run_config.get("schema") != "atlas.r3-qdp001-operator-study-run-config/1"
         or run_config.get("recording_planned") is not False
+        or run_config.get("run_class") not in RUN_CLASSES
+        or type(run_config.get("run_id")) is not str
+        or RUN_ID.fullmatch(run_config["run_id"]) is None
+        or type(run_config.get("participant_code")) is not str
+        or PARTICIPANT_CODE.fullmatch(run_config["participant_code"]) is None
+        or any(
+            type(run_config.get(key)) is not str or CONTACT_REFERENCE.fullmatch(run_config[key]) is None
+            for key in (
+                "participant_contact_ref",
+                "withdrawal_contact_ref",
+                "accessibility_contact_ref",
+            )
+        )
+        or type(run_config.get("data_policy_ref")) is not str
+        or POLICY_REFERENCE.fullmatch(run_config["data_policy_ref"]) is None
+        or run_config.get("purpose_profile") != PURPOSE_PROFILE
+        or run_config.get("data_use_profile") != DATA_USE_PROFILE
+        or run_config.get("storage_profile") != STORAGE_PROFILE
+        or run_config.get("access_profile") != ACCESS_PROFILE
+        or run_config.get("deletion_profile") != DELETION_PROFILE
+        or type(run_config.get("session_cap_minutes")) is not int
+        or type(run_config.get("session_cap_minutes")) is bool
+        or not 15 <= run_config["session_cap_minutes"] <= 180
+        or type(run_config.get("retention_days")) is not int
+        or type(run_config.get("retention_days")) is bool
+        or not 1 <= run_config["retention_days"] <= 3_650
+        or (
+            run_config.get("run_class") == RUN_CLASS_SYNTHETIC
+            and run_config.get("participant_code") != SYNTHETIC_PARTICIPANT_CODE
+        )
+        or (
+            run_config.get("run_class") == RUN_CLASS_HUMAN
+            and HUMAN_PARTICIPANT_CODE.fullmatch(run_config["participant_code"]) is None
+        )
         or manifest.get("run_id") != run_config.get("run_id")
         or manifest.get("participant_code") != run_config.get("participant_code")
         or manifest.get("run_config_digest") != _sha256(run_config_raw)
-        or (
-            expected_stage == "PHASE_A"
-            and predecessor is not None
-        )
+        or (expected_stage == "PHASE_A" and predecessor is not None)
         or (
             expected_stage == "PHASE_B"
-            and (
-                type(predecessor) is not str
-                or DIGEST_PATTERN.fullmatch(predecessor) is None
-            )
+            and (type(predecessor) is not str or DIGEST_PATTERN.fullmatch(predecessor) is None)
         )
         or any(
-            type(manifest.get(key)) is not str
-            or DIGEST_PATTERN.fullmatch(manifest[key]) is None
+            type(manifest.get(key)) is not str or DIGEST_PATTERN.fullmatch(manifest[key]) is None
             for key in (
                 "master_manifest_digest",
                 "run_config_digest",
@@ -850,9 +907,7 @@ def _verify_stage_package(
         )
         if row != {"bytes": len(raw), "digest": _sha256(raw)}:
             raise StudyScoringError("STAGE_FILE_BINDING_INVALID")
-    sums = _bounded_file_bytes(
-        root / "SHA256SUMS.txt", max_bytes=MAX_RESPONSE_BYTES
-    ).decode("ascii").splitlines()
+    sums = _bounded_file_bytes(root / "SHA256SUMS.txt", max_bytes=MAX_RESPONSE_BYTES).decode("ascii").splitlines()
     expected_sums = []
     for name in sorted(set(rows) | {"stage-manifest.json"}):
         raw = _bounded_file_bytes(
@@ -875,26 +930,14 @@ def verify_response_lock(
     expected_source_commit: str,
     expected_source_tree: str,
 ) -> tuple[bytes, Any]:
-    stage_raw, stage = _verify_stage_package(
-        stage_root, expected_stage=expected_stage
-    )
+    stage_raw, stage = _verify_stage_package(stage_root, expected_stage=expected_stage)
     response_raw, response = load_response_file(response_path)
-    receipt_raw, receipt = load_json_file(
-        receipt_path, max_bytes=MAX_RESPONSE_BYTES
-    )
+    receipt_raw, receipt = load_json_file(receipt_path, max_bytes=MAX_RESPONSE_BYTES)
     phase = "A" if expected_stage == "PHASE_A" else "B"
-    response_format = (
-        "NO_JAVASCRIPT_WORKSHEET"
-        if WORKSHEET_FENCE.encode("utf-8") in response_raw
-        else "BROWSER_JSON"
-    )
+    response_format = "NO_JAVASCRIPT_WORKSHEET" if WORKSHEET_FENCE.encode("utf-8") in response_raw else "BROWSER_JSON"
     recorded_at = receipt.get("recorded_at") if type(receipt) is dict else None
     try:
-        parsed_time = (
-            datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
-            if type(recorded_at) is str
-            else None
-        )
+        parsed_time = datetime.fromisoformat(recorded_at.replace("Z", "+00:00")) if type(recorded_at) is str else None
     except ValueError:
         parsed_time = None
     if (
@@ -912,19 +955,15 @@ def verify_response_lock(
         or receipt.get("campaign_input_digest") != EXPECTED_CAMPAIGN_INPUT_DIGEST
         or receipt.get("source_commit") != expected_source_commit
         or receipt.get("source_tree") != expected_source_tree
-        or receipt.get("master_manifest_digest")
-        != expected_master_manifest_digest
-        or receipt.get("master_manifest_digest")
-        != stage.get("master_manifest_digest")
+        or receipt.get("master_manifest_digest") != expected_master_manifest_digest
+        or receipt.get("master_manifest_digest") != stage.get("master_manifest_digest")
         or receipt.get("stage_manifest_digest") != _sha256(stage_raw)
         or receipt.get("run_config_digest") != stage.get("run_config_digest")
-        or receipt.get("predecessor_lock_digest")
-        != stage.get("predecessor_lock_digest")
+        or receipt.get("predecessor_lock_digest") != stage.get("predecessor_lock_digest")
         or receipt.get("response_format") != response_format
         or receipt.get("response_bytes") != len(response_raw)
         or receipt.get("response_raw_digest") != _sha256(response_raw)
-        or receipt.get("response_canonical_digest")
-        != _sha256(canonical_json_bytes(response))
+        or receipt.get("response_canonical_digest") != _sha256(canonical_json_bytes(response))
         or parsed_time is None
         or parsed_time.tzinfo is None
         or receipt.get("recorded_at_trusted") is not False
@@ -977,33 +1016,21 @@ def main(argv: list[str] | None = None) -> int:
             expected_source_commit=source["commit"],
             expected_source_tree=source["tree"],
         )
-        phase_a_stage_raw, phase_a_stage = _verify_stage_package(
-            args.phase_a_stage.resolve(), expected_stage="PHASE_A"
-        )
-        phase_b_stage_raw, phase_b_stage = _verify_stage_package(
-            args.phase_b_stage.resolve(), expected_stage="PHASE_B"
-        )
+        phase_a_stage_raw, phase_a_stage = _verify_stage_package(args.phase_a_stage.resolve(), expected_stage="PHASE_A")
+        phase_b_stage_raw, phase_b_stage = _verify_stage_package(args.phase_b_stage.resolve(), expected_stage="PHASE_B")
         if (
             locked_a != phase_a
             or locked_b != phase_b
-            or phase_b_stage["predecessor_lock_digest"]
-            != _sha256(phase_a_lock_raw)
+            or phase_b_stage["predecessor_lock_digest"] != _sha256(phase_a_lock_raw)
             or phase_b_stage["run_id"] != phase_a_stage["run_id"]
-            or phase_b_stage["participant_code"]
-            != phase_a_stage["participant_code"]
-            or phase_b_stage["run_config_digest"]
-            != phase_a_stage["run_config_digest"]
-            or phase_b_stage["master_manifest_digest"]
-            != phase_a_stage["master_manifest_digest"]
-            or _sha256(phase_a_stage_raw)
-            != parse_json_bytes(phase_a_lock_raw)["stage_manifest_digest"]
+            or phase_b_stage["participant_code"] != phase_a_stage["participant_code"]
+            or phase_b_stage["run_config_digest"] != phase_a_stage["run_config_digest"]
+            or phase_b_stage["master_manifest_digest"] != phase_a_stage["master_manifest_digest"]
+            or _sha256(phase_a_stage_raw) != parse_json_bytes(phase_a_lock_raw)["stage_manifest_digest"]
         ):
             raise StudyScoringError("STAGE_LOCK_CHAIN_INVALID")
         answer_row = manifest.get("files", {}).get("researcher-capsule/answer-key.json")
-        if (
-            type(answer_row) is not dict
-            or answer_row.get("digest") != EXPECTED_ANSWER_KEY_DIGEST
-        ):
+        if type(answer_row) is not dict or answer_row.get("digest") != EXPECTED_ANSWER_KEY_DIGEST:
             raise StudyScoringError("STUDY_MANIFEST_INVALID")
         result = score_responses(
             phase_a,
@@ -1016,12 +1043,14 @@ def main(argv: list[str] | None = None) -> int:
             phase_a_lock_verified=True,
             phase_b_lock_verified=True,
             source_state=source["source_state"],
+            run_class=phase_a_stage["run_config"]["run_class"],
             evidence_bindings={
                 "schema": "atlas.r3-qdp001-operator-study-score-evidence/1",
                 "authentication": "none",
                 "custody_proved": False,
                 "run_id": phase_a_stage["run_id"],
                 "participant_code": phase_a_stage["participant_code"],
+                "run_class": phase_a_stage["run_config"]["run_class"],
                 "source_commit": source["commit"],
                 "source_tree": source["tree"],
                 "source_state": source["source_state"],

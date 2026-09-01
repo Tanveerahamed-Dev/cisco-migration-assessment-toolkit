@@ -38,13 +38,7 @@ SCORER_SOURCE = REPOSITORY_ROOT / "tools" / "atlas_r3_operator_study_scoring.py"
 
 STUDY_SCHEMA = "atlas.r3-qdp001-operator-study-kit/1"
 BASE_CAMPAIGN_MERGE = "a6aae621d484cb762c1c6d21797516bd34a14b48"
-CAMPAIGN_FIXTURE = (
-    REPOSITORY_ROOT
-    / "tests"
-    / "fixtures"
-    / "atlas-r3-break-this-plan"
-    / "campaign.synthetic.json"
-)
+CAMPAIGN_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "atlas-r3-break-this-plan" / "campaign.synthetic.json"
 STUDY_ID = scoring.EXPECTED_STUDY_ID
 EXPECTED_SOURCE: dict[str, Any] = {}
 EXPECTED_FILE_DIGESTS: dict[str, str] = {}
@@ -108,18 +102,20 @@ LOCK_RECEIPT_SCHEMA = "atlas.r3-qdp001-operator-study-response-lock/1"
 RUN_CONFIG_KEYS = frozenset(
     {
         "schema",
+        "run_class",
         "run_id",
         "participant_code",
-        "participant_contact",
-        "withdrawal_contact",
-        "accessibility_contact",
-        "purpose",
+        "participant_contact_ref",
+        "withdrawal_contact_ref",
+        "accessibility_contact_ref",
+        "purpose_profile",
         "session_cap_minutes",
-        "data_use",
-        "data_storage",
-        "data_access",
-        "data_retention",
-        "data_deletion",
+        "data_use_profile",
+        "storage_profile",
+        "access_profile",
+        "retention_days",
+        "deletion_profile",
+        "data_policy_ref",
         "recording_planned",
     }
 )
@@ -128,11 +124,6 @@ STAGE_MANIFEST_KEYS = frozenset(
         "schema",
         "stage",
         "study_id",
-        "authoritative",
-        "decision_effect",
-        "authentication",
-        "custody_proved",
-        "trusted_time",
         "run_id",
         "participant_code",
         "campaign_input_digest",
@@ -143,6 +134,86 @@ STAGE_MANIFEST_KEYS = frozenset(
         "files",
     }
 )
+POST_REVEAL_STAGE_MANIFEST_KEYS = STAGE_MANIFEST_KEYS | {
+    "authoritative",
+    "decision_effect",
+    "authentication",
+    "custody_proved",
+    "trusted_time",
+}
+PHASE_A_FORBIDDEN_CUE_PATTERNS = (
+    r"\bacceptance\b",
+    r"\bauthentication\b",
+    r"\bauthoritative\b",
+    r"\bauthority\b",
+    r"\bauthori[sz](?:e|es|ed|ing|ation)\b",
+    r"\bcandidate\b",
+    r"\bchain\s+of\s+handling\b",
+    r"\bclosed\s+incomplete\s+experimental\s+checkpoint\b",
+    r"\bcollection\s+authorized\b",
+    r"\bcontract\s+only\b",
+    r"\bcounterexample\w*\b",
+    r"\bcustody\b",
+    r"\bdecision\s+effect\b",
+    r"\bdiscovery\s+planning\s+only\b",
+    r"\bevidence\s+collection\b",
+    r"\bgeneral\s+availability\b",
+    r"\bmodel\s+verdict\b",
+    r"\bnon\s+authoritative\b",
+    r"\boperational\s+clearance\b",
+    r"\bpartial\s+nonportable\s+prototype\b",
+    r"\bpromot\w*\b",
+    r"\bpublic\s+availability\b",
+    r"\bpublication\b",
+    r"\bpublish\w*\b",
+    r"\bqcp\s+001\b",
+    r"\bqualif\w*\b",
+    r"\br2\s+auth\b",
+    r"\breal\s+world\s+workload\b",
+    r"\breplay\w*\b",
+    r"\bsemantic\s+id\b",
+    r"\btrust(?:ed)?(?:\s+time)?\b",
+    r"\bwitness\w*\b",
+    r"\bworkload\b",
+    r"\babstain\w*\b",
+    r"\babstention\b",
+    r"\badvance\w*\s+(?:a|the)\s+release\b",
+    r"\bchooses?\s+no\s+(?:proposal|plan)\b",
+    r"\bpick(?:s|ed|ing)?\s+no\s+(?:option|proposal|plan)\b",
+    r"\bno\s+go\s+ahead\b.{0,80}\b(?:observation|measurement)\w*\b",
+    r"\bno\s+observation\s+work\s+may\s+begin\b",
+    r"\bnothing\s+may\s+be\s+shipped\b",
+    r"\b(?:cannot|does\s+not)\s+go\s+live\b",
+    r"\bprovenance\b",
+    r"\brepresentative\b.{0,80}\b(?:operational\s+demand|real\s+load|workload)\b",
+    r"\b(?:algorithm|exercise|process|result|study)\b.{0,80}\b(?:cannot|does\s+not|gives\s+no)\b.{0,40}\bapprov\w*\b",
+    r"\b(?:grant|give|provide)\w*\s+no\s+(?:permission|green\s+light|go\s+ahead)\b",
+    r"\bempower\w*\b",
+)
+EXPECTED_KNOWN_RESIDUALS = (
+    "PACKAGE_CONTAINS_NO_HUMAN_PARTICIPANT_RESULT",
+    "PACKAGE_ESTABLISHES_NO_OPERATOR_ACCEPTANCE",
+    "SINGLE_FIXED_SYNTHETIC_CAMPAIGN",
+    "PHASE_B_IS_OPEN_BOOK_REPORT_COMPREHENSION",
+    "PHASE_A_SINGLE_ITEM_WEAKLY_DISCRIMINATING",
+    "PHASE_B_HIGH_BURDEN_NO_SAVE_RESUME",
+    "PACKAGE_CONTAINS_NO_TARGET_AT_EXECUTION_EVIDENCE",
+    "PACKAGE_VERIFIER_IS_UNKEYED_SELF_CONSISTENCY_NOT_AUTHENTICATED_CUSTODY",
+    "SAME_PROCESS_RECOMPUTATION_IS_NOT_INDEPENDENT_TRUST_OR_PROVENANCE",
+    "NARRATIVE_REVIEW_REMAINS_EXTERNAL_UNAUTHENTICATED_PROCEDURE",
+    "PACKAGE_DOES_NOT_ATTEST_REMOTE_PUSH_PR_REVIEW_CHECK_MERGE_APPROVAL_QUALIFICATION_PROMOTION_PUBLICATION_OR_GA_STATE",
+)
+PURPOSE_PROFILE_TEXT = {scoring.PURPOSE_PROFILE: "Understand how people reason about one synthetic migration plan."}
+DATA_USE_PROFILE_TEXT = {
+    scoring.DATA_USE_PROFILE: "Use responses only to evaluate this formative plan-reasoning study."
+}
+STORAGE_PROFILE_TEXT = {scoring.STORAGE_PROFILE: "Store responses in an encrypted internal study workspace."}
+ACCESS_PROFILE_TEXT = {
+    scoring.ACCESS_PROFILE: "Limit response access to the moderator and two assigned narrative reviewers."
+}
+DELETION_PROFILE_TEXT = {
+    scoring.DELETION_PROFILE: "Delete responses after the retention period or earlier after a valid withdrawal request."
+}
 PHASE_A_STAGE_MEMBERS = frozenset(
     {
         "index.html",
@@ -232,9 +303,7 @@ def _parse_json(raw: bytes, *, require_canonical: bool = True) -> Any:
         value = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_duplicate_guard,
-            parse_constant=lambda _value: (_ for _ in ()).throw(
-                StudyBuildError("NONFINITE_JSON_NUMBER")
-            ),
+            parse_constant=lambda _value: (_ for _ in ()).throw(StudyBuildError("NONFINITE_JSON_NUMBER")),
         )
     except StudyBuildError:
         raise
@@ -260,6 +329,25 @@ def _digest(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _phase_a_folded_text(raw: bytes) -> str:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", folded).split())
+
+
+def _phase_a_semantic_cue(raw: bytes) -> bool:
+    text = _phase_a_folded_text(raw)
+    return any(re.search(pattern, text) is not None for pattern in PHASE_A_FORBIDDEN_CUE_PATTERNS)
+
+
+def _reject_phase_a_semantic_cues(payloads: dict[str, bytes]) -> None:
+    if any(_phase_a_semantic_cue(raw) for raw in payloads.values()):
+        _reject("PHASE_A_SEMANTIC_ANSWER_CUE")
+
+
 def _read_regular(path: Path, *, max_bytes: int = MAX_SOURCE_FILE_BYTES) -> bytes:
     try:
         path_info = path.lstat()
@@ -279,11 +367,7 @@ def _read_regular(path: Path, *, max_bytes: int = MAX_SOURCE_FILE_BYTES) -> byte
     try:
         with path.open("rb", buffering=0) as handle:
             before = os.fstat(handle.fileno())
-            if (
-                not stat.S_ISREG(before.st_mode)
-                or before.st_size > max_bytes
-                or before.st_nlink != 1
-            ):
+            if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes or before.st_nlink != 1:
                 _reject("SOURCE_FILE_NOT_BOUNDED_REGULAR")
             chunks: list[bytes] = []
             remaining = max_bytes + 1
@@ -362,10 +446,7 @@ def _validate_source_identity(value: Any) -> dict[str, Any]:
     if (
         type(value["parents"]) is not list
         or not 1 <= len(value["parents"]) <= 8
-        or any(
-            type(item) is not str or re.fullmatch(r"[0-9a-f]{40}", item) is None
-            for item in value["parents"]
-        )
+        or any(type(item) is not str or re.fullmatch(r"[0-9a-f]{40}", item) is None for item in value["parents"])
         or value["source_state"] not in {"EXACT_CLEAN_COMMIT", "DIRTY_TEST_PREVIEW"}
     ):
         _reject("SOURCE_IDENTITY_INVALID")
@@ -454,8 +535,7 @@ def _build_source_campaign(source_identity: dict[str, Any]) -> dict[str, Any]:
         or type(case_reports) is not list
         or len(cases) != EXPECTED_SUMMARY["case_count"]
         or len(case_reports) != len(cases)
-        or [item.get("case_id") for item in cases]
-        != [item.get("case_id") for item in case_reports]
+        or [item.get("case_id") for item in cases] != [item.get("case_id") for item in case_reports]
     ):
         _reject("CAMPAIGN_CASE_ACCOUNTING_INVALID")
     file_rows = {
@@ -505,9 +585,7 @@ def _source_file_rows(source: dict[str, Any]) -> list[dict[str, Any]]:
             or _git_value("rev-parse", "HEAD^{tree}") != source["tree"]
         ):
             _reject("SOURCE_CHANGED_DURING_BUILD")
-        actual_parents = _git_value(
-            "rev-list", "--parents", "-n", "1", source["commit"]
-        ).split()[1:]
+        actual_parents = _git_value("rev-list", "--parents", "-n", "1", source["commit"]).split()[1:]
         if source["parents"] != actual_parents:
             _reject("SOURCE_PARENT_BINDING_INVALID")
         _git_value(
@@ -520,9 +598,7 @@ def _source_file_rows(source: dict[str, Any]) -> list[dict[str, Any]]:
         path = REPOSITORY_ROOT.joinpath(*PurePosixPath(name).parts)
         raw = _read_regular(path)
         if clean:
-            entry = _git_value(
-                "ls-tree", "-r", "--full-tree", source["commit"], "--", name
-            )
+            entry = _git_value("ls-tree", "-r", "--full-tree", source["commit"], "--", name)
             match = re.fullmatch(r"([0-7]{6}) blob ([0-9a-f]{40})\t(.+)", entry)
             if match is None or match.group(3) != name:
                 _reject("SOURCE_BLOB_BINDING_INVALID")
@@ -589,9 +665,7 @@ def _aliases(campaign_input: dict[str, Any], campaign_result: dict[str, Any]) ->
             for step_index, step in enumerate(candidate["steps"]):
                 step_id = _identifier(step["step_id"])
                 step_alias = f"Step {letter}{candidate_index + 1}.{step_index + 1}"
-                contextual_aliases["steps"][
-                    f"{case_id}|{candidate_id}|{step_id}"
-                ] = step_alias
+                contextual_aliases["steps"][f"{case_id}|{candidate_id}|{step_id}"] = step_alias
                 steps.append(
                     {
                         "alias": step_alias,
@@ -651,8 +725,7 @@ def _action_text(action: str, parameters: dict[str, Any]) -> str:
         return f"Take node {parameters.get('id', '?')} out of service."
     if action == "shut_link":
         return (
-            f"Administratively shut interface {parameters.get('interface', '?')} on node "
-            f"{parameters.get('host', '?')}."
+            f"Administratively shut interface {parameters.get('interface', '?')} on node {parameters.get('host', '?')}."
         )
     return f"Request unsupported modeled action {action}; no supported effect is assumed."
 
@@ -673,14 +746,8 @@ def _ground_truth(alias_data: dict[str, Any], campaign_result: dict[str, Any]) -
         _reject("STUDY_WITNESS_DENOMINATOR_INVALID")
     witness = witnesses[0]
     mapping = alias_data["contextual_aliases"]
-    case_input = next(
-        case for case in alias_data["cases"] if case["source_id"] == witness["case_id"]
-    )
-    candidate = next(
-        item
-        for item in case_input["candidates"]
-        if item["source_id"] == witness["candidate_id"]
-    )
+    case_input = next(case for case in alias_data["cases"] if case["source_id"] == witness["case_id"])
+    candidate = next(item for item in case_input["candidates"] if item["source_id"] == witness["candidate_id"])
     step = next(item for item in candidate["steps"] if item["source_id"] == witness["step_id"])
     action = step["action"]
     parameters = step["parameters"]
@@ -700,15 +767,9 @@ def _ground_truth(alias_data: dict[str, Any], campaign_result: dict[str, Any]) -
         for row in campaign_result["case_reports"]
     }
     phase_a = {
-        "unsafe_plan_alias": mapping["candidates"][
-            f"{witness['case_id']}|{witness['candidate_id']}"
-        ],
-        "unsafe_step_alias": mapping["steps"][
-            f"{witness['case_id']}|{witness['candidate_id']}|{witness['step_id']}"
-        ],
-        "affected_requirement_alias": mapping["requirements"][
-            f"{witness['case_id']}|{witness['requirement_id']}"
-        ],
+        "unsafe_plan_alias": mapping["candidates"][f"{witness['case_id']}|{witness['candidate_id']}"],
+        "unsafe_step_alias": mapping["steps"][f"{witness['case_id']}|{witness['candidate_id']}|{witness['step_id']}"],
+        "affected_requirement_alias": mapping["requirements"][f"{witness['case_id']}|{witness['requirement_id']}"],
     }
     phase_b = {
         "case_id": witness["case_id"],
@@ -718,9 +779,7 @@ def _ground_truth(alias_data: dict[str, Any], campaign_result: dict[str, Any]) -
         "requirement_id": witness["requirement_id"],
         "result_kind": "COUNTEREXAMPLE",
         "global_limitations": sorted(campaign_result["global_limitations"]),
-        "candidate_limitations": {
-            key: sorted(value) for key, value in candidate_limitations.items()
-        },
+        "candidate_limitations": {key: sorted(value) for key, value in candidate_limitations.items()},
         "next_evidence_by_case": next_by_case,
         "product_boundary": campaign_result["product_boundary"],
         "authority_placeholders": campaign_result["authority_placeholders"],
@@ -751,8 +810,8 @@ textarea{width:100%;min-height:7rem} :focus-visible{outline:.22rem solid #005fcc
 
 def _page(title: str, body: str, script: str = "") -> str:
     return (
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{escape(title)}</title><style>{CSS}</style></head><body>"
         f"<main>{body}</main>{script}</body></html>\n"
     )
@@ -766,7 +825,7 @@ def _download_script(phase: str, payload_expression: str) -> str:
     semantic_helpers = (
         f"const NONCLAIMS={_js_json(REPLAY_NONCLAIMS)};\n"
         f"const CLAIM_KEYS={_js_json(FORBIDDEN_CLAIM_KEYS)};\n"
-        "function values(name){return [...document.querySelectorAll(`[name=\"${name}\"]:checked`)].map(x=>x.value).sort();}\n"
+        'function values(name){return [...document.querySelectorAll(`[name="${name}"]:checked`)].map(x=>x.value).sort();}\n'
         "function parseList(id){return document.getElementById(id).value.split(/[,;\\n\\r]+/).map(x=>x.trim()).filter(Boolean).sort();}\n"
         "function claims(){const out={}; for(const key of CLAIM_KEYS){out[key]=document.getElementById('claim-'+key).value==='YES';} return out;}\n"
         if phase == "B"
@@ -775,7 +834,7 @@ def _download_script(phase: str, payload_expression: str) -> str:
     return f"""
 <script>
 const STUDY_ID={_js_json(STUDY_ID)};
-const CAMPAIGN_DIGEST={_js_json(EXPECTED_FILE_DIGESTS['campaign-input.json'])};
+const CAMPAIGN_DIGEST={_js_json(EXPECTED_FILE_DIGESTS["campaign-input.json"])};
 {semantic_helpers}
 function downloadResponse(event){{event.preventDefault();const form=event.currentTarget;for(const field of form.querySelectorAll('textarea[data-narrative]')){{field.setCustomValidity(Array.from(field.value.trim()).length>=20?'':'Enter at least 20 non-space characters.');}}if(!form.reportValidity())return;const response={payload_expression};
 const code=response.participant_code.replace(/[^A-Za-z0-9._-]/g,'_');const blob=new Blob([JSON.stringify(response,null,2)+'\\n'],{{type:'application/json'}});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${{code}}-phase-{phase.lower()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);document.getElementById('saved').textContent='Download requested. Confirm the file exists with the moderator; if not, retry or use the worksheet. Do not revise after the next phase begins.';}}
@@ -787,9 +846,9 @@ def _claims_fields() -> str:
     return (
         "<fieldset><legend>Answer every row: does the campaign establish this positive claim?</legend>"
         + "".join(
-            f"<label><code>{escape(key)}</code> <select id=\"claim-{escape(key)}\" "
-            "required><option value=\"\">Choose YES or NO</option>"
-            "<option value=\"NO\">NO</option><option value=\"YES\">YES</option>"
+            f'<label><code>{escape(key)}</code> <select id="claim-{escape(key)}" '
+            'required><option value="">Choose YES or NO</option>'
+            '<option value="NO">NO</option><option value="YES">YES</option>'
             "</select></label>"
             for key in FORBIDDEN_CLAIM_KEYS
         )
@@ -798,16 +857,18 @@ def _claims_fields() -> str:
 
 
 def _nonclaim_fields() -> str:
-    return "<fieldset><legend>Select every thing replay does not establish</legend>" + "".join(
-        f"<label><input type=\"checkbox\" name=\"nonclaim\" value=\"{escape(item)}\"> <code>{escape(item)}</code></label>"
-        for item in REPLAY_NONCLAIMS
-    ) + "</fieldset>"
+    return (
+        "<fieldset><legend>Select every thing replay does not establish</legend>"
+        + "".join(
+            f'<label><input type="checkbox" name="nonclaim" value="{escape(item)}"> <code>{escape(item)}</code></label>'
+            for item in REPLAY_NONCLAIMS
+        )
+        + "</fieldset>"
+    )
 
 
 def _phase_a_plan(alias_data: dict[str, Any]) -> str:
-    scenario = next(
-        case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle")
-    )
+    scenario = next(case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle"))
     cards = []
     for case in [scenario]:
         requirements = "".join(
@@ -820,19 +881,17 @@ def _phase_a_plan(alias_data: dict[str, Any]) -> str:
                 f"<li><strong>{escape(item['alias'])}</strong>: {escape(_action_text(item['action'], item['parameters']))}</li>"
                 for item in candidate["steps"]
             )
-            plans.append(
-                f"<section class=\"card\"><h3>{escape(candidate['alias'])}</h3><ol>{steps}</ol></section>"
-            )
+            plans.append(f'<section class="card"><h3>{escape(candidate["alias"])}</h3><ol>{steps}</ol></section>')
         cards.append(
             f"<section><h2>{escape(case['alias'])}</h2><h3>Requirements</h3><ul>{requirements}</ul>{''.join(plans)}</section>"
         )
     body = f"""
 <h1>Phase A — Neutral plan diagnosis</h1>
-<p class="banner">SYNTHETIC STUDY STIMULUS — NON-AUTHORITATIVE — DECISION EFFECT: NONE</p>
+<p class="banner">SYNTHETIC STUDY STIMULUS</p>
 <p>Find the plan and first step that breaks the declared requirement. Labels are neutral aliases. Do not open Phase B yet.</p>
 <section class="card"><h2>Scenario context</h2><ul><li>Node A reaches the required destination network through next-hop owner Y over interface A/Gi0/1.</li><li>Node Z serves only an unrelated synthetic network.</li><li>The required flow starts from 10.0.1.1 and must continue to 10.0.5.50.</li></ul></section>
-<p class="warning">Reason from the plan actions and the scenario. No model verdict, witness, exact semantic ID, or answer-bearing observation is shown in Phase A.</p>
-{''.join(cards)}
+<p class="warning">Use only the scenario, requirements, and plan actions shown on this page.</p>
+{"".join(cards)}
 <p><a href="03-response.html">Open the Phase A response form</a></p>
 """
     return _page("Phase A — Neutral plan diagnosis", body)
@@ -845,9 +904,7 @@ def _options(values: list[str]) -> str:
 
 
 def _phase_a_response(alias_data: dict[str, Any]) -> str:
-    scenario = next(
-        case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle")
-    )
+    scenario = next(case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle"))
     plans = [item["alias"] for item in scenario["candidates"]]
     steps = [step["alias"] for item in scenario["candidates"] for step in item["steps"]]
     body = f"""
@@ -855,16 +912,16 @@ def _phase_a_response(alias_data: dict[str, Any]) -> str:
 <p>Prompt codes: P0 no help; P1 navigation only; P2 conceptual hint; P3 answer disclosure. Confirm the code with the moderator.</p>
 <noscript><p class="warning">JavaScript is unavailable. Use <a href="RESPONSE-WORKSHEET.md">the Phase A response worksheet</a>, preserve its original bytes, and lock it directly with the source tool. Do not transcribe or replace it.</p></noscript>
 <form onsubmit="downloadResponse(event)">
-<label>Participant code <input id="participant" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]{{0,31}}"></label>
-<label>Prior exposure <select id="exposure" required>{_options(['NO','YES','UNKNOWN'])}</select></label>
-<label>Highest prompt received <select id="prompt" required>{_options(['P0','P1','P2','P3'])}</select></label>
+<label>Participant code <input id="participant" required maxlength="14" pattern="p\\.[0-9a-f]{{12}}"></label>
+<label>Prior exposure <select id="exposure" required>{_options(["NO", "YES", "UNKNOWN"])}</select></label>
+<label>Highest prompt received <select id="prompt" required>{_options(["P0", "P1", "P2", "P3"])}</select></label>
 <label><input id="consent" type="checkbox" required> I voluntarily consent to this formative study and understand I may stop without penalty.</label>
 <label><input id="data-ack" type="checkbox" required> I have read and understood the participant information and data-handling terms.</label>
 <label>Unsafe plan <select id="plan" required>{_options(plans)}</select></label>
 <label>First demonstrated unsafe step <select id="step" required>{_options(steps)}</select></label>
 <label>Affected requirement alias <input id="requirement" required maxlength="32" placeholder="Type the neutral requirement alias"></label>
 <label>Explain the unsafe step and affected requirement <textarea id="explanation" data-narrative required minlength="20" maxlength="8192"></textarea></label>
-<button type="submit">Download locked Phase A response</button><p id="saved" role="status"></p></form>
+<button type="submit">Download Phase A response</button><p id="saved" role="status"></p></form>
 """
     expression = """{
 schema:'atlas.r3-qdp001-operator-study-response/1',study_id:STUDY_ID,phase:'A',participant_code:document.getElementById('participant').value,campaign_input_digest:CAMPAIGN_DIGEST,prompt_code:document.getElementById('prompt').value,prior_exposure:document.getElementById('exposure').value,voluntary_consent:document.getElementById('consent').checked,data_handling_acknowledged:document.getElementById('data-ack').checked,unsafe_plan_alias:document.getElementById('plan').value,unsafe_step_alias:document.getElementById('step').value,affected_requirement_alias:document.getElementById('requirement').value,explanation:document.getElementById('explanation').value}"""
@@ -881,18 +938,13 @@ def _phase_b_report(campaign: dict[str, Any]) -> str:
         replay_by_candidate: dict[str, int] = {}
         for envelope in case_report["replay_receipts"]:
             candidate_digest = envelope["replay_receipt"]["candidate_digest"]
-            replay_by_candidate[candidate_digest] = (
-                replay_by_candidate.get(candidate_digest, 0) + 1
-            )
+            replay_by_candidate[candidate_digest] = replay_by_candidate.get(candidate_digest, 0) + 1
         rows = []
         for candidate in discovery_result["candidate_results"]:
-            limitations = "".join(
-                f"<li><code>{escape(item)}</code></li>"
-                for item in candidate["limitations"]
-            )
+            limitations = "".join(f"<li><code>{escape(item)}</code></li>" for item in candidate["limitations"])
             rows.append(
                 "<tr>"
-                f"<th scope=\"row\"><code>{escape(candidate['candidate_id'])}</code></th>"
+                f'<th scope="row"><code>{escape(candidate["candidate_id"])}</code></th>'
                 f"<td><code>{escape(candidate['result_kind'])}</code></td>"
                 f"<td><code>{escape(candidate['reason_code'])}</code></td>"
                 f"<td>{candidate['checked_steps']}</td>"
@@ -925,9 +977,9 @@ def _phase_b_report(campaign: dict[str, Any]) -> str:
         witness_text = "".join(witnesses) or "<li>None accepted for this case.</li>"
         case_sections.append(
             f"<section><h3><code>{escape(case_report['case_id'])}</code></h3>"
-            "<table><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Result</th>"
-            "<th scope=\"col\">Reason</th><th scope=\"col\">Steps</th>"
-            "<th scope=\"col\">Replays</th><th scope=\"col\">Limitations</th></tr></thead>"
+            '<table><thead><tr><th scope="col">Candidate</th><th scope="col">Result</th>'
+            '<th scope="col">Reason</th><th scope="col">Steps</th>'
+            '<th scope="col">Replays</th><th scope="col">Limitations</th></tr></thead>'
             f"<tbody>{''.join(rows)}</tbody></table><p><strong>Next evidence:</strong> {request_text}</p>"
             f"<p><strong>Replayed witnesses:</strong></p><ul>{witness_text}</ul></section>"
         )
@@ -945,33 +997,33 @@ def _phase_b_report(campaign: dict[str, Any]) -> str:
     }
     limitation_rows = "".join(
         "<tr>"
-        f"<th scope=\"row\"><code>{escape(row['code'])}</code></th>"
+        f'<th scope="row"><code>{escape(row["code"])}</code></th>'
         f"<td>{row['count']}</td><td>{escape(report_explanations.get(row['code'], 'Meaning unavailable'))}</td></tr>"
         for row in result["limitation_counts"]
     )
     abstention_rows = "".join(
         "<tr>"
-        f"<th scope=\"row\"><code>{escape(row['code'])}</code></th>"
+        f'<th scope="row"><code>{escape(row["code"])}</code></th>'
         f"<td>{row['count']}</td><td>{escape(report_explanations.get(row['code'], 'Meaning unavailable'))}</td></tr>"
         for row in result["abstention_reason_counts"]
     )
     interpretation = "".join(
-        f"<tr><th scope=\"row\">{escape(key)}</th><td><code>{escape(value)}</code></td></tr>"
+        f'<tr><th scope="row">{escape(key)}</th><td><code>{escape(value)}</code></td></tr>'
         for key, value in result["operator_interpretation"].items()
     )
     body = f"""
 <h1>Phase B — Exact operator report comprehension</h1>
 <p class="banner">R3 SYNTHETIC CAMPAIGN — NON-AUTHORITATIVE — DECISION EFFECT: NONE</p>
-<p>This view is bound to operator-report SHA-256 <code>{escape(EXPECTED_FILE_DIGESTS['operator-report.md'])}</code>. It adds the eight global limitations omitted from the original Markdown projection. Raw machine JSON is not needed.</p>
-<h2>Accessible case and candidate results</h2>{''.join(case_sections)}
+<p>This view is bound to operator-report SHA-256 <code>{escape(EXPECTED_FILE_DIGESTS["operator-report.md"])}</code>. It adds the eight global limitations omitted from the original Markdown projection. Raw machine JSON is not needed.</p>
+<h2>Accessible case and candidate results</h2>{"".join(case_sections)}
 <h2>Campaign-global limitations — retain all eight</h2><ul>{global_rows}</ul>
 <h2>Observed candidate limitation meanings</h2><table><thead><tr><th scope="col">Code</th><th scope="col">Count</th><th scope="col">Plain-language meaning</th></tr></thead><tbody>{limitation_rows}</tbody></table>
 <h2>Abstention reason meanings</h2><table><thead><tr><th scope="col">Code</th><th scope="col">Count</th><th scope="col">Plain-language meaning</th></tr></thead><tbody>{abstention_rows}</tbody></table>
 <h2>Operator interpretation</h2><table><tbody>{interpretation}</tbody></table>
-<h2>Fixed product and decision boundary</h2><ul><li>Release 2: <code>{escape(boundary['release_2'])}</code></li><li>QCP-001: <code>{escape(boundary['qcp_001']['qualification_state'])} / {escape(boundary['qcp_001']['execution_state'])}</code></li><li>Runtime: <code>{escape(boundary['runtime'])}</code></li><li>Release 3: <code>{escape(boundary['release_3'])}</code></li><li>Decision effect: <code>NONE</code>; selected candidate and feasibility verdict remain <code>null</code>.</li></ul>
-<h2>Unresolved authority handoffs</h2><ul><li><code>R2-AUTH-001</code>: selection receipt <code>null</code>; evidence collection started <code>{str(handoffs['R2-AUTH-001']['evidence_collection_started']).lower()}</code>.</li><li><code>R2-AUTH-002</code>: Stage A plan and Stage B adequacy receipts <code>null</code>; workload collection started <code>{str(handoffs['R2-AUTH-002']['workload_evidence_collection_started']).lower()}</code>.</li><li><code>R2-AUTH-004</code>: profile <code>{escape(handoffs['R2-AUTH-004']['profile_state'])}</code>; implementation and operational receipts <code>null</code>; real keys/signatures created <code>{str(handoffs['R2-AUTH-004']['real_keys_or_signatures_created']).lower()}</code>.</li></ul><p>Every accountable value requires a future authenticated external update. This study neither fills a value nor starts collection.</p>
+<h2>Fixed product and decision boundary</h2><ul><li>Release 2: <code>{escape(boundary["release_2"])}</code></li><li>QCP-001: <code>{escape(boundary["qcp_001"]["qualification_state"])} / {escape(boundary["qcp_001"]["execution_state"])}</code></li><li>Runtime: <code>{escape(boundary["runtime"])}</code></li><li>Release 3: <code>{escape(boundary["release_3"])}</code></li><li>Decision effect: <code>NONE</code>; selected candidate and feasibility verdict remain <code>null</code>.</li></ul>
+<h2>Unresolved authority handoffs</h2><ul><li><code>R2-AUTH-001</code>: selection receipt <code>null</code>; evidence collection started <code>{str(handoffs["R2-AUTH-001"]["evidence_collection_started"]).lower()}</code>.</li><li><code>R2-AUTH-002</code>: Stage A plan and Stage B adequacy receipts <code>null</code>; workload collection started <code>{str(handoffs["R2-AUTH-002"]["workload_evidence_collection_started"]).lower()}</code>.</li><li><code>R2-AUTH-004</code>: profile <code>{escape(handoffs["R2-AUTH-004"]["profile_state"])}</code>; implementation and operational receipts <code>null</code>; real keys/signatures created <code>{str(handoffs["R2-AUTH-004"]["real_keys_or_signatures_created"]).lower()}</code>.</li></ul><p>Every accountable value requires a future authenticated external update. This study neither fills a value nor starts collection.</p>
 <p class="warning">Synthetic cases are not R2-AUTH-002 representative-workload evidence. Digests and replay are not R2-AUTH-004 trust/custody evidence. “None emitted” is not “no evidence needed.”</p>
-<details><summary>Exact bound Markdown operator report</summary><pre class="card" style="white-space:pre-wrap">{escape(campaign['report_text'])}</pre></details>
+<details><summary>Exact bound Markdown operator report</summary><pre class="card" style="white-space:pre-wrap">{escape(campaign["report_text"])}</pre></details>
 <p><a href="05-response.html">Open the Phase B response form</a></p>
 """
     return _page("Phase B — Exact report", body)
@@ -980,7 +1032,9 @@ def _phase_b_report(campaign: dict[str, Any]) -> str:
 def _phase_b_response(campaign: dict[str, Any], ground_truth: dict[str, Any]) -> str:
     result = campaign["result"]
     cases = [row["case_id"] for row in result["case_reports"]]
-    candidates = [row["candidate_id"] for case in result["case_reports"] for row in case["discovery_result"]["candidate_results"]]
+    candidates = [
+        row["candidate_id"] for case in result["case_reports"] for row in case["discovery_result"]["candidate_results"]
+    ]
     steps = [
         step["step_id"]
         for case in campaign["input"]["cases"]
@@ -995,11 +1049,11 @@ def _phase_b_response(campaign: dict[str, Any], ground_truth: dict[str, Any]) ->
         candidate_input_ids[candidate] = input_id
         candidate_fields.append(
             f"<label><code>{escape(candidate)}</code> limitations — one code per line "
-            f"<textarea id=\"{input_id}\" data-list required maxlength=\"8192\" "
-            "placeholder=\"Copy every applicable code, one per line\"></textarea></label>"
+            f'<textarea id="{input_id}" data-list required maxlength="8192" '
+            'placeholder="Copy every applicable code, one per line"></textarea></label>'
         )
     global_fields = (
-        '<label>All campaign-global limitations — one code per line '
+        "<label>All campaign-global limitations — one code per line "
         '<textarea id="global-limitations" data-list required maxlength="8192" '
         'placeholder="Copy all eight codes, one per line"></textarea></label>'
     )
@@ -1010,11 +1064,11 @@ def _phase_b_response(campaign: dict[str, Any], ground_truth: dict[str, Any]) ->
         next_input_ids[case] = input_id
         next_fields.append(
             f"<label><code>{escape(case)}</code> next evidence — one ID per line; enter "
-            f"<code>__NONE_EMITTED__</code> when the report emits none <textarea id=\"{input_id}\" "
-            "data-list required maxlength=\"8192\"></textarea></label>"
+            f'<code>__NONE_EMITTED__</code> when the report emits none <textarea id="{input_id}" '
+            'data-list required maxlength="8192"></textarea></label>'
         )
     authority_fields = "".join(
-        f'<label>{item} <select id="authority-{item}" required>{_options(["participant-filled","null"])}</select></label>'
+        f'<label>{item} <select id="authority-{item}" required>{_options(["participant-filled", "null"])}</select></label>'
         for item in ("R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004")
     )
     body = f"""
@@ -1023,36 +1077,36 @@ def _phase_b_response(campaign: dict[str, Any], ground_truth: dict[str, Any]) ->
 <noscript><p class="warning">JavaScript is unavailable. Use <a href="RESPONSE-WORKSHEET.md">the Phase B response worksheet</a>, preserve its original bytes, and lock it directly with the source tool. Do not transcribe or replace it.</p></noscript>
 <form onsubmit="downloadResponse(event)">
 <h2>1 of 5 — Session and finding identity</h2>
-<label>Participant code <input id="participant" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]{{0,31}}"></label>
-<label>Highest prompt received <select id="prompt" required>{_options(['P0','P1','P2','P3'])}</select></label>
+<label>Participant code <input id="participant" required maxlength="14" pattern="p\\.[0-9a-f]{{12}}"></label>
+<label>Highest prompt received <select id="prompt" required>{_options(["P0", "P1", "P2", "P3"])}</select></label>
 <label>Case <select id="case" required>{_options(cases)}</select></label>
 <label>Candidate <select id="candidate" required>{_options(candidates)}</select></label>
 <label>Step <select id="step" required>{_options(sorted(set(steps)))}</select></label>
-<label>Action <select id="action" required>{_options(['path_lost','shut_link:A:Gi0/1','unsupported'])}</select></label>
+<label>Action <select id="action" required>{_options(["path_lost", "shut_link:A:Gi0/1", "unsupported"])}</select></label>
 <label>Requirement <select id="requirement" required>{_options(sorted(set(requirements)))}</select></label>
-<label>Result <select id="result" required>{_options(['SUPPORT','ABSTENTION','COUNTEREXAMPLE'])}</select></label>
+<label>Result <select id="result" required>{_options(["SUPPORT", "ABSTENTION", "COUNTEREXAMPLE"])}</select></label>
 <h2>2 of 5 — Limitation and next-evidence retention</h2>
 {global_fields}
-{''.join(candidate_fields)}{''.join(next_fields)}
+{"".join(candidate_fields)}{"".join(next_fields)}
 <h2>3 of 5 — Fixed product and authority boundaries</h2>
 <fieldset><legend>Product boundaries</legend>
-<label>Release 2 <select id="release2" required>{_options(['COMPLETE',str(EXPECTED_BOUNDARY['release_2'])])}</select></label>
-<label>QCP-001 qualification <select id="qcpqual" required>{_options(['QUALIFIED','EXPERIMENTAL'])}</select></label>
-<label>QCP-001 execution <select id="qcpexec" required>{_options(['EXECUTABLE','CONTRACT_ONLY'])}</select></label>
-<label>Runtime <select id="runtime" required>{_options(['COMPLETE',str(EXPECTED_BOUNDARY['runtime'])])}</select></label>
-<label>Release 3 <select id="release3" required>{_options(['PREVIEW',str(EXPECTED_BOUNDARY['release_3'])])}</select></label></fieldset>
+<label>Release 2 <select id="release2" required>{_options(["COMPLETE", str(EXPECTED_BOUNDARY["release_2"])])}</select></label>
+<label>QCP-001 qualification <select id="qcpqual" required>{_options(["QUALIFIED", "EXPERIMENTAL"])}</select></label>
+<label>QCP-001 execution <select id="qcpexec" required>{_options(["EXECUTABLE", "CONTRACT_ONLY"])}</select></label>
+<label>Runtime <select id="runtime" required>{_options(["COMPLETE", str(EXPECTED_BOUNDARY["runtime"])])}</select></label>
+<label>Release 3 <select id="release3" required>{_options(["PREVIEW", str(EXPECTED_BOUNDARY["release_3"])])}</select></label></fieldset>
 <fieldset><legend>Authority placeholders</legend>{authority_fields}</fieldset>
 <h2>4 of 5 — Counterexample, replay, and abstention meaning</h2>
-<label>Replay meaning <select id="replay" required>{_options(['CANDIDATE_SUPPORT','REPRODUCED_SYNTHETIC_OBSERVED_DISCARD_ONLY','TRUST_CUSTODY_PROOF'])}</select></label>
-<label>Abstention meaning <select id="abstention" required>{_options(['FAILED_CANDIDATE','SAFE_TO_ADVANCE','NO_SUPPORT_OR_SAFETY_INFERENCE'])}</select></label>
-<label>Authority action <select id="authority-action" required>{_options(['START_COLLECTION','LEAVE_NULL_AWAIT_AUTHENTICATED_EXTERNAL_UPDATE_NO_COLLECTION','FILL_FROM_OPERATOR_JUDGMENT'])}</select></label>
+<label>Replay meaning <select id="replay" required>{_options(["CANDIDATE_SUPPORT", "REPRODUCED_SYNTHETIC_OBSERVED_DISCARD_ONLY", "TRUST_CUSTODY_PROOF"])}</select></label>
+<label>Abstention meaning <select id="abstention" required>{_options(["FAILED_CANDIDATE", "SAFE_TO_ADVANCE", "NO_SUPPORT_OR_SAFETY_INFERENCE"])}</select></label>
+<label>Authority action <select id="authority-action" required>{_options(["START_COLLECTION", "LEAVE_NULL_AWAIT_AUTHENTICATED_EXTERNAL_UPDATE_NO_COLLECTION", "FILL_FROM_OPERATOR_JUDGMENT"])}</select></label>
 {_nonclaim_fields()}{_claims_fields()}
 <h2>5 of 5 — Explanations and review</h2>
 <label>Explain replay in your own words <textarea id="replay-explanation" data-narrative required minlength="20" maxlength="8192"></textarea></label>
 <label>Explain why abstention is not support <textarea id="abstention-explanation" data-narrative required minlength="20" maxlength="8192"></textarea></label>
 <label>Explain the decision consequence of retained limitations <textarea id="limitations-explanation" data-narrative required minlength="20" maxlength="8192"></textarea></label>
 <label>Explain the next-evidence requests and “none emitted” <textarea id="next-explanation" data-narrative required minlength="20" maxlength="8192"></textarea></label>
-<button type="submit">Download locked Phase B response</button><p id="saved" role="status"></p></form>
+<button type="submit">Download Phase B response</button><p id="saved" role="status"></p></form>
 """
     candidate_inputs = _js_json(candidate_input_ids)
     next_inputs = _js_json(next_input_ids)
@@ -1063,10 +1117,9 @@ def _phase_b_response(campaign: dict[str, Any], ground_truth: dict[str, Any]) ->
 def _brief() -> str:
     body = """
 <h1>Break This Plan — participant brief</h1>
-<p class="banner">FORMATIVE SYNTHETIC COMPREHENSION STUDY — NOT ACCEPTANCE</p>
-<p>You will complete two stages. Phase A tests neutral plan diagnosis. Lock that response before the moderator releases Phase B, which tests exact report comprehension.</p>
+<p class="banner">FORMATIVE SYNTHETIC COMPREHENSION STUDY</p>
+<p>You will complete two separate stages. Finish, save, and return the first response before the moderator provides the next stage.</p>
 <ul><li>Use a pseudonymous participant code.</li><li>Do not use customer or device data.</li><li>Do not open raw JSON, the researcher capsule, or Phase B early.</li><li>No timer is forced; report accessibility accommodations to the moderator.</li></ul>
-<p>Nothing in this study selects a candidate, authorizes evidence collection, updates authority, qualifies QCP-001, or promotes a release.</p>
 <p><a href="02-neutral-plan.html">Begin Phase A</a></p>
 """
     return _page("Participant brief", body)
@@ -1088,27 +1141,25 @@ def _debrief(ground_truth: dict[str, Any], campaign: dict[str, Any]) -> str:
     body = f"""
 <h1>Debrief</h1><p class="banner">STUDY COMPLETION HAS DECISION EFFECT: NONE</p>
 <p>The demonstrated finding is one replayed synthetic observed-discard counterexample. Abstentions are unknown states, not support or safety. Every authority placeholder remains unresolved and must be supplied only by a future authenticated external update.</p>
-<h2>Answer reconciliation</h2><ul><li>Neutral plan: <code>{escape(phase_a['unsafe_plan_alias'])}</code></li><li>First unsafe step: <code>{escape(phase_a['unsafe_step_alias'])}</code></li><li>Affected requirement: <code>{escape(phase_a['affected_requirement_alias'])}</code></li><li>Exact source mapping: <code>{escape(witness['candidate_id'])}</code> → <code>{escape(witness['step_id'])}</code> → <code>{escape(witness['requirement_id'])}</code>.</li></ul>
+<h2>Answer reconciliation</h2><ul><li>Neutral plan: <code>{escape(phase_a["unsafe_plan_alias"])}</code></li><li>First unsafe step: <code>{escape(phase_a["unsafe_step_alias"])}</code></li><li>Affected requirement: <code>{escape(phase_a["affected_requirement_alias"])}</code></li><li>Exact source mapping: <code>{escape(witness["candidate_id"])}</code> → <code>{escape(witness["step_id"])}</code> → <code>{escape(witness["requirement_id"])}</code>.</li></ul>
 <h2>Campaign-global limitations</h2><ul>{global_rows}</ul>
 <h2>Next-evidence mapping</h2><ul>{next_rows}</ul><p><code>__NONE_EMITTED__</code> means the machine emitted no identifier for that case; it never means that no further evidence is needed.</p>
-<ul><li>Release 2: <code>{EXPECTED_BOUNDARY['release_2']}</code></li><li>QCP-001: <code>EXPERIMENTAL / CONTRACT_ONLY</code></li><li>Runtime: <code>{EXPECTED_BOUNDARY['runtime']}</code></li><li>Release 3: <code>{EXPECTED_BOUNDARY['release_3']}</code></li></ul>
+<ul><li>Release 2: <code>{EXPECTED_BOUNDARY["release_2"]}</code></li><li>QCP-001: <code>EXPERIMENTAL / CONTRACT_ONLY</code></li><li>Runtime: <code>{EXPECTED_BOUNDARY["runtime"]}</code></li><li>Release 3: <code>{EXPECTED_BOUNDARY["release_3"]}</code></li></ul>
 <p>This session is not approval, representative-workload evidence, trust/custody evidence, qualification, promotion, publication, release acceptance, shipment, or GA.</p>
 """
     return _page("Study debrief", body)
 
 
 def _markdown_phase_a(alias_data: dict[str, Any]) -> str:
-    lines = ["# Phase A neutral plan stimulus", "", "Synthetic, non-authoritative. Decision effect: NONE.", ""]
-    scenario = next(
-        case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle")
-    )
+    lines = ["# Phase A neutral plan stimulus", "", "Synthetic study stimulus.", ""]
+    scenario = next(case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle"))
     lines.extend(
         [
             "Scenario context:",
             "- Node A reaches the required destination network through next-hop owner Y over A/Gi0/1.",
             "- Node Z serves only an unrelated synthetic network.",
             "- The required flow starts at 10.0.1.1 and must continue to 10.0.5.50.",
-            "- No model verdict, witness, exact semantic ID, or answer-bearing observation is shown.",
+            "- Use only the scenario, requirements, and plan actions shown here.",
             "",
         ]
     )
@@ -1128,9 +1179,7 @@ def _markdown_phase_b(campaign: dict[str, Any]) -> str:
     lines = [campaign["report_text"].rstrip(), "", "## Campaign-global limitations", ""]
     lines.extend(f"- `{item}`" for item in campaign["result"]["global_limitations"])
     lines.extend(["", "## Operator interpretation", ""])
-    lines.extend(
-        f"- `{key}`: `{value}`" for key, value in campaign["result"]["operator_interpretation"].items()
-    )
+    lines.extend(f"- `{key}`: `{value}`" for key, value in campaign["result"]["operator_interpretation"].items())
     lines.extend(
         [
             "",
@@ -1168,9 +1217,7 @@ def _blank_worksheet_response(phase: str, campaign: dict[str, Any]) -> dict[str,
         _reject("WORKSHEET_PHASE_INVALID")
     result = campaign["result"]
     candidate_ids = [
-        row["candidate_id"]
-        for case in result["case_reports"]
-        for row in case["discovery_result"]["candidate_results"]
+        row["candidate_id"] for case in result["case_reports"] for row in case["discovery_result"]["candidate_results"]
     ]
     case_ids = [case["case_id"] for case in result["case_reports"]]
     return {
@@ -1182,12 +1229,8 @@ def _blank_worksheet_response(phase: str, campaign: dict[str, Any]) -> dict[str,
         "requirement_id": WORKSHEET_PLACEHOLDER,
         "result_kind": WORKSHEET_PLACEHOLDER,
         "global_limitations": [WORKSHEET_PLACEHOLDER],
-        "candidate_limitations": {
-            item: [WORKSHEET_PLACEHOLDER] for item in candidate_ids
-        },
-        "next_evidence_by_case": {
-            item: [WORKSHEET_PLACEHOLDER] for item in case_ids
-        },
+        "candidate_limitations": {item: [WORKSHEET_PLACEHOLDER] for item in candidate_ids},
+        "next_evidence_by_case": {item: [WORKSHEET_PLACEHOLDER] for item in case_ids},
         "product_boundary": {
             "qcp_001": {
                 "execution_state": WORKSHEET_PLACEHOLDER,
@@ -1198,16 +1241,13 @@ def _blank_worksheet_response(phase: str, campaign: dict[str, Any]) -> dict[str,
             "runtime": WORKSHEET_PLACEHOLDER,
         },
         "authority_placeholders": {
-            item: WORKSHEET_PLACEHOLDER
-            for item in ("R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004")
+            item: WORKSHEET_PLACEHOLDER for item in ("R2-AUTH-001", "R2-AUTH-002", "R2-AUTH-004")
         },
         "replay_meaning": WORKSHEET_PLACEHOLDER,
         "abstention_meaning": WORKSHEET_PLACEHOLDER,
         "authority_action": WORKSHEET_PLACEHOLDER,
         "replay_nonclaims": [WORKSHEET_PLACEHOLDER],
-        "forbidden_claims": {
-            item: WORKSHEET_PLACEHOLDER for item in FORBIDDEN_CLAIM_KEYS
-        },
+        "forbidden_claims": {item: WORKSHEET_PLACEHOLDER for item in FORBIDDEN_CLAIM_KEYS},
         "replay_explanation": WORKSHEET_PLACEHOLDER,
         "abstention_explanation": WORKSHEET_PLACEHOLDER,
         "limitations_explanation": WORKSHEET_PLACEHOLDER,
@@ -1267,25 +1307,25 @@ def parse_worksheet_response_bytes(
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         _reject("WORKSHEET_UTF8_INVALID")
+    text = text.replace("\r\n", "\n")
+    if "\r" in text:
+        _reject("WORKSHEET_FENCE_INVALID")
     marker = WORKSHEET_FENCE + "\n"
     if text.count(marker) != 1 or text.count("\n```\n") != 1:
         _reject("WORKSHEET_FENCE_INVALID")
     payload = text.split(marker, 1)[1].split("\n```", 1)[0].encode("utf-8")
     try:
-        value = scoring.parse_json_bytes(payload)
+        value = scoring.normalize_response_set_order(scoring.parse_json_bytes(payload))
     except scoring.StudyScoringError:
         _reject("WORKSHEET_RESPONSE_INVALID")
-    expected_keys = (
-        scoring.PHASE_A_KEYS if expected_phase == "A" else scoring.PHASE_B_KEYS
-    )
+    expected_keys = scoring.PHASE_A_KEYS if expected_phase == "A" else scoring.PHASE_B_KEYS
     if (
         type(value) is not dict
         or set(value) != set(expected_keys)
         or value.get("phase") != expected_phase
         or value.get("schema") != scoring.RESPONSE_SCHEMA
         or value.get("study_id") != STUDY_ID
-        or value.get("campaign_input_digest")
-        != EXPECTED_FILE_DIGESTS["campaign-input.json"]
+        or value.get("campaign_input_digest") != EXPECTED_FILE_DIGESTS["campaign-input.json"]
         or _contains_worksheet_placeholder(value)
     ):
         _reject("WORKSHEET_RESPONSE_INVALID")
@@ -1294,15 +1334,11 @@ def parse_worksheet_response_bytes(
 
 
 def _phase_a_worksheet(campaign: dict[str, Any]) -> str:
-    return response_to_worksheet_bytes(
-        "A", _blank_worksheet_response("A", campaign)
-    ).decode("utf-8")
+    return response_to_worksheet_bytes("A", _blank_worksheet_response("A", campaign)).decode("utf-8")
 
 
 def _phase_b_worksheet(campaign: dict[str, Any]) -> str:
-    return response_to_worksheet_bytes(
-        "B", _blank_worksheet_response("B", campaign)
-    ).decode("utf-8")
+    return response_to_worksheet_bytes("B", _blank_worksheet_response("B", campaign)).decode("utf-8")
 
 
 def _response_schema(
@@ -1319,36 +1355,24 @@ def _response_schema(
             "type": "string",
             "minLength": 1,
             "maxLength": 32,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$",
+            "pattern": scoring.PARTICIPANT_CODE.pattern,
         },
-        "campaign_input_digest": {
-            "const": EXPECTED_FILE_DIGESTS["campaign-input.json"]
-        },
+        "campaign_input_digest": {"const": EXPECTED_FILE_DIGESTS["campaign-input.json"]},
         "prompt_code": {"enum": ["P0", "P1", "P2", "P3"]},
     }
     narrative = {"type": "string", "minLength": 20, "maxLength": 8192}
     if phase == "A":
-        scenario = next(
-            case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle")
-        )
+        scenario = next(case for case in alias_data["cases"] if case["source_id"].endswith("unsafe-middle"))
         common.update(
             {
                 "prior_exposure": {"enum": ["NO", "YES", "UNKNOWN"]},
                 "voluntary_consent": {"const": True},
                 "data_handling_acknowledged": {"const": True},
-                "unsafe_plan_alias": {
-                    "enum": [item["alias"] for item in scenario["candidates"]]
-                },
+                "unsafe_plan_alias": {"enum": [item["alias"] for item in scenario["candidates"]]},
                 "unsafe_step_alias": {
-                    "enum": [
-                        step["alias"]
-                        for item in scenario["candidates"]
-                        for step in item["steps"]
-                    ]
+                    "enum": [step["alias"] for item in scenario["candidates"] for step in item["steps"]]
                 },
-                "affected_requirement_alias": {
-                    "enum": [item["alias"] for item in scenario["requirements"]]
-                },
+                "affected_requirement_alias": {"enum": [item["alias"] for item in scenario["requirements"]]},
                 "explanation": narrative,
             }
         )
@@ -1369,15 +1393,10 @@ def _response_schema(
             }
         )
         requirement_ids = sorted(
-            {
-                item["requirement_id"]
-                for case in campaign["input"]["cases"]
-                for item in case["requirements"]
-            }
+            {item["requirement_id"] for case in campaign["input"]["cases"] for item in case["requirements"]}
         )
         limitation_values = sorted(
-            [row["code"] for row in result["limitation_counts"]]
-            + ["UNSUPPORTED_EXTRA_LIMITATION"]
+            [row["code"] for row in result["limitation_counts"]] + ["UNSUPPORTED_EXTRA_LIMITATION"]
         )
         next_values = sorted(result["next_evidence_requests"]) + [
             "__NONE_EMITTED__",
@@ -1421,16 +1440,12 @@ def _response_schema(
                     "type": "object",
                     "additionalProperties": False,
                     "required": FORBIDDEN_CLAIM_KEYS,
-                    "properties": {
-                        key: {"type": "boolean"} for key in FORBIDDEN_CLAIM_KEYS
-                    },
+                    "properties": {key: {"type": "boolean"} for key in FORBIDDEN_CLAIM_KEYS},
                 },
                 "global_limitations": {
                     "type": "array",
                     "uniqueItems": True,
-                    "items": {
-                        "enum": result["global_limitations"] + ["REPLAY_PROVES_CUSTODY"]
-                    },
+                    "items": {"enum": result["global_limitations"] + ["REPLAY_PROVES_CUSTODY"]},
                 },
                 "candidate_limitations": {
                     "type": "object",
@@ -1538,9 +1553,7 @@ def _base_response(answer: dict[str, Any], phase: str) -> dict[str, Any]:
         common.update(
             {
                 "replay_nonclaims": REPLAY_NONCLAIMS,
-                "forbidden_claims": {
-                    item: False for item in FORBIDDEN_CLAIM_KEYS
-                },
+                "forbidden_claims": {item: False for item in FORBIDDEN_CLAIM_KEYS},
                 **deepcopy(answer["phase_b"]),
                 "replay_explanation": "Replay reproduced only the same synthetic observed-discard witness under the bound case.",
                 "abstention_explanation": "Abstention is unresolved evidence, not candidate support, safety, or permission to advance.",
@@ -1553,7 +1566,7 @@ def _base_response(answer: dict[str, Any], phase: str) -> dict[str, Any]:
 
 VERIFY_SCRIPT = r'''"""Verify the closed operator-study package without network access."""
 from __future__ import annotations
-import hashlib, json, os, stat
+import hashlib, json, os, re, stat, unicodedata
 from pathlib import Path, PurePosixPath
 import sys
 
@@ -1628,14 +1641,21 @@ if any(p.suffix.lower() in {".json",".csv"} for root in participant_roots for p 
 phase_a="\n".join(read(p).decode("utf-8",errors="ignore") for p in (ROOT/"participant-phase-a").rglob("*") if p.is_file())
 for token in manifest.get("phase_a_forbidden_tokens",[]):
     if token in phase_a: fail("PHASE_A_ANSWER_CUE")
+folded=" ".join(re.sub(r"[^a-z0-9]+"," ",unicodedata.normalize("NFKC",phase_a).casefold()).split())
+patterns=manifest.get("phase_a_forbidden_cue_patterns")
+if type(patterns) is not list or any(type(pattern) is not str for pattern in patterns): fail("PHASE_A_CUE_DENOMINATOR")
+for pattern in patterns:
+    try: matched=re.search(pattern,folded) is not None
+    except re.error: fail("PHASE_A_CUE_DENOMINATOR")
+    if matched: fail("PHASE_A_SEMANTIC_ANSWER_CUE")
 if manifest.get("authority_placeholders")!={"R2-AUTH-001":None,"R2-AUTH-002":None,"R2-AUTH-004":None}: fail("AUTHORITY_DRIFT")
-print("PASS: package hashes, staged capsule boundary, null authority, and Phase A blinding verified")
+print("PASS: package hashes, staged capsule boundary, null authority, and source-declared Phase A cue guard verified")
 '''
 
 
 def _docs(campaign: dict[str, Any]) -> dict[str, bytes]:
     package_status = (
-        "READY_TO_RUN_NO_PARTICIPANT_RESULT"
+        "MASTER_KIT_VERIFIED_RUN_CONFIGURATION_AND_TARGET_PREFLIGHT_REQUIRED_NO_PARTICIPANT_RESULT"
         if EXPECTED_SOURCE["source_state"] == "EXACT_CLEAN_COMMIT"
         else "DIRTY_TEST_PREVIEW_NOT_DELIVERABLE"
     )
@@ -1659,7 +1679,16 @@ Release only its standalone Phase A delivery.  Preserve the exact response and c
 Phase A lock receipt before the CLI can emit Phase B.  Lock Phase B before releasing the
 debrief.  Never give this researcher-only master kit to a participant.
 
-This is an executable, offline formative comprehension study. No human participant has been run. The included N−1/N/N+1 and hostile fixtures are `SYNTHETIC_DRY_RUN` tooling checks only.
+The template accepts only `run.<16 lowercase hex>`, `p.<12 lowercase hex>` for a declared
+human run (or the fixed synthetic fixture identity), three `contact.<12 lowercase hex>`
+references, one `policy.<12 lowercase hex>` reference, the source-populated closed profile
+codes, and bounded numeric session/retention values. If the source-populated participant
+terms are not true for the intended environment, stop and separately review an extension;
+never replace them with free prose.
+
+This is an executable, offline formative comprehension-study master. It contains no human
+participant response or result. The included N−1/N/N+1 and hostile fixtures are
+`SYNTHETIC_DRY_RUN_TOOLING_ONLY` checks only.
 
 Run package verification:
 
@@ -1689,9 +1718,9 @@ The scorer never decides participant acceptance. It checks structured fields and
 
 ## Evidence boundary
 
-- Source slice: `{EXPECTED_SOURCE['commit']}` / tree `{EXPECTED_SOURCE['tree']}`.
-- Base campaign integration: `{BASE_CAMPAIGN_MERGE}`. No review, check, PR, merge, or
-  release state is inherited by this local source slice.
+- Source slice: `{EXPECTED_SOURCE["commit"]}` / tree `{EXPECTED_SOURCE["tree"]}`.
+- Base campaign integration: `{BASE_CAMPAIGN_MERGE}`. This package does not query or inherit
+  remote PR, review, check, merge, approval, qualification, or release state.
 - Synthetic campaign cases are not R2-AUTH-002 representative-workload evidence.
 - Replay digests are not R2-AUTH-004 trust/custody evidence.
 - Same-process recomputation is consistency evidence only, never independent execution,
@@ -1699,10 +1728,10 @@ The scorer never decides participant acceptance. It checks structured fields and
 
 ## Fixed non-promotion state
 
-- Release 2: `{EXPECTED_BOUNDARY['release_2']}`
+- Release 2: `{EXPECTED_BOUNDARY["release_2"]}`
 - QCP-001: `EXPERIMENTAL / CONTRACT_ONLY`
-- Runtime: `{EXPECTED_BOUNDARY['runtime']}`
-- Release 3: `{EXPECTED_BOUNDARY['release_3']}`
+- Runtime: `{EXPECTED_BOUNDARY["runtime"]}`
+- Release 3: `{EXPECTED_BOUNDARY["release_3"]}`
 
 This kit is not approval, selection, collection authority, qualification, promotion, publication, release acceptance, shipment, or GA.
 """
@@ -1779,16 +1808,16 @@ Decision effect: `NONE`. Do not label this operator acceptance, qualification, p
 
 ## Exact local source
 
-- Commit: `{EXPECTED_SOURCE['commit']}`
-- Tree: `{EXPECTED_SOURCE['tree']}`
-- Parents: {", ".join(f"`{item}`" for item in EXPECTED_SOURCE['parents'])}
-- Source state: `{EXPECTED_SOURCE['source_state']}`
+- Commit: `{EXPECTED_SOURCE["commit"]}`
+- Tree: `{EXPECTED_SOURCE["tree"]}`
+- Parents: {", ".join(f"`{item}`" for item in EXPECTED_SOURCE["parents"])}
+- Source state: `{EXPECTED_SOURCE["source_state"]}`
 - Base campaign merge: `{BASE_CAMPAIGN_MERGE}`
 - Campaign input/result/report digests: `{EXPECTED_FILE_DIGESTS}`
 
 The campaign was recomputed from the tracked canonical fixture at this source state.  The
-source slice inherits no hosted checks, review, approval, merge, qualification, release, or
-publication claim.  Same-process full-mapping agreement catches the confirmed public-return
+package does not query or inherit hosted checks, review, approval, merge, qualification,
+release, or publication state.  Same-process full-mapping agreement catches the confirmed public-return
 suppression seams but is not independent execution, installed-code provenance, memory-image
 integrity, authentication, trusted time, or custody.
 
@@ -1829,18 +1858,20 @@ def _run_config_template() -> dict[str, Any]:
     required = "__REQUIRED_RUN_INPUT__"
     return {
         "schema": RUN_CONFIG_SCHEMA,
+        "run_class": required,
         "run_id": required,
         "participant_code": required,
-        "participant_contact": required,
-        "withdrawal_contact": required,
-        "accessibility_contact": required,
-        "purpose": required,
+        "participant_contact_ref": required,
+        "withdrawal_contact_ref": required,
+        "accessibility_contact_ref": required,
+        "purpose_profile": scoring.PURPOSE_PROFILE,
         "session_cap_minutes": 60,
-        "data_use": required,
-        "data_storage": required,
-        "data_access": required,
-        "data_retention": required,
-        "data_deletion": required,
+        "data_use_profile": scoring.DATA_USE_PROFILE,
+        "storage_profile": scoring.STORAGE_PROFILE,
+        "access_profile": scoring.ACCESS_PROFILE,
+        "retention_days": required,
+        "deletion_profile": scoring.DELETION_PROFILE,
+        "data_policy_ref": required,
         "recording_planned": False,
     }
 
@@ -1883,9 +1914,7 @@ def _payloads(campaign: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any
     n_minus_b = deepcopy(n_b)
     n_minus_b["global_limitations"] = n_minus_b["global_limitations"][:-1]
     n_plus_b = deepcopy(n_b)
-    n_plus_b["global_limitations"] = sorted(
-        n_plus_b["global_limitations"] + ["UNSUPPORTED_EXTRA_LIMITATION"]
-    )
+    n_plus_b["global_limitations"] = sorted(n_plus_b["global_limitations"] + ["UNSUPPORTED_EXTRA_LIMITATION"])
     hostile_a = deepcopy(n_a)
     hostile_a["participant_code"] = "../escape"
     hostile_a["unsafe_plan_alias"] = "Plan D1"
@@ -1908,14 +1937,8 @@ def _payloads(campaign: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any
         "researcher-capsule/campaign-input.json": campaign["input_raw"],
         "researcher-capsule/campaign-result.json": campaign["result_raw"],
         "researcher-capsule/operator-report.md": campaign["report_raw"],
-        "researcher-capsule/run-config.template.json": _canonical_json(
-            _run_config_template()
-        )
-        + b"\n",
-        "researcher-capsule/narrative-review.template.json": _canonical_json(
-            _narrative_review_template()
-        )
-        + b"\n",
+        "researcher-capsule/run-config.template.json": _canonical_json(_run_config_template()) + b"\n",
+        "researcher-capsule/narrative-review.template.json": _canonical_json(_narrative_review_template()) + b"\n",
         "researcher-capsule/source-alias-map.json": _canonical_json(alias_data) + b"\n",
         "researcher-capsule/score_response.py": _read_regular(SCORER_SOURCE),
         "researcher-capsule/fixtures/response-n.phase-a.json": _canonical_json(n_a) + b"\n",
@@ -1923,22 +1946,12 @@ def _payloads(campaign: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any
         "researcher-capsule/fixtures/response-n-minus-1.phase-b.json": _canonical_json(n_minus_b) + b"\n",
         "researcher-capsule/fixtures/response-n-plus-1.phase-b.json": _canonical_json(n_plus_b) + b"\n",
         "researcher-capsule/fixtures/response-hostile.phase-a.json": _canonical_json(hostile_a) + b"\n",
-        "schemas/phase-a-response.schema.json": _canonical_json(
-            _response_schema("A", campaign, alias_data)
-        )
-        + b"\n",
-        "schemas/phase-b-response.schema.json": _canonical_json(
-            _response_schema("B", campaign, alias_data)
-        )
-        + b"\n",
+        "schemas/phase-a-response.schema.json": _canonical_json(_response_schema("A", campaign, alias_data)) + b"\n",
+        "schemas/phase-b-response.schema.json": _canonical_json(_response_schema("B", campaign, alias_data)) + b"\n",
         "verify-study.py": VERIFY_SCRIPT.encode("utf-8"),
         "RUN-VERIFY.cmd": b'@py -3.12 -B "%~dp0verify-study.py"\r\n',
-        "developer-source/tools/build_atlas_r3_break_this_plan_operator_study.py": _read_regular(
-            Path(__file__)
-        ),
-        "developer-source/tools/atlas_r3_operator_study_scoring.py": _read_regular(
-            SCORER_SOURCE
-        ),
+        "developer-source/tools/build_atlas_r3_break_this_plan_operator_study.py": _read_regular(Path(__file__)),
+        "developer-source/tools/atlas_r3_operator_study_scoring.py": _read_regular(SCORER_SOURCE),
         "developer-source/tools/run_atlas_r3_break_this_plan_campaign.py": _read_regular(
             REPOSITORY_ROOT / "tools" / "run_atlas_r3_break_this_plan_campaign.py"
         ),
@@ -1949,14 +1962,10 @@ def _payloads(campaign: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any
             REPOSITORY_ROOT / "tests" / "test_atlas_r3_break_this_plan_operator_study.py"
         ),
         "developer-source/docs/atlas-release-3-break-this-plan-campaign-contract-2026-08-30.md": _read_regular(
-            REPOSITORY_ROOT
-            / "docs"
-            / "atlas-release-3-break-this-plan-campaign-contract-2026-08-30.md"
+            REPOSITORY_ROOT / "docs" / "atlas-release-3-break-this-plan-campaign-contract-2026-08-30.md"
         ),
         "developer-source/docs/atlas-release-3-qdp001-operator-study-contract-2026-08-31.md": _read_regular(
-            REPOSITORY_ROOT
-            / "docs"
-            / "atlas-release-3-qdp001-operator-study-contract-2026-08-31.md"
+            REPOSITORY_ROOT / "docs" / "atlas-release-3-qdp001-operator-study-contract-2026-08-31.md"
         ),
     }
     return payloads, alias_data, answer
@@ -1976,11 +1985,7 @@ def _guard_output_separation(output: Path, *protected: Path) -> None:
     except OSError:
         _reject("OUTPUT_PATH_UNRESOLVABLE")
     for item in protected_resolved:
-        if (
-            output_resolved == item
-            or output_resolved in item.parents
-            or item in output_resolved.parents
-        ):
+        if output_resolved == item or output_resolved in item.parents or item in output_resolved.parents:
             _reject("OUTPUT_PATH_OVERLAPS_PROTECTED_INPUT")
 
 
@@ -2007,26 +2012,19 @@ def _master_payloads_and_manifest(
     source_files: list[dict[str, Any]],
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
     payloads, alias_data, _answer = _payloads(campaign)
+    _reject_phase_a_semantic_cues(
+        {name: raw for name, raw in payloads.items() if name.startswith("participant-phase-a/")}
+    )
     phase_a_forbidden = sorted(
-        {
-            case["source_id"] for case in alias_data["cases"]
-        }
-        | {
-            candidate["source_id"]
-            for case in alias_data["cases"]
-            for candidate in case["candidates"]
-        }
+        {case["source_id"] for case in alias_data["cases"]}
+        | {candidate["source_id"] for case in alias_data["cases"] for candidate in case["candidates"]}
         | {
             step["source_id"]
             for case in alias_data["cases"]
             for candidate in case["candidates"]
             for step in candidate["steps"]
         }
-        | {
-            requirement["source_id"]
-            for case in alias_data["cases"]
-            for requirement in case["requirements"]
-        }
+        | {requirement["source_id"] for case in alias_data["cases"] for requirement in case["requirements"]}
         | {
             "unsafe-middle",
             "strand-service-flow",
@@ -2035,15 +2033,12 @@ def _master_payloads_and_manifest(
             "REPLAYABLE_OBSERVED_DISCARD_SYNTHETIC_FLOW",
         }
     )
-    file_rows = {
-        name: {"bytes": len(raw), "digest": _digest(raw)}
-        for name, raw in sorted(payloads.items())
-    }
+    file_rows = {name: {"bytes": len(raw), "digest": _digest(raw)} for name, raw in sorted(payloads.items())}
     manifest = {
         "schema": STUDY_SCHEMA,
         "study_id": STUDY_ID,
         "status": (
-            "READY_TO_RUN_NO_PARTICIPANT_RESULT"
+            "MASTER_KIT_VERIFIED_RUN_CONFIGURATION_AND_TARGET_PREFLIGHT_REQUIRED_NO_PARTICIPANT_RESULT"
             if source["source_state"] == "EXACT_CLEAN_COMMIT"
             else "DIRTY_TEST_PREVIEW_NOT_DELIVERABLE"
         ),
@@ -2082,18 +2077,8 @@ def _master_payloads_and_manifest(
         "participant_deliveries_exclude_campaign_result_answer_key_and_researcher_machine_data": True,
         "synthetic_dry_run_is_human_study": False,
         "phase_a_forbidden_tokens": phase_a_forbidden,
-        "known_residuals": [
-            "NO_HUMAN_PARTICIPANT_RESULT",
-            "NO_OPERATOR_ACCEPTANCE",
-            "SINGLE_FIXED_SYNTHETIC_CAMPAIGN",
-            "PHASE_B_IS_OPEN_BOOK_REPORT_COMPREHENSION",
-            "PHASE_A_SINGLE_ITEM_WEAKLY_DISCRIMINATING",
-            "PHASE_B_HIGH_BURDEN_NO_SAVE_RESUME",
-            "ACCESSIBILITY_WITH_ASSISTIVE_TECHNOLOGY_NOT_VERIFIED",
-            "PACKAGE_VERIFIER_IS_UNKEYED_SELF_CONSISTENCY_NOT_AUTHENTICATED_CUSTODY",
-            "SAME_PROCESS_RECOMPUTATION_IS_NOT_INDEPENDENT_TRUST_OR_PROVENANCE",
-            "LOCAL_SOURCE_SLICE_NOT_PUSHED_REVIEWED_OR_MERGED",
-        ],
+        "phase_a_forbidden_cue_patterns": list(PHASE_A_FORBIDDEN_CUE_PATTERNS),
+        "known_residuals": list(EXPECTED_KNOWN_RESIDUALS),
         "files": file_rows,
     }
     return payloads, manifest
@@ -2113,15 +2098,11 @@ def build(
     source = (
         _validate_source_identity(source_identity)
         if source_identity is not None
-        else _current_source_identity(
-            allow_dirty_test_preview=allow_dirty_test_preview
-        )
+        else _current_source_identity(allow_dirty_test_preview=allow_dirty_test_preview)
     )
     campaign = _build_source_campaign(source)
     source_files = _source_file_rows(source)
-    payloads, manifest = _master_payloads_and_manifest(
-        campaign, source, source_files
-    )
+    payloads, manifest = _master_payloads_and_manifest(campaign, source, source_files)
     manifest_raw = _canonical_json(manifest) + b"\n"
     sums = []
     all_for_sums = {**payloads, "study-manifest.json": manifest_raw}
@@ -2141,8 +2122,7 @@ def build(
             _write_member(temp_output, "SHA256SUMS.txt", sums_raw)
             verify_master_kit(
                 temp_output,
-                allow_dirty_test_preview=source["source_state"]
-                == "DIRTY_TEST_PREVIEW",
+                allow_dirty_test_preview=source["source_state"] == "DIRTY_TEST_PREVIEW",
             )
             os.replace(temp_output, output)
     except StudyBuildError:
@@ -2177,17 +2157,12 @@ def _directory_files(root: Path) -> set[str]:
             relative = item.relative_to(root)
             if len(relative.parts) > MAX_PACKAGE_DEPTH:
                 _reject("PACKAGE_TRAVERSAL_LIMIT")
-            if item.is_symlink() or bool(
-                getattr(info, "st_file_attributes", 0) & reparse
-            ):
+            if item.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse):
                 _reject("PACKAGE_REPARSE_FORBIDDEN")
             if stat.S_ISREG(info.st_mode):
                 count += 1
                 total_bytes += info.st_size
-                if (
-                    count > MAX_PACKAGE_FILES
-                    or total_bytes > MAX_PACKAGE_TOTAL_BYTES
-                ):
+                if count > MAX_PACKAGE_FILES or total_bytes > MAX_PACKAGE_TOTAL_BYTES:
                     _reject("PACKAGE_TRAVERSAL_LIMIT")
                 name = relative.as_posix()
                 _safe_rel(name)
@@ -2263,6 +2238,7 @@ def verify_master_kit(
         "participant_deliveries_exclude_campaign_result_answer_key_and_researcher_machine_data",
         "synthetic_dry_run_is_human_study",
         "phase_a_forbidden_tokens",
+        "phase_a_forbidden_cue_patterns",
         "known_residuals",
         "files",
     }
@@ -2272,7 +2248,7 @@ def verify_master_kit(
         or manifest.get("study_id") != STUDY_ID
         or manifest.get("status")
         != (
-            "READY_TO_RUN_NO_PARTICIPANT_RESULT"
+            "MASTER_KIT_VERIFIED_RUN_CONFIGURATION_AND_TARGET_PREFLIGHT_REQUIRED_NO_PARTICIPANT_RESULT"
             if manifest.get("deliverable") is True
             else "DIRTY_TEST_PREVIEW_NOT_DELIVERABLE"
         )
@@ -2284,49 +2260,39 @@ def verify_master_kit(
         or manifest.get("promotion_effect") != "NONE"
         or manifest.get("collection_started") is not False
         or manifest.get("product_boundary") != EXPECTED_BOUNDARY
-        or manifest.get("authority_placeholders")
-        != {"R2-AUTH-001": None, "R2-AUTH-002": None, "R2-AUTH-004": None}
+        or manifest.get("authority_placeholders") != {"R2-AUTH-001": None, "R2-AUTH-002": None, "R2-AUTH-004": None}
         or manifest.get("global_limitations") != EXPECTED_GLOBAL_LIMITATIONS
-        or manifest.get("operator_interpretation")
-        != EXPECTED_OPERATOR_INTERPRETATION
+        or manifest.get("operator_interpretation") != EXPECTED_OPERATOR_INTERPRETATION
         or manifest.get("participant_distribution")
         != (
             "STANDALONE_PHASE_A_THEN_CANONICAL_LOCK_THEN_STANDALONE_PHASE_B;"
             "PHASE_B_LOCK_THEN_DEBRIEF;NEVER_RESEARCHER_MASTER_KIT"
         )
-        or manifest.get(
-            "participant_deliveries_exclude_campaign_result_answer_key_and_researcher_machine_data"
-        )
+        or manifest.get("participant_deliveries_exclude_campaign_result_answer_key_and_researcher_machine_data")
         is not True
         or manifest.get("synthetic_dry_run_is_human_study") is not False
         or type(manifest.get("phase_a_forbidden_tokens")) is not list
-        or type(manifest.get("known_residuals")) is not list
+        or manifest.get("phase_a_forbidden_cue_patterns") != list(PHASE_A_FORBIDDEN_CUE_PATTERNS)
+        or manifest.get("known_residuals") != list(EXPECTED_KNOWN_RESIDUALS)
     ):
         _reject("MASTER_MANIFEST_INVALID")
     source_campaign = manifest.get("source_campaign")
     if (
         type(source_campaign) is not dict
-        or set(source_campaign)
-        != {"base_campaign_merge", "recomputed_at_source", "file_digests", "subject"}
+        or set(source_campaign) != {"base_campaign_merge", "recomputed_at_source", "file_digests", "subject"}
         or source_campaign.get("base_campaign_merge") != BASE_CAMPAIGN_MERGE
-        or source_campaign.get("subject")
-        != "TRACKED_FIXTURE_RECOMPUTED_AT_EXACT_SOURCE"
+        or source_campaign.get("subject") != "TRACKED_FIXTURE_RECOMPUTED_AT_EXACT_SOURCE"
     ):
         _reject("MASTER_MANIFEST_INVALID")
     source = _validate_source_identity(source_campaign.get("recomputed_at_source"))
-    if (
-        source["source_state"] != "EXACT_CLEAN_COMMIT"
-        and not allow_dirty_test_preview
-    ):
+    if source["source_state"] != "EXACT_CLEAN_COMMIT" and not allow_dirty_test_preview:
         _reject("DIRTY_PREVIEW_NOT_DELIVERABLE")
     _activate_source_identity(source)
     file_digests = source_campaign.get("file_digests")
     if (
         type(file_digests) is not dict
-        or set(file_digests)
-        != {"campaign-input.json", "campaign-result.json", "operator-report.md"}
-        or file_digests.get("campaign-input.json")
-        != scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
+        or set(file_digests) != {"campaign-input.json", "campaign-result.json", "operator-report.md"}
+        or file_digests.get("campaign-input.json") != scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
     ):
         _reject("MASTER_MANIFEST_INVALID")
     EXPECTED_FILE_DIGESTS.update(file_digests)
@@ -2335,18 +2301,15 @@ def verify_master_kit(
         type(local_builder) is not dict
         or set(local_builder) != {"state", "builder_digest", "scorer_digest"}
         or local_builder.get("state") != source["source_state"]
-        or manifest.get("deliverable")
-        != (source["source_state"] == "EXACT_CLEAN_COMMIT")
-        or local_builder.get("builder_digest")
-        != _digest(_read_regular(Path(__file__)))
+        or manifest.get("deliverable") != (source["source_state"] == "EXACT_CLEAN_COMMIT")
+        or local_builder.get("builder_digest") != _digest(_read_regular(Path(__file__)))
         or local_builder.get("scorer_digest") != _digest(_read_regular(SCORER_SOURCE))
     ):
         _reject("MASTER_MANIFEST_INVALID")
     source_files = manifest.get("source_files")
     if (
         type(source_files) is not list
-        or [row.get("path") for row in source_files if type(row) is dict]
-        != list(SOURCE_BINDING_PATHS)
+        or [row.get("path") for row in source_files if type(row) is dict] != list(SOURCE_BINDING_PATHS)
         or source_files != _source_file_rows(source)
     ):
         _reject("MASTER_SOURCE_BINDING_INVALID")
@@ -2381,56 +2344,55 @@ def verify_master_kit(
         if _digest(raw) != file_digests[name]:
             _reject("MASTER_CAMPAIGN_BINDING_INVALID")
     answer_row = rows.get("researcher-capsule/answer-key.json")
-    if (
-        type(answer_row) is not dict
-        or answer_row.get("digest") != scoring.EXPECTED_ANSWER_KEY_DIGEST
-    ):
+    if type(answer_row) is not dict or answer_row.get("digest") != scoring.EXPECTED_ANSWER_KEY_DIGEST:
         _reject("ANSWER_KEY_SOURCE_ANCHOR_INVALID")
     return manifest_raw, manifest
 
 
 def _validate_run_config(value: Any) -> dict[str, Any]:
-    required_marker = "__REQUIRED_RUN_INPUT__"
     if type(value) is not dict or set(value) != set(RUN_CONFIG_KEYS):
         _reject("RUN_CONFIG_INVALID")
     if value.get("schema") != RUN_CONFIG_SCHEMA:
         _reject("RUN_CONFIG_INVALID")
     if (
-        type(value.get("run_id")) is not str
-        or IDENTIFIER.fullmatch(value["run_id"]) is None
+        value.get("run_class") not in scoring.RUN_CLASSES
+        or type(value.get("run_id")) is not str
+        or scoring.RUN_ID.fullmatch(value["run_id"]) is None
         or type(value.get("participant_code")) is not str
         or scoring.PARTICIPANT_CODE.fullmatch(value["participant_code"]) is None
+        or any(
+            type(value.get(key)) is not str or scoring.CONTACT_REFERENCE.fullmatch(value[key]) is None
+            for key in (
+                "participant_contact_ref",
+                "withdrawal_contact_ref",
+                "accessibility_contact_ref",
+            )
+        )
+        or type(value.get("data_policy_ref")) is not str
+        or scoring.POLICY_REFERENCE.fullmatch(value["data_policy_ref"]) is None
+        or value.get("purpose_profile") != scoring.PURPOSE_PROFILE
+        or value.get("data_use_profile") != scoring.DATA_USE_PROFILE
+        or value.get("storage_profile") != scoring.STORAGE_PROFILE
+        or value.get("access_profile") != scoring.ACCESS_PROFILE
+        or value.get("deletion_profile") != scoring.DELETION_PROFILE
         or type(value.get("session_cap_minutes")) is not int
         or type(value.get("session_cap_minutes")) is bool
         or not 15 <= value["session_cap_minutes"] <= 180
+        or type(value.get("retention_days")) is not int
+        or type(value.get("retention_days")) is bool
+        or not 1 <= value["retention_days"] <= 3_650
         or type(value.get("recording_planned")) is not bool
         or value["recording_planned"] is not False
+        or (
+            value.get("run_class") == scoring.RUN_CLASS_SYNTHETIC
+            and value.get("participant_code") != scoring.SYNTHETIC_PARTICIPANT_CODE
+        )
+        or (
+            value.get("run_class") == scoring.RUN_CLASS_HUMAN
+            and scoring.HUMAN_PARTICIPANT_CODE.fullmatch(value["participant_code"]) is None
+        )
     ):
         _reject("RUN_CONFIG_INVALID")
-    for key in RUN_CONFIG_KEYS - {
-        "schema",
-        "run_id",
-        "participant_code",
-        "session_cap_minutes",
-        "recording_planned",
-    }:
-        item = value.get(key)
-        lowered = item.lower() if type(item) is str else ""
-        if (
-            type(item) is not str
-            or not 12 <= len(item.strip()) <= 1_024
-            or item == required_marker
-            or any(ord(char) < 32 and char not in "\n\r\t" for char in item)
-            or any(
-                token in lowered
-                for token in ("http:", "https:", "www.", "mailto:")
-            )
-            or any(
-                token in item
-                for token in ("<", ">", "[", "]", "(", ")", "!", "`", "@", "\r", "\n")
-            )
-        ):
-            _reject("RUN_CONFIG_INVALID")
     return deepcopy(value)
 
 
@@ -2445,9 +2407,7 @@ def _reject_run_config_answer_cues(
     config: dict[str, Any],
     master_root: Path,
 ) -> None:
-    _answer_raw, answer = _load_canonical_document(
-        master_root / "researcher-capsule" / "answer-key.json"
-    )
+    _answer_raw, answer = _load_canonical_document(master_root / "researcher-capsule" / "answer-key.json")
     phase_a = answer.get("phase_a") if type(answer) is dict else None
     if type(phase_a) is not dict:
         _reject("ANSWER_KEY_INVALID")
@@ -2472,61 +2432,63 @@ def _reject_run_config_answer_cues(
         "replayable",
         "phase b answer",
     }
-    text = "\n".join(
-        folded(value)
-        for value in config.values()
-        if type(value) is str
-    )
-    if any(cue and cue in text for cue in cues):
+    text = "\n".join(folded(value) for value in config.values() if type(value) is str)
+    if any(cue and cue in text for cue in cues) or _phase_a_semantic_cue(text.encode("utf-8")):
         _reject("RUN_CONFIG_ANSWER_CUE")
 
 
 def _participant_information(config: dict[str, Any]) -> tuple[bytes, bytes]:
     recording = "No recording is planned or permitted in this minimum P0 slice."
+    purpose = PURPOSE_PROFILE_TEXT[config["purpose_profile"]]
+    data_use = DATA_USE_PROFILE_TEXT[config["data_use_profile"]]
+    storage = STORAGE_PROFILE_TEXT[config["storage_profile"]]
+    access = ACCESS_PROFILE_TEXT[config["access_profile"]]
+    deletion = DELETION_PROFILE_TEXT[config["deletion_profile"]]
     body = f"""
 <h1>Participant information</h1>
-<p class="banner">FORMATIVE SYNTHETIC STUDY — VOLUNTARY — NOT ACCEPTANCE</p>
-<p><strong>Purpose:</strong> {escape(config['purpose'])}</p>
-<p>Participation is voluntary. You may pause or stop at any time without penalty. Contact
-{escape(config['withdrawal_contact'])} to withdraw or request the handling described below.</p>
+<p class="banner">FORMATIVE SYNTHETIC STUDY — VOLUNTARY</p>
+<p><strong>Purpose:</strong> {escape(purpose)}</p>
+<p>Participation is voluntary. You may pause or stop at any time without penalty. Use the
+internal directory route <code>{escape(config["withdrawal_contact_ref"])}</code> to withdraw
+or request the handling described below.</p>
 <ul>
-<li>Session cap: {config['session_cap_minutes']} minutes; no speed score is used.</li>
-<li>Participant contact: {escape(config['participant_contact'])}</li>
-<li>Accessibility contact: {escape(config['accessibility_contact'])}</li>
-<li>Data use: {escape(config['data_use'])}</li>
-<li>Storage: {escape(config['data_storage'])}</li>
-<li>Access: {escape(config['data_access'])}</li>
-<li>Retention: {escape(config['data_retention'])}</li>
-<li>Deletion: {escape(config['data_deletion'])}</li>
+<li>Session cap: {config["session_cap_minutes"]} minutes; no speed score is used.</li>
+<li>Participant-support contact reference: <code>{escape(config["participant_contact_ref"])}</code>.</li>
+<li>Accessibility contact reference: <code>{escape(config["accessibility_contact_ref"])}</code>.</li>
+<li>Data use: {escape(data_use)}</li>
+<li>Storage: {escape(storage)}</li>
+<li>Access: {escape(access)}</li>
+<li>Retention: {config["retention_days"]} days.</li>
+<li>Deletion: {escape(deletion)}</li>
+<li>Data-policy reference: <code>{escape(config["data_policy_ref"])}</code>.</li>
 </ul>
 <p>{escape(recording)}</p>
-<p>Do not include customer, device, credential, or network data. Nothing in this study
-selects a candidate or authorizes collection, qualification, promotion, publication, or GA.</p>
+<p>Use only the supplied synthetic scenario. Do not include real customer, device,
+credential, network, or operational information.</p>
 <p><a href="01-study-brief.html">Continue to the study brief</a></p>
 """
     markdown = f"""# Participant information
 
-Purpose: {config['purpose']}
+Purpose: {purpose}
 
 Participation is voluntary. You may pause or stop at any time without penalty.
 
-- Session cap: {config['session_cap_minutes']} minutes; no speed score is used.
-- Participant contact: {config['participant_contact']}
-- Withdrawal contact: {config['withdrawal_contact']}
-- Accessibility contact: {config['accessibility_contact']}
-- Data use: {config['data_use']}
-- Storage: {config['data_storage']}
-- Access: {config['data_access']}
-- Retention: {config['data_retention']}
-- Deletion: {config['data_deletion']}
+- Session cap: {config["session_cap_minutes"]} minutes; no speed score is used.
+- Participant-support contact reference: {config["participant_contact_ref"]}
+- Withdrawal contact reference: {config["withdrawal_contact_ref"]}
+- Accessibility contact reference: {config["accessibility_contact_ref"]}
+- Data use: {data_use}
+- Storage: {storage}
+- Access: {access}
+- Retention: {config["retention_days"]} days.
+- Deletion: {deletion}
+- Data-policy reference: {config["data_policy_ref"]}
 - {recording}
 
-Do not include customer, device, credential, or network data. This study has decision
-effect NONE and is not acceptance, authority, qualification, promotion, publication, or GA.
+Use only the supplied synthetic scenario. Do not include real customer, device,
+credential, network, or operational information.
 """
-    return _page("Participant information", body).encode("utf-8"), markdown.encode(
-        "utf-8"
-    )
+    return _page("Participant information", body).encode("utf-8"), markdown.encode("utf-8")
 
 
 class _StageHtmlParser(HTMLParser):
@@ -2544,10 +2506,7 @@ class _StageHtmlParser(HTMLParser):
             value = values.get(key)
             if value is not None:
                 self.targets.append(value)
-        if (
-            tag.lower() == "meta"
-            and (values.get("http-equiv") or "").lower() == "refresh"
-        ):
+        if tag.lower() == "meta" and (values.get("http-equiv") or "").lower() == "refresh":
             self.targets.append(values.get("content") or "")
         if values.get("srcset"):
             self.targets.append(values["srcset"] or "")
@@ -2596,11 +2555,7 @@ def _validate_payload_links(payloads: dict[str, bytes]) -> None:
                 _reject("STAGE_LINK_BOUNDARY_INVALID")
             path_text = target.split("#", 1)[0].split("?", 1)[0].replace("\\", "/")
             part = PurePosixPath(path_text)
-            if (
-                part.is_absolute()
-                or ".." in part.parts
-                or path_text not in members
-            ):
+            if part.is_absolute() or ".." in part.parts or path_text not in members:
                 _reject("STAGE_LINK_BOUNDARY_INVALID")
 
 
@@ -2615,16 +2570,22 @@ def _closed_package(
     if not output.parent.is_dir():
         _reject("OUTPUT_PARENT_INVALID")
     _validate_payload_links(payloads)
-    rows = {
-        name: {"bytes": len(raw), "digest": _digest(raw)}
-        for name, raw in sorted(payloads.items())
-    }
+    rows = {name: {"bytes": len(raw), "digest": _digest(raw)} for name, raw in sorted(payloads.items())}
     manifest = {**manifest, "files": rows}
     manifest_raw = _canonical_json(manifest) + b"\n"
     sums = [
         f"{hashlib.sha256(raw).hexdigest()}  {name}"
         for name, raw in sorted({**payloads, "stage-manifest.json": manifest_raw}.items())
     ]
+    sums_raw = ("\n".join(sums) + "\n").encode("ascii")
+    if manifest["stage"] == "PHASE_A":
+        _reject_phase_a_semantic_cues(
+            {
+                **payloads,
+                "stage-manifest.json": manifest_raw,
+                "SHA256SUMS.txt": sums_raw,
+            }
+        )
     try:
         with tempfile.TemporaryDirectory(
             prefix=f".{output.name}.partial-",
@@ -2637,7 +2598,7 @@ def _closed_package(
             _write_member(
                 temp_output,
                 "SHA256SUMS.txt",
-                ("\n".join(sums) + "\n").encode("ascii"),
+                sums_raw,
             )
             verify_stage(temp_output, expected_stage=manifest["stage"])
             os.replace(temp_output, output)
@@ -2659,15 +2620,10 @@ def _base_stage_manifest(
     run_config: dict[str, Any],
     predecessor_lock_digest: str | None,
 ) -> dict[str, Any]:
-    return {
+    manifest: dict[str, Any] = {
         "schema": STAGE_MANIFEST_SCHEMA,
         "stage": stage,
         "study_id": STUDY_ID,
-        "authoritative": False,
-        "decision_effect": "NONE",
-        "authentication": "none",
-        "custody_proved": False,
-        "trusted_time": False,
         "run_id": run_id,
         "participant_code": participant_code,
         "campaign_input_digest": scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST,
@@ -2676,6 +2632,17 @@ def _base_stage_manifest(
         "run_config": deepcopy(run_config),
         "predecessor_lock_digest": predecessor_lock_digest,
     }
+    if stage != "PHASE_A":
+        manifest.update(
+            {
+                "authoritative": False,
+                "decision_effect": "NONE",
+                "authentication": "none",
+                "custody_proved": False,
+                "trusted_time": False,
+            }
+        )
+    return manifest
 
 
 def _phase_a_stage_payloads(
@@ -2694,30 +2661,21 @@ def _phase_a_stage_payloads(
             short = "01-study-brief.html"
         elif short == "START.cmd":
             continue
-        payloads[short] = _read_regular(
-            master_root.joinpath(*PurePosixPath(name).parts)
-        )
+        payloads[short] = _read_regular(master_root.joinpath(*PurePosixPath(name).parts))
     payloads.update(
         {
             "index.html": info_html,
             "PARTICIPANT-INFORMATION.md": info_md,
-            "response.schema.json": _read_regular(
-                master_root / "schemas" / "phase-a-response.schema.json"
-            ),
+            "response.schema.json": _read_regular(master_root / "schemas" / "phase-a-response.schema.json"),
             "START.cmd": b'@start "" "%~dp0index.html"\r\n',
         }
     )
-    phase_a_text = "\n".join(
-        raw.decode("utf-8", errors="ignore") for raw in payloads.values()
-    )
+    phase_a_text = "\n".join(raw.decode("utf-8", errors="ignore") for raw in payloads.values())
     for token in master.get("phase_a_forbidden_tokens", []):
         if token in phase_a_text:
             _reject("PHASE_A_ANSWER_CUE")
-    if any(
-        value in name.lower()
-        for name in payloads
-        for value in ("phase-b", "debrief", "answer-key", "researcher")
-    ):
+    _reject_phase_a_semantic_cues(payloads)
+    if any(value in name.lower() for name in payloads for value in ("phase-b", "debrief", "answer-key", "researcher")):
         _reject("PHASE_A_MEMBER_BOUNDARY_INVALID")
     return payloads
 
@@ -2735,16 +2693,12 @@ def _static_stage_payloads(
     if prefix is None:
         _reject("STAGE_MANIFEST_INVALID")
     payloads = {
-        name.removeprefix(prefix): _read_regular(
-            master_root.joinpath(*PurePosixPath(name).parts)
-        )
+        name.removeprefix(prefix): _read_regular(master_root.joinpath(*PurePosixPath(name).parts))
         for name in master["files"]
         if name.startswith(prefix)
     }
     if stage == "PHASE_B":
-        payloads["response.schema.json"] = _read_regular(
-            master_root / "schemas" / "phase-b-response.schema.json"
-        )
+        payloads["response.schema.json"] = _read_regular(master_root / "schemas" / "phase-b-response.schema.json")
     return payloads
 
 
@@ -2761,9 +2715,7 @@ def release_phase_a(
         master_root,
         run_config_path,
     )
-    master_raw, master = verify_master_kit(
-        master_root, allow_dirty_test_preview=allow_dirty_test_preview
-    )
+    master_raw, master = verify_master_kit(master_root, allow_dirty_test_preview=allow_dirty_test_preview)
     config_raw, config = _load_run_config(run_config_path)
     _reject_run_config_answer_cues(config, master_root)
     payloads = _phase_a_stage_payloads(master_root, master, config)
@@ -2796,39 +2748,36 @@ def verify_stage(
     predecessor = manifest.get("predecessor_lock_digest")
     run_config = _validate_run_config(manifest.get("run_config"))
     if (
-        set(manifest) != set(STAGE_MANIFEST_KEYS)
+        set(manifest) != set(STAGE_MANIFEST_KEYS if expected_stage == "PHASE_A" else POST_REVEAL_STAGE_MANIFEST_KEYS)
         or manifest.get("schema") != STAGE_MANIFEST_SCHEMA
         or manifest.get("stage") != expected_stage
         or manifest.get("study_id") != STUDY_ID
-        or manifest.get("authoritative") is not False
-        or manifest.get("decision_effect") != "NONE"
-        or manifest.get("authentication") != "none"
-        or manifest.get("custody_proved") is not False
-        or manifest.get("trusted_time") is not False
-        or manifest.get("campaign_input_digest")
-        != scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
+        or (
+            expected_stage != "PHASE_A"
+            and (
+                manifest.get("authoritative") is not False
+                or manifest.get("decision_effect") != "NONE"
+                or manifest.get("authentication") != "none"
+                or manifest.get("custody_proved") is not False
+                or manifest.get("trusted_time") is not False
+            )
+        )
+        or manifest.get("campaign_input_digest") != scoring.EXPECTED_CAMPAIGN_INPUT_DIGEST
         or type(manifest.get("run_id")) is not str
         or IDENTIFIER.fullmatch(manifest["run_id"]) is None
         or type(manifest.get("participant_code")) is not str
         or scoring.PARTICIPANT_CODE.fullmatch(manifest["participant_code"]) is None
         or any(
-            type(manifest.get(key)) is not str
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", manifest[key]) is None
+            type(manifest.get(key)) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", manifest[key]) is None
             for key in ("master_manifest_digest", "run_config_digest")
         )
         or manifest.get("run_config_digest") != _digest(_canonical_json(run_config))
         or manifest.get("run_id") != run_config["run_id"]
         or manifest.get("participant_code") != run_config["participant_code"]
-        or (
-            expected_stage == "PHASE_A"
-            and predecessor is not None
-        )
+        or (expected_stage == "PHASE_A" and predecessor is not None)
         or (
             expected_stage in {"PHASE_B", "DEBRIEF"}
-            and (
-                type(predecessor) is not str
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", predecessor) is None
-            )
+            and (type(predecessor) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", predecessor) is None)
         )
     ):
         _reject("STAGE_MANIFEST_INVALID")
@@ -2847,9 +2796,15 @@ def verify_stage(
             _reject("STAGE_FILE_BINDING_INVALID")
         stage_payloads[name] = raw
     _validate_payload_links(stage_payloads)
-    _verify_checksum_list(
-        root, members=set(rows) | {"stage-manifest.json"}
-    )
+    _verify_checksum_list(root, members=set(rows) | {"stage-manifest.json"})
+    if expected_stage == "PHASE_A":
+        _reject_phase_a_semantic_cues(
+            {
+                **stage_payloads,
+                "stage-manifest.json": manifest_raw,
+                "SHA256SUMS.txt": _read_regular(root / "SHA256SUMS.txt"),
+            }
+        )
     return manifest_raw, manifest
 
 
@@ -2860,9 +2815,7 @@ def verify_stage_against_master(
     expected_stage: str,
     allow_dirty_test_preview: bool = False,
 ) -> tuple[bytes, dict[str, Any], bytes, dict[str, Any]]:
-    master_raw, master = verify_master_kit(
-        master_root, allow_dirty_test_preview=allow_dirty_test_preview
-    )
+    master_raw, master = verify_master_kit(master_root, allow_dirty_test_preview=allow_dirty_test_preview)
     stage_raw, stage = verify_stage(stage_root, expected_stage=expected_stage)
     if stage["master_manifest_digest"] != _digest(master_raw):
         _reject("STAGE_MASTER_BINDING_INVALID")
@@ -2889,8 +2842,7 @@ def verify_stage_against_master(
         predecessor_lock_digest=stage["predecessor_lock_digest"],
     )
     expected_manifest["files"] = {
-        name: {"bytes": len(raw), "digest": _digest(raw)}
-        for name, raw in sorted(expected_payloads.items())
+        name: {"bytes": len(raw), "digest": _digest(raw)} for name, raw in sorted(expected_payloads.items())
     }
     if stage != expected_manifest:
         _reject("STAGE_SOURCE_REGENERATION_MISMATCH")
@@ -2907,12 +2859,10 @@ def _parse_response(
     expected_phase: str,
 ) -> tuple[str, bytes, dict[str, Any]]:
     if WORKSHEET_FENCE.encode("utf-8") in raw:
-        canonical, value = parse_worksheet_response_bytes(
-            raw, expected_phase=expected_phase
-        )
+        canonical, value = parse_worksheet_response_bytes(raw, expected_phase=expected_phase)
         return "NO_JAVASCRIPT_WORKSHEET", canonical, value
     try:
-        value = scoring.parse_json_bytes(raw)
+        value = scoring.normalize_response_set_order(scoring.parse_json_bytes(raw))
     except scoring.StudyScoringError:
         _reject("RESPONSE_INVALID")
     if type(value) is not dict:
@@ -2926,13 +2876,9 @@ def _validate_response_against_stage(
     response_raw: bytes,
 ) -> tuple[str, bytes, dict[str, Any]]:
     phase = "A" if stage["stage"] == "PHASE_A" else "B"
-    response_format, canonical, response = _parse_response(
-        response_raw, expected_phase=phase
-    )
+    response_format, canonical, response = _parse_response(response_raw, expected_phase=phase)
     schema_raw = _read_regular(stage_root / "response.schema.json")
-    schema = _parse_json(
-        schema_raw[:-1] if schema_raw.endswith(b"\n") else schema_raw
-    )
+    schema = _parse_json(schema_raw[:-1] if schema_raw.endswith(b"\n") else schema_raw)
     try:
         Draft202012Validator.check_schema(schema)
         errors = list(Draft202012Validator(schema).iter_errors(response))
@@ -2943,13 +2889,11 @@ def _validate_response_against_stage(
     if (
         response.get("participant_code") != stage.get("participant_code")
         or response.get("study_id") != stage.get("study_id")
-        or response.get("campaign_input_digest")
-        != stage.get("campaign_input_digest")
+        or response.get("campaign_input_digest") != stage.get("campaign_input_digest")
     ):
         _reject("RESPONSE_STAGE_BINDING_INVALID")
     if phase == "A" and (
-        response.get("voluntary_consent") is not True
-        or response.get("data_handling_acknowledged") is not True
+        response.get("voluntary_consent") is not True or response.get("data_handling_acknowledged") is not True
     ):
         _reject("PARTICIPANT_CONSENT_NOT_ESTABLISHED")
     return response_format, canonical, response
@@ -2992,12 +2936,8 @@ def lock_response(
         expected_stage=expected_stage,
         allow_dirty_test_preview=allow_dirty_test_preview,
     )
-    response_raw = _read_regular(
-        response_path, max_bytes=scoring.MAX_RESPONSE_BYTES
-    )
-    response_format, canonical, response = _validate_response_against_stage(
-        stage_root, stage, response_raw
-    )
+    response_raw = _read_regular(response_path, max_bytes=scoring.MAX_RESPONSE_BYTES)
+    response_format, canonical, response = _validate_response_against_stage(stage_root, stage, response_raw)
     observed = recorded_at or datetime.now(timezone.utc).isoformat()
     try:
         parsed_time = datetime.fromisoformat(observed.replace("Z", "+00:00"))
@@ -3052,12 +2992,8 @@ def verify_lock(
         expected_stage=expected_stage,
         allow_dirty_test_preview=allow_dirty_test_preview,
     )
-    response_raw = _read_regular(
-        response_path, max_bytes=scoring.MAX_RESPONSE_BYTES
-    )
-    response_format, canonical, response = _validate_response_against_stage(
-        stage_root, stage, response_raw
-    )
+    response_raw = _read_regular(response_path, max_bytes=scoring.MAX_RESPONSE_BYTES)
+    response_format, canonical, response = _validate_response_against_stage(stage_root, stage, response_raw)
     receipt_raw, receipt = _load_canonical_document(receipt_path)
     expected = {
         "schema": LOCK_RECEIPT_SCHEMA,
@@ -3090,9 +3026,7 @@ def verify_lock(
     ):
         _reject("LOCK_RECEIPT_BINDING_INVALID")
     try:
-        observed = datetime.fromisoformat(
-            receipt["recorded_at"].replace("Z", "+00:00")
-        )
+        observed = datetime.fromisoformat(receipt["recorded_at"].replace("Z", "+00:00"))
     except (AttributeError, ValueError):
         _reject("LOCK_RECEIPT_BINDING_INVALID")
     if observed.tzinfo is None:
@@ -3117,16 +3051,12 @@ def release_phase_b(
         phase_a_response,
         phase_a_lock,
     )
-    master_raw, master = verify_master_kit(
-        master_root, allow_dirty_test_preview=allow_dirty_test_preview
-    )
-    _master_again, _master_value, _stage_raw, phase_a_stage = (
-        verify_stage_against_master(
-            master_root,
-            phase_a_root,
-            expected_stage="PHASE_A",
-            allow_dirty_test_preview=allow_dirty_test_preview,
-        )
+    master_raw, master = verify_master_kit(master_root, allow_dirty_test_preview=allow_dirty_test_preview)
+    _master_again, _master_value, _stage_raw, phase_a_stage = verify_stage_against_master(
+        master_root,
+        phase_a_root,
+        expected_stage="PHASE_A",
+        allow_dirty_test_preview=allow_dirty_test_preview,
     )
     lock_raw, lock, _canonical, _response = verify_lock(
         master_root,
@@ -3138,10 +3068,8 @@ def release_phase_b(
     )
     if (
         lock["master_manifest_digest"] != _digest(master_raw)
-        or lock["source_commit"]
-        != master["source_campaign"]["recomputed_at_source"]["commit"]
-        or lock["source_tree"]
-        != master["source_campaign"]["recomputed_at_source"]["tree"]
+        or lock["source_commit"] != master["source_campaign"]["recomputed_at_source"]["commit"]
+        or lock["source_tree"] != master["source_campaign"]["recomputed_at_source"]["tree"]
     ):
         _reject("LOCK_MASTER_BINDING_INVALID")
     payloads = _static_stage_payloads(
@@ -3179,16 +3107,12 @@ def release_debrief(
         phase_b_response,
         phase_b_lock,
     )
-    master_raw, master = verify_master_kit(
-        master_root, allow_dirty_test_preview=allow_dirty_test_preview
-    )
-    _master_again, _master_value, _stage_raw, phase_b_stage = (
-        verify_stage_against_master(
-            master_root,
-            phase_b_root,
-            expected_stage="PHASE_B",
-            allow_dirty_test_preview=allow_dirty_test_preview,
-        )
+    master_raw, master = verify_master_kit(master_root, allow_dirty_test_preview=allow_dirty_test_preview)
+    _master_again, _master_value, _stage_raw, phase_b_stage = verify_stage_against_master(
+        master_root,
+        phase_b_root,
+        expected_stage="PHASE_B",
+        allow_dirty_test_preview=allow_dirty_test_preview,
     )
     lock_raw, lock, _canonical, _response = verify_lock(
         master_root,
@@ -3200,10 +3124,8 @@ def release_debrief(
     )
     if (
         lock["master_manifest_digest"] != _digest(master_raw)
-        or lock["source_commit"]
-        != master["source_campaign"]["recomputed_at_source"]["commit"]
-        or lock["source_tree"]
-        != master["source_campaign"]["recomputed_at_source"]["tree"]
+        or lock["source_commit"] != master["source_campaign"]["recomputed_at_source"]["commit"]
+        or lock["source_tree"] != master["source_campaign"]["recomputed_at_source"]["tree"]
     ):
         _reject("LOCK_MASTER_BINDING_INVALID")
     payloads = _static_stage_payloads(
@@ -3246,9 +3168,7 @@ def main(argv: list[str] | None = None) -> int:
     lock_a.add_argument("--recorded-at")
     lock_a.add_argument("--allow-dirty-test-preview", action="store_true")
 
-    phase_b = sub.add_parser(
-        "release-phase-b", help="emit standalone Phase B after Phase A lock"
-    )
+    phase_b = sub.add_parser("release-phase-b", help="emit standalone Phase B after Phase A lock")
     phase_b.add_argument("--master", type=Path, required=True)
     phase_b.add_argument("--phase-a-stage", type=Path, required=True)
     phase_b.add_argument("--phase-a-response", type=Path, required=True)
@@ -3264,9 +3184,7 @@ def main(argv: list[str] | None = None) -> int:
     lock_b.add_argument("--recorded-at")
     lock_b.add_argument("--allow-dirty-test-preview", action="store_true")
 
-    debrief = sub.add_parser(
-        "release-debrief", help="emit debrief after Phase B lock"
-    )
+    debrief = sub.add_parser("release-debrief", help="emit debrief after Phase B lock")
     debrief.add_argument("--master", type=Path, required=True)
     debrief.add_argument("--phase-b-stage", type=Path, required=True)
     debrief.add_argument("--phase-b-response", type=Path, required=True)

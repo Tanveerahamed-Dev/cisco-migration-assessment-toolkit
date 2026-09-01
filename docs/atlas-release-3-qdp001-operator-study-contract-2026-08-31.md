@@ -36,9 +36,9 @@ every study, scorer, campaign, discovery, schema, fixture, contract, and transit
 source named by the builder's closed source path set.
 
 The builder recomputes the canonical tracked synthetic campaign at that exact source state.
-It does not inherit the checks, reviews, approval, merge, or release status of the historical
-base campaign merge. A dirty build is available only as an explicitly labelled test preview
-and is not a participant or release artifact.
+The package does not query or inherit remote PR, check, review, approval, merge,
+qualification, promotion, publication, or release state. A dirty build is available only as
+an explicitly labelled test preview and is not a participant or release artifact.
 
 The source, package, stage, and response digests are unkeyed exact-byte consistency
 bindings. They are not authentication, signature, trusted time, or external custody. The
@@ -50,17 +50,25 @@ and lock chain still requires separate organizational custody to detect.
 
 Before Phase A can be emitted, the researcher must provide one closed run configuration:
 
-- pseudonymous participant and run identifiers;
-- participant, withdrawal, and accessibility contacts;
-- study purpose and session cap;
-- data use, storage, access, retention, and deletion statements; and
+- a declared `HUMAN_FORMATIVE_RUN` or `SYNTHETIC_DRY_RUN_TOOLING_ONLY` run class;
+- strictly shaped opaque participant and run identifiers;
+- three strictly shaped internal-directory contact references;
+- one closed purpose profile and session cap;
+- closed data use, storage, access, and deletion profiles;
+- a concrete retention-day count and opaque policy reference; and
 - confirmation that recording is not planned for this minimum slice.
 
-Required values have no source defaults. Phase A release refuses placeholders, missing
-fields, unexpected fields, unsafe identifiers, or an invalid duration. The participant
-information states that participation is voluntary, the participant may pause or stop
-without penalty, and recording is forbidden until a separately designed consent receipt is
-implemented.
+Accountable identifiers, references, and retention have no source defaults; the one
+supported source-owned profile set is prefilled for explicit environment confirmation.
+Phase A release refuses placeholders, missing
+fields, unexpected fields, free participant-visible prose, unsafe identifiers,
+synthetic/human identity mismatch, unsupported profiles, or invalid durations. The renderer,
+not the run configuration, owns the concrete neutral purpose and data-handling sentences.
+Contact and policy references are actionable through the approved internal directory; if a
+real policy cannot be truthfully represented by the closed source profile, the run refuses
+until that profile is separately reviewed and extended. The participant information states
+only the voluntary, data-handling, accessibility, recording, and synthetic-data boundaries
+needed before the task. It does not state or imply any later report answer.
 
 ## Two-phase blinding and response locks
 
@@ -68,7 +76,14 @@ The researcher-only master kit is never a participant delivery.
 
 Phase A release emits only Phase A content, its response schema, the run-specific participant
 information, a closed stage manifest, and a checksum list. It contains no Phase B, debrief,
-answer key, source alias map, campaign machine result, or researcher material.
+answer key, source alias map, campaign machine result, or researcher material. Every
+participant-adjacent Phase A byte is checked against a closed semantic-cue denominator.
+Phase A uses a neutral integrity manifest that omits authority, decision-effect,
+authentication, custody, and trusted-time fields. Those technical nonclaims may appear only
+after the Phase A response is locked and the report stage is released.
+The final cue scan is defense in depth over source-owned text, not a semantic proof over
+arbitrary prose; arbitrary participant-visible prose is structurally absent from the run
+configuration.
 
 The Phase A lock consumes the preserved original response bytes. It:
 
@@ -82,8 +97,10 @@ Phase B release refuses a missing, malformed, cross-run, cross-participant, cros
 cross-source, or byte-mismatched Phase A lock. Its stage manifest binds the exact lock
 receipt digest. Phase B lock and debrief release apply the same rule in sequence.
 
-These gates establish a local auditable workflow. A researcher with source access can bypass
-it, so organizational procedure and separate custody remain required.
+These gates establish a local structurally verified workflow. They do not establish trusted
+time, actual human sequencing, non-exposure, or an uncontaminated participant. A researcher
+with source access can bypass them, so organizational procedure and separate custody remain
+required.
 
 ## Response-surface equivalence
 
@@ -91,6 +108,12 @@ The browser and no-JavaScript surfaces share the same closed Phase A and Phase B
 schemas and exact field sets. The worksheet contains one fenced JSON response object and is
 parsed without moderator field remapping. Every required participant-entered value begins as
 an explicit invalid placeholder; no answer is prefilled.
+
+Schema-unique list fields have set semantics. Their string members are sorted before the
+canonical response digest is formed, while the exact original response bytes retain their own
+separate digest. Thus visible report order, browser order, LF worksheet saves, and CRLF
+worksheet saves converge on one canonical response without deduplicating, accepting an extra
+member, or hiding a missing member.
 
 The forbidden-claim domain is eight independent required YES/NO choices on both surfaces.
 N−1, N, N+1, and schema-valid hostile cases must traverse the worksheet parser and scorer
@@ -118,9 +141,15 @@ from passing under unchanged trusted source. It does not defeat a source-rewriti
 resealer.
 
 Automated scoring checks closed structured values only. It always leaves
-`participant_pass=null`. Two distinct reviewers must independently grade every narrative
-and cross-response contradiction, record evidence locations, and freeze their judgments
-before either sees the other's result. Disagreement and adjudication remain explicit.
+`participant_pass=null`, `primary_cohort_eligible=null`, and
+`human_participant_established=null`. Included N/N−1/N+1 responses are explicitly
+`SYNTHETIC_DRY_RUN_TOOLING_ONLY`; even a declared human run class establishes only that the
+closed structural conditions were reported. Human origin, actual stage ordering, prior
+exposure, and contamination remain external review facts. Two distinct reviewers must
+independently grade every narrative and cross-response contradiction, record evidence
+locations, and freeze their judgments before either sees the other's result. The package
+contains only a procedural review template: it supplies no authenticated distinct-reviewer,
+review-digest, or reconciliation verifier. Disagreement and adjudication remain explicit.
 
 One participant is one `HUMAN_FORMATIVE_RUN`, never operator acceptance or population
 validity.
