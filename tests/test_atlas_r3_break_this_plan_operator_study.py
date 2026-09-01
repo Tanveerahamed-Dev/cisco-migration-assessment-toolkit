@@ -37,17 +37,22 @@ def _test_source() -> dict:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    parent_line = subprocess.run(
-        ["git", "rev-list", "--parents", "-n", "1", "HEAD"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.split()
+    commit_headers = (
+        subprocess.run(
+            ["git", "cat-file", "-p", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.split("\n\n", 1)[0]
+        .splitlines()
+    )
+    parents = [line.removeprefix("parent ") for line in commit_headers if line.startswith("parent ")]
     return {
         "base_campaign_merge": builder.BASE_CAMPAIGN_MERGE,
         "commit": commit,
-        "parents": parent_line[1:],
+        "parents": parents,
         "source_state": "DIRTY_TEST_PREVIEW",
         "tree": tree,
     }
