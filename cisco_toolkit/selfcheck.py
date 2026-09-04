@@ -20,6 +20,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import time
@@ -33,7 +34,7 @@ GRAPHIFY_GUARD_IDENTITY = {
     "aliases": 5,
     "ast_cache": "bypass-json-casefold",
     "bytecode_writes": "disabled",
-    "contract": "graphify-producer-overlays/3",
+    "contract": "graphify-producer-overlays/4",
     "environment": "graphify-git-path-sanitized",
     "extractor": "graphify/extractors/json_config.py",
     "isolated": True,
@@ -43,9 +44,15 @@ GRAPHIFY_GUARD_IDENTITY = {
     "report_aliases": 1,
     "report_patched_sha256": "b6855a4111f7aec351022fc0d7ed96359216eb3b48c307ea025b8b41ef600bb9",
     "report_source_sha256": "382d844327181b652bbcd3ebd9cc3f2ab63bbce30e6eb5da80ced2b1575d1d0a",
+    "rebuild_commit_policy": "rewrite_only_when_head_differs_and_non_provenance_graph_report_match",
+    "rebuild_patched_sha256": "1858a57219a040f145804893816d6f0fd61c796e0876110b2aaeda408cba4782",
+    "rebuild_source_sha256": "4c1283138dfb003bf7cd768c2ba6fb94d2ae6869d0d8b4ac42cc54253163be18",
     "source_sha256": "d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945",
     "status": "pass",
     "version": "0.9.51",
+    "watch": "graphify/watch.py",
+    "watch_aliases": 1,
+    "watch_source_sha256": "664547629cb659f3b0fa7209f8461acfd1b96985caf87944591dadb0c9f0e93d",
 }
 
 # The non-vacuity guards: each must exist AND actually assert something. A guard deleted or emptied is RED.
@@ -547,7 +554,7 @@ def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str
             "graph_refresh_receipt",
             UNKNOWN,
             f"topology write is {topology_age:.0f}d old, but no current guarded refresh receipt exists; "
-            "topology-neutral scans do not update graph.json mtime",
+            "current Graphify provenance is not established",
         )
     age_days = (now - refreshed_at) / 86400.0
     return _check(
@@ -560,14 +567,19 @@ def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str
 
 def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool],
                           n_changed: Optional[int]) -> Tuple[str, str]:
-    """The PURE decision for graph topology-stamp currency. ``built``/``head``
+    """The PURE decision for graph commit-stamp currency. ``built``/``head``
     are non-empty commit strings; ``is_ancestor`` is whether ``built`` is an ancestor of ``head`` (None =
     undeterminable); ``n_changed`` is the count of tracked paths changed between them (only meaningful when
     ``is_ancestor``). Coverage-honest: what cannot be evaluated is UNKNOWN, never a fabricated GREEN.
 
-    Graphify intentionally leaves ``built_at_commit`` unchanged after a successful refresh whose graph topology
-    is byte-equivalent. Any path drift is therefore a disclosed risk/UNKNOWN, not proof that the hook failed."""
-    if head.startswith(built) or built.startswith(head):
+    Guard contract v4 requires an exact current-HEAD stamp after a successful guarded refresh,
+    including a tree-identical merge commit. Any older stamp is UNKNOWN even when the compared
+    trees have no changed paths."""
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", built) is None:
+        return UNKNOWN, "graph built_at_commit is malformed"
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is None:
+        return UNKNOWN, "current Git HEAD is malformed"
+    if head == built:
         return GREEN, f"current (built at HEAD {head[:10]})"
     if is_ancestor is None:
         return UNKNOWN, f"built at {built[:10]}; ancestry vs HEAD {head[:10]} undeterminable"
@@ -581,10 +593,13 @@ def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool],
             f"built at {built[:10]}; changed-path denominator vs HEAD {head[:10]} unavailable"
         )
     if n_changed <= 0:
-        return GREEN, f"built at {built[:10]}; behind HEAD but no tracked path changed"
+        return UNKNOWN, (
+            f"built at {built[:10]}; tree-equivalent to HEAD {head[:10]} but the exact commit stamp is behind. "
+            f"From the main checkout root, run: {GRAPHIFY_REFRESH_COMMAND}"
+        )
     return UNKNOWN, (
-        f"built at topology write {built[:10]}; {n_changed} tracked path(s) changed since. "
-        "The stamp does not distinguish a missed refresh from a successful topology-neutral scan; "
+        f"built at {built[:10]}; {n_changed} tracked path(s) changed since. "
+        "The graph commit stamp is not current; "
         f"from the main checkout root, run: {GRAPHIFY_REFRESH_COMMAND}"
     )
 
@@ -608,11 +623,11 @@ def _run_git(root: str, *args: str) -> Optional[subprocess.CompletedProcess]:
 
 
 def check_graph_commit_current(root: str) -> Dict[str, str]:
-    """Disclose ``built_at_commit`` vs HEAD without overstating the stamp.
+    """Disclose exact ``built_at_commit`` vs HEAD without overstating the stamp.
 
-    The stamp records the last topology write, not the last successful full scan: Markdown body-only,
-    unsupported, and other topology-neutral changes can be scanned successfully without advancing it.
-    Any tracked-path drift is therefore UNKNOWN. Absent graph / non-git / unreadable is also UNKNOWN."""
+    Guard contract v4 requires equality after a completed guarded refresh. A tree-equivalent
+    ancestor is still UNKNOWN until the guard performs its bounded commit-only refresh.
+    Absent graph / non-git / unreadable is also UNKNOWN."""
     p = os.path.join(root, "graphify-out", "graph.json")
     if not os.path.exists(p):
         return _check("graph_commit", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout)")
@@ -629,7 +644,7 @@ def check_graph_commit_current(root: str) -> Dict[str, str]:
     head = head_proc.stdout.strip()
     is_ancestor: Optional[bool] = None
     n_changed: Optional[int] = None
-    if not (head.startswith(built) or built.startswith(head)):
+    if built != head:
         anc = _run_git(root, "merge-base", "--is-ancestor", built, head)
         if anc is not None and anc.returncode in (0, 1):
             is_ancestor = anc.returncode == 0

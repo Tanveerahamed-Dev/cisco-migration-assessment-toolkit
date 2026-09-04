@@ -1,11 +1,13 @@
-"""Run Graphify 0.9.51 with two reviewed producer corrections in memory.
+"""Run Graphify 0.9.51 with three reviewed producer corrections in memory.
 
 Graphifyy 0.9.51's JSON extractor emits ``extends`` edges for every array-valued
 property.  Its report summary also counts structural-only communities as shown,
-although its navigation and sections exclude them.  This launcher accepts only
-the reviewed upstream extractor and reporter bytes, changes those two faulty
-expressions in memory, verifies both results, and rebinds the live 0.9.51 aliases
-before Graphify's CLI is entered.
+although its navigation and sections exclude them.  Its incremental rebuild also
+ignores ``built_at_commit`` when comparing unchanged topology, so a merge commit
+with the same tree as its PR head cannot acquire exact provenance.  This launcher
+accepts only the reviewed upstream extractor, reporter, and rebuild bytes, applies
+those three bounded producer corrections in memory, verifies every result, and rebinds the
+live 0.9.51 aliases before Graphify's CLI is entered.
 Because parallel AST workers reload the on-disk module, the launcher also owns
 ``GRAPHIFY_MAX_WORKERS=1`` and rejects command-line worker overrides.
 
@@ -20,9 +22,12 @@ import hashlib
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import types
 from contextlib import contextmanager
@@ -30,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-GUARD_CONTRACT = "graphify-producer-overlays/3"
+GUARD_CONTRACT = "graphify-producer-overlays/4"
 DIST_NAME = "graphifyy"
 EXPECTED_VERSION = "0.9.51"
 EXTRACTOR_MODULE = "graphify.extractors.json_config"
@@ -45,6 +50,14 @@ EXPECTED_REPORT_SOURCE_BYTES = 14_395
 EXPECTED_REPORT_SOURCE_SHA256 = "382d844327181b652bbcd3ebd9cc3f2ab63bbce30e6eb5da80ced2b1575d1d0a"
 EXPECTED_REPORT_PATCHED_BYTES = 14_393
 EXPECTED_REPORT_PATCHED_SHA256 = "b6855a4111f7aec351022fc0d7ed96359216eb3b48c307ea025b8b41ef600bb9"
+WATCH_MODULE = "graphify.watch"
+WATCH_RELATIVE_PATH = "graphify/watch.py"
+EXPECTED_WATCH_SOURCE_BYTES = 95_869
+EXPECTED_WATCH_SOURCE_SHA256 = "664547629cb659f3b0fa7209f8461acfd1b96985caf87944591dadb0c9f0e93d"
+EXPECTED_REBUILD_SOURCE_BYTES = 42_104
+EXPECTED_REBUILD_SOURCE_SHA256 = "4c1283138dfb003bf7cd768c2ba6fb94d2ae6869d0d8b4ac42cc54253163be18"
+EXPECTED_REBUILD_PATCHED_BYTES = 42_925
+EXPECTED_REBUILD_PATCHED_SHA256 = "1858a57219a040f145804893816d6f0fd61c796e0876110b2aaeda408cba4782"
 WORKER_ENV = "GRAPHIFY_MAX_WORKERS"
 GUARDED_MAX_WORKERS = "1"
 REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/1"
@@ -54,7 +67,48 @@ _SOURCE_SENTINEL = b'            elif val.type == "array":'
 _PATCHED_SENTINEL = b'            elif val.type == "array" and key == "extends":'
 _REPORT_SOURCE_SENTINEL = b"    shown_count = len(communities) - thin_count_summary"
 _REPORT_PATCHED_SENTINEL = b"    shown_count = len(non_empty) - thin_count_summary"
-_MAX_REVIEWED_SOURCE_BYTES = 32_768
+_REBUILD_COMMIT_SOURCE_SENTINEL = (
+    b"        commit = _git_head(cwd=watch_root)\n"
+    b"        result = extract(\n"
+)
+_REBUILD_COMMIT_PATCHED_SENTINEL = (
+    b"        commit = _git_head(cwd=watch_root)\n"
+    b'        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:\n'
+    b'            print("[graphify watch] Rebuild failed: current Git HEAD is unavailable or malformed.", file=sys.stderr)\n'
+    b"            return False\n"
+    b"        result = extract(\n"
+)
+_REBUILD_TOPOLOGY_SOURCE_SENTINEL = (
+    b"        candidate_topology = _topology_from_graph(G)\n"
+    b"        if existing_graph_data:\n"
+)
+_REBUILD_TOPOLOGY_PATCHED_SENTINEL = (
+    b"        candidate_topology = _topology_from_graph(G)\n"
+    b"        commit_only_refresh = False\n"
+    b"        if existing_graph_data:\n"
+)
+_REBUILD_FAST_SOURCE_SENTINEL = b"            if same_topology:\n"
+_REBUILD_FAST_PATCHED_SENTINEL = (
+    b"            commit_only_refresh = (\n"
+    b"                same_topology\n"
+    b'                and existing_graph_data.get("built_at_commit") != commit\n'
+    b"            )\n"
+    b"            if same_topology and not commit_only_refresh:\n"
+)
+_REBUILD_FINAL_SOURCE_SENTINEL = b"        no_change = same_graph and same_report\n"
+_REBUILD_FINAL_PATCHED_SENTINEL = (
+    b"        if commit_only_refresh and not (same_graph and same_report):\n"
+    b"            graph_tmp.unlink(missing_ok=True)\n"
+    b"            print(\n"
+    b'                "[graphify watch] Commit-only provenance refresh refused because non-provenance graph/report bytes changed.",\n'
+    b"                file=sys.stderr,\n"
+    b"            )\n"
+    b"            return False\n"
+    b"        no_change = same_graph and same_report and not commit_only_refresh\n"
+)
+_MAX_REVIEWED_SOURCE_BYTES = 131_072
+_MAX_GRAPH_BYTES = 512 * 1024 * 1024
+_MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024
 
 _ERROR_MESSAGES = {
     "G001": "graphifyy distribution metadata is unavailable",
@@ -173,6 +227,10 @@ def _locate_report(distribution: Any) -> Path:
     return _locate_reviewed_source(distribution, REPORT_RELATIVE_PATH)
 
 
+def _locate_watch(distribution: Any) -> Path:
+    return _locate_reviewed_source(distribution, WATCH_RELATIVE_PATH)
+
+
 def _verified_patch(source: bytes) -> bytes:
     if (
         len(source) != EXPECTED_SOURCE_BYTES
@@ -213,6 +271,57 @@ def _verified_report_patch(source: bytes) -> bytes:
     return patched
 
 
+def _verified_rebuild_patch(source: bytes) -> bytes:
+    if (
+        len(source) != EXPECTED_REBUILD_SOURCE_BYTES
+        or _sha256(source) != EXPECTED_REBUILD_SOURCE_SHA256
+        or source.count(_REBUILD_COMMIT_SOURCE_SENTINEL) != 1
+        or source.count(_REBUILD_COMMIT_PATCHED_SENTINEL) != 0
+        or source.count(_REBUILD_TOPOLOGY_SOURCE_SENTINEL) != 1
+        or source.count(_REBUILD_TOPOLOGY_PATCHED_SENTINEL) != 0
+        or source.count(_REBUILD_FAST_SOURCE_SENTINEL) != 1
+        or source.count(_REBUILD_FAST_PATCHED_SENTINEL) != 0
+        or source.count(_REBUILD_FINAL_SOURCE_SENTINEL) != 1
+        or source.count(_REBUILD_FINAL_PATCHED_SENTINEL) != 0
+    ):
+        raise GuardFailure("G004")
+
+    patched = source.replace(
+        _REBUILD_COMMIT_SOURCE_SENTINEL,
+        _REBUILD_COMMIT_PATCHED_SENTINEL,
+        1,
+    )
+    patched = patched.replace(
+        _REBUILD_TOPOLOGY_SOURCE_SENTINEL,
+        _REBUILD_TOPOLOGY_PATCHED_SENTINEL,
+        1,
+    )
+    patched = patched.replace(
+        _REBUILD_FAST_SOURCE_SENTINEL,
+        _REBUILD_FAST_PATCHED_SENTINEL,
+        1,
+    )
+    patched = patched.replace(
+        _REBUILD_FINAL_SOURCE_SENTINEL,
+        _REBUILD_FINAL_PATCHED_SENTINEL,
+        1,
+    )
+    if (
+        len(patched) != EXPECTED_REBUILD_PATCHED_BYTES
+        or _sha256(patched) != EXPECTED_REBUILD_PATCHED_SHA256
+        or patched.count(_REBUILD_COMMIT_SOURCE_SENTINEL) != 0
+        or patched.count(_REBUILD_COMMIT_PATCHED_SENTINEL) != 1
+        or patched.count(_REBUILD_TOPOLOGY_SOURCE_SENTINEL) != 0
+        or patched.count(_REBUILD_TOPOLOGY_PATCHED_SENTINEL) != 1
+        or patched.count(_REBUILD_FAST_SOURCE_SENTINEL) != 0
+        or patched.count(_REBUILD_FAST_PATCHED_SENTINEL) != 1
+        or patched.count(_REBUILD_FINAL_SOURCE_SENTINEL) != 0
+        or patched.count(_REBUILD_FINAL_PATCHED_SENTINEL) != 1
+    ):
+        raise GuardFailure("G005")
+    return patched
+
+
 def _module_file(module: types.ModuleType) -> Path:
     try:
         return Path(module.__file__).resolve(strict=True)  # type: ignore[arg-type]
@@ -238,8 +347,15 @@ def _prepare_overlay(
 
     source_path = _locate_extractor(distribution)
     report_source_path = _locate_report(distribution)
+    watch_source_path = _locate_watch(distribution)
     source = _read_stable_source(source_path)
     report_source = _read_stable_source(report_source_path)
+    watch_source = _read_stable_source(watch_source_path)
+    if (
+        len(watch_source) != EXPECTED_WATCH_SOURCE_BYTES
+        or _sha256(watch_source) != EXPECTED_WATCH_SOURCE_SHA256
+    ):
+        raise GuardFailure("G004")
     patched = _verified_patch(source)
     report_patched = _verified_report_patch(report_source)
 
@@ -250,6 +366,7 @@ def _prepare_overlay(
         extract_facade = import_module("graphify.extract")
         graphify_package = import_module("graphify")
         original_report_module = import_module(REPORT_MODULE)
+        original_watch_module = import_module(WATCH_MODULE)
     except Exception as exc:
         raise GuardFailure("G006") from exc
 
@@ -260,6 +377,8 @@ def _prepare_overlay(
         or _read_stable_source(source_path) != source
         or _module_file(original_report_module) != report_source_path
         or _read_stable_source(report_source_path) != report_source
+        or _module_file(original_watch_module) != watch_source_path
+        or _read_stable_source(watch_source_path) != watch_source
     ):
         raise GuardFailure("G006")
 
@@ -268,6 +387,7 @@ def _prepare_overlay(
     language_extractors = getattr(extractors_package, "LANGUAGE_EXTRACTORS", None)
     cache_bypass_suffixes = getattr(extract_facade, "_JS_CACHE_BYPASS_SUFFIXES", None)
     original_generate = getattr(original_report_module, "generate", None)
+    original_rebuild_code = getattr(original_watch_module, "_rebuild_code", None)
     if (
         not callable(original_extract_json)
         or getattr(extractors_package, "json_config", None) is not original_module
@@ -281,6 +401,7 @@ def _prepare_overlay(
         or getattr(models_module, "_JS_CACHE_BYPASS_SUFFIXES", None) is not cache_bypass_suffixes
         or getattr(graphify_package, "report", None) is not original_report_module
         or not callable(original_generate)
+        or not callable(original_rebuild_code)
     ):
         raise GuardFailure("G006")
 
@@ -320,6 +441,30 @@ def _prepare_overlay(
     if not callable(corrected_generate):
         raise GuardFailure("G007")
 
+    try:
+        rebuild_source = inspect.getsource(original_rebuild_code).encode("utf-8")
+        original_rebuild_signature = inspect.signature(original_rebuild_code)
+    except (OSError, TypeError) as exc:
+        raise GuardFailure("G006") from exc
+    rebuild_patched = _verified_rebuild_patch(rebuild_source)
+    try:
+        rebuild_code = compile(
+            rebuild_patched.decode("utf-8", errors="strict"),
+            str(watch_source_path),
+            "exec",
+        )
+        exec(rebuild_code, original_watch_module.__dict__)
+        corrected_rebuild_code = original_watch_module._rebuild_code
+        corrected_rebuild_signature = inspect.signature(corrected_rebuild_code)
+    except Exception as exc:
+        raise GuardFailure("G007") from exc
+    if (
+        not callable(corrected_rebuild_code)
+        or corrected_rebuild_code is original_rebuild_code
+        or corrected_rebuild_signature != original_rebuild_signature
+    ):
+        raise GuardFailure("G007")
+
     # Rebind every public/live 0.9.51 function alias. The dispatcher mapping is
     # the extraction owner; the others keep direct imports coherent.
     sys.modules[EXTRACTOR_MODULE] = overlay
@@ -348,6 +493,7 @@ def _prepare_overlay(
         and _JSON_SUFFIX_VARIANTS.issubset(cache_bypass_suffixes)
         and getattr(models_module, "_JS_CACHE_BYPASS_SUFFIXES", None) is cache_bypass_suffixes
         and original_report_module.generate is corrected_generate
+        and original_watch_module._rebuild_code is corrected_rebuild_code
     ):
         raise GuardFailure("G007")
 
@@ -362,9 +508,15 @@ def _prepare_overlay(
         "report_aliases": 1,
         "report_patched_sha256": EXPECTED_REPORT_PATCHED_SHA256,
         "report_source_sha256": EXPECTED_REPORT_SOURCE_SHA256,
+        "rebuild_commit_policy": "rewrite_only_when_head_differs_and_non_provenance_graph_report_match",
+        "rebuild_patched_sha256": EXPECTED_REBUILD_PATCHED_SHA256,
+        "rebuild_source_sha256": EXPECTED_REBUILD_SOURCE_SHA256,
         "source_sha256": EXPECTED_SOURCE_SHA256,
         "status": "pass",
         "version": EXPECTED_VERSION,
+        "watch": WATCH_RELATIVE_PATH,
+        "watch_aliases": 1,
+        "watch_source_sha256": EXPECTED_WATCH_SOURCE_SHA256,
     }
 
 
@@ -656,6 +808,67 @@ def _valid_head(head: str) -> bool:
     )
 
 
+def _git_output(root: Path, *arguments: str) -> bytes:
+    try:
+        executable_name = shutil.which("git")
+        if not executable_name:
+            raise GuardFailure("G017")
+        executable = Path(executable_name).resolve(strict=True)
+        if (
+            not executable.is_file()
+            or executable.is_symlink()
+            or executable.is_junction()
+            or executable == root
+            or root in executable.parents
+        ):
+            raise GuardFailure("G017")
+        completed = subprocess.run(
+            [str(executable), "-C", str(root), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+        )
+    except GuardFailure:
+        raise
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise GuardFailure("G017") from exc
+    if (
+        completed.returncode != 0
+        or len(completed.stdout) > _MAX_GIT_OUTPUT_BYTES
+        or len(completed.stderr) > _MAX_GIT_OUTPUT_BYTES
+    ):
+        raise GuardFailure("G017")
+    return completed.stdout
+
+
+def _current_git_identity(root: Path) -> tuple[str, str]:
+    try:
+        head = _git_output(root, "rev-parse", "--verify", "HEAD").decode(
+            "ascii", errors="strict"
+        ).strip()
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise GuardFailure("G017") from exc
+    if not _valid_head(head):
+        raise GuardFailure("G017")
+    status = _git_output(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    return head, "dirty" if status else "clean"
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if not isinstance(key, str) or key in result:
+            raise ValueError("duplicate or invalid JSON object key")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-finite JSON number")
+
+
 def _refresh_receipt_payload(
     *, phase: str, head: str, state: str, guard_receipt: dict[str, Any], receipt_path: Path
 ) -> dict[str, Any]:
@@ -673,29 +886,64 @@ def _refresh_receipt_payload(
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     if phase == "complete":
-        payload["graph"] = _graph_identity(receipt_path.parent / "graph.json")
+        graph_identity, built_at_commit = _graph_snapshot(
+            receipt_path.parent / "graph.json"
+        )
+        if built_at_commit != head:
+            raise GuardFailure("G017")
+        payload["graph"] = graph_identity
     return payload
 
 
-def _graph_identity(path: Path) -> dict[str, Any]:
+def _graph_snapshot(path: Path) -> tuple[dict[str, Any], str]:
     try:
-        if path.is_symlink():
+        if path.is_symlink() or path.is_junction():
             raise GuardFailure("G017")
         digest = hashlib.sha256()
+        chunks: list[bytes] = []
+        total = 0
         with path.open("rb") as handle:
             before = os.fstat(handle.fileno())
-            if not stat.S_ISREG(before.st_mode):
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise GuardFailure("G017")
             while chunk := handle.read(1024 * 1024):
+                total += len(chunk)
+                if total > _MAX_GRAPH_BYTES:
+                    raise GuardFailure("G017")
                 digest.update(chunk)
+                chunks.append(chunk)
             after = os.fstat(handle.fileno())
+        named = os.stat(path, follow_symlinks=False)
     except GuardFailure:
         raise
     except OSError as exc:
         raise GuardFailure("G017") from exc
-    if _stat_identity(before) != _stat_identity(after):
+    if (
+        _stat_identity(before) != _stat_identity(after)
+        or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)
+        or (after.st_size, after.st_mtime_ns) != (named.st_size, named.st_mtime_ns)
+    ):
         raise GuardFailure("G017")
-    return {"sha256": digest.hexdigest(), "size": after.st_size}
+    try:
+        graph = json.loads(
+            b"".join(chunks).decode("utf-8", errors="strict"),
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+        )
+        built_at_commit = graph.get("built_at_commit")
+    except (AttributeError, RecursionError, UnicodeDecodeError, ValueError) as exc:
+        raise GuardFailure("G017") from exc
+    if not isinstance(graph, dict) or not isinstance(built_at_commit, str):
+        raise GuardFailure("G017")
+    if not _valid_head(built_at_commit):
+        raise GuardFailure("G017")
+    return {"sha256": digest.hexdigest(), "size": after.st_size}, built_at_commit
+
+
+def _graph_identity(path: Path) -> dict[str, Any]:
+    return _graph_snapshot(path)[0]
 
 
 def _write_refresh_receipt(path: Path, payload: dict[str, Any]) -> None:
@@ -746,10 +994,15 @@ def _same_receipt_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def _handle_refresh_receipt(
-    arguments: Sequence[str], guard_receipt: dict[str, Any]
+    arguments: Sequence[str], guard_receipt: dict[str, Any], root: Path
 ) -> int:
     mode, path_arg, head, state = arguments
     path = _refresh_receipt_path(path_arg)
+    if not _valid_head(head) or state not in {"clean", "dirty"}:
+        raise GuardFailure("G017")
+    actual_head, actual_state = _current_git_identity(root)
+    if head != actual_head or state != actual_state:
+        raise GuardFailure("G017")
     if mode == "--receipt-status":
         if state != "clean":
             return 1
@@ -819,7 +1072,7 @@ def _validate_arguments(arguments: Sequence[str]) -> None:
         roots = []
         positional = 0
         for argument in arguments[1:]:
-            if argument in {"--force", "--no-cluster"}:
+            if argument == "--force":
                 continue
             if argument.startswith("-"):
                 raise GuardFailure("G013")
@@ -883,7 +1136,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         failure = GuardFailure("G010")
         _print_failure(failure)
         return 2
-    if arguments != ["--probe"] and not receipt_mode:
+    if receipt_mode:
+        try:
+            producer_root = _producer_root(["update", "."])
+        except GuardFailure as failure:
+            _print_failure(failure)
+            return 2
+    elif arguments != ["--probe"]:
         try:
             _validate_arguments(arguments)
             producer_root = _producer_root(arguments)
@@ -908,7 +1167,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if receipt_mode:
             try:
-                return _handle_refresh_receipt(arguments, attested)
+                if producer_root is None:
+                    raise GuardFailure("G015")
+                with _producer_lock(producer_root):
+                    return _handle_refresh_receipt(arguments, attested, producer_root)
             except GuardFailure as failure:
                 _print_failure(failure)
                 return 2

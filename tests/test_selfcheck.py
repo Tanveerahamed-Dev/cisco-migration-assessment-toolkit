@@ -173,7 +173,7 @@ def test_graph_fresh_stale_absent(tmp_path, monkeypatch):
     mtime = os.path.getmtime(gpath)
     unreceipted = SC.check_graph_fresh(root, now=mtime + 3600)
     assert unreceipted["status"] == SC.UNKNOWN
-    assert "topology-neutral scans" in unreceipted["detail"]
+    assert "provenance is not established" in unreceipted["detail"]
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
     ).stdout.strip()
@@ -219,15 +219,16 @@ def test_graph_fresh_stale_absent(tmp_path, monkeypatch):
 def test_graph_commit_verdict_pure():
     """The topology stamp never fabricates a refresh verdict from repository drift."""
     V = SC._graph_commit_verdict
-    assert V("abc1234", "abc1234ff", None, 0)[0] == SC.GREEN     # prefix match either way -> current
-    assert V("abc1234ff", "abc1234", None, 0)[0] == SC.GREEN
-    assert V("aaa", "bbb", True, 0)[0] == SC.GREEN               # ancestor, empty commit
-    drift = V("aaa", "bbb", True, 5)
-    assert drift[0] == SC.UNKNOWN and "topology-neutral" in drift[1]
-    rewritten = V("aaa", "bbb", False, 0)
+    assert V("a" * 40, "a" * 40, None, 0)[0] == SC.GREEN
+    assert V("abc1234", "abc1234ff", None, 0)[0] == SC.UNKNOWN
+    tree_equivalent = V("a" * 40, "b" * 40, True, 0)
+    assert tree_equivalent[0] == SC.UNKNOWN and "tree-equivalent" in tree_equivalent[1]
+    drift = V("a" * 40, "b" * 40, True, 5)
+    assert drift[0] == SC.UNKNOWN and "not current" in drift[1]
+    rewritten = V("a" * 40, "b" * 40, False, 0)
     assert rewritten[0] == SC.UNKNOWN and SC.GRAPHIFY_REFRESH_COMMAND in rewritten[1]
-    assert V("aaa", "bbb", None, 0)[0] == SC.UNKNOWN             # ancestry unknown -> UNKNOWN
-    assert V("aaa", "bbb", True, None)[0] == SC.UNKNOWN          # diff denominator unavailable
+    assert V("a" * 40, "b" * 40, None, 0)[0] == SC.UNKNOWN       # ancestry unknown -> UNKNOWN
+    assert V("a" * 40, "b" * 40, True, None)[0] == SC.UNKNOWN    # diff denominator unavailable
 
 
 def test_graph_commit_counts_non_python_corpus_changes(tmp_path):
@@ -257,7 +258,7 @@ def test_graph_commit_counts_non_python_corpus_changes(tmp_path):
 
     assert result["status"] == SC.UNKNOWN
     assert "1 tracked path(s)" in result["detail"]
-    assert "topology-neutral" in result["detail"]
+    assert "graph commit stamp is not current" in result["detail"]
 
 
 def test_graph_commit_diff_failure_is_unknown_not_false_green(tmp_path, monkeypatch):
