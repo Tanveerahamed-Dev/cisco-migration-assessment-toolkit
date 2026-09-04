@@ -259,6 +259,14 @@ export type CompletenessInvariant = {
   passed: boolean;
 };
 
+export type SourceDigestPolicy = {
+  schemaVersion: "source-digest-projection/1";
+  fileContentDigest: "retained_sha256_exact_file_bytes";
+  lineDigest: "retained_sha256_exact_line_text_plus_terminator";
+  textDigest: "verified_pre_projection_omitted_derivable_from_exact_emitted_text";
+  fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1";
+};
+
 export type ProjectionIndex = {
   schemaVersion: string;
   status: string;
@@ -284,6 +292,7 @@ export type ProjectionIndex = {
   groupCounts: Record<string, number>;
   sourceFileCount: number;
   sourceModuleCount: number;
+  sourceDigestPolicy: SourceDigestPolicy;
   disclosure: Record<string, string>;
 };
 
@@ -308,8 +317,7 @@ export type SourceLine = {
   terminator: "" | "\n" | "\r" | "\r\n";
   fragmentIndex: number;
   fragmentCount: number;
-  fragmentDigest: string;
-  textDigest: string;
+  fragmentDigest?: string;
   lineDigest: string;
   recordId: string | null;
   syntaxKind: string | null;

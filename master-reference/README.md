@@ -46,14 +46,13 @@ lock and local-package source receipt, exercise real tracked PNG/SVG assets,
 reject static image imports and metadata-route files across the exact Git-owned
 JS/TS path set, and run hostile inputs in watchdog subprocesses.
 
-This is a narrow Vinext-edge replacement, not an advisory waiver. Next 16.2.12
-contains compiled image-parser code that npm overrides cannot replace,
-including an image-size implementation for which exact ICNS and JXL inputs
-demonstrate zero-progress behavior in isolated watchdogs. The related compiled
-detector bundle is present, but this contract does not claim its runtime
-reachability. The release pipeline keeps that residual and the missing
-external source-authenticated applicability/VEX review explicitly blocked even
-when an offline npm audit reports no registry finding.
+This is a narrow Vinext-edge replacement, not an advisory waiver. Next is absent
+from the current direct dependencies, lock, installed graph, SBOM, and built
+output; the release pipeline fails closed if any future Next component appears.
+Those exact-source and installed-state absences, and an offline npm audit with no
+registry finding, do not supply an externally authenticated current-advisory or
+applicability/VEX review. That independent review gate remains explicitly
+blocked.
 
 Production builds also create a lossless Sites packaging profile. The canonical
 projection and compression JSON receipts remain byte-for-byte reconstructable,

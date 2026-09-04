@@ -15,6 +15,8 @@ clean, all required record groups and named completeness invariants are present,
 the completeness ledger has no hard/fatal failure, every consumed chunk matches
 its manifest digest, and every safe source record round-trips to its declared
 file, byte, physical-line, nonblank-line, and semantic-line denominators.
+The emitted browser projection is contract `2.0.0`; the compiler input contract
+remains independently fixed at `1.2.0`.
 
 For an explicitly labelled local-only preview, add `--allow-preview`. Preview
 state remains embedded in `index.mjs`; it is not made publishable by the flag.
@@ -42,7 +44,12 @@ Output layout:
   query needs.
 - `source/index-*.mjs` and `source/chunks/*.mjs` — bounded line/UTF-8-fragment
   chunks. Ordered chunks reconstruct every safe file byte-for-byte, while a
-  stable line link loads only the chunk containing that line.
+  stable line link loads only the chunk containing that line. Every file keeps
+  its SHA-256 content digest and every logical line keeps the SHA-256 of exact
+  text plus its terminator. The compiler's text digest is verified before
+  projection and then omitted because it is derivable from the emitted text;
+  a fragment digest is emitted only for the genuinely split lines that require
+  independent fragment reassembly.
 - `graph/summary-*.mjs`, `graph/index-*.mjs`, and `graph/shards/*.mjs` — a
   bounded initial graph overview plus complete community partitions loaded only
   after selection.
