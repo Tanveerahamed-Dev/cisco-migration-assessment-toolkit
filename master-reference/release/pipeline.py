@@ -109,6 +109,14 @@ _IMAGE_SIZE_HIGH_ADVISORIES = (
     "GHSA-w3rx-r6r6-pgpr",
 )
 _NANOID_HIGH_ADVISORY = "GHSA-2v37-7h3g-55p8"
+_FFLATE_MODERATE_ADVISORY = "GHSA-px8p-9vwx-vf98"
+_FFLATE_AFFECTED_RANGES = (
+    ((0, 4, 5), (0, 4, 9)),
+    ((0, 5, 0), (0, 5, 4)),
+    ((0, 6, 0), (0, 6, 11)),
+    ((0, 7, 0), (0, 7, 5)),
+    ((0, 8, 0), (0, 8, 3)),
+)
 _SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -168,6 +176,19 @@ def _is_affected_nanoid(value: object) -> bool:
     if None in (before_3_3_17, from_4_0_0, before_5_1_6):
         return True
     return before_3_3_17 < 0 or (from_4_0_0 >= 0 and before_5_1_6 < 0)
+
+
+def _is_affected_fflate(value: object) -> bool:
+    if _SEMVER_RE.fullmatch(str(value)) is None:
+        return True
+    for lower, upper in _FFLATE_AFFECTED_RANGES:
+        from_lower = _semver_compare_to_stable(value, lower)
+        before_upper = _semver_compare_to_stable(value, upper)
+        if from_lower is None or before_upper is None:
+            return True
+        if from_lower >= 0 and before_upper < 0:
+            return True
+    return False
 
 
 def _sbom_component_properties(component: dict[str, Any]) -> dict[str, str]:
@@ -305,6 +326,15 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             and _is_affected_nanoid(component.get("version"))
         }
     )
+    affected_fflate_versions = sorted(
+        {
+            str(component.get("version"))
+            for component in components
+            if isinstance(component, dict)
+            and component.get("name") == "fflate"
+            and _is_affected_fflate(component.get("version"))
+        }
+    )
     limits: list[str] = []
     if affected_image_size_versions:
         advisories = ", ".join(_IMAGE_SIZE_HIGH_ADVISORIES)
@@ -325,6 +355,14 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "Build-time-only reachability does not waive the finding; update every owning lockfile "
             "to a patched version before treating the dependency assessment as current."
         )
+    if affected_fflate_versions:
+        limits.append(
+            "The whole-repository SBOM contains fflate version(s) "
+            f"{', '.join(affected_fflate_versions)} affected by moderate-severity "
+            f"{_FFLATE_MODERATE_ADVISORY}. Update every owning lockfile to a patched release "
+            "within its admitted line. A higher-severity npm audit threshold can exit zero while "
+            "this advisory remains; that is not advisory absence or applicability/VEX evidence."
+        )
     if bounded_image_aliases:
         limits.append(
             "The Vinext image-size dependency edge resolves to the tracked local "
@@ -343,12 +381,18 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "waiver; replace or independently assess "
             "the vendored parser before release."
         )
+    if affected_fflate_versions and (
+        affected_image_size_versions or affected_nanoid_versions or next_vendored_image_parser
+    ):
+        return "blocked_multiple_unremediated_dependency_advisories", limits
     if affected_image_size_versions and affected_nanoid_versions:
         return "blocked_multiple_unremediated_high_dependency_advisories", limits
     if affected_image_size_versions:
         return "blocked_image_size_unpatched_build_time_high_advisories", limits
     if affected_nanoid_versions:
         return "blocked_nanoid_unremediated_high_advisory", limits
+    if affected_fflate_versions:
+        return "blocked_fflate_unremediated_moderate_advisory", limits
     limits.append(
         "SBOM inventory does not assert vulnerability absence; a current source-authenticated "
         "advisory and applicability/VEX review is not embedded in this release."
