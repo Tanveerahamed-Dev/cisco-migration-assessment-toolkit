@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 
 const GENERATED_MARKER = ".atlas-projection-generated";
 const COMPILER_SCHEMA_VERSION = "1.2.0";
-const PROJECTION_SCHEMA_VERSION = "1.2.0";
+const PROJECTION_SCHEMA_VERSION = "2.0.0";
 const REQUIRED_COMPILER_GROUPS = Object.freeze([
   "binaries",
   "calls",
@@ -209,6 +209,13 @@ const SOURCE_CHUNK_MAX_BYTES = 256 * 1024;
 // chunk, search-shard, compressed-family, or expanded-deployment budgets.
 const SOURCE_INDEX_MAX_BYTES = 3 * 1024 * 1024;
 const SOURCE_FRAGMENT_TEXT_BYTES = 64 * 1024;
+const SOURCE_DIGEST_POLICY = Object.freeze({
+  schemaVersion: "source-digest-projection/1",
+  fileContentDigest: "retained_sha256_exact_file_bytes",
+  lineDigest: "retained_sha256_exact_line_text_plus_terminator",
+  textDigest: "verified_pre_projection_omitted_derivable_from_exact_emitted_text",
+  fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1",
+});
 const GRAPH_SHARD_MAX_BYTES = 256 * 1024;
 const GRAPH_INDEX_MAX_BYTES = 512 * 1024;
 const GRAPH_SHARD_RECORDS = 400;
@@ -3239,8 +3246,9 @@ async function writeSourceProjection({
             terminator: fragmentIndex === fragments.length - 1 ? line.terminator : "",
             fragmentIndex,
             fragmentCount: fragments.length,
-            fragmentDigest: sha256(Buffer.from(text, "utf8")),
-            textDigest: line.text_digest,
+            ...(fragments.length > 1
+              ? { fragmentDigest: sha256(Buffer.from(text, "utf8")) }
+              : {}),
             lineDigest: line.line_digest,
             recordId: structural?.id ?? null,
             syntaxKind: structural?.syntaxKind ?? null,
@@ -4504,7 +4512,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     dev: stagingInfo.dev,
     ino: stagingInfo.ino,
   };
-  await writeFile(join(staging, GENERATED_MARKER), "atlas-projection-v1.2\n", "utf8");
+  await writeFile(join(staging, GENERATED_MARKER), "atlas-projection-v2.0\n", "utf8");
   await mkdir(join(staging, "source"), { recursive: true });
   await mkdir(join(staging, "metadata"), { recursive: true });
   await mkdir(join(staging, "records"), { recursive: true });
@@ -4740,6 +4748,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     ),
     sourceFileCount: sourceProjection.files,
     sourceModuleCount: sourceEntries.length,
+    sourceDigestPolicy: SOURCE_DIGEST_POLICY,
     disclosure: {
       metadataDerivation: "compiler_structural",
       metadataCoverage: "every_manifest_group_except_lines_and_source_text",
@@ -4883,6 +4892,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     sourceIndex: sourceProjection.index,
     sourceFileCount: sourceProjection.files,
     sourceModules: sourceEntries,
+    sourceDigestPolicy: SOURCE_DIGEST_POLICY,
     budgets: {
       identityModuleMaxBytes: IDENTITY_MODULE_MAX_BYTES,
       searchShardMaxBytes: SEARCH_SHARD_MAX_BYTES,

@@ -39,6 +39,89 @@ const stableJson = (value) => {
   return JSON.stringify(value);
 };
 const digestObject = (value) => sha256(Buffer.from(`${stableJson(value)}\n`, "utf8"));
+const SOURCE_DIGEST_POLICY = {
+  schemaVersion: "source-digest-projection/1",
+  fileContentDigest: "retained_sha256_exact_file_bytes",
+  lineDigest: "retained_sha256_exact_line_text_plus_terminator",
+  textDigest: "verified_pre_projection_omitted_derivable_from_exact_emitted_text",
+  fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1",
+};
+const SOURCE_SEGMENT_BASE_KEYS = [
+  "behaviorGroup",
+  "callersAndDependencies",
+  "claimsInfluenced",
+  "containingSymbol",
+  "containingSymbolId",
+  "currentOrHistorical",
+  "explanationDepth",
+  "fragmentCount",
+  "fragmentIndex",
+  "guiOrArtifactConsumers",
+  "inputsAndOutputs",
+  "lineDigest",
+  "number",
+  "owner",
+  "recordId",
+  "runtimeTraceState",
+  "securityAndPrivacyEffect",
+  "semanticEntity",
+  "structuralMappingBasis",
+  "syntaxDepth",
+  "syntaxKind",
+  "terminator",
+  "testCoverageState",
+  "testsCoveringIt",
+  "text",
+  "unresolvedReasons",
+].sort();
+
+function assertSourceDigestProjection(descriptor, segments, expectedBytes) {
+  const byLine = Map.groupBy(segments, (segment) => segment.number);
+  for (const lineSegments of byLine.values()) {
+    const fragmentCount = lineSegments[0].fragmentCount;
+    assert.ok(Number.isSafeInteger(fragmentCount) && fragmentCount > 0);
+    assert.equal(lineSegments.length, fragmentCount);
+    assert.deepEqual(
+      lineSegments.map((segment) => segment.fragmentIndex),
+      Array.from({ length: fragmentCount }, (_, index) => index),
+    );
+    const lineDigests = new Set(lineSegments.map((segment) => segment.lineDigest));
+    assert.equal(lineDigests.size, 1);
+    assert.match(lineSegments[0].lineDigest, /^[0-9a-f]{64}$/);
+    for (const [index, segment] of lineSegments.entries()) {
+      assert.equal(Object.hasOwn(segment, "textDigest"), false);
+      assert.deepEqual(
+        Object.keys(segment).sort(),
+        fragmentCount > 1
+          ? [...SOURCE_SEGMENT_BASE_KEYS, "fragmentDigest"].sort()
+          : SOURCE_SEGMENT_BASE_KEYS,
+      );
+      assert.equal(segment.fragmentCount, fragmentCount);
+      assert.equal(segment.fragmentIndex, index);
+      assert.ok(["", "\n", "\r", "\r\n"].includes(segment.terminator));
+      if (index < fragmentCount - 1) assert.equal(segment.terminator, "");
+      if (fragmentCount > 1) {
+        assert.match(segment.fragmentDigest, /^[0-9a-f]{64}$/);
+        assert.equal(segment.fragmentDigest, sha256(Buffer.from(segment.text, "utf8")));
+      } else {
+        assert.equal(Object.hasOwn(segment, "fragmentDigest"), false);
+      }
+    }
+    const text = lineSegments.map((segment) => segment.text).join("");
+    const terminator = lineSegments.at(-1).terminator;
+    assert.equal(
+      lineSegments[0].lineDigest,
+      sha256(Buffer.from(`${text}${terminator}`, "utf8")),
+    );
+  }
+  const reconstructed = Buffer.from(
+    segments.map((segment) => `${segment.text}${segment.terminator}`).join(""),
+    "utf8",
+  );
+  assert.deepEqual(reconstructed, expectedBytes);
+  assert.equal(descriptor.contentDigest, sha256(reconstructed));
+}
+
 const stableId = (kind, ...parts) =>
   `urn:atlas:${kind}:${sha256(Buffer.from(parts.map(String).join("\u001f"), "utf8")).slice(0, 24)}`;
 const ATLAS_STABLE_ID_PATTERN = /^urn:atlas:[a-z-]+:[0-9a-f]{24}$/;
@@ -2027,7 +2110,7 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     const manifestB = await buildProjection({ input, output: outputB });
     assert.equal(
       await readFile(join(outputA, ".atlas-projection-generated"), "utf8"),
-      "atlas-projection-v1.2\n",
+      "atlas-projection-v2.0\n",
     );
 
     const indexA = await readFile(join(outputA, "index.mjs"), "utf8");
@@ -2081,6 +2164,8 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
         .sort(([left], [right]) => left.localeCompare(right)),
     );
     assert.deepEqual(manifestA.groupCounts, expectedMetadataCounts);
+    assert.equal(manifestA.schemaVersion, "2.0.0");
+    assert.deepEqual(manifestA.sourceDigestPolicy, SOURCE_DIGEST_POLICY);
     assert.match(manifestA.sourceModules[0].module, new RegExp(manifestA.sourceModules[0].sha256.slice(0, 24)));
     assert.ok(
       manifestA.metadataModules.every((entry) => /-[0-9a-f]{16}\.mjs$/.test(entry.module)),
@@ -2143,6 +2228,7 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
         .map((gate) => ({ name: gate.name })),
     );
     assert.deepEqual(loaded.projection.groupCounts, expectedMetadataCounts);
+    assert.deepEqual(loaded.projection.sourceDigestPolicy, SOURCE_DIGEST_POLICY);
     assert.deepEqual(Object.keys(loaded.metadataLoaders).sort(), Object.keys(expectedMetadataCounts));
     for (const [group, expected] of Object.entries(expectedMetadataCounts)) {
       assert.equal((await loaded.loadMetadata(group)).length, expected, `${group} projection denominator drifted`);
@@ -2163,15 +2249,12 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
       assert.equal(await loaded.loadSourceWindow(inheritedKey, 1), null);
     }
     const segments = chunks.flatMap((chunk) => chunk.segments);
-    assert.equal(segments.map((line) => `${line.text}${line.terminator}`).join(""), exact.toString("utf8"));
+    assertSourceDigestProjection(source, segments, exact);
     const secondChunks = await Promise.all(secondSource.chunks.map(
       (chunk) => loaded.loadSourceChunk(secondSource.path, chunk.chunkIndex),
     ));
-    assert.equal(
-      secondChunks.flatMap((chunk) => chunk.segments)
-        .map((line) => `${line.text}${line.terminator}`).join(""),
-      secondExact.toString("utf8"),
-    );
+    const secondSegments = secondChunks.flatMap((chunk) => chunk.segments);
+    assertSourceDigestProjection(secondSource, secondSegments, secondExact);
     assert.equal(segments[0].containingSymbolId, fixtureStableId("urn:atlas:symbol:hello"));
     assert.equal(segments[0].structuralMappingBasis, "symbol_range");
     assert.equal(segments[0].explanationDepth, 3);
@@ -2349,6 +2432,59 @@ test("projection is deterministic, lazy, privacy-gated, and exact-source preserv
     assert.equal(files.length, 3);
     assert.equal(loaded.projection.releaseClass, "exact_commit");
     assert.equal(await loaded.loadSource("assets/private.bin"), null);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("source digest compaction verifies derivable digests before projection", async (t) => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-source-digests-"));
+  const cases = [
+    {
+      name: "source-text text digest",
+      group: "source_text",
+      mutate(envelope) {
+        const source = envelope.records.find((record) => record.path === "app/example.py");
+        assert.ok(source);
+        source.lines[0].text_digest = "0".repeat(64);
+      },
+      error: /source text digest mismatch/,
+    },
+    {
+      name: "semantic-line text digest",
+      group: "lines",
+      mutate(envelope) {
+        const line = envelope.records.find(
+          (record) => record.path === "app/example.py" && record.line_number === 1,
+        );
+        assert.ok(line);
+        line.text_digest = "0".repeat(64);
+      },
+      error: /source and semantic line records disagree/,
+    },
+    {
+      name: "source-text line digest",
+      group: "source_text",
+      mutate(envelope) {
+        const source = envelope.records.find((record) => record.path === "app/example.py");
+        assert.ok(source);
+        source.lines[0].line_digest = "0".repeat(64);
+      },
+      error: /source line digest mismatch/,
+    },
+  ];
+  try {
+    for (const item of cases) {
+      await t.test(item.name, async () => {
+        const caseRoot = join(scratch, item.name.replaceAll(" ", "-"));
+        await mkdir(caseRoot);
+        const { input } = await makeCompilerFixture(caseRoot);
+        await mutateCompilerGroup(input, item.group, item.mutate);
+        const output = join(caseRoot, "projection");
+        await assert.rejects(buildProjection({ input, output }), item.error);
+        await assert.rejects(readdir(output), /ENOENT/);
+      });
+    }
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -2836,7 +2972,7 @@ test("projection preserves repeated anonymous missing-endpoint topology", async 
     });
     const output = join(scratch, "projection");
     const manifest = await buildProjection({ input, output });
-    assert.equal(manifest.schemaVersion, "1.2.0");
+    assert.equal(manifest.schemaVersion, "2.0.0");
     assert.deepEqual(repeatedSlots, [0, 0]);
   } finally {
     await rm(scratch, { recursive: true, force: true });
