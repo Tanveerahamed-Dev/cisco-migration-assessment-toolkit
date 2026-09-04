@@ -1,5 +1,5 @@
 /* oxlint-disable nextjs/no-html-link-for-pages -- full-document navigation preserves the connect-src 'none' privacy boundary. */
-import type { Metadata } from "next";
+import type { Metadata } from "vinext/shims/metadata";
 import outputContract from "../../content/output-contract.json";
 import { AtlasShell, OwnerLinks, SectionHeading, StateMark } from "../atlas/Shell";
 import styles from "./Exports.module.css";

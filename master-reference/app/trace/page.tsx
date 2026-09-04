@@ -1,5 +1,5 @@
 /* oxlint-disable nextjs/no-html-link-for-pages -- local full-document navigation is deliberate for the offline site. */
-import type { Metadata } from "next";
+import type { Metadata } from "vinext/shims/metadata";
 import { core, ownerById } from "../atlas/data";
 import { AtlasShell, SectionHeading } from "../atlas/Shell";
 import styles from "../atlas/Workspace.module.css";

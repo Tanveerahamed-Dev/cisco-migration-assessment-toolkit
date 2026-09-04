@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata } from "vinext/shims/metadata";
 import { OwnerCockpit } from "./atlas/OwnerCockpit";
 
 export const metadata: Metadata = {

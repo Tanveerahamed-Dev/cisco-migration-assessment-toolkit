@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata } from "vinext/shims/metadata";
 import { AtlasShell } from "../atlas/Shell";
 import { SourceExplorer } from "../atlas/SourceExplorer";
 

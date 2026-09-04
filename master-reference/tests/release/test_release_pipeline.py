@@ -2066,13 +2066,13 @@ def test_dependency_assessment_fails_closed_when_vinext_is_not_the_only_alias_co
     assert "GHSA-5p2g-fcmc-qvqq" in limits[0]
 
 
-def _next_vendored_sbom_component() -> dict[str, object]:
+def _next_vendored_sbom_component(version: str = "16.2.12") -> dict[str, object]:
     return {
         "bom-ref": "next",
         "name": "next",
-        "version": "16.2.12",
+        "version": version,
         "externalReferences": [
-            {"type": "distribution", "url": "https://registry.npmjs.org/next/-/next-16.2.12.tgz"}
+            {"type": "distribution", "url": f"https://registry.npmjs.org/next/-/next-{version}.tgz"}
         ],
         "properties": [
             {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
@@ -2086,9 +2086,10 @@ def _next_vendored_sbom_component() -> dict[str, object]:
     }
 
 
-def test_dependency_assessment_preserves_the_next_vendored_parser_block() -> None:
+@pytest.mark.parametrize("version", ("16.2.12", "16.3.4", "17.0.0", "unparseable"))
+def test_dependency_assessment_preserves_the_next_vendored_parser_block(version: str) -> None:
     sbom = _bounded_image_replacement_sbom()
-    sbom["components"].append(_next_vendored_sbom_component())
+    sbom["components"].append(_next_vendored_sbom_component(version))
     sbom["dependencies"].append({"ref": "next", "dependsOn": []})
 
     gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
@@ -2096,11 +2097,13 @@ def test_dependency_assessment_preserves_the_next_vendored_parser_block() -> Non
     assert gate == "blocked_next_vendored_image_parser_and_external_review_required"
     assert len(limits) == 3
     assert "GHSA-w3rx-r6r6-pgpr" in limits[1]
+    assert version in limits[1]
+    assert "every Next component as unassessed" in limits[1]
     assert "reachability is not a vulnerability waiver" in limits[1]
     assert "current source-authenticated advisory" in limits[2]
 
 
-def test_tracked_lock_and_local_source_emit_the_exact_vendored_parser_block() -> None:
+def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> None:
     repo = MASTER_REFERENCE.parent
     sources = {
         relative: (repo / relative).read_bytes()
@@ -2115,11 +2118,18 @@ def test_tracked_lock_and_local_source_emit_the_exact_vendored_parser_block() ->
     component_rows = {
         component["name"]: (component, release_pipeline._sbom_component_properties(component))
         for component in sbom["components"]
-        if component.get("name") in {"bounded-image-size", "fflate", "image-size", "next", "vinext"}
+        if component.get("name")
+        in {"bounded-image-size", "image-size", "next", "node-html-parser", "vinext"}
+    }
+    fflate_rows = {
+        (release_pipeline._sbom_component_properties(component).get("atlas:lockfile"), component.get("version"))
+        for component in sbom["components"]
+        if component.get("name") == "fflate"
     }
 
-    assert gate == "blocked_next_vendored_image_parser_and_external_review_required"
-    assert len(limits) == 3
+    assert gate == "blocked_external_current_advisory_applicability_review_required"
+    assert len(limits) == 2
+    assert "next" not in component_rows
     assert component_rows["image-size"][0].get("version") is None
     assert component_rows["bounded-image-size"][0]["licenses"] == [
         {"expression": "LicenseRef-Proprietary"}
@@ -2131,9 +2141,14 @@ def test_tracked_lock_and_local_source_emit_the_exact_vendored_parser_block() ->
     assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceBytes"] == (
         release_pipeline._BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES
     )
-    assert component_rows["fflate"][0]["version"] == "0.7.5"
-    assert "GHSA-w3rx-r6r6-pgpr" in limits[1]
-    assert "current source-authenticated advisory" in limits[2]
+    assert component_rows["node-html-parser"][0]["version"] == "9.0.3"
+    assert component_rows["node-html-parser"][1]["atlas:developmentOnly"] == "true"
+    assert fflate_rows == {
+        ("master-reference/package-lock.json", "0.7.5"),
+        ("webapp/frontend/package-lock.json", "0.8.3"),
+    }
+    assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
+    assert "current source-authenticated advisory" in limits[1]
 
 
 def test_dependency_sources_preserve_the_scoped_override_and_full_local_package(

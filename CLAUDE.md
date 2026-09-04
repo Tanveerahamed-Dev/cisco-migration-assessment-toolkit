@@ -104,15 +104,18 @@ the PDF, so it does not establish PDF-to-PNG provenance.
 
 The dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is locked to the
 patched 3.3.18 line through both the Master Reference and AssessHub npm overrides. Vinext 0.0.50's exact
-`image-size` edge is now scoped to the tracked `@atlas/bounded-image-size` package, whose source-bound
+`image-size` edge is scoped to the tracked `@atlas/bounded-image-size` package, whose source-bound
 PNG/SVG-only parser rejects the advisory-named HEIF, JXL and ICNS families and every other unsupported
 format. The source contract rejects static image imports, numbered metadata-route images and `next/image`
-entry points until they have a bounded owner. This removes the affected registry package from that Vinext
-edge, but it is not release closure: Next 16.2.12 independently embeds compiled parser code outside npm
-override resolution, including an image-size implementation for which mutation-effective watchdogs
-preserve the known ICNS/JXL zero-progress finding. The release gate therefore remains blocked pending removal or authoritative assessment of that
-vendored residual plus a fresh source-authenticated applicability/VEX review. A zero-result npm audit does
-not supersede this owner. Do not suppress the gate or downgrade the framework as a substitute for evidence.
+entry points until they have a bounded owner. The separate direct Next distribution was removed after
+exact package inspection proved its compiled image-size implementation retained mutation-effective
+ICNS/JXL zero-progress paths. Metadata and config types now come from Vinext's owned exports, and rendered
+tests use an exact direct `node-html-parser` development dependency rather than a private Next bundle.
+Tracked lock, install-graph and built-output tests require the Next distribution and compiled parser to
+remain absent; any future Next component fails closed for a new exact compiled-package assessment. This
+closes the known vendored-parser source blocker, but not the fresh externally authenticated current
+advisory/applicability review. The release gate remains blocked on that external boundary, and a zero-result
+npm audit does not supersede it.
 
 ## Shared Git and host operating doctrine
 
