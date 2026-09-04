@@ -161,7 +161,7 @@ the repo's **structural** Markdown layer: page/frontmatter, headings, and links 
 docs/research/). Paragraph bodies are not indexed; retrieve the raw document for body content or semantic freshness.
 Use the graph FIRST for codebase questions AND impact analysis before a change — a scoped subgraph beats broad grep.
 graphify is NOT on PATH. On this owner host, read-only query/navigation verbs use `py -3.12 -m graphify`.
-Source extraction has exactly three guarded forms: `py -3.12 -I -B tools/graphify_guarded.py update <local-path> [--force] [--no-cluster]`,
+Source extraction has exactly three guarded forms: `py -3.12 -I -B tools/graphify_guarded.py update <local-path> [--force]`,
 `py -3.12 -I -B tools/graphify_guarded.py watch <local-path>`, or
 `py -3.12 -I -B tools/graphify_guarded.py extract <local-path> --code-only [--no-cluster]`, **from the main
 checkout (repo root), never a linked worktree**: `graphify-out/` is untracked AND `.graphifyignore` excludes
@@ -187,12 +187,16 @@ rebuild can remove a deliberately deleted privacy-offending node and heal increm
 these two producer gaps. Reconcile the residual tests only when upstream makes explicit include/ignore policy
 authoritative over both special scans.
 
-Graphifyy 0.9.51's official JSON extractor applies its array branch to keys other than `extends`, producing
-false `extends` edges, and its report summary counts structural-only communities as shown even though navigation
-and sections exclude them. `tools/graphify_guarded.py` requires the exact distribution version, import paths, and
-reviewed extractor/reporter SHA-256 identities; applies both one-line corrections only in memory; verifies both
-corrected SHA-256 identities; and rebinds all five live extractor aliases plus the reporter's live `generate`
-alias before entering the CLI. The official AST-cache namespace
+Graphifyy 0.9.51's official JSON extractor applies its array branch to keys other than `extends`, its report summary
+counts structural-only communities as shown even though navigation and sections exclude them, and its incremental
+rebuild discards `built_at_commit` when deciding that topology is unchanged. `tools/graphify_guarded.py` requires the
+exact distribution version, import paths, and reviewed extractor/reporter/watch/rebuild SHA-256 identities; applies
+all three bounded corrections only in memory; verifies every corrected SHA-256 identity; and rebinds all five live
+extractor aliases, the reporter's live `generate` alias, and the watch rebuild before entering the CLI. The commit
+correction uses the normal upstream cluster/report/export path when saved topology matches but the saved commit
+does not equal current HEAD. It publishes only when canonical graph and report content match after removing their
+commit fields; any other drift is refused. An unchanged graph already stamped at current HEAD retains the no-op path. The official
+AST-cache namespace
 does not bind extractor bytes, so the launcher preserves but never reads or writes JSON cache entries (including
 mixed-case `.JSON` suffixes). `--probe` attests the exact overlays, isolated `-I` process, `-B` bytecode-write suppression,
 case-fold-safe cache bypass, sanitized ambient `GRAPHIFY_*`/`GIT_*` controls and executable lookup, and one-worker
@@ -206,7 +210,7 @@ reuse and parallel speed for semantic closure. The command allowlist also reject
 every producer verb not listed above. The Stop receipt is local bookkeeping for wrapper exit 0, matching observed
 HEAD/status endpoints, and the final graph digest. It is not signed source-to-output provenance, producer-warning or
 corpus closure, and cannot exclude a concurrent writer changing and restoring source bytes during extraction. This
-bounds those two corrections only—it is not verification of the rest of the wheel or its transitive dependencies.
+bounds those three corrections only—it is not verification of the rest of the wheel or its transitive dependencies.
 
 Rules:
 - For codebase questions, run `py -3.12 -m graphify query "<question>"` first. Use `py -3.12 -m graphify path "<A>" "<B>"`
@@ -247,9 +251,9 @@ Rules:
 
   **Known incremental-rebuild limitation (current producer residual, not a claim that the present graph is
   truncated):** Graphify's incremental `changed_paths` rebuild can retain the full node census while evicting
-  cross-file edges for a re-extracted file. `built_at_commit` records the last topology write (a successful
-  topology-neutral scan intentionally leaves it unchanged), and it and node count therefore do not prove edge
-  completeness. Consumers must report missing declared edges, and a reference/release build must first run a
+  cross-file edges for a re-extracted file. Guard contract v4 requires `built_at_commit` to equal current HEAD after
+  a completed guarded refresh, including a tree-identical merge rebind, but that stamp and node count still do not
+  prove edge completeness. Consumers must report missing declared edges, and a reference/release build must first run a
   full `py -3.12 -I -B tools/graphify_guarded.py update .`, which heals this producer state. Executable evidence:
   `cisco_toolkit/d10_eval_set.py` and
   `tests/test_d10_eval_set.py::test_verify_multi_hop_edges_reports_on_an_edge_truncated_graph`.
