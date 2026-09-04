@@ -2066,27 +2066,29 @@ def test_dependency_assessment_fails_closed_when_vinext_is_not_the_only_alias_co
     assert "GHSA-5p2g-fcmc-qvqq" in limits[0]
 
 
+def _next_vendored_sbom_component() -> dict[str, object]:
+    return {
+        "bom-ref": "next",
+        "name": "next",
+        "version": "16.2.12",
+        "externalReferences": [
+            {"type": "distribution", "url": "https://registry.npmjs.org/next/-/next-16.2.12.tgz"}
+        ],
+        "properties": [
+            {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+            {"name": "atlas:lockfilePath", "value": "node_modules/next"},
+            {"name": "atlas:recordKind", "value": "resolved-third-party-component"},
+            {
+                "name": "atlas:npmIntegrity",
+                "value": "sha512-iD59eYQWmbFcEbX7v/acG5DRym9iw1DdaPoD0WTA920naWsE25wShzJW4+UvAs8MK9EC2kBfIH6vtto1H1PHGw==",
+            },
+        ],
+    }
+
+
 def test_dependency_assessment_preserves_the_next_vendored_parser_block() -> None:
     sbom = _bounded_image_replacement_sbom()
-    sbom["components"].append(
-        {
-            "bom-ref": "next",
-            "name": "next",
-            "version": "16.2.12",
-            "externalReferences": [
-                {"type": "distribution", "url": "https://registry.npmjs.org/next/-/next-16.2.12.tgz"}
-            ],
-            "properties": [
-                {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
-                {"name": "atlas:lockfilePath", "value": "node_modules/next"},
-                {"name": "atlas:recordKind", "value": "resolved-third-party-component"},
-                {
-                    "name": "atlas:npmIntegrity",
-                    "value": "sha512-iD59eYQWmbFcEbX7v/acG5DRym9iw1DdaPoD0WTA920naWsE25wShzJW4+UvAs8MK9EC2kBfIH6vtto1H1PHGw==",
-                },
-            ],
-        }
-    )
+    sbom["components"].append(_next_vendored_sbom_component())
     sbom["dependencies"].append({"ref": "next", "dependsOn": []})
 
     gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
@@ -2113,7 +2115,7 @@ def test_tracked_lock_and_local_source_emit_the_exact_vendored_parser_block() ->
     component_rows = {
         component["name"]: (component, release_pipeline._sbom_component_properties(component))
         for component in sbom["components"]
-        if component.get("name") in {"bounded-image-size", "image-size", "next", "vinext"}
+        if component.get("name") in {"bounded-image-size", "fflate", "image-size", "next", "vinext"}
     }
 
     assert gate == "blocked_next_vendored_image_parser_and_external_review_required"
@@ -2129,6 +2131,7 @@ def test_tracked_lock_and_local_source_emit_the_exact_vendored_parser_block() ->
     assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceBytes"] == (
         release_pipeline._BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES
     )
+    assert component_rows["fflate"][0]["version"] == "0.7.5"
     assert "GHSA-w3rx-r6r6-pgpr" in limits[1]
     assert "current source-authenticated advisory" in limits[2]
 
@@ -2286,6 +2289,88 @@ def test_dependency_assessment_does_not_flag_patched_nanoid_only() -> None:
     assert gate == "blocked_external_current_advisory_applicability_review_required"
     assert len(limits) == 1
     assert "GHSA-2v37-7h3g-55p8" not in limits[0]
+
+
+@pytest.mark.parametrize(
+    ("version", "affected"),
+    (
+        ("0.4.4", False),
+        ("0.4.5", True),
+        ("0.4.8+build.1", True),
+        ("0.4.9-beta.1", True),
+        ("0.4.9", False),
+        ("0.5.0-beta.1", False),
+        ("0.5.0", True),
+        ("0.5.4", False),
+        ("0.6.0", True),
+        ("0.6.10", True),
+        ("0.6.11", False),
+        ("0.7.0", True),
+        ("0.7.4", True),
+        ("0.7.5-beta.1", True),
+        ("0.7.5+build.1", False),
+        ("0.8.0", True),
+        ("0.8.2", True),
+        ("0.8.3", False),
+        ("0.9.0", False),
+        ("unparseable", True),
+    ),
+)
+def test_dependency_assessment_models_fflate_advisory_ranges_fail_closed(
+    version: str,
+    affected: bool,
+) -> None:
+    assert release_pipeline._is_affected_fflate(version) is affected
+
+
+def test_dependency_assessment_cannot_hide_vulnerable_fflate_behind_patched_copy() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "fflate", "version": "0.7.4"},
+                {"name": "fflate", "version": "0.8.3"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_fflate_unremediated_moderate_advisory"
+    assert len(limits) == 1
+    assert "GHSA-px8p-9vwx-vf98" in limits[0]
+    assert "0.7.4" in limits[0]
+    assert "0.8.3" not in limits[0]
+    assert "higher-severity npm audit threshold" in limits[0]
+
+
+def test_dependency_assessment_does_not_flag_patched_fflate_only() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "fflate", "version": "0.7.5"},
+                {"name": "fflate", "version": "0.8.3"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_external_current_advisory_applicability_review_required"
+    assert len(limits) == 1
+    assert "GHSA-px8p-9vwx-vf98" not in limits[0]
+
+
+def test_dependency_assessment_reports_fflate_with_another_modeled_blocker() -> None:
+    sbom = _bounded_image_replacement_sbom()
+    sbom["components"].extend(
+        [
+            {"name": "fflate", "version": "0.7.4"},
+            _next_vendored_sbom_component(),
+        ]
+    )
+    sbom["dependencies"].append({"ref": "next", "dependsOn": []})
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == "blocked_multiple_unremediated_dependency_advisories"
+    assert any("GHSA-px8p-9vwx-vf98" in limit for limit in limits)
+    assert any("GHSA-w3rx-r6r6-pgpr" in limit for limit in limits)
 
 
 def test_release_inputs_and_preservation_use_git_blobs_across_checkout_eol(tmp_path: Path) -> None:
