@@ -1,5 +1,5 @@
 /* oxlint-disable nextjs/no-html-link-for-pages -- full-document links preserve connect-src 'none'. */
-import type { Metadata } from "next";
+import type { Metadata } from "vinext/shims/metadata";
 import { deliveryGovernance, horizonGapsViewModel } from "../atlas/data";
 import { GapWorkbench } from "../atlas/GapWorkbench";
 import { AtlasShell, SectionHeading, StateMark } from "../atlas/Shell";

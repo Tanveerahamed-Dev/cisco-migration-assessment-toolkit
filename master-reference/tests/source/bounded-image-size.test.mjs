@@ -228,32 +228,33 @@ test("application source contains no Vinext or Next image-parser entry points", 
   }
 
   const pathSetDigest = createHash("sha256").update(`${JSON.stringify(scannedPaths)}\n`).digest("hex");
-  assert.equal(scannedPaths.length, 65);
-  assert.equal(pathSetDigest, "ff84b9fbecd63ed112fe38b1ea3fccf023a69070340311bb2c842dc66227a431");
+  assert.equal(scannedPaths.length, 66);
+  assert.equal(pathSetDigest, "99d212bef3b993bf6fb034dc501a01f8b95e5b99f26df0abcbdcaa1b08551e3d");
   assert.deepEqual(findings.sort(), []);
 });
 
-test("the separately bundled Next parser remains an explicit blocked residual", () => {
-  const vectors = [
-    [0x69, 0x63, 0x6e, 0x73, 0, 0, 0, 16, 0x69, 0x63, 0x70, 0x34, 0, 0, 0, 0],
-    [
-      0, 0, 0, 12, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a,
-      0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x6a, 0x78, 0x6c, 0x20,
-      0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0x6a, 0x78, 0x6c, 0x70,
-    ],
-  ];
-  for (const vector of vectors) {
-    const child = `const fs=require("node:fs");const imageSize=require("next/dist/compiled/image-size");fs.writeSync(1,"entered\\n");imageSize(Buffer.from(${JSON.stringify(vector)}));`;
-    const result = spawnSync(process.execPath, ["--eval", child], {
-      cwd: projectRoot,
-      encoding: "utf8",
-      timeout: 2_000,
-      windowsHide: true,
-    });
-    assert.equal(result.stdout, "entered\n");
-    assert.equal(result.error?.code, "ETIMEDOUT");
-    assert.equal(result.status, null);
+test("the separately bundled Next parser is absent from the install graph", () => {
+  const manifest = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  const lock = JSON.parse(readFileSync(path.join(projectRoot, "package-lock.json"), "utf8"));
+  const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+
+  assert.equal(manifest.dependencies.next, undefined);
+  assert.equal(manifest.overrides.next, undefined);
+  assert.deepEqual(
+    Object.keys(lock.packages).filter(
+      (key) => key === "node_modules/next" || key.endsWith("/node_modules/next"),
+    ),
+    [],
+  );
+  for (const specifier of [
+    "next",
+    "next/dist/compiled/image-size",
+    "next/dist/compiled/image-detector/detector.js",
+  ]) {
+    assert.throws(
+      () => projectRequire.resolve(specifier),
+      (error) => error?.code === "MODULE_NOT_FOUND",
+    );
   }
 });
 

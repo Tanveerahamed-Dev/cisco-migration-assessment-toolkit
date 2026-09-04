@@ -1,5 +1,5 @@
 /* oxlint-disable nextjs/no-html-link-for-pages -- local full-document links preserve the connect-src 'none' boundary. */
-import type { Metadata } from "next";
+import type { Metadata } from "vinext/shims/metadata";
 import {
   capabilityCatalog,
   deliveryGovernance,

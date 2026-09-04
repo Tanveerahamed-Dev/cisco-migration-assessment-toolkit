@@ -285,21 +285,18 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
 
     components = sbom.get("components", [])
     bounded_image_aliases = _verified_bounded_image_replacement_aliases(sbom)
-    next_vendored_image_parser = any(
-        isinstance(component, dict)
-        and component.get("name") == "next"
-        and component.get("version") == "16.2.12"
-        and component.get("externalReferences")
-        == [{"type": "distribution", "url": "https://registry.npmjs.org/next/-/next-16.2.12.tgz"}]
-        and _sbom_component_properties(component).get("atlas:lockfile")
-        == "master-reference/package-lock.json"
-        and _sbom_component_properties(component).get("atlas:lockfilePath") == "node_modules/next"
-        and _sbom_component_properties(component).get("atlas:recordKind")
-        == "resolved-third-party-component"
-        and _sbom_component_properties(component).get("atlas:npmIntegrity")
-        == "sha512-iD59eYQWmbFcEbX7v/acG5DRym9iw1DdaPoD0WTA920naWsE25wShzJW4+UvAs8MK9EC2kBfIH6vtto1H1PHGw=="
-        for component in components
+    next_component_versions = sorted(
+        {
+            (
+                str(component.get("version"))
+                if component.get("version") is not None
+                else "<unversioned-next-component>"
+            )
+            for component in components
+            if isinstance(component, dict) and component.get("name") == "next"
+        }
     )
+    next_vendored_image_parser = bool(next_component_versions)
     affected_image_size_versions = sorted(
         {
             (
@@ -375,11 +372,13 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
         )
     if next_vendored_image_parser:
         limits.append(
-            "Next 16.2.12 contains a separate compiled image-size implementation outside npm override "
+            "The whole-repository SBOM contains Next component version(s) "
+            f"{', '.join(next_component_versions)}. At least the reviewed Next 16.2.12 and 16.3.4 "
+            "distributions contain a separate compiled image-size implementation outside npm override "
             "resolution, including the zero-progress ICNS parser covered by GHSA-w3rx-r6r6-pgpr. "
-            "Current source contracts reject next/image imports, but reachability is not a vulnerability "
-            "waiver; replace or independently assess "
-            "the vendored parser before release."
+            "An npm override cannot alter those compiled bytes, and reachability is not a vulnerability "
+            "waiver. This gate therefore treats every Next component as unassessed until exact source "
+            "removes the distribution or an independently reviewable compiled-package assessment is supplied."
         )
     if affected_fflate_versions and (
         affected_image_size_versions or affected_nanoid_versions or next_vendored_image_parser

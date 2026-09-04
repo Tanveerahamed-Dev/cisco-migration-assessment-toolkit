@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
-import htmlParser from "next/dist/compiled/node-html-parser/index.js";
+import { parse as parseHtml } from "node-html-parser";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
 import { buildCapabilityCatalogViewModel } from "../app/atlas/capabilityLineage.ts";
@@ -18,7 +18,6 @@ const root = new URL("../", import.meta.url);
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
 workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
-const { parse: parseHtml } = htmlParser;
 const HTML_PARSE_OPTIONS = {
   comment: false,
   blockTextElements: {
@@ -1849,7 +1848,9 @@ test("keeps runtime local, read-only, private, and dependency-light", async () =
   ]);
   const packageData = JSON.parse(packageText);
 
-  assert.deepEqual(Object.keys(packageData.dependencies).sort(), ["next", "react", "react-dom"]);
+  assert.deepEqual(Object.keys(packageData.dependencies).sort(), ["react", "react-dom"]);
+  assert.equal(packageData.devDependencies["node-html-parser"], "9.0.3");
+  assert.equal(packageData.overrides.next, undefined);
   assert.equal(packageData.private, true);
   assert.match(layout, /index:\s*false/);
   assert.match(layout, /follow:\s*false/);
@@ -1875,6 +1876,27 @@ test("keeps runtime local, read-only, private, and dependency-light", async () =
   const height = socialCard.readUInt32BE(20);
   assert.ok(width >= 1200 && height >= 630, `social card too small: ${width}x${height}`);
   assert.ok(width / height >= 1.85 && width / height <= 1.95, `unexpected social-card ratio: ${width}x${height}`);
+});
+
+test("built output excludes the vendored Next image parser", async () => {
+  const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+  const scriptPaths = (await sourceFiles(distDirectory)).filter((path) => /\.(?:c?js|mjs)$/.test(path));
+  const signatures = [
+    "next/dist/compiled/image-size",
+    "next/dist/compiled/image-detector",
+    "extractPartialStreams",
+    '"ICN#":32',
+  ];
+  const findings = [];
+  for (const scriptPath of scriptPaths) {
+    const source = await readFile(scriptPath, "utf8");
+    for (const signature of signatures) {
+      if (source.includes(signature)) findings.push(`${scriptPath}:${signature}`);
+    }
+  }
+
+  assert.ok(scriptPaths.length > 0, "built script denominator is empty");
+  assert.deepEqual(findings, []);
 });
 
 test("renders deterministic catalogs and never promotes advisory content", async () => {
