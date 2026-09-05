@@ -3108,6 +3108,25 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(ledger["parsing"]["expected_nonblank_lines"], 3)
             self.assertEqual(ledger["parsing"]["line_records"], 3)
 
+    def test_release_lock_sql_fixture_and_extensionless_license_are_classified(self) -> None:
+        lock = classify_file("portable/windows-x64-requirements.lock", "100644")
+        self.assertEqual(lock["classification_errors"], [])
+        self.assertEqual(lock["language"], "text")
+        self.assertIn("dependency", lock["roles"])
+
+        fixture = classify_file("tests/fixtures/assesshub-v3.32.1.sql", "100644")
+        self.assertEqual(fixture["classification_errors"], [])
+        self.assertEqual(fixture["language"], "sql")
+        self.assertIn("dataset", fixture["roles"])
+        self.assertIn("test", fixture["roles"])
+
+        license_file = classify_file(
+            "portable/third-party-licenses/react-force-graph-LICENSE", "100644"
+        )
+        self.assertEqual(license_file["classification_errors"], [])
+        self.assertEqual(license_file["language"], "text")
+        self.assertEqual(license_file["roles"], ["documentation"])
+
 
 if __name__ == "__main__":
     unittest.main()
