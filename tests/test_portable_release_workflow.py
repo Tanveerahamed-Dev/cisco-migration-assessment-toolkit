@@ -87,6 +87,9 @@ def test_portable_workflow_separates_untrusted_build_from_draft_write_authority(
     assert "atlas-portable-release\\portable-controller.json" not in portable
     assert "--draft --prerelease" in draft
     assert "never overwrites release assets" in draft
+    assert 'gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY"' in draft
+    assert 'gh release create "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY"' in draft
+    assert 'gh release upload "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY"' in draft
     assert "gh attestation verify" in draft
     assert "--signer-workflow" in draft and "--source-digest" in draft
     assert "--predicate-type 'https://cyclonedx.org/bom'" in draft
