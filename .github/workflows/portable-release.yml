@@ -329,18 +329,18 @@ jobs:
           version="$(python -c 'import glob,json,os; p=glob.glob(os.environ["RUNNER_TEMP"]+"/candidate/*.release.json"); assert len(p)==1; d=json.load(open(p[0],encoding="utf-8")); assert d["source"]["commit"]==os.environ["SOURCE_COMMIT"]; print(d["version"])')"
           expected="$(python -c 'import re,sys; print("v"+re.sub(r"rc([0-9]+)$",r"-rc.\1",sys.argv[1]))' "$version")"
           if [ "$DRAFT_TAG" != "$expected" ]; then echo "draft tag must be $expected for source version $version" >&2; exit 1; fi
-          if gh release view "$DRAFT_TAG" --json isDraft >/dev/null 2>&1; then echo 'draft tag already exists; this workflow never overwrites release assets' >&2; exit 1; fi
+          if gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft >/dev/null 2>&1; then echo 'draft tag already exists; this workflow never overwrites release assets' >&2; exit 1; fi
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" >/dev/null 2>&1; then echo 'tag already exists without this draft; refusing an ambiguous target' >&2; exit 1; fi
           remote_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           [ "$remote_main" = "$SOURCE_COMMIT" ] || { echo 'main advanced before draft creation; refusing a stale candidate' >&2; exit 1; }
-          gh release create "$DRAFT_TAG" --draft --prerelease --target "$SOURCE_COMMIT" --title "$DRAFT_TAG Atlas portable release candidate" --notes 'UNSIGNED RELEASE CANDIDATE. Automated Windows checks passed; production signing, managed-policy, physical USB/BitLocker, third-party dataset redistribution legal review, independent human review, and field acceptance remain open.'
+          gh release create "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$SOURCE_COMMIT" --title "$DRAFT_TAG Atlas portable release candidate" --notes 'UNSIGNED RELEASE CANDIDATE. Automated Windows checks passed; production signing, managed-policy, physical USB/BitLocker, third-party dataset redistribution legal review, independent human review, and field acceptance remain open.'
           tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" --jq '.object.sha')"
           tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" --jq '.object.type')"
           if [ "$tag_type" = 'tag' ]; then tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_target}" --jq '.object.sha')"; fi
           [ "$tag_target" = "$SOURCE_COMMIT" ] || { echo 'created draft tag does not resolve to the exact source; refusing upload' >&2; exit 1; }
           remote_main_after="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           [ "$remote_main_after" = "$SOURCE_COMMIT" ] || { echo 'main advanced during draft creation; refusing asset upload' >&2; exit 1; }
-          gh release upload "$DRAFT_TAG" "${RUNNER_TEMP}"/candidate/*
+          gh release upload "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" "${RUNNER_TEMP}"/candidate/*
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DRAFT_TAG}" > "${RUNNER_TEMP}/draft-release.json"
           python - "${RUNNER_TEMP}/candidate" "${RUNNER_TEMP}/draft-release.json" <<'PY'
           import hashlib, json, pathlib, sys
