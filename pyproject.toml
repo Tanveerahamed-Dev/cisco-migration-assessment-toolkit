@@ -107,7 +107,7 @@ mcp = ["mcp>=1.28,<3"]
 # Compatibility alias; AssessHub runtime dependencies are already in the base set.
 webapp = []
 # Building the Atlas one-folder portable bundle (ADR-0004 P2; portable/build_atlas.py).
-build = ["pip==25.3", "pyinstaller>=6.10,<7", "cyclonedx-python-lib[json-validation]==11.12.0"]
+build = ["pip==26.2", "pyinstaller>=6.10,<7", "cyclonedx-python-lib[json-validation]==11.12.0"]
 # The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
 # all offline/air-gap-safe, none imported by the engine: rank-bm25 (the auditable pure-Python Okapi
 # BM25 — §4's frozen priors k1/b are constructor args), pytrec-eval-terrier (the maintained
