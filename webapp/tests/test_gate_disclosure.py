@@ -235,7 +235,7 @@ def test_gate_evaluation_exception_marks_document_instead_of_becoming_silence(
 ):
     monkeypatch.setattr(
         gate_state,
-        "pending_approvals",
+        "load_store",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             RuntimeError("private path detail\nFORGED LOG RECORD")
         ),
@@ -250,4 +250,4 @@ def test_gate_evaluation_exception_marks_document_instead_of_becoming_silence(
     assert "private path detail" not in text
     assert "private path detail" not in caplog.text
     assert "FORGED LOG RECORD" not in caplog.text
-    assert "gated document disclosure evaluation failed" in caplog.text
+    assert caplog.text.count("gated document disclosure evaluation failed") == 1
