@@ -231,12 +231,14 @@ def test_one_gate_read_drives_header_and_document(tmp_path, engagement, monkeypa
 
 
 def test_gate_evaluation_exception_marks_document_instead_of_becoming_silence(
-    tmp_path, engagement, monkeypatch,
+    tmp_path, engagement, monkeypatch, caplog,
 ):
     monkeypatch.setattr(
         gate_state,
         "pending_approvals",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("private path detail")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("private path detail\nFORGED LOG RECORD")
+        ),
     )
     with _client(tmp_path) as client:
         sid, _ = _seed(client)
@@ -246,3 +248,6 @@ def test_gate_evaluation_exception_marks_document_instead_of_becoming_silence(
     _, text = _docx_text(response, tmp_path, "gate-exception.docx")
     assert "UNAPPROVED DRAFT" in text
     assert "private path detail" not in text
+    assert "private path detail" not in caplog.text
+    assert "FORGED LOG RECORD" not in caplog.text
+    assert "gated document disclosure evaluation failed" in caplog.text

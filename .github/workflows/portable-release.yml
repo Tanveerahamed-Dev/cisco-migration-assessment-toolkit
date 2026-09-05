@@ -218,7 +218,9 @@ jobs:
           path: ${{ runner.temp }}/candidate
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.portable.outputs.source_commit }}
+          # workflow_dispatch is admitted only when the portable job proves github.sha is the
+          # current exact main commit.  Do not flow a job output into checkout's ref input.
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

@@ -47,9 +47,11 @@ _RAW_SECRET_CANARIES = (
 
 
 def _run(command: list[str], *, environment: dict[str, str], timeout: int = 600) -> subprocess.CompletedProcess:
+    working_directory = Path(environment["TEMP"]).resolve(strict=True)
     return subprocess.run(
         command,
         env=environment,
+        cwd=str(working_directory),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

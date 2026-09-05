@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import subprocess
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from portable.qualify_atlas import (
     _REDACTION_CANARIES,
     _python_absent,
+    _run,
     _sanitize_warning_report,
     _scan_redaction_canaries,
 )
@@ -69,3 +72,19 @@ def test_python_absence_probe_fails_closed_without_where_exe(
 ) -> None:
     monkeypatch.setenv("SystemRoot", str(tmp_path / "missing-windows"))
     assert _python_absent({}) is False
+
+
+def test_qualification_children_run_from_the_isolated_temp_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _run(["Atlas.exe", "--version"], environment={"TEMP": str(tmp_path)})
+    assert observed["cwd"] == str(tmp_path.resolve(strict=True))

@@ -96,6 +96,9 @@ def test_portable_workflow_separates_untrusted_build_from_draft_write_authority(
     assert "protected-main checks not successful" in text
     assert "created draft tag does not resolve to the exact source" in draft
     assert "draft release asset readback differs" in draft
+    verify_candidate = text.split("  verify_candidate:", 1)[1].split("  draft:", 1)[0]
+    assert "ref: ${{ github.sha }}" in verify_candidate
+    assert "ref: ${{ needs.portable.outputs.source_commit }}" not in verify_candidate
     assert "${{ inputs.draft_tag }}'" not in draft
     for match in re.finditer(r"uses:\s+[^\s]+@([^\s#]+)", text):
         assert re.fullmatch(r"[0-9a-f]{40}", match.group(1)), match.group(0)

@@ -49,9 +49,16 @@ DIST = ROOT / "portable" / "dist" / exe_name()
 EXE = DIST / f"{exe_name()}.exe"
 
 
-def _run(cmd: list, timeout: int, **kw) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list,
+    timeout: int,
+    *,
+    cwd: str | Path,
+    **kw,
+) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
-                          stdin=subprocess.DEVNULL, timeout=timeout, **kw)
+                          stdin=subprocess.DEVNULL, timeout=timeout,
+                          cwd=str(Path(cwd).resolve(strict=True)), **kw)
 
 
 def expected_release() -> str:
@@ -98,7 +105,12 @@ def windows_version_info_gap(observed: dict, expected: dict) -> str:
     return f"Windows VERSIONINFO differs from source: {missing}" if missing else ""
 
 
-def _windows_version_info(exe: Path, environment: dict[str, str]) -> dict:
+def _windows_version_info(
+    exe: Path,
+    environment: dict[str, str],
+    *,
+    cwd: str | Path,
+) -> dict:
     """Read the signed-policy-facing PE metadata through Windows' version API."""
     if os.name != "nt":
         raise SystemExit("Windows VERSIONINFO verification requires Windows")
@@ -124,6 +136,7 @@ def _windows_version_info(exe: Path, environment: dict[str, str]) -> dict:
         [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
         timeout=60,
         env=child_env,
+        cwd=cwd,
     )
     if result.returncode:
         raise SystemExit(f"Windows VERSIONINFO probe failed: {result.stderr[-800:]}")
@@ -176,10 +189,16 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             )
 
     with tempfile.TemporaryDirectory(prefix="atlas_smoke_") as td:
-        db = str(Path(td) / "data" / "hub.db")
+        smoke_root = Path(td).resolve(strict=True)
+        db = str(smoke_root / "data" / "hub.db")
 
         print("[smoke 1/4] --selftest")
-        p = _run([str(exe), "--selftest", "--db", db], timeout=180, env=runtime_env)
+        p = _run(
+            [str(exe), "--selftest", "--db", db],
+            timeout=180,
+            env=runtime_env,
+            cwd=smoke_root,
+        )
         print("\n".join("    " + ln for ln in (p.stdout or "").strip().splitlines()))
         if p.returncode != 0:
             raise SystemExit(f"selftest FAILED (exit {p.returncode})\n{p.stderr}")
@@ -190,19 +209,24 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             )
 
         print("[smoke 2/4] --version")
-        p = _run([str(exe), "--version"], timeout=120, env=runtime_env)
+        p = _run([str(exe), "--version"], timeout=120, env=runtime_env, cwd=smoke_root)
         print(f"    {p.stdout.strip()}")
         gap = version_gap(p.stdout, expected_release()) if p.returncode == 0 else "non-zero exit"
         if gap:
             raise SystemExit(f"--version FAILED (exit {p.returncode}): {gap}\n{p.stderr!r}")
-        resource = _windows_version_info(exe, runtime_env)
+        resource = _windows_version_info(exe, runtime_env, cwd=smoke_root)
         resource_gap = windows_version_info_gap(resource, version_expectations(ROOT))
         if resource_gap:
             raise SystemExit(f"--version resource FAILED: {resource_gap}")
         print("    Windows VERSIONINFO matches pyproject, brand, and license owners")
 
         print("[smoke 3/4] --run-engine --help (frozen engine-child dispatch)")
-        p = _run([str(exe), "--run-engine", "--help"], timeout=180, env=runtime_env)
+        p = _run(
+            [str(exe), "--run-engine", "--help"],
+            timeout=180,
+            env=runtime_env,
+            cwd=smoke_root,
+        )
         if p.returncode != 0 or "cisco-assess" not in p.stdout:
             raise SystemExit(f"engine dispatch FAILED (exit {p.returncode}):\n{p.stderr[-800:]}")
         print("    engine argparse reached (usage: cisco-assess …)")
@@ -214,7 +238,7 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
         srv = subprocess.Popen([str(exe), "--no-browser", "--port", str(port), "--db", db],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
-                               env=child_env)
+                               env=child_env, cwd=str(smoke_root))
         try:
             base = f"http://127.0.0.1:{port}"
             deadline = time.monotonic() + 60

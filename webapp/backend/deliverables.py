@@ -167,8 +167,10 @@ def gate_disclosure(kind: str, gate_root: str = ".", engagement: str | None = No
         # `missing == []` means UNKNOWN, not "nothing missing", which is why `status` leads the
         # header. `detail` mirrors `summary` for the pre-existing key shape.
         return {**posture, "detail": posture.get("summary", "")}
-    except Exception as exc:                  # noqa: BLE001 - a broken ledger never blocks a download
-        logger.warning("[GATE UNREADABLE] %s disclosure evaluation failed: %s", kind, exc)
+    except Exception:                         # noqa: BLE001 - a broken ledger never blocks a download
+        # Do not interpolate the request-derived kind or an exception whose message can contain
+        # ledger content.  Either can contain control characters and forge adjacent log records.
+        logger.warning("[GATE UNREADABLE] gated document disclosure evaluation failed")
         return {
             "generator": kind,
             "status": "unreadable",
