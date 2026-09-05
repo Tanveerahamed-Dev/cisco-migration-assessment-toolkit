@@ -1619,7 +1619,17 @@ def test_tree_equivalent_check_ignores_git_replace_objects(tmp_path):
     git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "changed")
     second = git("rev-parse", "HEAD")
     replacement = subprocess.run(
-        ["git", "commit-tree", first_tree, "-p", first],
+        [
+            "git",
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=t",
+            "commit-tree",
+            first_tree,
+            "-p",
+            first,
+        ],
         cwd=repo,
         check=True,
         input="replacement view\n",

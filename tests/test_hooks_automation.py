@@ -66,6 +66,29 @@ _GIT = shutil.which("git")
 _needs_shell = pytest.mark.skipif(not (_BASH and _GIT), reason="bash / git unavailable")
 
 
+def _reviewed_graphify_available():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            os.path.join(ROOT, "tools", "graphify_guarded.py"),
+            "--probe",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+_needs_reviewed_graphify = pytest.mark.skipif(
+    not _reviewed_graphify_available(),
+    reason="exact reviewed Graphify runtime is unavailable",
+)
+
+
 def _read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
         return f.read()
@@ -497,8 +520,17 @@ def test_graph_refresh_guarded_identity_failure_is_loud_and_does_not_mutate(tmp_
     index = repo / ".git" / "index"
     index.unlink()
     index.mkdir()
+    fake = _fake_graphify_python(tmp_path, "identity_failure")
+    log = tmp_path / "graphify-argv-identity-failure.log"
+    (repo / "graphify-out" / ".graphify_python").write_text(
+        fake.as_posix(), encoding="utf-8"
+    )
 
-    p = _run_hook("graph-refresh.sh", cwd=repo)
+    p = _run_hook(
+        "graph-refresh.sh",
+        cwd=repo,
+        env=_env_with(GRAPHIFY_FAKE_LOG=str(log)),
+    )
 
     assert p.returncode == 0
     assert "guarded repository identity is unavailable" in p.stderr
@@ -635,6 +667,7 @@ def test_graph_refresh_ignores_ambient_git_checkout_redirection(tmp_path):
 
 
 @_needs_shell
+@_needs_reviewed_graphify
 def test_graph_refresh_delegates_identity_without_executing_active_filter(tmp_path):
     repo = _graph_refresh_repo(tmp_path, "gr_filter_identity")
     tracked = repo / "tracked.txt"
