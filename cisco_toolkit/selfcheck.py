@@ -29,14 +29,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 GREEN, RED, UNKNOWN = "GREEN", "RED", "UNKNOWN"
 GRAPHIFY_REFRESH_COMMAND = "py -3.12 -I -B tools/graphify_guarded.py update ."
-GRAPHIFY_REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/1"
+GRAPHIFY_REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/2"
 GRAPHIFY_GUARD_IDENTITY = {
     "aliases": 5,
     "ast_cache": "bypass-json-casefold",
     "bytecode_writes": "disabled",
-    "contract": "graphify-producer-overlays/4",
+    "contract": "graphify-producer-overlays/5",
     "environment": "graphify-git-path-sanitized",
     "extractor": "graphify/extractors/json_config.py",
+    "git_replace_objects": "disabled",
+    "git_optional_locks": "disabled",
     "isolated": True,
     "max_workers": 1,
     "patched_sha256": "cb6b660bd2dee3f58e9007d0eac27883cd3bb3fe5d8136c13e8d83b92b90e011",
@@ -44,11 +46,13 @@ GRAPHIFY_GUARD_IDENTITY = {
     "report_aliases": 1,
     "report_patched_sha256": "b6855a4111f7aec351022fc0d7ed96359216eb3b48c307ea025b8b41ef600bb9",
     "report_source_sha256": "382d844327181b652bbcd3ebd9cc3f2ab63bbce30e6eb5da80ced2b1575d1d0a",
-    "rebuild_commit_policy": "rewrite_only_when_head_differs_and_non_provenance_graph_report_match",
-    "rebuild_patched_sha256": "1858a57219a040f145804893816d6f0fd61c796e0876110b2aaeda408cba4782",
+    "rebuild_commit_policy": "rewrite_only_when_head_differs_and_non_commit_graph_report_match",
+    "rebuild_fast_noop_policy": "current_complete_receipt_exact_graph_report",
+    "rebuild_patched_sha256": "87aa8d48e1b4f5c45ab9e779688bd280a752609983262fc3502db8a8ce76cb75",
     "rebuild_source_sha256": "4c1283138dfb003bf7cd768c2ba6fb94d2ae6869d0d8b4ac42cc54253163be18",
     "source_sha256": "d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945",
     "status": "pass",
+    "tree_equivalent_rebind_policy": "prior_receipted_ancestor_equal_tree_commit_fields_only",
     "version": "0.9.51",
     "watch": "graphify/watch.py",
     "watch_aliases": 1,
@@ -104,15 +108,23 @@ def _check(name: str, status: str, detail: str) -> Dict[str, str]:
 def _repo_root(root: Optional[str]) -> str:
     if root:
         return root
-    try:
-        import subprocess
-        out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
-    except Exception:
-        pass
-    return os.getcwd()
+    current = os.path.realpath(os.getcwd())
+    candidate = current
+    is_junction = getattr(os.path, "isjunction", None)
+    while True:
+        marker = os.path.join(candidate, ".git")
+        if (
+            os.path.isdir(marker)
+            and not os.path.islink(marker)
+            and not (is_junction is not None and is_junction(marker))
+            and os.path.normcase(os.path.realpath(marker))
+            == os.path.normcase(marker)
+        ):
+            return candidate
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return current
+        candidate = parent
 
 
 def _count_rows(path: str) -> int:
@@ -449,18 +461,23 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
                   "`python -m cisco_toolkit.memory_guard snapshot|verify` around a consolidation pass")
 
 
-def _stable_graph_identity(path: str) -> Dict[str, Any]:
-    """Hash one regular graph file and reject a replacement during the read."""
+def _stable_file_payload(path: str, *, label: str, maximum_bytes: int) -> bytes:
+    """Read one bounded regular file and reject a replacement during the read."""
     if os.path.islink(path):
-        raise ValueError("graph.json is a symlink")
-    digest = hashlib.sha256()
+        raise ValueError(f"{label} is a symlink")
+    chunks = []
     with open(path, "rb") as handle:
         before = os.fstat(handle.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError("graph.json is not a regular file")
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError(f"{label} is not a singly-linked regular file")
+        total = 0
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+            total += len(chunk)
+            if total > maximum_bytes:
+                raise ValueError(f"{label} exceeds its reviewed size bound")
+            chunks.append(chunk)
         after = os.fstat(handle.fileno())
+    named = os.stat(path, follow_symlinks=False)
     def identity(value):
         return (
             value.st_dev,
@@ -469,9 +486,100 @@ def _stable_graph_identity(path: str) -> Dict[str, Any]:
             value.st_mtime_ns,
             value.st_ctime_ns,
         )
-    if identity(before) != identity(after):
-        raise ValueError("graph.json changed while hashing")
-    return {"sha256": digest.hexdigest(), "size": after.st_size}
+    if (
+        identity(before) != identity(after)
+        or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)
+        or (after.st_size, after.st_mtime_ns) != (named.st_size, named.st_mtime_ns)
+    ):
+        raise ValueError(f"{label} changed while hashing")
+    return b"".join(chunks)
+
+
+def _graphify_output_root(root: str) -> str:
+    """Require the canonical in-repository output directory, never indirection."""
+
+    root_real = os.path.realpath(root)
+    output = os.path.join(root, "graphify-out")
+    is_junction = getattr(os.path, "isjunction", None)
+    if os.path.islink(output) or (is_junction is not None and is_junction(output)):
+        raise ValueError("graphify-out is a symlink or junction")
+    expected = os.path.join(root_real, "graphify-out")
+    if os.path.normcase(os.path.realpath(output)) != os.path.normcase(expected):
+        raise ValueError("graphify-out resolves outside the repository")
+    return output
+
+
+def _stable_file_identity(path: str, *, label: str, maximum_bytes: int) -> Dict[str, Any]:
+    payload = _stable_file_payload(
+        path, label=label, maximum_bytes=maximum_bytes
+    )
+    return {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+
+
+def _stable_graph_identity(path: str) -> Dict[str, Any]:
+    return _stable_file_identity(
+        path, label="graph.json", maximum_bytes=512 * 1024 * 1024
+    )
+
+
+def _stable_report_identity(path: str) -> Dict[str, Any]:
+    return _stable_file_identity(
+        path, label="GRAPH_REPORT.md", maximum_bytes=16 * 1024 * 1024
+    )
+
+
+def _stable_report_snapshot(path: str) -> Tuple[Dict[str, Any], str]:
+    """Bind the report digest and its unique anchored commit stamp in one read."""
+    payload = _stable_file_payload(
+        path, label="GRAPH_REPORT.md", maximum_bytes=16 * 1024 * 1024
+    )
+    matches = re.findall(
+        rb"(?m)^- Built from commit: `([0-9a-f]{8})`\r?$", payload
+    )
+    if len(matches) != 1:
+        raise ValueError("GRAPH_REPORT.md lacks one unique anchored commit stamp")
+    return (
+        {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)},
+        matches[0].decode("ascii"),
+    )
+
+
+def _stable_graph_snapshot(path: str) -> Tuple[Dict[str, Any], str]:
+    """Bind the graph digest and strict full commit stamp in one read."""
+    payload = _stable_file_payload(
+        path, label="graph.json", maximum_bytes=512 * 1024 * 1024
+    )
+    graph = json.loads(
+        payload.decode("utf-8", errors="strict"),
+        object_pairs_hook=_strict_json_object,
+        parse_constant=_reject_json_constant,
+    )
+    if not isinstance(graph, dict):
+        raise ValueError("graph.json root is not an object")
+    built = graph.get("built_at_commit")
+    if not isinstance(built, str) or re.fullmatch(
+        r"[0-9a-f]{40}|[0-9a-f]{64}", built
+    ) is None:
+        raise ValueError("graph.json has no valid full commit stamp")
+    return (
+        {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)},
+        built,
+    )
+
+
+def _strict_json_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if not isinstance(key, str) or key in result:
+            raise ValueError("duplicate or invalid JSON object key")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-finite JSON number")
 
 
 def _strict_json_equal(left: Any, right: Any) -> bool:
@@ -490,14 +598,22 @@ def _guarded_refresh_time(root: str) -> Tuple[Optional[float], Optional[str]]:
     This local hook receipt is not a signed source-to-output attestation and cannot
     exclude a source writer that changes and restores a file during extraction.
     """
-    path = os.path.join(root, "graphify-out", ".guarded_refresh.json")
+    try:
+        output = _graphify_output_root(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return None, f"guarded refresh output root invalid: {exc}"
+    path = os.path.join(output, ".guarded_refresh.json")
     if not os.path.exists(path):
         return None, None
     try:
-        if os.path.islink(path) or os.path.getsize(path) > 16_384:
-            raise ValueError("receipt is not a bounded regular file")
-        with open(path, encoding="utf-8") as handle:
-            receipt = json.load(handle)
+        receipt_payload = _stable_file_payload(
+            path, label="guarded refresh receipt", maximum_bytes=16_384
+        )
+        receipt = json.loads(
+            receipt_payload.decode("utf-8", errors="strict"),
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+        )
         updated = datetime.fromisoformat(receipt["updated_at"])
         guard = receipt["guard"]
         python_version = guard.get("python") if isinstance(guard, dict) else None
@@ -509,12 +625,36 @@ def _guarded_refresh_time(root: str) -> Tuple[Optional[float], Optional[str]]:
             raise ValueError("guard Python identity invalid") from exc
         expected_guard = {**GRAPHIFY_GUARD_IDENTITY, "python": python_version}
         graph_path = os.path.join(root, "graphify-out", "graph.json")
-        graph_identity = _stable_graph_identity(graph_path)
+        graph_identity, graph_commit = _stable_graph_snapshot(graph_path)
+        report_path = os.path.join(root, "graphify-out", "GRAPH_REPORT.md")
+        report_identity, report_commit = _stable_report_snapshot(report_path)
+        expected_root, expected_git_dir = _exact_git_paths(root)
+        top_proc = _run_git(root, "rev-parse", "--show-toplevel")
+        git_dir_proc = _run_git(root, "rev-parse", "--absolute-git-dir")
         head_proc = _run_git(root, "rev-parse", "--verify", "HEAD")
-        status_proc = _run_git(root, "status", "--porcelain")
+        hidden_index_state = _git_index_has_hidden_state(root)
+        if hidden_index_state is not False:
+            raise ValueError("Git index has hidden or unreadable state flags")
+        index_scope = _git_index_scope(root)
+        if index_scope is None:
+            raise ValueError("Git index scope is unreadable")
+        tracked_paths, index_unsafe = index_scope
+        if index_unsafe:
+            raise ValueError("Git submodules are unsupported")
+        active_filters = _tracked_paths_have_active_filters(root, tracked_paths)
+        if active_filters is not False:
+            raise ValueError("Git filter state is active or unreadable")
+        status_proc = _run_git(
+            root,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
         if (
             not isinstance(receipt, dict)
-            or set(receipt) != {"contract", "graph", "guard", "head", "phase", "root", "state", "updated_at"}
+            or set(receipt) != {"contract", "graph", "guard", "head", "phase", "report", "root", "state", "updated_at"}
             or receipt.get("contract") != GRAPHIFY_REFRESH_RECEIPT_CONTRACT
             or receipt.get("phase") != "complete"
             or receipt.get("state") != "clean"
@@ -522,6 +662,20 @@ def _guarded_refresh_time(root: str) -> Tuple[Optional[float], Optional[str]]:
             or python_parts < (3, 12)
             or not _strict_json_equal(guard, expected_guard)
             or not _strict_json_equal(receipt.get("graph"), graph_identity)
+            or graph_commit != receipt.get("head")
+            or not _strict_json_equal(receipt.get("report"), report_identity)
+            or not isinstance(receipt.get("head"), str)
+            or report_commit != receipt["head"][:8]
+            or top_proc is None
+            or top_proc.returncode != 0
+            or not top_proc.stdout.strip()
+            or os.path.normcase(os.path.realpath(top_proc.stdout.strip()))
+            != os.path.normcase(expected_root)
+            or git_dir_proc is None
+            or git_dir_proc.returncode != 0
+            or not git_dir_proc.stdout.strip()
+            or os.path.normcase(os.path.realpath(git_dir_proc.stdout.strip()))
+            != os.path.normcase(expected_git_dir)
             or head_proc is None
             or head_proc.returncode != 0
             or receipt.get("head") != head_proc.stdout.strip()
@@ -532,14 +686,18 @@ def _guarded_refresh_time(root: str) -> Tuple[Optional[float], Optional[str]]:
         ):
             raise ValueError("receipt identity/state mismatch")
         return updated.timestamp(), None
-    except (KeyError, OSError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, RecursionError, TypeError, UnicodeError, ValueError) as exc:
         return None, f"guarded refresh receipt invalid: {exc}"
 
 
 def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str, str]:
     """Verify bounded refresh bookkeeping; mtime is context, never refresh evidence."""
     del stale_days  # identity, not elapsed wall time, determines currency
-    p = os.path.join(root, "graphify-out", "graph.json")
+    try:
+        output = _graphify_output_root(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _check("graph_refresh_receipt", UNKNOWN, f"graphify-out path invalid: {exc}")
+    p = os.path.join(output, "graph.json")
     if not os.path.exists(p):
         return _check("graph_refresh_receipt", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout; a worktree won't have it)")
     refreshed_at, receipt_error = _guarded_refresh_time(root)
@@ -554,13 +712,13 @@ def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str
             "graph_refresh_receipt",
             UNKNOWN,
             f"topology write is {topology_age:.0f}d old, but no current guarded refresh receipt exists; "
-            "current Graphify provenance is not established",
+            "current guarded Graphify refresh evidence is not established",
         )
     age_days = (now - refreshed_at) / 86400.0
     return _check(
         "graph_refresh_receipt",
         GREEN,
-        f"guarded refresh completed at this clean HEAD; graph bytes still match "
+        f"guarded refresh completed at this clean HEAD; graph/report bytes still match "
         f"(recorded {age_days:.0f}d ago; concurrent source writes are not excluded)",
     )
 
@@ -572,7 +730,7 @@ def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool],
     undeterminable); ``n_changed`` is the count of tracked paths changed between them (only meaningful when
     ``is_ancestor``). Coverage-honest: what cannot be evaluated is UNKNOWN, never a fabricated GREEN.
 
-    Guard contract v4 requires an exact current-HEAD stamp after a successful guarded refresh,
+    Guard contract v5 requires an exact current-HEAD stamp after a successful guarded refresh,
     including a tree-identical merge commit. Any older stamp is UNKNOWN even when the compared
     trees have no changed paths."""
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", built) is None:
@@ -604,16 +762,111 @@ def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool],
     )
 
 
-def _run_git(root: str, *args: str) -> Optional[subprocess.CompletedProcess]:
+def _exact_git_paths(root: str) -> Tuple[str, str]:
+    root_real = os.path.realpath(root)
+    git_marker = os.path.join(root_real, ".git")
+    is_junction = getattr(os.path, "isjunction", None)
+    if (
+        os.path.islink(git_marker)
+        or (is_junction is not None and is_junction(git_marker))
+        or not os.path.isdir(git_marker)
+        or os.path.normcase(os.path.realpath(git_marker))
+        != os.path.normcase(git_marker)
+    ):
+        raise ValueError("Git directory is absent or indirected")
+    commondir = os.path.join(git_marker, "commondir")
+    if (
+        os.path.exists(commondir)
+        or os.path.islink(commondir)
+        or (is_junction is not None and is_junction(commondir))
+    ):
+        raise ValueError("Git common directory is indirected")
+    return root_real, git_marker
+
+
+def _git_executable_from_path(entries: List[str]) -> Optional[str]:
+    name = "git.exe" if os.name == "nt" else "git"
+    for directory in entries:
+        candidate = os.path.join(directory, name)
+        if not os.path.isfile(candidate) or os.path.islink(candidate):
+            continue
+        is_junction = getattr(os.path, "isjunction", None)
+        if is_junction is not None and is_junction(candidate):
+            continue
+        if os.name != "nt" and not os.access(candidate, os.X_OK):
+            continue
+        return os.path.realpath(candidate)
+    return None
+
+
+def _run_git(
+    root: str, *args: str, input_text: Optional[str] = None
+) -> Optional[subprocess.CompletedProcess]:
     """Run git in ``root``; None on any failure (the caller degrades to UNKNOWN — never crashes a run)."""
     try:
+        if input_text is not None and len(input_text.encode("utf-8")) > 8 * 1024 * 1024:
+            return None
+        root_real, git_dir = _exact_git_paths(root)
+        inherited_path = os.environ.get("PATH", "")
+        safe_path = []
+        root_path = os.path.normcase(os.path.realpath(root_real))
+        for entry in inherited_path.split(os.pathsep):
+            if not entry or not os.path.isabs(entry):
+                continue
+            resolved = os.path.realpath(entry)
+            normalized = os.path.normcase(resolved)
+            try:
+                inside_root = os.path.commonpath((root_path, normalized)) == root_path
+            except ValueError:
+                inside_root = False
+            if not inside_root and os.path.isdir(resolved):
+                safe_path.append(resolved)
         environment = {
             key: value for key, value in os.environ.items() if not key.startswith("GIT_")
         }
+        environment["PATH"] = os.pathsep.join(safe_path)
+        environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        if os.name == "nt":
+            environment["NoDefaultCurrentDirectoryInExePath"] = "1"
+        executable_name = _git_executable_from_path(safe_path)
+        if not executable_name:
+            return None
+        executable = os.path.realpath(executable_name)
+        is_junction = getattr(os.path, "isjunction", None)
+        if (
+            not os.path.isfile(executable)
+            or os.path.islink(executable)
+            or (is_junction is not None and is_junction(executable))
+        ):
+            return None
+        executable_normalized = os.path.normcase(executable)
+        try:
+            executable_in_root = (
+                os.path.commonpath((root_path, executable_normalized)) == root_path
+            )
+        except ValueError:
+            executable_in_root = False
+        if executable_in_root:
+            return None
+        config_arguments = (
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+        )
         return subprocess.run(
-            ["git", *args],
-            cwd=root,
+            [
+                executable,
+                f"--git-dir={git_dir}",
+                f"--work-tree={root_real}",
+                *config_arguments,
+                *args,
+            ],
+            cwd=root_real,
             env=environment,
+            stdin=subprocess.DEVNULL if input_text is None else None,
+            input=input_text,
             capture_output=True,
             text=True,
             timeout=15,
@@ -622,22 +875,88 @@ def _run_git(root: str, *args: str) -> Optional[subprocess.CompletedProcess]:
         return None
 
 
+def _git_index_has_hidden_state(root: str) -> Optional[bool]:
+    hidden = False
+    for option in ("-t", "-v"):
+        result = _run_git(root, "ls-files", option, "-z")
+        if result is None or result.returncode != 0:
+            return None
+        records = result.stdout.split("\0")
+        if records[-1:] != [""]:
+            return None
+        for record in records[:-1]:
+            if len(record) < 3 or record[1] != " ":
+                return None
+            if record[0] != "H":
+                hidden = True
+    return hidden
+
+
+def _git_index_scope(root: str) -> Optional[Tuple[str, bool]]:
+    result = _run_git(root, "ls-files", "--stage", "-z")
+    if result is None or result.returncode != 0:
+        return None
+    rows = result.stdout.split("\0")
+    if rows[-1:] != [""]:
+        return None
+    paths = []
+    unsafe = False
+    for row in rows[:-1]:
+        try:
+            header, path = row.split("\t", 1)
+            mode, oid, stage = header.split(" ")
+        except ValueError:
+            return None
+        if (
+            not path
+            or re.fullmatch(r"[0-7]{6}", mode) is None
+            or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid) is None
+            or stage != "0"
+        ):
+            return None
+        unsafe = unsafe or mode == "160000"
+        paths.append(path)
+    return "\0".join(paths) + ("\0" if paths else ""), unsafe
+
+
+def _tracked_paths_have_active_filters(root: str, paths: str) -> Optional[bool]:
+    for cached in (False, True):
+        arguments = ["check-attr", "-z"]
+        if cached:
+            arguments.append("--cached")
+        arguments.extend(("--stdin", "filter"))
+        result = _run_git(root, *arguments, input_text=paths)
+        if result is None or result.returncode != 0:
+            return None
+        fields = result.stdout.split("\0")
+        if fields[-1:] != [""] or (len(fields) - 1) % 3:
+            return None
+        for index in range(0, len(fields) - 1, 3):
+            path, attribute, value = fields[index : index + 3]
+            if not path or attribute != "filter":
+                return None
+            if value not in {"unspecified", "unset"}:
+                return True
+    return False
+
+
 def check_graph_commit_current(root: str) -> Dict[str, str]:
     """Disclose exact ``built_at_commit`` vs HEAD without overstating the stamp.
 
-    Guard contract v4 requires equality after a completed guarded refresh. A tree-equivalent
+    Guard contract v5 requires equality after a completed guarded refresh. A tree-equivalent
     ancestor is still UNKNOWN until the guard performs its bounded commit-only refresh.
     Absent graph / non-git / unreadable is also UNKNOWN."""
-    p = os.path.join(root, "graphify-out", "graph.json")
+    try:
+        output = _graphify_output_root(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _check("graph_commit", UNKNOWN, f"graphify-out path invalid: {exc}")
+    p = os.path.join(output, "graph.json")
     if not os.path.exists(p):
         return _check("graph_commit", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout)")
     try:
-        with open(p, encoding="utf-8") as f:
-            built = json.load(f).get("built_at_commit")
-    except (OSError, ValueError) as e:
+        _identity, built = _stable_graph_snapshot(p)
+    except (OSError, RecursionError, UnicodeError, ValueError) as e:
         return _check("graph_commit", UNKNOWN, f"could not read built_at_commit: {e!r}")
-    if not built or not isinstance(built, str):
-        return _check("graph_commit", UNKNOWN, "graph.json has no built_at_commit stamp")
     head_proc = _run_git(root, "rev-parse", "HEAD")
     if head_proc is None or head_proc.returncode != 0 or not head_proc.stdout.strip():
         return _check("graph_commit", UNKNOWN, "not a git checkout / HEAD unavailable")

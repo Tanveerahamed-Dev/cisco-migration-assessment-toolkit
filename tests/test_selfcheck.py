@@ -8,8 +8,11 @@ runtime default path is the pin; here every store is synthetic, under tmp or via
 """
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
+
+import pytest
 
 from cisco_toolkit import memory_guard as MG
 from cisco_toolkit import selfcheck as SC
@@ -170,27 +173,54 @@ def test_graph_fresh_stale_absent(tmp_path, monkeypatch):
     os.makedirs(gdir)
     gpath = os.path.join(gdir, "graph.json")
     open(gpath, "w").close()
+    report_path = os.path.join(gdir, "GRAPH_REPORT.md")
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write("# Graph report\n")
     mtime = os.path.getmtime(gpath)
     unreceipted = SC.check_graph_fresh(root, now=mtime + 3600)
     assert unreceipted["status"] == SC.UNKNOWN
-    assert "provenance is not established" in unreceipted["detail"]
+    assert "refresh evidence is not established" in unreceipted["detail"]
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
     ).stdout.strip()
-    with open(os.path.join(gdir, ".guarded_refresh.json"), "w", encoding="utf-8") as handle:
+    valid_graph = json.dumps(
+        {"built_at_commit": head, "nodes": [], "links": []}, separators=(",", ":")
+    ) + "\n"
+    with open(gpath, "w", encoding="utf-8") as handle:
+        handle.write(valid_graph)
+    valid_report = f"# Graph report\n\n- Built from commit: `{head[:8]}`\n"
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write(valid_report)
+    receipt_path = os.path.join(gdir, ".guarded_refresh.json")
+    with open(receipt_path, "w", encoding="utf-8") as handle:
         json.dump({
             "contract": SC.GRAPHIFY_REFRESH_RECEIPT_CONTRACT,
             "graph": SC._stable_graph_identity(gpath),
             "guard": {**SC.GRAPHIFY_GUARD_IDENTITY, "python": "3.12.9"},
             "head": head,
             "phase": "complete",
+            "report": SC._stable_report_identity(report_path),
             "root": os.path.realpath(root),
             "state": "clean",
             "updated_at": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
         }, handle)
     current = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
     assert current["status"] == SC.GREEN and current["name"] == "graph_refresh_receipt"
-    assert "completed at this clean HEAD; graph bytes still match" in current["detail"]
+    assert "completed at this clean HEAD; graph/report bytes still match" in current["detail"]
+
+    real_index_scope = SC._git_index_scope
+    monkeypatch.setattr(SC, "_git_index_scope", lambda _root: ("", True))
+    uninitialized_submodule = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert uninitialized_submodule["status"] == SC.UNKNOWN
+    assert "submodules are unsupported" in uninitialized_submodule["detail"]
+    monkeypatch.setattr(SC, "_git_index_scope", real_index_scope)
+
+    receipt_alias = receipt_path + ".alias"
+    os.link(receipt_path, receipt_alias)
+    hardlinked = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert hardlinked["status"] == SC.UNKNOWN
+    assert "singly-linked regular file" in hardlinked["detail"]
+    os.remove(receipt_alias)
 
     other = tmp_path.parent / (tmp_path.name + "-redirect")
     other.mkdir()
@@ -207,13 +237,208 @@ def test_graph_fresh_stale_absent(tmp_path, monkeypatch):
     redirected = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
     assert redirected["status"] == SC.GREEN, "ambient Git redirection must not change the checked root"
 
+    with open(report_path, "a", encoding="utf-8") as handle:
+        handle.write("tampered\n")
+    report_replaced = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert report_replaced["status"] == SC.UNKNOWN
+    assert "identity/state mismatch" in report_replaced["detail"]
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write(valid_report)
+
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write("# Graph report\n\n- Built from commit: `bbbbbbbb`\n")
+    with open(receipt_path, encoding="utf-8") as handle:
+        rechained = json.load(handle)
+    rechained["report"] = SC._stable_report_identity(report_path)
+    with open(receipt_path, "w", encoding="utf-8") as handle:
+        json.dump(rechained, handle)
+    wrong_stamp = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert wrong_stamp["status"] == SC.UNKNOWN
+    assert "identity/state mismatch" in wrong_stamp["detail"]
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write(valid_report)
+    rechained["report"] = SC._stable_report_identity(report_path)
+    with open(receipt_path, "w", encoding="utf-8") as handle:
+        json.dump(rechained, handle)
+
+    for malformed_graph in (
+        json.dumps({"built_at_commit": "b" * 40, "nodes": [], "links": []}) + "\n",
+        '{"built_at_commit":"' + head + '","built_at_commit":"' + head + '","nodes":[],"links":[]}\n',
+        '{"nodes":[],"links":[]}\n',
+    ):
+        with open(gpath, "w", encoding="utf-8") as handle:
+            handle.write(malformed_graph)
+        with open(receipt_path, encoding="utf-8") as handle:
+            rechained_graph = json.load(handle)
+        rechained_graph["graph"] = SC._stable_graph_identity(gpath)
+        with open(receipt_path, "w", encoding="utf-8") as handle:
+            json.dump(rechained_graph, handle)
+        invalid_graph = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+        assert invalid_graph["status"] == SC.UNKNOWN
+        assert "guarded refresh receipt invalid" in invalid_graph["detail"]
+    with open(gpath, "w", encoding="utf-8") as handle:
+        handle.write(valid_graph)
+    rechained["graph"] = SC._stable_graph_identity(gpath)
+    with open(receipt_path, "w", encoding="utf-8") as handle:
+        json.dump(rechained, handle)
+
+    real_json_loads = SC.json.loads
+
+    def recurse_on_graph(payload, *args, **kwargs):
+        if (
+            isinstance(payload, str) and '"built_at_commit"' in payload
+        ) or (
+            isinstance(payload, (bytes, bytearray)) and b'"built_at_commit"' in payload
+        ):
+            raise RecursionError("synthetic deeply nested graph")
+        return real_json_loads(payload, *args, **kwargs)
+
+    monkeypatch.setattr(SC.json, "loads", recurse_on_graph)
+    recursive_graph = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
+    assert recursive_graph["status"] == SC.UNKNOWN
+    assert "synthetic deeply nested graph" in recursive_graph["detail"]
+    monkeypatch.setattr(SC.json, "loads", real_json_loads)
+
     with open(gpath, "w", encoding="utf-8") as handle:
         handle.write('{"replaced":true}\n')
     replaced = SC.check_graph_fresh(root, now=mtime + 100 * 86400)
     assert replaced["status"] == SC.UNKNOWN
-    assert "identity/state mismatch" in replaced["detail"]
+    assert "valid full commit stamp" in replaced["detail"]
     os.remove(gpath)
     assert SC.check_graph_fresh(root, now=mtime)["status"] == SC.UNKNOWN               # absent -> UNKNOWN, not GREEN
+
+
+def test_stable_receipt_read_rejects_a_named_path_replacement(tmp_path, monkeypatch):
+    receipt = tmp_path / ".guarded_refresh.json"
+    replacement = tmp_path / "replacement.json"
+    receipt.write_bytes(b'{"phase":"complete"}\n')
+    replacement.write_bytes(b'{"phase":"pending"}\n')
+    real_stat = SC.os.stat
+    swapped = False
+
+    def swap_before_named_stat(path, *args, **kwargs):
+        nonlocal swapped
+        if (
+            not swapped
+            and os.path.normcase(os.fspath(path)) == os.path.normcase(str(receipt))
+            and kwargs.get("follow_symlinks") is False
+        ):
+            swapped = True
+            os.replace(replacement, receipt)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(SC.os, "stat", swap_before_named_stat)
+    with pytest.raises(ValueError, match="changed while hashing"):
+        SC._stable_file_payload(
+            str(receipt), label="guarded refresh receipt", maximum_bytes=16_384
+        )
+
+
+def test_graph_selfchecks_reject_an_indirected_output_root(tmp_path):
+    root = tmp_path / "repo"
+    external = tmp_path / "external-output"
+    root.mkdir()
+    external.mkdir()
+    output = root / "graphify-out"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(output), str(external)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        output.symlink_to(external, target_is_directory=True)
+    try:
+        (external / "graph.json").write_text("{}\n", encoding="utf-8")
+        fresh = SC.check_graph_fresh(str(root), now=1.0)
+        commit = SC.check_graph_commit_current(str(root))
+        assert fresh["status"] == SC.UNKNOWN and "path invalid" in fresh["detail"]
+        assert commit["status"] == SC.UNKNOWN and "path invalid" in commit["detail"]
+    finally:
+        if os.name == "nt":
+            os.rmdir(output)
+        else:
+            output.unlink()
+
+
+def test_graph_selfchecks_reject_a_redirected_git_common_directory(tmp_path):
+    root = _healthy_root(tmp_path, None)
+    external = tmp_path.parent / (tmp_path.name + "-external-common")
+    external.mkdir()
+    with open(os.path.join(root, ".git", "commondir"), "w", encoding="utf-8") as handle:
+        handle.write(str(external))
+
+    fresh = SC.check_graph_fresh(root, now=1.0)
+    commit = SC.check_graph_commit_current(root)
+    assert fresh["status"] == SC.UNKNOWN
+    assert "common directory is indirected" in fresh["detail"]
+    assert commit["status"] == SC.UNKNOWN
+
+
+def test_selfcheck_git_runner_excludes_repo_local_executable_lookup(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    subprocess.run([real_git, "init", "-q"], cwd=root, check=True)
+    (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run([real_git, "add", "tracked.txt"], cwd=root, check=True)
+    subprocess.run(
+        [
+            real_git,
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    fake_root = tmp_path / "fake-root"
+    fake_root.mkdir()
+    fake = root / ("git.cmd" if os.name == "nt" else "git")
+    fake.write_text(
+        (
+            f"@echo {fake_root}\n@exit /b 0\n"
+            if os.name == "nt"
+            else f"#!/bin/sh\necho {fake_root}\nexit 0\n"
+        ),
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    external_fake = fake_root / ("git.cmd" if os.name == "nt" else "git")
+    external_fake.write_text(fake.read_text(encoding="utf-8"), encoding="utf-8")
+    external_fake.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join((str(root), str(os.path.dirname(real_git))))
+    )
+
+    result = SC._run_git(str(root), "rev-parse", "--verify", "HEAD")
+    assert result is not None and result.returncode == 0
+    assert os.path.normcase(os.path.realpath(result.args[0])) == os.path.normcase(
+        os.path.realpath(real_git)
+    )
+    monkeypatch.chdir(root)
+    assert os.path.normcase(SC._repo_root(None)) == os.path.normcase(str(root.resolve()))
+    monkeypatch.chdir(fake_root)
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+    if os.name == "nt":
+        assert os.path.normcase(os.path.realpath(shutil.which("git") or "")) == os.path.normcase(
+            os.path.realpath(external_fake)
+        )
+    external_cwd_result = SC._run_git(
+        str(root), "rev-parse", "--verify", "HEAD"
+    )
+    assert external_cwd_result is not None and external_cwd_result.returncode == 0
+    assert os.path.normcase(os.path.realpath(external_cwd_result.args[0])) == os.path.normcase(
+        os.path.realpath(real_git)
+    )
 
 
 def test_graph_commit_verdict_pure():
@@ -551,6 +776,8 @@ def _init_git_with_current_graph(root):
     head = _g("rev-parse", "HEAD").stdout.strip() or ("0" * 40)
     with open(os.path.join(root, "graphify-out", "graph.json"), "w", encoding="utf-8") as f:
         json.dump({"built_at_commit": head, "nodes": [], "links": []}, f)
+    with open(os.path.join(root, "graphify-out", "GRAPH_REPORT.md"), "w", encoding="utf-8") as f:
+        f.write(f"# Graph report\n\n- Built from commit: `{head[:8]}`\n")
 
 
 def _healthy_root(tmp_path, now_ref):
@@ -566,6 +793,7 @@ def _healthy_root(tmp_path, now_ref):
     os.makedirs(os.path.join(root, "graphify-out"))
     _init_git_with_current_graph(root)              # HEAD + a current graph.json (writes graphify-out/graph.json)
     gpath = os.path.join(root, "graphify-out", "graph.json")
+    report_path = os.path.join(root, "graphify-out", "GRAPH_REPORT.md")
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
     ).stdout.strip()
@@ -576,11 +804,163 @@ def _healthy_root(tmp_path, now_ref):
             "guard": {**SC.GRAPHIFY_GUARD_IDENTITY, "python": "3.12.9"},
             "head": head,
             "phase": "complete",
+            "report": SC._stable_report_identity(report_path),
             "root": os.path.realpath(root),
             "state": "clean",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, handle)
     return root
+
+
+def test_graph_fresh_binds_the_exact_worktree_despite_core_worktree_redirect(
+    tmp_path
+):
+    root = _healthy_root(tmp_path, None)
+    external = tmp_path.parent / (tmp_path.name + "-external-worktree")
+    shutil.copytree(root, external, ignore=shutil.ignore_patterns(".git"))
+    subprocess.run(
+        ["git", "-C", root, "config", "core.worktree", str(external)], check=True
+    )
+    claude = os.path.join(root, "CLAUDE.md")
+    with open(claude, "a", encoding="utf-8") as handle:
+        handle.write("dirty root only\n")
+    redirected = subprocess.run(
+        ["git", "-C", root, "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert redirected.stdout == ""
+
+    result = SC.check_graph_fresh(root, now=1.0)
+    assert result["status"] == SC.UNKNOWN
+    assert "identity/state mismatch" in result["detail"]
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_graph_fresh_rejects_index_flags_that_hide_tracked_changes(
+    tmp_path, flag
+):
+    root = _healthy_root(tmp_path, None)
+    subprocess.run(
+        ["git", "-C", root, "update-index", flag, "CLAUDE.md"], check=True
+    )
+    with open(os.path.join(root, "CLAUDE.md"), "a", encoding="utf-8") as handle:
+        handle.write("hidden dirty root\n")
+    hidden = subprocess.run(
+        ["git", "-C", root, "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert hidden.stdout == ""
+
+    result = SC.check_graph_fresh(root, now=1.0)
+    assert result["status"] == SC.UNKNOWN
+    assert "hidden or unreadable state flags" in result["detail"]
+
+
+def test_graph_fresh_disables_fsmonitor_valid_shortcuts(tmp_path):
+    root = _healthy_root(tmp_path, None)
+    subprocess.run(
+        ["git", "-C", root, "config", "core.fsmonitor", "true"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", root, "update-index", "--fsmonitor"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", root, "update-index", "--untracked-cache"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", root, "update-index", "--fsmonitor-valid", "CLAUDE.md"],
+        check=True,
+    )
+    tagged = subprocess.run(
+        ["git", "-C", root, "ls-files", "-f", "CLAUDE.md"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert tagged.stdout.startswith("h ")
+    index_path = os.path.join(root, ".git", "index")
+    with open(index_path, "rb") as handle:
+        index_before = handle.read()
+    index_mtime = os.stat(index_path).st_mtime_ns
+    with open(os.path.join(root, "CLAUDE.md"), "a", encoding="utf-8") as handle:
+        handle.write("fsmonitor-hidden change\n")
+    result = SC.check_graph_fresh(root, now=1.0)
+    assert result["status"] == SC.UNKNOWN
+    assert "identity/state mismatch" in result["detail"]
+    with open(index_path, "rb") as handle:
+        assert handle.read() == index_before
+    assert os.stat(index_path).st_mtime_ns == index_mtime
+
+
+def test_graph_fresh_never_executes_a_configured_fsmonitor_command(tmp_path):
+    root = _healthy_root(tmp_path, None)
+    sentinel = tmp_path.parent / (tmp_path.name + "-fsmonitor-invoked.txt")
+    command = tmp_path.parent / (tmp_path.name + "-fsm.sh")
+    command.write_text(
+        f'#!/bin/sh\necho invoked >> "{sentinel.as_posix()}"\necho token\nexit 0\n',
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    subprocess.run(
+        ["git", "-C", root, "config", "core.fsmonitor", command.as_posix()], check=True
+    )
+    subprocess.run(
+        ["git", "-C", root, "update-index", "--fsmonitor"], check=True
+    )
+    sentinel.unlink(missing_ok=True)
+    subprocess.run(
+        ["git", "-C", root, "ls-files", "-t", "CLAUDE.md"], check=True
+    )
+    assert sentinel.exists(), "positive control: plain Git must invoke the configured monitor"
+    sentinel.unlink()
+
+    result = SC.check_graph_fresh(root, now=1.0)
+    assert result["status"] == SC.GREEN
+    assert not sentinel.exists()
+
+
+def test_graph_fresh_rejects_active_filters_without_executing_them(tmp_path):
+    root = _healthy_root(tmp_path, None)
+    sentinel = tmp_path.parent / (tmp_path.name + "-filter-invoked.txt")
+    command = tmp_path.parent / (tmp_path.name + "-filter.sh")
+    command.write_text(
+        f'#!/bin/sh\necho invoked >> "{sentinel.as_posix()}"\ncat\n',
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            root,
+            "config",
+            "filter.selfcheck-test.clean",
+            command.as_posix(),
+        ],
+        check=True,
+    )
+    with open(os.path.join(root, ".git", "info", "attributes"), "w", encoding="utf-8") as handle:
+        handle.write("*.md filter=selfcheck-test\n")
+    sentinel.unlink(missing_ok=True)
+    with open(os.path.join(root, "CLAUDE.md"), "a", encoding="utf-8") as handle:
+        handle.write("filter-triggering change\n")
+    subprocess.run(
+        ["git", "-C", root, "diff", "--", "CLAUDE.md"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert sentinel.exists(), "positive control: plain Git must invoke the configured filter"
+    sentinel.unlink()
+
+    result = SC.check_graph_fresh(root, now=1.0)
+    assert result["status"] == SC.UNKNOWN
+    assert "filter state is active" in result["detail"]
+    assert not sentinel.exists()
 
 
 def test_run_selfcheck_all_green(tmp_path):

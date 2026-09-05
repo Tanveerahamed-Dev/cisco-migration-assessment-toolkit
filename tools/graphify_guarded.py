@@ -4,7 +4,7 @@ Graphifyy 0.9.51's JSON extractor emits ``extends`` edges for every array-valued
 property.  Its report summary also counts structural-only communities as shown,
 although its navigation and sections exclude them.  Its incremental rebuild also
 ignores ``built_at_commit`` when comparing unchanged topology, so a merge commit
-with the same tree as its PR head cannot acquire exact provenance.  This launcher
+with the same tree as its PR head cannot acquire an exact current-commit stamp.  This launcher
 accepts only the reviewed upstream extractor, reporter, and rebuild bytes, applies
 those three bounded producer corrections in memory, verifies every result, and rebinds the
 live 0.9.51 aliases before Graphify's CLI is entered.
@@ -25,6 +25,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -35,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-GUARD_CONTRACT = "graphify-producer-overlays/4"
+GUARD_CONTRACT = "graphify-producer-overlays/5"
 DIST_NAME = "graphifyy"
 EXPECTED_VERSION = "0.9.51"
 EXTRACTOR_MODULE = "graphify.extractors.json_config"
@@ -56,12 +57,13 @@ EXPECTED_WATCH_SOURCE_BYTES = 95_869
 EXPECTED_WATCH_SOURCE_SHA256 = "664547629cb659f3b0fa7209f8461acfd1b96985caf87944591dadb0c9f0e93d"
 EXPECTED_REBUILD_SOURCE_BYTES = 42_104
 EXPECTED_REBUILD_SOURCE_SHA256 = "4c1283138dfb003bf7cd768c2ba6fb94d2ae6869d0d8b4ac42cc54253163be18"
-EXPECTED_REBUILD_PATCHED_BYTES = 42_925
-EXPECTED_REBUILD_PATCHED_SHA256 = "1858a57219a040f145804893816d6f0fd61c796e0876110b2aaeda408cba4782"
+EXPECTED_REBUILD_PATCHED_BYTES = 43_131
+EXPECTED_REBUILD_PATCHED_SHA256 = "87aa8d48e1b4f5c45ab9e779688bd280a752609983262fc3502db8a8ce76cb75"
 WORKER_ENV = "GRAPHIFY_MAX_WORKERS"
 GUARDED_MAX_WORKERS = "1"
-REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/1"
+REFRESH_RECEIPT_CONTRACT = "atlas-graphify-refresh/2"
 REFRESH_RECEIPT_PATH = Path("graphify-out/.guarded_refresh.json")
+_ACTIVE_GUARD_RECEIPT: dict[str, Any] | None = None
 
 _SOURCE_SENTINEL = b'            elif val.type == "array":'
 _PATCHED_SENTINEL = b'            elif val.type == "array" and key == "extends":'
@@ -93,22 +95,38 @@ _REBUILD_FAST_PATCHED_SENTINEL = (
     b"                same_topology\n"
     b'                and existing_graph_data.get("built_at_commit") != commit\n'
     b"            )\n"
-    b"            if same_topology and not commit_only_refresh:\n"
+    b"            if (\n"
+    b"                same_topology\n"
+    b"                and not commit_only_refresh\n"
+    b"                and _guard_fast_noop_ready(out, commit)\n"
+    b"            ):\n"
 )
 _REBUILD_FINAL_SOURCE_SENTINEL = b"        no_change = same_graph and same_report\n"
 _REBUILD_FINAL_PATCHED_SENTINEL = (
     b"        if commit_only_refresh and not (same_graph and same_report):\n"
     b"            graph_tmp.unlink(missing_ok=True)\n"
     b"            print(\n"
-    b'                "[graphify watch] Commit-only provenance refresh refused because non-provenance graph/report bytes changed.",\n'
+    b'                "[graphify watch] Commit-field refresh refused because graph/report bytes beyond their commit fields changed.",\n'
     b"                file=sys.stderr,\n"
     b"            )\n"
     b"            return False\n"
-    b"        no_change = same_graph and same_report and not commit_only_refresh\n"
+    b"        no_change = (\n"
+    b"            same_graph\n"
+    b"            and same_report\n"
+    b"            and not commit_only_refresh\n"
+    b"            and _guard_fast_noop_ready(out, commit)\n"
+    b"        )\n"
 )
 _MAX_REVIEWED_SOURCE_BYTES = 131_072
 _MAX_GRAPH_BYTES = 512 * 1024 * 1024
+_MAX_REPORT_BYTES = 16 * 1024 * 1024
 _MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024
+_GRAPH_COMMIT_LINE = re.compile(
+    rb'(?m)^  "built_at_commit": "([0-9a-f]{40}|[0-9a-f]{64})"\r?$'
+)
+_REPORT_COMMIT_LINE = re.compile(
+    rb"(?m)^- Built from commit: `([0-9a-f]{8})`\r?$"
+)
 
 _ERROR_MESSAGES = {
     "G001": "graphifyy distribution metadata is unavailable",
@@ -129,6 +147,7 @@ _ERROR_MESSAGES = {
     "G016": "update and watch require an established graph.json in the canonical checkout",
     "G017": "the guarded refresh receipt request is invalid or unavailable",
     "G018": "another guarded Graphify producer already owns this output root",
+    "G019": "the tree-equivalent Graphify commit-field rebind was refused",
 }
 
 _JSON_SUFFIX_VARIANTS = frozenset(
@@ -454,6 +473,7 @@ def _prepare_overlay(
             "exec",
         )
         exec(rebuild_code, original_watch_module.__dict__)
+        original_watch_module._guard_fast_noop_ready = _fast_noop_ready
         corrected_rebuild_code = original_watch_module._rebuild_code
         corrected_rebuild_signature = inspect.signature(corrected_rebuild_code)
     except Exception as exc:
@@ -494,6 +514,8 @@ def _prepare_overlay(
         and getattr(models_module, "_JS_CACHE_BYPASS_SUFFIXES", None) is cache_bypass_suffixes
         and original_report_module.generate is corrected_generate
         and original_watch_module._rebuild_code is corrected_rebuild_code
+        and getattr(original_watch_module, "_guard_fast_noop_ready", None)
+        is _fast_noop_ready
     ):
         raise GuardFailure("G007")
 
@@ -508,11 +530,13 @@ def _prepare_overlay(
         "report_aliases": 1,
         "report_patched_sha256": EXPECTED_REPORT_PATCHED_SHA256,
         "report_source_sha256": EXPECTED_REPORT_SOURCE_SHA256,
-        "rebuild_commit_policy": "rewrite_only_when_head_differs_and_non_provenance_graph_report_match",
+        "rebuild_commit_policy": "rewrite_only_when_head_differs_and_non_commit_graph_report_match",
+        "rebuild_fast_noop_policy": "current_complete_receipt_exact_graph_report",
         "rebuild_patched_sha256": EXPECTED_REBUILD_PATCHED_SHA256,
         "rebuild_source_sha256": EXPECTED_REBUILD_SOURCE_SHA256,
         "source_sha256": EXPECTED_SOURCE_SHA256,
         "status": "pass",
+        "tree_equivalent_rebind_policy": "prior_receipted_ancestor_equal_tree_commit_fields_only",
         "version": EXPECTED_VERSION,
         "watch": WATCH_RELATIVE_PATH,
         "watch_aliases": 1,
@@ -570,6 +594,8 @@ def _controlled_environment(root: Path | None = None):
     for key in inherited:
         os.environ.pop(key, None)
     os.environ[WORKER_ENV] = GUARDED_MAX_WORKERS
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+    os.environ["GIT_OPTIONAL_LOCKS"] = "0"
     sanitized_path = []
     for entry in (inherited_path or "").split(os.pathsep):
         if not entry:
@@ -668,9 +694,15 @@ def _producer_root(arguments: Sequence[str]) -> Path:
     marker = root / ".git"
     if marker.is_symlink() or marker.is_junction() or marker.is_file():
         raise GuardFailure("G015")
-    if marker.is_dir() and (marker / "commondir").exists():
+    commondir = marker / "commondir"
+    if marker.is_dir() and (
+        commondir.exists() or commondir.is_symlink() or commondir.is_junction()
+    ):
         raise GuardFailure("G015")
     if not marker.is_dir() and any((parent / ".git").exists() for parent in root.parents):
+        raise GuardFailure("G015")
+    grafts = marker / "info" / "grafts"
+    if grafts.exists() or grafts.is_symlink() or grafts.is_junction():
         raise GuardFailure("G015")
     return root
 
@@ -774,6 +806,8 @@ def _attested_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     attested = dict(receipt)
     attested["bytecode_writes"] = "disabled"
     attested["environment"] = "graphify-git-path-sanitized"
+    attested["git_replace_objects"] = "disabled"
+    attested["git_optional_locks"] = "disabled"
     attested["isolated"] = True
     attested["python"] = ".".join(str(part) for part in sys.version_info[:3])
     return attested
@@ -802,14 +836,32 @@ def _refresh_receipt_path(argument: str) -> Path:
     return candidate
 
 
-def _valid_head(head: str) -> bool:
-    return len(head) in {40, 64} and head == head.lower() and all(
+def _valid_head(head: Any) -> bool:
+    return isinstance(head, str) and len(head) in {40, 64} and head == head.lower() and all(
         character in "0123456789abcdef" for character in head
     )
 
 
-def _git_output(root: Path, *arguments: str) -> bytes:
+def _git_output(
+    root: Path, *arguments: str, stdin_payload: bytes | None = None
+) -> bytes:
     try:
+        if stdin_payload is not None and len(stdin_payload) > _MAX_GIT_OUTPUT_BYTES:
+            raise GuardFailure("G017")
+        root = root.resolve(strict=True)
+        git_marker = root / ".git"
+        git_dir = git_marker.resolve(strict=True)
+        if (
+            not git_dir.is_dir()
+            or git_marker.is_symlink()
+            or git_marker.is_junction()
+            or os.path.normcase(str(git_dir))
+            != os.path.normcase(str(git_marker))
+        ):
+            raise GuardFailure("G017")
+        commondir = git_marker / "commondir"
+        if commondir.exists() or commondir.is_symlink() or commondir.is_junction():
+            raise GuardFailure("G017")
         executable_name = shutil.which("git")
         if not executable_name:
             raise GuardFailure("G017")
@@ -822,11 +874,33 @@ def _git_output(root: Path, *arguments: str) -> bytes:
             or root in executable.parents
         ):
             raise GuardFailure("G017")
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        config_arguments = (
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+        )
         completed = subprocess.run(
-            [str(executable), "-C", str(root), *arguments],
-            stdin=subprocess.DEVNULL,
+            [
+                str(executable),
+                f"--git-dir={git_dir}",
+                f"--work-tree={root}",
+                *config_arguments,
+                *arguments,
+            ],
+            cwd=root,
+            stdin=subprocess.DEVNULL if stdin_payload is None else None,
+            input=stdin_payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=environment,
             check=False,
             timeout=15,
         )
@@ -843,17 +917,105 @@ def _git_output(root: Path, *arguments: str) -> bytes:
     return completed.stdout
 
 
-def _current_git_identity(root: Path) -> tuple[str, str]:
+def _current_git_snapshot(root: Path) -> tuple[str, str, str]:
     try:
+        top_level = _git_output(root, "rev-parse", "--show-toplevel").decode(
+            "utf-8", errors="strict"
+        ).strip()
+        absolute_git_dir = _git_output(
+            root, "rev-parse", "--absolute-git-dir"
+        ).decode("utf-8", errors="strict").strip()
+        expected_root = root.resolve(strict=True)
+        expected_git_dir = expected_root / ".git"
+        if (
+            Path(top_level).resolve(strict=True) != expected_root
+            or Path(absolute_git_dir).resolve(strict=True) != expected_git_dir
+        ):
+            raise GuardFailure("G017")
         head = _git_output(root, "rev-parse", "--verify", "HEAD").decode(
             "ascii", errors="strict"
         ).strip()
-    except (UnicodeDecodeError, ValueError) as exc:
+    except GuardFailure:
+        raise
+    except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         raise GuardFailure("G017") from exc
     if not _valid_head(head):
         raise GuardFailure("G017")
-    status = _git_output(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    return head, "dirty" if status else "clean"
+    hidden_index_state = False
+    for option in ("-t", "-v"):
+        tagged = _git_output(root, "ls-files", option, "-z")
+        records = tagged.split(b"\0")
+        if records[-1:] != [b""]:
+            raise GuardFailure("G017")
+        for record in records[:-1]:
+            if len(record) < 3 or record[1:2] != b" ":
+                raise GuardFailure("G017")
+            if record[:1] != b"H":
+                hidden_index_state = True
+    if hidden_index_state:
+        raise GuardFailure("G017")
+    tracked_paths, index_unsafe = _tracked_index_scope(root)
+    if index_unsafe or _tracked_paths_have_active_filters(root, tracked_paths):
+        raise GuardFailure("G017")
+    status = _git_output(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    )
+    return head, "dirty" if status else "clean", _sha256(status)
+
+
+def _current_git_identity(root: Path) -> tuple[str, str]:
+    head, state, _status_digest = _current_git_snapshot(root)
+    return head, state
+
+
+def _tracked_index_scope(root: Path) -> tuple[bytes, bool]:
+    rows = _git_output(root, "ls-files", "--stage", "-z").split(b"\0")
+    if rows[-1:] != [b""]:
+        raise GuardFailure("G017")
+    paths: list[bytes] = []
+    unsafe = False
+    for row in rows[:-1]:
+        try:
+            header, path = row.split(b"\t", 1)
+            mode, oid, stage = header.split(b" ")
+            oid_text = oid.decode("ascii", errors="strict")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise GuardFailure("G017") from exc
+        if (
+            not path
+            or len(mode) != 6
+            or any(character not in b"01234567" for character in mode)
+            or not _valid_head(oid_text)
+            or stage != b"0"
+        ):
+            raise GuardFailure("G017")
+        unsafe = unsafe or mode == b"160000"
+        paths.append(path)
+    return b"\0".join(paths) + (b"\0" if paths else b""), unsafe
+
+
+def _tracked_paths_have_active_filters(root: Path, paths: bytes) -> bool:
+    for cached in (False, True):
+        arguments = ["check-attr", "-z"]
+        if cached:
+            arguments.append("--cached")
+        arguments.extend(("--stdin", "filter"))
+        payload = _git_output(root, *arguments, stdin_payload=paths)
+        fields = payload.split(b"\0")
+        if fields[-1:] != [b""] or (len(fields) - 1) % 3:
+            raise GuardFailure("G017")
+        for index in range(0, len(fields) - 1, 3):
+            path, attribute, value = fields[index : index + 3]
+            if not path or attribute != b"filter":
+                raise GuardFailure("G017")
+            if value not in {b"unspecified", b"unset"}:
+                return True
+    return False
 
 
 def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -870,7 +1032,14 @@ def _reject_json_constant(_value: str) -> None:
 
 
 def _refresh_receipt_payload(
-    *, phase: str, head: str, state: str, guard_receipt: dict[str, Any], receipt_path: Path
+    *,
+    phase: str,
+    head: str,
+    state: str,
+    guard_receipt: dict[str, Any],
+    receipt_path: Path,
+    prior: dict[str, Any] | None = None,
+    root: Path | None = None,
 ) -> dict[str, Any]:
     if phase not in {"pending", "complete"} or state not in {"clean", "dirty"}:
         raise GuardFailure("G017")
@@ -881,10 +1050,12 @@ def _refresh_receipt_payload(
         "guard": guard_receipt,
         "head": head,
         "phase": phase,
-        "root": str(Path.cwd().resolve(strict=True)),
+        "root": str((root or Path.cwd()).resolve(strict=True)),
         "state": state,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if phase == "pending" and prior is not None:
+        payload["prior"] = prior
     if phase == "complete":
         graph_identity, built_at_commit = _graph_snapshot(
             receipt_path.parent / "graph.json"
@@ -892,14 +1063,19 @@ def _refresh_receipt_payload(
         if built_at_commit != head:
             raise GuardFailure("G017")
         payload["graph"] = graph_identity
+        report_identity, report_commit = _report_snapshot(
+            receipt_path.parent / "GRAPH_REPORT.md"
+        )
+        if report_commit != head[:8]:
+            raise GuardFailure("G017")
+        payload["report"] = report_identity
     return payload
 
 
-def _graph_snapshot(path: Path) -> tuple[dict[str, Any], str]:
+def _read_stable_payload(path: Path, maximum_bytes: int) -> bytes:
     try:
         if path.is_symlink() or path.is_junction():
             raise GuardFailure("G017")
-        digest = hashlib.sha256()
         chunks: list[bytes] = []
         total = 0
         with path.open("rb") as handle:
@@ -908,9 +1084,8 @@ def _graph_snapshot(path: Path) -> tuple[dict[str, Any], str]:
                 raise GuardFailure("G017")
             while chunk := handle.read(1024 * 1024):
                 total += len(chunk)
-                if total > _MAX_GRAPH_BYTES:
+                if total > maximum_bytes:
                     raise GuardFailure("G017")
-                digest.update(chunk)
                 chunks.append(chunk)
             after = os.fstat(handle.fileno())
         named = os.stat(path, follow_symlinks=False)
@@ -926,9 +1101,18 @@ def _graph_snapshot(path: Path) -> tuple[dict[str, Any], str]:
         or (after.st_size, after.st_mtime_ns) != (named.st_size, named.st_mtime_ns)
     ):
         raise GuardFailure("G017")
+    return b"".join(chunks)
+
+
+def _file_identity(path: Path, maximum_bytes: int) -> dict[str, Any]:
+    payload = _read_stable_payload(path, maximum_bytes)
+    return {"sha256": _sha256(payload), "size": len(payload)}
+
+
+def _graph_commit(payload: bytes) -> str:
     try:
         graph = json.loads(
-            b"".join(chunks).decode("utf-8", errors="strict"),
+            payload.decode("utf-8", errors="strict"),
             object_pairs_hook=_strict_json_object,
             parse_constant=_reject_json_constant,
         )
@@ -939,11 +1123,60 @@ def _graph_snapshot(path: Path) -> tuple[dict[str, Any], str]:
         raise GuardFailure("G017")
     if not _valid_head(built_at_commit):
         raise GuardFailure("G017")
-    return {"sha256": digest.hexdigest(), "size": after.st_size}, built_at_commit
+    return built_at_commit
+
+
+def _graph_snapshot(path: Path) -> tuple[dict[str, Any], str]:
+    payload = _read_stable_payload(path, _MAX_GRAPH_BYTES)
+    built_at_commit = _graph_commit(payload)
+    return {"sha256": _sha256(payload), "size": len(payload)}, built_at_commit
 
 
 def _graph_identity(path: Path) -> dict[str, Any]:
     return _graph_snapshot(path)[0]
+
+
+def _report_commit_match(payload: bytes) -> re.Match[bytes]:
+    matches = list(_REPORT_COMMIT_LINE.finditer(payload))
+    if len(matches) != 1:
+        raise GuardFailure("G017")
+    return matches[0]
+
+
+def _report_snapshot(path: Path) -> tuple[dict[str, Any], str]:
+    payload = _read_stable_payload(path, _MAX_REPORT_BYTES)
+    match = _report_commit_match(payload)
+    return (
+        {"sha256": _sha256(payload), "size": len(payload)},
+        match.group(1).decode("ascii", errors="strict"),
+    )
+
+
+def _report_stamp_ready(output: Path, commit: Any) -> bool:
+    if not _valid_head(commit):
+        return False
+    try:
+        _identity, short_commit = _report_snapshot(output / "GRAPH_REPORT.md")
+    except GuardFailure:
+        return False
+    return short_commit == commit[:8]
+
+
+def _fast_noop_ready(output: Path, commit: Any) -> bool:
+    """Authorize upstream's no-op only from a current complete v2 receipt."""
+
+    if not _valid_head(commit) or _ACTIVE_GUARD_RECEIPT is None:
+        return False
+    try:
+        root = output.parent.resolve(strict=True)
+        if _current_git_identity(root) != (commit, "clean"):
+            return False
+        prior = _validated_prior_complete(
+            output / ".guarded_refresh.json", _ACTIVE_GUARD_RECEIPT
+        )
+        return bool(prior is not None and prior["head"] == commit)
+    except (GuardFailure, OSError, RuntimeError, ValueError):
+        return False
 
 
 def _write_refresh_receipt(path: Path, payload: dict[str, Any]) -> None:
@@ -966,31 +1199,350 @@ def _write_refresh_receipt(path: Path, payload: dict[str, Any]) -> None:
 
 def _read_refresh_receipt(path: Path) -> dict[str, Any] | None:
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16_384:
-            return None
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
+        payload = _read_stable_payload(path, 16_384)
+        value = json.loads(
+            payload.decode("utf-8", errors="strict"),
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (GuardFailure, RecursionError, UnicodeError, ValueError):
         return None
     return value if isinstance(value, dict) else None
 
 
-def _same_receipt_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    """Compare JSON identities without Python's ``True == 1`` coercion."""
-
+def _same_json_identity(left: Any, right: Any) -> bool:
+    """Compare JSON values without Python's ``True == 1`` coercion."""
     try:
-        return json.dumps(
-            {key: value for key, value in left.items() if key != "updated_at"},
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ) == json.dumps(
-            {key: value for key, value in right.items() if key != "updated_at"},
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
+        return json.dumps(left, allow_nan=False, sort_keys=True, separators=(",", ":")) == json.dumps(
+            right, allow_nan=False, sort_keys=True, separators=(",", ":")
         )
     except (TypeError, ValueError):
         return False
+
+
+def _same_receipt_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Compare top-level receipt identity while excluding its event timestamp."""
+
+    return _same_json_identity(
+        {key: value for key, value in left.items() if key != "updated_at"},
+        {key: value for key, value in right.items() if key != "updated_at"},
+    )
+
+
+def _valid_file_identity(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and set(value) == {"sha256", "size"}
+        and isinstance(value.get("sha256"), str)
+        and len(value["sha256"]) == 64
+        and all(character in "0123456789abcdef" for character in value["sha256"])
+        and isinstance(value.get("size"), int)
+        and not isinstance(value.get("size"), bool)
+        and value["size"] >= 0
+    )
+
+
+def _valid_prior_identity(value: Any, guard_receipt: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and set(value) == {"graph", "guard", "head", "report"}
+        and _valid_head(value.get("head"))
+        and _valid_file_identity(value.get("graph"))
+        and isinstance(value.get("guard"), dict)
+        and _same_json_identity(value["guard"], guard_receipt)
+        and _valid_file_identity(value.get("report"))
+    )
+
+
+def _validated_pending_prior(
+    path: Path,
+    *,
+    head: str,
+    state: str,
+    guard_receipt: dict[str, Any],
+    root: Path,
+) -> dict[str, Any] | None:
+    """Preserve an exact pending transaction so a partial rebind can retry."""
+
+    actual = _read_refresh_receipt(path)
+    prior = actual.get("prior") if isinstance(actual, dict) else None
+    if not _valid_prior_identity(prior, guard_receipt):
+        return None
+    expected = _refresh_receipt_payload(
+        phase="pending",
+        head=head,
+        state=state,
+        guard_receipt=guard_receipt,
+        receipt_path=path,
+        prior=prior,
+        root=root,
+    )
+    try:
+        updated_at = datetime.fromisoformat(actual["updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if updated_at.tzinfo is None or not _same_receipt_identity(actual, expected):
+        return None
+    return prior
+
+
+def _validated_prior_complete(
+    path: Path, guard_receipt: dict[str, Any]
+) -> dict[str, Any] | None:
+    actual = _read_refresh_receipt(path)
+    if actual is None or set(actual) != {
+        "contract",
+        "graph",
+        "guard",
+        "head",
+        "phase",
+        "report",
+        "root",
+        "state",
+        "updated_at",
+    }:
+        return None
+    if (
+        actual.get("contract") != REFRESH_RECEIPT_CONTRACT
+        or actual.get("phase") != "complete"
+        or actual.get("state") != "clean"
+        or not isinstance(actual.get("guard"), dict)
+        or not _same_json_identity(actual["guard"], guard_receipt)
+        or not _valid_head(actual.get("head"))
+        or not _valid_file_identity(actual.get("graph"))
+        or not _valid_file_identity(actual.get("report"))
+        or not isinstance(actual.get("root"), str)
+        or "\x00" in actual["root"]
+        or not Path(actual["root"]).is_absolute()
+        or str(actual["root"]).replace("\\", "/").startswith("//")
+    ):
+        return None
+    try:
+        updated_at = datetime.fromisoformat(actual["updated_at"])
+        graph_identity, built_at_commit = _graph_snapshot(path.parent / "graph.json")
+        report_identity, report_commit = _report_snapshot(
+            path.parent / "GRAPH_REPORT.md"
+        )
+    except (GuardFailure, KeyError, TypeError, ValueError):
+        return None
+    if (
+        updated_at.tzinfo is None
+        or built_at_commit != actual["head"]
+        or report_commit != actual["head"][:8]
+        or graph_identity != actual["graph"]
+        or report_identity != actual["report"]
+    ):
+        return None
+    return {
+        "graph": graph_identity,
+        "guard": guard_receipt,
+        "head": built_at_commit,
+        "report": report_identity,
+    }
+
+
+def _git_object_id(root: Path, revision: str) -> str:
+    try:
+        value = _git_output(root, "rev-parse", "--verify", revision).decode(
+            "ascii", errors="strict"
+        ).strip()
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise GuardFailure("G019") from exc
+    if not _valid_head(value):
+        raise GuardFailure("G019")
+    return value
+
+
+def _tree_equivalent_ancestor(root: Path, prior: str, current: str) -> bool:
+    grafts = root / ".git" / "info" / "grafts"
+    if grafts.exists() or grafts.is_symlink() or grafts.is_junction():
+        return False
+    try:
+        merge_base = _git_output(root, "merge-base", prior, current).decode(
+            "ascii", errors="strict"
+        ).strip()
+        if merge_base != prior:
+            return False
+        return _git_object_id(root, f"{prior}^{{tree}}") == _git_object_id(
+            root, f"{current}^{{tree}}"
+        )
+    except (GuardFailure, UnicodeDecodeError, ValueError):
+        return False
+
+
+def _write_exclusive_bytes(path: Path, payload: bytes) -> None:
+    with path.open("xb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _replace_pair_transactionally(
+    replacements: Sequence[tuple[Path, bytes, bytes]]
+) -> None:
+    """Publish exact target bytes; a pending receipt makes a split retryable."""
+
+    temporaries: list[tuple[Path, Path]] = []
+    try:
+        for target, original, replacement in replacements:
+            temporary = target.with_name(f".{target.name}.{os.getpid()}.rebind")
+            _write_exclusive_bytes(temporary, replacement)
+            temporaries.append((target, temporary))
+        for target, original, _replacement in replacements:
+            maximum = (
+                _MAX_GRAPH_BYTES if target.name == "graph.json" else _MAX_REPORT_BYTES
+            )
+            if _read_stable_payload(target, maximum) != original:
+                raise OSError("rebind source changed before replacement")
+        for target, temporary in temporaries:
+            os.replace(temporary, target)
+        for target, _original, replacement in replacements:
+            maximum = (
+                _MAX_GRAPH_BYTES if target.name == "graph.json" else _MAX_REPORT_BYTES
+            )
+            if _read_stable_payload(target, maximum) != replacement:
+                raise OSError("rebind verification failed")
+    except (GuardFailure, OSError, ValueError) as exc:
+        # os.replace is atomic per file, not across the pair.  Do not improvise
+        # a lossy rollback.  The still-pending v2 receipt preserves the exact
+        # prior identity, and the next guarded run accepts only an exact
+        # prior/target state for each file before completing the transition.
+        raise GuardFailure("G019") from exc
+    finally:
+        for _target, temporary in temporaries:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _payload_identity(payload: bytes) -> dict[str, Any]:
+    return {"sha256": _sha256(payload), "size": len(payload)}
+
+
+def _transition_target_payload(
+    payload: bytes,
+    *,
+    pattern: re.Pattern[bytes],
+    prior_stamp: bytes,
+    target_stamp: bytes,
+    prior_identity: dict[str, Any],
+    graph: bool,
+) -> bytes:
+    """Recognize only exact prior/target bytes and derive the exact target."""
+
+    if len(prior_stamp) != len(target_stamp):
+        raise GuardFailure("G019")
+    matches = list(pattern.finditer(payload))
+    if len(matches) != 1 or matches[0].group(1) not in {prior_stamp, target_stamp}:
+        raise GuardFailure("G019")
+    start, end = matches[0].span(1)
+    prior_payload = payload
+    if matches[0].group(1) == target_stamp and target_stamp != prior_stamp:
+        prior_payload = payload[:start] + prior_stamp + payload[end:]
+    if _payload_identity(prior_payload) != prior_identity:
+        raise GuardFailure("G019")
+    prior_matches = list(pattern.finditer(prior_payload))
+    if len(prior_matches) != 1 or prior_matches[0].group(1) != prior_stamp:
+        raise GuardFailure("G019")
+    start, end = prior_matches[0].span(1)
+    target_payload = prior_payload[:start] + target_stamp + prior_payload[end:]
+    if graph:
+        try:
+            if (
+                _graph_commit(prior_payload) != prior_stamp.decode("ascii")
+                or _graph_commit(target_payload) != target_stamp.decode("ascii")
+            ):
+                raise GuardFailure("G019")
+        except (GuardFailure, UnicodeDecodeError) as exc:
+            raise GuardFailure("G019") from exc
+    return target_payload
+
+
+def _maybe_tree_equivalent_rebind(
+    root: Path, arguments: Sequence[str], guard_receipt: dict[str, Any]
+) -> bool:
+    if not arguments or arguments[0] != "update" or "--force" in arguments:
+        return False
+    output = root / "graphify-out"
+    receipt_path = output / ".guarded_refresh.json"
+    graph_path = output / "graph.json"
+    report_path = output / "GRAPH_REPORT.md"
+    pending = _read_refresh_receipt(receipt_path)
+    prior = pending.get("prior") if isinstance(pending, dict) else None
+    if not _valid_prior_identity(prior, guard_receipt):
+        return False
+    head, state = _current_git_identity(root)
+    if state != "clean":
+        return False
+    if prior["head"] == head:
+        return False
+    expected_pending = _refresh_receipt_payload(
+        phase="pending",
+        head=head,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=root,
+    )
+    try:
+        pending_updated_at = datetime.fromisoformat(pending["updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (
+        not isinstance(pending, dict)
+        or pending_updated_at.tzinfo is None
+        or not _same_receipt_identity(pending, expected_pending)
+    ):
+        return False
+    if not _tree_equivalent_ancestor(root, prior["head"], head):
+        return False
+
+    if (
+        len(prior["head"]) != len(head)
+        or not _valid_file_identity(prior["graph"])
+        or not _valid_file_identity(prior["report"])
+    ):
+        raise GuardFailure("G019")
+    try:
+        graph_bytes = _read_stable_payload(graph_path, _MAX_GRAPH_BYTES)
+        report_bytes = _read_stable_payload(report_path, _MAX_REPORT_BYTES)
+        rebound_graph = _transition_target_payload(
+            graph_bytes,
+            pattern=_GRAPH_COMMIT_LINE,
+            prior_stamp=prior["head"].encode("ascii"),
+            target_stamp=head.encode("ascii"),
+            prior_identity=prior["graph"],
+            graph=True,
+        )
+        rebound_report = _transition_target_payload(
+            report_bytes,
+            pattern=_REPORT_COMMIT_LINE,
+            prior_stamp=prior["head"][:8].encode("ascii"),
+            target_stamp=head[:8].encode("ascii"),
+            prior_identity=prior["report"],
+            graph=False,
+        )
+    except GuardFailure as exc:
+        raise GuardFailure("G019") from exc
+    if _current_git_identity(root) != (head, "clean"):
+        raise GuardFailure("G019")
+    replacements = tuple(
+        replacement
+        for replacement in (
+            (graph_path, graph_bytes, rebound_graph),
+            (report_path, report_bytes, rebound_report),
+        )
+        if replacement[1] != replacement[2]
+    )
+    if replacements:
+        _replace_pair_transactionally(replacements)
+    print(
+        "[graphify guard] rebound tree-equivalent graph/report commit fields; "
+        "all non-commit bytes were preserved."
+    )
+    return True
 
 
 def _handle_refresh_receipt(
@@ -1012,6 +1564,7 @@ def _handle_refresh_receipt(
             state=state,
             guard_receipt=guard_receipt,
             receipt_path=path,
+            root=root,
         )
         actual = _read_refresh_receipt(path)
         if actual is None:
@@ -1031,15 +1584,17 @@ def _handle_refresh_receipt(
         # but it prevents an accidental/partial finalizer from blessing arbitrary
         # graph bytes without the transaction's pre-mutation marker.
         pending = _read_refresh_receipt(path)
+        if pending is None:
+            raise GuardFailure("G017")
         expected_pending = _refresh_receipt_payload(
             phase="pending",
             head=head,
             state=state,
             guard_receipt=guard_receipt,
             receipt_path=path,
+            prior=pending.get("prior") if isinstance(pending, dict) else None,
+            root=root,
         )
-        if pending is None:
-            raise GuardFailure("G017")
         try:
             pending_updated_at = datetime.fromisoformat(pending["updated_at"])
         except (KeyError, TypeError, ValueError) as exc:
@@ -1050,12 +1605,25 @@ def _handle_refresh_receipt(
             raise GuardFailure("G017")
 
     phase = "pending" if mode == "--receipt-pending" else "complete"
+    prior = None
+    if phase == "pending":
+        prior = _validated_prior_complete(path, guard_receipt)
+        if prior is None:
+            prior = _validated_pending_prior(
+                path,
+                head=head,
+                state=state,
+                guard_receipt=guard_receipt,
+                root=root,
+            )
     payload = _refresh_receipt_payload(
         phase=phase,
         head=head,
         state=state,
         guard_receipt=guard_receipt,
         receipt_path=path,
+        prior=prior,
+        root=root,
     )
     _write_refresh_receipt(path, payload)
     return 0
@@ -1116,10 +1684,13 @@ def _validate_arguments(arguments: Sequence[str]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    global _ACTIVE_GUARD_RECEIPT
+
     arguments = list(sys.argv[1:] if argv is None else argv)
     producer_root: Path | None = None
     receipt_modes = {"--receipt-status", "--receipt-pending", "--receipt-complete"}
     receipt_mode = bool(arguments and arguments[0] in receipt_modes)
+    identity_mode = arguments == ["--identity"]
     if not _invocation_isolated():
         failure = GuardFailure("G014")
         _print_failure(failure)
@@ -1132,11 +1703,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         failure = GuardFailure("G017")
         _print_failure(failure)
         return 2
+    if arguments and arguments[0] == "--identity" and not identity_mode:
+        failure = GuardFailure("G017")
+        _print_failure(failure)
+        return 2
     if any(arg == "--max-workers" or arg.startswith("--max-workers=") for arg in arguments):
         failure = GuardFailure("G010")
         _print_failure(failure)
         return 2
-    if receipt_mode:
+    if receipt_mode or identity_mode:
         try:
             producer_root = _producer_root(["update", "."])
         except GuardFailure as failure:
@@ -1162,9 +1737,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
         attested = _attested_receipt(receipt)
+        _ACTIVE_GUARD_RECEIPT = attested
         if arguments == ["--probe"]:
             print(json.dumps(attested, sort_keys=True, separators=(",", ":")))
             return 0
+        if identity_mode:
+            try:
+                if producer_root is None:
+                    raise GuardFailure("G015")
+                head, state, status_digest = _current_git_snapshot(producer_root)
+                print(f"{head}\t{state}\t{status_digest}")
+                return 0
+            except GuardFailure as failure:
+                _print_failure(failure)
+                return 2
         if receipt_mode:
             try:
                 if producer_root is None:
@@ -1178,6 +1764,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if producer_root is None:
                 raise GuardFailure("G015")
             with _producer_lock(producer_root):
+                if arguments[0] in {"update", "watch"}:
+                    _current_git_identity(producer_root)
+                if _maybe_tree_equivalent_rebind(producer_root, arguments, attested):
+                    return 0
                 return _run_graphify(arguments)
         except GuardFailure as failure:
             _print_failure(failure)
