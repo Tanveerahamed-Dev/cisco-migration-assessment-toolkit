@@ -176,6 +176,39 @@ def test_distribution_inventory_collapses_only_identical_synthetic_metadata(monk
         subject._python_distribution_receipts(reject_duplicate_locations=False)
 
 
+def test_synthetic_package_discloses_missing_pyinstaller_without_claiming_it(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository = _repository(tmp_path)
+    bundle = _bundle(tmp_path)
+    source = subject.source_identity(repository)
+    monkeypatch.setattr(subject, "_pyinstaller_version", lambda *, required: None)
+    output = tmp_path / "out"
+    index = subject.build_portable_release(
+        repository, bundle, output, _qualification(source, bundle)
+    )
+    with zipfile.ZipFile(output / index["zip"]["name"]) as package:
+        toolchain = json.loads(
+            package.read(f"Atlas/{subject.METADATA_DIR}/{subject.TOOLCHAIN_NAME}")
+        )
+        sbom = json.loads(package.read(f"Atlas/{subject.METADATA_DIR}/{subject.SBOM_NAME}"))
+    assert toolchain["pyinstaller"] is None
+    assert [item["name"] for item in sbom["metadata"]["tools"]["components"]] == [
+        "CPython"
+    ]
+
+
+def test_missing_pyinstaller_is_permitted_only_for_synthetic_receipts(monkeypatch) -> None:
+    def missing(_name: str) -> str:
+        raise subject.importlib.metadata.PackageNotFoundError("pyinstaller")
+
+    monkeypatch.setattr(subject.importlib.metadata, "version", missing)
+    assert subject._pyinstaller_version(required=False) is None
+    with pytest.raises(subject.PortableReleaseError, match="missing PyInstaller"):
+        subject._pyinstaller_version(required=True)
+
+
 def test_release_zip_manifest_sbom_provenance_and_checksums_reconcile(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     bundle = _bundle(tmp_path)

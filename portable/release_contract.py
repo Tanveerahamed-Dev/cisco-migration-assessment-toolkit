@@ -818,8 +818,20 @@ def _python_distribution_receipts(*, reject_duplicate_locations: bool) -> list[d
     return sorted(by_name.values(), key=lambda item: (item["name"], item["version"]))
 
 
+def _pyinstaller_version(*, required: bool) -> str | None:
+    try:
+        return importlib.metadata.version("pyinstaller")
+    except importlib.metadata.PackageNotFoundError as exc:
+        if required:
+            raise PortableReleaseError(
+                "real Atlas release environment is missing PyInstaller metadata"
+            ) from exc
+        return None
+
+
 def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
     root = Path(repository_root).resolve(strict=True)
+    real_release = (root / "portable" / "atlas.spec").is_file()
     node = shutil.which("node")
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm") or shutil.which("npm")
     npm_cli = (
@@ -828,10 +840,10 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
         else None
     )
     distributions = _python_distribution_receipts(
-        reject_duplicate_locations=(root / "portable" / "atlas.spec").is_file()
+        reject_duplicate_locations=real_release
     )
-    pyinstaller = importlib.metadata.version("pyinstaller")
-    if (root / "portable" / "atlas.spec").is_file():
+    pyinstaller = _pyinstaller_version(required=real_release)
+    if real_release:
         lock_text = (root / "portable" / "windows-x64-requirements.lock").read_text(
             encoding="utf-8", errors="strict"
         )
@@ -1583,6 +1595,19 @@ def _sbom(
     )
     components = member_components + library_components
     root_ref = f"pkg:generic/atlas@{source['version']}?download_url=portable"
+    tool_components = [
+        {
+            "type": "application",
+            "name": "CPython",
+            "version": toolchain["python"]["version"],
+        }
+    ]
+    if isinstance(toolchain.get("pyinstaller"), str):
+        tool_components.append({
+            "type": "application",
+            "name": "PyInstaller",
+            "version": toolchain["pyinstaller"],
+        })
     value = {
         "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
         "bomFormat": "CycloneDX",
@@ -1590,20 +1615,7 @@ def _sbom(
         "serialNumber": f"urn:uuid:{serial}",
         "version": 1,
         "metadata": {
-            "tools": {
-                "components": [
-                    {
-                        "type": "application",
-                        "name": "CPython",
-                        "version": toolchain["python"]["version"],
-                    },
-                    {
-                        "type": "application",
-                        "name": "PyInstaller",
-                        "version": toolchain["pyinstaller"],
-                    },
-                ]
-            },
+            "tools": {"components": tool_components},
             "component": {
                 "type": "application",
                 "bom-ref": root_ref,
