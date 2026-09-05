@@ -90,6 +90,12 @@ def test_portable_workflow_separates_untrusted_build_from_draft_write_authority(
     assert "gh attestation verify" in draft
     assert "--signer-workflow" in draft and "--source-digest" in draft
     assert "--predicate-type 'https://cyclonedx.org/bom'" in draft
+    assert "id: candidate" in draft
+    assert "candidate ZIP denominator is not exactly one" in draft
+    assert "candidate SBOM denominator is not exactly one" in draft
+    assert "subject-path: ${{ steps.candidate.outputs.zip }}" in draft
+    assert "sbom-path: ${{ steps.candidate.outputs.sbom }}" in draft
+    assert not re.search(r"(?m)^\s*sbom-path:.*\*", draft)
     assert "actions/attest-sbom@" not in draft
     assert "--stdlib-only" in text
     assert "pip install" not in draft

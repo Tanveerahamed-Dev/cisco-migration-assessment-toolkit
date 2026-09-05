@@ -292,15 +292,26 @@ jobs:
         with:
           name: atlas-portable-${{ needs.portable.outputs.source_commit }}
           path: ${{ runner.temp }}/candidate
+      - name: Resolve the one verified ZIP and SBOM
+        id: candidate
+        shell: bash
+        run: |
+          shopt -s nullglob
+          zips=("${RUNNER_TEMP}"/candidate/Atlas-*-windows-x64.zip)
+          sboms=("${RUNNER_TEMP}"/candidate/Atlas-*-windows-x64.cdx.json)
+          [ "${#zips[@]}" -eq 1 ] || { echo 'candidate ZIP denominator is not exactly one' >&2; exit 1; }
+          [ "${#sboms[@]}" -eq 1 ] || { echo 'candidate SBOM denominator is not exactly one' >&2; exit 1; }
+          printf 'zip=%s\n' "${zips[0]}" >> "$GITHUB_OUTPUT"
+          printf 'sbom=%s\n' "${sboms[0]}" >> "$GITHUB_OUTPUT"
       - name: Attest portable ZIP provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/candidate/Atlas-*-windows-x64.zip
+          subject-path: ${{ steps.candidate.outputs.zip }}
       - name: Attest portable CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/candidate/Atlas-*-windows-x64.zip
-          sbom-path: ${{ runner.temp }}/candidate/Atlas-*-windows-x64.cdx.json
+          subject-path: ${{ steps.candidate.outputs.zip }}
+          sbom-path: ${{ steps.candidate.outputs.sbom }}
       - name: Verify the new GitHub provenance attestation before release attachment
         env:
           GH_TOKEN: ${{ github.token }}
