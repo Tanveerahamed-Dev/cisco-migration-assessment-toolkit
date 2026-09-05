@@ -34,6 +34,7 @@ DIST_DEST = "webapp_dist"
 #: PyInstaller ≥6 puts spec `datas` under _internal\, where no field engineer would ever look —
 #: so build_atlas.py copies :func:`root_files` there as a post-build step.
 FIELD_README = "README-FIELD.txt"
+PROJECT_LICENSE = "LICENSE"
 
 
 def exe_name() -> str:
@@ -68,7 +69,10 @@ def bundle_datas(root: Path) -> List[Tuple[str, str]]:
 def root_files(root: Path) -> List[str]:
     """Files copied to the bundle ROOT (beside the exe) by build_atlas.py after PyInstaller runs
     — the visible-to-the-engineer tier the spec's `datas` (buried in _internal\\) cannot serve."""
-    return [str(Path(root) / "portable" / FIELD_README)]
+    return [
+        str(Path(root) / "portable" / FIELD_README),
+        str(Path(root) / PROJECT_LICENSE),
+    ]
 
 
 def missing_data_sources(root: Path) -> List[str]:

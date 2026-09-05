@@ -572,6 +572,12 @@ def test_graphify_ignore_uses_a_generic_private_engagement_pattern():
     assert "*_DC_Design/" in txt
 
 
+def test_graphify_ignore_excludes_registered_codex_worktrees():
+    """Linked Codex worktrees are full repository copies, never graph corpus members."""
+    txt = GRAPHIFY_IGNORE.read_text(encoding="utf-8")
+    assert ".codex-worktrees/" in txt
+
+
 # --------------------------------------------------------- the reconcile guard must cover EVERY band
 def test_every_lifecycle_band_the_producer_emits_has_a_raw_basis_guard():
     """`ssot._LIFECYCLE_BANDS` is the map from summary field -> the band reconcile() re-derives from

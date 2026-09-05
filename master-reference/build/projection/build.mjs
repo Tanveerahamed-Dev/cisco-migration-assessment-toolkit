@@ -3414,9 +3414,10 @@ const GRAPH_KINDS = new Set([
   "", "bash_entrypoint", "bash_function", "class", "code", "file", "function", "method",
   "module", "symbol",
 ]);
-const GRAPH_RELATIONS = new Set([
-  "calls", "contains", "defines", "imports", "imports_from", "indirect_call", "inherits",
-  "method", "rationale_for", "related_to", "re_exports", "references", "uses",
+export const GRAPH_RELATIONS = new Set([
+  "calls", "cites", "contains", "defines", "dynamic_import", "extends", "imports",
+  "imports_from", "indirect_call", "inherits", "method", "rationale_for", "related_to",
+  "re_exports", "references", "uses",
 ]);
 const GRAPH_ABSENT_METADATA_KEYS = Object.freeze([
   "schema_version", "source_commit", "source_tree_digest", "available", "status", "source",

@@ -48,7 +48,59 @@ def test_root_files_ship_the_field_guide_beside_the_exe():
     (PyInstaller ≥6 buries spec datas there). Its source is tracked, so it must exist here."""
     names = {Path(p).name for p in atlas_bundle.root_files(ROOT)}
     assert atlas_bundle.FIELD_README in names
+    assert atlas_bundle.PROJECT_LICENSE in names
     assert all(Path(p).is_file() for p in atlas_bundle.root_files(ROOT))
+
+
+def test_spec_installs_the_default_offline_network_runtime_hook():
+    spec = (ROOT / "portable" / "atlas.spec").read_text(encoding="utf-8")
+    assert "rthook_network_boundary.py" in spec
+    assert "version=pyinstaller_version_info(ROOT)" in spec
+    assert (ROOT / "portable" / "rthook_network_boundary.py").is_file()
+    assert (ROOT / "portable" / "network_boundary.py").is_file()
+
+
+def test_windows_version_info_is_derived_from_version_brand_and_license_owners():
+    from cisco_toolkit.brand_tokens import APP_NAME
+    from portable.windows_version_info import (
+        fixed_file_version,
+        project_version,
+        version_expectations,
+        version_strings,
+    )
+
+    version = project_version(ROOT)
+    strings = version_strings(ROOT)
+    assert strings == {
+        "CompanyName": "Tanveerahamed-Dev",
+        "FileDescription": "Atlas - by Tanveer Ahamed",
+        "FileVersion": version,
+        "InternalName": APP_NAME,
+        "LegalCopyright": "Copyright (c) 2026 Tanveerahamed-Dev. All rights reserved.",
+        "OriginalFilename": "Atlas.exe",
+        "ProductName": APP_NAME,
+        "ProductVersion": version,
+    }
+    assert (ROOT / "LICENSE").read_text(encoding="utf-8").splitlines()[0] == strings["LegalCopyright"]
+    assert fixed_file_version("3.33.0a1") < fixed_file_version("3.33.0b1")
+    assert fixed_file_version("3.33.0b1") < fixed_file_version("3.33.0rc1")
+    assert fixed_file_version("3.33.0rc1") < fixed_file_version("3.33.0")
+    assert fixed_file_version("3.33.0") < fixed_file_version("3.33.0.post1")
+    fixed = ".".join(str(item) for item in fixed_file_version(version))
+    assert version_expectations(ROOT) == {
+        **strings,
+        "FixedFileVersion": fixed,
+        "FixedProductVersion": fixed,
+    }
+
+
+def test_windows_version_info_gap_names_any_policy_facing_drift():
+    from portable.build_atlas import windows_version_info_gap
+
+    expected = {"ProductName": "Atlas", "ProductVersion": "3.33.0rc1"}
+    assert windows_version_info_gap(dict(expected), expected) == ""
+    gap = windows_version_info_gap({"ProductName": "Atlas", "ProductVersion": ""}, expected)
+    assert "ProductVersion" in gap and "3.33.0rc1" in gap
 
 
 def test_hidden_imports_cover_the_dynamic_seams():

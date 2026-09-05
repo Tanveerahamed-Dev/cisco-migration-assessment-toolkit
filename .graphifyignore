@@ -19,6 +19,11 @@ graphify-out/memory/
 # 3 named claude/* checkouts, and their copies must never enter the graph.
 .claude/worktrees/
 
+# 2026-09-03: Codex linked worktrees are kept under the canonical checkout for
+# cross-agent continuity. They remain full repository copies and must not be
+# re-ingested into the canonical knowledge graph.
+.codex-worktrees/
+
 # 2026-07-03 audit: untracked scratch + side-engagement dirs were diluting the graph ~27% (~1.9k
 # of 6.9k nodes) and outranking real engine symbols in queries. None is repo SOURCE:
 #   ds-bundle/ + .ds-sync/  = AssessHub design-sync OUTPUT bundle (the real webapp source is webapp/)

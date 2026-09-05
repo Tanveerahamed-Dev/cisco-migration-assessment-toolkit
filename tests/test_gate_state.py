@@ -1688,23 +1688,28 @@ def test_assesshub_deliverable_download_discloses_gates():
     src = (ROOT / "webapp" / "backend" / "deliverables.py").read_text(encoding="utf-8")
 
     assert "def gate_disclosure(" in src, "AssessHub lost its document-gate consult"
-    assert re.search(r"disclosure = gate_disclosure\(kind, gate_root\)", src), \
+    assert "gate_disclosure(kind, gate_root, engagement=gate_engagement)" in src, \
         "deliverables.generate no longer consults the document gates"
     # The decision is 'disclose', so the consult must reach a log/verdict and never a refusal.
-    assert "logger.warning" in src.split("disclosure = gate_disclosure")[1][:600], \
+    disclosure_branch = src.split("disclosure = (")[1][:900]
+    assert "logger.warning" in disclosure_branch, \
         "the gate verdict is consulted but no longer surfaced -- that is silence, not disclosure"
     for refusal in ("raise ", "return None", "return \"\""):
-        assert refusal not in src.split("disclosure = gate_disclosure")[1][:600], \
+        assert refusal not in disclosure_branch, \
             (f"deliverables.generate appears to BLOCK on the gate ({refusal!r}). That reverses a "
              "recorded decision -- an AssessHub campaign has no filesystem engagement root, so a "
              "server-root ledger would wrongly refuse other campaigns. See the generate docstring.")
 
-    # The route must surface the verdict out-of-band (headers), never by rewriting the document:
-    # 'byte-identical to what the CLI pipeline emits' is this module's documented contract.
+    # The route must surface one immutable verdict both in-band (forwardable DOCX) and out-of-band
+    # (headers). It remains disclosure-only and never withholds the deliverable.
     app_src = (ROOT / "webapp" / "backend" / "app.py").read_text(encoding="utf-8")
-    assert "deliverables.gate_disclosure(kind)" in app_src, \
+    assert 'deliverables.gate_disclosure(kind, engagement=meta["engagement_id"])' in app_src, \
         "the deliverable route stopped surfacing the gate verdict"
+    assert "document_gate=gate_note" in app_src, \
+        "the exact gate snapshot no longer reaches the forwarded document"
     assert "X-Gate-Status" in app_src
+    assert "UNAPPROVED DRAFT" in src, \
+        "unsatisfied Design/MOP gates no longer travel inside forwarded DOCX bytes"
 
 
 def test_assesshub_gate_disclosure_is_read_only_and_fail_open(tmp_path):

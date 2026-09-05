@@ -12,7 +12,9 @@ import importlib
 import importlib.util
 import logging
 import os
+import re
 import tempfile
+from collections.abc import Mapping
 from typing import Dict
 
 from . import engine  # noqa: F401  (import bootstraps sys.path so cisco_toolkit.* resolves)
@@ -22,6 +24,90 @@ from cisco_toolkit.docmeta import (  # noqa: E402  (engine establishes package p
 )
 
 logger = logging.getLogger(__name__)
+
+_GATE_NOT_SUPPLIED = object()
+_DISCLOSED_GATE_STATUSES = frozenset(
+    {"bad_root", "unreadable", "ownership_mismatch", "ownership_unbound", "pending"}
+)
+_GATED_DOCUMENT_KINDS = frozenset({"design", "mop"})
+_APPROVAL_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _document_gate_projection(disclosure: object) -> dict[str, object] | None:
+    """Return the bounded gate facts safe to place inside a forwarded document.
+
+    Filesystem paths, engagement identifiers and free-form ledger/error text are deliberately
+    excluded.  The HTTP header and DOCX are projections of this one immutable read.
+    """
+    if not isinstance(disclosure, Mapping):
+        return None
+    status = str(disclosure.get("status") or "")
+    if status not in _DISCLOSED_GATE_STATUSES:
+        return None
+
+    def keys(name: str) -> list[str]:
+        value = disclosure.get(name)
+        if not isinstance(value, list):
+            return []
+        return sorted(
+            {str(item) for item in value if isinstance(item, str) and _APPROVAL_KEY.fullmatch(item)}
+        )
+
+    return {"status": status, "missing": keys("missing"), "revoked": keys("revoked")}
+
+
+def _stamp_unapproved_draft(path: str, kind: str, disclosure: object) -> None:
+    """Embed an unsatisfied AssessHub gate in visible DOCX text and core metadata."""
+    gate = _document_gate_projection(disclosure)
+    if gate is None or kind not in {"design", "mop"}:
+        return
+
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor
+
+    status = str(gate["status"]).upper()
+    missing = ", ".join(gate["missing"]) if gate["missing"] else "UNCONFIRMED"
+    revoked = ", ".join(gate["revoked"]) if gate["revoked"] else "NONE RECORDED"
+    marker = (
+        f"UNAPPROVED DRAFT | gate status: {status} | missing approvals: {missing} | "
+        f"revoked approvals: {revoked}"
+    )
+
+    doc = Document(path)
+    banner = doc.paragraphs[0].insert_paragraph_before() if doc.paragraphs else doc.add_paragraph()
+    banner.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = banner.add_run(marker)
+    run.bold = True
+    run.font.size = Pt(14)
+    run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # Repeat the state in every section header so pages separated from the cover remain honest.
+    for section in doc.sections:
+        paragraph = section.header.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        header_run = paragraph.add_run(f"UNAPPROVED DRAFT | {status}")
+        header_run.bold = True
+        header_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # Replace the generic draft row in the existing Document Control table when present.
+    replaced = False
+    for table in doc.tables:
+        for row in table.rows:
+            if len(row.cells) >= 2 and row.cells[0].text.strip().casefold() == "status":
+                row.cells[1].text = marker
+                replaced = True
+                break
+        if replaced:
+            break
+
+    # Standard OOXML core properties are independently readable from docProps/core.xml.
+    doc.core_properties.content_status = "UNAPPROVED DRAFT"
+    doc.core_properties.keywords = (
+        f"atlas_gate_status={gate['status']};"
+        f"missing={','.join(gate['missing'])};revoked={','.join(gate['revoked'])}"
+    )[:255]
+    doc.save(path)
 
 
 def _reconcile_gate(snap: dict, kind: str) -> list:
@@ -40,13 +126,15 @@ def _reconcile_gate(snap: dict, kind: str) -> list:
     return violations
 
 
-def gate_disclosure(kind: str, gate_root: str = ".") -> dict | None:
+def gate_disclosure(kind: str, gate_root: str = ".", engagement: str | None = None) -> dict | None:
     """The PPDIOO document-gate verdict for `kind`, as a DISCLOSURE — never a refusal.
 
-    None means "nothing to say": an ungated deliverable, an engagement that never opted in (no
-    store — gate_state's brownfield branch), or approvals all present. A dict means the ledger says
-    this document's upstream approvals are missing/revoked, or that the gate state could not be
-    determined at all; see `generate` for why AssessHub discloses where the CLI refuses.
+    None means "nothing to say": an ungated deliverable, a legacy direct caller that supplied no
+    engagement identity and has no store, or approvals verified for the declared engagement. The
+    AssessHub route always supplies its campaign engagement ID, so no store becomes
+    `ownership_unbound` rather than silent brownfield. A dict means the ledger says this document's
+    upstream approvals are missing/revoked, or that gate state/ownership could not be determined;
+    see `generate` for why AssessHub discloses where the CLI refuses.
 
     The status token is NOT computed here. `gate_state.pending_approvals` owns the gate-posture
     fact (SSOT Law 1) and is the read-only counterpart of the deciding path `enforce()` — same
@@ -62,14 +150,16 @@ def gate_disclosure(kind: str, gate_root: str = ".") -> dict | None:
     arm APPENDS an audit line, which a read for a download header must never do. Total/fail-open
     like `_reconcile_gate` — a gate ledger problem must never be able to withhold a deliverable,
     which is the whole point of this mode."""
+    if kind not in _GATED_DOCUMENT_KINDS:
+        return None
     try:
         from cisco_toolkit import gate_state
         if kind not in gate_state.GENERATOR_REQUIRES:
-            return None
-        posture = gate_state.pending_approvals(kind, gate_root)
+            raise RuntimeError("gated document registry drift")
+        posture = gate_state.pending_approvals(kind, gate_root, engagement=engagement)
         if posture["status"] in ("ungated", "clear"):
-            # ungated = no ledger, never opted in (unchanged brownfield behaviour);
-            # clear = every upstream approval recorded. Both have nothing to disclose.
+            # ungated occurs only for a caller that declared no engagement; AssessHub declares one.
+            # clear here means the owner verified every required upstream approval.
             return None
         # Everything else is disclosed — `pending`, and also the remaining UNEVALUATED statuses
         # (`unreadable`, `bad_root`). Unknown ≠ absent: the CLI fails CLOSED there, we cannot, so we
@@ -77,8 +167,17 @@ def gate_disclosure(kind: str, gate_root: str = ".") -> dict | None:
         # `missing == []` means UNKNOWN, not "nothing missing", which is why `status` leads the
         # header. `detail` mirrors `summary` for the pre-existing key shape.
         return {**posture, "detail": posture.get("summary", "")}
-    except Exception:                         # noqa: BLE001 - a broken ledger never blocks a download
-        return None
+    except Exception as exc:                  # noqa: BLE001 - a broken ledger never blocks a download
+        logger.warning("[GATE UNREADABLE] %s disclosure evaluation failed: %s", kind, exc)
+        return {
+            "generator": kind,
+            "status": "unreadable",
+            "verified": False,
+            "missing": [],
+            "revoked": [],
+            "summary": "gate state evaluation failed; approvals are unconfirmed",
+            "detail": "gate state evaluation failed; approvals are unconfirmed",
+        }
 
 
 # Compatibility name retained for callers that used the old web-local dataclass. Membership,
@@ -131,7 +230,9 @@ def catalogue() -> list:
 
 
 def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
-             gate_root: str = ".", protocol_assurance_bundle: dict | None = None) -> str:
+             gate_root: str = ".", protocol_assurance_bundle: dict | None = None,
+             document_gate: object = _GATE_NOT_SUPPLIED,
+             gate_engagement: str | None = None) -> str:
     """Write the deliverable to a temp file; return its path. Caller streams it and deletes it.
     `gates` is the campaign's recorded gate sign-offs — consumed only by the engagement plan of
     record (its §4.3 as-signed trail); every other writer is a pure snapshot read.
@@ -165,15 +266,18 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
     the CLI can click Download and invoke the same writer. That bypass is now visible in the
     log and on the response (`X-Gate-Status`, set by the route) instead of being invisible.
 
-    KNOWN RESIDUAL — the disclosure does not travel inside the .docx, so a forwarded document
-    still looks approved. Closing that needs a per-campaign document-gate axis in the AssessHub
-    store (DOC_GATES keys per campaign_id, alongside the existing per-wave board), which is a
-    feature with a schema migration and a precedence rule against the filesystem ledger — not a
-    fix. Pinned by tests/test_gate_state.py::test_assesshub_deliverable_download_discloses_gates.
+    The disclosure now travels inside Design/MOP DOCX bytes as `UNAPPROVED DRAFT` plus bounded
+    machine-readable core metadata. This does not establish campaign ownership: a per-campaign
+    document-gate axis still needs a schema migration and precedence rule against the filesystem
+    ledger. The in-document state therefore never claims approval.
     """
     spec = SPECS[kind]
     _reconcile_gate(snap, kind)   # W3-5: loudly flag a drifting snapshot before emit (fail-soft, never blocks)
-    disclosure = gate_disclosure(kind, gate_root)
+    disclosure = (
+        gate_disclosure(kind, gate_root, engagement=gate_engagement)
+        if document_gate is _GATE_NOT_SUPPLIED
+        else document_gate
+    )
     if disclosure:
         logger.warning("[GATE %s] %s generated from AssessHub with unsatisfied document gates: %s "
                        "-- disclosed, not blocked (see deliverables.generate docstring)",
@@ -201,6 +305,7 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
             )
         else:
             write(path, snap, label)
+        _stamp_unapproved_draft(path, kind, disclosure)
     except Exception:
         if os.path.exists(path):
             os.unlink(path)

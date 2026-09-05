@@ -1,0 +1,19 @@
+{
+  "schema": "atlas.portable-license-fallbacks/1",
+  "entries": [
+    {
+      "key": "npm:node_modules/react-force-graph-3d@1.29.1",
+      "license_file": "portable/third-party-licenses/react-force-graph-LICENSE",
+      "license_sha256": "5b6dc9ce44c7b73620b191c567339212bd00537af46fdedaf98304c34214cc9c",
+      "source": "https://raw.githubusercontent.com/vasturiano/react-force-graph/5ee21b693d83f62da569cba6e3cdf31e028406e1/LICENSE",
+      "source_identity": "npm gitHead 5ee21b693d83f62da569cba6e3cdf31e028406e1"
+    },
+    {
+      "key": "pypi:pyserial@3.5",
+      "license_file": "portable/third-party-licenses/pyserial-LICENSE.txt",
+      "license_sha256": "71199b647b333f77b39bfb42915a2f3fdda877060573454f5f61b3cf8187c989",
+      "source": "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz#pyserial-3.5/LICENSE.txt",
+      "source_identity": "PyPI sdist sha256 3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb"
+    }
+  ]
+}

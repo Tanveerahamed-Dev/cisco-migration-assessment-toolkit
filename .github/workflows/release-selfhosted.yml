@@ -198,4 +198,4 @@ jobs:
           & "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m cisco_toolkit.distribution_verify dist --source-commit "${{ steps.source.outputs.commit }}" --source-tree "${{ steps.source.outputs.tree }}" --require-source-binding --expected-json dist/dist-verification.json
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $proof = Get-Content dist/dist-verification.json -Raw | ConvertFrom-Json
-          gh release create "${{ inputs.tag }}" "dist/$($proof.wheel)" "dist/$($proof.sdist)" dist/dist-verification.json --title "${{ inputs.tag }}" --generate-notes --verify-tag
+          gh release create "${{ inputs.tag }}" "dist/$($proof.wheel)" "dist/$($proof.sdist)" dist/dist-verification.json --title "${{ inputs.tag }}" --draft --generate-notes --verify-tag

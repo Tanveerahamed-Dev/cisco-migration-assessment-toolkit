@@ -1,0 +1,344 @@
+name: Atlas portable Windows x64
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: "Exact full main commit to build"
+        required: true
+        type: string
+      draft_tag:
+        description: "Unique draft candidate tag, e.g. v3.33.0-rc.1"
+        required: true
+        type: string
+      attach_draft:
+        description: "Attach verified assets to a draft prerelease"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-portable-${{ github.event.pull_request.number || inputs.source_commit || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Full source and frontend gate (unprivileged runner)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_commit || github.sha }}
+          fetch-depth: 1
+      - name: Normalize the test checkout to committed bytes
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config core.eol lf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git rm --cached -r --quiet .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git reset --hard --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (git status --porcelain) { throw 'test checkout normalization left a dirty tree' }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.14"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - name: Run complete Python and frontend tests without artifact authority
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade 'pip==25.3'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q -p no:cacheprovider
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm install --global npm@11.16.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location webapp/frontend
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location ../..
+          git diff --exit-code -- webapp/frontend/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  portable:
+    name: Build and qualify Atlas.exe
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      source_commit: ${{ steps.source.outputs.commit }}
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      EVENT_NAME: ${{ github.event_name }}
+      REQUESTED_SOURCE_COMMIT: ${{ inputs.source_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_commit || github.sha }}
+          fetch-depth: 0
+      - name: Normalize the artifact checkout to committed bytes
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config core.eol lf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git rm --cached -r --quiet .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git reset --hard --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (git status --porcelain) { throw 'artifact checkout normalization left a dirty tree' }
+      - name: Capture and validate exact source
+        id: source
+        shell: pwsh
+        run: |
+          $commit = git rev-parse 'HEAD^{commit}'
+          $tree = git rev-parse 'HEAD^{tree}'
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            if ($env:REQUESTED_SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'source_commit must be one full lowercase SHA-1' }
+            if ($commit -ne $env:REQUESTED_SOURCE_COMMIT) { throw 'checkout does not equal requested full commit' }
+            if ($commit -ne $env:GITHUB_SHA) { throw 'dispatch checkout must equal the workflow context commit used by attestations' }
+            git fetch --no-tags origin main
+            if ($LASTEXITCODE -ne 0) { throw 'fresh origin/main fetch failed' }
+            $remoteMain = git rev-parse 'refs/remotes/origin/main^{commit}'
+            if ($commit -ne $remoteMain) { throw 'dispatch builds only the current exact main commit' }
+          }
+          if (git status --porcelain) { throw 'portable source checkout is not clean' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "commit=$commit"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tree=$tree"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.14"
+          cache: pip
+          cache-dependency-path: portable/windows-x64-requirements.lock
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - name: Verify pinned npm bytes and rebuild the tracked AssessHub frontend
+        shell: pwsh
+        run: |
+          $contract = Get-Content -LiteralPath portable/toolchain.json -Raw | ConvertFrom-Json
+          if ((node --version) -ne 'v24.19.0') { throw 'Node version mismatch' }
+          $tarball = Join-Path $env:RUNNER_TEMP 'npm-11.16.0.tgz'
+          Invoke-WebRequest -Uri $contract.npm_tarball.url -OutFile $tarball
+          $observed = (Get-FileHash -Algorithm SHA512 -LiteralPath $tarball).Hash.ToLowerInvariant()
+          if ($observed -ne $contract.npm_tarball.sha512_hex) { throw 'npm tarball SHA-512 mismatch' }
+          $npmRoot = Join-Path $env:RUNNER_TEMP 'atlas-npm-bin\node_modules\npm'
+          New-Item -ItemType Directory -Path $npmRoot | Out-Null
+          tar.exe -xzf $tarball -C $npmRoot --strip-components=1
+          if ($LASTEXITCODE -ne 0) { throw 'verified npm tarball extraction failed' }
+          $npmCli = Join-Path $npmRoot 'bin\npm-cli.js'
+          if ((& node $npmCli --version) -ne '11.16.0') { throw 'verified npm version mismatch' }
+          $wrapperRoot = Split-Path (Split-Path $npmRoot -Parent) -Parent
+          $wrapper = Join-Path $wrapperRoot 'npm.cmd'
+          [IO.File]::WriteAllText($wrapper, "@echo off`r`nnode `"%~dp0node_modules\npm\bin\npm-cli.js`" %*`r`n", [Text.Encoding]::ASCII)
+          Add-Content -Path $env:GITHUB_PATH -Value $wrapperRoot
+          Add-Content -Path $env:GITHUB_ENV -Value "ATLAS_NPM_TARBALL=$tarball"
+          Set-Location webapp/frontend
+          & node $npmCli ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & node $npmCli run build
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Set-Location ../..
+          git diff --exit-code -- webapp/frontend/dist
+      - name: Create isolated hash-locked build environment
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\atlas-portable-venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m pip install --require-hashes --only-binary=:all: -r portable/windows-x64-requirements.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -c "from portable.release_contract import _validate_cyclonedx; _validate_cyclonedx({'bomFormat':'CycloneDX','specVersion':'1.6','version':1})"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prove preparation did not change tracked source
+        shell: pwsh
+        run: |
+          python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
+      - name: Build, smoke, qualify, package, and reopen Atlas portable
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m portable.build_release --output "$env:RUNNER_TEMP\atlas-portable-release" --json-out "$env:RUNNER_TEMP\portable-controller.json"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m portable.verify_release --release-dir "$env:RUNNER_TEMP\atlas-portable-release"
+      - name: Prove build did not change tracked source
+        shell: pwsh
+        run: |
+          python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
+      - name: Upload exact portable candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: atlas-portable-${{ steps.source.outputs.commit }}
+          path: |
+            ${{ runner.temp }}/atlas-portable-release/*
+          if-no-files-found: error
+          retention-days: 30
+  verify_candidate:
+    name: Reverify candidate and current-main gates (unprivileged runner)
+    if: github.event_name == 'workflow_dispatch' && inputs.attach_draft
+    needs: [gate, portable]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      SOURCE_COMMIT: ${{ needs.portable.outputs.source_commit }}
+    steps:
+      - name: Download the exact build job artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: atlas-portable-${{ needs.portable.outputs.source_commit }}
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.portable.outputs.source_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.14"
+      - name: Reverify the downloaded closed release set
+        shell: bash
+        run: |
+          # The Windows build job already ran the strict CycloneDX 1.6 validator. This separate
+          # read-only job executes no registry package code: it rechecks the exact bytes,
+          # canonical receipts, SBOM/notices joins, and complete outer denominator with stdlib.
+          python -B - "${RUNNER_TEMP}/expected-source.json" <<'PY'
+          import pathlib, sys
+          from portable.release_contract import canonical_json, source_identity
+          pathlib.Path(sys.argv[1]).write_bytes(canonical_json(source_identity(pathlib.Path.cwd())))
+          PY
+          python -B -m portable.verify_release --release-dir "${RUNNER_TEMP}/candidate" --stdlib-only --expected-source-json "${RUNNER_TEMP}/expected-source.json" --source-root .
+      - name: Require exact current main and every protected-main check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source commit is malformed' >&2; exit 1; }
+          remote_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          [ "$remote_main" = "$SOURCE_COMMIT" ] || { echo 'main advanced after the build; refusing a stale candidate' >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/branches/main" > "${RUNNER_TEMP}/branch.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_COMMIT}/check-runs?per_page=100" > "${RUNNER_TEMP}/check-runs.json"
+          python - .github/portable-required-main-checks.json "${RUNNER_TEMP}/branch.json" "${RUNNER_TEMP}/check-runs.json" <<'PY'
+          import json, pathlib, sys
+          tracked = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          branch = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          payloads = json.loads(pathlib.Path(sys.argv[3]).read_text())
+          required = branch.get("protection", {}).get("required_status_checks", {})
+          tracked_contexts = tracked.get("contexts") if tracked.get("schema") == "atlas.portable-required-main-checks/1" else None
+          live_contexts = required.get("contexts")
+          if not isinstance(tracked_contexts, list) or set(tracked_contexts) != set(live_contexts or []):
+              raise SystemExit("tracked required-check denominator differs from live main protection")
+          runs = [run for payload in payloads for run in payload.get("check_runs", [])]
+          latest = {}
+          for run in runs:
+              key = (run.get("name"), (run.get("app") or {}).get("id"))
+              if key not in latest or int(run.get("id") or 0) > int(latest[key].get("id") or 0):
+                  latest[key] = run
+          missing = []
+          for item in required.get("checks", []):
+              run = latest.get((item.get("context"), item.get("app_id")))
+              if not run or run.get("status") != "completed" or run.get("conclusion") != "success":
+                  missing.append({"required": item, "observed": None if run is None else {"status": run.get("status"), "conclusion": run.get("conclusion")}})
+          if missing:
+              raise SystemExit("protected-main checks not successful: " + json.dumps(missing, sort_keys=True))
+          print(f"protected-main required checks: {len(required.get('checks', []))} success")
+          PY
+  draft:
+    name: Attest and attach the exact draft assets
+    if: github.event_name == 'workflow_dispatch' && inputs.attach_draft
+    needs: [portable, verify_candidate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      SOURCE_COMMIT: ${{ needs.portable.outputs.source_commit }}
+      DRAFT_TAG: ${{ inputs.draft_tag }}
+    steps:
+      - name: Download the independently reverified build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: atlas-portable-${{ needs.portable.outputs.source_commit }}
+          path: ${{ runner.temp }}/candidate
+      - name: Attest portable ZIP provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/candidate/Atlas-*-windows-x64.zip
+      - name: Attest portable CycloneDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/candidate/Atlas-*-windows-x64.zip
+          sbom-path: ${{ runner.temp }}/candidate/Atlas-*-windows-x64.cdx.json
+      - name: Verify the new GitHub provenance attestation before release attachment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          signer="github.com/${GITHUB_REPOSITORY}/.github/workflows/portable-release.yml"
+          gh attestation verify "${RUNNER_TEMP}"/candidate/Atlas-*-windows-x64.zip --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" --source-digest "$SOURCE_COMMIT"
+          gh attestation verify "${RUNNER_TEMP}"/candidate/Atlas-*-windows-x64.zip --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" --source-digest "$SOURCE_COMMIT" --predicate-type 'https://cyclonedx.org/bom'
+      - name: Attach only to a new draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          [[ "$DRAFT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo 'draft tag is malformed' >&2; exit 1; }
+          version="$(python -c 'import glob,json,os; p=glob.glob(os.environ["RUNNER_TEMP"]+"/candidate/*.release.json"); assert len(p)==1; d=json.load(open(p[0],encoding="utf-8")); assert d["source"]["commit"]==os.environ["SOURCE_COMMIT"]; print(d["version"])')"
+          expected="$(python -c 'import re,sys; print("v"+re.sub(r"rc([0-9]+)$",r"-rc.\1",sys.argv[1]))' "$version")"
+          if [ "$DRAFT_TAG" != "$expected" ]; then echo "draft tag must be $expected for source version $version" >&2; exit 1; fi
+          if gh release view "$DRAFT_TAG" --json isDraft >/dev/null 2>&1; then echo 'draft tag already exists; this workflow never overwrites release assets' >&2; exit 1; fi
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" >/dev/null 2>&1; then echo 'tag already exists without this draft; refusing an ambiguous target' >&2; exit 1; fi
+          remote_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          [ "$remote_main" = "$SOURCE_COMMIT" ] || { echo 'main advanced before draft creation; refusing a stale candidate' >&2; exit 1; }
+          gh release create "$DRAFT_TAG" --draft --prerelease --target "$SOURCE_COMMIT" --title "$DRAFT_TAG Atlas portable release candidate" --notes 'UNSIGNED RELEASE CANDIDATE. Automated Windows checks passed; production signing, managed-policy, physical USB/BitLocker, third-party dataset redistribution legal review, independent human review, and field acceptance remain open.'
+          tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" --jq '.object.sha')"
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" --jq '.object.type')"
+          if [ "$tag_type" = 'tag' ]; then tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_target}" --jq '.object.sha')"; fi
+          [ "$tag_target" = "$SOURCE_COMMIT" ] || { echo 'created draft tag does not resolve to the exact source; refusing upload' >&2; exit 1; }
+          remote_main_after="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          [ "$remote_main_after" = "$SOURCE_COMMIT" ] || { echo 'main advanced during draft creation; refusing asset upload' >&2; exit 1; }
+          gh release upload "$DRAFT_TAG" "${RUNNER_TEMP}"/candidate/*
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DRAFT_TAG}" > "${RUNNER_TEMP}/draft-release.json"
+          python - "${RUNNER_TEMP}/candidate" "${RUNNER_TEMP}/draft-release.json" <<'PY'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          expected = {
+              path.name: {"size": path.stat().st_size, "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+              for path in root.iterdir() if path.is_file()
+          }
+          release = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          actual = {item["name"]: {"size": item["size"], "digest": item.get("digest")} for item in release.get("assets", [])}
+          if actual != expected:
+              raise SystemExit("draft release asset readback differs from the exact local release set")
+          print(f"draft release asset readback: {len(actual)} exact SHA-256 members")
+          PY

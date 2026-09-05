@@ -1,0 +1,17 @@
+{
+  "schema": "atlas.portable-toolchain-contract/1",
+  "platform": "windows-x64",
+  "python": "3.12.14",
+  "pip": "25.3",
+  "pyinstaller": "6.22.2",
+  "node": "v24.19.0",
+  "npm": "11.16.0",
+  "npm_tarball": {
+    "url": "https://registry.npmjs.org/npm/-/npm-11.16.0.tgz",
+    "sha512_base64": "A74XL8OxmcegZDMWPkWb5bEQppg8HdYwW3rBD2sPoS4UQHVajfaxBkqyzLeJ3wR0kZ+5xoTjItxXaF7eIXUsyw==",
+    "sha512_hex": "03be172fc3b199c7a06433163e459be5b110a6983c1dd6305b7ac10f6b0fa12e1440755a8df6b1064ab2ccb789df0474919fb9c684e322dc57685ede21752ccb"
+  },
+  "dependency_install": "python -m pip install --require-hashes --only-binary=:all: -r portable/windows-x64-requirements.lock",
+  "frontend_install": "npm ci --ignore-scripts",
+  "authority": "version and hash pins constrain the build; they do not establish publisher identity or field qualification"
+}

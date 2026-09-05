@@ -2,9 +2,10 @@
 
 Releases are immutable promotions of one reviewed Git commit. The tag workflow
 builds and verifies the wheel and source archive once, attaches those exact
-files to a GitHub Release, and records their SHA-256 digests in
-`dist-verification.json`. PyPI publishing is a separate, protected manual
-promotion of those assets; it never rebuilds them.
+files to a **draft** GitHub Release, and records their SHA-256 digests in
+`dist-verification.json`. Draft creation is technical staging, not publication.
+PyPI publishing is a separate, protected manual promotion of those assets; it
+never rebuilds them.
 
 ## Version contract
 
@@ -61,7 +62,10 @@ exactly one wheel and one source archive, validates metadata, entry points,
 runtime assets, wheel `RECORD` hashes, archive path safety, and the privacy
 boundary, installs the wheel outside the checkout, runs entry-point and
 authoritative-registry smoke tests, and attaches the verified archives plus
-`dist-verification.json` to the GitHub Release.
+`dist-verification.json` to a draft GitHub Release. The workflow never publishes
+that draft. Publication requires the separate accountable decision after every
+applicable archive, portable, signing, policy, physical-media, review, and field
+gate has closed.
 
 Re-running an existing release downloads and re-verifies its existing assets.
 It does not replace them with a fresh build.
@@ -75,24 +79,54 @@ sequence (annotated-tag/version/ancestry verification, privacy boundary, immutab
 between every step, single build, trusted distribution proof, clean-venv smoke test) on the
 self-hosted fleet, and attaches the assets to the GitHub Release. It is deliberately
 dispatch-only — never `pull_request` — per the runner-isolation rule in the `ci.yml` header, and
-it is idempotent the same way the hosted workflow is: re-running an existing release re-verifies
-the published assets rather than rebuilding. When hosted minutes return, the tag-triggered
+it is idempotent the same way the hosted workflow is: re-running an existing draft/release re-verifies
+the staged or published assets rather than rebuilding. When hosted minutes return, the tag-triggered
 workflow resumes as the canonical path; both paths verify rather than rebuild on re-runs, so
 they cannot disagree about a release's contents.
 
+## Build the Windows x64 portable release candidate
+
+`.github/workflows/portable-release.yml` is the only portable candidate lane. On pull requests it
+runs the Windows x64 actual-binary build without a write-capable repository token. A manual run
+must name an exact full commit already on `main` and a unique candidate tag matching the PEP 440
+project version (`3.33.0rc1` maps to `v3.33.0-rc.1`). It:
+
+1. pins Python, PyInstaller, Node, npm, and a hash-locked Windows dependency set;
+2. runs broad source/frontend tests on a separate read-only runner, while the artifact runner
+   executes only hash-checked Python/npm inputs and reproduces the tracked SPA;
+3. builds and executes the real `Atlas.exe`;
+4. runs the four-step smoke plus offline-boundary, sanitized-Python-path, Unicode-path,
+   drive-letter, database-copy, and frozen-redaction checks;
+5. emits and reopens a closed release set: ZIP, member manifest, SHA-256 lists, file/dependency
+   CycloneDX SBOM, runtime license/dataset notices, toolchain, signing, qualification, and
+   provenance receipts; unkeyed `SELF_CONSISTENCY_PASS` is not authentication;
+6. uploads one exact Actions artifact and, only on an authorized manual run, creates a new draft
+   prerelease without overwriting existing assets; and
+7. on a separate read-only runner, rebinds material hashes to exact current source and requires the
+   latest live protected-main checks; the write/OIDC job executes no candidate source code, emits
+   GitHub provenance and CycloneDX attestations, and verifies both against the exact source digest
+   and signer workflow before attachment. Attestation still does not prove safety or qualification.
+
+Without a production Authenticode certificate the receipt is `UNSIGNED_RELEASE_CANDIDATE`, the
+physical/external qualification fields remain open, and the draft must stay unpublished. Follow
+`docs/atlas-release-1-field-test-packet-2026-09-05.md` for the exact closing evidence.
+This v1 portable release set is permanently `draft_only`; the repository currently defines no
+public-promotion or protected signed-candidate upload lane. `prepare_signing` / `sign_release` /
+`package_signed_release` are local, fail-closed qualification tooling only. Even after every field
+row (including IEEE/Cisco dataset redistribution review) closes, public attachment requires a new
+reviewed contract that ingests the unchanged signed ZIP, binds a separately custodied exact-asset
+promotion decision, verifies it in a write-separated workflow, and preserves the original draft
+receipts as historical facts. Do not manually upload or change this candidate's draft status.
+
 ## Promote the exact release to PyPI
 
-> **DECIDED 2026-08-03 — this project is NOT published to the public PyPI.**
-> The open question below ("decide explicitly whether public installability is
-> appropriate") is now answered: **no**. `LICENSE` is all-rights-reserved
-> proprietary — "No permission is granted to use, copy, modify, merge, publish,
-> distribute... except with the prior written consent of the copyright holder" —
-> and PyPI is a public distribution channel whose versions can be yanked but
-> never deleted or reused. Publishing there would make the full source
-> permanently world-downloadable and `pip install`-able by anyone, which the
-> license forbids. **Distribution is the GitHub Release**, which already carries
-> the verified wheel, source archive and `dist-verification.json` source-binding
-> proof for authorized recipients.
+> **DECIDED 2026-08-03 — this project is NOT published to public PyPI.**
+> The repository itself is intentionally public, so source visibility is not the distinction.
+> PyPI is avoided as an additional globally discoverable/installable package-index channel whose
+> versions cannot be deleted or reused. The all-rights-reserved owner may choose a distribution
+> channel; the license constrains recipient rights rather than the copyright owner's authority.
+> A published GitHub Release in this public repository would also be publicly downloadable; only a
+> draft remains collaborator-visible. No text here describes a public release as recipient-restricted.
 >
 > `publish.yml` is retained, unused, and still correct: if a private index or a
 > licensing change ever makes promotion appropriate, it is the reviewed path.

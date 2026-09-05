@@ -15,6 +15,7 @@ concurrency:
 jobs:
   release:
     name: Verify tag and create immutable release assets
+    if: ${{ !contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     env:
       PYTHONDONTWRITEBYTECODE: "1"
@@ -247,5 +248,6 @@ jobs:
             "dist/${sdist}" \
             dist/dist-verification.json \
             --title "${GITHUB_REF_NAME}" \
+            --draft \
             --generate-notes \
             --verify-tag

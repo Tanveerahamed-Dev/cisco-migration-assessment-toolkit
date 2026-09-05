@@ -1384,6 +1384,14 @@ class CompilerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
             node_count = 128
+            schema = json.loads(
+                (MASTER_REFERENCE / "schema" / "atlas-records.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            relations = tuple(sorted(schema["$defs"]["graphEdgeRecord"]["properties"]["relation"]["enum"]))
+            self.assertEqual(set(relations), graphify_module.CONTROLLED_GRAPH_RELATIONS)
+            self.assertTrue({"cites", "dynamic_import", "extends"} <= set(relations))
             write(
                 repository,
                 "graphify-out/graph.json",
@@ -1405,7 +1413,7 @@ class CompilerTests(unittest.TestCase):
                             {
                                 "source": "producer_node_0000",
                                 "target": f"producer_node_{index:04d}",
-                                "relation": "calls",
+                                "relation": relations[(index - 1) % len(relations)],
                                 "confidence": "extracted",
                                 "confidence_score": 1,
                                 "source_file": "safe.py",
@@ -1425,6 +1433,7 @@ class CompilerTests(unittest.TestCase):
                 {"safe.py": "urn:atlas:file:" + "c" * 24},
             )
             self.assertEqual((len(nodes), len(edges)), (node_count, node_count - 1))
+            self.assertEqual({edge["relation"] for edge in edges}, set(relations))
 
     def test_graphify_exclusion_disposition_uniqueness_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
