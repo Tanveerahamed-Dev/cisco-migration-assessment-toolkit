@@ -294,6 +294,8 @@ def test_assurance_and_unknown_intake_owners_match_their_static_dependencies() -
     allowed = {tuple(edge) for edge in contract["allowed_edges"]}
     assert ("governance", "evidence_access") in allowed
     assert ("atlas_portable", "deliverables") in allowed
+    assert ("atlas_portable", "parse_model") in allowed
+    assert ("assesshub_backend", "atlas_portable") in allowed
 
 
 def test_protocol_evidence_owners_are_derived_truth() -> None:

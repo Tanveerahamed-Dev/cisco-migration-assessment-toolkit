@@ -65,8 +65,11 @@ CONTROLLED_GRAPH_KINDS = frozenset(
 CONTROLLED_GRAPH_RELATIONS = frozenset(
     {
         "calls",
+        "cites",
         "contains",
         "defines",
+        "dynamic_import",
+        "extends",
         "imports",
         "imports_from",
         "indirect_call",

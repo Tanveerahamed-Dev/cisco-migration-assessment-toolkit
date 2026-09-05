@@ -85,6 +85,14 @@ def _collection(tmp_path: Path) -> Path:
     return d
 
 
+def test_engine_filename_census_keeps_manifested_topology_sidecars() -> None:
+    """A promoted manifest must not point back into the deleted private work directory."""
+    names = ing._engine_filenames("Assessment_redacted")
+    assert {"topology.dot", "topology.mmd"} <= names
+    delivery = ing.redaction_delivery_filenames()
+    assert delivery == names | {"Assessment_redacted.redaction.json"}
+
+
 def _fake_engine(record: dict, snapshot=None, extra_files=()):
     """Stand-in for a successful engine run: records argv/cwd and writes the deliverables the
     real engine would leave beside --output."""

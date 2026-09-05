@@ -107,6 +107,7 @@ TEXT_EXTENSIONS = frozenset(
         ".json",
         ".jsonc",
         ".jsonl",
+        ".lock",
         ".md",
         ".mjs",
         ".mts",
@@ -114,6 +115,7 @@ TEXT_EXTENSIONS = frozenset(
         ".py",
         ".sh",
         ".spec",
+        ".sql",
         ".svg",
         ".toml",
         ".ts",
@@ -156,6 +158,7 @@ LANGUAGE_BY_EXTENSION = {
     ".json": "json",
     ".jsonc": "jsonc",
     ".jsonl": "jsonl",
+    ".lock": "text",
     ".md": "markdown",
     ".mjs": "javascript",
     ".mts": "typescript",
@@ -163,6 +166,7 @@ LANGUAGE_BY_EXTENSION = {
     ".py": "python",
     ".sh": "shell",
     ".spec": "python",
+    ".sql": "sql",
     ".svg": "svg",
     ".toml": "toml",
     ".ts": "typescript",
@@ -246,6 +250,10 @@ def _extension(path: str) -> str:
     return PurePosixPath(lower).suffix
 
 
+def _is_license_name(name: str) -> bool:
+    return name == "license" or name.endswith("-license")
+
+
 def validate_path_allowlist(path: str) -> list[str]:
     p = PurePosixPath(path)
     if p.is_absolute() or ".." in p.parts or not p.parts:
@@ -263,7 +271,7 @@ def validate_path_allowlist(path: str) -> list[str]:
     name = p.name.lower()
     if ext in TEXT_EXTENSIONS or ext in BINARY_EXTENSIONS:
         return []
-    if name == "license" or name in SPECIAL_CONFIG_NAMES or path in SPECIAL_CONFIG_PATHS:
+    if _is_license_name(name) or name in SPECIAL_CONFIG_NAMES or path in SPECIAL_CONFIG_PATHS:
         return []
     return [f"extension_not_allowlisted:{ext or '<none>'}"]
 
@@ -276,13 +284,13 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
     language = LANGUAGE_BY_EXTENSION.get(ext, "binary" if ext in BINARY_EXTENSIONS else "text")
     if name in SPECIAL_CONFIG_NAMES or path in SPECIAL_CONFIG_PATHS:
         language = "config"
-    elif name == "license":
+    elif _is_license_name(name):
         language = "text"
 
     roles: set[str] = set()
     if language in SOURCE_LANGUAGES:
         roles.add("source")
-    if language == "markdown" or name in {"license"}:
+    if language == "markdown" or _is_license_name(name):
         roles.add("documentation")
     if language in {"json", "jsonl", "toml", "yaml", "csv", "ini", "config"}:
         roles.add("structured_data")
@@ -309,7 +317,7 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
         "classification_errors": errors,
         "media_type": (
             "text/plain"
-            if path in SPECIAL_CONFIG_PATHS
+            if path in SPECIAL_CONFIG_PATHS or language in {"text", "sql"}
             else mimetypes.guess_type(path)[0] or "application/octet-stream"
         ),
     }
@@ -335,13 +343,15 @@ def _is_manifest(path: str) -> bool:
 
 def _is_dependency_file(path: str) -> bool:
     name = PurePosixPath(path).name.lower()
-    return name in {"package.json", "package-lock.json", "pyproject.toml", "setup.py"} or name.startswith(
-        "requirements"
+    return (
+        name in {"package.json", "package-lock.json", "pyproject.toml", "setup.py"}
+        or name.startswith("requirements")
+        or name.endswith(".lock")
     )
 
 
 def _is_dataset(path: str, language: str) -> bool:
-    if language not in {"csv", "json", "jsonl", "toml", "yaml"}:
+    if language not in {"csv", "json", "jsonl", "sql", "toml", "yaml"}:
         return False
     if path in SAFE_ROOT_DATA:
         return True

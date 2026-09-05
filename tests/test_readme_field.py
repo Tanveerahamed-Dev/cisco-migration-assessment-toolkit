@@ -125,7 +125,13 @@ def test_every_engine_command_uses_only_engine_flags():
     for n, cmd, used in _atlas_commands():
         if "--run-engine" not in used:
             continue
-        unknown = used - {"--run-engine"} - engine_flags
+        launcher_flags = set()
+        if "--allow-live-network" in used:
+            assert cmd.index("--allow-live-network") < cmd.index("--run-engine"), (
+                f"line {n}: launcher-only --allow-live-network must precede --run-engine"
+            )
+            launcher_flags.add("--allow-live-network")
+        unknown = used - {"--run-engine"} - launcher_flags - engine_flags
         assert not unknown, \
             f"line {n}: engine command names non-engine flags {sorted(unknown)}: {cmd}"
 

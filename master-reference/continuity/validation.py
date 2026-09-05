@@ -68,6 +68,24 @@ RECEIPT_FIELDS = frozenset(
 )
 
 
+def _placeholder_paths(value: object, path: str) -> list[str]:
+    if isinstance(value, str):
+        return [path] if value.startswith("REPLACE_WITH_") else []
+    if isinstance(value, Mapping):
+        return [
+            nested
+            for key, item in value.items()
+            for nested in _placeholder_paths(item, f"{path}.{key}")
+        ]
+    if isinstance(value, list):
+        return [
+            nested
+            for index, item in enumerate(value)
+            for nested in _placeholder_paths(item, f"{path}[{index}]")
+        ]
+    return []
+
+
 def _utc(value: object, field: str, errors: list[str]) -> datetime | None:
     if not isinstance(value, str) or not value:
         errors.append(f"{field}:missing_or_invalid")
@@ -140,6 +158,10 @@ def _validate_envelope_fields(
     missing = sorted(ENVELOPE_FIELDS - set(envelope))
     errors.extend(f"envelope:unknown_field:{field}" for field in unknown)
     errors.extend(f"envelope:missing_field:{field}" for field in missing)
+    errors.extend(
+        f"placeholder:unmaterialized:{path}"
+        for path in _placeholder_paths(envelope, "envelope")
+    )
     if envelope.get("schema_version") != "1.0.0":
         errors.append("schema_version:unsupported")
     for field in ("id", "objective"):
@@ -315,6 +337,10 @@ def validate_completion_receipt(
     missing = sorted(RECEIPT_FIELDS - set(receipt))
     errors.extend(f"receipt:unknown_field:{field}" for field in unknown)
     errors.extend(f"receipt:missing_field:{field}" for field in missing)
+    errors.extend(
+        f"placeholder:unmaterialized:{path}"
+        for path in _placeholder_paths(receipt, "receipt")
+    )
     if receipt.get("schema_version") != "1.0.0":
         errors.append("receipt:schema_version_unsupported")
     if receipt.get("envelope_digest") != digest_object(dict(envelope)):

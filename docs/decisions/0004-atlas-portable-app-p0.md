@@ -21,11 +21,12 @@ shipped product). Known adjacency: "Atlas" is common in tech (MongoDB Atlas etc.
 for a bylined field tool, revisit only if commercialized. The name lives in ONE brand constant
 (`cisco_toolkit/brand_tokens.py` at build time) so a rename stays a one-line change.
 
-## D2 · Field scope: the **full 12-document family**
+## D2 · Field scope: the **full registry-owned artifact family**
 
-Everything AssessHub serves today (owner: `cisco_toolkit/docmeta.py::FAMILY`) ships on the stick —
-no code trimming. The `[docx]`/`[pptx]` extras are therefore **required** in the frozen bundle and
-asserted by the P1 `--selftest`.
+Everything AssessHub serves today (owner: `cisco_toolkit/docmeta.py::ARTIFACT_SPECS`, including its
+conditional post-execution PIR) is supported by the stick — no code trimming. Read counts from that
+owner rather than freezing them here. The DOCX/PPTX dependencies are therefore **required** in the
+frozen bundle and asserted by `--selftest`.
 
 ## D3 · Collection mode: **dual — offline-analysis default, opt-in live SSH**
 
@@ -49,28 +50,36 @@ AssessKit P1 surfaces this as a one-prompt fleet flow with a per-device override
 session-memory only — **credentials are never written to the stick** (P3 field discipline).
 No engine change required; UI + docs only.
 
-## D5 · Distribution: unsigned freeware build — signing DEFERRED indefinitely (amendment, 2026-07-20)
+## D5 · Distribution: historical unsigned freeware decision — superseded for Release-1 candidates (2026-09-05)
 
-Owner's call ("I don't want to pay anything now"): the **$0 unsigned build is the operating
-version**. Every tool in the stack is free/open-source; there is no license cost anywhere. This is
-safe because the operating pattern never needs third-party code trust:
+The 2026-07-20 owner decision allowed a $0 unsigned internal build. It remains historical context,
+but its execution-safety rationale is no longer controlling for a Release-1 candidate. Current
+Microsoft guidance says Smart App Control can evaluate all executable files, regardless of download
+origin, and enterprise policy may make SmartScreen warnings non-bypassable. Consequently:
 
-- Atlas runs from the stick **on the engineer's own laptop** — collections go out over SSH from
-  there; client hardware never executes the exe.
-- FAT32/exFAT sticks carry no Mark-of-the-Web, so SmartScreen does not prompt (P2 audit fact);
-  an NTFS copy is at worst a one-time "More info → Run anyway".
-- The one scenario that stays closed — an AppLocker/WDAC-locked third-party laptop — has **no
-  free workaround by design** (that is the policy working). Legitimate paths: run on the
-  engineer's laptop, or a client-IT exception.
+- FAT32/exFAT is not an unsigned-execution assurance mechanism.
+- Every candidate remains `UNSIGNED_RELEASE_CANDIDATE` unless a trusted RSA Authenticode identity
+  and RFC3161 timestamp verify after signing.
+- A self-signed certificate exercises the machinery only; it does not create public or enterprise
+  trust.
+- AppLocker/App Control must be tested against the actual managed policy. A publisher rule is
+  available only for signed code; an exact-hash exception is a version-specific IT decision, not a
+  broad writable-USB-path bypass.
+- `portable/sign_release.ps1` and `portable/verify_signatures.ps1` implement the no-key-in-source
+  boundary. Certificate procurement, private-key custody, reputation, and policy acceptance remain
+  external.
 
-**Revisit triggers:** distributing the exe to engineers outside the owner's control, or a hard
-client-hardware deployment requirement. Cheap path when triggered: Azure Trusted Signing
-(~$10/month, month-to-month, cancel after) rather than $300+/yr OV/EV certificates; self-signing
-helps only on self-controlled fleets.
+No production signing identity was supplied by this amendment. Draft candidate creation is allowed;
+all signing, policy, physical, legal, independent-review, and field-acceptance rows in the field-test
+packet remain necessary blockers. The current receipt schema is permanently draft-only and defines
+no public-promotion path.
 
 ## Deferred to the owner (calendar items, not session work)
 
-- ~~Order the code-signing certificate~~ — **superseded by D5** (deferred indefinitely, no spend).
+- **Obtain an externally custodied trusted signing identity or service** — required by D5 before a
+  signed field candidate can close; procurement method, spend, key custody, and availability are
+  currently **not verified**. This supersedes the earlier indefinite/no-spend deferral while
+  preserving the historical $0 unsigned decision above.
 - ~~Delete `..\Enhancements_attic_2026-07-05\`~~ — **DONE 2026-07-25, at the owner's instruction**,
   executed by session `local_0c935881`. The decision was the owner's and the session only the
   hands, so this stays an owner calendar item, consistent with the heading above; the 2026-07-24

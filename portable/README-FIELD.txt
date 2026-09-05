@@ -86,11 +86,14 @@ anything. Expect several minutes for a large fleet.
 The seven Word documents each carry a Document Control table, just after
 the cover page, whose Status row marks them a generated draft that has
 not been reviewed. Take it literally: nothing here has been peer-reviewed
-or approved. The workbook, the explorer and the executive deck carry NO
-such marking, and the deck is the one most likely to be put in front of a
-client - so say it out loud rather than relying on the page. Approval is
-recorded per engagement by whoever runs the assessment, not on this
-stick, and Atlas has no way to know whether it happened.
+or approved. AssessHub Design/MOP downloads add a visible and machine-readable
+UNAPPROVED DRAFT marker when their configured approval gates are missing,
+revoked, unreadable, or ownership-uncertain. This field redaction command is
+deliberately ungated, so its Design/MOP carry only the generic draft control.
+The workbook, explorer and executive deck carry NO such marking, and the
+deck is the item most likely to be put in front of a client - say the posture
+out loud rather than relying on the page. Approval is recorded per engagement
+by whoever runs the assessment; a generated document never creates approval.
 
 WHAT REDACTION DOES NOT REMOVE - read this before sending anything:
 HOSTNAMES AND DESCRIPTIONS ARE KEPT ON PURPOSE (a deliverable full of
@@ -138,6 +141,8 @@ do not send.
 
 This command produces eleven items: the workbook, the source-bound Protocol
 Assurance JSON export, the explorer, seven Word documents and the deck.
+It also keeps the manifest-owned topology.dot/topology.mmd and run-metadata
+sidecars so later manifest verification does not point to deleted staging files.
 The Cutover Plan and the NRFU / Acceptance Test
 Plan are NOT among them - those two are generated in AssessHub, not by
 this command, so a set with no warning is complete WITHOUT them.
@@ -197,11 +202,43 @@ Anything that asks you to save a password on the stick is a bug: don't.
 UPDATE (new Atlas version)
 --------------------------
 On the build machine:
-  powershell -File portable\make_stick.ps1 -Dest E:\
-(or copy the new  Atlas\  folder over this one, keeping  data\ ).
-Everything is replaced EXCEPT  data\  - campaigns, snapshots and backups
-survive every update. Afterwards run  Atlas.exe --selftest  once.
+  powershell -File portable\make_stick.ps1 -Dest E:\ -Package <Atlas-version-windows-x64.zip>
+Never copy new files over the active Atlas\ tree. The updater verifies and
+preflights Atlas.incoming on the destination drive, preserves a hash-bound
+pre-update database backup, moves data\ to Atlas.data-handoff, switches and
+verifies the application with no client data inside its tree, and only then attaches
+data\ with one exact directory rename. It holds .Atlas.update.lock so a second
+updater cannot touch a live transaction. The old complete application remains
+at Atlas.previous, and Atlas.rollback-slot.json binds that exact pair. If
+interrupted, re-run the same command: Atlas.update-state.json drives recovery
+before new work.
+Software fault-injection tests cover each recorded phase; only the physical
+field packet can prove real USB power-loss behavior.
+
+Explicit application rollback (newer database retained separately):
+  powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback
+The older application must open a same-drive copy of the retained database
+before Atlas switches it in. If that compatibility check fails, use:
+  powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback -RestorePreUpdateDatabase
+Only the database backup named and hashed by Atlas.rollback-slot.json is
+eligible. Atlas first preserves the newer database and a hash receipt in
+data\release-backups\. Those hashes are local consistency evidence, not a
+signature or independent custody record.
 
 If the update reports "IN USE": Atlas or the browser it opened is
 still running and holding files on the stick. Close both (see EJECT
 DISCIPLINE above) and run it again.
+
+OFFLINE / LIVE NETWORK BOUNDARY
+-------------------------------
+The portable profile guards the Python socket paths used by Atlas against
+non-loopback DNS, TCP and UDP by default while keeping AssessHub on numeric
+loopback (127.0.0.1 or ::1). This is defense in depth, not an OS firewall:
+the disconnected-NIC field test is the hard no-internet check. For an
+explicitly authorized read-only SSH collection, use the engine door with the
+engagement's reviewed devices file and workbook template, for example:
+  Atlas.exe --allow-live-network --run-engine --devices-file D:\job\devices.json --template D:\job\template.xlsx --output D:\job\Assessment.xlsx
+The browser ingest routes remain offline; the bare `--allow-live-network`
+server form changes reachability but does not itself start a collection.
+This enables network reachability only. It does NOT authorize a collection,
+change device credentials, permit device writes, or weaken the read-only role.

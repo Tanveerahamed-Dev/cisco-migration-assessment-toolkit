@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import json
 from collections import Counter
 from typing import Any, Iterable
 
@@ -537,25 +538,73 @@ def enhancement_brief(content: ContentBundle, gap_id: str | None) -> str:
 """
 
 
+def agent_pack_templates(bundle: CompilerBundle) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return validator-shaped templates that deliberately contain no grant or run evidence."""
+    envelope: dict[str, Any] = {
+        "schema_version": "1.0.0",
+        "id": "REPLACE_WITH_TASK_ID",
+        "baseline_commit": bundle.source_commit,
+        "baseline_tree": bundle.manifest["head_tree_oid"],
+        "objective": "REPLACE_WITH_BOUNDED_OBJECTIVE",
+        "allowed_owners": ["master_reference"],
+        "allowed_paths": ["master-reference/continuity/"],
+        "allowed_actions": ["read-repository", "run-tests"],
+        "prohibited_actions": [
+            "device-write",
+            "vault-write",
+            "client-data-ingest",
+            "public-publish",
+        ],
+        "required_tests": [{"id": "REPLACE_WITH_TEST_ID", "command": "REPLACE_WITH_EXACT_COMMAND"}],
+        "authority": {
+            "actor_id": "REPLACE_WITH_EXTERNALLY_AUTHORIZED_ACTOR",
+            "grant_id": "REPLACE_WITH_CURRENT_HUMAN_GRANT",
+            "granted_by": "REPLACE_WITH_HUMAN_GRANTOR",
+        },
+        "expires_at": "REPLACE_WITH_CURRENT_UTC_EXPIRY",
+    }
+    receipt: dict[str, Any] = {
+        "schema_version": "1.0.0",
+        "id": "REPLACE_WITH_COMPLETION_ID",
+        "envelope_digest": "REPLACE_WITH_CANONICAL_ENVELOPE_SHA256",
+        "baseline_commit": bundle.source_commit,
+        "baseline_tree": bundle.manifest["head_tree_oid"],
+        "completion_commit": "REPLACE_WITH_EXACT_COMPLETION_COMMIT",
+        "completion_tree": "REPLACE_WITH_EXACT_COMPLETION_TREE",
+        "diff_digest": "REPLACE_WITH_OBSERVED_DIFF_SHA256",
+        "changed_paths": [],
+        "changed_owners": [],
+        "actions_performed": [],
+        "tests": [{"id": "REPLACE_WITH_TEST_ID", "command": "REPLACE_WITH_EXACT_COMMAND", "exit_code": None}],
+        "artifacts": [],
+        "conflicts": [],
+        "exceptions": [],
+        "external_actions": [],
+        "actor_id": "REPLACE_WITH_EXTERNALLY_AUTHORIZED_ACTOR",
+    }
+    return envelope, receipt
+
+
 def agent_pack(bundle: CompilerBundle, content: ContentBundle) -> str:
     constraints = [item.get("statement") for item in content.governance.get("invariants", [])]
+    envelope, receipt = agent_pack_templates(bundle)
+    envelope_json = json.dumps(envelope, indent=2, ensure_ascii=False)
+    receipt_json = json.dumps(receipt, indent=2, ensure_ascii=False)
     return f"""# Atlas Agent Pack
+
+## Validator-shaped materialization template
+
+The field names and nested shapes match the local continuity contract, while every authority,
+execution, expiry, digest, and test-result value that this pure renderer cannot observe is an
+explicit `REPLACE_WITH_...` placeholder (or `null`). **The blocks intentionally fail validation
+until a current human grant and observed execution evidence materialize them.** Compiler
+source-tree digest (separate from the Git tree object ID):
+`{bundle.source_tree_digest}`.
 
 ## Immutable task-envelope baseline
 
 ```json
-{{
-  "baseline_commit": "{bundle.source_commit}",
-  "source_tree_digest": "{bundle.source_tree_digest}",
-  "objective": "[bounded objective]",
-  "allowed_owners": ["[owner id]"],
-  "allowed_paths": ["[path prefix]"],
-  "allowed_actions": ["read", "edit", "test"],
-  "prohibited_actions": ["device-write", "vault-write", "client-data-ingest", "public-publish"],
-  "required_tests": ["[command]"],
-  "authority": "[human authority]",
-  "expires": "[ISO-8601 instant]"
-}}
+{envelope_json}
 ```
 
 An agent must stop when the baseline is stale, the requested owner/path falls
@@ -564,18 +613,7 @@ outside the envelope, or a protected constraint would be crossed.
 ## Completion receipt
 
 ```json
-{{
-  "baseline_commit": "{bundle.source_commit}",
-  "result_tree": "[exact tree]",
-  "diff_digest": "[sha256]",
-  "changed_owners": ["[owner id]"],
-  "manifest_delta": ["[record delta]"],
-  "commands": [{{"command": "[exact command]", "exit_code": 0}}],
-  "artifacts": [{{"path": "[path]", "sha256": "[digest]"}}],
-  "conflicts": [],
-  "exceptions": [],
-  "external_actions": []
-}}
+{receipt_json}
 ```
 
 ## Non-negotiable invariants

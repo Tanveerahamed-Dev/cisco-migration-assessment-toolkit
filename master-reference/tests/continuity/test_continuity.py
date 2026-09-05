@@ -3,10 +3,11 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,13 @@ sys.path.insert(0, str(MASTER_REFERENCE))
 from continuity.git_state import observe_git_state  # noqa: E402
 from continuity.model import digest_object  # noqa: E402
 from continuity.query import query_by_id, query_by_path, query_impact  # noqa: E402
-from continuity.validation import validate_completion_receipt, validate_task_envelope  # noqa: E402
+from continuity.validation import (  # noqa: E402
+    ENVELOPE_FIELDS,
+    RECEIPT_FIELDS,
+    validate_completion_receipt,
+    validate_task_envelope,
+)
+from release.documents import agent_pack  # noqa: E402
 
 
 NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
@@ -217,6 +224,88 @@ def test_task_envelope_binds_exact_baseline_authority_scope_and_constraints(tmp_
     _git(repo, "add", "outside.py")
     result = validate_task_envelope(envelope, repo, _bundle(commit, tree), now=NOW)
     assert "changed_path_outside_scope:outside.py" in result["errors"]
+
+
+def test_generated_agent_pack_examples_validate_end_to_end(tmp_path: Path) -> None:
+    """Materialized generator templates reach both validators only with observed evidence."""
+    repo = tmp_path / "repo"
+    commit, tree = _repository(repo)
+    bundle = _bundle(commit, tree)
+    content = type("Content", (), {"governance": {"invariants": []}})()
+    rendered = agent_pack(bundle, content)
+    blocks = re.findall(r"```json\n(.*?)\n```", rendered, flags=re.DOTALL)
+    assert len(blocks) == 2
+    envelope, receipt = (json.loads(block) for block in blocks)
+
+    assert set(envelope) == ENVELOPE_FIELDS
+    assert set(receipt) == RECEIPT_FIELDS
+    assert validate_task_envelope(envelope, repo, bundle, now=NOW)["status"] == "invalid"
+    assert validate_completion_receipt(receipt, envelope, repo, bundle, now=NOW)["status"] == "invalid"
+
+    partially_materialized = copy.deepcopy(envelope)
+    partially_materialized["expires_at"] = (
+        NOW + timedelta(days=1)
+    ).isoformat().replace("+00:00", "Z")
+    partial_result = validate_task_envelope(
+        partially_materialized, repo, bundle, now=NOW
+    )
+    assert partial_result["status"] == "invalid"
+    assert any(
+        error.startswith("placeholder:unmaterialized:envelope.")
+        for error in partial_result["errors"]
+    )
+
+    command = f'"{sys.executable}" -c "raise SystemExit(0)"'
+    executed = subprocess.run(
+        [sys.executable, "-c", "raise SystemExit(0)"],
+        cwd=repo,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    envelope.update({
+        "id": "task-continuity-generated",
+        "objective": "Validate the generated continuity template.",
+        "required_tests": [{"id": "generated", "command": command}],
+        "authority": {
+            "actor_id": "fixture-authorized-actor",
+            "grant_id": "fixture-current-grant",
+            "granted_by": "fixture-human-grantor",
+        },
+        "expires_at": (NOW + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+    })
+    observed = observe_git_state(repo, commit)
+    receipt.update({
+        "id": "completion-continuity-generated",
+        "envelope_digest": digest_object(envelope),
+        "completion_commit": observed["head_commit"],
+        "completion_tree": observed["head_tree"],
+        "diff_digest": observed["diff_digest"],
+        "actions_performed": ["read-repository", "run-tests"],
+        "tests": [{"id": "generated", "command": command, "exit_code": executed.returncode}],
+        "actor_id": "fixture-authorized-actor",
+    })
+    envelope_result = validate_task_envelope(envelope, repo, bundle, now=NOW)
+    assert envelope_result["status"] == "valid", envelope_result["errors"]
+    receipt_result = validate_completion_receipt(receipt, envelope, repo, bundle, now=NOW)
+    assert receipt_result["status"] == "valid", receipt_result["errors"]
+
+    old_envelope = copy.deepcopy(envelope)
+    old_envelope["source_tree_digest"] = bundle.source_tree_digest
+    old_envelope["expires"] = old_envelope.pop("expires_at")
+    old_envelope["allowed_actions"] = ["read", "edit", "test"]
+    old_envelope["required_tests"] = ["python -m pytest"]
+    old_envelope["authority"] = "[human authority]"
+    invalid_envelope = validate_task_envelope(old_envelope, repo, bundle, now=NOW)
+    assert invalid_envelope["status"] == "invalid"
+
+    old_receipt = copy.deepcopy(receipt)
+    old_receipt["result_tree"] = old_receipt.pop("completion_tree")
+    old_receipt["commands"] = old_receipt.pop("tests")
+    old_receipt["manifest_delta"] = []
+    invalid_receipt = validate_completion_receipt(old_receipt, envelope, repo, bundle, now=NOW)
+    assert invalid_receipt["status"] == "invalid"
 
 
 def test_expired_or_unknown_owner_envelope_is_invalid(tmp_path: Path) -> None:

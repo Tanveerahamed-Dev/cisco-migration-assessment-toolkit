@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
 from . import engine, redaction_verify, summary
-from .serve import ENGINE_SENTINEL
+from .serve import ENGINE_SENTINEL, LIVE_NETWORK_FLAG
 
 _REPO_ROOT = Path(engine.__file__).resolve().parents[2]
 _ENGINE_SCRIPT = _REPO_ROOT / "COLLECT_PARSE_V3_23_0.py"
@@ -521,7 +521,8 @@ def _engine_argv() -> List[str]:
     ``serve.main`` turns into the engine CLI before any server code runs. Both forms stay a real
     child process: isolation and the hard timeout are identical."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, ENGINE_SENTINEL]
+        live = os.environ.get("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK") == "1"
+        return [sys.executable, *([LIVE_NETWORK_FLAG] if live else []), ENGINE_SENTINEL]
     return [sys.executable, str(_ENGINE_SCRIPT)]
 
 
@@ -938,7 +939,8 @@ def _engine_filenames(stem: str) -> frozenset:
 
     return frozenset([f for _k, _n, f in cli_artifacts(stem)] +
                      [stem + s for s in (".snapshot.json", ".run_manifest.json",
-                                         ".phase_timings.json")])
+                                         ".phase_timings.json")] +
+                     ["topology.dot", "topology.mmd"])
 
 
 def _written_by_this_run(p: Path, engine_names: frozenset,
@@ -1510,6 +1512,11 @@ def _stable_regular_sha256(path: Path) -> str:
 
 
 _REDACTION_RECEIPT = "Assessment_redacted.redaction.json"
+
+
+def redaction_delivery_filenames() -> frozenset[str]:
+    """Closed top-level filename denominator promoted by the field redaction wrapper."""
+    return _engine_filenames("Assessment_redacted") | {_REDACTION_RECEIPT}
 
 
 def _promote_verified_delivery(

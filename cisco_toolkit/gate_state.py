@@ -1316,9 +1316,9 @@ def pending_approvals(generator: str, root: str = ".",
                                      f"(NOT the same as ungated).")
         try:
             store, path = load_store(root)
-        except GateStateError as e:
-            return _done("unreadable", f"gate ledger present but unreadable ({e}) -- gate state "
-                                       f"unknown; treat approvals as UNCONFIRMED.")
+        except GateStateError:
+            return _done("unreadable", "gate ledger present but unreadable -- gate state "
+                                       "unknown; treat approvals as UNCONFIRMED.")
         out["store"] = path
         if store is None:
             # Same ordering fix as enforce(): a DECLARED engagement cannot be answered "no ledger for
@@ -1352,10 +1352,12 @@ def pending_approvals(generator: str, root: str = ".",
                                     f"-- the {generator} must not be treated as approved.")
         return _done("pending", f"awaiting approval of {', '.join(out['missing'])} in {scope} -- "
                                 f"the {generator} is not yet approved.")
-    except Exception as e:                                    # pragma: no cover - belt and braces
+    except Exception:                                         # pragma: no cover - belt and braces
         # The no-raise contract is the point of this function; a bug in it must degrade to "unknown"
-        # rather than take down the deliverable run that only wanted a status line.
-        logger.warning("[gate] disclosure failed for %s: %s", generator, e)
+        # rather than take down the deliverable run that only wanted a status line.  Do not log the
+        # exception or request-derived values: ledger exceptions can contain line breaks, paths, or
+        # content and therefore forge adjacent log records or disclose client details.
+        logger.warning("[gate] gated document disclosure evaluation failed")
         return _done("unreadable", "gate state could not be determined -- treat approvals as "
                                    "UNCONFIRMED.")
 

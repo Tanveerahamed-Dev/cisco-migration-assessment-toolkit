@@ -751,8 +751,9 @@
         "target": {"$ref": "#/$defs/atlasId"},
         "relation": {
           "enum": [
-            "calls", "contains", "defines", "imports", "imports_from", "indirect_call",
-            "inherits", "method", "rationale_for", "related_to", "re_exports", "references", "uses"
+            "calls", "cites", "contains", "defines", "dynamic_import", "extends", "imports",
+            "imports_from", "indirect_call", "inherits", "method", "rationale_for", "related_to",
+            "re_exports", "references", "uses"
           ]
         },
         "coordinate_occurrence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},

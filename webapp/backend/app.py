@@ -2223,6 +2223,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         # sign-offs (§4.3 "as signed"); every other deliverable is a pure snapshot read.
         gate_rec = (gates.gate_record(store.list_gates(meta["campaign_id"]))
                     if kind == "engagement" else None)
+        # One immutable gate read feeds both the forwarded DOCX and the response header. Reading
+        # twice allowed a concurrent decision to split the two representations.
+        gate_note = deliverables.gate_disclosure(kind, engagement=meta["engagement_id"])
         # Slot acquired OUTSIDE the 500-wrapper so its 503 (server at the concurrency ceiling) isn't
         # rewritten to a 500; released by the context manager even if generation raises.
         with _generation_slot(request.app.state.generation_semaphore):
@@ -2233,14 +2236,14 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     meta["label"],
                     gates=gate_rec,
                     protocol_assurance_bundle=protocol_assurance_bundle,
+                    document_gate=gate_note,
                 )
             except Exception as e:  # generation failure (e.g. a malformed snapshot)
                 raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]
         # PPDIOO document gates DISCLOSE on this surface rather than refuse (the reasoning, and the
-        # known residual, are in deliverables.generate's docstring). Surfaced as a response header
-        # so it is visible to the SPA and to curl without changing the bytes of the document.
-        gate_note = deliverables.gate_disclosure(kind)
+        # remaining ownership limit, are in deliverables.generate's docstring). The same bounded
+        # projection is embedded in Design/MOP DOCX files and exposed to the SPA/curl here.
         headers = {"X-Gate-Status": f"{gate_note['status']}:"
                                     f"{','.join(gate_note.get('missing') or ['-'])}"} if gate_note else None
         return _send_file(path, spec.media, meta["label"], spec.download_suffix,

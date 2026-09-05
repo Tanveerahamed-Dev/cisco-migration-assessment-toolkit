@@ -28,6 +28,7 @@ from portable.atlas_bundle import (  # noqa: E402
     hidden_imports,
     missing_data_sources,
 )
+from portable.windows_version_info import pyinstaller_version_info  # noqa: E402
 
 _missing = missing_data_sources(ROOT)
 if _missing:
@@ -44,7 +45,10 @@ a = Analysis(  # noqa: F821
     # netmiko resolves vendor drivers via its class map — take the whole tree; the rest of the
     # dynamic seams are pinned (with rationale) in atlas_bundle.hidden_imports.
     hiddenimports=hidden_imports() + collect_submodules("netmiko"),
-    runtime_hooks=[str(ROOT / "portable" / "rthook_stdio_utf8.py")],
+    runtime_hooks=[
+        str(ROOT / "portable" / "rthook_stdio_utf8.py"),
+        str(ROOT / "portable" / "rthook_network_boundary.py"),
+    ],
     excludes=["tkinter"],
 )
 pyz = PYZ(a.pure)  # noqa: F821
@@ -54,6 +58,7 @@ exe = EXE(  # noqa: F821
     a.scripts,
     exclude_binaries=True,
     name=exe_name(),
+    version=pyinstaller_version_info(ROOT),
     console=True,  # D3 — never windowed
     upx=False,
 )

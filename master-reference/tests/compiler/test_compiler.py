@@ -1384,6 +1384,14 @@ class CompilerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
             node_count = 128
+            schema = json.loads(
+                (MASTER_REFERENCE / "schema" / "atlas-records.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            relations = tuple(sorted(schema["$defs"]["graphEdgeRecord"]["properties"]["relation"]["enum"]))
+            self.assertEqual(set(relations), graphify_module.CONTROLLED_GRAPH_RELATIONS)
+            self.assertTrue({"cites", "dynamic_import", "extends"} <= set(relations))
             write(
                 repository,
                 "graphify-out/graph.json",
@@ -1405,7 +1413,7 @@ class CompilerTests(unittest.TestCase):
                             {
                                 "source": "producer_node_0000",
                                 "target": f"producer_node_{index:04d}",
-                                "relation": "calls",
+                                "relation": relations[(index - 1) % len(relations)],
                                 "confidence": "extracted",
                                 "confidence_score": 1,
                                 "source_file": "safe.py",
@@ -1425,6 +1433,7 @@ class CompilerTests(unittest.TestCase):
                 {"safe.py": "urn:atlas:file:" + "c" * 24},
             )
             self.assertEqual((len(nodes), len(edges)), (node_count, node_count - 1))
+            self.assertEqual({edge["relation"] for edge in edges}, set(relations))
 
     def test_graphify_exclusion_disposition_uniqueness_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3098,6 +3107,28 @@ class CompilerTests(unittest.TestCase):
             ledger = json.loads((output / "completeness.json").read_text(encoding="utf-8"))
             self.assertEqual(ledger["parsing"]["expected_nonblank_lines"], 3)
             self.assertEqual(ledger["parsing"]["line_records"], 3)
+
+    def test_release_lock_sql_fixture_and_extensionless_license_are_classified(self) -> None:
+        lock = classify_file("portable/windows-x64-requirements.lock", "100644")
+        self.assertEqual(lock["classification_errors"], [])
+        self.assertEqual(lock["language"], "text")
+        self.assertEqual(lock["media_type"], "text/plain")
+        self.assertIn("dependency", lock["roles"])
+
+        fixture = classify_file("tests/fixtures/assesshub-v3.32.1.sql", "100644")
+        self.assertEqual(fixture["classification_errors"], [])
+        self.assertEqual(fixture["language"], "sql")
+        self.assertEqual(fixture["media_type"], "text/plain")
+        self.assertIn("dataset", fixture["roles"])
+        self.assertIn("test", fixture["roles"])
+
+        license_file = classify_file(
+            "portable/third-party-licenses/react-force-graph-LICENSE", "100644"
+        )
+        self.assertEqual(license_file["classification_errors"], [])
+        self.assertEqual(license_file["language"], "text")
+        self.assertEqual(license_file["media_type"], "text/plain")
+        self.assertEqual(license_file["roles"], ["documentation"])
 
 
 if __name__ == "__main__":

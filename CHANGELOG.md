@@ -7,6 +7,26 @@ per change, with verification evidence) lives in
 ## [Unreleased]
 
 ### Added
+- **Atlas 3.33.0rc1 Windows x64 portable release lane.** The exact-source Windows workflow now
+  builds and executes the real PyInstaller `Atlas.exe`, installs a hash-locked dependency closure,
+  enforces default-offline/loopback-only portable networking with an explicit read-only collection
+  enable, exercises Unicode paths and alternate drive letters, preflights a migrated database copy,
+  drives frozen redaction, and emits a re-opened ZIP with complete member/checksum, CycloneDX SBOM,
+  toolchain, signing, qualification, and provenance receipts. Updates now hold an exclusive
+  destination lock, verify a same-volume package copy and installed member set, preflight the
+  database on that volume, retain the prior rollback slot until validation, move directories with
+  exact non-merging renames, keep client data detached while candidate executables run, and bind
+  the eligible pre-update database backup to
+  `Atlas.rollback-slot.json`. Executable injections cover first-install/update/rollback phases,
+  locked data, concurrency, candidate data/member mutation, failed rollback-candidate reversal,
+  and timeout containment. The complete field-packet/`external_pending` denominator—including
+  signing, managed policy, physical USB/power-loss/database recovery, dataset legal review,
+  independent human review, and operator acceptance—remains an explicit draft blocker; v1 has no
+  public-promotion lane.
+- **Relocatable Graphify-to-Obsidian export.** A tracked, source-pinned wrapper now derives bounded
+  note names from stable node IDs, builds in isolation, preflights the complete target path, and
+  reproduces identical vault bytes across different root lengths instead of shortening names from
+  the absolute destination.
 - **QDP-001 multi-case synthetic adversarial campaign and operator report.** A separate bounded,
   stdout-only capsule now runs up to eight complete canonical discovery cases, preserves every
   candidate outcome, automatically replays every emitted witness, and reports exact case,
@@ -90,6 +110,16 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Portable redaction promotions now keep the manifest-owned topology sidecars.** The private
+  staging run sealed `topology.dot` and `topology.mmd`, but the promotion census omitted them and
+  deleted the staging directory; a later `Atlas.exe --verify-manifest` therefore failed over an
+  otherwise successful redaction. Both files now cross the verified promotion boundary with the
+  manifest they belong to.
+- **Generated agent contracts and forwarded document approvals now travel correctly.** The Master
+  Reference agent-pack examples use the exact continuity envelope/receipt vocabulary and validate
+  end-to-end. AssessHub reads a Design/MOP gate once and embeds the same bounded state in the HTTP
+  header, visible `UNAPPROVED DRAFT` text, Document Control row, and DOCX core metadata without
+  leaking ledger paths or claiming campaign approval.
 - **The Windows redirector test harness now contains the nested runtime-probe deadline.** Exact-main
   run `33292999786` passed 8,439 Python tests but failed when the redirector child exceeded an outer
   30-second watchdog that also wrapped its own 30-second product probe plus post-probe inventory work.

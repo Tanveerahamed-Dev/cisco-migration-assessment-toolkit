@@ -80,6 +80,16 @@ webapp/frontend/dist/** -text -whitespace
 # ubuntu's pure-LF checkout. Minified code is EOL-insensitive; a verbatim template passthrough is not.
 webapp/frontend/index.html text eol=lf
 
+# The portable release toolchain receipt hashes these authored materials in a Windows build and
+# rechecks them in an independent Linux job before attestation. Pin their checkout bytes so Git's
+# content-equivalent CRLF conversion cannot create a false provenance mismatch.
+pyproject.toml text eol=lf
+webapp/frontend/package-lock.json text eol=lf
+portable/*.json text eol=lf
+portable/*.lock text eol=lf
+portable/third-party-licenses/** text eol=lf
+tests/fixtures/*.sql text eol=lf
+
 # Cloudflare parses this tracked deployment contract byte-for-byte. Pin LF so
 # Windows and Linux builds feed the same header rules into the Sites archive.
 master-reference/public/_headers text eol=lf

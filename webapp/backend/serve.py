@@ -28,10 +28,14 @@ needs a real terminal, so the frozen app is built ``console=True``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
+import json
 import multiprocessing
 import os
+import re
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
@@ -44,9 +48,13 @@ from cisco_toolkit.docmeta import artifact_family_metadata
 # The frozen exe re-invokes ITSELF with this first argument to become the engine CLI child
 # (see backend/ingest.py:_engine_argv, the only producer).
 ENGINE_SENTINEL = "--run-engine"
+LIVE_NETWORK_FLAG = "--allow-live-network"
+DATABASE_PREFLIGHT_ENV = "ATLAS_PORTABLE_DATABASE_PREFLIGHT"
+DATABASE_PREFLIGHT_MARKER = "atlas-db-preflight.json"
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
+_EXTERNAL_LAUNCH_LOCK = threading.Lock()
 
 
 def _frozen() -> bool:
@@ -150,15 +158,50 @@ def _effective_db_path(cli_db) -> str:
     return app_module.DEFAULT_DB
 
 
+def _set_windows_dll_directory(value: str | None) -> bool:
+    import ctypes
+
+    return bool(ctypes.windll.kernel32.SetDllDirectoryW(value))
+
+
+def _open_external_url(url: str, opener=None) -> bool:
+    """Launch a system browser without leaking PyInstaller's DLL search path to it."""
+    import webbrowser
+
+    launch = opener or webbrowser.open
+    if os.name != "nt" or not _frozen():
+        return bool(launch(url))
+    bundle = str(getattr(sys, "_MEIPASS", ""))
+    prior_path = os.environ.get("PATH")
+    parts = (prior_path or "").split(os.pathsep)
+    folded_bundle = os.path.normcase(os.path.abspath(bundle)) if bundle else ""
+    cleaned = [
+        item for item in parts
+        if not folded_bundle
+        or not os.path.normcase(os.path.abspath(item or ".")).startswith(folded_bundle)
+    ]
+    with _EXTERNAL_LAUNCH_LOCK:
+        try:
+            if not _set_windows_dll_directory(None):
+                raise OSError("could not restore the system DLL search directory")
+            os.environ["PATH"] = os.pathsep.join(cleaned)
+            return bool(launch(url))
+        finally:
+            if prior_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = prior_path
+            if bundle:
+                _set_windows_dll_directory(bundle)
+
+
 def _schedule_browser_open(url: str) -> None:
     """uvicorn.run blocks — open the UI shortly after startup from a daemon timer.
     Fire-and-forget: a headless box just keeps the printed URL."""
 
     def _open() -> None:
-        import webbrowser
-
         try:
-            webbrowser.open(url)
+            _open_external_url(url)
         except Exception:
             pass
 
@@ -173,6 +216,17 @@ def _bind_is_loopback(host: str) -> bool:
         return True
     if candidate.startswith("[") and candidate.endswith("]"):
         candidate = candidate[1:-1]
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _bind_is_numeric_loopback(host: str) -> bool:
+    """Frozen binding never delegates the meaning of ``localhost`` to hosts/DNS state."""
+    candidate = str(host).strip()
+    if candidate.startswith("[") and candidate.endswith("]"):
+        return False  # brackets are URL syntax, not a valid uvicorn bind address
     try:
         return ipaddress.ip_address(candidate).is_loopback
     except ValueError:
@@ -370,6 +424,17 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
         check("engine-entry", None if _ilu.find_spec("COLLECT_PARSE_V3_23_0")
               else "engine module not bundled — ingest would respawn the app instead of "
                    "running the engine")
+        from portable import network_boundary
+
+        network_ok = network_boundary.installed() and (
+            network_boundary.live_network_allowed() or network_boundary.offline_probe()
+        )
+        mode = "explicit-live" if network_boundary.live_network_allowed() else "offline-loopback-only"
+        check(
+            f"network-boundary [{mode}]",
+            None if network_ok
+            else "portable socket boundary is absent or failed its non-loopback denial probe",
+        )
     else:
         from . import ingest as ingest_mod
 
@@ -538,11 +603,165 @@ def run_verify_manifest(path: str, expect_root=None, metadata_only: bool = False
     return 0 if res["ok"] else 4
 
 
+def _preflight_file_bytes(path: Path, what: str) -> tuple[bytes, os.stat_result]:
+    """Read one physical, single-link file while holding its exact handle."""
+    metadata = path.lstat()
+    reparse = int(getattr(metadata, "st_file_attributes", 0)) & int(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+    if path.is_symlink() or reparse or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise OSError(f"{what} must be a regular, non-reparse, single-link file")
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        value = stream.read()
+        after = os.fstat(stream.fileno())
+    final = path.lstat()
+    identities = {
+        (item.st_dev, item.st_ino, item.st_mode, item.st_size, item.st_mtime_ns)
+        for item in (metadata, opened, after, final)
+    }
+    if len(identities) != 1 or len(value) != final.st_size:
+        raise OSError(f"{what} changed while read")
+    return value, final
+
+
+def _preflight_request(raw: bytes) -> dict:
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError("duplicate request key")
+            result[key] = value
+        return result
+
+    value = json.loads(
+        raw.decode("utf-8", errors="strict"),
+        object_pairs_hook=pairs,
+        parse_constant=lambda token: (_ for _ in ()).throw(
+            ValueError(f"non-finite request number {token}")
+        ),
+    )
+    canonical = (
+        json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    if not isinstance(value, dict) or canonical != raw:
+        raise ValueError("request is not a canonical JSON object")
+    return value
+
+
+def run_database_preflight(path: str) -> int:
+    """Open and migrate one caller-supplied DB whose same-directory request is exact-bound."""
+    nonce = os.environ.get(DATABASE_PREFLIGHT_ENV, "")
+    if not re.fullmatch(r"[0-9a-f]{32}", nonce):
+        print(f"{APP_TITLE}: database preflight requires a valid one-run request nonce.",
+              file=sys.stderr)
+        return 2
+    db = Path(os.path.abspath(path))
+    marker = db.with_name(DATABASE_PREFLIGHT_MARKER)
+    try:
+        if _frozen():
+            active = (_exe_dir() / "data" / "assesshub.db").resolve(strict=False)
+            if os.path.normcase(str(db.resolve(strict=True))) == os.path.normcase(str(active)):
+                raise OSError("database preflight refuses the active frozen Atlas store")
+        before_bytes, before_metadata = _preflight_file_bytes(db, "database preflight input")
+        marker_bytes, _marker_metadata = _preflight_file_bytes(marker, "database preflight marker")
+        request = _preflight_request(marker_bytes)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"{APP_TITLE}: database preflight request is invalid: {exc}", file=sys.stderr)
+        return 1
+    before = hashlib.sha256(before_bytes).hexdigest()
+    expected_request = {
+        "schema": "atlas.database-preflight-request/1",
+        "nonce": nonce,
+        "database_name": db.name,
+        "input_copy_sha256": before,
+        "input_copy_bytes": len(before_bytes),
+        "requested_action": "open_migrate_copy_and_report",
+    }
+    if request != expected_request:
+        print(f"{APP_TITLE}: database preflight request does not bind the exact input copy.",
+              file=sys.stderr)
+        return 1
+    if any(db.with_name(db.name + suffix).exists() for suffix in ("-journal", "-wal", "-shm")):
+        print(f"{APP_TITLE}: database preflight copy has live journal/WAL sidecars.", file=sys.stderr)
+        return 1
+    from portable.database_preflight import migrate_and_compare
+    from .storage import Store
+
+    try:
+        logical_migration = migrate_and_compare(db, Store)
+        counts = {
+            row["name"]: row["row_count"]
+            for row in logical_migration["after"]["tables"]
+        }
+    except Exception as exc:  # noqa: BLE001 - hidden field command must return bounded refusal
+        print(f"{APP_TITLE}: database preflight failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        after_bytes, after_metadata = _preflight_file_bytes(db, "migrated database preflight input")
+        final_marker, _ = _preflight_file_bytes(marker, "database preflight marker")
+    except OSError as exc:
+        print(f"{APP_TITLE}: database preflight final binding failed: {exc}", file=sys.stderr)
+        return 1
+    if (before_metadata.st_dev, before_metadata.st_ino) != (
+        after_metadata.st_dev, after_metadata.st_ino
+    ):
+        print(f"{APP_TITLE}: database preflight input identity was replaced.", file=sys.stderr)
+        return 1
+    if final_marker != marker_bytes:
+        print(f"{APP_TITLE}: database preflight marker changed during migration.", file=sys.stderr)
+        return 1
+    after = hashlib.sha256(after_bytes).hexdigest()
+    print(json.dumps({
+        "schema": "atlas.database-preflight/1",
+        "status": "pass",
+        "request_sha256": hashlib.sha256(marker_bytes).hexdigest(),
+        "request_nonce": nonce,
+        "input_copy_binding": {
+            "database_name": db.name,
+            "bytes": len(before_bytes),
+            "sha256": before,
+        },
+        "migrated_copy_sha256": after,
+        "migrated_copy_bytes": len(after_bytes),
+        "quick_check": "ok",
+        "row_counts": counts,
+        "logical_migration": logical_migration,
+        "caller_supplied_database_modified": after != before,
+        "authority_effect": "NONE",
+    }, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 # ── entry point ─────────────────────────────────────────────────────────────────
 def main(argv=None) -> int:
     # Frozen multiprocessing children re-enter here; this MUST precede everything else.
     multiprocessing.freeze_support()
     argv = list(sys.argv[1:]) if argv is None else list(argv)
+    if argv.count(LIVE_NETWORK_FLAG) > 1:
+        print(f"{APP_TITLE}: {LIVE_NETWORK_FLAG} may be supplied only once.", file=sys.stderr)
+        return 2
+    live_requested = LIVE_NETWORK_FLAG in argv
+    if live_requested:
+        # The runtime hook checks this value dynamically at each connection. Removing the Atlas
+        # flag before engine dispatch keeps the engine's own argparse surface unchanged.
+        argv.remove(LIVE_NETWORK_FLAG)
+    prior_live = os.environ.get("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK")
+    if live_requested:
+        os.environ["ATLAS_PORTABLE_ALLOW_LIVE_NETWORK"] = "1"
+    else:
+        os.environ.pop("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK", None)
+    try:
+        return _main_scoped(argv)
+    finally:
+        if prior_live is None:
+            os.environ.pop("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK", None)
+        else:
+            os.environ["ATLAS_PORTABLE_ALLOW_LIVE_NETWORK"] = prior_live
+
+
+def _main_scoped(argv: list[str]) -> int:
     if argv and argv[0] == ENGINE_SENTINEL:
         return _run_engine(argv[1:])
 
@@ -566,6 +785,9 @@ def main(argv=None) -> int:
                         help="TLS private-key PEM (or $ASSESSHUB_TLS_KEY)")
     parser.add_argument("--no-browser", action="store_true",
                         help="do not auto-open the UI in a browser")
+    # Parsed early and removed before engine dispatch; this hidden declaration keeps the shipped
+    # app-flag inventory mechanically complete for the field guide.
+    parser.add_argument("--allow-live-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--selftest", action="store_true",
                         help="verify the silent-degrade assets (explorer template, OUI/port/EoL KBs, "
                              "docx/pptx, frontend dist, engine entry, DB + backup dirs) and exit "
@@ -586,6 +808,7 @@ def main(argv=None) -> int:
                         help="check a delivered <name>.run_manifest.json against its own hash chain "
                              "and exit (0 clean, 4 broken). Unkeyed: catches careless edits, not a "
                              "forger who re-seals - add --expect-root to pin it to its run")
+    parser.add_argument("--database-preflight", default=None, metavar="COPY", help=argparse.SUPPRESS)
     parser.add_argument("--expect-root", default=None, metavar="SHA256",
                         help="with --verify-manifest: the chain_root recorded out of band (in the "
                              "report) that this file must match")
@@ -620,6 +843,7 @@ def main(argv=None) -> int:
                         ("--ssl-keyfile", args.ssl_keyfile),
                         ("--redact-folder", args.redact_folder), ("--out", args.out),
                         ("--verify-manifest", args.verify_manifest),
+                        ("--database-preflight", args.database_preflight),
                         ("--expect-root", args.expect_root)):
         if value is None:
             continue
@@ -638,6 +862,7 @@ def main(argv=None) -> int:
     # code says success" failure as the empty-value bug above, reached by a different route.
     jobs = [name for name, wanted in (("--selftest", args.selftest),
                                       ("--verify-manifest", args.verify_manifest is not None),
+                                      ("--database-preflight", args.database_preflight is not None),
                                       ("--redact-folder", args.redact_folder is not None)) if wanted]
     if len(jobs) > 1:
         print(f"{APP_TITLE}: {' and '.join(jobs)} each ask Atlas to do a different job, and it "
@@ -655,6 +880,8 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             return 2
         return run_verify_manifest(args.verify_manifest, args.expect_root, args.metadata_only)
+    if args.database_preflight is not None:
+        return run_database_preflight(args.database_preflight)
     if args.expect_root is not None or args.metadata_only or args.verify_artifacts:
         print(f"{APP_TITLE}: --expect-root, --metadata-only and --verify-artifacts only apply to "
               f"--verify-manifest.",
@@ -690,6 +917,10 @@ def main(argv=None) -> int:
             print(f"{APP_TITLE}: TLS certificate/key file not found: {missing_tls[0]}",
                   file=sys.stderr)
             return 2
+    if _frozen() and not _bind_is_numeric_loopback(args.host):
+        print(f"{APP_TITLE}: the portable Release-1 profile is loopback-only and requires a numeric loopback bind; "
+              "--host must be 127.0.0.1 or ::1.", file=sys.stderr)
+        return 2
     if not _bind_is_loopback(args.host):
         if not os.environ.get("ASSESSHUB_TOKEN"):
             print(f"{APP_TITLE}: a non-loopback bind requires ASSESSHUB_TOKEN.",

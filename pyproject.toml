@@ -20,7 +20,7 @@ name = "cisco-migration-assessment-toolkit"
 # `cisco_toolkit.__version__` ("3.23.0"): that constant is the snapshot-SCHEMA version baked into the
 # golden data contract (`script_version` in every snapshot), and bumping it would churn the frozen
 # golden. See the change log ("In-code version 3.23.0") and tests/test_pipeline_golden.py.
-version = "3.32.1"
+version = "3.33.0rc1"
 description = "Evidence-led Cisco L1-L4 network migration-assessment toolkit: one offline SSH collection produces a multi-sheet Excel workbook, an interactive single-file topology explorer, and a DOCX runbook."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,7 +29,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Tanveerahamed-Dev" }]
 keywords = ["cisco", "network", "migration", "assessment", "ios", "ios-xe", "nxos", "netmiko", "topology"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Intended Audience :: Telecommunications Industry",
@@ -95,6 +95,8 @@ dev = [
     # webapp/tests for the same reason. Declared here rather than only in webapp/requirements.txt
     # because `[dev]` is what CI actually installs.
     "httpx>=0.23,<1",
+    # Strictly validates the portable CycloneDX 1.6 file SBOM in tests and the release lane.
+    "cyclonedx-python-lib==11.12.0",
 ]
 # The Model Context Protocol server is optional: it exposes READ-ONLY query tools over a
 # already-produced snapshot.json (offline, no egress). The base engine never imports `mcp`
@@ -105,7 +107,7 @@ mcp = ["mcp>=1.28,<3"]
 # Compatibility alias; AssessHub runtime dependencies are already in the base set.
 webapp = []
 # Building the Atlas one-folder portable bundle (ADR-0004 P2; portable/build_atlas.py).
-build = ["pyinstaller>=6.10,<7"]
+build = ["pip==25.3", "pyinstaller>=6.10,<7", "cyclonedx-python-lib[json-validation]==11.12.0"]
 # The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
 # all offline/air-gap-safe, none imported by the engine: rank-bm25 (the auditable pure-Python Okapi
 # BM25 — §4's frozen priors k1/b are constructor args), pytrec-eval-terrier (the maintained
