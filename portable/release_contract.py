@@ -17,6 +17,7 @@ import stat
 import struct
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import unicodedata
 import urllib.parse
@@ -778,14 +779,32 @@ def _npm_distribution_receipt(root: Path) -> dict[str, Any] | None:
 def _python_distribution_receipts(*, reject_duplicate_locations: bool) -> list[dict[str, Any]]:
     """Inventory logical distributions while bounding duplicate metadata search locations.
 
-    Editable test installs can expose the same, byte-identical distribution metadata through both
-    the checkout and site-packages.  Synthetic fixture packaging records that logical distribution
-    once.  A conflicting duplicate always refuses, and a real Atlas release root asks this helper
-    to reject even byte-identical duplicate locations before its exact-lock equality check.
+    Synthetic fixture packaging inventories installed metadata only: checkout ``egg-info`` is source
+    material, not an installed toolchain distribution.  A real Atlas release scans every import-
+    visible location and rejects even equivalent duplicate locations before exact-lock equality.
+    Conflicting or unreadable duplicate metadata always refuses in either mode.
     """
+    if reject_duplicate_locations:
+        candidates = importlib.metadata.distributions()
+    else:
+        prefix = Path(sys.prefix).resolve(strict=True)
+        metadata_paths: set[str] = set()
+        for key in ("purelib", "platlib"):
+            raw_path = sysconfig.get_path(key)
+            if not raw_path:
+                continue
+            path = Path(raw_path).resolve(strict=True)
+            if path != prefix and prefix not in path.parents:
+                raise PortableReleaseError(
+                    "installed Python metadata path escapes the active interpreter prefix"
+                )
+            metadata_paths.add(str(path))
+        if not metadata_paths:
+            raise PortableReleaseError("installed Python metadata paths are unavailable")
+        candidates = importlib.metadata.distributions(path=sorted(metadata_paths))
     by_name: dict[str, dict[str, Any]] = {}
     duplicate_names: set[str] = set()
-    for distribution in importlib.metadata.distributions():
+    for distribution in candidates:
         name = distribution.metadata.get("Name")
         if not name:
             continue
@@ -807,7 +826,7 @@ def _python_distribution_receipts(*, reject_duplicate_locations: bool) -> list[d
         prior = by_name.get(item["name"])
         if prior is not None:
             duplicate_names.add(item["name"])
-            if prior != item:
+            if item["metadata_sha256"] is None or prior != item:
                 raise PortableReleaseError(
                     "build environment contains conflicting Python distribution metadata"
                 )

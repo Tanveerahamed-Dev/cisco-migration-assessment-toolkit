@@ -141,7 +141,7 @@ class _Distribution:
         self,
         name: str,
         version: str,
-        metadata_text: str = "metadata",
+        metadata_text: str | None = "metadata",
         metadata_file: str = "METADATA",
     ) -> None:
         self.metadata = {"Name": name, "License": "MIT"}
@@ -159,7 +159,11 @@ def test_distribution_inventory_collapses_only_identical_synthetic_metadata(monk
         _Distribution("Example_Pkg", "1.0", metadata_file="PKG-INFO"),
         _Distribution("example-pkg", "1.0"),
     ]
-    monkeypatch.setattr(subject.importlib.metadata, "distributions", lambda: identical)
+    monkeypatch.setattr(
+        subject.importlib.metadata,
+        "distributions",
+        lambda **_kwargs: identical,
+    )
     receipt = subject._python_distribution_receipts(reject_duplicate_locations=False)
     assert receipt == [{
         "name": "example-pkg",
@@ -171,7 +175,23 @@ def test_distribution_inventory_collapses_only_identical_synthetic_metadata(monk
         subject._python_distribution_receipts(reject_duplicate_locations=True)
 
     conflicting = [_Distribution("example-pkg", "1.0"), _Distribution("example.pkg", "2.0")]
-    monkeypatch.setattr(subject.importlib.metadata, "distributions", lambda: conflicting)
+    monkeypatch.setattr(
+        subject.importlib.metadata,
+        "distributions",
+        lambda **_kwargs: conflicting,
+    )
+    with pytest.raises(subject.PortableReleaseError, match="conflicting"):
+        subject._python_distribution_receipts(reject_duplicate_locations=False)
+
+    unreadable = [
+        _Distribution("example-pkg", "1.0", metadata_text=None),
+        _Distribution("example.pkg", "1.0", metadata_text=None),
+    ]
+    monkeypatch.setattr(
+        subject.importlib.metadata,
+        "distributions",
+        lambda **_kwargs: unreadable,
+    )
     with pytest.raises(subject.PortableReleaseError, match="conflicting"):
         subject._python_distribution_receipts(reject_duplicate_locations=False)
 
