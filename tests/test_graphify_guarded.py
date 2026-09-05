@@ -242,6 +242,7 @@ def _overlay_harness(tmp_path, monkeypatch):
     watch._unlink_calls = []
     watch._git_head = lambda **_kwargs: watch._head
     watch.watch_root = tmp_path
+    watch.out = tmp_path
     watch.extract = lambda: watch._extract_calls.append(True) or {}
     watch.G = {}
     watch._topology_from_graph = lambda _result: {}
@@ -291,7 +292,8 @@ def _overlay_harness(tmp_path, monkeypatch):
 def test_reviewed_graphify_identity_constants_are_exact():
     assert guard.DIST_NAME == "graphifyy"
     assert guard.EXPECTED_VERSION == "0.9.51"
-    assert guard.GUARD_CONTRACT == "graphify-producer-overlays/4"
+    assert guard.GUARD_CONTRACT == "graphify-producer-overlays/5"
+    assert guard.REFRESH_RECEIPT_CONTRACT == "atlas-graphify-refresh/2"
     assert guard.EXTRACTOR_RELATIVE_PATH == "graphify/extractors/json_config.py"
     assert guard.EXPECTED_SOURCE_BYTES == 9_723
     assert guard.EXPECTED_SOURCE_SHA256 == (
@@ -319,9 +321,9 @@ def test_reviewed_graphify_identity_constants_are_exact():
     assert guard.EXPECTED_REBUILD_SOURCE_SHA256 == (
         "4c1283138dfb003bf7cd768c2ba6fb94d2ae6869d0d8b4ac42cc54253163be18"
     )
-    assert guard.EXPECTED_REBUILD_PATCHED_BYTES == 42_925
+    assert guard.EXPECTED_REBUILD_PATCHED_BYTES == 43_131
     assert guard.EXPECTED_REBUILD_PATCHED_SHA256 == (
-        "1858a57219a040f145804893816d6f0fd61c796e0876110b2aaeda408cba4782"
+        "87aa8d48e1b4f5c45ab9e779688bd280a752609983262fc3502db8a8ce76cb75"
     )
     assert guard.WORKER_ENV == "GRAPHIFY_MAX_WORKERS"
     assert guard.GUARDED_MAX_WORKERS == "1"
@@ -329,6 +331,12 @@ def test_reviewed_graphify_identity_constants_are_exact():
         ".json", ".Json", ".jSon", ".JSon", ".jsOn", ".JsOn", ".jSOn", ".JSOn",
         ".jsoN", ".JsoN", ".jSoN", ".JSoN", ".jsON", ".JsON", ".jSON", ".JSON",
     }
+
+
+def test_refresh_receipt_contract_matches_the_selfcheck_consumer():
+    from cisco_toolkit import selfcheck
+
+    assert guard.REFRESH_RECEIPT_CONTRACT == selfcheck.GRAPHIFY_REFRESH_RECEIPT_CONTRACT
 
 
 @pytest.mark.skipif(
@@ -668,7 +676,13 @@ def test_overlay_rebinds_every_live_0951_alias_and_changes_only_extends_arrays(
     assert receipt["rebuild_source_sha256"] == guard.EXPECTED_REBUILD_SOURCE_SHA256
     assert receipt["rebuild_patched_sha256"] == guard.EXPECTED_REBUILD_PATCHED_SHA256
     assert receipt["rebuild_commit_policy"] == (
-        "rewrite_only_when_head_differs_and_non_provenance_graph_report_match"
+        "rewrite_only_when_head_differs_and_non_commit_graph_report_match"
+    )
+    assert receipt["rebuild_fast_noop_policy"] == (
+        "current_complete_receipt_exact_graph_report"
+    )
+    assert receipt["tree_equivalent_rebind_policy"] == (
+        "prior_receipted_ancestor_equal_tree_commit_fields_only"
     )
     assert source_path.read_bytes() == source
     assert report_source_path.read_bytes() == report_source
@@ -676,6 +690,8 @@ def test_overlay_rebinds_every_live_0951_alias_and_changes_only_extends_arrays(
         PurePosixPath(guard.WATCH_RELATIVE_PATH)
     ).read_bytes() == _synthetic_watch_source()
     assert graphify_package.report is report
+    assert watch._guard_fast_noop_ready is guard._fast_noop_ready
+    watch._guard_fast_noop_ready = guard._report_stamp_ready
 
     value = types.SimpleNamespace(type="array")
     assert corrected(value, "extends") == "array"
@@ -683,7 +699,16 @@ def test_overlay_rebinds_every_live_0951_alias_and_changes_only_extends_arrays(
     assert report.generate({1: [], 2: [], 3: []}, {1: [], 2: []}, 1) == 1
     assert report.generate({1: []}, {}, 0) == 0
     watch._head = "a" * 40
+    (tmp_path / "GRAPH_REPORT.md").write_text(
+        "- Built from commit: `aaaaaaaa`\n", encoding="utf-8"
+    )
     assert watch._rebuild_code({"built_at_commit": watch._head}) == "fast-noop"
+    (tmp_path / "GRAPH_REPORT.md").unlink()
+    assert watch._rebuild_code({"built_at_commit": watch._head}) == "rebuilt"
+    (tmp_path / "GRAPH_REPORT.md").write_text(
+        "- Built from commit: `bbbbbbbb`\n", encoding="utf-8"
+    )
+    assert watch._rebuild_code({"built_at_commit": watch._head}) == "rebuilt"
     watch._head = "b" * 40
     assert watch._rebuild_code({"built_at_commit": "a" * 40}) == "rebuilt"
     watch._unlink_calls.clear()
@@ -792,14 +817,35 @@ def test_probe_output_is_fixed_machine_readable_receipt(monkeypatch, capsys):
     captured = capsys.readouterr()
     expected = {
         **receipt,
-        "bytecode_writes": "disabled",
-        "environment": "graphify-git-path-sanitized",
-        "isolated": True,
+            "bytecode_writes": "disabled",
+            "environment": "graphify-git-path-sanitized",
+            "git_optional_locks": "disabled",
+            "git_replace_objects": "disabled",
+            "isolated": True,
         "python": ".".join(str(part) for part in sys.version_info[:3]),
     }
     assert json.loads(captured.out) == expected
     assert captured.out == json.dumps(expected, sort_keys=True, separators=(",", ":")) + "\n"
     assert not captured.err
+
+
+def test_identity_mode_emits_the_guarded_head_state_and_status_digest(
+    tmp_path, monkeypatch, capsys
+):
+    repo, _tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    head = git("rev-parse", "HEAD")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(guard, "_prepare_overlay", lambda: {"status": "pass"})
+
+    assert guard.main(["--identity"]) == 0
+    output = capsys.readouterr()
+    fields = output.out.strip().split("\t")
+    assert fields == [head, "clean", hashlib.sha256(b"").hexdigest()]
+    assert not output.err
+    assert guard.main(["--identity", "extra"]) == 2
+    assert "G017" in capsys.readouterr().err
 
 
 def test_nonisolated_invocation_is_rejected_before_import(monkeypatch, capsys):
@@ -842,6 +888,9 @@ def test_refresh_receipt_is_atomic_phase_and_guard_bound(tmp_path, monkeypatch, 
         separators=(",", ":"),
     ) + "\n"
     graph_path.write_text(graph_bytes, encoding="utf-8")
+    report_path = output / "GRAPH_REPORT.md"
+    report_bytes = f"# Graph report\n\n- Built from commit: `{head[:8]}`\n"
+    report_path.write_text(report_bytes, encoding="utf-8")
     receipt_path = output / ".guarded_refresh.json"
     guard_receipt = {
         "contract": guard.GUARD_CONTRACT,
@@ -864,7 +913,16 @@ def test_refresh_receipt_is_atomic_phase_and_guard_bound(tmp_path, monkeypatch, 
     assert pending["head"] == head and pending["state"] == "clean"
     assert guard.main(["--receipt-status", *args]) == 1
 
+    report_path.write_text(
+        "# Graph report\n\n- Built from commit: `bbbbbbbb`\n", encoding="utf-8"
+    )
+    assert guard.main(["--receipt-complete", *args]) == 2
+    report_path.write_text(report_bytes, encoding="utf-8")
     assert guard.main(["--receipt-complete", *args]) == 0
+    assert guard.main(["--receipt-status", *args]) == 0
+    report_path.write_text(report_bytes + "tampered\n", encoding="utf-8")
+    assert guard.main(["--receipt-status", *args]) == 1
+    report_path.write_text(report_bytes, encoding="utf-8")
     assert guard.main(["--receipt-status", *args]) == 0
     graph_path.write_text('{"corrupted":true}\n', encoding="utf-8")
     assert guard.main(["--receipt-status", *args]) == 2
@@ -877,6 +935,13 @@ def test_refresh_receipt_is_atomic_phase_and_guard_bound(tmp_path, monkeypatch, 
     graph_path.write_text(graph_bytes, encoding="utf-8")
     assert guard.main(["--receipt-complete", *args]) == 2
     assert guard.main(["--receipt-pending", *args]) == 0
+    pending = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert pending["prior"] == {
+        "graph": guard._graph_identity(graph_path),
+        "guard": guard._attested_receipt(guard_receipt),
+        "head": head,
+        "report": guard._file_identity(report_path, guard._MAX_REPORT_BYTES),
+    }
     assert guard.main(["--receipt-complete", *args]) == 0
     dirty_args = [str(receipt_path), head, "dirty"]
     assert guard.main(["--receipt-complete", *dirty_args]) == 2
@@ -908,6 +973,14 @@ def test_refresh_receipt_is_atomic_phase_and_guard_bound(tmp_path, monkeypatch, 
     receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
     assert guard.main(["--receipt-status", *args]) == 1
 
+    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered["root"] = None
+    tampered["guard"]["updated_at"] = "not-a-guard-field"
+    receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert guard.main(["--receipt-pending", *args]) == 0
+    assert "prior" not in json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert guard.main(["--receipt-complete", *args]) == 0
+
     monkeypatch.setattr(
         guard,
         "_prepare_overlay",
@@ -915,6 +988,763 @@ def test_refresh_receipt_is_atomic_phase_and_guard_bound(tmp_path, monkeypatch, 
     )
     assert guard.main(["--receipt-status", *args]) == 1
     assert "G017" in capsys.readouterr().err
+
+
+def _receipted_graph_fixture(tmp_path):
+    repo = tmp_path / "receipted"
+    repo.mkdir()
+
+    def git(*arguments):
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    (repo / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    tracked = repo / "tracked.txt"
+    tracked.write_text("one\n", encoding="utf-8")
+    git("add", ".gitignore", "tracked.txt")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "one")
+    first = git("rev-parse", "HEAD")
+    output = repo / "graphify-out"
+    output.mkdir()
+    graph_path = output / "graph.json"
+    report_path = output / "GRAPH_REPORT.md"
+    graph_path.write_text(
+        json.dumps(
+            {"nodes": [], "links": [], "built_at_commit": first}, indent=2
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        f"# Graph report\n\n- Built from commit: `{first[:8]}`\n",
+        encoding="utf-8",
+    )
+    receipt_path = output / ".guarded_refresh.json"
+    guard_receipt = {
+        "contract": guard.GUARD_CONTRACT,
+        "status": "pass",
+        "tree_equivalent_rebind_policy": (
+            "prior_receipted_ancestor_equal_tree_commit_fields_only"
+        ),
+    }
+    complete = guard._refresh_receipt_payload(
+        phase="complete",
+        head=first,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, complete)
+    return repo, tracked, graph_path, report_path, receipt_path, guard_receipt, git
+
+
+def test_fast_noop_requires_the_receipted_checkout_to_remain_clean(
+    tmp_path, monkeypatch
+):
+    repo, tracked, _graph, _report, _receipt, guard_receipt, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    head = git("rev-parse", "HEAD")
+    monkeypatch.setattr(guard, "_ACTIVE_GUARD_RECEIPT", guard_receipt)
+    assert guard._fast_noop_ready(repo / "graphify-out", head)
+
+    tracked.write_text("dirty\n", encoding="utf-8")
+    assert not guard._fast_noop_ready(repo / "graphify-out", head)
+    tracked.write_text("one\n", encoding="utf-8")
+
+    def fail_identity(_root):
+        raise guard.GuardFailure("G017")
+
+    monkeypatch.setattr(guard, "_current_git_identity", fail_identity)
+    assert not guard._fast_noop_ready(repo / "graphify-out", head)
+
+
+def test_git_identity_binds_the_exact_worktree_despite_core_worktree_redirect(
+    tmp_path, monkeypatch
+):
+    repo, tracked, _graph, _report, receipt_path, guard_receipt, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    head = git("rev-parse", "HEAD")
+    external = tmp_path / "external-worktree"
+    external.mkdir()
+    (external / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    (external / "tracked.txt").write_text("one\n", encoding="utf-8")
+    git("config", "core.worktree", str(external))
+    tracked.write_text("dirty root\n", encoding="utf-8")
+    redirected_status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert redirected_status == ""
+
+    assert guard._current_git_identity(repo) == (head, "dirty")
+    monkeypatch.chdir(repo)
+    for mode in ("--receipt-pending", "--receipt-complete", "--receipt-status"):
+        with pytest.raises(guard.GuardFailure, match="G017"):
+            guard._handle_refresh_receipt(
+                [mode, str(receipt_path), head, "clean"], guard_receipt, repo
+            )
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_git_identity_rejects_index_flags_that_hide_tracked_changes(
+    tmp_path, monkeypatch, flag
+):
+    repo, tracked, _graph, _report, receipt_path, guard_receipt, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    head = git("rev-parse", "HEAD")
+    git("update-index", flag, "tracked.txt")
+    tracked.write_text("hidden dirty root\n", encoding="utf-8")
+    assert git("status", "--porcelain") == ""
+
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._current_git_identity(repo)
+    monkeypatch.chdir(repo)
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._handle_refresh_receipt(
+            ["--receipt-pending", str(receipt_path), head, "clean"],
+            guard_receipt,
+            repo,
+        )
+
+
+def test_git_identity_disables_fsmonitor_valid_shortcuts(tmp_path):
+    repo, tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    head = git("rev-parse", "HEAD")
+    git("config", "core.fsmonitor", "true")
+    git("update-index", "--fsmonitor")
+    git("update-index", "--untracked-cache")
+    git("update-index", "--fsmonitor-valid", "tracked.txt")
+    assert git("ls-files", "-f", "tracked.txt").startswith("h ")
+    index_path = repo / ".git" / "index"
+    index_before = index_path.read_bytes()
+    index_mtime = index_path.stat().st_mtime_ns
+    tracked.write_text("fsmonitor-hidden change\n", encoding="utf-8")
+    assert guard._current_git_identity(repo) == (head, "dirty")
+    assert index_path.read_bytes() == index_before
+    assert index_path.stat().st_mtime_ns == index_mtime
+
+
+def test_git_identity_never_executes_a_configured_fsmonitor_command(tmp_path):
+    repo, _tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    head = git("rev-parse", "HEAD")
+    sentinel = tmp_path / "fsmonitor-invoked.txt"
+    command = tmp_path / "fsm.sh"
+    command.write_text(
+        f'#!/bin/sh\necho invoked >> "{sentinel.as_posix()}"\necho token\nexit 0\n',
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    git("config", "core.fsmonitor", command.as_posix())
+    git("update-index", "--fsmonitor")
+    sentinel.unlink(missing_ok=True)
+    git("ls-files", "-t", "tracked.txt")
+    assert sentinel.exists(), "positive control: plain Git must invoke the configured monitor"
+    sentinel.unlink()
+
+    assert guard._current_git_identity(repo) == (head, "clean")
+    assert not sentinel.exists()
+
+
+def test_git_identity_rejects_active_filters_without_executing_them(
+    tmp_path, monkeypatch, capsys
+):
+    repo, tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    sentinel = tmp_path / "filter-invoked.txt"
+    command = tmp_path / "filter.sh"
+    command.write_text(
+        f'#!/bin/sh\necho invoked >> "{sentinel.as_posix()}"\ncat\n',
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    attributes = repo / ".gitattributes"
+    attributes.write_text("*.txt filter=guard-test-filter\n", encoding="utf-8")
+    git("config", "filter.guard-test-filter.clean", command.as_posix())
+    git("add", ".gitattributes")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "attributes")
+    sentinel.unlink(missing_ok=True)
+    tracked.write_text("filter-hidden change\n", encoding="utf-8")
+    git("diff", "--", "tracked.txt")
+    assert sentinel.exists(), "positive control: plain Git must invoke the configured filter"
+    sentinel.unlink()
+
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._current_git_identity(repo)
+    assert not sentinel.exists()
+    invoked = []
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(guard, "_prepare_overlay", lambda: {"status": "pass"})
+    monkeypatch.setattr(guard, "_run_graphify", lambda _args: invoked.append(True) or 0)
+    for arguments in (["update", "."], ["update", ".", "--force"], ["watch", "."]):
+        assert guard.main(arguments) == 2
+    assert not invoked
+    assert capsys.readouterr().err.count("G017") == 3
+
+
+def test_git_identity_rejects_all_submodule_worktree_states(
+    tmp_path
+):
+    child = tmp_path / "child"
+    parent = tmp_path / "parent"
+    clone = tmp_path / "clone"
+    child.mkdir()
+    parent.mkdir()
+
+    def run(repo, *arguments):
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    run(child, "init", "-q")
+    (child / "child.txt").write_text("one\n", encoding="utf-8")
+    run(child, "add", "child.txt")
+    run(child, "-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "one")
+    first_child = run(child, "rev-parse", "HEAD")
+    run(parent, "init", "-q")
+    (parent / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    run(parent, "add", ".gitignore")
+    run(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(child), "deps/sub")
+    run(parent, "-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "parent")
+    (child / "child.txt").write_text("two\n", encoding="utf-8")
+    run(child, "add", "child.txt")
+    run(child, "-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "two")
+    second_child = run(child, "rev-parse", "HEAD")
+    subprocess.run(["git", "clone", "-q", str(parent), str(clone)], check=True)
+
+    assert run(clone, "status", "--porcelain", "--ignore-submodules=none") == ""
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._current_git_identity(clone)
+    run(
+        clone,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "--init",
+        "--recursive",
+    )
+    assert run(clone / "deps" / "sub", "rev-parse", "HEAD") == first_child
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._current_git_identity(clone)
+    run(clone / "deps" / "sub", "fetch", "-q", "origin", second_child)
+    run(clone / "deps" / "sub", "checkout", "-q", second_child)
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._current_git_identity(clone)
+
+
+@pytest.mark.parametrize("bad_head", [None, True, 7, [], {}])
+def test_malformed_receipt_heads_are_bounded_and_never_authorize_rebind(
+    tmp_path, monkeypatch, bad_head
+):
+    (
+        repo,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    head = git("rev-parse", "HEAD")
+    malformed = json.loads(receipt_path.read_text(encoding="utf-8"))
+    malformed["head"] = bad_head
+    receipt_path.write_text(json.dumps(malformed), encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert guard._handle_refresh_receipt(
+        ["--receipt-pending", str(receipt_path), head, "clean"],
+        guard_receipt,
+        repo,
+    ) == 0
+    pending = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert "prior" not in pending
+    pending["prior"] = {
+        "graph": guard._graph_identity(graph_path),
+        "guard": guard_receipt,
+        "head": bad_head,
+        "report": guard._file_identity(report_path, guard._MAX_REPORT_BYTES),
+    }
+    receipt_path.write_text(json.dumps(pending), encoding="utf-8")
+    assert not guard._maybe_tree_equivalent_rebind(
+        repo, ["update", str(repo)], guard_receipt
+    )
+
+
+@pytest.mark.parametrize("artifact", ["graph", "report"])
+def test_tree_equivalent_rebind_refuses_post_pending_artifact_drift(
+    tmp_path, artifact
+):
+    (
+        repo,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    first = git("rev-parse", "HEAD")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "two")
+    second = git("rev-parse", "HEAD")
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    assert prior is not None and prior["head"] == first
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+    target = graph_path if artifact == "graph" else report_path
+    target.write_bytes(target.read_bytes() + b"\n")
+    graph_before = graph_path.read_bytes()
+    report_before = report_path.read_bytes()
+
+    with pytest.raises(guard.GuardFailure, match="G019"):
+        guard._maybe_tree_equivalent_rebind(
+            repo, ["update", str(repo)], guard_receipt
+        )
+
+    assert graph_path.read_bytes() == graph_before
+    assert report_path.read_bytes() == report_before
+
+
+@pytest.mark.parametrize("artifact", ["graph", "report"])
+def test_tree_equivalent_rebind_refuses_missing_post_pending_artifact(
+    tmp_path, artifact
+):
+    (
+        repo,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "two")
+    second = git("rev-parse", "HEAD")
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+    (graph_path if artifact == "graph" else report_path).unlink()
+
+    with pytest.raises(guard.GuardFailure, match="G019"):
+        guard._maybe_tree_equivalent_rebind(
+            repo, ["update", str(repo)], guard_receipt
+        )
+
+
+def test_tree_equivalent_rebind_refuses_interphase_artifact_drift(
+    tmp_path, monkeypatch
+):
+    (
+        repo,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    first = git("rev-parse", "HEAD")
+    graph_before = graph_path.read_bytes()
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "two")
+    second = git("rev-parse", "HEAD")
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    assert prior is not None and prior["head"] == first
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+
+    def mutate_between_snapshots(_root, _prior, _current):
+        report_path.write_bytes(report_path.read_bytes() + b"interphase drift\n")
+        return True
+
+    monkeypatch.setattr(guard, "_tree_equivalent_ancestor", mutate_between_snapshots)
+    with pytest.raises(guard.GuardFailure, match="G019"):
+        guard._maybe_tree_equivalent_rebind(
+            repo, ["update", str(repo)], guard_receipt
+        )
+
+    assert graph_path.read_bytes() == graph_before
+    assert report_path.read_bytes().endswith(b"interphase drift\n")
+
+
+def test_tree_equivalent_rebind_falls_through_for_a_changed_tree(tmp_path):
+    (
+        repo,
+        tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    tracked.write_text("two\n", encoding="utf-8")
+    git("add", "tracked.txt")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "two")
+    second = git("rev-parse", "HEAD")
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+    graph_before = graph_path.read_bytes()
+    report_before = report_path.read_bytes()
+
+    assert not guard._maybe_tree_equivalent_rebind(
+        repo, ["update", str(repo)], guard_receipt
+    )
+    assert graph_path.read_bytes() == graph_before
+    assert report_path.read_bytes() == report_before
+
+
+def test_tree_equivalent_rebind_changes_only_the_anchored_report_stamp(tmp_path):
+    (
+        repo,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    first = git("rev-parse", "HEAD")
+    decoy = f"Inline decoy - Built from commit: `{first[:8]}` must stay.\n"
+    report_path.write_text(
+        decoy + f"\n- Built from commit: `{first[:8]}`\n", encoding="utf-8"
+    )
+    complete = guard._refresh_receipt_payload(
+        phase="complete",
+        head=first,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, complete)
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "two")
+    second = git("rev-parse", "HEAD")
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+
+    assert guard._maybe_tree_equivalent_rebind(
+        repo, ["update", str(repo)], guard_receipt
+    )
+    rebound = report_path.read_text(encoding="utf-8")
+    assert decoy in rebound
+    assert f"\n- Built from commit: `{second[:8]}`\n" in rebound
+    assert json.loads(graph_path.read_text(encoding="utf-8"))["built_at_commit"] == second
+
+
+def test_tree_equivalent_rebind_handles_an_unchanged_eight_character_prefix(
+    tmp_path, monkeypatch
+):
+    (
+        repo,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    first = git("rev-parse", "HEAD")
+    second = first[:8] + ("0" * (len(first) - 8))
+    if second == first:
+        second = first[:8] + ("1" * (len(first) - 8))
+    report_before = report_path.read_bytes()
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+    monkeypatch.setattr(guard, "_current_git_identity", lambda _root: (second, "clean"))
+    monkeypatch.setattr(guard, "_tree_equivalent_ancestor", lambda *_args: True)
+
+    assert guard._maybe_tree_equivalent_rebind(
+        repo, ["update", str(repo)], guard_receipt
+    )
+    assert json.loads(graph_path.read_text(encoding="utf-8"))["built_at_commit"] == second
+    assert report_path.read_bytes() == report_before
+
+
+def test_tree_equivalent_rebind_revalidates_a_complete_artifact_set_in_a_fresh_clone(
+    tmp_path, monkeypatch
+):
+    (
+        source,
+        _tracked,
+        graph_path,
+        report_path,
+        receipt_path,
+        guard_receipt,
+        source_git,
+    ) = _receipted_graph_fixture(tmp_path)
+    first = source_git("rev-parse", "HEAD")
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(source), str(clone)], check=True
+    )
+    clone_output = clone / "graphify-out"
+    clone_output.mkdir()
+    for path in (graph_path, report_path, receipt_path):
+        shutil.copy2(path, clone_output / path.name)
+
+    def clone_git(*arguments):
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=clone,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    clone_git(
+        "-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "merge-like"
+    )
+    second = clone_git("rev-parse", "HEAD")
+    clone_receipt = clone_output / receipt_path.name
+    prior = guard._validated_prior_complete(clone_receipt, guard_receipt)
+    assert prior is not None and prior["head"] == first
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=clone_receipt,
+        prior=prior,
+        root=clone,
+    )
+    guard._write_refresh_receipt(clone_receipt, pending)
+
+    assert guard._maybe_tree_equivalent_rebind(
+        clone, ["update", str(clone)], guard_receipt
+    )
+    monkeypatch.chdir(clone)
+    receipt_args = [str(clone_receipt), second, "clean"]
+    assert guard._handle_refresh_receipt(
+        ["--receipt-complete", *receipt_args], guard_receipt, clone
+    ) == 0
+    final_receipt = json.loads(clone_receipt.read_text(encoding="utf-8"))
+    assert final_receipt["root"] == str(clone.resolve())
+    assert final_receipt["head"] == second
+
+
+def test_tree_equivalent_check_rejects_a_same_tree_nonancestor(tmp_path):
+    repo, _tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-qb", "left")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "left")
+    left = git("rev-parse", "HEAD")
+    git("checkout", "-qb", "right", base)
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "right")
+    right = git("rev-parse", "HEAD")
+
+    assert git("rev-parse", f"{left}^{{tree}}") == git("rev-parse", f"{right}^{{tree}}")
+    assert not guard._tree_equivalent_ancestor(repo, left, right)
+
+
+def test_tree_equivalent_check_ignores_git_replace_objects(tmp_path):
+    repo, tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    first = git("rev-parse", "HEAD")
+    first_tree = git("rev-parse", f"{first}^{{tree}}")
+    tracked.write_text("changed\n", encoding="utf-8")
+    git("add", "tracked.txt")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "changed")
+    second = git("rev-parse", "HEAD")
+    replacement = subprocess.run(
+        ["git", "commit-tree", first_tree, "-p", first],
+        cwd=repo,
+        check=True,
+        input="replacement view\n",
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git("replace", second, replacement)
+    assert git("rev-parse", f"{second}^{{tree}}") == first_tree
+
+    assert not guard._tree_equivalent_ancestor(repo, first, second)
+
+
+def test_tree_equivalent_check_rejects_legacy_git_grafts(tmp_path):
+    repo, _tracked, _graph, _report, _receipt, _guard, git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-qb", "left")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "left")
+    left = git("rev-parse", "HEAD")
+    git("checkout", "-qb", "right", base)
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "right")
+    right = git("rev-parse", "HEAD")
+    grafts = repo / ".git" / "info" / "grafts"
+    grafts.write_text(f"{right} {left}\n", encoding="ascii")
+    assert git("merge-base", left, right) == left
+
+    assert not guard._tree_equivalent_ancestor(repo, left, right)
+    with pytest.raises(guard.GuardFailure, match="G015"):
+        _REAL_PRODUCER_ROOT(["update", str(repo)])
+
+
+def test_git_identity_rejects_a_redirected_common_directory(tmp_path):
+    repo, _tracked, _graph, _report, _receipt, _guard, _git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    external = tmp_path / "external-common"
+    external.mkdir()
+    (repo / ".git" / "commondir").write_text(str(external), encoding="utf-8")
+
+    with pytest.raises(guard.GuardFailure, match="G017"):
+        guard._current_git_identity(repo)
+    with pytest.raises(guard.GuardFailure, match="G015"):
+        _REAL_PRODUCER_ROOT(["update", str(repo)])
+
+
+def test_producer_root_rejects_a_broken_common_directory_link(tmp_path):
+    repo, _tracked, _graph, _report, _receipt, _guard, _git = (
+        _receipted_graph_fixture(tmp_path)
+    )
+    commondir = repo / ".git" / "commondir"
+    try:
+        commondir.symlink_to(tmp_path / "missing-common")
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+    with pytest.raises(guard.GuardFailure, match="G015"):
+        _REAL_PRODUCER_ROOT(["update", str(repo)])
+
+
+def test_partial_pair_rebind_is_pending_and_idempotently_recovers(
+    tmp_path, monkeypatch
+):
+    (
+        repo,
+        _tracked,
+        graph,
+        report,
+        receipt_path,
+        guard_receipt,
+        git,
+    ) = _receipted_graph_fixture(tmp_path)
+    first = git("rev-parse", "HEAD")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "two")
+    second = git("rev-parse", "HEAD")
+    prior = guard._validated_prior_complete(receipt_path, guard_receipt)
+    pending = guard._refresh_receipt_payload(
+        phase="pending",
+        head=second,
+        state="clean",
+        guard_receipt=guard_receipt,
+        receipt_path=receipt_path,
+        prior=prior,
+        root=repo,
+    )
+    guard._write_refresh_receipt(receipt_path, pending)
+    real_replace = os.replace
+    calls = 0
+
+    def fail_second(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second replace failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(guard.os, "replace", fail_second)
+    with pytest.raises(guard.GuardFailure, match="G019"):
+        guard._maybe_tree_equivalent_rebind(
+            repo, ["update", str(repo)], guard_receipt
+        )
+
+    assert json.loads(graph.read_text(encoding="utf-8"))["built_at_commit"] == second
+    assert f"`{first[:8]}`" in report.read_text(encoding="utf-8")
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))["phase"] == "pending"
+    assert not list(graph.parent.glob(".*.rebind"))
+
+    monkeypatch.setattr(guard.os, "replace", real_replace)
+    monkeypatch.chdir(repo)
+    receipt_args = [str(receipt_path), second, "clean"]
+    assert guard._handle_refresh_receipt(
+        ["--receipt-pending", *receipt_args], guard_receipt, repo
+    ) == 0
+    retry = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert retry["prior"]["head"] == first
+    assert guard._maybe_tree_equivalent_rebind(
+        repo, ["update", str(repo)], guard_receipt
+    )
+    assert json.loads(graph.read_text(encoding="utf-8"))["built_at_commit"] == second
+    assert f"`{second[:8]}`" in report.read_text(encoding="utf-8")
+    assert guard._handle_refresh_receipt(
+        ["--receipt-complete", *receipt_args], guard_receipt, repo
+    ) == 0
+    assert guard._handle_refresh_receipt(
+        ["--receipt-status", *receipt_args], guard_receipt, repo
+    ) == 0
 
 
 @pytest.mark.parametrize(
@@ -1321,12 +2151,22 @@ def test_ambient_graphify_and_git_controls_are_sanitized_and_restored(monkeypatc
     monkeypatch.setenv("GRAPHIFY_FUTURE_PRODUCER_OVERRIDE", "surprise")
     monkeypatch.setenv("GIT_DIR", "elsewhere/.git")
     monkeypatch.setenv("GIT_FUTURE_PRODUCER_OVERRIDE", "surprise")
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
     monkeypatch.setenv(guard.WORKER_ENV, "8")
 
     assert guard.main(["update", "."]) == 0
     assert seen == [
-        {guard.WORKER_ENV: guard.GUARDED_MAX_WORKERS},
-        {guard.WORKER_ENV: guard.GUARDED_MAX_WORKERS},
+        {
+            guard.WORKER_ENV: guard.GUARDED_MAX_WORKERS,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        },
+        {
+            guard.WORKER_ENV: guard.GUARDED_MAX_WORKERS,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        },
     ]
     assert os.environ["GRAPHIFY_FORCE"] == "1"
     assert os.environ["GRAPHIFY_OUT"] == "redirected"
@@ -1334,6 +2174,8 @@ def test_ambient_graphify_and_git_controls_are_sanitized_and_restored(monkeypatc
     assert os.environ["GRAPHIFY_FUTURE_PRODUCER_OVERRIDE"] == "surprise"
     assert os.environ["GIT_DIR"] == "elsewhere/.git"
     assert os.environ["GIT_FUTURE_PRODUCER_OVERRIDE"] == "surprise"
+    assert os.environ["GIT_NO_REPLACE_OBJECTS"] == "0"
+    assert os.environ["GIT_OPTIONAL_LOCKS"] == "1"
     assert os.environ[guard.WORKER_ENV] == "8"
 
 
@@ -1341,6 +2183,9 @@ def test_relative_and_repo_local_executable_paths_are_excluded(monkeypatch, tmp_
     outside = tmp_path / "outside-bin"
     outside.mkdir()
     root = Path.cwd().resolve()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    git_directory = str(Path(real_git).resolve().parent)
     original_path = os.environ.get("PATH")
     original_no_current = os.environ.get("NoDefaultCurrentDirectoryInExePath")
     observed = {}
@@ -1352,13 +2197,17 @@ def test_relative_and_repo_local_executable_paths_are_excluded(monkeypatch, tmp_
 
     monkeypatch.setattr(guard, "_prepare_overlay", prepare)
     monkeypatch.setattr(guard, "_run_graphify", lambda _args: 0)
-    monkeypatch.setenv("PATH", os.pathsep.join((".", str(root), str(outside))))
+    test_path = os.pathsep.join((".", str(root), str(outside), git_directory))
+    monkeypatch.setenv("PATH", test_path)
 
     assert guard.main(["update", "."]) == 0
-    assert observed["path"].split(os.pathsep) == [str(outside.resolve())]
+    assert observed["path"].split(os.pathsep) == [
+        str(outside.resolve()),
+        git_directory,
+    ]
     if os.name == "nt":
         assert observed["no_current"] == "1"
-    assert os.environ.get("PATH") == os.pathsep.join((".", str(root), str(outside)))
+    assert os.environ.get("PATH") == test_path
     assert os.environ.get("NoDefaultCurrentDirectoryInExePath") == original_no_current
     assert original_path is not None  # prove the test did not inherit an unusable environment
 
@@ -1395,7 +2244,137 @@ def test_graphify_runtime_failure_is_not_misreported_as_a_preflight_failure(monk
     not _reviewed_install_available(),
     reason="the exact official Graphifyy 0.9.51 extractor, reporter, and rebuild are not installed",
 )
-def test_real_guarded_update_rebinds_only_tree_identical_commit_provenance(tmp_path):
+def test_real_guarded_same_head_bootstrap_creates_a_receiptable_report(tmp_path):
+    repo = tmp_path / "bootstrap"
+    repo.mkdir()
+    guard_path = Path(guard.__file__).resolve()
+
+    def git(*arguments):
+        return subprocess.run(
+            ["git", *arguments], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def guarded(*arguments, expected=0):
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", str(guard_path), *arguments],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert completed.returncode == expected, (completed.stdout + completed.stderr)[-4_000:]
+        return completed
+
+    git("init", "-q")
+    (repo / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    (repo / "source.py").write_text("def first():\n    return 1\n", encoding="utf-8")
+    git("add", ".gitignore", "source.py")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "initial")
+    head = git("rev-parse", "HEAD")
+    guarded("extract", str(repo), "--code-only")
+    output = repo / "graphify-out"
+    report_path = output / "GRAPH_REPORT.md"
+    assert not report_path.exists()
+    receipt_path = output / ".guarded_refresh.json"
+
+    guarded("--receipt-pending", str(receipt_path), head, "clean")
+    rebuilt = guarded("update", str(repo))
+    assert "Rebuilt:" in rebuilt.stdout
+    assert f"- Built from commit: `{head[:8]}`" in report_path.read_text(encoding="utf-8")
+    guarded("--receipt-complete", str(receipt_path), head, "clean")
+    guarded("--receipt-status", str(receipt_path), head, "clean")
+
+
+@pytest.mark.skipif(
+    not _reviewed_install_available(),
+    reason="the exact official Graphifyy 0.9.51 extractor, reporter, and rebuild are not installed",
+)
+def test_real_guarded_pending_without_prior_rebuilds_tampered_artifacts(tmp_path):
+    repo = tmp_path / "tamper-rebuild"
+    repo.mkdir()
+    guard_path = Path(guard.__file__).resolve()
+
+    def git(*arguments):
+        return subprocess.run(
+            ["git", *arguments], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def guarded(*arguments, expected=0):
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", str(guard_path), *arguments],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert completed.returncode == expected, (completed.stdout + completed.stderr)[-4_000:]
+        return completed
+
+    git("init", "-q")
+    (repo / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    (repo / "source.py").write_text("def first():\n    return 1\n", encoding="utf-8")
+    git("add", ".gitignore", "source.py")
+    git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "initial")
+    head = git("rev-parse", "HEAD")
+    guarded("extract", str(repo), "--code-only")
+    output = repo / "graphify-out"
+    receipt_path = output / ".guarded_refresh.json"
+    graph_path = output / "graph.json"
+    report_path = output / "GRAPH_REPORT.md"
+    receipt_args = [str(receipt_path), head, "clean"]
+    guarded("--receipt-pending", *receipt_args)
+    guarded("update", str(repo))
+    guarded("--receipt-complete", *receipt_args)
+
+    source_path = repo / "source.py"
+    source_bytes = source_path.read_bytes()
+    report_before_dirty_update = report_path.read_bytes()
+    source_path.write_bytes(
+        source_bytes
+        + b"# dirty topology preserving words must still refresh the corpus report\n"
+    )
+    dirty_update = guarded("update", str(repo))
+    assert "Rebuilt:" in dirty_update.stdout
+    assert report_path.read_bytes() != report_before_dirty_update
+    source_path.write_bytes(source_bytes)
+    guarded("--receipt-status", *receipt_args, expected=1)
+    guarded("--receipt-pending", *receipt_args)
+    assert "prior" not in json.loads(receipt_path.read_text(encoding="utf-8"))
+    guarded("update", str(repo))
+    guarded("--receipt-complete", *receipt_args)
+
+    report_path.write_bytes(report_path.read_bytes() + b"tampered report bytes\n")
+    guarded("--receipt-status", *receipt_args, expected=1)
+    guarded("--receipt-pending", *receipt_args)
+    assert "prior" not in json.loads(receipt_path.read_text(encoding="utf-8"))
+    guarded("update", str(repo))
+    assert b"tampered report bytes" not in report_path.read_bytes()
+    guarded("--receipt-complete", *receipt_args)
+    guarded("--receipt-status", *receipt_args)
+
+    graph_object = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_object["nodes"][0]["community_name"] = "tampered-community-name"
+    graph_path.write_text(json.dumps(graph_object, indent=2) + "\n", encoding="utf-8")
+    guarded("--receipt-status", *receipt_args, expected=1)
+    guarded("--receipt-pending", *receipt_args)
+    assert "prior" not in json.loads(receipt_path.read_text(encoding="utf-8"))
+    guarded("update", str(repo))
+    healed = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert all(
+        node.get("community_name") != "tampered-community-name"
+        for node in healed["nodes"]
+    )
+    guarded("--receipt-complete", *receipt_args)
+    guarded("--receipt-status", *receipt_args)
+
+
+@pytest.mark.skipif(
+    not _reviewed_install_available(),
+    reason="the exact official Graphifyy 0.9.51 extractor, reporter, and rebuild are not installed",
+)
+def test_real_guarded_update_rebinds_only_tree_identical_commit_fields(tmp_path):
     repo = tmp_path / "source"
     repo.mkdir()
     guard_path = Path(guard.__file__).resolve()
@@ -1412,7 +2391,7 @@ def test_real_guarded_update_rebinds_only_tree_identical_commit_provenance(tmp_p
     def guarded(*arguments, expected=0):
         completed = subprocess.run(
             [sys.executable, "-I", "-B", str(guard_path), *arguments],
-            cwd=tmp_path,
+            cwd=repo,
             capture_output=True,
             text=True,
             timeout=120,
@@ -1432,7 +2411,11 @@ def test_real_guarded_update_rebinds_only_tree_identical_commit_provenance(tmp_p
     git("add", "extra.py")
     git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "baseline")
     baseline_head = git("rev-parse", "HEAD")
+    receipt_path = repo / guard.REFRESH_RECEIPT_PATH
+    guarded("--receipt-pending", str(receipt_path), baseline_head, "clean")
     guarded("update", str(repo))
+    guarded("--receipt-complete", str(receipt_path), baseline_head, "clean")
+    guarded("--receipt-status", str(receipt_path), baseline_head, "clean")
 
     graph_path = repo / "graphify-out" / "graph.json"
     report_path = repo / "graphify-out" / "GRAPH_REPORT.md"
@@ -1449,7 +2432,13 @@ def test_real_guarded_update_rebinds_only_tree_identical_commit_provenance(tmp_p
     git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "merge-like")
     merge_like_head = git("rev-parse", "HEAD")
     assert git("rev-parse", "HEAD^{tree}") == git("rev-parse", f"{baseline_head}^{{tree}}")
-    guarded("update", str(repo))
+    guarded("--receipt-pending", str(receipt_path), merge_like_head, "clean")
+    pending = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert pending["prior"]["head"] == baseline_head
+    rebound_run = guarded("update", str(repo))
+    assert "rebound tree-equivalent graph/report commit fields" in rebound_run.stdout
+    guarded("--receipt-complete", str(receipt_path), merge_like_head, "clean")
+    guarded("--receipt-status", str(receipt_path), merge_like_head, "clean")
     graph_rebound = graph_path.read_bytes()
     report_rebound = report_path.read_bytes()
     rebound_object = json.loads(graph_rebound)
@@ -1490,9 +2479,12 @@ print(f"RESULT={{result!r}}")
     assert graph_path.read_bytes() == graph_rebound
     assert report_path.read_bytes() == report_rebound
 
-    report_path.write_bytes(report_rebound + b"non-provenance drift\n")
+    report_path.write_bytes(report_rebound + b"non-commit drift\n")
     drifted_report = report_path.read_bytes()
     git("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "refuse-drift")
+    refusal_head = git("rev-parse", "HEAD")
+    guarded("--receipt-pending", str(receipt_path), refusal_head, "clean")
+    assert "prior" not in json.loads(receipt_path.read_text(encoding="utf-8"))
     guarded("update", str(repo), expected=1)
     assert graph_path.read_bytes() == graph_rebound
     assert report_path.read_bytes() == drifted_report

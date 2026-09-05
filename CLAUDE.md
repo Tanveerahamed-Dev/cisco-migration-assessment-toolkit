@@ -192,25 +192,45 @@ counts structural-only communities as shown even though navigation and sections 
 rebuild discards `built_at_commit` when deciding that topology is unchanged. `tools/graphify_guarded.py` requires the
 exact distribution version, import paths, and reviewed extractor/reporter/watch/rebuild SHA-256 identities; applies
 all three bounded corrections only in memory; verifies every corrected SHA-256 identity; and rebinds all five live
-extractor aliases, the reporter's live `generate` alias, and the watch rebuild before entering the CLI. The commit
-correction uses the normal upstream cluster/report/export path when saved topology matches but the saved commit
-does not equal current HEAD. It publishes only when canonical graph and report content match after removing their
-commit fields; any other drift is refused. An unchanged graph already stamped at current HEAD retains the no-op path. The official
+extractor aliases, the reporter's live `generate` alias, and the watch rebuild before entering the CLI. Guard contract
+v5 adds a narrower pre-CLI path for a tree-equivalent descendant commit: only a clean checkout with a valid prior v2
+completion receipt over the still-identical graph and report may replace their single reviewed commit fields. The
+files are atomically replaced one at a time, so an interruption can leave an incomplete pair. Its still-pending v2
+receipt blocks completion; the next guarded run accepts only exact prior-or-target commit-field variants and finishes
+the missing side, while any other bytes refuse. The prior commit must be an ancestor and its raw Git tree must
+equal current HEAD's tree; `--force`, missing/tampered evidence, a changed tree, or a non-ancestor cannot use this path.
+Git replacement-object views are disabled and a legacy `.git/info/grafts` file is rejected before production.
+Without that authorization, the correction uses the normal upstream cluster/report/export path when saved topology
+matches but the saved commit does not equal current HEAD. That path publishes only when canonical graph and report
+content match after removing their commit fields; any other drift is refused. The upstream no-op path is allowed only
+when the checkout is still clean and a current v2 complete receipt still matches the exact graph, report, guard, and HEAD. A missing, invalid, or
+pending receipt deliberately forces normal regeneration even when the saved graph stamp already equals HEAD. The official
 AST-cache namespace
 does not bind extractor bytes, so the launcher preserves but never reads or writes JSON cache entries (including
-mixed-case `.JSON` suffixes). `--probe` attests the exact overlays, isolated `-I` process, `-B` bytecode-write suppression,
-case-fold-safe cache bypass, sanitized ambient `GRAPHIFY_*`/`GIT_*` controls and executable lookup, and one-worker
-boundary. Every producer also holds the same OS-backed output lock; recursive reparse points and regular-file
+mixed-case `.JSON` suffixes). `--probe` attests the exact overlays and process policy: isolated `-I`, `-B`
+bytecode-write suppression, case-fold-safe cache bypass, sanitized ambient `GRAPHIFY_*`/`GIT_*` controls and
+executable lookup, disabled Git replacement-object views, and the one-worker boundary. It has no repository root and
+does not attest a concrete checkout state. Each rooted `update`, `watch`, `--identity`, or receipt operation additionally binds exact
+`<root>/.git` plus `<root>` work tree, disables optional Git locks and fsmonitor/untracked-cache shortcuts, and rejects
+assume-unchanged/skip-worktree flags before status. A fsmonitor-valid bit is ignored under forced-disabled fsmonitor,
+not separately rejected; it cannot hide a changed file from this check. Any submodule is rejected
+because nested worktree/index closure is not implemented. An effective `filter` attribute on any tracked path is also
+rejected before status, so configured clean/process commands are never selected. Every producer also holds the same OS-backed output lock; recursive reparse points and regular-file
 hard links under `graphify-out/` are rejected. Any mismatch exits
 before a Graphify command can mutate the graph, and the installed package remains unchanged. Because 0.9.51's
 parallel AST workers reload the on-disk
 module, the launcher fixes `GRAPHIFY_MAX_WORKERS=1` and rejects `--max-workers`; guarded extraction trades cache
 reuse and parallel speed for semantic closure. The command allowlist also rejects generic/semantic `extract`,
 `--allow-partial`, `--no-gitignore`, output/global/live-source indirection, hidden `.graphify_root` reuse, and
-every producer verb not listed above. The Stop receipt is local bookkeeping for wrapper exit 0, matching observed
-HEAD/status endpoints, and the final graph digest. It is not signed source-to-output provenance, producer-warning or
+every producer verb not listed above. The v2 Stop receipt is local bookkeeping for wrapper exit 0, matching observed
+HEAD/status endpoints, the final graph and report digests, the graph's matching full commit stamp, and the report's
+matching anchored eight-character display. The short report display is not by itself an exact or collision-free commit identity. A pending receipt carries a prior complete identity
+only after revalidating both artifacts and the exact guard; the old receipt's recorded root is deliberately not an
+identity field, so the artifact set can be rechecked in a fresh standalone clone. It is not signed source-to-output provenance, producer-warning or
 corpus closure, and cannot exclude a concurrent writer changing and restoring source bytes during extraction. This
 bounds those three corrections only—it is not verification of the rest of the wheel or its transitive dependencies.
+The self-check shares the sanitized absolute Git executable lookup, those exact Git/work-tree/index-state checks, the canonical non-indirected `graphify-out/`
+boundary, and stable single-link receipt/graph/report reads.
 
 Rules:
 - For codebase questions, run `py -3.12 -m graphify query "<question>"` first. Use `py -3.12 -m graphify path "<A>" "<B>"`
@@ -240,7 +260,9 @@ Rules:
   update/cluster-only) is fully offline.
 - Keeping the graph current: after any visible repository change, the Stop hook runs a full AST corpus scan/update
   (cache hits still apply; no API cost), because that is the only rename/removal-safe trigger across Graphify's
-  mixed corpus. A persistent untracked, unsupported artifact can therefore cause a bounded redundant full scan on
+  mixed corpus. The shell discovers only a physical parent with a direct `.git` directory; both endpoint HEAD/state
+  reads use the guard's `--identity` mode, so the wrapper itself never runs Git before or after the producer.
+  A persistent untracked, unsupported artifact can therefore cause a bounded redundant full scan on
   each Stop until it is ignored or removed. A MANUAL `py -3.12 -I -B tools/graphify_guarded.py update .` may REFUSE
   ("fewer nodes than existing — missing chunk files from a previous
   session"); that is graphify's SAFETY GUARD, not corruption — do NOT `--force` past an ACCIDENTAL shrink (it
@@ -251,8 +273,8 @@ Rules:
 
   **Known incremental-rebuild limitation (current producer residual, not a claim that the present graph is
   truncated):** Graphify's incremental `changed_paths` rebuild can retain the full node census while evicting
-  cross-file edges for a re-extracted file. Guard contract v4 requires `built_at_commit` to equal current HEAD after
-  a completed guarded refresh, including a tree-identical merge rebind, but that stamp and node count still do not
+  cross-file edges for a re-extracted file. Guard contract v5 requires `built_at_commit` to equal current HEAD after
+  a completed guarded refresh, including a prior-receipted tree-equivalent descendant rebind, but that stamp and node count still do not
   prove edge completeness. Consumers must report missing declared edges, and a reference/release build must first run a
   full `py -3.12 -I -B tools/graphify_guarded.py update .`, which heals this producer state. Executable evidence:
   `cisco_toolkit/d10_eval_set.py` and

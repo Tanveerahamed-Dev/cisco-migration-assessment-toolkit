@@ -8,16 +8,12 @@
 # the reviewed Graphifyy 0.9.51 JSON extractor can be corrected in memory.
 set -u
 
-# Git's own environment overrides -C/cwd and can redirect status, HEAD, ignore
-# policy, and receipts to another checkout. The hook owns its cwd scope.
+# Git environment overrides can redirect identity reads. The tracked guard owns
+# all Git execution; this shell finds only a direct .git directory by walking
+# physical parents and never invokes Git itself.
 for _name in $(compgen -e); do
   case "${_name^^}" in GIT_*) unset "$_name" ;; esac
 done
-GIT=$(type -P git 2>/dev/null || true)
-if [ -z "$GIT" ] || [ ! -x "$GIT" ]; then
-  echo "graph-refresh: Git executable is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
-  exit 0
-fi
 
 TIMEOUT=$(command -v timeout || true)
 if [ -z "$TIMEOUT" ]; then
@@ -25,28 +21,31 @@ if [ -z "$TIMEOUT" ]; then
   exit 0
 fi
 
-if ! repo_root=$("$TIMEOUT" --kill-after=2s 15s "$GIT" rev-parse --show-toplevel 2>/dev/null); then
-  echo "graph-refresh: repository root is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
+repo_root=$(pwd -P 2>/dev/null || true)
+if [ -z "$repo_root" ]; then
+  echo "graph-refresh: physical working directory is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
   exit 0
 fi
+while :; do
+  if [ -e "$repo_root/.git" ] || [ -L "$repo_root/.git" ]; then
+    if [ ! -d "$repo_root/.git" ] || [ -L "$repo_root/.git" ]; then
+      echo "graph-refresh: direct repository root is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
+      exit 0
+    fi
+    break
+  fi
+  parent=${repo_root%/*}
+  [ -n "$parent" ] || parent=/
+  if [ "$parent" = "$repo_root" ]; then
+    echo "graph-refresh: repository root is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
+    exit 0
+  fi
+  repo_root=$parent
+done
 cd "$repo_root" || exit 0
 
 # Nothing to update if the graph was never built.
 [ -f graphify-out/graph.json ] || exit 0
-
-# Graphify's reviewed corpus spans many code/config/document extensions, extensionless
-# scripts, and removals. Any repository change is the only rename-safe trigger; detect()
-# remains the authority that decides which changed paths affect the graph.
-if ! changed=$("$TIMEOUT" --kill-after=2s 15s "$GIT" status --porcelain 2>/dev/null); then
-  echo "graph-refresh: git status failed; graph not mutated and may be stale — allowing stop (fail-open)." >&2
-  exit 0
-fi
-if ! head=$("$TIMEOUT" --kill-after=2s 15s "$GIT" rev-parse --verify HEAD 2>/dev/null); then
-  echo "graph-refresh: HEAD is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
-  exit 0
-fi
-state=dirty
-[ -z "$changed" ] && state=clean
 
 # Resolve an interpreter only when the tracked guard's full probe passes. `command -v
 # python` alone accepts the Microsoft Store stub; a bare import probe would also accept
@@ -79,6 +78,22 @@ if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then
 fi
 if [ -z "$PY" ]; then
   echo "graph-refresh: guard probe failed (requires graphifyy 0.9.51 and json_config.py SHA-256 d15ea6d9b48cc71e73615c44c72808562ad4a1dbc82d5a340e3ad0c2fb4fc945); graph not mutated and may be stale — allowing stop (fail-open)." >&2
+  exit 0
+fi
+
+# Derive HEAD and clean/dirty state only through the guarded Git boundary. The
+# third field binds the exact bounded porcelain bytes used for endpoint drift
+# comparison; malformed or unsafe Git/index/filter/submodule state fails open
+# here without running Graphify.
+if ! identity=$("$TIMEOUT" --kill-after=2s 15s "$PY" -I -B "$RUNNER" --identity 2>/dev/null); then
+  echo "graph-refresh: guarded repository identity is unavailable; graph not mutated and may be stale — allowing stop (fail-open)." >&2
+  exit 0
+fi
+IFS=$'\t' read -r head state status_digest extra <<< "$identity"
+if [[ ! "$head" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || \
+   [[ "$state" != clean && "$state" != dirty ]] || \
+   [[ ! "$status_digest" =~ ^[0-9a-f]{64}$ ]] || [ -n "${extra:-}" ]; then
+  echo "graph-refresh: guarded repository identity is malformed; graph not mutated and may be stale — allowing stop (fail-open)." >&2
   exit 0
 fi
 
@@ -159,15 +174,14 @@ if [ "$rc" -ne 0 ]; then
   exit 0
 fi
 
-# Finalize only if the hook observes the same HEAD/status at both endpoints. This
+# Finalize only if the hook observes the same guarded identity at both endpoints. This
 # does not exclude an external writer changing and restoring bytes during extraction;
 # the receipt is local bookkeeping, not a signed source-to-output attestation.
-if ! after_changed=$("$TIMEOUT" --kill-after=2s 15s "$GIT" status --porcelain 2>/dev/null) || \
-   ! after_head=$("$TIMEOUT" --kill-after=2s 15s "$GIT" rev-parse --verify HEAD 2>/dev/null); then
+if ! after_identity=$("$TIMEOUT" --kill-after=2s 15s "$PY" -I -B "$RUNNER" --identity 2>/dev/null); then
   echo "graph-refresh: refresh finished but repository state could not be re-read; receipt remains pending — allowing stop (fail-open)." >&2
   exit 0
 fi
-if [ "$after_head" != "$head" ] || [ "$after_changed" != "$changed" ]; then
+if [ "$after_identity" != "$identity" ]; then
   echo "graph-refresh: repository changed during refresh; receipt remains pending for the next Stop — allowing stop (fail-open)." >&2
   exit 0
 fi

@@ -300,6 +300,11 @@ def _fake_graphify_python(tmp_path, name):
         "printf '\\n'; } >> \"$GRAPHIFY_FAKE_LOG\"\n"
         "case \" $* \" in\n"
         "  *' --probe '*) exit \"${GRAPHIFY_FAKE_PROBE_RC:-0}\" ;;\n"
+        "  *' --identity '*) head=$(git rev-parse --verify HEAD) || exit 2; "
+        "changed=$(git status --porcelain) || exit 2; state=dirty; "
+        "[ -z \"$changed\" ] && state=clean; "
+        "printf '%s\\t%s\\t%s\\n' \"$head\" \"$state\" "
+        "'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'; exit 0 ;;\n"
         f"  *' --receipt-'*) exec \"{Path(sys.executable).as_posix()}\" "
         f"\"{receipt_shim.as_posix()}\" \"${{@:4}}\" ;;\n"
         "  *' update . '*) [ -z \"${GRAPHIFY_FAKE_UPDATE_OUTPUT:-}\" ] || "
@@ -486,10 +491,9 @@ def test_graph_refresh_probe_failure_prevents_graph_mutation_but_allows_stop(tmp
 
 
 @_needs_shell
-def test_graph_refresh_git_status_failure_is_loud_and_does_not_mutate(tmp_path):
+def test_graph_refresh_guarded_identity_failure_is_loud_and_does_not_mutate(tmp_path):
     repo = _graph_refresh_repo(tmp_path, "gr_status_failure")
-    # rev-parse still resolves the worktree, but status cannot read an index
-    # path that is a directory. This avoids PATH/MSYS executable rewriting.
+    # The guard cannot read an index path that is a directory.
     index = repo / ".git" / "index"
     index.unlink()
     index.mkdir()
@@ -497,7 +501,7 @@ def test_graph_refresh_git_status_failure_is_loud_and_does_not_mutate(tmp_path):
     p = _run_hook("graph-refresh.sh", cwd=repo)
 
     assert p.returncode == 0
-    assert "git status failed" in p.stderr
+    assert "guarded repository identity is unavailable" in p.stderr
     assert "graph not mutated" in p.stderr
     assert (repo / "graphify-out" / "graph.json").read_text(encoding="utf-8") == \
         '{"sentinel":"unchanged"}\n'
@@ -630,13 +634,58 @@ def test_graph_refresh_ignores_ambient_git_checkout_redirection(tmp_path):
     assert any(_is_guard_update(call) for call in calls)
 
 
+@_needs_shell
+def test_graph_refresh_delegates_identity_without_executing_active_filter(tmp_path):
+    repo = _graph_refresh_repo(tmp_path, "gr_filter_identity")
+    tracked = repo / "tracked.txt"
+    tracked.write_text("one\n", encoding="utf-8")
+    attributes = repo / ".gitattributes"
+    attributes.write_text("*.txt filter=hook-test-filter\n", encoding="utf-8")
+    subprocess.run([_GIT, "add", "tracked.txt", ".gitattributes"], cwd=repo, check=True)
+    subprocess.run([_GIT, "commit", "-qm", "filter fixture"], cwd=repo, check=True)
+    sentinel = tmp_path / "hook-filter-invoked.txt"
+    command = tmp_path / "hook-filter.sh"
+    command.write_text(
+        f'#!/bin/sh\necho invoked >> "{sentinel.as_posix()}"\ncat\n',
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    subprocess.run(
+        [
+            _GIT,
+            "config",
+            "filter.hook-test-filter.clean",
+            command.as_posix(),
+        ],
+        cwd=repo,
+        check=True,
+    )
+    tracked.write_text("two\n", encoding="utf-8")
+    subprocess.run([_GIT, "diff", "--", "tracked.txt"], cwd=repo, check=True)
+    assert sentinel.exists(), "positive control: plain Git must invoke the configured filter"
+    sentinel.unlink()
+    (repo / "graphify-out" / ".graphify_python").write_text(
+        Path(sys.executable).as_posix(), encoding="utf-8"
+    )
+    graph = repo / "graphify-out" / "graph.json"
+    graph_before = graph.read_bytes()
+
+    result = _run_hook("graph-refresh.sh", cwd=repo)
+
+    assert result.returncode == 0
+    assert "guarded repository identity is unavailable" in result.stderr
+    assert not sentinel.exists()
+    assert graph.read_bytes() == graph_before
+
+
 def test_graph_refresh_has_no_unbounded_update_fallback():
     text = _read(".claude", "hooks", "graph-refresh.sh")
     assert 'if [ -z "$TIMEOUT" ]; then' in text
     assert "single-worker refresh cannot be bounded" in text
     assert '"$TIMEOUT" --kill-after=5s 180s "$PY" -I -B "$RUNNER" update .' in text
-    assert '"$TIMEOUT" --kill-after=2s 15s "$GIT" ' in text
-    assert "GIT=$(type -P git" in text
+    assert text.count('"$TIMEOUT" --kill-after=2s 15s "$PY" -I -B "$RUNNER" --identity') == 2
+    assert '"$GIT"' not in text
+    assert "GIT=$(type -P git" not in text
     assert 'case "${_name^^}" in GIT_*)' in text
     assert '"$TIMEOUT" 180 "$PY"' not in text
     assert '\n  "$PY" -I -B "$RUNNER" update .' not in text
