@@ -61,6 +61,16 @@ def _run(
                           cwd=str(Path(cwd).resolve(strict=True)), **kw)
 
 
+def _stop_server(server: subprocess.Popen, *, timeout: int = 10) -> None:
+    """Stop and reap the smoke server before its temporary working directory is removed."""
+    server.terminate()
+    try:
+        server.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait(timeout=timeout)
+
+
 def expected_release() -> str:
     """What the built bundle must report, read through the SAME owner the app reads it from
     (``serve._release_version`` -> ``pyproject.toml``), so there is one source of truth for it."""
@@ -277,11 +287,7 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
                 raise SystemExit(f"/ did not serve the SPA index: {index[:200]!r}")
             print("    / serves the bundled SPA (webapp_dist found via _MEIPASS)")
         finally:
-            srv.terminate()
-            try:
-                srv.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                srv.kill()
+            _stop_server(srv)
 
     print(f"[ok] bundle verified: {dist}")
     return {

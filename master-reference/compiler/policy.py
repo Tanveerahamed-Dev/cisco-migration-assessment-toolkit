@@ -317,7 +317,7 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
         "classification_errors": errors,
         "media_type": (
             "text/plain"
-            if path in SPECIAL_CONFIG_PATHS
+            if path in SPECIAL_CONFIG_PATHS or language in {"text", "sql"}
             else mimetypes.guess_type(path)[0] or "application/octet-stream"
         ),
     }

@@ -3112,11 +3112,13 @@ class CompilerTests(unittest.TestCase):
         lock = classify_file("portable/windows-x64-requirements.lock", "100644")
         self.assertEqual(lock["classification_errors"], [])
         self.assertEqual(lock["language"], "text")
+        self.assertEqual(lock["media_type"], "text/plain")
         self.assertIn("dependency", lock["roles"])
 
         fixture = classify_file("tests/fixtures/assesshub-v3.32.1.sql", "100644")
         self.assertEqual(fixture["classification_errors"], [])
         self.assertEqual(fixture["language"], "sql")
+        self.assertEqual(fixture["media_type"], "text/plain")
         self.assertIn("dataset", fixture["roles"])
         self.assertIn("test", fixture["roles"])
 
@@ -3125,6 +3127,7 @@ class CompilerTests(unittest.TestCase):
         )
         self.assertEqual(license_file["classification_errors"], [])
         self.assertEqual(license_file["language"], "text")
+        self.assertEqual(license_file["media_type"], "text/plain")
         self.assertEqual(license_file["roles"], ["documentation"])
 
 

@@ -4,12 +4,37 @@ Pins the frozen bundle's contract WITHOUT running PyInstaller: the assets --self
 all be in datas, the dynamic imports static analysis cannot see must all be hidden-imports, and
 the dist destination must be the exact directory the entry module probes when frozen."""
 
+import subprocess
 import sys
 from pathlib import Path
 
 from portable import atlas_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_smoke_server_is_reaped_after_forced_termination():
+    from portable.build_atlas import _stop_server
+
+    class Server:
+        def __init__(self):
+            self.calls = []
+
+        def terminate(self):
+            self.calls.append("terminate")
+
+        def kill(self):
+            self.calls.append("kill")
+
+        def wait(self, *, timeout):
+            self.calls.append(("wait", timeout))
+            if self.calls.count(("wait", timeout)) == 1:
+                raise subprocess.TimeoutExpired("Atlas.exe", timeout)
+            return 0
+
+    server = Server()
+    _stop_server(server, timeout=3)
+    assert server.calls == ["terminate", ("wait", 3), "kill", ("wait", 3)]
 
 
 def test_exe_name_is_the_brand_constant():
