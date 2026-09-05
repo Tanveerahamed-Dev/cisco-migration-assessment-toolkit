@@ -775,6 +775,49 @@ def _npm_distribution_receipt(root: Path) -> dict[str, Any] | None:
     }
 
 
+def _python_distribution_receipts(*, reject_duplicate_locations: bool) -> list[dict[str, Any]]:
+    """Inventory logical distributions while bounding duplicate metadata search locations.
+
+    Editable test installs can expose the same, byte-identical distribution metadata through both
+    the checkout and site-packages.  Synthetic fixture packaging records that logical distribution
+    once.  A conflicting duplicate always refuses, and a real Atlas release root asks this helper
+    to reject even byte-identical duplicate locations before its exact-lock equality check.
+    """
+    by_name: dict[str, dict[str, Any]] = {}
+    duplicate_names: set[str] = set()
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if not name:
+            continue
+        # PEP 660 editable installs can expose the same project once as wheel-style ``METADATA``
+        # and once as checkout ``PKG-INFO``.  Compare the actual metadata payload across both forms.
+        metadata_bytes = distribution.read_text("METADATA")
+        if metadata_bytes is None:
+            metadata_bytes = distribution.read_text("PKG-INFO")
+        item = {
+            "name": _distribution_name(name),
+            "version": str(distribution.version),
+            "license_declared": _metadata_license(distribution.metadata),
+            "metadata_sha256": (
+                hashlib.sha256(metadata_bytes.encode("utf-8")).hexdigest()
+                if metadata_bytes is not None
+                else None
+            ),
+        }
+        prior = by_name.get(item["name"])
+        if prior is not None:
+            duplicate_names.add(item["name"])
+            if prior != item:
+                raise PortableReleaseError(
+                    "build environment contains conflicting Python distribution metadata"
+                )
+            continue
+        by_name[item["name"]] = item
+    if duplicate_names and reject_duplicate_locations:
+        raise PortableReleaseError("build environment contains duplicate Python distributions")
+    return sorted(by_name.values(), key=lambda item: (item["name"], item["version"]))
+
+
 def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
     root = Path(repository_root).resolve(strict=True)
     node = shutil.which("node")
@@ -784,27 +827,9 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
         if npm
         else None
     )
-    distributions = []
-    for distribution in importlib.metadata.distributions():
-        name = distribution.metadata.get("Name")
-        if not name:
-            continue
-        metadata_bytes = distribution.read_text("METADATA")
-        distributions.append(
-            {
-                "name": _distribution_name(name),
-                "version": str(distribution.version),
-                "license_declared": _metadata_license(distribution.metadata),
-                "metadata_sha256": (
-                    hashlib.sha256(metadata_bytes.encode("utf-8")).hexdigest()
-                    if metadata_bytes is not None
-                    else None
-                ),
-            }
-        )
-    distributions.sort(key=lambda item: (item["name"], item["version"]))
-    if len({item["name"] for item in distributions}) != len(distributions):
-        raise PortableReleaseError("build environment contains duplicate Python distributions")
+    distributions = _python_distribution_receipts(
+        reject_duplicate_locations=(root / "portable" / "atlas.spec").is_file()
+    )
     pyinstaller = importlib.metadata.version("pyinstaller")
     if (root / "portable" / "atlas.spec").is_file():
         lock_text = (root / "portable" / "windows-x64-requirements.lock").read_text(

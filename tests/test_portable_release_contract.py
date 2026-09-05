@@ -136,6 +136,46 @@ def _qualification(source: dict, bundle: Path) -> dict:
     }
 
 
+class _Distribution:
+    def __init__(
+        self,
+        name: str,
+        version: str,
+        metadata_text: str = "metadata",
+        metadata_file: str = "METADATA",
+    ) -> None:
+        self.metadata = {"Name": name, "License": "MIT"}
+        self.version = version
+        self._metadata_text = metadata_text
+        self._metadata_file = metadata_file
+
+    def read_text(self, name: str) -> str | None:
+        assert name in {"METADATA", "PKG-INFO"}
+        return self._metadata_text if name == self._metadata_file else None
+
+
+def test_distribution_inventory_collapses_only_identical_synthetic_metadata(monkeypatch) -> None:
+    identical = [
+        _Distribution("Example_Pkg", "1.0", metadata_file="PKG-INFO"),
+        _Distribution("example-pkg", "1.0"),
+    ]
+    monkeypatch.setattr(subject.importlib.metadata, "distributions", lambda: identical)
+    receipt = subject._python_distribution_receipts(reject_duplicate_locations=False)
+    assert receipt == [{
+        "name": "example-pkg",
+        "version": "1.0",
+        "license_declared": "MIT",
+        "metadata_sha256": hashlib.sha256(b"metadata").hexdigest(),
+    }]
+    with pytest.raises(subject.PortableReleaseError, match="duplicate Python distributions"):
+        subject._python_distribution_receipts(reject_duplicate_locations=True)
+
+    conflicting = [_Distribution("example-pkg", "1.0"), _Distribution("example.pkg", "2.0")]
+    monkeypatch.setattr(subject.importlib.metadata, "distributions", lambda: conflicting)
+    with pytest.raises(subject.PortableReleaseError, match="conflicting"):
+        subject._python_distribution_receipts(reject_duplicate_locations=False)
+
+
 def test_release_zip_manifest_sbom_provenance_and_checksums_reconcile(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     bundle = _bundle(tmp_path)

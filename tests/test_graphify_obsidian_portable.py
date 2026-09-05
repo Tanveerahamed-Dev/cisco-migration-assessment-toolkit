@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import os
@@ -58,6 +59,26 @@ def test_duplicate_node_id_is_refused() -> None:
     }).encode()
     with pytest.raises(subject.ObsidianExportError, match="duplicate node ids"):
         subject._load_graph_bytes(duplicate_graph)
+
+
+def test_valid_graph_without_optional_networkx_is_a_controlled_refusal(monkeypatch) -> None:
+    real_import = builtins.__import__
+
+    def without_networkx(name, *args, **kwargs):
+        if name == "networkx" or name.startswith("networkx."):
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_networkx)
+    valid_graph = json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [{"id": "one"}],
+        "links": [],
+    }).encode()
+    with pytest.raises(subject.ObsidianExportError, match="networkx is unavailable"):
+        subject._load_graph_bytes(valid_graph)
 
 
 @pytest.mark.parametrize("node_id,label", [("bad\ud800", "label"), ("node", "bad\udfff")])

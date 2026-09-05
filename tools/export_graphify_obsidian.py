@@ -282,8 +282,6 @@ def _worker_export(request_path: Path) -> int:
 
 
 def _load_graph_bytes(raw: bytes):
-    from networkx.readwrite import json_graph
-
     try:
         payload = json.loads(raw.decode("utf-8", errors="strict"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -297,6 +295,12 @@ def _load_graph_bytes(raw: bytes):
         node_ids.append(node["id"])
     if len(node_ids) != len(set(node_ids)):
         raise ObsidianExportError("graph input contains duplicate node ids")
+    try:
+        from networkx.readwrite import json_graph
+    except ImportError as exc:
+        raise ObsidianExportError(
+            "the reviewed Graphify runtime dependency networkx is unavailable"
+        ) from exc
     graph = json_graph.node_link_graph(payload, edges="links")
     communities: dict[int, list[str]] = {}
     for node_id, data in sorted(graph.nodes(data=True), key=lambda row: str(row[0])):
