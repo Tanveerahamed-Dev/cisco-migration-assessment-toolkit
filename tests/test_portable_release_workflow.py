@@ -21,7 +21,7 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     assert contract == {
         "schema": "atlas.portable-toolchain-contract/1",
         "platform": "windows-x64",
-        "python": "3.12.14",
+        "python": "3.12.10",
         "pip": "25.3",
         "pyinstaller": "6.22.2",
         "node": "v24.19.0",

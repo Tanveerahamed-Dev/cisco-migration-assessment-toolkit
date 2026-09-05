@@ -28,7 +28,7 @@ from typing import Any, Mapping
 
 
 PLATFORM_ID = "windows-x64"
-PYTHON_VERSION = "3.12.14"
+PYTHON_VERSION = "3.12.10"
 PIP_VERSION = "25.3"
 PYINSTALLER_VERSION = "6.22.2"
 NODE_VERSION = "v24.19.0"
