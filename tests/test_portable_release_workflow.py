@@ -103,7 +103,11 @@ def test_portable_workflow_separates_untrusted_build_from_draft_write_authority(
     assert "--stdlib-only" in text
     assert "pip install" not in draft
     assert "protected-main checks not successful" in text
-    assert "created draft tag does not resolve to the exact source" in draft
+    assert "new draft release metadata differs from the exact source" in draft
+    assert "uploaded draft release metadata differs from the exact source" in draft
+    assert "targetCommitish" in draft and "publishedAt" in draft
+    assert "tag_target=" not in draft
+    assert 'releases/tags/${DRAFT_TAG}' not in draft
     assert "draft release asset readback differs" in draft
     verify_candidate = text.split("  verify_candidate:", 1)[1].split("  draft:", 1)[0]
     assert "ref: ${{ github.sha }}" in verify_candidate
