@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+from importlib import resources
 import json
 from pathlib import Path
-import shutil
 from types import SimpleNamespace
 from typing import Any
 
@@ -41,6 +42,67 @@ _R1_ADDITIVE_FIELDS = {
 
 def _comparison() -> dict[str, Any]:
     return json.loads(RETROSPECTIVE_COMPARISON_RAW)
+
+
+def _materialize_approved_historical_roster(root: Path) -> None:
+    """Write the frozen approved bytes, never today's files, for roster-audit tests."""
+    raw = resources.files("cisco_toolkit").joinpath(
+        "data", legacy.LEGACY_R1_EXECUTABLE_BUNDLE_RESOURCE
+    ).read_bytes()
+    bundle = json.loads(raw)
+    required = {item["path"] for item in legacy.LEGACY_R1_SOURCE_MANIFEST}
+    entries = {item["path"]: item for item in bundle["files"]}
+    missing = required - set(entries)
+    historical_raw = (
+        REPOSITORY_ROOT / "tests" / "fixtures" /
+        "atlas-r1-historical-webapp-roster.json"
+    ).read_bytes()
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            assert key not in value
+            value[key] = item
+        return value
+
+    historical_webapp = json.loads(
+        historical_raw,
+        object_pairs_hook=unique_object,
+        parse_constant=lambda value: pytest.fail(f"non-finite fixture value: {value}"),
+    )
+    assert historical_raw == json.dumps(
+        historical_webapp, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    assert set(historical_webapp) == {
+        "approved_head", "chunk_encoding", "files", "schema",
+    }
+    assert historical_webapp["schema"] == "atlas.release1-historical-webapp-roster/1"
+    assert historical_webapp["approved_head"] == legacy.LEGACY_R1_APPROVED_HEAD
+    assert historical_webapp["chunk_encoding"] == "BASE64_RFC4648_512_KIB_RAW_CHUNKS"
+    historical_files = historical_webapp["files"]
+    assert isinstance(historical_files, list) and len(historical_files) == len(missing)
+    assert all(
+        isinstance(item, dict)
+        and set(item) == {"bytes", "content_base64_chunks", "path", "sha256"}
+        for item in historical_files
+    )
+    historical_entries = {item["path"]: item for item in historical_files}
+    assert len(historical_entries) == len(historical_files)
+    assert set(historical_entries) == missing
+    assert [item["path"] for item in historical_files] == sorted(missing)
+    entries.update(historical_entries)
+    assert required <= set(entries)
+    for relative in sorted(required):
+        entry = entries[relative]
+        source_raw = b"".join(
+            base64.b64decode(chunk, validate=True)
+            for chunk in entry["content_base64_chunks"]
+        )
+        assert len(source_raw) == entry["bytes"]
+        assert bytes_digest(source_raw) == entry["sha256"]
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source_raw)
 
 
 def _comparison_raw(comparison: dict[str, Any] | None = None) -> bytes:
@@ -117,11 +179,7 @@ def test_retrospective_vector_is_packaged_exactly_and_not_regenerated_by_current
 
 
 def test_any_owner_source_byte_mutation_invalidates_the_pinned_bundle(tmp_path: Path) -> None:
-    for item in legacy.LEGACY_R1_SOURCE_MANIFEST:
-        source = REPOSITORY_ROOT / item["path"]
-        target = tmp_path / item["path"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+    _materialize_approved_historical_roster(tmp_path)
 
     assert legacy.verify_release1_semantic_bundle(tmp_path).digest == (
         legacy.LEGACY_R1_SEMANTIC_BUNDLE_DIGEST
@@ -302,8 +360,10 @@ def test_adapter_remains_audit_only_even_after_exact_bundle_verification(
     ]
 
 
-def test_optional_historical_source_roster_audit_is_disclosed_separately() -> None:
-    roster_verified = legacy.verify_release1_semantic_bundle(REPOSITORY_ROOT)
+def test_optional_historical_source_roster_audit_is_disclosed_separately(
+        tmp_path: Path) -> None:
+    _materialize_approved_historical_roster(tmp_path)
+    roster_verified = legacy.verify_release1_semantic_bundle(tmp_path)
     adapter = legacy.adapt_release1_comparison_bytes(_comparison_raw(), roster_verified)
 
     assert roster_verified.historical_source_roster_verified is True
@@ -312,6 +372,13 @@ def test_optional_historical_source_roster_audit_is_disclosed_separately() -> No
     assert adapter["historical_source_roster_verified"] is True
     assert adapter["adapter_authority"] == "AUDIT_ONLY"
     assert adapter["r2_authoritative_gate"] is None
+
+
+def test_current_checkout_is_not_misrepresented_as_the_historical_approved_roster() -> None:
+    _assert_legacy_refusal(
+        lambda: legacy.verify_release1_semantic_bundle(REPOSITORY_ROOT),
+        "legacy_semantic_source_digest_mismatch",
+    )
 
 
 def test_detached_or_fake_semantic_bundle_cannot_acquire_replay_authority() -> None:

@@ -26,6 +26,13 @@ MANIFEST_RESOURCE = "atlas-r1-executable-bundle.json"
 BEFORE_RESOURCE = "atlas-r1-retrospective-before.json"
 AFTER_RESOURCE = "atlas-r1-retrospective-after.json"
 COMPARISON_RESOURCE = "atlas-r1-retrospective-comparison.json"
+SEMANTIC_WEBAPP_ROSTER_RESOURCE = "atlas-r1-historical-webapp-roster.json"
+SEMANTIC_WEBAPP_ROSTER_PATHS = (
+    "webapp/backend/engine.py",
+    "webapp/backend/execution.py",
+    "webapp/backend/storage.py",
+    "webapp/frontend/src/api.ts",
+)
 SOURCE_CHUNK_BYTES = 512 * 1024
 COMPARISON_DIGEST = "e92dbe997b92b3c6d1e3017408ac1a32e7364e14f61edd9202a67d9710a87c70"
 COMPARISON_BYTES = 51_678
@@ -280,7 +287,7 @@ def _approved_package_files(repository: Path) -> dict[str, bytes]:
     }
 
 
-def _source_bundle(files: dict[str, bytes]) -> bytes:
+def _encoded_source_entries(files: dict[str, bytes]) -> list[dict[str, Any]]:
     entries = []
     for path, raw in files.items():
         chunks = [
@@ -293,11 +300,28 @@ def _source_bundle(files: dict[str, bytes]) -> bytes:
             "path": path,
             "sha256": _digest(raw),
         })
+    return entries
+
+
+def _source_bundle(files: dict[str, bytes]) -> bytes:
     return _canonical({
         "approved_head": APPROVED_HEAD,
         "chunk_encoding": "BASE64_RFC4648_512_KIB_RAW_CHUNKS",
-        "files": entries,
+        "files": _encoded_source_entries(files),
         "schema": "atlas.release1-source-bundle/1",
+    })
+
+
+def _historical_webapp_roster(repository: Path) -> bytes:
+    files = {
+        path: _git(repository, "show", f"{APPROVED_HEAD}:{path}")
+        for path in SEMANTIC_WEBAPP_ROSTER_PATHS
+    }
+    return _canonical({
+        "approved_head": APPROVED_HEAD,
+        "chunk_encoding": "BASE64_RFC4648_512_KIB_RAW_CHUNKS",
+        "files": _encoded_source_entries(files),
+        "schema": "atlas.release1-historical-webapp-roster/1",
     })
 
 
@@ -422,15 +446,24 @@ def main() -> int:
         return 0
     with tempfile.TemporaryDirectory(prefix="atlas-r1-build-") as temporary:
         outputs = _stage(repository, Path(temporary))
+    historical_webapp_roster = _historical_webapp_roster(repository)
+    historical_webapp_path = (
+        repository / "tests" / "fixtures" / SEMANTIC_WEBAPP_ROSTER_RESOURCE
+    )
     if args.update:
         for name, raw in outputs.items():
             (data / name).write_bytes(raw)
+        historical_webapp_path.write_bytes(historical_webapp_roster)
         return 0
     drift = [
         name
         for name, raw in outputs.items()
         if not (data / name).is_file() or (data / name).read_bytes() != raw
     ]
+    if (
+            not historical_webapp_path.is_file()
+            or historical_webapp_path.read_bytes() != historical_webapp_roster):
+        drift.append(f"tests/fixtures/{SEMANTIC_WEBAPP_ROSTER_RESOURCE}")
     if drift:
         raise RuntimeError(
             "Release 1 generated resources drifted: " + ", ".join(sorted(drift))
