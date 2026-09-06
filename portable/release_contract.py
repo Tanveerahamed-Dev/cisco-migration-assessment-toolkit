@@ -263,6 +263,21 @@ def safe_relative(value: object) -> str:
     return value
 
 
+def _resolve_verification_path(value: str | os.PathLike[str]) -> Path:
+    """Resolve an input path, using Windows' extended namespace for all descendant reads."""
+
+    path = Path(value)
+    if os.name == "nt":
+        spelling = os.path.abspath(os.fspath(path))
+        if not spelling.startswith(("\\\\?\\", "\\\\.\\")):
+            if spelling.startswith("\\\\"):
+                spelling = "\\\\?\\UNC\\" + spelling[2:]
+            else:
+                spelling = "\\\\?\\" + spelling
+        path = Path(spelling)
+    return path.resolve(strict=True)
+
+
 def _same_read(path: Path) -> tuple[bytes, os.stat_result]:
     with path.open("rb") as stream:
         before = os.fstat(stream.fileno())
@@ -3180,7 +3195,7 @@ def verify_release_set(
 
 def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
     """Rehash an extracted/staged Atlas tree before updater activation."""
-    root = Path(bundle_root).resolve(strict=True)
+    root = _resolve_verification_path(bundle_root)
     checksum_path = root / METADATA_DIR / CHECKSUMS_NAME
     try:
         checksum_text = _read_bounded_regular(

@@ -7,12 +7,19 @@ import os
 import re
 import struct
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from portable import release_contract as subject
+
+
+_LONGEST_RUNTIME_MEMBER = Path(
+    "_internal/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/"
+    "iso_schematron_skeleton_for_xslt1.xsl"
+)
 
 
 def _git(root: Path, *args: str) -> None:
@@ -134,6 +141,42 @@ def _qualification(source: dict, bundle: Path) -> dict:
         "field_qualified": False,
         "external_pending": sorted(subject.REQUIRED_EXTERNAL_GATES),
     }
+
+
+def _installed_bundle(tmp_path: Path, *, longest_member: bool = False) -> Path:
+    repository = _repository(tmp_path)
+    bundle = _bundle(tmp_path)
+    if longest_member:
+        member = bundle / _LONGEST_RUNTIME_MEMBER
+        member.parent.mkdir(parents=True)
+        member.write_bytes(b"longest-member")
+    source = subject.source_identity(repository)
+    output = tmp_path / "out"
+    index = subject.build_portable_release(
+        repository, bundle, output, _qualification(source, bundle)
+    )
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(output / index["zip"]["name"]) as package:
+        package.extractall(extracted)
+    return extracted / "Atlas"
+
+
+def _windows_extended(path: Path) -> str:
+    value = os.path.abspath(os.fspath(path))
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def _deep_failed_rollback_root(tmp_path: Path) -> Path:
+    destination = tmp_path / "deep-destination"
+    failed_root = destination / ("Atlas.failed-rollback-" + "a" * 32)
+    while len(os.fspath(failed_root / _LONGEST_RUNTIME_MEMBER)) < 266:
+        destination /= "deep-segment-xxxxxxxxxxxxxxxx"
+        failed_root = destination / ("Atlas.failed-rollback-" + "a" * 32)
+    return failed_root
 
 
 class _Distribution:
@@ -260,6 +303,83 @@ def test_release_zip_manifest_sbom_provenance_and_checksums_reconcile(tmp_path: 
         assert len(refs) == len(set(refs))
         signing = json.loads(package.read(f"Atlas/{subject.METADATA_DIR}/{subject.SIGNING_NAME}"))
         assert any(item["path"].endswith("renamed-pe.bin") for item in signing["members"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length path contract")
+def test_installed_verifier_accepts_normal_deep_updater_path_without_receipt_drift(
+    tmp_path: Path,
+) -> None:
+    installed = _installed_bundle(tmp_path, longest_member=True)
+    shallow_receipt = subject.verify_installed_bundle(installed)
+    updater_root = _deep_failed_rollback_root(tmp_path)
+    try:
+        os.makedirs(_windows_extended(updater_root.parent), exist_ok=True)
+        os.rename(installed, _windows_extended(updater_root))
+    except OSError as exc:
+        pytest.skip(f"host has no extended-length path support: {exc}")
+
+    deepest = updater_root / _LONGEST_RUNTIME_MEMBER
+    assert len(os.fspath(deepest)) >= 266
+    assert not os.fspath(updater_root).startswith("\\\\?\\")
+    assert os.path.getsize(_windows_extended(deepest)) == len(b"longest-member")
+
+    direct_receipt = subject.verify_installed_bundle(os.fspath(updater_root))
+    assert direct_receipt == shallow_receipt
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "portable.verify_release",
+            "--installed",
+            os.fspath(updater_root),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        check=False,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert json.loads(process.stdout) == shallow_receipt
+
+
+def test_installed_verifier_still_refuses_link_members(tmp_path: Path) -> None:
+    installed = _installed_bundle(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "preserve.txt").write_text("preserve\n", encoding="utf-8")
+    link = installed / "_internal" / "linked"
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except OSError as exc:
+        if os.name != "nt":
+            pytest.skip(f"directory symlink creation unavailable: {exc}")
+        link_ps = os.fspath(link).replace("'", "''")
+        outside_ps = os.fspath(outside).replace("'", "''")
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                f"New-Item -ItemType Junction -Path '{link_ps}' "
+                f"-Target '{outside_ps}' | Out-Null",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if result.returncode:
+            pytest.skip(f"directory reparse creation unavailable: {exc}; {result.stderr}")
+
+    with pytest.raises(subject.PortableReleaseError, match="link/reparse"):
+        subject.verify_installed_bundle(installed)
+    assert (outside / "preserve.txt").read_text(encoding="utf-8") == "preserve\n"
 
 
 def test_release_verifier_rejects_member_and_cross_receipt_mutations(tmp_path: Path) -> None:
