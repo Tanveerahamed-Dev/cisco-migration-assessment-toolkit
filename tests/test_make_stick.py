@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from portable_release_test_support import LONGEST_RUNTIME_MEMBER
+
 pytestmark = pytest.mark.skipif(sys.platform != "win32",
                                 reason="Windows-only stick layout script (robocopy/powershell)")
 
@@ -720,7 +722,7 @@ def test_failed_receipted_database_rollback_restores_newer_active_database(tmp_p
     assert not (dest / "Atlas.update-state.json").exists()
 
 
-def _release_package(tmp_path: Path) -> Path:
+def _release_package(tmp_path: Path, *, longest_member: bool = False) -> Path:
     from portable import release_contract as release
 
     repository = tmp_path / "package-repo"
@@ -764,6 +766,10 @@ def _release_package(tmp_path: Path) -> Path:
     (bundle / "README-FIELD.txt").write_text("ATLAS FIELD GUIDE\n", encoding="ascii")
     (bundle / "LICENSE").write_text("fixture license\n", encoding="ascii")
     (bundle / "_internal" / "runtime.bin").write_bytes(b"runtime")
+    if longest_member:
+        member = bundle / LONGEST_RUNTIME_MEMBER
+        member.parent.mkdir(parents=True)
+        member.write_bytes(b"longest-member")
     source_identity = release.source_identity(repository)
     qualification = {
         "schema": release.QUALIFICATION_SCHEMA,
@@ -807,6 +813,29 @@ def test_release_package_is_copied_verified_extracted_and_reverified(tmp_path):
     assert (target / "data").is_dir()
     assert not (dest / ".Atlas.update-package.zip").exists()
     assert not (dest / ".Atlas.update-extract").exists()
+
+
+def test_release_package_longest_member_verifies_at_deep_updater_path(tmp_path):
+    package = _release_package(tmp_path, longest_member=True)
+    dest = tmp_path / "deep-package-stick"
+    failed_member = (
+        dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
+    )
+    while len(os.fspath(failed_member)) < 266:
+        dest /= "deep-segment-xxxxxxxxxxxxxxxx"
+        failed_member = (
+            dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
+        )
+    staging_member = dest / ".Atlas.update-extract" / "Atlas" / LONGEST_RUNTIME_MEMBER
+    assert len(os.fspath(failed_member)) >= 266
+    assert len(os.fspath(staging_member)) < 260
+    extended = "\\\\?\\" + os.path.abspath(os.fspath(dest))
+    os.makedirs(extended)
+
+    result = _run("-Dest", os.fspath(dest), "-Package", os.fspath(package), skip_selftest=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    installed = dest / "Atlas" / LONGEST_RUNTIME_MEMBER
+    assert installed.read_bytes() == b"longest-member"
 
 
 def test_path_sensitive_rollback_failure_restores_original_tree_and_data(tmp_path):
