@@ -334,22 +334,42 @@ jobs:
           remote_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           [ "$remote_main" = "$SOURCE_COMMIT" ] || { echo 'main advanced before draft creation; refusing a stale candidate' >&2; exit 1; }
           gh release create "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$SOURCE_COMMIT" --title "$DRAFT_TAG Atlas portable release candidate" --notes 'UNSIGNED RELEASE CANDIDATE. Automated Windows checks passed; production signing, managed-policy, physical USB/BitLocker, third-party dataset redistribution legal review, independent human review, and field acceptance remain open.'
-          tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" --jq '.object.sha')"
-          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DRAFT_TAG}" --jq '.object.type')"
-          if [ "$tag_type" = 'tag' ]; then tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_target}" --jq '.object.sha')"; fi
-          [ "$tag_target" = "$SOURCE_COMMIT" ] || { echo 'created draft tag does not resolve to the exact source; refusing upload' >&2; exit 1; }
+          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft,isPrerelease,tagName,targetCommitish,publishedAt,assets > "${RUNNER_TEMP}/draft-release.json"
+          python - "${RUNNER_TEMP}/draft-release.json" <<'PY'
+          import json, os, pathlib, sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if (
+              not isinstance(release.get("databaseId"), int)
+              or release.get("isDraft") is not True
+              or release.get("isPrerelease") is not True
+              or release.get("tagName") != os.environ["DRAFT_TAG"]
+              or release.get("targetCommitish") != os.environ["SOURCE_COMMIT"]
+              or release.get("publishedAt") is not None
+              or release.get("assets") != []
+          ):
+              raise SystemExit("new draft release metadata differs from the exact source")
+          PY
           remote_main_after="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           [ "$remote_main_after" = "$SOURCE_COMMIT" ] || { echo 'main advanced during draft creation; refusing asset upload' >&2; exit 1; }
           gh release upload "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" "${RUNNER_TEMP}"/candidate/*
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DRAFT_TAG}" > "${RUNNER_TEMP}/draft-release.json"
+          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft,isPrerelease,tagName,targetCommitish,publishedAt,assets > "${RUNNER_TEMP}/draft-release.json"
           python - "${RUNNER_TEMP}/candidate" "${RUNNER_TEMP}/draft-release.json" <<'PY'
-          import hashlib, json, pathlib, sys
+          import hashlib, json, os, pathlib, sys
           root = pathlib.Path(sys.argv[1])
           expected = {
               path.name: {"size": path.stat().st_size, "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
               for path in root.iterdir() if path.is_file()
           }
           release = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          if (
+              not isinstance(release.get("databaseId"), int)
+              or release.get("isDraft") is not True
+              or release.get("isPrerelease") is not True
+              or release.get("tagName") != os.environ["DRAFT_TAG"]
+              or release.get("targetCommitish") != os.environ["SOURCE_COMMIT"]
+              or release.get("publishedAt") is not None
+          ):
+              raise SystemExit("uploaded draft release metadata differs from the exact source")
           actual = {item["name"]: {"size": item["size"], "digest": item.get("digest")} for item in release.get("assets", [])}
           if actual != expected:
               raise SystemExit("draft release asset readback differs from the exact local release set")
