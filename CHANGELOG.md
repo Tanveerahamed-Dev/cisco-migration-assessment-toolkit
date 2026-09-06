@@ -77,6 +77,12 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Release-candidate identity advances to `3.33.0rc2` after the integrated runtime-security
+  hardening.** A successor portable draft must use `v3.33.0-rc.2` and rebuild from the later exact
+  `main`; the existing RC1 draft remains historical, unpublished evidence bound to its original
+  source and hashes. The snapshot schema remains independently versioned at `3.23.0`, and this
+  version change establishes no signing, field qualification, operator acceptance, publication,
+  or GA authority.
 - **Self-hosted frontend verification now bounds Vitest fork fan-out without weakening the gate.**
   Exact-main run `33286607459` passed 11 files and 57 tests, then failed when 13 default-pool
   fork workers timed out before their files could execute; build and browser E2E therefore remained
