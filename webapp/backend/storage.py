@@ -757,6 +757,39 @@ def _our_backups(backups: Path) -> List[Path]:
                   key=lambda p: p.name)
 
 
+def _backup_campaign_evidence(backups: List[Path]) -> str:
+    """Classify campaign evidence in owned backups without ever opening one writable.
+
+    ``unknown`` is deliberately sticky: an unreadable or legacy backup is still possible client
+    evidence and must not be rotated away merely because the other readable backups are empty.
+    """
+    state = "absent"
+    for backup in backups:
+        try:
+            # SQLite's plain mode=ro may still create -wal/-shm files for a WAL-header database.
+            # Product backups are immutable, standalone snapshots; refuse to classify a candidate
+            # with live WAL companions because immutable mode intentionally cannot see their state.
+            if any(Path(f"{backup}{suffix}").exists() for suffix in ("-wal", "-shm")):
+                state = "unknown"
+                continue
+            uri = f"{backup.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+            source = sqlite3.connect(uri, uri=True)
+            try:
+                integrity = source.execute("PRAGMA quick_check").fetchall()
+                if len(integrity) != 1 or integrity[0][0] != "ok":
+                    state = "unknown"
+                    continue
+                row = source.execute("SELECT COUNT(*) FROM campaigns").fetchone()
+            finally:
+                source.close()
+        except (OSError, sqlite3.Error):
+            state = "unknown"
+            continue
+        if row and row[0] > 0:
+            return "present"
+    return state
+
+
 class Store:
     """Thin, thread-safe SQLite wrapper. One connection guarded by a lock — fine for a single-process
     dev/demo server; swap for a pool or Postgres if this ever needs real concurrency."""
@@ -1095,11 +1128,23 @@ class Store:
             n_campaigns = row[0] if row else 0
         except sqlite3.DatabaseError:
             n_campaigns = 0
-        if n_campaigns == 0 and _our_backups(backups):
-            print(f"[warn] {dbfile} holds NO campaigns while backups in {backups} do — it looks "
-                  f"TRUNCATED or replaced. Not backing it up, so those backups survive. If this "
-                  f"is unexpected, stop now and restore before continuing "
-                  f"(README-FIELD.txt, 'Corruption').", file=sys.stderr)
+        if n_campaigns == 0:
+            have = _our_backups(backups)
+            backup_evidence = _backup_campaign_evidence(have)
+            if backup_evidence == "present":
+                print(f"[warn] {dbfile} holds NO campaigns while at least one Atlas-owned backup "
+                      f"in {backups} does — it looks TRUNCATED or replaced. Not backing it up, so "
+                      f"those backups survive. If this is unexpected, stop now and restore before "
+                      f"continuing (README-FIELD.txt, 'Corruption').", file=sys.stderr)
+            elif backup_evidence == "unknown":
+                print(f"[warn] {dbfile} holds NO campaigns and one or more Atlas-owned backups in "
+                      f"{backups} could not be verified — not backing it up, so the existing "
+                      f"backups survive. If the empty store is unexpected, stop now and inspect "
+                      f"the backups before continuing (README-FIELD.txt, 'Corruption').",
+                      file=sys.stderr)
+            # Empty stores are not evidence worth copying.  Returning also prevents a normal
+            # campaign-free first run from manufacturing an empty backup that looks suspicious
+            # on every later boot.
             return
 
         try:

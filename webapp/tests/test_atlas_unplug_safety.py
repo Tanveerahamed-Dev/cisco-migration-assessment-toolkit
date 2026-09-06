@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` importable
 
 import backend.serve as serve  # noqa: E402
+import backend.storage as storage_module  # noqa: E402
 from backend.app import create_app  # noqa: E402
 from backend.storage import Store, StoreCorruptError  # noqa: E402
 
@@ -65,6 +66,184 @@ def test_first_boot_backs_nothing_up(tmp_path):
     db = tmp_path / "data" / "hub.db"
     _boot(db)
     assert _backups(db) == []  # a brand-new empty store is not evidence worth copying
+
+
+def test_repeated_empty_boots_neither_back_up_nor_claim_backup_evidence(tmp_path, capsys):
+    """A campaign-free store is a normal state, not evidence that an existing backup is richer."""
+    db = tmp_path / "data" / "hub.db"
+    for _ in range(3):
+        _boot(db)
+    assert _backups(db) == []
+    assert "TRUNCATED" not in capsys.readouterr().err
+
+
+def test_legacy_empty_backup_does_not_trigger_a_false_campaign_warning(tmp_path, capsys):
+    """Older builds created empty owned backups; their existence proves no campaign content."""
+    db = tmp_path / "شبكة #%25" / "data" / "hub.db"
+    _boot(db)
+    backups = db.parent / "backups"
+    backups.mkdir()
+    legacy = backups / "assesshub-20200101T000000Z.db"
+    shutil.copy2(db, legacy)
+    legacy_bytes = legacy.read_bytes()
+    capsys.readouterr()
+
+    _boot(db)
+
+    assert _backups(db) == [legacy]
+    assert legacy.read_bytes() == legacy_bytes
+    assert capsys.readouterr().err == ""
+
+
+def test_unreadable_owned_backup_is_preserved_without_claiming_it_has_campaigns(tmp_path, capsys):
+    """Unreadable is unknown, not proof of campaigns and not permission to rotate the file."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    backups = db.parent / "backups"
+    backups.mkdir()
+    unreadable = backups / "assesshub-20200101T000000Z.db"
+    payload = b"not a sqlite database"
+    unreadable.write_bytes(payload)
+    capsys.readouterr()
+
+    _boot(db)
+
+    err = capsys.readouterr().err
+    assert "could not be verified" in err
+    assert "while backups in" not in err
+    assert unreadable.read_bytes() == payload
+    assert _backups(db) == [unreadable]
+
+
+def test_backup_campaign_scan_prefers_proven_campaign_evidence_over_unknown(tmp_path, capsys):
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    backups = db.parent / "backups"
+    backups.mkdir()
+    unknown = backups / "assesshub-20200101T000000Z.db"
+    unknown.write_bytes(b"not sqlite")
+    seeded = tmp_path / "seeded.db"
+    _seed_row(seeded)
+    proven = backups / "assesshub-20200102T000000Z.db"
+    shutil.copy2(seeded, proven)
+    expected = {path: path.read_bytes() for path in (unknown, proven)}
+    capsys.readouterr()
+
+    _boot(db)
+
+    err = capsys.readouterr().err
+    assert "at least one Atlas-owned backup" in err
+    assert "could not be verified" not in err
+    assert {path: path.read_bytes() for path in (unknown, proven)} == expected
+    assert _backups(db) == [unknown, proven]
+
+
+def test_schema_valid_backup_without_campaigns_table_is_unknown(tmp_path, capsys):
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    backups = db.parent / "backups"
+    backups.mkdir()
+    legacy = backups / "assesshub-20200101T000000Z.db"
+    conn = sqlite3.connect(str(legacy))
+    try:
+        conn.execute("CREATE TABLE legacy_evidence (value TEXT)")
+        conn.execute("INSERT INTO legacy_evidence VALUES ('preserve me')")
+        conn.commit()
+    finally:
+        conn.close()
+    expected = legacy.read_bytes()
+    capsys.readouterr()
+
+    _boot(db)
+
+    assert "could not be verified" in capsys.readouterr().err
+    assert legacy.read_bytes() == expected
+    assert _backups(db) == [legacy]
+
+
+def test_wal_header_backup_is_inspected_without_creating_sqlite_sidecars(tmp_path, capsys):
+    """Even mode=ro can create -wal/-shm; immutable inspection must leave no new files."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    backups = db.parent / "backups"
+    backups.mkdir()
+    wal_backup = backups / "assesshub-20200101T000000Z.db"
+    conn = sqlite3.connect(str(wal_backup))
+    try:
+        assert conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        conn.execute("CREATE TABLE campaigns (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("INSERT INTO campaigns (name) VALUES ('retained evidence')")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    companions = [Path(f"{wal_backup}-wal"), Path(f"{wal_backup}-shm")]
+    for companion in companions:
+        companion.unlink(missing_ok=True)
+    expected = wal_backup.read_bytes()
+    capsys.readouterr()
+
+    _boot(db)
+
+    assert "at least one Atlas-owned backup" in capsys.readouterr().err
+    assert wal_backup.read_bytes() == expected
+    assert not any(companion.exists() for companion in companions)
+
+
+def test_existing_wal_companions_force_unknown_without_touching_any_bytes(tmp_path, capsys):
+    """Immutable SQLite ignores live WAL state, so companions must prevent positive classification."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    backups = db.parent / "backups"
+    backups.mkdir()
+    seeded = tmp_path / "seeded.db"
+    _seed_row(seeded)
+    candidate = backups / "assesshub-20200101T000000Z.db"
+    shutil.copy2(seeded, candidate)
+    companions = [Path(f"{candidate}-wal"), Path(f"{candidate}-shm")]
+    companions[0].write_bytes(b"live wal state")
+    companions[1].write_bytes(b"live shm state")
+    expected = {path: path.read_bytes() for path in (candidate, *companions)}
+    capsys.readouterr()
+
+    _boot(db)
+
+    err = capsys.readouterr().err
+    assert "could not be verified" in err
+    assert "at least one Atlas-owned backup" not in err
+    assert {path: path.read_bytes() for path in (candidate, *companions)} == expected
+
+
+def test_failed_backup_quick_check_cannot_be_misclassified_as_campaign_evidence(
+        tmp_path, monkeypatch):
+    candidate = tmp_path / "assesshub-20200101T000000Z.db"
+    candidate.write_bytes(b"resolved path placeholder")
+
+    class FakeConnection:
+        def __init__(self):
+            self.statement = ""
+            self.closed = False
+
+        def execute(self, statement):
+            self.statement = statement
+            return self
+
+        def fetchall(self):
+            assert self.statement == "PRAGMA quick_check"
+            return [("database disk image is malformed",)]
+
+        def fetchone(self):
+            assert self.statement == "SELECT COUNT(*) FROM campaigns"
+            return (1,)
+
+        def close(self):
+            self.closed = True
+
+    fake = FakeConnection()
+    monkeypatch.setattr(storage_module.sqlite3, "connect", lambda *_a, **_kw: fake)
+
+    assert storage_module._backup_campaign_evidence([candidate]) == "unknown"
+    assert fake.closed is True
 
 
 def test_second_boot_takes_a_restorable_backup(tmp_path):
@@ -269,7 +448,9 @@ def test_truncated_store_is_not_backed_up_over_real_evidence(tmp_path, capsys):
         s.close()
     kept = _backups(db)
     assert kept == good, "the truncated store rotated real evidence off the disk"
-    assert "TRUNCATED" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "TRUNCATED" in err
+    assert "at least one Atlas-owned backup" in err
     conn = sqlite3.connect(str(kept[0]))
     try:
         assert conn.execute("SELECT name FROM campaigns").fetchone()[0] == "evidence"
