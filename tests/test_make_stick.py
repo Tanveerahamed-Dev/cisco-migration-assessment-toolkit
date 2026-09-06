@@ -19,15 +19,13 @@ from pathlib import Path
 
 import pytest
 
+from portable_release_test_support import LONGEST_RUNTIME_MEMBER
+
 pytestmark = pytest.mark.skipif(sys.platform != "win32",
                                 reason="Windows-only stick layout script (robocopy/powershell)")
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "portable" / "make_stick.ps1"
-LONGEST_RUNTIME_MEMBER = Path(
-    "_internal/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/"
-    "iso_schematron_skeleton_for_xslt1.xsl"
-)
 
 
 def _command(*args: str, skip_selftest: bool = True) -> list[str]:
@@ -832,10 +830,7 @@ def test_release_package_longest_member_verifies_at_deep_updater_path(tmp_path):
     assert len(os.fspath(failed_member)) >= 266
     assert len(os.fspath(staging_member)) < 260
     extended = "\\\\?\\" + os.path.abspath(os.fspath(dest))
-    try:
-        os.makedirs(extended)
-    except OSError as exc:
-        pytest.skip(f"host has no extended-length path support: {exc}")
+    os.makedirs(extended)
 
     result = _run("-Dest", os.fspath(dest), "-Package", os.fspath(package), skip_selftest=False)
     assert result.returncode == 0, result.stdout + result.stderr

@@ -263,19 +263,271 @@ def safe_relative(value: object) -> str:
     return value
 
 
-def _resolve_verification_path(value: str | os.PathLike[str]) -> Path:
-    """Resolve an input path, using Windows' extended namespace for all descendant reads."""
+def _installed_stat_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        getattr(metadata, "st_file_attributes", 0),
+        getattr(metadata, "st_reparse_tag", 0),
+    )
 
-    path = Path(value)
+
+def _installed_path_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        getattr(metadata, "st_file_attributes", 0),
+        getattr(metadata, "st_reparse_tag", 0),
+    )
+
+
+def _installed_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        stat.S_IFMT(metadata.st_mode),
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _installed_verification_root(
+    value: str | os.PathLike[str],
+) -> tuple[Path, dict[Path, tuple[int, ...]]]:
+    """Lexically anchor an installed root without resolving away a link/reparse alias."""
+
+    spelling = os.path.abspath(os.fspath(Path(value)))
     if os.name == "nt":
-        spelling = os.path.abspath(os.fspath(path))
-        if not spelling.startswith(("\\\\?\\", "\\\\.\\")):
+        if spelling.startswith("\\\\.\\"):
+            raise PortableReleaseError("Windows device namespace paths are forbidden")
+        if spelling.startswith("\\\\?\\"):
+            namespace = spelling[4:]
+            if not (
+                re.match(r"^[A-Za-z]:\\", namespace)
+                or namespace.casefold().startswith("unc\\")
+            ):
+                raise PortableReleaseError("Windows device namespace paths are forbidden")
+        else:
             if spelling.startswith("\\\\"):
                 spelling = "\\\\?\\UNC\\" + spelling[2:]
             else:
                 spelling = "\\\\?\\" + spelling
-        path = Path(spelling)
-    return path.resolve(strict=True)
+    path = Path(spelling)
+    chain = [path]
+    while chain[-1].parent != chain[-1]:
+        chain.append(chain[-1].parent)
+    directories: dict[Path, tuple[int, ...]] = {}
+    for component in reversed(chain):
+        metadata = component.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
+            if component == path:
+                raise PortableReleaseError("installed bundle root is a link/reparse alias")
+            raise PortableReleaseError("installed bundle root path crosses a link/reparse alias")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PortableReleaseError("installed bundle root path contains a non-directory")
+        directories[component] = _installed_path_identity(metadata)
+    return path, directories
+
+
+def _installed_tree_entries(
+    root: Path,
+) -> tuple[list[tuple[str, Path, os.stat_result]], dict[Path, tuple[int, ...]]]:
+    """Enumerate a bounded tree deterministically without descending through links/reparses."""
+
+    root_metadata = root.lstat()
+    if stat.S_ISLNK(root_metadata.st_mode) or _is_reparse(root_metadata):
+        raise PortableReleaseError("installed bundle root is a link/reparse alias")
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise PortableReleaseError("installed bundle root is not a directory")
+    directories = {root: _installed_stat_identity(root_metadata)}
+    stack = [root]
+    entries: list[tuple[str, Path, os.stat_result]] = []
+    file_count = 0
+    directory_count = 0
+    while stack:
+        directory = stack.pop()
+        expected_directory = directories[directory]
+        before = directory.lstat()
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or _is_reparse(before)
+            or not stat.S_ISDIR(before.st_mode)
+            or _installed_stat_identity(before) != expected_directory
+        ):
+            raise PortableReleaseError("installed bundle directory changed during enumeration")
+
+        def scan_once() -> list[tuple[str, Path, os.stat_result]]:
+            scanned: list[tuple[str, Path, os.stat_result]] = []
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    path = directory / entry.name
+                    relative = safe_relative(path.relative_to(root).as_posix())
+                    metadata = path.lstat()
+                    scanned.append((relative, path, metadata))
+                    if len(entries) + len(scanned) > 2 * MAX_ZIP_MEMBERS:
+                        raise PortableReleaseError(
+                            "installed bundle entry count exceeds portable bounds"
+                        )
+            scanned.sort(key=lambda item: item[0])
+            return scanned
+
+        scanned = scan_once()
+        confirmed = scan_once()
+        if [
+            (relative, _installed_stat_identity(metadata))
+            for relative, _path, metadata in scanned
+        ] != [
+            (relative, _installed_stat_identity(metadata))
+            for relative, _path, metadata in confirmed
+        ]:
+            raise PortableReleaseError("installed bundle directory changed during enumeration")
+        scanned = confirmed
+        after = directory.lstat()
+        if _installed_stat_identity(after) != expected_directory:
+            raise PortableReleaseError("installed bundle directory changed during enumeration")
+        child_directories: list[Path] = []
+        for relative, path, metadata in scanned:
+            if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
+                raise PortableReleaseError(
+                    f"installed bundle contains link/reparse member: {relative}"
+                )
+            if stat.S_ISDIR(metadata.st_mode):
+                directory_count += 1
+                if directory_count > MAX_ZIP_MEMBERS:
+                    raise PortableReleaseError(
+                        "installed bundle directory count exceeds the portable bound"
+                    )
+                directories[path] = _installed_stat_identity(metadata)
+                child_directories.append(path)
+            else:
+                file_count += 1
+                if file_count > MAX_ZIP_MEMBERS:
+                    raise PortableReleaseError(
+                        "installed bundle member count exceeds the portable bound"
+                    )
+            entries.append((relative, path, metadata))
+        stack.extend(reversed(child_directories))
+    entries.sort(key=lambda item: item[0])
+    return entries, directories
+
+
+def _recheck_installed_directories(directories: Mapping[Path, tuple[int, ...]]) -> None:
+    for directory, expected in directories.items():
+        metadata = directory.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or _is_reparse(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or _installed_stat_identity(metadata) != expected
+        ):
+            raise PortableReleaseError("installed bundle directory changed during verification")
+
+
+def _recheck_installed_root_path(directories: Mapping[Path, tuple[int, ...]]) -> None:
+    for directory, expected in directories.items():
+        metadata = directory.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or _is_reparse(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or _installed_path_identity(metadata) != expected
+        ):
+            raise PortableReleaseError("installed bundle root path changed during verification")
+
+
+def _recheck_installed_tree(
+    root: Path,
+    entries: list[tuple[str, Path, os.stat_result]],
+    directories: Mapping[Path, tuple[int, ...]],
+    root_path_directories: Mapping[Path, tuple[int, ...]],
+) -> None:
+    _recheck_installed_root_path(root_path_directories)
+    _recheck_installed_directories(directories)
+    observed_entries, observed_directories = _installed_tree_entries(root)
+    expected_snapshot = [
+        (relative, _installed_stat_identity(metadata))
+        for relative, _path, metadata in entries
+    ]
+    observed_snapshot = [
+        (relative, _installed_stat_identity(metadata))
+        for relative, _path, metadata in observed_entries
+    ]
+    if expected_snapshot != observed_snapshot or dict(directories) != observed_directories:
+        raise PortableReleaseError("installed bundle tree changed during verification")
+    _recheck_installed_root_path(root_path_directories)
+
+
+def _read_installed_regular(
+    path: Path,
+    expected_metadata: os.stat_result,
+    maximum: int,
+    what: str,
+) -> bytes:
+    """Open one enumerated file, prove the handle/path identity, then read bounded bytes."""
+
+    expected_identity = _installed_stat_identity(expected_metadata)
+    if (
+        stat.S_ISLNK(expected_metadata.st_mode)
+        or _is_reparse(expected_metadata)
+        or not stat.S_ISREG(expected_metadata.st_mode)
+        or expected_metadata.st_nlink != 1
+        or expected_metadata.st_size > maximum
+    ):
+        raise PortableReleaseError(f"{what} is not a bounded regular file")
+    preopen = path.lstat()
+    if (
+        _installed_stat_identity(preopen) != expected_identity
+        or stat.S_ISLNK(preopen.st_mode)
+        or _is_reparse(preopen)
+        or not stat.S_ISREG(preopen.st_mode)
+    ):
+        raise PortableReleaseError(f"{what} changed before open")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    if os.name != "nt":
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        path_opened = path.lstat()
+        if (
+            _installed_file_identity(before) != _installed_file_identity(expected_metadata)
+            or _installed_stat_identity(path_opened) != expected_identity
+            or stat.S_ISLNK(path_opened.st_mode)
+            or _is_reparse(path_opened)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > maximum
+        ):
+            raise PortableReleaseError(f"{what} changed or is not a bounded regular file")
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        value = b"".join(chunks)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    path_after = path.lstat()
+    if (
+        _installed_file_identity(after) != _installed_file_identity(expected_metadata)
+        or _installed_stat_identity(path_after) != expected_identity
+        or stat.S_ISLNK(path_after.st_mode)
+        or _is_reparse(path_after)
+        or len(value) != after.st_size
+        or len(value) > maximum
+    ):
+        raise PortableReleaseError(f"{what} changed while read")
+    return value
 
 
 def _same_read(path: Path) -> tuple[bytes, os.stat_result]:
@@ -3195,11 +3447,26 @@ def verify_release_set(
 
 def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
     """Rehash an extracted/staged Atlas tree before updater activation."""
-    root = _resolve_verification_path(bundle_root)
-    checksum_path = root / METADATA_DIR / CHECKSUMS_NAME
+    root, root_path_directories = _installed_verification_root(bundle_root)
+    entries, directories = _installed_tree_entries(root)
+    entry_map = {
+        relative: (path, metadata)
+        for relative, path, metadata in entries
+        if not stat.S_ISDIR(metadata.st_mode)
+    }
+
+    def read_entry(relative: str, maximum: int, what: str) -> bytes:
+        try:
+            path, metadata = entry_map[relative]
+        except KeyError as exc:
+            raise PortableReleaseError(f"{what} is missing from the installed tree") from exc
+        return _read_installed_regular(path, metadata, maximum, what)
+
     try:
-        checksum_text = _read_bounded_regular(
-            checksum_path, MAX_METADATA_BYTES, "installed checksum list"
+        checksum_text = read_entry(
+            f"{METADATA_DIR}/{CHECKSUMS_NAME}",
+            MAX_METADATA_BYTES,
+            "installed checksum list",
         ).decode("utf-8", errors="strict")
     except (OSError, UnicodeDecodeError) as exc:
         raise PortableReleaseError("installed bundle lacks valid embedded checksums") from exc
@@ -3214,12 +3481,13 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         expected[relative] = match.group(1)
     actual: dict[str, str] = {}
     total_bytes = 0
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        relative = path.relative_to(root).as_posix()
+    for relative, path, observed_metadata in entries:
         metadata = path.lstat()
-        if path.is_symlink() or _is_reparse(metadata):
+        if _installed_stat_identity(metadata) != _installed_stat_identity(observed_metadata):
+            raise PortableReleaseError(f"installed bundle member changed during enumeration: {relative}")
+        if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
             raise PortableReleaseError(f"installed bundle contains link/reparse member: {relative}")
-        if path.is_dir():
+        if stat.S_ISDIR(metadata.st_mode):
             continue
         if not stat.S_ISREG(metadata.st_mode):
             raise PortableReleaseError(f"installed bundle contains non-regular member: {relative}")
@@ -3238,7 +3506,12 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
             raise PortableReleaseError("installed bundle uses a noncanonical release-metadata namespace")
         if relative == f"{METADATA_DIR}/{CHECKSUMS_NAME}":
             continue
-        value, _ = _same_read(path)
+        value = _read_installed_regular(
+            path,
+            observed_metadata,
+            MAX_ZIP_MEMBER_BYTES,
+            f"installed bundle member: {relative}",
+        )
         if top != METADATA_DIR.casefold():
             if _forbidden_member(relative):
                 raise PortableReleaseError(f"forbidden runtime member in installed bundle: {relative}")
@@ -3254,11 +3527,13 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
             if machine is not None and machine != PE_AMD64:
                 raise PortableReleaseError(f"installed PE member is not AMD64: {relative}")
         actual[safe_relative(relative)] = hashlib.sha256(value).hexdigest()
+    _recheck_installed_root_path(root_path_directories)
+    _recheck_installed_directories(directories)
     if actual != expected:
         raise PortableReleaseError("installed bundle member denominator or checksum differs")
     manifest = _json_object(
-        _read_bounded_regular(
-            root / METADATA_DIR / MANIFEST_NAME,
+        read_entry(
+            f"{METADATA_DIR}/{MANIFEST_NAME}",
             MAX_METADATA_BYTES,
             "installed portable manifest",
         ),
@@ -3280,7 +3555,11 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
             raise PortableReleaseError(f"installed runtime manifest mismatch: {item['path']}")
         if item["role"] != _runtime_role(item["path"]):
             raise PortableReleaseError(f"installed runtime role differs: {item['path']}")
-        value, _ = _same_read(root.joinpath(*PurePosixPath(item["path"]).parts))
+        value = read_entry(
+            item["path"],
+            MAX_ZIP_MEMBER_BYTES,
+            f"installed runtime member: {item['path']}",
+        )
         machine = pe_machine(value)
         if item.get("executable") != (machine is not None) or item.get("pe_machine") != (
             "AMD64" if machine is not None else None
@@ -3289,8 +3568,8 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         ):
             raise PortableReleaseError(f"installed runtime PE classification differs: {item['path']}")
     signing = _json_object(
-        _read_bounded_regular(
-            root / METADATA_DIR / SIGNING_NAME,
+        read_entry(
+            f"{METADATA_DIR}/{SIGNING_NAME}",
             MAX_METADATA_BYTES,
             "installed signing receipt",
         ),
@@ -3304,12 +3583,17 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
     _validate_signing(signing, expected_pe, manifest)
     if signing.get("status") != "UNSIGNED_RELEASE_CANDIDATE" and any(
         not has_terminal_authenticode_table(
-            _same_read(root.joinpath(*PurePosixPath(item["path"]).parts))[0]
+            read_entry(
+                item["path"],
+                MAX_ZIP_MEMBER_BYTES,
+                f"installed signed runtime member: {item['path']}",
+            )
         )
         for item in claimed
         if item["executable"]
     ):
         raise PortableReleaseError("installed signed PE lacks a terminal certificate table")
+    _recheck_installed_tree(root, entries, directories, root_path_directories)
     return {
         "schema": "atlas.portable-installed-verification/1",
         "status": "SELF_CONSISTENCY_PASS",

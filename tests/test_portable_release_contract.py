@@ -14,12 +14,7 @@ from pathlib import Path
 import pytest
 
 from portable import release_contract as subject
-
-
-_LONGEST_RUNTIME_MEMBER = Path(
-    "_internal/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/"
-    "iso_schematron_skeleton_for_xslt1.xsl"
-)
+from portable_release_test_support import LONGEST_RUNTIME_MEMBER
 
 
 def _git(root: Path, *args: str) -> None:
@@ -147,7 +142,7 @@ def _installed_bundle(tmp_path: Path, *, longest_member: bool = False) -> Path:
     repository = _repository(tmp_path)
     bundle = _bundle(tmp_path)
     if longest_member:
-        member = bundle / _LONGEST_RUNTIME_MEMBER
+        member = bundle / LONGEST_RUNTIME_MEMBER
         member.parent.mkdir(parents=True)
         member.write_bytes(b"longest-member")
     source = subject.source_identity(repository)
@@ -173,10 +168,38 @@ def _windows_extended(path: Path) -> str:
 def _deep_failed_rollback_root(tmp_path: Path) -> Path:
     destination = tmp_path / "deep-destination"
     failed_root = destination / ("Atlas.failed-rollback-" + "a" * 32)
-    while len(os.fspath(failed_root / _LONGEST_RUNTIME_MEMBER)) < 266:
+    while len(os.fspath(failed_root / LONGEST_RUNTIME_MEMBER)) < 266:
         destination /= "deep-segment-xxxxxxxxxxxxxxxx"
         failed_root = destination / ("Atlas.failed-rollback-" + "a" * 32)
     return failed_root
+
+
+def _directory_alias(link: Path, target: Path) -> None:
+    if os.name != "nt":
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlink creation unavailable: {exc}")
+        return
+    link_ps = os.fspath(link).replace("'", "''")
+    target_ps = os.fspath(target).replace("'", "''")
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"New-Item -ItemType Junction -Path '{link_ps}' "
+            f"-Target '{target_ps}' | Out-Null",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode:
+        pytest.skip(f"directory junction creation unavailable: {result.stderr}")
 
 
 class _Distribution:
@@ -312,13 +335,10 @@ def test_installed_verifier_accepts_normal_deep_updater_path_without_receipt_dri
     installed = _installed_bundle(tmp_path, longest_member=True)
     shallow_receipt = subject.verify_installed_bundle(installed)
     updater_root = _deep_failed_rollback_root(tmp_path)
-    try:
-        os.makedirs(_windows_extended(updater_root.parent), exist_ok=True)
-        os.rename(installed, _windows_extended(updater_root))
-    except OSError as exc:
-        pytest.skip(f"host has no extended-length path support: {exc}")
+    os.makedirs(_windows_extended(updater_root.parent), exist_ok=True)
+    os.rename(installed, _windows_extended(updater_root))
 
-    deepest = updater_root / _LONGEST_RUNTIME_MEMBER
+    deepest = updater_root / LONGEST_RUNTIME_MEMBER
     assert len(os.fspath(deepest)) >= 266
     assert not os.fspath(updater_root).startswith("\\\\?\\")
     assert os.path.getsize(_windows_extended(deepest)) == len(b"longest-member")
@@ -346,40 +366,279 @@ def test_installed_verifier_accepts_normal_deep_updater_path_without_receipt_dri
     assert json.loads(process.stdout) == shallow_receipt
 
 
-def test_installed_verifier_still_refuses_link_members(tmp_path: Path) -> None:
+def test_installed_verifier_refuses_root_alias_before_target_access(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = _installed_bundle(tmp_path)
+    alias = tmp_path / "installed-alias"
+    _directory_alias(alias, installed)
+
+    scandir_calls: list[str] = []
+    read_calls: list[str] = []
+    real_scandir = os.scandir
+    real_installed_read = subject._read_installed_regular
+
+    def witnessed_scandir(path):
+        scandir_calls.append(os.fspath(path))
+        return real_scandir(path)
+
+    def witnessed_read(path, *args, **kwargs):
+        read_calls.append(os.fspath(path))
+        return real_installed_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(subject.os, "scandir", witnessed_scandir)
+    monkeypatch.setattr(subject, "_read_installed_regular", witnessed_read)
+    with pytest.raises(subject.PortableReleaseError, match="root.*link/reparse"):
+        subject.verify_installed_bundle(alias)
+    assert scandir_calls == []
+    assert read_calls == []
+
+
+def test_installed_verifier_refuses_ancestor_alias_before_target_access(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    installed = _installed_bundle(real_parent)
+    alias_parent = tmp_path / "alias-parent"
+    _directory_alias(alias_parent, installed.parent)
+    aliased_root = alias_parent / "Atlas"
+
+    scandir_calls: list[str] = []
+    read_calls: list[str] = []
+    monkeypatch.setattr(
+        subject.os,
+        "scandir",
+        lambda path: scandir_calls.append(os.fspath(path)),
+    )
+    monkeypatch.setattr(
+        subject,
+        "_read_installed_regular",
+        lambda path, *_args, **_kwargs: read_calls.append(os.fspath(path)),
+    )
+    with pytest.raises(subject.PortableReleaseError, match="crosses.*link/reparse"):
+        subject.verify_installed_bundle(aliased_root)
+    assert scandir_calls == []
+    assert read_calls == []
+
+
+def test_installed_verifier_refuses_finite_junction_without_target_enumeration_or_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     installed = _installed_bundle(tmp_path)
     outside = tmp_path / "outside"
+    (outside / "nested").mkdir(parents=True)
+    evidence = outside / "nested" / "evidence.txt"
+    evidence.write_text("outside evidence\n", encoding="utf-8")
+    link = installed / "_internal" / "linked"
+    _directory_alias(link, outside)
+
+    scanned: list[str] = []
+    read_paths: list[str] = []
+    real_scandir = os.scandir
+    real_installed_read = subject._read_installed_regular
+
+    def witnessed_scandir(path):
+        scanned.append(os.fspath(path))
+        return real_scandir(path)
+
+    def witnessed_read(path, *args, **kwargs):
+        value = os.fspath(path)
+        read_paths.append(value)
+        assert "outside" not in value.casefold()
+        return real_installed_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(subject.os, "scandir", witnessed_scandir)
+    monkeypatch.setattr(subject, "_read_installed_regular", witnessed_read)
+    with pytest.raises(subject.PortableReleaseError, match="link/reparse"):
+        subject.verify_installed_bundle(installed)
+    assert any(Path(path).name.casefold() == "_internal" for path in scanned)
+    assert not any("linked" in path.casefold() or "outside" in path.casefold() for path in scanned)
+    assert read_paths == []
+    assert evidence.read_text(encoding="utf-8") == "outside evidence\n"
+
+
+def test_installed_verifier_refuses_cyclic_directory_alias_without_descent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = _installed_bundle(tmp_path)
+    loop = installed / "_internal" / "loop"
+    _directory_alias(loop, installed)
+    scanned: list[str] = []
+    real_scandir = os.scandir
+
+    def witnessed_scandir(path):
+        scanned.append(os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(subject.os, "scandir", witnessed_scandir)
+    with pytest.raises(subject.PortableReleaseError, match="link/reparse"):
+        subject.verify_installed_bundle(installed)
+    assert any(Path(path).name.casefold() == "_internal" for path in scanned)
+    assert not any("loop" in path.casefold() for path in scanned)
+    assert len(scanned) <= subject.MAX_ZIP_MEMBERS
+
+
+def test_installed_verifier_fails_closed_when_directory_changes_during_scan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = _installed_bundle(tmp_path)
+    real_scandir = os.scandir
+    real_installed_read = subject._read_installed_regular
+    read_paths: list[str] = []
+    changed = False
+
+    class RacingScandir:
+        def __init__(self, path):
+            self.path = Path(path)
+            self.context = real_scandir(path)
+
+        def __enter__(self):
+            return self.context.__enter__()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            nonlocal changed
+            result = self.context.__exit__(exc_type, exc_value, traceback)
+            if not changed:
+                changed = True
+                (self.path / "race-marker").write_bytes(b"changed during scan")
+            return result
+
+    def witnessed_read(path, *args, **kwargs):
+        read_paths.append(os.fspath(path))
+        return real_installed_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(subject.os, "scandir", RacingScandir)
+    monkeypatch.setattr(subject, "_read_installed_regular", witnessed_read)
+    with pytest.raises(subject.PortableReleaseError, match="changed during enumeration"):
+        subject.verify_installed_bundle(installed)
+    assert changed is True
+    assert read_paths == []
+
+
+def test_installed_walker_enforces_entry_bound_before_reading_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = _installed_bundle(tmp_path)
+    read_paths: list[str] = []
+    real_installed_read = subject._read_installed_regular
+
+    def witnessed_read(path, *args, **kwargs):
+        read_paths.append(os.fspath(path))
+        return real_installed_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(subject, "MAX_ZIP_MEMBERS", 2)
+    monkeypatch.setattr(subject, "_read_installed_regular", witnessed_read)
+    with pytest.raises(subject.PortableReleaseError, match="entry count"):
+        subject.verify_installed_bundle(installed)
+    assert read_paths == []
+
+
+def test_installed_reader_refuses_parent_alias_swap_before_outside_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    installed = _installed_bundle(tmp_path)
+    internal = installed / "_internal"
+    parked = tmp_path / "parked-internal"
+    outside = tmp_path / "race-outside"
+    outside.mkdir()
+    outside_file = outside / "runtime.bin"
+    outside_payload = b"outside bytes must never be read"
+    outside_file.write_bytes(outside_payload)
+    prepared_alias = tmp_path / "prepared-alias"
+    _directory_alias(prepared_alias, outside)
+
+    real_os_open = os.open
+    real_os_read = os.read
+    outside_identity = (outside_file.stat().st_dev, outside_file.stat().st_ino)
+    outside_reads = 0
+    swapped = False
+
+    def witnessed_os_read(descriptor, size):
+        nonlocal outside_reads
+        metadata = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) == outside_identity:
+            outside_reads += 1
+        return real_os_read(descriptor, size)
+
+    def swap_then_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        candidate = Path(path)
+        if candidate.name == "runtime.bin" and candidate.parent.name == "_internal" and not swapped:
+            os.rename(internal, parked)
+            os.rename(prepared_alias, internal)
+            swapped = True
+        return real_os_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(subject.os, "open", swap_then_open)
+    monkeypatch.setattr(subject.os, "read", witnessed_os_read)
+    with pytest.raises(subject.PortableReleaseError, match="changed or is not"):
+        subject.verify_installed_bundle(installed)
+    assert swapped is True
+    assert outside_reads == 0
+    with Path.open(outside_file, "rb") as stream:
+        assert stream.read() == outside_payload
+
+
+@pytest.mark.skipif(os.name == "nt" or not hasattr(os, "mkfifo"), reason="POSIX FIFO contract")
+def test_installed_checksum_fifo_refuses_without_blocking(tmp_path: Path) -> None:
+    installed = _installed_bundle(tmp_path)
+    checksum = installed / subject.METADATA_DIR / subject.CHECKSUMS_NAME
+    checksum.unlink()
+    os.mkfifo(checksum)
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "portable.verify_release",
+            "--installed",
+            os.fspath(installed),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        timeout=5,
+        check=False,
+    )
+    assert process.returncode == 1
+    assert "installed checksum list is not a bounded regular file" in process.stderr
+
+
+def test_installed_verifier_still_refuses_symlink_members(tmp_path: Path) -> None:
+    installed = _installed_bundle(tmp_path)
+    outside = tmp_path / "symlink-outside"
     outside.mkdir()
     (outside / "preserve.txt").write_text("preserve\n", encoding="utf-8")
-    link = installed / "_internal" / "linked"
+    link = installed / "_internal" / "symlinked"
     try:
         os.symlink(outside, link, target_is_directory=True)
     except OSError as exc:
-        if os.name != "nt":
-            pytest.skip(f"directory symlink creation unavailable: {exc}")
-        link_ps = os.fspath(link).replace("'", "''")
-        outside_ps = os.fspath(outside).replace("'", "''")
-        result = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                f"New-Item -ItemType Junction -Path '{link_ps}' "
-                f"-Target '{outside_ps}' | Out-Null",
-            ],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if result.returncode:
-            pytest.skip(f"directory reparse creation unavailable: {exc}; {result.stderr}")
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
 
     with pytest.raises(subject.PortableReleaseError, match="link/reparse"):
         subject.verify_installed_bundle(installed)
     assert (outside / "preserve.txt").read_text(encoding="utf-8") == "preserve\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows device namespace contract")
+@pytest.mark.parametrize(
+    "value",
+    [r"\\.\C:\Atlas", r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1"],
+)
+def test_installed_verifier_rejects_device_namespace_spelling(value: str) -> None:
+    with pytest.raises(subject.PortableReleaseError, match="device namespace"):
+        subject.verify_installed_bundle(value)
 
 
 def test_release_verifier_rejects_member_and_cross_receipt_mutations(tmp_path: Path) -> None:
