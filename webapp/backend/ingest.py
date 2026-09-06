@@ -1970,6 +1970,7 @@ def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: boo
         # compared against the captures that are really there. Only computed when it was asked
         # for: the folder walk is pointless otherwise, and "not requested" is not an outcome.
         scrub_ok, scrub_detail = (False, "")
+        scrub_uncovered_count = 0
         if redact_collection:
             scrub_ok, scrub_detail = _collection_scrub_outcome(engine_output,
                                                                _count_raw_captures(root))
@@ -2010,6 +2011,7 @@ def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: boo
                 # read as "the folder is clean", which is the same false-health shape as a
                 # dark device disappearing out of an average.
                 uncovered = staged_scrub_proof.get("uncovered") or []
+                scrub_uncovered_count = len(uncovered)
                 if uncovered:
                     names = ", ".join(row["file"] for row in uncovered[:6])
                     scrub_detail += (
@@ -2062,15 +2064,17 @@ def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: boo
             "skipped_dirs": skipped,
             "devices_json": provenance,
             "n_source_files": n_files,
-            # Three keys, because one bool could not tell the three states apart and the old one
+            # Four keys, because one bool could not tell the states apart and the old one
             # silently conflated two of them. `..._requested` is the FLAG (what was asked for);
             # `redacted_collection` is the OUTCOME (positively confirmed by the engine's own
             # record, so False also covers "asked for, could not be confirmed"); `..._detail` is
-            # the sentence with the counts. Reporting the flag as the outcome told a field
+            # the internal evidence sentence; `..._uncovered_count` is the safe terminal projection.
+            # Reporting the flag as the outcome told a field
             # engineer the secrets were off the stick when the scrub may never have run.
             "redacted_collection_requested": bool(redact_collection),
             "redacted_collection": scrub_ok,
             "redacted_collection_detail": scrub_detail,
+            "redacted_collection_uncovered_count": scrub_uncovered_count,
             "engine_seconds": duration,
             "engine_log_tail": log_tail,
         }

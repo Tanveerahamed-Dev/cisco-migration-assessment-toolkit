@@ -344,8 +344,18 @@ class _RequestBodyLimitMiddleware:
                         object_pairs_hook=_reject_duplicate_json_keys,
                     )
                 except (UnicodeDecodeError, ValueError) as exc:
+                    # Never reflect decoder/hook exception text.  The duplicate-key hook includes
+                    # the attacker-supplied member name in its ValueError, and other decoder
+                    # implementations may disclose parser internals.  Preserve the one useful,
+                    # bounded reason without returning the exception itself.
+                    detail = "Invalid JSON request body"
+                    if (
+                        isinstance(exc, ValueError)
+                        and str(exc).startswith("duplicate JSON object key ")
+                    ):
+                        detail += ": duplicate JSON object key"
                     await JSONResponse(
-                        {"detail": f"Invalid JSON request body: {exc}"},
+                        {"detail": detail},
                         status_code=400,
                     )(scope, receive, send)
                     return

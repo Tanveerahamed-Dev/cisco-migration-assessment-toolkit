@@ -12,6 +12,7 @@ nothing found — NOT a blind spot); an absent section is `not_collected` (a rea
 Nothing is ever labelled "ok"/"healthy": absence of evidence is never health.
 """
 import json
+import logging
 import os
 
 import pytest
@@ -181,6 +182,31 @@ def test_sheet_is_total_on_empty_census():
     wb = Workbook()
     write_coverage_schema_sheet(wb, {})           # missing schema/sections/summary -> no crash
     assert COVERAGE_SCHEMA_SHEET_NAME in wb.sheetnames
+
+
+def test_sheet_completion_log_does_not_reflect_census_payloads(caplog):
+    """CodeQL #23: the supported producer emits integer summary counts, but this writer is public.
+
+    A caller-crafted mapping must not copy arbitrary census values into the unstructured log.  The
+    workbook remains the structured owner projection; the log carries only a completion marker.
+    """
+    marker = "PRIVATE_CENSUS_VALUE_2df81b"
+    census = {
+        "summary": {
+            "n_sections": marker,
+            "n_published": marker,
+            "n_collected_but_empty": marker,
+            "n_not_collected": marker,
+        },
+        "sections": [],
+    }
+    wb = Workbook()
+    with caplog.at_level(logging.INFO, logger="cisco_toolkit.excel"):
+        write_coverage_schema_sheet(wb, census)
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert marker not in messages
+    assert "'Coverage Schema' sheet written" in messages
 
 
 # --- the golden fixture, where present ---------------------------------------------------------

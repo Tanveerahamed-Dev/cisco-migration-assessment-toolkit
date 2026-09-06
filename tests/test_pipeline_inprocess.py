@@ -17,6 +17,7 @@ byte-exact golden, which stays the subprocess test's job, so the two don't dupli
 """
 import hashlib
 import json
+import logging
 import os
 import sys
 
@@ -951,6 +952,46 @@ def _gated_run(tmp_path, monkeypatch, eng_root, *extra):
         *extra,
     ])
     return cp.main(), out_xlsx
+
+
+def test_main_ssot_drift_stays_structured_and_never_crosses_the_log(
+        tmp_path, monkeypatch, caplog):
+    """CodeQL #20: exercise the real ``main()`` callsite, not only its safe helper.
+
+    A mutation that restores the old f-string at the assembly boundary must expose this marker and
+    fail.  The same exact owner-produced receipt must remain available in the emitted snapshot.
+    """
+    from cisco_toolkit import ssot
+
+    marker = "PRIVATE_MAIN_S3CR3T\r\nFORGED MAIN LOG RECORD"
+    injected = {
+        "ssot_reconciliation": "failed",
+        "n_violations": 1,
+        "violations": [marker],
+    }
+    real_audit = ssot.audit
+    audit_calls = 0
+
+    def first_call_is_drift(snapshot):
+        nonlocal audit_calls
+        audit_calls += 1
+        return injected if audit_calls == 1 else real_audit(snapshot)
+
+    monkeypatch.setattr(ssot, "audit", first_call_is_drift)
+    engagement_root = tmp_path / "engagement"
+    engagement_root.mkdir()
+    with caplog.at_level(logging.WARNING, logger=cp.logger.name):
+        rc, out_xlsx = _gated_run(tmp_path, monkeypatch, engagement_root)
+
+    assert rc == 0
+    assert audit_calls >= 1
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert marker not in messages
+    assert "FORGED MAIN LOG RECORD" not in messages
+    assert "details are retained in assessment_integrity" in messages
+    snapshot_path = out_xlsx.with_suffix(".snapshot.json")
+    emitted = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert emitted["assessment_integrity"]["violations"] == [marker]
 
 
 def test_gate_refusal_is_recorded_durably_and_exits_0_unless_asked(tmp_path, monkeypatch):

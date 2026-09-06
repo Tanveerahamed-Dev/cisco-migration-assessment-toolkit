@@ -110,20 +110,105 @@ def _stamp_unapproved_draft(path: str, kind: str, disclosure: object) -> None:
     doc.save(path)
 
 
-def _reconcile_gate(snap: dict, kind: str) -> list:
+def _reconcile_gate(snap: dict, _kind: str | None = None) -> dict | None:
     """Fail-soft SSOT pre-emission check (universal-best roadmap W3-5): never SILENTLY emit a deliverable from
-    a snapshot whose published facts disagree with the raw evidence. Logs the violations (the snapshot's
-    assessment_integrity already carries the machine-readable disclosure that the deliverables render); it never
-    blocks the emit -- a single benign drift must not wedge the whole deliverable set. Total/fail-open."""
+    a snapshot whose published facts disagree with the raw evidence. Individual violations can contain uploaded
+    snapshot values, so the log carries only a fixed pointer while the exact owner-produced disclosure is embedded
+    into the snapshot copy passed to the writer. It never blocks the emit -- a single benign drift must not wedge
+    the whole deliverable set. Total/fail-open."""
     try:
         from cisco_toolkit import ssot
-        violations = ssot.reconcile(snap if isinstance(snap, dict) else {})
+        drift = ssot.audit(snap if isinstance(snap, dict) else {})
     except Exception:
+        return None
+    if drift:
+        logger.warning(
+            "[SSOT] snapshot deliverable generated with unreconciled facts; "
+            "bounded reconciliation details are embedded in the artifact"
+        )
+    return drift
+
+
+def _snapshot_with_ssot_disclosure(snap: dict, drift: object) -> dict:
+    """Return a shallow snapshot copy carrying the owner-produced drift without mutating storage."""
+    if not isinstance(snap, dict) or not isinstance(drift, dict):
+        return snap
+    rendered = dict(snap)
+    current = snap.get("assessment_integrity")
+    integrity = dict(current) if isinstance(current, dict) else {}
+    integrity.update(drift)
+    rendered["assessment_integrity"] = integrity
+    return rendered
+
+
+def _bounded_ssot_violation_lines(drift: object) -> list[str]:
+    """Return XML-safe, single-line, bounded reconciliation details for generated artifacts."""
+    if not isinstance(drift, dict) or not isinstance(drift.get("violations"), list):
         return []
-    if violations:
-        logger.warning("[SSOT] %s deliverable generated from a snapshot with %d unreconciled fact(s): %s",
-                       kind, len(violations), violations[:3])
-    return violations
+    from cisco_toolkit.textutils import xml_safe
+
+    lines = []
+    for value in drift["violations"][:20]:
+        raw = str(value)
+        bounded = (
+            raw[:464] + " [truncated; inspect source snapshot]"
+            if len(raw) > 512 else raw
+        )
+        rendered = " ".join(str(xml_safe(bounded)).split())
+        lines.append(rendered or "[unrenderable violation; inspect source snapshot]")
+    return lines
+
+
+def _stamp_ssot_integrity(path: str, spec: ArtifactSpec, drift: object) -> None:
+    """Make a fresh SSOT failure visible in every AssessHub document type.
+
+    Writers consume the snapshot for their domain, but not all of them render
+    ``assessment_integrity``.  Post-processing only the exceptional drift case keeps normal bytes
+    unchanged while ensuring the artifact carrying a fixed log pointer also carries the bounded,
+    actionable findings.  The original uploaded snapshot remains unchanged.
+    """
+    lines = _bounded_ssot_violation_lines(drift)
+    if not lines:
+        return
+    if spec.ext == "docx":
+        from docx import Document
+        from docx.shared import RGBColor
+
+        doc = Document(path)
+        paragraph = (
+            doc.paragraphs[0].insert_paragraph_before()
+            if doc.paragraphs else doc.add_paragraph()
+        )
+        title = paragraph.add_run("ASSESSMENT INTEGRITY WARNING\n")
+        title.bold = True
+        title.font.color.rgb = RGBColor(192, 0, 0)
+        paragraph.add_run(
+            "Published facts did not reconcile to their evidence. Review these bounded findings "
+            "against the source snapshot before using this deliverable:\n"
+            + "\n".join(f"• {line}" for line in lines)
+        )
+        doc.save(path)
+        return
+    if spec.ext == "pptx":
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        deck = Presentation(path)
+        slide = deck.slides.add_slide(deck.slide_layouts[6])
+        box = slide.shapes.add_textbox(Inches(0.7), Inches(0.6), Inches(8.6), Inches(6.1))
+        frame = box.text_frame
+        frame.text = "ASSESSMENT INTEGRITY WARNING"
+        frame.paragraphs[0].font.bold = True
+        intro = frame.add_paragraph()
+        intro.text = (
+            "Published facts did not reconcile to their evidence. Review these bounded findings "
+            "against the source snapshot before using this deliverable."
+        )
+        for line in lines:
+            row = frame.add_paragraph()
+            row.text = line
+            row.level = 0
+        deck.save(path)
 
 
 def gate_disclosure(kind: str, gate_root: str = ".", engagement: str | None = None) -> dict | None:
@@ -274,39 +359,52 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
     ledger. The in-document state therefore never claims approval.
     """
     spec = SPECS[kind]
-    _reconcile_gate(snap, kind)   # W3-5: loudly flag a drifting snapshot before emit (fail-soft, never blocks)
+    ssot_drift = _reconcile_gate(snap, kind)
+    render_snap = _snapshot_with_ssot_disclosure(snap, ssot_drift)
     disclosure = (
         gate_disclosure(kind, gate_root, engagement=gate_engagement)
         if document_gate is _GATE_NOT_SUPPLIED
         else document_gate
     )
     if disclosure:
-        logger.warning("[GATE %s] %s generated from AssessHub with unsatisfied document gates: %s "
-                       "-- disclosed, not blocked (see deliverables.generate docstring)",
-                       disclosure["status"].upper(), kind, disclosure)
+        safe_gate = _document_gate_projection(disclosure)
+        if safe_gate is None:
+            logger.warning(
+                "[GATE UNREADABLE] snapshot deliverable generated with an unavailable bounded "
+                "gate projection -- disclosed, not blocked"
+            )
+        else:
+            logger.warning(
+                "[GATE UNSATISFIED] snapshot deliverable generated with unsatisfied document "
+                "gates -- exact status is disclosed in the response and document, not blocked"
+            )
     # Producer dispatch is registry-owned too. validate_artifact_registry refuses any listed
     # download without a module/function, so catalogue membership cannot become an orphan.
     write = resolve_writer(spec)
 
-    fd, path = tempfile.mkstemp(suffix="." + spec.ext, prefix=f"assesshub_{kind}_")
+    # The request-selected key has already resolved to a closed registry entry.  It does not need
+    # to become part of a filesystem expression: a fixed prefix plus the registry-owned extension
+    # leaves the OS-generated path wholly independent of request bytes.
+    fd, path = tempfile.mkstemp(suffix="." + spec.ext, prefix="assesshub_")
     os.close(fd)
     try:
         if kind == "engagement":
             # The writer treats None and {} identically (its own gr filter), so no `and gates`
             # second branch — one call shape per kind (V3.23.159 review simplification).
-            write(path, snap, label, gate_record=gates)
+            write(path, render_snap, label, gate_record=gates)
         elif kind in {"runbook", "mop", "nrfu"}:
             # The writers are pure renderers and cannot establish exact-byte custody from a parsed
             # snapshot. AssessHub supplies the separately built portfolio-owner sidecar; direct/CLI
             # calls leave it absent and the documents state NOT VERIFIED rather than minting one.
             write(
                 path,
-                snap,
+                render_snap,
                 label,
                 protocol_assurance_bundle=protocol_assurance_bundle,
             )
         else:
-            write(path, snap, label)
+            write(path, render_snap, label)
+        _stamp_ssot_integrity(path, spec, ssot_drift)
         _stamp_unapproved_draft(path, kind, disclosure)
     except Exception:
         if os.path.exists(path):

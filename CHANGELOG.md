@@ -110,6 +110,16 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Atlas runtime diagnostics no longer reflect client-controlled paths, parser details, gate
+  records, or snapshot values into unstructured logs and responses.** Generated deliverable temp
+  names now use a fixed prefix after closed-registry selection; invalid JSON responses carry only
+  fixed reason text; raw-capture coverage uses a structured count with a fail-closed missing-value
+  state; and fresh SSOT drift is retained in the structured snapshot plus a bounded visible DOCX or
+  PPTX warning instead of being copied into the log. Mutation tests cover CRLF/log forging,
+  credential-like values, hostile SPA paths, invalid coverage counts, and the real engine `main()`
+  assembly path. Existing CodeQL findings over the credential scrubber's sanitized output and the
+  SPA's pre-resolution plus post-resolution containment remain separately triaged rather than
+  suppressed or weakened.
 - **Portable redaction promotions now keep the manifest-owned topology sidecars.** The private
   staging run sealed `topology.dot` and `topology.mmd`, but the promotion census omitted them and
   deleted the staging directory; a later `Atlas.exe --verify-manifest` therefore failed over an

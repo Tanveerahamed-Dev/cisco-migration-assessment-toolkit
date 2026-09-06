@@ -12,6 +12,7 @@ CLEARTEXT on the consulting laptop, and nothing ever said so. This slice adds:
 - devices.example.json + README making the password_env / $CISCO_PASS chain the
   documented default (the chain itself has existed since V3.23.1 — just unused)."""
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -84,7 +85,8 @@ def test_cli_flag_scrubs_after_analysis_and_warns(tmp_path):
     # console must say so: "scrubbed N of M" over an unstated denominator reads as "the folder is
     # clean" (R8/F4 — the Atlas exit disclosed this, the engine's primary entrypoint did not).
     os.makedirs(collection, exist_ok=True)
-    with open(os.path.join(collection, "controller_dump.json"), "w", encoding="utf-8") as f:
+    uncovered_name = "controller_PRIVATE-S3cr3tRW.json"
+    with open(os.path.join(collection, uncovered_name), "w", encoding="utf-8") as f:
         f.write('{"apicPassword": "keepme-not-a-capture"}')
     # ...and the same file under a name the producer and the verifier used to classify
     # DIFFERENTLY (R9/F1). `os.path.splitext` swallows every leading dot, `Path.suffix` swallows
@@ -120,16 +122,18 @@ def test_cli_flag_scrubs_after_analysis_and_warns(tmp_path):
     assert "redact-collection" in console.lower()
     # R8/F4: the CLI now names what it did NOT cover, from BOTH accounts — the producer's own
     # skip list and the independent verifier's `uncovered`. Pre-fix the console carried only
-    # "scrubbed 8 of 8 raw capture file(s)" while controller_dump.json was never looked at.
+    # "scrubbed 8 of 8 raw capture file(s)" while the structured dump was never looked at.
     assert "NOT COVERED" in console, f"the CLI printed no coverage disclosure:\n{console}"
-    assert "controller_dump.json" in console, console
+    # CodeQL #21: exact client filenames/reasons are custody evidence, not safe terminal fields.
+    assert uncovered_name not in console, console
+    assert "keepme-not-a-capture" not in console, console
     # BOTH accounts, separately — the producer's skip list and the independent verifier's
     # `uncovered`. One standing in for the other would hide a producer/verifier divergence.
     assert "were not scrubbed" in console, console
     assert "NOT COVERED by the independent verifier" in console, console
     assert "NOT a statement that they are free of secrets" in console, console
     # and the file it declined to read is untouched — disclosure, not a silent rewrite
-    with open(os.path.join(collection, "controller_dump.json"), encoding="utf-8") as f:
+    with open(os.path.join(collection, uncovered_name), encoding="utf-8") as f:
         assert f.read() == '{"apicPassword": "keepme-not-a-capture"}'
     # R9/F1 — the two-leading-dot name, at the CONSUMER: the engine's own console. The class the
     # producer and the verifier used to classify DIFFERENTLY must now be accounted for EXACTLY
@@ -141,7 +145,14 @@ def test_cli_flag_scrubs_after_analysis_and_warns(tmp_path):
     with open(os.path.join(collection, "..json"), encoding="utf-8") as f:
         _two_dot_after = f.read()
     _two_dot_scrubbed = _two_dot_after != _two_dot
-    _two_dot_disclosed = "..json" in console
+    manifest = json.load(open(os.path.splitext(str(out_xlsx))[0] + ".run_manifest.json",
+                              encoding="utf-8"))
+    redaction_custody = manifest["metadata"]["redaction"]
+    producer_uncovered = {row["file"] for row in redaction_custody.get("producer_uncovered", [])}
+    verifier_uncovered = {row["file"] for row in redaction_custody.get("verifier_uncovered", [])}
+    # The exact action list remains in structured custody even though it no longer crosses the log.
+    assert uncovered_name in producer_uncovered and uncovered_name in verifier_uncovered
+    _two_dot_disclosed = "..json" in producer_uncovered and "..json" in verifier_uncovered
     assert _two_dot_scrubbed != _two_dot_disclosed, (
         f"'..json' was covered={_two_dot_scrubbed} and disclosed={_two_dot_disclosed}; it must be "
         f"exactly one of the two:\n{console}")
@@ -171,6 +182,31 @@ def test_cli_flag_scrubs_after_analysis_and_warns(tmp_path):
     assert _REDACT_PLACEHOLDER in raw_after
     # and the dir still EXISTS (never auto-deleted — it is the --compare source)
     assert os.path.isdir(collection)
+
+
+def test_security_notices_never_reflect_sensitive_payloads(caplog):
+    """CodeQL #20/#21: retain loud failures and exact structured evidence without log copies."""
+    import COLLECT_PARSE_V3_23_0 as cp
+
+    marker = "PRIVATE_LOG_PAYLOAD_b2f941"
+    snapshot = {}
+    with caplog.at_level(logging.WARNING, logger=cp.logger.name):
+        cp._record_ssot_integrity_failure(snapshot, {
+            "n_violations": 1,
+            "violations": [marker],
+        })
+        cp._log_redaction_coverage_gap(
+            "producer", [(marker, f"unreadable ({marker})")]
+        )
+        cp._log_redaction_coverage_gap(
+            "verifier", [{"file": marker, "reason": marker}]
+        )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert marker not in messages
+    assert snapshot["assessment_integrity"]["violations"] == [marker]
+    assert "assessment_integrity" in messages
+    assert "exact counts, paths and reasons are retained in run custody" in messages
 
 
 def test_sensitive_warning_prints_even_without_the_flag(tmp_path):
