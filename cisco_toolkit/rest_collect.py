@@ -521,7 +521,10 @@ def resolve_cli_password(password=None, password_env=None, *, allow_prompt=True)
         pw = os.environ.get(password_env, "")
         if pw:
             return pw
-        logger.warning("  [rest] --password-env %s is set but that variable is empty/unset", password_env)
+        # ``password_env`` is the caller-supplied *variable name*, not the credential value.  It is
+        # still an unnecessary user-controlled terminal field (and CodeQL classifies the name as
+        # sensitive), so keep the actionable warning without reflecting it into the log (#24).
+        logger.warning("  [rest] the requested --password-env variable is empty/unset")
     for var in (_REST_PASS_ENV, _SSH_PASS_ENV):
         pw = os.environ.get(var, "")
         if pw:

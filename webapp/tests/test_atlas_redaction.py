@@ -341,6 +341,70 @@ def test_cli_runs_redaction_and_reports_what_it_wrote(monkeypatch, tmp_path, cap
     assert "Every IP/MAC/serial is pseudonymized" not in out
 
 
+def test_cli_scrub_summary_never_echoes_sensitive_uncovered_paths(monkeypatch, capsys):
+    """The internal report retains exact uncovered filenames; terminal/log output does not."""
+    secret_detail = (
+        "client-S3cr3t\\capture.json\r\nFORGED LOG RECORD"
+    )
+
+    monkeypatch.setattr(
+        ing,
+        "run_redaction_folder",
+        lambda *_args, **_kwargs: {
+            "n_device_dirs": 1,
+            "engine_seconds": 0.1,
+            "files": ["Assessment_redacted.xlsx"],
+            "stale_unsafe_marker": False,
+            "redacted_collection_requested": True,
+            "redacted_collection": True,
+            "redacted_collection_detail": secret_detail,
+            "redacted_collection_uncovered_count": 1,
+            "engine_warnings": [],
+            "missing": [],
+        },
+    )
+
+    assert serve.run_redaction("safe-source", "safe-output", redact_collection=True) == 0
+    output = capsys.readouterr().out
+    assert "Raw captures (--redact-collection): SCRUBBED" in output
+    assert "NOT COVERED: one or more files were outside the capture grammar" in output
+    assert "client-S3cr3t" not in output
+    assert "FORGED LOG RECORD" not in output
+
+
+@pytest.mark.parametrize("bad_count", ["missing", True, -1])
+def test_cli_scrub_summary_fails_closed_without_valid_structured_coverage_count(
+        monkeypatch, capsys, bad_count):
+    """Missing, boolean and negative counts are unknown, even if legacy prose reassures."""
+    report = {
+        "n_device_dirs": 1,
+        "engine_seconds": 0.1,
+        "files": ["Assessment_redacted.xlsx"],
+        "stale_unsafe_marker": False,
+        "redacted_collection_requested": True,
+        "redacted_collection": True,
+        "redacted_collection_detail": "all clear; client-S3cr3t\r\nFORGED LOG RECORD",
+        "engine_warnings": [],
+        "missing": [],
+    }
+    if bad_count != "missing":
+        report["redacted_collection_uncovered_count"] = bad_count
+    monkeypatch.setattr(
+        ing,
+        "run_redaction_folder",
+        lambda *_args, **_kwargs: report,
+    )
+
+    assert serve.run_redaction("safe-source", "safe-output", redact_collection=True) == 1
+    output = capsys.readouterr().out
+    assert "Raw captures (--redact-collection): *** NOT VERIFIED ***" in output
+    assert "uncovered-file coverage count is unavailable" in output
+    assert "SCRUBBED" not in output
+    assert "Supported raw capture files passed" not in output
+    assert "client-S3cr3t" not in output
+    assert "FORGED LOG RECORD" not in output
+
+
 def test_cli_requires_out_and_says_so(tmp_path, capsys):
     rc = serve.main(["--redact-folder", str(_collection(tmp_path))])
     assert rc == 2
@@ -1315,6 +1379,7 @@ def test_the_scrub_is_reported_from_what_happened_not_from_the_flag(
     assert report["redacted_collection_requested"] is True, "the flag did travel"
     assert report["redacted_collection"] is True
     assert "independently verified 1 raw capture" in report["redacted_collection_detail"]
+    assert report["redacted_collection_uncovered_count"] == 0
 
 
 def test_the_scrub_verdict_survives_a_long_run(monkeypatch, tmp_path):
@@ -1349,6 +1414,7 @@ def test_no_scrub_verdict_is_invented_when_it_was_not_asked_for(monkeypatch, tmp
     assert report["redacted_collection_requested"] is False
     assert report["redacted_collection"] is False
     assert report["redacted_collection_detail"] == ""
+    assert report["redacted_collection_uncovered_count"] == 0
 
 
 # ── a certification must be over THIS run's evidence ────────────────────────────
@@ -1815,6 +1881,7 @@ def test_files_the_capture_grammar_cannot_read_are_disclosed_not_dropped(monkeyp
     detail = report["redacted_collection_detail"]
     assert "NOT COVERED" in detail and "_capture_meta.json" in detail, detail
     assert "NOT a statement" in detail
+    assert report["redacted_collection_uncovered_count"] == 1
 
 
 def test_the_scrubbed_bytes_are_copied_back_for_every_capture_not_only_txt(monkeypatch, tmp_path):

@@ -13,6 +13,7 @@ rendered as an observation. (#9 — the controller-REST strings that were being 
 is pinned in tests/test_readonly_and_no_egress.py, next to the doctrine sentence it falsified.)
 """
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -268,6 +269,24 @@ def test_rest_cli_password_absent_yields_empty_not_a_blank_login(monkeypatch):
         monkeypatch.delenv(v, raising=False)
     assert R.resolve_cli_password(None, None, allow_prompt=False) == ""
     assert R.resolve_cli_password(None, "NOT_SET_ANYWHERE", allow_prompt=False) == ""
+
+
+def test_rest_cli_password_env_name_never_crosses_the_log_sink(monkeypatch, caplog):
+    """CodeQL #24: ``password_env`` names a variable; it is not the password value.
+
+    It is nevertheless caller-controlled and can itself contain sensitive/log-forging text.  The
+    warning must remain actionable without reflecting that name into the terminal.
+    """
+    marker = "PRIVATE_PASSWORD_ENV_9f0c2a"
+    for var in (marker, "CISCO_REST_PASS", "CISCO_PASS"):
+        monkeypatch.delenv(var, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger=R.logger.name):
+        assert R.resolve_cli_password(None, marker, allow_prompt=False) == ""
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert marker not in messages
+    assert "requested --password-env variable is empty/unset" in messages
 
 
 # ================================== #66: ERS pagination must terminate against a hostile/broken PAN ===

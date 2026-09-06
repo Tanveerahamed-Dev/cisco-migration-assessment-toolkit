@@ -2018,13 +2018,13 @@ def test_reconcile_gate_flags_a_drifting_snapshot(caplog):
     but a single drift never blocks the deliverable. Total/fail-open on bad input."""
     import logging
     from backend.deliverables import _reconcile_gate
-    assert _reconcile_gate({}, "mop") == []                                # nothing published -> clean
-    assert _reconcile_gate(None, "mop") == []                              # total on bad input, no crash
+    assert _reconcile_gate({}, "mop") is None                              # nothing published -> clean
+    assert _reconcile_gate(None, "mop") is None                            # total on bad input, no crash
     drift = {"executive_brief": {"scale": {"n_devices": 999}},
              "health_scores": [{"switch": "a"}, {"switch": "b"}]}
     with caplog.at_level(logging.WARNING):
-        viol = _reconcile_gate(drift, "mop")
-    assert viol and any("n_devices" in v for v in viol)                    # the drift is returned
+        disclosure = _reconcile_gate(drift, "mop")
+    assert disclosure and any("n_devices" in v for v in disclosure["violations"])
     assert any("unreconciled" in r.getMessage() for r in caplog.records)   # ...and loudly logged
 
 

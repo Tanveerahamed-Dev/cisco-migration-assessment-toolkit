@@ -512,11 +512,32 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
     # skips any capture it cannot read or rewrite and continues. Its verdict is therefore reported
     # from what HAPPENED, and it has to be printed -- an engineer who asked for the scrub and reads
     # only a success banner will believe the secrets are gone.
+    raw_scrub_unverified = False
     if report.get("redacted_collection_requested"):
-        verdict = "SCRUBBED" if report.get("redacted_collection") else "*** NOT VERIFIED ***"
-        print(f"\n  Raw captures (--redact-collection): {verdict}\n"
-              f"    {report.get('redacted_collection_detail', 'no detail reported')}")
-        if not report.get("redacted_collection"):
+        # The prose detail may name user-controlled files that the scrub grammar did not cover.
+        # Consume the producer's separate numeric count instead, so paths, credentials and control
+        # characters never enter the terminal and coverage is not inferred by parsing prose.
+        uncovered_count = report.get("redacted_collection_uncovered_count")
+        has_coverage_count = (
+            isinstance(uncovered_count, int)
+            and not isinstance(uncovered_count, bool)
+            and uncovered_count >= 0
+        )
+        scrub_verified = bool(report.get("redacted_collection")) and has_coverage_count
+        raw_scrub_unverified = not scrub_verified
+        verdict = "SCRUBBED" if scrub_verified else "*** NOT VERIFIED ***"
+        print(f"\n  Raw captures (--redact-collection): {verdict}")
+        if scrub_verified:
+            print("    Supported raw capture files passed independent post-copy verification.")
+            if uncovered_count:
+                print("    NOT COVERED: one or more files were outside the capture grammar; "
+                      "review the collection before handoff.")
+        elif report.get("redacted_collection"):
+            print("    The uncovered-file coverage count is unavailable; review the collection "
+                  "before handoff.")
+        else:
+            print("    The requested raw-capture scrub did not produce a verified result.")
+        if raw_scrub_unverified:
             print("    The RAW captures may still hold secrets in cleartext. Do not hand the\n"
                   "    collection folder over until you have confirmed the scrub yourself.")
     print("  Checked: mandatory redaction/finalization completed; every current JSON, HTML and\n"
@@ -548,7 +569,7 @@ def run_redaction(src: str, out: str, redact_collection: bool = False,
             print(f"    engine: {line}")
     missing = report.get("missing") or []
     if not missing:
-        return 0
+        return 1 if raw_scrub_unverified else 0
     print(f"\n  INCOMPLETE SET - {len(missing)} deliverable(s) were NOT produced:")
     for m in missing:
         print(f"    {m['state'].upper():9} {m['name']}  ({m['filename']})\n"

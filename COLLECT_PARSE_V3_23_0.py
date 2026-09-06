@@ -5362,9 +5362,7 @@ def main():
         if isinstance(snap_dict.get("executive_brief"), dict):
             snap_dict["executive_brief"]["ssot"] = _ssot.summary(snap_dict)
         if _ssot_drift:
-            logger.warning(f"  [INTEGRITY] {_ssot_drift['n_violations']} published fact(s) do not reconcile "
-                           f"to the raw evidence; disclosing in assessment_integrity: {_ssot_drift['violations'][:3]}")
-            snap_dict.setdefault("assessment_integrity", {}).update(_ssot_drift)
+            _record_ssot_integrity_failure(snap_dict, _ssot_drift)
     except Exception as e:                                            # fail-soft: a self-check must never break the write
         logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
         _record_phase_failure("SSOT self-check", f"{type(e).__name__}: {e}")
@@ -5570,6 +5568,52 @@ def main():
     return 0
 
 
+def _log_ssot_integrity_failure(_drift: object) -> None:
+    """Disclose SSOT failure without copying snapshot-derived values into the terminal log.
+
+    The complete bounded violation list remains in ``assessment_integrity``.  Logging that list
+    duplicated customer-controlled snapshot values into an unstructured sink (CodeQL #20), where
+    it was neither needed to locate the structured evidence nor protected by the artifact's
+    redaction/custody controls.
+    """
+    logger.warning(
+        "  [INTEGRITY] published facts do not reconcile to the raw evidence; "
+        "bounded details are retained in assessment_integrity"
+    )
+
+
+def _record_ssot_integrity_failure(snap_dict: dict, drift: dict) -> None:
+    """Keep the complete structured finding while emitting only the constant log notice."""
+    _log_ssot_integrity_failure(drift)
+    snap_dict.setdefault("assessment_integrity", {}).update(drift)
+
+
+def _log_redaction_coverage_gap(kind: str, _uncovered: object) -> None:
+    """Log only a coverage count; exact paths/reasons remain in the run-custody record.
+
+    ``uncovered`` can contain filenames and verifier error text sourced from a client collection.
+    Those values are evidence, but they are not safe terminal-log fields (CodeQL #21).  The count
+    preserves the loud coverage warning while the structured custody record preserves the exact
+    action list.
+    """
+    if kind == "producer":
+        logger.warning(
+            "  redact-collection NOT COVERED: one or more files were not scrubbed; "
+            "exact counts, paths and reasons are retained in run custody"
+        )
+    elif kind == "verifier":
+        logger.warning(
+            "  redact-collection NOT COVERED by the independent verifier: one or more files "
+            "were neither scrubbed nor scanned; exact counts, paths and reasons are retained "
+            "in run custody, so this is NOT a statement that they are free of secrets"
+        )
+    else:
+        logger.warning(
+            "  redact-collection coverage is incomplete; exact paths and reasons are retained "
+            "in run custody"
+        )
+
+
 def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
     """Finalize one run in custody order: evidence -> redaction -> artifacts -> timings -> seal.
 
@@ -5649,11 +5693,7 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
             if _producer_uncovered:
                 _RUN_CUSTODY["redaction"]["producer_uncovered"] = [
                     {"file": rel, "reason": why} for rel, why in _producer_uncovered]
-                logger.warning(
-                    "  redact-collection NOT COVERED: %s file(s) under %s were not scrubbed: %s%s",
-                    len(_producer_uncovered), root_dir,
-                    "; ".join(f"{rel} ({why})" for rel, why in _producer_uncovered[:6]),
-                    ", ..." if len(_producer_uncovered) > 6 else "")
+                _log_redaction_coverage_gap("producer", _producer_uncovered)
             try:
                 from webapp.backend import redaction_verify as _redaction_verify
                 collection_proof = _redaction_verify.verify_collection_secret_scrub(
@@ -5679,19 +5719,11 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                     verifier_uncovered=_uncovered,
                 )
                 if _uncovered:
-                    logger.warning(
-                        "  redact-collection NOT COVERED by the independent verifier: %s file(s) "
-                        "under %s were neither scrubbed nor scanned (%s%s) — the capture grammar "
-                        "does not read them, so this is NOT a statement that they are free of "
-                        "secrets",
-                        len(_uncovered), root_dir,
-                        "; ".join(f"{row.get('file')} ({row.get('reason')})"
-                                  for row in _uncovered[:6]),
-                        ", ..." if len(_uncovered) > 6 else "")
+                    _log_redaction_coverage_gap("verifier", _uncovered)
                 else:
                     logger.info("[OK] redact-collection: independently verified %s raw capture "
                                 "file(s); no file was outside the verifier's grammar",
-                                collection_proof["files"])
+                                scanned)
             except Exception as exc:
                 _record_mandatory_failure(
                     "Raw capture redaction verification",

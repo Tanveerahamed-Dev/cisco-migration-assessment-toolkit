@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` importable
 
 from backend import app as app_module  # noqa: E402
+from backend import deliverables as deliverables_module  # noqa: E402
 from backend.app import create_app  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -420,6 +421,75 @@ def test_spa_catchall_refuses_path_traversal(tmp_path, monkeypatch):
         assert "TOP-SECRET" not in c.get("/%2e%2e%2f%2e%2e%2fsecret.txt").text  # deeper encoded traversal too
 
 
+@pytest.mark.parametrize(
+    "hostile_path",
+    (
+        "//198.51.100.7/share/secret.txt",
+        "\\\\198.51.100.7\\share\\secret.txt",
+        "C:/Windows/win.ini",
+        "../secret.txt",
+        "safe/../../secret.txt",
+        "safe/secret.txt\x00",
+    ),
+)
+def test_spa_rejects_hostile_paths_before_request_derived_resolution(
+    tmp_path, monkeypatch, hostile_path,
+):
+    """Mutation pin for the CodeQL path findings: containment is not post-sink theatre.
+
+    All hostile path classes must select the fixed SPA shell before a request-derived Path reaches
+    resolve().  The trusted dist root itself is expected to resolve once per call.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    index = dist / "index.html"
+    index.write_text("<!doctype html><title>SPA-SHELL</title>", encoding="utf-8")
+    app = create_app(db_path=str(tmp_path / "hostile.db"), dist_dir=dist)
+    spa = next(route.endpoint for route in app.routes if route.path == "/{full_path:path}")
+
+    resolved = []
+    real_resolve = Path.resolve
+
+    def traced_resolve(path, *args, **kwargs):
+        resolved.append(str(path))
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", traced_resolve)
+    response = spa(hostile_path)
+
+    assert Path(response.path) == index
+    assert set(resolved) <= {str(dist), str(index)}, (
+        f"hostile request path reached resolve(): {hostile_path!r} -> {resolved!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_detail"),
+    (
+        (
+            b'{"ok":1,"secret\\r\\nFORGED LOG RECORD":2,'
+            b'"secret\\r\\nFORGED LOG RECORD":3}',
+            "Invalid JSON request body: duplicate JSON object key",
+        ),
+        (b'{"secret-material":', "Invalid JSON request body"),
+        (b'{"name":"\xff"}', "Invalid JSON request body"),
+    ),
+)
+def test_invalid_json_response_never_echoes_parser_or_request_detail(
+    client, body, expected_detail,
+):
+    response = client.post(
+        "/api/compare",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": expected_detail}
+    assert "secret" not in response.text.lower()
+    assert "forged" not in response.text.lower()
+
+
 # ── whole-repo review, 2026-07-28 ───────────────────────────────────────────────────
 def _raw_asgi_get(app, path, headers, client_peer):
     """Drive the ASGI app with a hand-built scope, so `client` can be ABSENT — the shape a
@@ -570,6 +640,109 @@ def test_downloaded_deliverable_leaves_no_temp_file(client, tmp_path, monkeypatc
     eid = client.post(f"/api/snapshots/{sid}/executions", json={}).json()["id"]
     assert client.get(f"/api/executions/{eid}/report").status_code == 200
     assert list(private.glob("assesshub_*")) == [], "a rendered client deliverable was left in %TEMP%"
+
+
+@pytest.mark.parametrize("kind", sorted(deliverables_module.SPECS))
+def test_deliverable_temp_path_is_independent_of_request_kind(
+    tmp_path, monkeypatch, kind,
+):
+    """The closed registry key selects a writer; it never needs to become path material."""
+    seen = []
+    real_mkstemp = deliverables_module.tempfile.mkstemp
+
+    def traced_mkstemp(*, suffix, prefix):
+        seen.append((suffix, prefix))
+        return real_mkstemp(suffix=suffix, prefix=prefix, dir=tmp_path)
+
+    def writer(path, _snap, _label, **_kwargs):
+        Path(path).write_bytes(b"generated")
+
+    monkeypatch.setattr(deliverables_module.tempfile, "mkstemp", traced_mkstemp)
+    monkeypatch.setattr(deliverables_module, "resolve_writer", lambda _spec: writer)
+    monkeypatch.setattr(deliverables_module, "_reconcile_gate", lambda *_args: None)
+
+    path = deliverables_module.generate(kind, {}, "label", document_gate=None)
+    try:
+        assert seen == [("." + deliverables_module.SPECS[kind].ext, "assesshub_")]
+        assert Path(path).parent == tmp_path
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_deliverable_logs_keep_only_aggregate_security_state(
+    tmp_path, monkeypatch, caplog,
+):
+    """Uploaded snapshot and gate values cannot forge or disclose adjacent log records."""
+    from cisco_toolkit import ssot
+
+    violation = "client-secret-value\r\nFORGED SSOT RECORD"
+    drift = {
+        "ssot_reconciliation": "failed",
+        "n_violations": 1,
+        "violations": [violation],
+    }
+    monkeypatch.setattr(ssot, "audit", lambda _snap: drift)
+    caplog.set_level("WARNING", logger=deliverables_module.__name__)
+    assert deliverables_module._reconcile_gate({}) == drift
+    assert "bounded reconciliation details are embedded in the artifact" in caplog.text
+    assert "client-secret-value" not in caplog.text
+    assert "FORGED SSOT RECORD" not in caplog.text
+
+    caplog.clear()
+
+    rendered = []
+
+    def writer_for(spec):
+        def capture_writer(path, snapshot, _label, **_kwargs):
+            rendered.append(snapshot)
+            if spec.ext == "docx":
+                from docx import Document
+                Document().save(path)
+            else:
+                from pptx import Presentation
+                Presentation().save(path)
+        return capture_writer
+
+    monkeypatch.setattr(deliverables_module, "resolve_writer", writer_for)
+    disclosure = {
+        "status": "pending",
+        "missing": ["assessment_approved"],
+        "revoked": [],
+        "generator": "client-secret-value\r\nFORGED GATE RECORD",
+        "detail": "C:\\private\\client-secret-value",
+    }
+    source_snapshot = {}
+    path = deliverables_module.generate("runbook", source_snapshot, "label", document_gate=disclosure)
+    try:
+        from docx import Document
+        assert rendered[0]["assessment_integrity"] == drift
+        assert "assessment_integrity" not in source_snapshot
+        doc_text = "\n".join(paragraph.text for paragraph in Document(path).paragraphs)
+        assert "ASSESSMENT INTEGRITY WARNING" in doc_text
+        assert "client-secret-value FORGED SSOT RECORD" in doc_text
+        assert "[GATE UNSATISFIED]" in caplog.text
+        assert "exact status is disclosed in the response and document" in caplog.text
+        assert "client-secret-value" not in caplog.text
+        assert "FORGED GATE RECORD" not in caplog.text
+        assert "C:\\private" not in caplog.text
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+    deck_path = deliverables_module.generate(
+        "deck", source_snapshot, "label", document_gate=None,
+    )
+    try:
+        from pptx import Presentation
+        deck_text = "\n".join(
+            shape.text
+            for slide in Presentation(deck_path).slides
+            for shape in slide.shapes
+            if hasattr(shape, "text")
+        )
+        assert "ASSESSMENT INTEGRITY WARNING" in deck_text
+        assert "client-secret-value FORGED SSOT RECORD" in deck_text
+    finally:
+        Path(deck_path).unlink(missing_ok=True)
 
 
 # ------------------------------------- OpenAPI / docs routes (guard COMPLETENESS)

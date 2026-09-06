@@ -2931,9 +2931,11 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
     for i, w in enumerate([26, 20, 8, 8, 56], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A3"
-    logger.info(f"  [OK] '{COVERAGE_SCHEMA_SHEET_NAME}' sheet: "
-                f"{summ.get('n_published', 0)} seen / {summ.get('n_collected_but_empty', 0)} empty / "
-                f"{summ.get('n_not_collected', 0)} blind of {summ.get('n_sections', 0)} section(s)")
+    # The workbook already carries the owner-produced counts.  Do not duplicate census values in
+    # the process log: this public writer accepts a mapping, so a caller-crafted value could cross
+    # the unstructured logging boundary even though the supported producer emits integers
+    # (CodeQL #23).  A constant completion marker keeps the operational breadcrumb.
+    logger.info("  [OK] '%s' sheet written", COVERAGE_SCHEMA_SHEET_NAME)
 
 
 COLLECTION_COMPLETENESS_SHEET_NAME = "Collection Completeness"   # NEW-V3.23.109
