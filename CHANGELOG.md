@@ -125,6 +125,13 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **The portable build-tool pip pin is now one reconciled owner set.** The project build extra,
+  Windows hash lock, portable toolchain contract, release verifier, and hosted bootstrap all use
+  pip 26.2.1, moving the executed toolchain beyond all five development-scope advisory ranges
+  without silently testing an older Atlas build toolchain. Mutation tests independently break each
+  owner and require reconciliation; pip remains build-only and is not represented as a bundled
+  Atlas runtime dependency. Existing RC1/RC2 artifacts and receipts remain immutable and do not
+  inherit this source change; hosted alert closure still requires evaluation on integrated main.
 - **Five Release-1 CodeQL security defects are remediated at their owning boundaries.** The three
   Master Reference lineage validators now share a bounded single-pass ASCII semantic-identifier
   parser instead of an ambiguously nested regular expression. The docs-only fabric verifier serves
