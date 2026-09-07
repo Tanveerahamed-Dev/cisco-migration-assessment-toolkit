@@ -3,7 +3,9 @@ name: Release (self-hosted)
 # The billing-outage release path: the SAME fail-closed gate sequence as release.yml, executed
 # on the self-hosted fleet at zero hosted minutes. Dispatch-only with an explicit tag input —
 # NEVER pull_request (the ci.yml-header invariant: only reviewed, merged refs run on persistent
-# machines; an annotated tag on main is exactly that trust class). release.yml stays the
+# machines; an annotated tag on main is exactly that trust class). Because workflow_dispatch can
+# select a branch or tag, the release job also requires the workflow ref itself to be main before
+# GitHub allocates the persistent runner. release.yml stays the
 # canonical path and takes over again when hosted minutes return; on a re-run of an existing
 # release BOTH paths verify the already-published assets instead of rebuilding, so they cannot
 # disagree about what a release contains.
@@ -29,6 +31,7 @@ concurrency:
 
 jobs:
   release:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     name: Verify tag and create immutable release assets (fleet)
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 90
