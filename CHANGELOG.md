@@ -125,6 +125,16 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Python release verification and the historical Release-1 replay profile now advance as one
+  reconciled dependency change.** The Master Reference verification toolchain uses cryptography
+  50.0.1, Ruff 0.16.6, ReportLab 5.0.1, and pypdf 6.17.0 (including its Roman-numeral
+  input limit), while the separately provisioned Windows replay profile uses lxml 6.1.3 and
+  setuptools 84.0.0. The Release-1 generator refreshed only the exact 2,340-byte
+  executable-profile manifest. Its
+  independent digest pin and the dependent non-authoritative Release-2 census and proposal
+  bindings were refreshed separately; the approved historical source bundle, retrospective
+  vectors, semantic roster, `AUDIT_ONLY` authority, null Release-2 gate, and non-promotion
+  boundary remain byte-identical.
 - **The portable build-tool pip pin is now one reconciled owner set.** The project build extra,
   Windows hash lock, portable toolchain contract, release verifier, and hosted bootstrap all use
   pip 26.2.1, moving the executed toolchain beyond all five development-scope advisory ranges
