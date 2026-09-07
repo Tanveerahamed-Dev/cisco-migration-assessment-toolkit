@@ -1,15 +1,15 @@
-name: main-selfhosted
+name: Self-hosted Windows fallback (manual)
 
-# Post-merge verification on the self-hosted Windows fleet — zero hosted-runner minutes.
+# Manual exact-main compatibility fallback on the persistent Windows fleet.
 #
-# Deliberately NOT triggered by pull_request: the repository's standing security rule
-# (see the ci.yml header) is that PR code executes only on GitHub-hosted, ephemeral
-# runners, never on a persistent local machine. This workflow executes only after the
-# subject is present on main. Ordinary review/merge and explicit admin exceptions are
-# separately governed; this post-merge verifier does not prove review or approval.
-# This job supplements the hosted matrix (it does not replace it and
-# is not a required protection context); it exists so main keeps continuous verification
-# when hosted minutes are exhausted.
+# GitHub-hosted CI is the automatic, canonical path for pull requests and pushes to main.
+# This workflow is deliberately workflow_dispatch-only, is not a required protection
+# context, and exists solely for a supervised host-compatibility diagnosis or emergency
+# fallback. Manual dispatch can select another branch or tag, so every self-hosted job
+# repeats the exact-main guard before GitHub allocates the persistent runner. The explicit
+# acknowledgement prevents an accidental click from starting the long local-host suite.
+# A workflow-level guard is not machine isolation: keep the runner offline when it is not
+# being deliberately supervised.
 #
 # Runner facts this workflow is written around: the fleet is Windows (PowerShell steps,
 # no bashisms, no && chains), and actions/setup-python cannot install interpreters on it
@@ -17,24 +17,31 @@ name: main-selfhosted
 # runner host's Python environment is never mutated.
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_on_persistent_windows:
+        description: "Run current main on the persistent Windows fallback runner"
+        required: true
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: mainsh-${{ github.ref }}
+  # Keep an unacknowledged dispatch from cancelling a supervised run.
+  group: mainsh-${{ github.ref }}-${{ inputs.run_on_persistent_windows }}
   cancel-in-progress: true
 
 jobs:
   suite:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_on_persistent_windows }}
     name: Main suite · py3.12 · self-hosted-windows
     runs-on: [self-hosted, Windows, X64]
     # Exact-main runs 33274394182 and 33278292400 both reached 94% before cancellation
     # at the 90-minute job ceiling; the first explicitly logged KeyboardInterrupt.
     # Keep the complete gate intact and give the measured Windows runtime bounded
-    # headroom. Completion still requires a successful exact-main post-merge run.
+    # headroom. A manual result is supplemental; routine exact-main completion is owned
+    # by the required GitHub-hosted checks.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,6 +63,7 @@ jobs:
         run: '& "$env:RUNNER_TEMP\ci-venv\Scripts\python.exe" -m pytest'
 
   frontend:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_on_persistent_windows }}
     name: Frontend suite · self-hosted-windows
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 45

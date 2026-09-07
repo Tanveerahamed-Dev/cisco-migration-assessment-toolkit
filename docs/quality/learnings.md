@@ -37,7 +37,7 @@ via `/ingest`). It is the repo/engine facts worth remembering. To add one: state
 
 - Piping pytest through `| tail` masks its exit code (the pipe returns tail's 0), hiding real failures; run
   `python -m pytest` unpiped or capture `$?` before any pipe. Evidence: `.claude/hooks/verify-green.sh` (the Stop gate runs pytest unpiped for exactly this reason).
-- The local full suite and `.github/workflows/main-selfhosted.yml` share one Windows host; check the live workflow before a local full run. Evidence: run `30980535490` + `docs/review-hardening-handoff-2026-07-30.md` section 5.17.
+- The manual `.github/workflows/main-selfhosted.yml` fallback and a local full suite share one Windows host; keep the runner offline outside supervised fallback use, and never overlap a dispatch with local validation. Evidence: run `30980535490` + `docs/review-hardening-handoff-2026-07-30.md` section 5.17.
 - Adding a tracked path under a ratcheted LF glob changes the complete path-set receipt even when it is not a derived byte owner; recompute `lf_scope` and `broader_declared_lf_scope` from the final tree. Evidence: `tests/test_transition_schema_assets.py::test_byte_bound_checkout_owners_are_lf_exactly_attributed` + `tests/fixtures/atlas-r2-byte-custody-policy.v1.json`.
 - Release provenance, privacy, correctness, and reproducibility are separate proof axes. The old release gate
   proved origin exhaustively but never ran the tagged code's suite, so v3.32.0 shipped from a red commit; the current gate tests the tag's own content. Evidence: `.github/workflows/release-selfhosted.yml`.
