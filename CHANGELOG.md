@@ -77,6 +77,15 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **GitHub-hosted CI is now the automatic and canonical validation path.** Because the repository
+  is intentionally public and the protected `main` branch already requires the hosted Ubuntu,
+  Windows, distribution, security, Master Reference, and Atlas gates, `main-selfhosted` no longer
+  runs after every merge. It is an explicitly acknowledged manual fallback whose current default-
+  branch workflow refuses every ref except `main` before runner allocation. The existing manual
+  self-hosted release fallback now applies the same workflow-ref admission guard. The test selection, Windows
+  compatibility coverage, timeouts, branch-protection contexts, and release gates are unchanged.
+  The persistent runner should remain offline outside supervised fallback use; these tracked-source
+  admission guards are defense in depth, not a server-side runner policy or clean-machine isolation.
 - **Release-candidate identity advances to `3.33.0rc2` after the integrated runtime-security
   hardening.** A successor portable draft must use `v3.33.0-rc.2` and rebuild from the later exact
   `main`; the existing RC1 draft remains historical, unpublished evidence bound to its original

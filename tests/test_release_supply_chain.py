@@ -109,48 +109,67 @@ def test_pull_request_workflows_cannot_select_self_hosted_runners():
         )
 
 
-def test_no_workflow_that_handles_pull_requests_can_select_self_hosted_runners():
-    """The STRUCTURAL form of the guard above, which is scoped to two workflows by NAME.
+def test_tracked_literal_self_hosted_workflows_are_manual_dispatch_only():
+    """Tracked workflows must not intentionally route automatic events to this fleet.
 
     The invariant (ci.yml header) is about the event, not about those two files: code arriving
     via a pull request must only ever execute on GitHub-hosted, ephemeral runners — never on a
     persistent local machine holding credentials or private state. A future workflow file with a
-    `pull_request` trigger would evade a named list, so this sweeps EVERY workflow: any file
-    whose non-comment body engages with pull_request events at all must not select self-hosted
-    runners. Push-to-main workflows may use the fleet after review and merge; any manual-dispatch
-    trust boundary needs a separate workflow-specific guard."""
+    `pull_request` or automatic trigger would evade a named list, so this sweeps EVERY workflow
+    that selects the fleet and requires workflow_dispatch as its only event. Each manual trust
+    boundary still needs a separate workflow-specific ref/content guard. This source ratchet
+    covers the exact current literal selector; it is not a server-side runner access policy."""
     offenders = []
+    self_hosted_workflows = []
     for path in sorted(WORKFLOWS.glob("*.yml")):
         body = "\n".join(
             line for line in path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("#")
         )
-        if "pull_request" in body and "self-hosted" in body:
-            offenders.append(path.name)
+        if "self-hosted" not in body:
+            continue
+        self_hosted_workflows.append(path.name)
+        events = re.search(r"(?ms)^on:\n.*?(?=^permissions:)", body)
+        if events is None:
+            offenders.append(f"{path.name}: missing bounded event block")
+            continue
+        event_block = events.group(0)
+        event_names = re.findall(r"(?m)^  ([a-z][a-z0-9_]*):", event_block)
+        if event_names != ["workflow_dispatch"]:
+            offenders.append(f"{path.name}: events={event_names!r}")
     assert not offenders, (
-        "workflows that handle pull_request events must never run on self-hosted runners: "
+        "self-hosted workflows must never have automatic or pull-request triggers: "
         + ", ".join(offenders)
     )
-    # NON-VACUITY, both directions: the sweep saw a pull_request workflow and a self-hosted one.
+    # NON-VACUITY: the sweep saw both current manual fallbacks.
     bodies = {p.name: p.read_text(encoding="utf-8") for p in WORKFLOWS.glob("*.yml")}
     assert any("pull_request" in b for b in bodies.values())
-    assert any("self-hosted" in "\n".join(
-        line for line in b.splitlines() if not line.lstrip().startswith("#")
-    ) for b in bodies.values()), "no self-hosted workflow found — the sweep proves nothing"
+    assert self_hosted_workflows == ["main-selfhosted.yml", "release-selfhosted.yml"]
 
 
-def test_main_selfhosted_runs_only_after_main_integration_with_bounded_job_timeouts():
+def test_main_selfhosted_is_acknowledged_main_only_fallback_with_bounded_timeouts():
     body = _workflow("main-selfhosted.yml")
+    assert body.startswith("name: Self-hosted Windows fallback (manual)\n")
     uncommented = "\n".join(
         line for line in body.splitlines() if not line.lstrip().startswith("#")
     )
     events = re.search(r"(?ms)^on:\n.*?(?=^permissions:)", uncommented)
     permissions = re.search(r"(?ms)^permissions:\n.*?(?=^concurrency:)", uncommented)
     concurrency = re.search(r"(?ms)^concurrency:\n.*?(?=^jobs:)", uncommented)
-    assert events and events.group(0).strip() == "on:\n  push:\n    branches: [main]"
+    assert events and events.group(0).strip() == (
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "    inputs:\n"
+        "      run_on_persistent_windows:\n"
+        '        description: "Run current main on the persistent Windows fallback runner"\n'
+        "        required: true\n"
+        "        type: boolean"
+    )
     assert permissions and permissions.group(0).strip() == "permissions:\n  contents: read"
     assert concurrency and concurrency.group(0).strip() == (
-        "concurrency:\n  group: mainsh-${{ github.ref }}\n  cancel-in-progress: true"
+        "concurrency:\n"
+        "  group: mainsh-${{ github.ref }}-${{ inputs.run_on_persistent_windows }}\n"
+        "  cancel-in-progress: true"
     )
     assert len(re.findall(r"(?m)^on:$", uncommented)) == 1
     assert len(re.findall(r"(?m)^permissions:$", uncommented)) == 1
@@ -159,6 +178,13 @@ def test_main_selfhosted_runs_only_after_main_integration_with_bounded_job_timeo
     assert "|| true" not in uncommented
 
     suite, frontend = uncommented.split("  frontend:", 1)
+    exact_main_guard = (
+        "if: ${{ github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main' && inputs.run_on_persistent_windows }}"
+    )
+    assert f"  suite:\n    {exact_main_guard}\n" in uncommented
+    assert f"  frontend:\n    {exact_main_guard}\n" in uncommented
+    assert suite.count(exact_main_guard) == 1
     assert suite.count("runs-on: [self-hosted, Windows, X64]") == 1
     assert suite.count("timeout-minutes: 120") == 1
     assert "timeout-minutes: 45" not in suite
@@ -176,6 +202,7 @@ def test_main_selfhosted_runs_only_after_main_integration_with_bounded_job_timeo
     ]
     assert actual_runs == expected_runs
 
+    assert frontend.count(exact_main_guard) == 1
     assert frontend.count("runs-on: [self-hosted, Windows, X64]") == 1
     assert frontend.count("timeout-minutes: 45") == 1
     assert "timeout-minutes: 120" not in frontend
@@ -256,6 +283,20 @@ def test_main_selfhosted_runs_only_after_main_integration_with_bounded_job_timeo
         "testTimeout",
     ):
         assert re.search(rf"\b{re.escape(forbidden_field)}\s*:", vitest_config) is None
+
+
+def test_release_selfhosted_requires_main_workflow_ref_before_runner_allocation():
+    body = _workflow("release-selfhosted.yml")
+    uncommented = "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith("#")
+    )
+    exact_main_guard = (
+        "if: ${{ github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main' }}"
+    )
+    assert f"  release:\n    {exact_main_guard}\n" in uncommented
+    assert uncommented.count(exact_main_guard) == 1
+    assert "runs-on: [self-hosted, Windows, X64]" in uncommented
 
 
 def test_publish_promotes_release_assets_without_rebuilding():

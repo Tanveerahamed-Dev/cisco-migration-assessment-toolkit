@@ -124,11 +124,14 @@ npm audit does not supersede it.
   inspect `git log --merges origin/main` and preserve the established method unless the user explicitly
   chooses another. When hosted required checks are structurally dead (`steps: 0`), an admin bypass still
   requires exact-head scope review, the relevant local gate with recorded evidence, and explicit user
-  authority; then read the merged-main `main-selfhosted` verdict.
-- `main-selfhosted` runs on the same physical Windows development host as local verification. Before
-  starting a full local pytest run, check whether that workflow is active; concurrent suites can starve
-  an otherwise healthy job into a timeout. A long step with a null conclusion is cancellation/timeout
-  evidence, not a test assertion failure.
+  authority; then require the terminal hosted verdicts on the exact merged-main SHA. GitHub-hosted CI is
+  the automatic and canonical path. `main-selfhosted` is a manual, non-required compatibility fallback;
+  read its verdict only when it was deliberately dispatched against `main`.
+- The manual `main-selfhosted` fallback runs on the same physical Windows development host as local
+  verification. Keep that persistent runner offline when it is not under supervised use. Before dispatch,
+  confirm the selected ref is `main`, acknowledge the persistent-host input, and ensure no local full suite
+  is active; concurrent suites can starve an otherwise healthy job into a timeout. A long step with a null
+  conclusion is cancellation/timeout evidence, not a test assertion failure.
 - Commands handed to the user are normally pasted into Windows PowerShell 5.1 from an arbitrary
   directory. Prefer performing authorized actions directly; otherwise provide one command at a time,
   avoid `&&`, and establish the repository with an absolute `cd` or `git -C`.
