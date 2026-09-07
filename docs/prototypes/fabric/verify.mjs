@@ -24,11 +24,11 @@
  * deliberately loose; treat the numbers as smoke, not as a benchmark.
  */
 import { createRequire } from "node:module";
-import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, extname } from "node:path";
+import { dirname, join } from "node:path";
+import { createFabricServer } from "./server.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..", "..");
@@ -72,15 +72,7 @@ if (!browser) {
 }
 
 /* Serve this directory on an ephemeral port — no fixed port to collide with. */
-const MIME = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript", ".js": "text/javascript" };
-const server = createServer(async (req, res) => {
-  const f = decodeURIComponent(req.url.split("?")[0]);
-  try {
-    const buf = await readFile(join(HERE, f === "/" ? "fabric.html" : f));
-    res.writeHead(200, { "Content-Type": MIME[extname(f)] || "text/plain" });
-    res.end(buf);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
+const server = createFabricServer();
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const URL_ = `http://127.0.0.1:${server.address().port}/fabric.html`;
 

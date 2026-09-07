@@ -125,6 +125,16 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Five Release-1 CodeQL security defects are remediated at their owning boundaries.** The three
+  Master Reference lineage validators now share a bounded single-pass ASCII semantic-identifier
+  parser instead of an ambiguously nested regular expression. The docs-only fabric verifier serves
+  one fixed HTML asset through an exact request allowlist rather than joining request text into a
+  filesystem path. Compiler JSON intake now opens the final entry first with non-following,
+  nonblocking flags where the platform supplies them, binds that handle to a contained pathname,
+  reads it twice, and revalidates exact file identity and metadata before accepting bytes.
+  Adversarial tests cover the former repeated-hyphen input, encoded traversal requests, pathname
+  replacement, changed second reads, and POSIX named-pipe blocking. A fresh CodeQL analysis remains the authority
+  for hosted alert closure.
 - **Atlas runtime diagnostics no longer reflect client-controlled paths, parser details, gate
   records, or snapshot values into unstructured logs and responses.** Generated deliverable temp
   names now use a fixed prefix after closed-registry selection; invalid JSON responses carry only

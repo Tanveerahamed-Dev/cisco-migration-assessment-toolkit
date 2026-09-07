@@ -5,6 +5,7 @@ import type {
   CoreOutcome,
   OwnerRef,
 } from "./types";
+import { isSemanticIdentifier } from "./semanticIdentifier.ts";
 
 const CORE_STATES = [
   "current",
@@ -234,7 +235,7 @@ function identifier(value: unknown, path: string, prefix: string): string {
   if (
     id.length > 160 ||
     !id.startsWith(prefix) ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(id)
+    !isSemanticIdentifier(id)
   ) {
     fail(path, "expected a bounded semantic identifier");
   }

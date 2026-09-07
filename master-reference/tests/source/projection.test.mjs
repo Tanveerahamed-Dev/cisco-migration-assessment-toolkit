@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   beginCommunitySelection,
@@ -14,11 +16,13 @@ import {
   buildProjection,
   COMPILER_RECORD_KEYS_BY_GROUP,
   isPythonStripEmpty,
+  readBoundedCompilerJsonFromHandle,
   reconstructConsequentialClaimFacetRecords,
   validateConsequentialClaimCensus,
   validateSymbolMetadataRoute,
 } from "../../build/projection/build.mjs";
 
+const execFileAsync = promisify(execFile);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const gitBlobOid = (value) => createHash("sha1")
   .update(Buffer.from(`blob ${value.byteLength}\0`, "ascii"))
@@ -46,6 +50,97 @@ const SOURCE_DIGEST_POLICY = {
   textDigest: "verified_pre_projection_omitted_derivable_from_exact_emitted_text",
   fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1",
 };
+
+test("bounded compiler JSON is read twice through one identity-bound handle", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-handle-read-"));
+  const path = join(scratch, "manifest.json");
+  const displaced = join(scratch, "manifest.original.json");
+  const original = Buffer.from('{"value":"original"}\n', "utf8");
+  const replacement = Buffer.from('{"value":"replaced"}\n', "utf8");
+  await writeFile(path, original);
+  try {
+    const input = await realpath(scratch);
+    const stableHandle = await open(path, "r");
+    try {
+      assert.deepEqual(
+        await readBoundedCompilerJsonFromHandle(input, path, stableHandle),
+        original,
+      );
+    } finally {
+      await stableHandle.close();
+    }
+
+    const displacedHandle = await open(path, "r");
+    await rename(path, displaced);
+    await writeFile(path, replacement);
+    try {
+      await assert.rejects(
+        readBoundedCompilerJsonFromHandle(input, path, displacedHandle),
+        /opened-file identity is invalid/,
+      );
+    } finally {
+      await displacedHandle.close();
+    }
+
+    const changingHandle = await open(path, "r");
+    let nonemptyReads = 0;
+    const mutatingView = {
+      stat: (options) => changingHandle.stat(options),
+      async read(buffer, offset, length, position) {
+        const result = await changingHandle.read(buffer, offset, length, position);
+        if (result.bytesRead > 0) {
+          nonemptyReads += 1;
+          if (nonemptyReads === 2) buffer[offset] ^= 0x01;
+        }
+        return result;
+      },
+    };
+    try {
+      await assert.rejects(
+        readBoundedCompilerJsonFromHandle(input, path, mutatingView),
+        /changed during read/,
+      );
+    } finally {
+      await changingHandle.close();
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test(
+  "projection refuses a final FIFO without blocking before the file-type check",
+  { skip: process.platform === "win32" ? "POSIX FIFO contract" : false },
+  async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-fifo-"));
+    const input = join(scratch, "compiler");
+    const output = join(scratch, "projection");
+    await mkdir(input);
+    const manifest = join(input, "manifest.json");
+    try {
+      execFileSync("mkfifo", [manifest], { stdio: "ignore" });
+      const moduleUrl = new URL("../../build/projection/build.mjs", import.meta.url).href;
+      const script = [
+        `import { buildProjection } from ${JSON.stringify(moduleUrl)};`,
+        "try {",
+        "  await buildProjection({ input: process.argv[1], output: process.argv[2] });",
+        "  process.exitCode = 2;",
+        "} catch (error) {",
+        "  process.stdout.write(error instanceof Error ? error.message : String(error));",
+        "}",
+      ].join("\n");
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ["--input-type=module", "--eval", script, input, output],
+        { timeout: 2_000, windowsHide: true },
+      );
+      assert.equal(stdout, "compiler JSON read failed");
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 const SOURCE_SEGMENT_BASE_KEYS = [
   "behaviorGroup",
   "callersAndDependencies",

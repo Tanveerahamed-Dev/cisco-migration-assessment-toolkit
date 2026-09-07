@@ -228,8 +228,8 @@ test("application source contains no Vinext or Next image-parser entry points", 
   }
 
   const pathSetDigest = createHash("sha256").update(`${JSON.stringify(scannedPaths)}\n`).digest("hex");
-  assert.equal(scannedPaths.length, 67);
-  assert.equal(pathSetDigest, "7f4b3134ea4ef4f50040d1195d7261611450d50893eb82be0bb04692eb6dcf72");
+  assert.equal(scannedPaths.length, 69);
+  assert.equal(pathSetDigest, "83cfd1eed5f33ea664c2a7ce945b345a049944467592980fdbb89049fe9ef92e");
   assert.deepEqual(findings.sort(), []);
 });
 
