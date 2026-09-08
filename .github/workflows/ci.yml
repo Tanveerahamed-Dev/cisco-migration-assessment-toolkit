@@ -226,8 +226,12 @@ jobs:
           --expected-commit "${{ steps.source.outputs.commit }}"
           --expected-tree "${{ steps.source.outputs.tree }}"
           --allow-untracked-prefix webapp/frontend/node_modules
-      - name: Build exactly one wheel and one source archive
-        run: python -m build --sdist --wheel --outdir dist
+      - name: Build and byte-reproduce exactly one wheel and one source archive
+        run: >-
+          python tools/build_reproducible_distributions.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --outdir dist
       - name: Prove the archive build did not change the source
         run: >-
           python .github/scripts/verify_checkout_immutable.py

@@ -125,6 +125,17 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Python release archives now fail closed on same-source byte reproducibility.** CI, tagged
+  release, self-hosted release, and the local verification runbook use one build owner that binds
+  `SOURCE_DATE_EPOCH` to the exact selected commit and materializes two separate no-local LF-exact
+  clones. Each cold candidate builds and bounded-canonicalizes its sdist, builds its wheel from that
+  canonical sdist, and is verified against the unchanged commit/tree before exact stable-handle
+  comparison. One retained set is staged, remeasured after the final original-source check, and
+  renamed into an output path checked absent immediately beforehand, remeasured after rename, and
+  quarantined on mismatch. This is executed-toolchain reproducibility evidence under the workflow's
+  nonconcurrent output-parent assumption,
+  not independent provenance, review, cross-platform equivalence, signing, qualification,
+  promotion, or publication authority.
 - **Additional CodeQL-reported boundaries are hardened without broad suppression.** AssessHub now
   captures bounded same-handle-verified immutable SPA bytes at app construction and reconciles an
   exact pre/post physical-tree census before accepting them. One strict local Vite boot shell,

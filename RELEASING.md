@@ -1,8 +1,9 @@
 # Releasing
 
 Releases are immutable promotions of one reviewed Git commit. The tag workflow
-builds and verifies the wheel and source archive once, attaches those exact
-files to a **draft** GitHub Release, and records their SHA-256 digests in
+builds two cold candidates from separate exact-commit clones, requires byte-identical
+wheel/source-archive pairs, verifies one retained set, attaches those exact files to
+a **draft** GitHub Release, and records their SHA-256 digests in
 `dist-verification.json`. Draft creation is technical staging, not publication.
 PyPI publishing is a separate, protected manual promotion of those assets; it
 never rebuilds them.
@@ -75,8 +76,9 @@ It does not replace them with a fresh build.
 When GitHub-hosted minutes are unavailable (billing exhaustion), the tag-triggered `Release`
 workflow cannot execute. **Release (self-hosted)** (`release-selfhosted.yml`) is the sanctioned
 alternative: dispatch it manually with the existing tag. It replicates the same fail-closed gate
-sequence (annotated-tag/version/ancestry verification, privacy boundary, immutability proofs
-between every step, single build, trusted distribution proof, clean-venv smoke test) on the
+sequence (annotated-tag/version/ancestry verification, privacy boundary, immutability proofs,
+two cold exact-source candidates yielding one retained set, trusted distribution proof, and
+clean-venv smoke test) on the
 self-hosted fleet, and attaches the assets to the GitHub Release. It is deliberately
 dispatch-only — never `pull_request` — per the runner-isolation rule in the `ci.yml` header, and
 it is idempotent the same way the hosted workflow is: re-running an existing draft/release re-verifies
@@ -166,9 +168,12 @@ npm test
 npm run build
 cd ../..
 source_commit="$(git rev-parse 'HEAD^{commit}')"
-source_tree="$(git rev-parse 'HEAD^{tree}')"
+source_tree="$(git rev-parse "${source_commit}^{tree}")"
 python -m pip install "build==1.5.0" "twine==6.2.0"
-python -m build --sdist --wheel --outdir dist
+python tools/build_reproducible_distributions.py \
+  --expected-commit "$source_commit" \
+  --expected-tree "$source_tree" \
+  --outdir dist
 python -m twine check dist/*
 python tools/audit_wheel.py dist
 python -m cisco_toolkit.distribution_verify dist \
@@ -177,6 +182,19 @@ python -m cisco_toolkit.distribution_verify dist \
   --require-source-binding \
   --json-out dist-verification.json
 ```
+
+The build wrapper derives `SOURCE_DATE_EPOCH` from the exact selected commit and creates two
+separate `git clone --no-local --no-checkout` source clones with LF-exact checkout settings. In
+each cold clone it builds only the sdist, bounded-canonicalizes its tar/PAX/gzip metadata while
+preserving member names, payloads, and executable semantics, safely extracts that canonical sdist,
+and builds the wheel from the extracted canonical source. Both retained candidate pairs must have
+identical names and bytes. Only after that comparison and a final original-source check does the
+wrapper remeasure and atomically rename one retained set into a `dist` path checked absent
+immediately beforehand, then remeasures the published bytes and quarantines a mismatch. This
+assumes no hostile concurrent writer controls the output parent; it proves same-source
+reproducibility under the executed toolchain, not independent source provenance, review, signing,
+or cross-platform reproducibility. Git is resolved once from the process's startup PATH and then
+absolute-path bound; this records one selected tool, not independent authentication of startup PATH.
 
 Do not publish locally. The protected workflow is the authoritative promotion
 path and is the only path that binds the reviewed tag to the released bytes.
