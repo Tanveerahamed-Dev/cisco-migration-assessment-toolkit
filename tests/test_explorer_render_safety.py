@@ -21,6 +21,8 @@ Regex sentinels cannot catch either — both are behaviours of the assembled out
 gate EXECUTES the real embedded ``<script>`` under node against a minimal DOM stub, the same
 pattern tests/test_explorer_js_parity.py uses for the FIB port. Skips cleanly without node.
 """
+import csv
+import io
 import json
 import pathlib
 import re
@@ -157,9 +159,362 @@ def _run(driver_body: str, tmp_path, payload=None):
         pf = tmp_path / "payload.json"
         pf.write_text(json.dumps(payload), encoding="utf-8")
         argv.append(str(pf))
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    proc = subprocess.run(
+        argv,
+        capture_output=True,
+        encoding="utf-8",
+        errors="strict",
+        timeout=180,
+    )
     assert proc.returncode == 0, f"node run of the embedded explorer JS failed:\n{proc.stderr[:3000]}"
     return json.loads(proc.stdout)
+
+
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_flow_matrix_whatifs_are_structured_bounded_and_copy_safe(tmp_path):
+    out = _run("""
+      const atom=__EV("operatorTextAtom"), label=__EV("fmxWhatifLabel"),
+        apply=__EV("fmxApply"), copy=__EV("fmxCopy"), csvRow=__EV("fmxCsvRow");
+      globalThis.__ROUTE_CALLS=0; globalThis.__ACL_CALLS=0;
+      globalThis.__ROUTE_ARGS=null; globalThis.__ACL_ARGS=null; globalThis.__COPIED="";
+      const grid=[[{self:true,reach:true,unknown:false,asym:false,l3:true,acl:"allow"}]];
+      __EV("renderFlowMatrix=()=>{}");
+      __EV("fmxMutateSnap=(host,prefix)=>{globalThis.__ROUTE_CALLS++;globalThis.__ROUTE_ARGS=[host,prefix];return {};}");
+      __EV("fmxWithSnap=(_snap,run)=>run()");
+      __EV("fmxCompute=(_reps,deny)=>{if(deny){globalThis.__ACL_CALLS++;globalThis.__ACL_ARGS=deny;}return globalThis.__GRID;}");
+      globalThis.__GRID=grid;
+      __EV('MODEL={hosts:["edge-1"],links:[]}');
+      __EV('SNAP={routes:{"edge-1":[{prefix:"10.0.0.0/8"}]}}');
+      __EV('FMX={reps:[{vlan:200}],whatif:{kind:"route",rhost:"edge-1",arg:"10.0.0.0/8",asrc:"any",adst:""},base:globalThis.__GRID,mut:null,diff:null}');
+      apply();
+      const route_applied=__EV("FMX.mut!==null");
+      Object.defineProperty(navigator,"clipboard",{configurable:true,value:{
+        writeText(text){globalThis.__COPIED=text;return Promise.resolve();}
+      }});
+      copy();
+      const copied=globalThis.__COPIED;
+      __EV('MODEL={hosts:["edge,=1+1"],links:[]}');
+      __EV('FMX={reps:[{vlan:200}],whatif:{kind:"host",rhost:"",arg:"edge,=1+1",asrc:"any",adst:""},base:globalThis.__GRID,mut:globalThis.__GRID,diff:null}');
+      copy();
+      const formula_csv=globalThis.__COPIED;
+      Object.defineProperty(navigator,"clipboard",{configurable:true,value:{
+        writeText(){return {then(){return {catch(fail){fail();}};}};}
+      }});
+      copy();
+      const rejected_copy_status=document.getElementById("fmxCopyBtn").textContent;
+      Object.defineProperty(navigator,"clipboard",{configurable:true,value:null});
+      copy();
+      const unavailable_copy_status=document.getElementById("fmxCopyBtn").textContent;
+      Object.defineProperty(navigator,"clipboard",{configurable:true,value:{
+        writeText(){throw new Error("synthetic synchronous clipboard refusal");}
+      }});
+      copy();
+      const synchronous_copy_status=document.getElementById("fmxCopyBtn").textContent;
+      __EV('MODEL={hosts:["edge-1"],links:[]}');
+      __EV('FMX={reps:[{vlan:200}],whatif:{kind:"acl",rhost:"",arg:"",asrc:"any",adst:"200"},base:globalThis.__GRID,mut:null,diff:null}');
+      apply();
+      const acl_applied=__EV("FMX.mut!==null");
+      globalThis.__BAD_ROUTE={reps:[{vlan:200}],whatif:{kind:"route",rhost:"edge\\nFORGED",
+        arg:"10.0.0.0/8",asrc:"any",adst:""},base:grid,mut:{},diff:{}};
+      __EV("FMX=globalThis.__BAD_ROUTE");
+      apply();
+      const bad_route_state=__EV("({mut:FMX.mut,diff:FMX.diff})");
+      globalThis.__BAD_ACL={reps:[{vlan:200}],whatif:{kind:"acl",rhost:"",arg:"",asrc:"any",
+        adst:"200\\nFORGED"},base:grid,mut:{},diff:{}};
+      __EV("FMX=globalThis.__BAD_ACL");
+      apply();
+      const bad_acl_state=__EV("({mut:FMX.mut,diff:FMX.diff})");
+      const controls=[0,10,13,0x7f,0x85,0xd800,0x2028,0x2029,0x202e,0x2066,0xfeff]
+        .map(cp=>atom("safe"+String.fromCodePoint(cp)+"FORGED",512));
+      console.log(JSON.stringify({
+        route_label:label({kind:"route",rhost:"edge-1",arg:"10.0.0.0/8"},"tcp",443),
+        acl_label:label({kind:"acl",asrc:"any",adst:"200"},"tcp",443),
+        malformed_label:label({kind:"host",arg:"edge\\nFORGED"},"tcp",443),
+        route_calls:globalThis.__ROUTE_CALLS,
+        acl_calls:globalThis.__ACL_CALLS,
+        route_args:globalThis.__ROUTE_ARGS,
+        acl_args:globalThis.__ACL_ARGS,
+        route_applied,
+        acl_applied,
+        bad_route_state,
+        bad_acl_state,
+        controls,
+        empty:atom("",512),
+        overlong:atom("x".repeat(513),512),
+        copied_has_label:copied.includes("WHAT-IF: remove route edge-1 10.0.0.0/8"),
+        copied_has_forged:copied.includes("FORGED"),
+        formula_csv,
+        formula_row:csvRow(["=1+1","+2","-3","@x","  =2","\\t=3",'say "hello"']),
+        rejected_copy_status,
+        unavailable_copy_status,
+        synchronous_copy_status
+      }));
+    """, tmp_path)
+    formula_csv_raw = out.pop("formula_csv")
+    formula_row_raw = out.pop("formula_row")
+    assert out == {
+        "route_label": "remove route edge-1 10.0.0.0/8",
+        "acl_label": "deny TCP/443 any → V200",
+        "malformed_label": "invalid what-if",
+        "route_calls": 1,
+        "acl_calls": 1,
+        "route_args": ["edge-1", "10.0.0.0/8"],
+        "acl_args": {"srcVlan": "any", "dstVlan": "200"},
+        "route_applied": True,
+        "acl_applied": True,
+        "bad_route_state": {"mut": None, "diff": None},
+        "bad_acl_state": {"mut": None, "diff": None},
+        "controls": [None] * 11,
+        "empty": None,
+        "overlong": None,
+        "copied_has_label": True,
+        "copied_has_forged": False,
+        "rejected_copy_status": "Copy failed",
+        "unavailable_copy_status": "Copy failed",
+        "synchronous_copy_status": "Copy failed",
+    }
+    formula_csv = list(csv.reader(io.StringIO(formula_csv_raw)))
+    assert formula_csv[0] == ["Reachability matrix — WHAT-IF: fail switch edge,=1+1", ""]
+    assert {len(row) for row in formula_csv} == {2}
+    assert formula_csv[4] == ["V200", "-"]
+    assert not any(
+        cell != "-" and cell.startswith(("=", "+", "-", "@"))
+        for row in formula_csv
+        for cell in row
+    )
+    assert next(csv.reader([formula_row_raw])) == [
+        "'=1+1", "'+2", "'-3", "'@x", "'  =2", "[invalid cell]", 'say "hello"',
+    ]
+
+
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_flow_matrix_route_rows_require_own_arrays_and_clone_without_prototype(tmp_path):
+    out = _run("""
+      const hosts=__EV("fmxRouteHosts"), rows=__EV("routesFor"),
+        apply=__EV("fmxApply"), mutate=__EV("fmxMutateSnap");
+      const inherited={toString:[{prefix:"inherited"}],constructor:[{prefix:"inherited"}]};
+      const malformed=Object.create(inherited);
+      malformed.edge="not-an-array"; malformed.object={length:1};
+      malformed.nulls=[null,{},[],{prefix:null}];
+      malformed.badText=[{prefix:"not-a-prefix"},{prefix:""},{prefix:"10.0.0.0/33"}];
+      globalThis.__SNAP={routes:malformed};
+      __EV("SNAP=globalThis.__SNAP");
+      globalThis.__MODEL={hosts:[],links:[],gateways:new Map()};
+      __EV("MODEL=globalThis.__MODEL");
+      const malformed_hosts=hosts(), edge_rows=rows("edge"), null_rows=rows("nulls"), bad_rows=rows("badText"),
+        inherited_rows=rows("toString"), constructor_rows=rows("constructor"),
+        null_cover_is_unknown=__EV("_routeCovers")("nulls","10.0.0.1")===undefined;
+      globalThis.__FMX={reps:[],whatif:{kind:"route",rhost:"edge",arg:""},
+        base:[],mut:null,diff:null};
+      __EV("FMX=globalThis.__FMX");
+      let malformed_rendered=true;
+      try{__EV("renderFlowMatrix")();}catch(_error){malformed_rendered=false;}
+      __EV("renderFlowMatrix=()=>{}");
+      __EV('FMX={reps:[],whatif:{kind:"route",rhost:"edge",arg:"prefix"},base:[],mut:{},diff:{}}');
+      apply();
+      const malformed_state=__EV("({mut:FMX.mut,diff:FMX.diff})");
+      __EV('FMX={reps:[],whatif:{kind:"route",rhost:"toString",arg:"inherited"},base:[],mut:{},diff:{}}');
+      apply();
+      const inherited_state=__EV("({mut:FMX.mut,diff:FMX.diff})");
+      const legitimate=Object.create(null);
+      legitimate.constructor=[{prefix:"10.0.0.0/8",source:"connected"}];
+      legitimate.prototype=[{prefix:"192.0.2.0/24",source:"static"}];
+      legitimate.sourcebad=[{prefix:"0.0.0.0/0",source:{}}];
+      const inheritedSource=Object.create({source:"bgp"});inheritedSource.prefix="10.0.0.0/8";
+      legitimate.inheritedSource=[inheritedSource];
+      globalThis.__SNAP={routes:legitimate};
+      __EV("SNAP=globalThis.__SNAP");
+      const legitimate_hosts=hosts(), constructor_own=rows("constructor"),
+        prototype_own=rows("prototype"), sourcebad=rows("sourcebad"),
+        inherited_source=rows("inheritedSource"), source_dist=__EV("routeSourceDist")();
+      const distanceRoutes=[
+        {prefix:"0.0.0.0/0",source:"static",admin_distance:200,next_hop:"10.0.0.1"},
+        {prefix:"0.0.0.0/0",source:"ospf",admin_distance:110,next_hop:"10.0.0.2"},
+        {prefix:"10.0.0.0/8",source:"connected",admin_distance:0,out_intf:"Vlan10"}
+      ];
+      globalThis.__SNAP={routes:{R:distanceRoutes}};__EV("SNAP=globalThis.__SNAP");
+      const selectedBefore=__EV("_fibLookupAll")(__EV("_fibComputeFib")(rows("R")),"8.8.8.8");
+      const distanceClone=mutate("R","10.0.0.0/8");
+      globalThis.__SNAP=distanceClone;__EV("SNAP=globalThis.__SNAP");
+      const selectedAfter=__EV("_fibLookupAll")(__EV("_fibComputeFib")(rows("R")),"8.8.8.8");
+      let inherited_getter_reads=0;
+      const inheritedSnap=Object.create(Object.defineProperty({},"routes",{get(){
+        inherited_getter_reads++;throw new Error("inherited getter ran");
+      }}));
+      globalThis.__SNAP=inheritedSnap;__EV("SNAP=globalThis.__SNAP");
+      let inherited_getter_error=null,inherited_getter_hosts=null;
+      try{inherited_getter_hosts=hosts();}catch(error){inherited_getter_error=String(error);}
+      const own=Object.create(null);
+      own["__proto__"]=[{prefix:"drop"},{prefix:"keep"}];
+      globalThis.__SNAP=Object.create(null);
+      globalThis.__SNAP["__proto__"]={polluted:true};
+      globalThis.__SNAP.routes=own;
+      __EV("SNAP=globalThis.__SNAP");
+      const clone=mutate("__proto__","drop");
+      console.log(JSON.stringify({
+        malformed_hosts,
+        edge_rows,
+        null_rows,
+        bad_rows,
+        inherited_rows,
+        constructor_rows,
+        null_cover_is_unknown,
+        malformed_rendered,
+        malformed_state,
+        inherited_state,
+        legitimate_hosts,
+        constructor_own,
+        prototype_own,
+        sourcebad,
+        inherited_source,
+        source_dist,
+        distance_before:selectedBefore.map(r=>[r.next_hop,r.admin_distance]),
+        distance_after:selectedAfter.map(r=>[r.next_hop,r.admin_distance]),
+        inherited_getter_reads,
+        inherited_getter_error,
+        inherited_getter_hosts,
+        own_hosts:hosts(),
+        clone_prototype_clean:Object.getPrototypeOf(clone)===Object.prototype,
+        clone_has_own_proto:Object.hasOwn(clone,"__proto__"),
+        clone_has_null_prototype:Object.getPrototypeOf(clone.routes)===null,
+        clone_rows:clone.routes["__proto__"]||null
+      }));
+    """, tmp_path)
+    assert out == {
+        "malformed_hosts": [],
+        "edge_rows": [],
+        "null_rows": [],
+        "bad_rows": [],
+        "inherited_rows": [],
+        "constructor_rows": [],
+        "null_cover_is_unknown": True,
+        "malformed_rendered": True,
+        "malformed_state": {"mut": None, "diff": None},
+        "inherited_state": {"mut": None, "diff": None},
+        "legitimate_hosts": ["constructor", "inheritedSource", "prototype", "sourcebad"],
+        "constructor_own": [{"prefix": "10.0.0.0/8", "source": "connected"}],
+        "prototype_own": [{"prefix": "192.0.2.0/24", "source": "static"}],
+        "sourcebad": [{"prefix": "0.0.0.0/0"}],
+        "inherited_source": [{"prefix": "10.0.0.0/8"}],
+        "source_dist": {"?": 2, "connected": 1, "static": 1},
+        "distance_before": [["10.0.0.2", 110]],
+        "distance_after": [["10.0.0.2", 110]],
+        "inherited_getter_reads": 0,
+        "inherited_getter_error": None,
+        "inherited_getter_hosts": [],
+        "own_hosts": [],
+        "clone_prototype_clean": True,
+        "clone_has_own_proto": False,
+        "clone_has_null_prototype": True,
+        "clone_rows": None,
+    }
+
+
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_full_flow_treats_inherited_or_malformed_routes_as_uncollected(tmp_path):
+    def routed_snapshot(gateway: str) -> dict:
+        snap = _fabric()
+        core = snap["interfaces"].pop("core1")
+        core["Vlan10"].update({"port": "Vlan10", "vlan": "10"})
+        core["Vlan20"] = {
+            "port": "Vlan20",
+            "vlan": "20",
+            "svi_ip": "10.0.20.1 255.255.255.0",
+        }
+        snap["interfaces"][gateway] = core
+        for access, core_port in (("access1", "Gi1/0/1"), ("access2", "Gi1/0/2")):
+            access_uplink = snap["interfaces"][access]["Gi0/1"]
+            access_uplink.update({
+                "cdp_neighbor": gateway,
+                "trunk_allowed_vlans": "10,20",
+                "stp_fwd_vlans": "10,20",
+            })
+            core[core_port].update({
+                "trunk_allowed_vlans": "10,20",
+                "stp_fwd_vlans": "10,20",
+            })
+        endpoint = snap["interfaces"]["access2"]["Gi0/2"]
+        endpoint["vlan"] = "20"
+        endpoint["end_host_ip"] = "10.0.20.51"
+        return snap
+
+    driver = """
+      const EV=globalThis.__EV;
+      const P=JSON.parse(require('fs').readFileSync(process.argv[2],'utf-8'));
+      let snap=P.snap;
+      if(P.inherited){
+        const own=snap; snap=Object.assign(Object.create({routes:P.inherited}),own);
+        delete snap.routes;
+      }
+      EV('load')(snap,'T',false);
+      const eps=EV('EPALL'),source=eps.find(e=>String(e.vlan)==='10'),
+        destination=eps.find(e=>String(e.vlan)==='20');
+      let error=null,result=null;
+      try{result=EV('flowBetween')(source,destination);}catch(exc){error=String(exc);}
+      process.stdout.write(JSON.stringify({
+        error,
+        route_assumed:result&&result.routeAssumed===true,
+        verdict:result&&result.verdict,
+        reason:result&&result.reason
+      }));
+    """
+
+    inherited = routed_snapshot("constructor")
+    inherited_result = _run(
+        driver,
+        tmp_path,
+        payload={
+            "snap": inherited,
+            "inherited": {"constructor": [{"prefix": "0.0.0.0/0", "source": "static"}]},
+        },
+    )
+    malformed = routed_snapshot("core1")
+    malformed["routes"] = {"core1": [None, {}, {"prefix": None}]}
+    malformed_result = _run(driver, tmp_path, payload={"snap": malformed})
+    malformed_string = routed_snapshot("core1")
+    malformed_string["routes"] = {"core1": [{"prefix": "not-a-prefix"}]}
+    malformed_string_result = _run(driver, tmp_path, payload={"snap": malformed_string})
+
+    for result in (inherited_result, malformed_result, malformed_string_result):
+        assert result["error"] is None
+        assert result["route_assumed"] is True, result
+        assert result["verdict"] != "NOT REACHABLE"
+
+
+@pytest.mark.skipif(not NODE, reason="node is not available")
+def test_cutover_clipboard_text_accepts_only_authored_emphasis_markup(tmp_path):
+    out = _run("""
+      const project=__EV("abCopyStepText"), heading=__EV("abCopyHeading");
+      const controls=[0,10,13,0x7f,0x85,0xd800,0x2028,0x2029,0x202e,0x2066,0xfeff]
+        .map(cp=>project("<b>Freeze</b>"+String.fromCodePoint(cp)+"FORGED"));
+      console.log(JSON.stringify({
+        authored:project("<b>Freeze</b> - ready &amp; bounded"),
+        escaped_dynamic:project("&lt;script&gt;"),
+        unexpected_tag:project("<i>hostile</i>"),
+        reintroduced_tag:project("<<b>b>"),
+        unclosed:project("<b>Freeze"),
+        orphan_close:project("Freeze</b>"),
+        nested:project("<b>Freeze <b>again</b></b>"),
+        controls,
+        unicode_heading:heading("edge-α"),
+        hostile_heading:heading("edge"+String.fromCodePoint(0x202e)+"FORGED")
+      }));
+    """, tmp_path)
+    assert out == {
+        "authored": "Freeze - ready & bounded",
+        "escaped_dynamic": "<script>",
+        "unexpected_tag": "[invalid step]",
+        "reintroduced_tag": "[invalid step]",
+        "unclosed": "[invalid step]",
+        "orphan_close": "[invalid step]",
+        "nested": "[invalid step]",
+        "controls": ["[invalid step]"] * 11,
+        "unicode_heading": "CUTOVER MOP — edge-α",
+        "hostile_heading": "CUTOVER MOP — [invalid host]",
+    }
+    html = EXPLORER.read_text(encoding="utf-8")
+    cutover = html[html.index("function abH_cutover("):html.index("function abH_fixfirst(")]
+    assert "const txt=abCopyHeading(h)" in cutover
 
 
 def test_vpc_domain_grouping_is_explicitly_candidate_only() -> None:

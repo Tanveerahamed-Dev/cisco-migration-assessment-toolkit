@@ -3685,7 +3685,7 @@ def _norm_key(k) -> str:
     return re.sub(r"[_-]", "", str(k or "").lower())
 
 
-def _scrub_secrets(s: str) -> str:
+def _redact_config_values(s: str) -> str:
     """Replace known credential / community / key material in a config-or-output string
     with a placeholder, preserving surrounding context. Conservative (deny-list of
     compiled regexes, secret-token capture only) and idempotent."""
@@ -3801,7 +3801,7 @@ def redact_snapshot(snap: dict) -> dict:
         # Strip credentials / community / key material first so a secret token is replaced wholesale, THEN
         # pseudonymize any remaining IPv4 / IPv6 / MACs in context. IPv6 is remapped before MAC; the two
         # patterns are mutually exclusive (a MAC has neither 7 colons nor a '::'), so neither corrupts the other.
-        s = _scrub_identity_tokens(_scrub_secrets(s))
+        s = _scrub_identity_tokens(_redact_config_values(s))
         return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     def _is_secret_key(key) -> bool:
@@ -3971,14 +3971,14 @@ def _make_redactor(reserved=None):
         return "".join(chunks)
 
     def scrub(s):
-        s = _identities(_scrub_secrets(s))
+        s = _identities(_redact_config_values(s))
         return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     return scrub, serial
 
 
 #: Structured documents `redact_collection_dir` does NOT rewrite in place, and the scratch name it
-#: writes while rewriting a capture. `_scrub_secrets` is a grammar over line-oriented device-config
+#: writes while rewriting a capture. `_redact_config_values` is a grammar over line-oriented device-config
 #: text (``snmp-server community <V>``, ``username u password <V>``); it does not read structured
 #: data, substituting inside a serialised document is how a capture stops parsing, and rewriting a
 #: generated ``.html`` deliverable that happens to sit in the collection folder would break the run
@@ -4074,7 +4074,7 @@ class _ScrubResult(tuple):
 
 def redact_collection_dir(collection_dir: str) -> tuple:
     """Plan A / Tier-1 #5: scrub SECRET VALUES (passwords / communities / keys — the same
-    conservative _scrub_secrets deny-list --redact uses) IN PLACE across every collected
+    conservative _redact_config_values deny-list --redact uses) IN PLACE across every collected
     text capture under collection_dir (see `_is_raw_capture`; NOT just ``*.txt``). Values
     only: IPs / hostnames / interfaces are KEPT
     so the dir stays analyzable with --no-collect and remains the --compare/--trend
@@ -4103,7 +4103,7 @@ def redact_collection_dir(collection_dir: str) -> tuple:
     2. binary content — a NUL byte anywhere means this is a container, not line-oriented capture text;
     3. size — over `_REDACT_MAX_CAPTURE_BYTES` (the verifier's own artifact ceiling) nothing is even
        read: a 200 MB blob in a collection folder is a core dump or a pcap, not a ``show`` capture;
-    4. the grammar itself — a file is only ever REWRITTEN when `_scrub_secrets` actually matched a
+    4. the grammar itself — a file is only ever REWRITTEN when `_redact_config_values` actually matched a
        secret line in it, so an unrelated ``.md`` or ``.csv`` that happens to sit under the root is
        read and left byte-identical.
 
@@ -4155,13 +4155,13 @@ def redact_collection_dir(collection_dir: str) -> tuple:
                 uncovered.append((_rel(p), "binary content (a NUL byte), not a text capture"))
                 continue
             scanned += 1
-            scrubbed = _scrub_secrets(text)
-            if scrubbed != text:
+            redacted_text = _redact_config_values(text)
+            if redacted_text != text:
                 tmp = p + ".redacting"
                 try:
                     with open(tmp, "w", encoding="utf-8", errors="surrogateescape",
                               newline="") as f:
-                        f.write(scrubbed)
+                        f.write(redacted_text)
                     os.replace(tmp, p)      # atomic: the capture is either old or new, never half
                     changed += 1
                 except Exception as e:

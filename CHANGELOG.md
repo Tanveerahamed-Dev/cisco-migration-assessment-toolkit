@@ -125,13 +125,28 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Additional CodeQL-reported boundaries are hardened without broad suppression.** AssessHub now
+  captures bounded same-handle-verified immutable SPA bytes at app construction and reconciles an
+  exact pre/post physical-tree census before accepting them. One strict local Vite boot shell,
+  nonblank referenced assets, and pinned HTML/JavaScript/CSS media types form the shared structural
+  readiness contract for selftest and production boot. GET, HEAD, content-hash revalidation, and
+  bounded single ranges perform no request-time filesystem operation; every post-construction
+  startup path closes the SQLite store. Explorer what-if execution and copy labels use structured,
+  model-bound,
+  control-safe fields; route maps require own valid arrays/rows and clone without prototype hazards,
+  while copied matrices use rectangular quote-all CSV with formula neutralization and honest failure
+  status. Clipboard plan text accepts only balanced authored emphasis and rejects raw markup or
+  control text. Redaction naming describes redacted output rather than secret storage; URL/script
+  negative tests use exact values and sentinels instead of sanitizer-shaped assertions. Fresh hosted
+  CodeQL remains required for closure; synthetic-key test findings and external-module data-as-code
+  findings remain individually reviewable rather than mass-dismissed.
 - **Python release verification and the historical Release-1 replay profile now advance as one
   reconciled dependency change.** The Master Reference verification toolchain uses cryptography
   50.0.1, Ruff 0.16.6, ReportLab 5.0.1, and pypdf 6.17.0 (including its Roman-numeral
   input limit), while the separately provisioned Windows replay profile uses lxml 6.1.3 and
   setuptools 84.0.0. The Release-1 generator refreshed only the exact 2,340-byte
-  executable-profile manifest. Its
-  independent digest pin and the dependent non-authoritative Release-2 census and proposal
+  executable-profile manifest. Its independent digest pin and the dependent non-authoritative
+  Release-2 census and proposal
   bindings were refreshed separately; the approved historical source bundle, retrospective
   vectors, semantic roster, `AUDIT_ONLY` authority, null Release-2 gate, and non-promotion
   boundary remain byte-identical.
@@ -150,8 +165,8 @@ per change, with verification evidence) lives in
   nonblocking flags where the platform supplies them, binds that handle to a contained pathname,
   reads it twice, and revalidates exact file identity and metadata before accepting bytes.
   Adversarial tests cover the former repeated-hyphen input, encoded traversal requests, pathname
-  replacement, changed second reads, and POSIX named-pipe blocking. A fresh CodeQL analysis remains the authority
-  for hosted alert closure.
+  replacement, changed second reads, and POSIX named-pipe blocking. A fresh CodeQL analysis remains
+  the authority for hosted alert closure.
 - **Atlas runtime diagnostics no longer reflect client-controlled paths, parser details, gate
   records, or snapshot values into unstructured logs and responses.** Generated deliverable temp
   names now use a fixed prefix after closed-registry selection; invalid JSON responses carry only

@@ -10,26 +10,29 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
+from dataclasses import dataclass
 import functools
 import hashlib
 import hmac
+from html.parser import HTMLParser
 import json
+import mimetypes
 import os
 import re
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, BinaryIO, Dict, List, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from cisco_toolkit import brand_tokens, docmeta
@@ -81,6 +84,115 @@ def _default_db_path() -> str:
 
 
 FRONTEND_DIST = _WEBAPP / "frontend" / "dist"
+_FRONTEND_MAX_FILES = 4_096
+_FRONTEND_MAX_ENTRIES = 8_192
+_FRONTEND_MAX_FILE_BYTES = 64 * 1024 * 1024
+_FRONTEND_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_FRONTEND_PINNED_MEDIA_TYPES = {
+    ".css": "text/css",
+    ".html": "text/html",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+}
+
+
+@dataclass(frozen=True)
+class _FrontendFile:
+    content: bytes
+    media_type: str
+    etag: str
+
+
+class _FrontendShellParser(HTMLParser):
+    """Extract the small, local boot contract from Vite's generated shell."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.doctype = 0
+        self.html_start = 0
+        self.html_end = 0
+        self.head_start = 0
+        self.head_end = 0
+        self.body_start = 0
+        self.body_end = 0
+        self.script_start = 0
+        self.script_end = 0
+        self.root_mounts = 0
+        self.in_head = False
+        self.in_body = False
+        self.invalid = False
+        self.references: list[tuple[str, Literal["module", "script", "stylesheet"]]] = []
+
+    def handle_decl(self, declaration: str) -> None:
+        if declaration.strip().casefold() == "doctype html":
+            self.doctype += 1
+        else:
+            self.invalid = True
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attribute_names = [name.casefold() for name, _value in attrs]
+        if len(attribute_names) != len(set(attribute_names)):
+            self.invalid = True
+            return
+        attributes = dict(attrs)
+        tag = tag.casefold()
+        if tag in ("base", "template"):
+            self.invalid = True
+        elif tag == "html":
+            self.html_start += 1
+        elif tag == "head":
+            self.head_start += 1
+            self.in_head = True
+        elif tag == "body":
+            self.body_start += 1
+            self.in_body = True
+        elif tag == "div" and attributes.get("id") == "root" and self.in_body:
+            self.root_mounts += 1
+        elif tag == "script":
+            self.script_start += 1
+            if (
+                not self.in_head
+                or set(attribute_names) - {"type", "crossorigin", "src"}
+                or (attributes.get("type") or "").casefold() != "module"
+                or not attributes.get("src")
+            ):
+                self.invalid = True
+            else:
+                self.references.append((attributes["src"] or "", "module"))
+        elif tag == "link" and attributes.get("href"):
+            relationships = (attributes.get("rel") or "").casefold().split()
+            if "stylesheet" in relationships:
+                if (
+                    not self.in_head
+                    or set(attribute_names) - {"rel", "crossorigin", "href", "media"}
+                ):
+                    self.invalid = True
+                else:
+                    self.references.append((attributes["href"] or "", "stylesheet"))
+        elif tag == "meta" and "http-equiv" in attributes:
+            self.invalid = True
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.casefold() not in {
+            "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+            "param", "source", "track", "wbr",
+        }:
+            self.invalid = True
+            return
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag == "html":
+            self.html_end += 1
+        elif tag == "head":
+            self.head_end += 1
+            self.in_head = False
+        elif tag == "body":
+            self.body_end += 1
+            self.in_body = False
+        elif tag == "script":
+            self.script_end += 1
 
 # Prefer the richer, engine-computed demo fleet (webapp/sample_data/build_sample.py); fall back to the
 # small bundled golden snapshot if it hasn't been generated.
@@ -996,6 +1108,373 @@ def _meta_build_facts() -> tuple[tuple[dict, ...], str]:
     return tuple(deliverables.catalogue()), serve._release_version()
 
 
+def _is_filesystem_link(path: Path) -> bool:
+    """Identify symlinks/junctions; metadata uncertainty propagates to refuse the whole index."""
+    junction_probe = getattr(path, "is_junction", None)
+    attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return (
+        path.is_symlink()
+        or bool(junction_probe and junction_probe())
+        or bool(reparse_flag and attributes & reparse_flag)
+    )
+
+
+def _frontend_stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+        value.st_nlink,
+    )
+
+
+def _frontend_path_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Identity fields whose precision is stable across Windows handle/path stat APIs."""
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_nlink,
+    )
+
+
+def _frontend_census_identity(value: os.stat_result) -> tuple[int, ...]:
+    """Exact path-stat fields used to reconcile the complete physical tree around reads."""
+    return (
+        *_frontend_stat_identity(value),
+        value.st_mode,
+        getattr(value, "st_file_attributes", 0),
+    )
+
+
+def _frontend_media_type(relative: str) -> str:
+    suffix = PurePosixPath(relative).suffix.casefold()
+    if suffix in _FRONTEND_PINNED_MEDIA_TYPES:
+        return _FRONTEND_PINNED_MEDIA_TYPES[suffix]
+    return mimetypes.guess_type(relative)[0] or "application/octet-stream"
+
+
+def _read_frontend_file(path: Path, dist: Path) -> bytes | None:
+    """Read twice through one bounded guarded handle, then revalidate its fixed path."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size < 0
+            or before.st_size > _FRONTEND_MAX_FILE_BYTES
+        ):
+            return None
+
+        def read_once() -> bytes:
+            chunks: list[bytes] = []
+            remaining = _FRONTEND_MAX_FILE_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+
+        content = read_once()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        repeated = read_once()
+        after = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+        current_path = path.resolve(strict=True)
+        if (
+            len(content) != before.st_size
+            or repeated != content
+            or _frontend_stat_identity(after) != _frontend_stat_identity(before)
+            or _frontend_path_identity(current) != _frontend_path_identity(before)
+            or not stat.S_ISREG(current.st_mode)
+            or current_path != path
+            or not current_path.is_relative_to(dist)
+        ):
+            return None
+        return content
+    except (OSError, OverflowError, ValueError):
+        return None
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
+def _frontend_tree_census(
+    dist: Path,
+) -> tuple[tuple[tuple[str, str, tuple[int, ...]], ...], tuple[tuple[str, Path], ...]] | None:
+    """Return a bounded deterministic path/type/identity census plus canonical file members."""
+    pending = [dist]
+    records: list[tuple[str, str, tuple[int, ...]]] = []
+    files: list[tuple[str, Path]] = []
+    relative_files: set[str] = set()
+    encountered = 0
+    total_bytes = 0
+    try:
+        while pending:
+            directory = pending.pop()
+            if _is_filesystem_link(directory):
+                return None
+            current_directory = directory.resolve(strict=True)
+            directory_stat = os.stat(directory, follow_symlinks=False)
+            if (
+                current_directory != directory
+                or not current_directory.is_relative_to(dist)
+                or not stat.S_ISDIR(directory_stat.st_mode)
+            ):
+                return None
+            relative_directory = "." if directory == dist else directory.relative_to(dist).as_posix()
+            records.append(
+                ("directory", relative_directory, _frontend_census_identity(directory_stat))
+            )
+
+            entries = []
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    encountered += 1
+                    if encountered > _FRONTEND_MAX_ENTRIES:
+                        return None
+                    entries.append(entry)
+
+            child_directories = []
+            for entry in sorted(entries, key=lambda item: item.name):
+                candidate = directory / entry.name
+                if _is_filesystem_link(candidate):
+                    return None
+                candidate_stat = os.stat(candidate, follow_symlinks=False)
+                if stat.S_ISDIR(candidate_stat.st_mode):
+                    child_directories.append(candidate)
+                    continue
+                if not stat.S_ISREG(candidate_stat.st_mode) or candidate_stat.st_nlink != 1:
+                    return None
+                if (
+                    candidate_stat.st_size < 0
+                    or candidate_stat.st_size > _FRONTEND_MAX_FILE_BYTES
+                ):
+                    return None
+                resolved = candidate.resolve(strict=True)
+                if resolved != candidate or not resolved.is_relative_to(dist):
+                    return None
+                relative = candidate.relative_to(dist).as_posix()
+                if relative in relative_files or len(files) >= _FRONTEND_MAX_FILES:
+                    return None
+                relative_files.add(relative)
+                total_bytes += candidate_stat.st_size
+                if total_bytes > _FRONTEND_MAX_TOTAL_BYTES:
+                    return None
+                records.append(("file", relative, _frontend_census_identity(candidate_stat)))
+                files.append((relative, candidate))
+            pending.extend(reversed(child_directories))
+    except (OSError, OverflowError, RuntimeError, ValueError):
+        return None
+    return tuple(sorted(records)), tuple(sorted(files))
+
+
+def _frontend_reference_key(value: str) -> str | None:
+    if (
+        not value
+        or len(value) > 2_048
+        or "\\" in value
+        or "%" in value
+        or any(ord(character) < 0x20 or ord(character) == 0x7f for character in value)
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or not parsed.path.startswith("/assets/")
+        or parsed.path.startswith("//")
+    ):
+        return None
+    raw_path = parsed.path[1:]
+    segments = raw_path.split("/")
+    if not segments or any(segment in ("", ".", "..") for segment in segments):
+        return None
+    path = PurePosixPath(*segments)
+    if path.is_absolute():
+        return None
+    return path.as_posix()
+
+
+def _frontend_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
+    """Require one complete local Vite boot shell; presence-only readiness is not sufficient."""
+    index_file = indexed.get("index.html")
+    if index_file is None or not index_file.content or len(index_file.content) > _FRONTEND_MAX_FILE_BYTES:
+        return False
+    try:
+        text = index_file.content.decode("utf-8", errors="strict")
+        parser = _FrontendShellParser()
+        parser.feed(text)
+        parser.close()
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if (
+        parser.invalid
+        or parser.doctype != 1
+        or parser.html_start != 1
+        or parser.html_end != 1
+        or parser.head_start != 1
+        or parser.head_end != 1
+        or parser.body_start != 1
+        or parser.body_end != 1
+        or parser.root_mounts != 1
+        or parser.script_start != 1
+        or parser.script_end != 1
+        or parser.in_head
+        or parser.in_body
+    ):
+        return False
+    module_entries = 0
+    for reference, kind in parser.references:
+        key = _frontend_reference_key(reference)
+        if key is None or key not in indexed or not indexed[key].content.strip():
+            return False
+        if kind in ("module", "script"):
+            if (
+                not key.casefold().endswith((".js", ".mjs"))
+                or indexed[key].media_type != "text/javascript"
+            ):
+                return False
+        elif not key.casefold().endswith(".css") or indexed[key].media_type != "text/css":
+            return False
+        if kind == "module":
+            module_entries += 1
+    return module_entries >= 1
+
+
+def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile]] | None:
+    """Snapshot bounded immutable SPA bytes under one trusted root before serving requests.
+
+    Request text never enters filesystem handling. Enumeration rejects links, junctions, hard
+    links, path escapes, races, partial walks, oversized members, and aggregate/file-count excess.
+    """
+    try:
+        dist = dist_root.resolve(strict=True)
+        if not dist.is_dir() or _is_filesystem_link(dist_root):
+            return None
+    except (OSError, OverflowError, RuntimeError, ValueError):
+        return None
+
+    before = _frontend_tree_census(dist)
+    if before is None:
+        return None
+    before_records, members = before
+    indexed: dict[str, _FrontendFile] = {}
+    total_bytes = 0
+    for relative, candidate in members:
+        # Open the enumerated path, not a resolved target. The guarded reader compares its handle
+        # back to this exact canonical path; the whole-tree pass below closes inter-member races.
+        content = _read_frontend_file(candidate, dist)
+        if content is None:
+            return None
+        total_bytes += len(content)
+        if total_bytes > _FRONTEND_MAX_TOTAL_BYTES:
+            return None
+        indexed[relative] = _FrontendFile(
+            content=content,
+            media_type=_frontend_media_type(relative),
+            etag=f'"{hashlib.sha256(content).hexdigest()}"',
+        )
+    after = _frontend_tree_census(dist)
+    if after is None or after[0] != before_records or after[1] != members:
+        return None
+    if not _frontend_shell_valid(indexed):
+        return None
+    return dist, indexed
+
+
+def _etag_matches(header: str | None, expected: str) -> bool:
+    if not header:
+        return False
+    for candidate in header.split(","):
+        token = candidate.strip()
+        if token == "*":
+            return True
+        if token.startswith("W/"):
+            token = token[2:].strip()
+        if token == expected:
+            return True
+    return False
+
+
+def _single_byte_range(header: str, total: int) -> tuple[int, int] | None:
+    value = header.strip()
+    unit, equals, specification = value.partition("=")
+    if (len(value) > 128 or not equals or unit.casefold() != "bytes"
+            or "," in specification or total < 1):
+        return None
+    start_text, separator, end_text = specification.partition("-")
+    if not separator or (not start_text and not end_text):
+        return None
+    if start_text:
+        if (not start_text.isascii() or not start_text.isdigit()
+                or (end_text and (not end_text.isascii() or not end_text.isdigit()))):
+            return None
+        start = int(start_text)
+        end = int(end_text) if end_text else total - 1
+        if start >= total or end < start:
+            return None
+        return start, min(end, total - 1)
+    if not end_text.isascii() or not end_text.isdigit() or int(end_text) < 1:
+        return None
+    length = min(int(end_text), total)
+    return total - length, total - 1
+
+
+def _frontend_response(entry: _FrontendFile, request: Request) -> Response:
+    headers = {"accept-ranges": "bytes", "etag": entry.etag}
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and len(if_none_match) > 4_096:
+        return Response(status_code=431, headers=headers)
+    if _etag_matches(if_none_match, entry.etag):
+        return Response(status_code=304, headers=headers)
+
+    content = entry.content
+    status_code = 200
+    range_header = request.headers.get("range") if request.method == "GET" else None
+    if range_header:
+        unit, equals, _specification = range_header.strip().partition("=")
+        if equals and unit.casefold() != "bytes":
+            range_header = None  # RFC 9110: ignore an unsupported range unit
+    if range_header and "," in range_header:
+        range_header = None  # bounded implementation: ignore unsupported multipart ranges
+    if range_header and request.headers.get("if-range") not in (None, entry.etag):
+        range_header = None
+    if range_header:
+        selected = _single_byte_range(range_header, len(content))
+        if selected is None:
+            return Response(
+                status_code=416,
+                headers={**headers, "content-range": f"bytes */{len(content)}"},
+            )
+        start, end = selected
+        content = content[start:end + 1]
+        status_code = 206
+        headers["content-range"] = f"bytes {start}-{end}/{len(entry.content)}"
+    headers["content-length"] = str(len(content))
+    body = b"" if request.method == "HEAD" else content
+    return Response(
+        content=body,
+        status_code=status_code,
+        media_type=entry.media_type,
+        headers=headers,
+    )
+
+
 def is_guarded_api_path(path: str, doc_paths) -> bool:
     """Whether `path` is on the API surface `_api_access_guard` protects (auth + cross-site read +
     CSRF). THE definition — the middleware calls this, and so does the completeness test, so a test
@@ -1005,9 +1484,9 @@ def is_guarded_api_path(path: str, doc_paths) -> bool:
     disabling one of those URLs cannot silently open a hole.
 
     Note what this rule does NOT cover, deliberately and visibly: anything registered outside
-    `/api/*` and the docs set — a `Mount` (the SPA's `/assets` StaticFiles), or a route on some
-    future `/v2` / `/internal` prefix. Those are unguarded BY CONSTRUCTION, which is correct for
-    static assets and would be a hole for anything that reads client data;
+    `/api/*` and the docs set — the SPA catch-all (including its exact indexed assets), or a route
+    on some future `/v2` / `/internal` prefix. Those are unguarded BY CONSTRUCTION, which is correct
+    for static assets and would be a hole for anything that reads client data;
     `tests/test_expensive_get_hardening.py` enumerates every registered route against this predicate
     so a new one outside the surface fails the suite instead of opening the gap silently."""
     return path.startswith("/api/") or path in doc_paths
@@ -1019,12 +1498,22 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     webapp/frontend/dist) — the hook the Atlas entry module uses to point at the bundled copy
     inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``boot_hardening`` threads the
     P3 unplug-safety boot (integrity check + backup — see storage.Store) and may raise
-    StoreCorruptError; only the production entry turns it on."""
+    StoreCorruptError; only the production entry turns it on. The returned ASGI object owns one
+    Store for one application lifespan; create a new app object for a later independent run."""
     store = Store(db_path or _default_db_path(), boot_hardening=boot_hardening)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_application: FastAPI):
+        try:
+            yield
+        finally:
+            store.close()
+
     app = FastAPI(
         title="AssessHub",
         version=engine.ENGINE_SCHEMA_VERSION,
         description="A live web platform over the Cisco Migration-Assessment engine.",
+        lifespan=lifespan,
     )
 
     @app.exception_handler(ExecutionReceiptAuthorityError)
@@ -2316,47 +2805,29 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     # non-API path returns index.html so client-side deep links survive a hard refresh. The /api
     # routes above are registered first, so they always win over this catch-all.
     dist_root = Path(dist_dir) if dist_dir is not None else FRONTEND_DIST
-    if dist_root.exists():
-        assets_dir = dist_root / "assets"
-        if assets_dir.exists():
-            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+    frontend_index = _frontend_file_index(dist_root)
+    app.state.frontend_ready = False
+    app.state.frontend_status = "bounded_startup_index_failed"
+    if frontend_index is not None:
+        _dist, frontend_files = frontend_index
+        index_file = frontend_files["index.html"]
+        app.state.frontend_ready = True
+        app.state.frontend_status = "ready"
 
-        @app.get("/{full_path:path}", include_in_schema=False)
-        def spa(full_path: str):
+        @app.api_route(
+            "/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+        def spa(request: Request, full_path: str):
             if full_path.startswith("api/"):
                 raise HTTPException(404, "Not found")
-            # SECURITY: this catch-all sits BELOW the /api access guard (no token/loopback check), so the
-            # join MUST be contained. A raw client (browsers normalise `..`, sockets/curl --path-as-is do
-            # not) can send `/../../../etc/passwd`; without the resolve()+containment check that FileResponse
-            # served ANY file the process can read — the client-snapshot DB, source, keys — unauthenticated.
-            # An escaping / absolute / drive-qualified path falls through to index.html, never a file read.
-            #
-            # The rejection happens BEFORE resolve(), because resolve() is itself a sink — the
-            # containment check after it is correct but runs too late. On Windows a path beginning
-            # `//` is a UNC name, and resolve() performs a LIVE NETWORK LOOKUP for it: measured
-            # through the real app, `GET ///198.51.100.7/share/x` returned 200 after 42.3s, and each
-            # such call opens an outbound SMB session in which Windows offers NTLMv2 credentials.
-            # That is a credential-leak/relay primitive plus a threadpool-exhaustion DoS (this
-            # handler is sync, so each request pins a worker for the whole lookup) on a route with no
-            # token check, no loopback check, no Host allowlist and no generation cap — and an egress
-            # the air-gapped field posture forbids outright. A NUL byte reaches resolve() the same
-            # way and raises ValueError, i.e. an unhandled 500.
-            dist = dist_root.resolve()
-            segments = [s for s in re.split(r"[\\/]+", full_path) if s not in ("", ".")]
-            unsafe = (
-                not full_path
-                or not segments
-                or "\x00" in full_path
-                or full_path[0] in "/\\"            # UNC (`//host/share`) or root-absolute
-                or ":" in segments[0]               # drive- (`C:`) or scheme-qualified
-                or any(s == ".." for s in segments)
-            )
-            if unsafe:
-                return FileResponse(dist / "index.html")
-            candidate = (dist / full_path).resolve()
-            if candidate.is_relative_to(dist) and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(dist / "index.html")
+            # This unguarded catch-all accepts no request-time filesystem operation. Only an
+            # exact key can select bounded immutable bytes captured under ``dist`` at startup;
+            # missing assets stay 404 while non-asset deep links receive the SPA shell.
+            selected = frontend_files.get(full_path)
+            if selected is not None:
+                return _frontend_response(selected, request)
+            if full_path == "assets" or full_path.startswith("assets/"):
+                raise HTTPException(404, "Not found")
+            return _frontend_response(index_file, request)
 
     return app
 

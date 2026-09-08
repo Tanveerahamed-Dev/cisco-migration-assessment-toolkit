@@ -11,6 +11,7 @@ Same harness discipline as the sibling files: in-process via TestClient / direct
 subprocess is always faked (a stub that writes the snapshot the dispatcher expects), no real DB.
 """
 
+import hashlib
 import io
 import json
 import sys
@@ -26,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` i
 import backend.ingest as ing  # noqa: E402
 import backend.serve as serve  # noqa: E402
 from backend.app import create_app  # noqa: E402
+from frontend_fixture import write_frontend_dist  # noqa: E402
 
 
 @pytest.fixture()
@@ -139,7 +141,17 @@ def _fake_uvicorn(rec: dict):
 
 
 def test_main_serves_app_object_without_reload_or_workers(monkeypatch, tmp_path):
+    from backend.storage import Store
+
     rec = {}
+    closes = []
+    real_close = Store.close
+
+    def traced_close(store):
+        closes.append(store)
+        real_close(store)
+
+    monkeypatch.setattr(Store, "close", traced_close)
     monkeypatch.setitem(sys.modules, "uvicorn", _fake_uvicorn(rec))
     monkeypatch.setattr(serve, "_schedule_browser_open", lambda url: rec.setdefault("browser", url))
     rc = serve.main(["--db", str(tmp_path / "a.db"), "--port", "8123", "--no-browser"])
@@ -150,6 +162,7 @@ def test_main_serves_app_object_without_reload_or_workers(monkeypatch, tmp_path)
     assert "reload" not in rec["kw"] and "workers" not in rec["kw"]
     assert rec["kw"]["host"] == "127.0.0.1" and rec["kw"]["port"] == 8123
     assert "browser" not in rec  # --no-browser honoured
+    assert len(closes) == 1
 
 
 def test_main_schedules_browser_open_by_default(monkeypatch, tmp_path):
@@ -158,6 +171,96 @@ def test_main_schedules_browser_open_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(serve, "_schedule_browser_open", lambda url: rec.setdefault("browser", url))
     assert serve.main(["--db", str(tmp_path / "a.db"), "--port", "8124"]) == 0
     assert rec["browser"] == "http://127.0.0.1:8124/"
+
+
+def test_main_refuses_to_launch_without_the_bounded_frontend_index(
+    monkeypatch, tmp_path, capsys,
+):
+    from backend.storage import Store
+
+    rec = {}
+    closes = []
+    real_close = Store.close
+
+    def traced_close(store):
+        closes.append(store)
+        real_close(store)
+
+    monkeypatch.setattr(Store, "close", traced_close)
+    monkeypatch.setitem(sys.modules, "uvicorn", _fake_uvicorn(rec))
+    monkeypatch.setattr(serve, "_schedule_browser_open", lambda url: rec.setdefault("browser", url))
+    rc = serve.main([
+        "--db", str(tmp_path / "a.db"),
+        "--dist", str(tmp_path / "missing-dist"),
+    ])
+    assert rc == 1
+    assert rec == {}
+    assert len(closes) == 1
+    assert "bounded immutable startup indexing" in capsys.readouterr().err
+
+
+def test_main_closes_store_if_server_startup_raises(monkeypatch, tmp_path):
+    from backend.storage import Store
+
+    closes = []
+    real_close = Store.close
+
+    def traced_close(store):
+        closes.append(store)
+        real_close(store)
+
+    def failed_run(_app, **_kwargs):
+        raise RuntimeError("synthetic server startup failure")
+
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    monkeypatch.setattr(Store, "close", traced_close)
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=failed_run))
+    with pytest.raises(RuntimeError, match="synthetic server startup failure"):
+        serve.main([
+            "--db", str(tmp_path / "startup.db"),
+            "--dist", str(dist),
+            "--no-browser",
+        ])
+    assert len(closes) == 1
+
+
+def test_main_resolves_server_runtime_before_opening_store(monkeypatch, tmp_path, capsys):
+    from backend import app as app_module
+
+    created = []
+    monkeypatch.setattr(
+        app_module,
+        "create_app",
+        lambda **kwargs: created.append(kwargs),
+    )
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    assert serve.main(["--db", str(tmp_path / "never-opened.db")]) == 1
+    assert created == []
+    assert "server runtime is unavailable" in capsys.readouterr().err
+
+
+def test_main_closes_store_if_browser_scheduling_raises(monkeypatch, tmp_path):
+    from backend.storage import Store
+
+    closes = []
+    real_close = Store.close
+
+    def traced_close(store):
+        closes.append(store)
+        real_close(store)
+
+    def failed_schedule(_url):
+        raise RuntimeError("synthetic browser scheduling failure")
+
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    monkeypatch.setattr(Store, "close", traced_close)
+    monkeypatch.setitem(sys.modules, "uvicorn", _fake_uvicorn({}))
+    monkeypatch.setattr(serve, "_schedule_browser_open", failed_schedule)
+    with pytest.raises(RuntimeError, match="synthetic browser scheduling failure"):
+        serve.main(["--db", str(tmp_path / "browser.db"), "--dist", str(dist)])
+    assert len(closes) == 1
 
 
 def test_version_flag_prints_brand_and_exits_zero(capsys):
@@ -185,8 +288,7 @@ def test_selftest_green_on_dev_checkout(tmp_path, capsys):
     pytest.importorskip("docx")
     pytest.importorskip("pptx")
     dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html>", encoding="utf-8")
+    write_frontend_dist(dist)
     rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "data" / "hub.db"))
     out = capsys.readouterr().out
     assert rc == 0, out
@@ -203,11 +305,26 @@ def test_selftest_fails_loud_on_missing_frontend_dist(tmp_path, capsys):
     assert "FAIL" in out and "frontend" in out.lower()
 
 
+def test_selftest_uses_the_same_bounded_frontend_index_as_the_app(
+    monkeypatch, tmp_path, capsys,
+):
+    pytest.importorskip("docx")
+    pytest.importorskip("pptx")
+    from backend import app as app_module
+
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    monkeypatch.setattr(app_module, "_frontend_file_index", lambda _dist: None)
+    rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "frontend-dist" in out and "bounded immutable startup indexing" in out
+
+
 def test_selftest_fails_when_explorer_template_missing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(serve, "_explorer_template_path", lambda: tmp_path / "absent.html")
     dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html>", encoding="utf-8")
+    write_frontend_dist(dist)
     rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
     out = capsys.readouterr().out
     assert rc == 1
@@ -225,8 +342,7 @@ def test_selftest_fails_when_oui_kb_degraded(monkeypatch, tmp_path, capsys):
         lambda: {"authoritative": False, "status": "invalid", "error": "hash mismatch"},
     )
     dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html>", encoding="utf-8")
+    write_frontend_dist(dist)
     rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
     out = capsys.readouterr().out
     assert rc == 1
@@ -257,8 +373,7 @@ def test_selftest_fails_when_retained_eol_evidence_is_missing(monkeypatch, tmp_p
         },
     )
     dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html>", encoding="utf-8")
+    write_frontend_dist(dist)
 
     rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
     out = capsys.readouterr().out
@@ -293,8 +408,7 @@ def test_selftest_fails_when_eol_fixture_is_not_semantically_bound(monkeypatch, 
         },
     )
     dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html>", encoding="utf-8")
+    write_frontend_dist(dist)
 
     rc = serve.run_selftest(dist_dir=dist, db_path=str(tmp_path / "a.db"))
     out = capsys.readouterr().out
@@ -313,14 +427,49 @@ def test_selftest_flag_exits_with_failure_code(tmp_path):
 # ── create_app(dist_dir=…): the frozen/package serving hook ─────────────────────
 def test_create_app_serves_provided_dist_dir(tmp_path):
     dist = tmp_path / "dist"
-    (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text("<html>ATLAS-DIST-MARKER</html>", encoding="utf-8")
-    (dist / "assets" / "x.js").write_text("js-payload", encoding="utf-8")
+    write_frontend_dist(
+        dist,
+        "ATLAS-DIST-MARKER",
+        asset_name="x.js",
+        asset_bytes=b"js-payload",
+    )
     app = create_app(db_path=str(tmp_path / "t.db"), dist_dir=str(dist))
     with TestClient(app, base_url="http://localhost") as c:
         assert "ATLAS-DIST-MARKER" in c.get("/campaigns/view/3").text  # deep-link fallback
-        assert c.get("/assets/x.js").text == "js-payload"
-        # containment survives the parametrisation: an escaping path falls back to index.html
+        asset = c.get("/assets/x.js")
+        assert asset.status_code == 200 and asset.text == "js-payload"
+        assert asset.headers["accept-ranges"] == "bytes"
+        assert asset.headers["etag"] == f'"{hashlib.sha256(b"js-payload").hexdigest()}"'
+        head = c.head("/assets/x.js")
+        assert head.status_code == 200 and head.content == b""
+        assert head.headers["content-length"] == str(len(b"js-payload"))
+        assert c.get("/assets/x.js", headers={"if-none-match": asset.headers["etag"]}).status_code == 304
+        assert c.get(
+            "/assets/x.js", headers={"if-none-match": f"W/{asset.headers['etag']}"},
+        ).status_code == 304
+        assert c.head("/assets/x.js", headers={"if-none-match": "*"}).status_code == 304
+        partial = c.get("/assets/x.js", headers={"range": "BYTES=0-1"})
+        assert partial.status_code == 206 and partial.content == b"js"
+        assert partial.headers["content-range"] == "bytes 0-1/10"
+        partial_head = c.head("/assets/x.js", headers={"range": "bytes=0-1"})
+        assert partial_head.status_code == 200 and partial_head.content == b""
+        assert partial_head.headers["content-length"] == "10"
+        assert c.get(
+            "/assets/x.js",
+            headers={"range": "bytes=0-1", "if-range": '"stale"'},
+        ).content == b"js-payload"
+        assert c.get(
+            "/assets/x.js",
+            headers={"range": "bytes=0-1", "if-range": asset.headers["etag"]},
+        ).content == b"js"
+        assert c.get("/assets/x.js", headers={"range": "bytes=0-1,4-5"}).content == b"js-payload"
+        assert c.get("/assets/x.js", headers={"range": "items=0-1"}).content == b"js-payload"
+        unsatisfied = c.get("/assets/x.js", headers={"range": "bytes=999-"})
+        assert unsatisfied.status_code == 416
+        assert unsatisfied.headers["content-range"] == "bytes */10"
+        assert c.get("/assets/missing.js").status_code == 404
+        assert c.head("/assets/missing.js").status_code == 404
+        # The startup index survives the parametrisation: an escaping deep link gets index.html.
         assert "ATLAS-DIST-MARKER" in c.get("/../../pyproject.toml").text
 
 

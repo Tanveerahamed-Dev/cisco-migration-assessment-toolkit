@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` i
 from backend import app as app_mod  # noqa: E402
 from backend import deliverables  # noqa: E402
 from backend.app import create_app  # noqa: E402
+from frontend_fixture import write_frontend_dist  # noqa: E402
 
 # A section name that is in the allow-list AND present in every snapshot -> deterministic 200.
 _SECTION = "devices"
@@ -246,19 +247,16 @@ _EXEMPT_API_GETS = frozenset({"/api/health"})
 #: unguarded BY CONSTRUCTION — with the reason each is allowed to be, and whether it exists only
 #: when the SPA bundle has been built. `test_no_route_is_registered_outside_the_derived_guard_surface`
 #: fails when anything else appears here, so the gap cannot open silently (the guard surface is
-#: `/api/* + the docs set`; a Mount or a route on another prefix is invisible to it).
+#: `/api/* + the docs set`; a route on another prefix is invisible to it).
 #: `{path: (is_registered_now, why_it_may_be_unguarded)}`. The first element is a PREDICATE, not a
-#: constant: both entries are conditional on the SPA bundle, so "absent" is only excusable when the
+#: constant: the entry is conditional on the SPA bundle, so "absent" is only excusable when the
 #: bundle really is absent — otherwise a route that quietly stopped being registered would read as
 #: an unbuilt frontend.
 _UNGUARDED_SURFACE: dict[str, tuple] = {
-    "/assets": (lambda: (app_mod.FRONTEND_DIST / "assets").is_dir(),
-                "StaticFiles mount for the SPA's content-hashed bundles: no store access, no "
-                "client data, and the app's own <script src>/<link href> loads are how it is "
-                "meant to be fetched"),
-    "/{full_path:path}": (lambda: app_mod.FRONTEND_DIST.is_dir(),
-                          "the SPA shell + history fallback: a user following a cross-site link "
-                          "must get the app, not a 403 (it reads no store)"),
+    "/{full_path:path}": (lambda: (app_mod.FRONTEND_DIST / "index.html").is_file(),
+                          "the exact startup-indexed SPA assets, shell, and history fallback: a "
+                          "user following a cross-site link must get the app, not a 403 (it reads "
+                          "no store)"),
 }
 
 #: GET routes that are legitimately outside the /api surface the guard derives from. The SPA shell
@@ -334,9 +332,7 @@ def test_no_route_is_registered_outside_the_derived_guard_surface(client):
     """[F5] The guard surface is DERIVED, but the derivation is itself a shape: `/api/* plus the docs
     set`. Anything registered outside it — a `Mount`, a route on a future `/v2` or `/internal` prefix
     — is unguarded by construction and nothing would have said so. The sweep above only walks
-    `APIRoute`s, so it cannot even see the `/assets` StaticFiles mount.
-
-    So enumerate EVERY registered route (Mounts included), classify each with the app's own
+    So enumerate EVERY registered route, classify each with the app's own
     `is_guarded_api_path`, and require anything outside the surface to be recorded in
     `_UNGUARDED_SURFACE` with a reason. A new unguarded prefix or mount fails here instead of
     silently opening the gap.
@@ -509,11 +505,12 @@ def test_the_spa_shell_is_exempt_from_the_guard_without_needing_the_real_bundle(
     "route not registered" reason the `!= 403` form did."""
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
     dist = tmp_path / "dist"
-    (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text(
-        "<!doctype html><html><body><div id=root>SYNTHETIC-SHELL-MARKER</div></body></html>",
-        encoding="utf-8")
-    (dist / "assets" / "app-abc123.js").write_text("export const marker = 1;\n", encoding="utf-8")
+    write_frontend_dist(
+        dist,
+        "SYNTHETIC-SHELL-MARKER",
+        asset_name="app-abc123.js",
+        asset_bytes=b"export const marker = 1;\n",
+    )
 
     app = create_app(db_path=str(tmp_path / "shell.db"), dist_dir=dist)
     with TestClient(app, base_url="http://localhost") as c:
@@ -524,7 +521,7 @@ def test_the_spa_shell_is_exempt_from_the_guard_without_needing_the_real_bundle(
             assert r.headers["content-type"].startswith("text/html"), r.headers.get("content-type")
             assert "SYNTHETIC-SHELL-MARKER" in r.text, r.text[:200]
 
-        # the /assets Mount too — recorded in _UNGUARDED_SURFACE, so pin that it really is reachable
+        # Indexed assets share the same catch-all and remain cross-site readable by design.
         a = c.get("/assets/app-abc123.js", headers=cross)
         assert a.status_code == 200, a.status_code
         assert "export const marker" in a.text

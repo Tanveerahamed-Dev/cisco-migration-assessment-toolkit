@@ -105,7 +105,7 @@ The NotebookLM "citation UX" program (the explorer/askbot honesty layer) + the d
 | W3-6 ✅ **BUILT** (`6cb3a7c`) | **Doctrine-graph invariants** — AST-project `_decision(pid)`↔`design_kb`; gate two pytest invariants — coverage-honesty as a build gate | **DONE.** `cisco_toolkit/doctrine.py` `build_doctrine_graph()` projects from SOURCE (AST-only, no egress): 82 literal `_decision(pid)` + 8 `_NEEDS` overlay pids vs 307 KB principles / 89 engine_actionable. `doctrine_invariants()` (pure) gates INV1 *no orphan detector* (0) + INV2 *engine_actionable ⊆ cited* (89/89 wired). Two pytest gates (one proves the logic catches a synthetic orphan+uncited; one asserts the live graph holds + the only dynamic call is `_NEEDS`). Placed in `cisco_toolkit/` for testability vs the proposed `tools/` | **M** |
 | W3-7 ✅ **BUILT** (`47763a6`) | **Auto-generated traceability appendix** (decision→principle→citation→evidence) in the As-Built HLD — the one safe *product* win | **DONE.** `build_design_traceability(snap)` (pure renderer over `design_blueprint.decisions`, no new compute, no golden change) → one row per recommended decision: decision → CCDE principle (id+title) → published citation → evidence (summary + snapshot field PATHS + devices). COVERAGE-HONEST: an uncited decision shows '(uncited)', never fabricated. Rendered as design.py §4.5. Verified test-first (pure-fn + DOCX-render) + real Meridian (30 decisions traced, 0 uncited). **Follow-on:** reuse in archreview/crd | **M** |
 
-**W3-3 binding fix:** `--collect-raw-outputs` must **force secret-scrub (`_scrub_secrets`) + excerpt-only,
+**W3-3 binding fix:** `--collect-raw-outputs` must **force secret-scrub (`_redact_config_values`) + excerpt-only,
 unconditionally** (independent of `--redact`, which is default-OFF) — else `show running-config` ships cleartext
 secrets. `redact_snapshot`'s recursive `_walk` (`html.py:701`) covers it *only under `--redact`*.
 
@@ -135,7 +135,7 @@ secrets. `redact_snapshot`'s recursive `_walk` (`html.py:701`) covers it *only u
   (`GATE_SEQUENCE` stores free-text offsets) so it would fabricate. *Salvage: gate-velocity + remediation burn-down,
   computed live, "window not anchored" instead of a fabricated verdict.*
 - **Ordinal-equivalence redaction** — an **anti-goal**: "this community is reused on A,B,C" is exactly the
-  attacker-useful fact redaction must *destroy*; `_scrub_secrets` deliberately one-way-scrubs. **Cut.** (IP/MAC/
+  attacker-useful fact redaction must *destroy*; `_redact_config_values` deliberately one-way-scrubs. **Cut.** (IP/MAC/
   serial pseudonyms already preserve safe consistency.)
 - **OS-keychain credential bundle** — gold-plating an already-closed threat (`$CISCO_PASS` keeps secrets out of the
   file; they live only in an in-process dict; `html.py` scrubs every secret form before any write). *Salvage:

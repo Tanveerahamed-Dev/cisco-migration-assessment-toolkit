@@ -843,12 +843,12 @@ def test_ingest_route_passes_upload_spool_not_bytes_to_zip_runner(tmp_path, monk
             f"/api/campaigns/{campaign['id']}/ingest",
             files={"file": ("fleet.zip", b"PKstreamed", "application/zip")},
         )
+        persisted = app.state.store.get_snapshot(response.json()["id"])
     assert response.status_code == 201, response.text
     assert seen == {"is_bytes": False, "seekable": True, "prefix": b"PK"}
     verification = response.json()["summary"]["verification"]
     assert verification["status"] == "verified"
     assert verification["origin"] == summary.LOCAL_ENGINE_ORIGIN
-    persisted = app.state.store.get_snapshot(response.json()["id"])
     assert persisted[summary.SNAPSHOT_PROVENANCE_KEY] == {
         "origin": summary.LOCAL_ENGINE_ORIGIN,
         "integrity_verified": True,

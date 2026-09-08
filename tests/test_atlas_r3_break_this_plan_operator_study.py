@@ -593,10 +593,13 @@ def test_generated_browser_serializers_are_valid_javascript(tmp_path: Path) -> N
         "participant-phase-b/05-response.html",
     ):
         text = (kit / name).read_text(encoding="utf-8")
-        scripts = re.findall(r"<script>(.*?)</script>", text, flags=re.DOTALL)
-        assert len(scripts) == 1
+        assert text.count("<script>") == 1
+        assert text.count("</script>") == 1
+        _before, opening, remainder = text.partition("<script>")
+        script, closing, _after = remainder.partition("</script>")
+        assert opening == "<script>" and closing == "</script>"
         script_path = tmp_path / (Path(name).stem + ".js")
-        script_path.write_text(scripts[0], encoding="utf-8", newline="\n")
+        script_path.write_text(script, encoding="utf-8", newline="\n")
         run = subprocess.run(
             ["node", "--check", str(script_path)],
             check=False,

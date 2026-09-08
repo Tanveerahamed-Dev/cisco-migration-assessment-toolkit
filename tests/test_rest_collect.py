@@ -286,19 +286,20 @@ def test_ise_pagination_survives_malformed_port_nextpage(tmp_path, monkeypatch):
     as '9060.attacker.com'` and the test errors."""
     from cisco_toolkit import rest_collect as RC
     urls_hit = []
+    malformed_next = "https://ise.corp.local:9060.attacker.com/ers/steal"
 
     def fake_get_json(opener, url, headers=None, timeout=30):
         urls_hit.append(url)
         if url.endswith("/ers/config/node"):          # page 1: nextPage names a malformed (non-integer) port
             return {"SearchResult": {"resources": [],
-                                     "nextPage": {"href": "https://ise.corp.local:9060.attacker.com/ers/steal"}}}
+                                     "nextPage": {"href": malformed_next}}}
         return None
 
     monkeypatch.setattr(RC, "_get_json", fake_get_json)
     monkeypatch.setattr(RC, "_write", lambda *a, **k: "")
     # must return cleanly, NOT raise ValueError (that is the whole point of the fix)
     RC.collect_ise("https://ise.corp.local", "svc-ro", "S3cretPass!", str(tmp_path), verify_tls=True)
-    assert not any("attacker.com" in u for u in urls_hit), \
+    assert malformed_next not in urls_hit, \
         "a malformed-port nextPage.href must be refused (fail closed), never followed"
 
 
@@ -379,20 +380,23 @@ def test_collect_fmc_survives_malformed_port_pagination_link(tmp_path, monkeypat
     DOM = "dom-uuid-1"
     base = "https://fmc.example"
     got = []
+    malformed_next = (
+        "https://fmc.example:9060.attacker.com/api/fmc_config/v1/domain/x/"
+        "devices/devicerecords?offset=1&limit=1&expanded=true"
+    )
     monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: _FakeFMCLogin([{"name": "Global", "uuid": DOM}]))
 
     def fake_get_json(opener, url, headers=None, timeout=30):
         got.append(url)
         if "devices/devicerecords" in url and "offset=" not in url:    # page 1 -> same-host MALFORMED-port next
             return {"items": [{"name": "FTD-01"}],
-                    "paging": {"next": ["https://fmc.example:9060.attacker.com/api/fmc_config/v1/domain/x/"
-                                        "devices/devicerecords?offset=1&limit=1&expanded=true"]}}
+                    "paging": {"next": [malformed_next]}}
         return {"items": []}
     monkeypatch.setattr(rest_collect, "_get_json", fake_get_json)
 
     # must return cleanly (fail closed), NOT raise ValueError, and never GET the malformed-port link
     rest_collect.collect_fmc(base, "ro", "pw", str(tmp_path))
-    assert not any("attacker.com" in u for u in got), "a malformed-port paging.next must be refused, never followed"
+    assert malformed_next not in got, "a malformed-port paging.next must be refused, never followed"
     fn = os.path.join(str(tmp_path), rest_collect._cmd_filename("api/fmc_config/v1/devices/devicerecords"))
     devs = parse.parse_fmc_devices(open(fn, encoding="utf-8").read())
     assert {d["name"] for d in devs} == {"FTD-01"}      # page 1 census still written (fail-soft, honest)

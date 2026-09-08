@@ -4770,12 +4770,39 @@ function _normVrf(v){v=(v||"").trim().toLowerCase();return (v===""||v==="default
 /* L2: route-aware reachability — does HOST's (scoped) routing table have a route covering IP?
    Returns the longest-prefix-matching route row, null when a table is present but NOTHING covers IP,
    or undefined when no route data was collected for HOST (caller then falls back — never a false-negative). */
+function _ownData(value,key){if(!value||typeof value!=="object")return undefined;
+  const descriptor=Object.getOwnPropertyDescriptor(value,key);
+  return descriptor&&Object.hasOwn(descriptor,"value")?descriptor.value:undefined;}
+function _routeMap(){const routes=_ownData(SNAP,"routes");
+  return routes&&typeof routes==="object"&&!Array.isArray(routes)?routes:null;}
+function _routeKeyAllowed(host){return typeof host==="string"&&host!=="__proto__";}
+function _routePrefix(row){const prefix=_ownData(row,"prefix");
+  if(typeof prefix!=="string"||prefix!==prefix.trim()||prefix.length>64||
+     prefix.indexOf("/")<=0||prefix.indexOf("/")!==prefix.lastIndexOf("/"))return null;
+  const net=_fibParseNet(prefix);return net&&net.v===4?prefix:null;}
+function _routeOwnText(row,key){const value=_ownData(row,key);
+  return typeof value==="string"?(operatorTextAtom(value,512)||""):"";}
+function _safeRouteRow(row){const prefix=_routePrefix(row);if(prefix===null)return null;
+  const clean={prefix};for(const key of ["source","next_hop","out_intf"]){
+    const value=_routeOwnText(row,key);if(value)clean[key]=value;}
+  const descriptor=row&&typeof row==="object"?Object.getOwnPropertyDescriptor(row,"admin_distance"):null;
+  if(descriptor&&Object.hasOwn(descriptor,"value")){
+    const ad=descriptor.value;
+    clean.admin_distance=(typeof ad==="number"&&Number.isFinite(ad)&&Number.isInteger(ad)&&ad>=0)?ad:
+      (typeof ad==="string"&&operatorTextAtom(ad,32)?ad:null);
+  }
+  return clean;}
+function routesFor(host){const routes=_routeMap();
+  if(!routes||!_routeKeyAllowed(host))return[];const rows=_ownData(routes,host);
+  if(!Array.isArray(rows))return[];const clean=[];
+  for(let i=0;i<rows.length;i++){const row=_safeRouteRow(_ownData(rows,String(i)));if(row)clean.push(row);}
+  return clean;}
 function _routeCovers(host,ip){
-  const rt=(SNAP&&SNAP.routes&&SNAP.routes[host])?SNAP.routes[host]:null;
-  if(!rt||!rt.length)return undefined;                                  // no route data -> assume routed (back-compat)
+  const rt=routesFor(host);
+  if(!rt.length)return undefined;                                       // no route data -> assume routed (back-compat)
   const a=_ip2int(ip); if(a==null)return undefined;                     // unparseable dst -> don't block
   let best=null,bestLen=-1;
-  for(const r of rt){const parts=String(r.prefix||"").split("/"); if(parts.length!==2)continue;
+  for(const r of rt){const parts=r.prefix.split("/");
     const base=_ip2int(parts[0]),len=+parts[1];
     if(base==null||!(len>=0&&len<=32))continue;
     const mask=len===0?0:((0xFFFFFFFF<<(32-len))>>>0);                  // /0 default matches everything
@@ -4784,10 +4811,10 @@ function _routeCovers(host,ip){
 }
 /* V3.23.130: all routes at the LONGEST matching prefix (equal-cost) -> ECMP detection for the flow sim. */
 function _routesCovering(host,ip){
-  const rt=(SNAP&&SNAP.routes&&SNAP.routes[host])?SNAP.routes[host]:null; if(!rt||!rt.length)return [];
+  const rt=routesFor(host); if(!rt.length)return [];
   const a=_ip2int(ip); if(a==null)return [];
   let bestLen=-1; const out=[];
-  for(const r of rt){const parts=String(r.prefix||"").split("/"); if(parts.length!==2)continue;
+  for(const r of rt){const parts=r.prefix.split("/");
     const base=_ip2int(parts[0]),len=+parts[1]; if(base==null||!(len>=0&&len<=32))continue;
     const mask=len===0?0:((0xFFFFFFFF<<(32-len))>>>0);
     if(((a&mask)>>>0)===((base&mask)>>>0)){ if(len>bestLen){bestLen=len;out.length=0;out.push(r);} else if(len===bestLen)out.push(r); }}
@@ -5572,7 +5599,7 @@ function flowBetween(s,d){
   // present but no covering route). The old code fell straight through to a confident 'REACHABLE — L3', so the
   // Reachability Matrix painted a verified-green check for a flow it never actually checked. Flag it as an
   // ASSUMPTION so the matrix surfaces it as '?' (unknown), not a confident reach, and the why-ladder discloses it.
-  if(d.ip&&_rt===undefined&&!(SNAP&&SNAP.routes&&SNAP.routes[sgw]&&SNAP.routes[sgw].length)){
+  if(d.ip&&_rt===undefined&&!routesFor(sgw).length){
     F.routeAssumed=true; hop("L3",`⚠ ${sgw} routing table not collected — L3 reachability to ${d.ip} is ASSUMED, not verified (coverage gap).`,false);}
   seg(sv,s.host,sgw);
   const single=sgwAll.size<2;
@@ -6267,7 +6294,7 @@ window.addEventListener("keydown",e=>{ if(e.key==="Escape"&&FLOWSIM){e.preventDe
    apply a hypothetical ("fail a switch" / "fail a link") and DIFF the result against the baseline so
    you can see exactly which flows a cutover would break — before you touch the network. Honest: same
    offline L1–L4 control-plane intent the single-flow simulator uses (flowBetween), just run N×N. ==== */
-let FMX=null;   // {reps, base, mut, whatif:{kind,arg}, sum}
+let FMX=null;   // {reps, base, mut, whatif:{kind,arg,rhost,asrc,adst}, sum, diff}
 function _linkSig2(L){return [L.a,L.b].sort().join("::");}
 /* one representative endpoint per VLAN (lowest IP), capped + sorted by VLAN id. */
 function fmxReps(){
@@ -6289,9 +6316,13 @@ function fmxMutateModel(mut){
 function fmxWithModel(clone,fn){ const orig=MODEL; try{ MODEL=clone; return fn(); } finally{ MODEL=orig; } }
 /* V3.23.136: route-level what-if — `_routeCovers` reads SNAP.routes (not MODEL), so removing a route /
    prefix needs a SNAP swap (shallow: shares every other key, replaces only routes[host]). */
-function fmxRouteHosts(){ const r=(SNAP&&SNAP.routes)||{}; return Object.keys(r).filter(h=>(r[h]||[]).length).sort(); }
-function fmxMutateSnap(host,prefix){ const routes=Object.assign({},(SNAP&&SNAP.routes)||{});
-  routes[host]=(routes[host]||[]).filter(r=>r.prefix!==prefix); return Object.assign({},SNAP,{routes}); }
+function fmxRouteHosts(){ const routes=_routeMap();
+  return routes?Object.keys(routes).filter(h=>routesFor(h).length).sort():[]; }
+function fmxMutateSnap(host,prefix){ const routes=Object.create(null),source=_routeMap();
+  if(source)Object.keys(source).forEach(key=>{const rows=routesFor(key);if(rows.length)routes[key]=rows;});
+  if(_routeKeyAllowed(host))routes[host]=routesFor(host).filter(r=>r&&r.prefix!==prefix);
+  const clone={...SNAP,routes};if(Object.hasOwn(clone,"__proto__"))delete clone["__proto__"];
+  return clone; }
 function fmxWithSnap(clone,fn){ const orig=SNAP; try{ SNAP=clone; return fn(); } finally{ SNAP=orig; } }
 /* N×N verdict grid for the CURRENT MODEL (caller swaps it for what-if). */
 function fmxCompute(reps,denySpec){
@@ -6327,27 +6358,55 @@ function openFlowMatrix(){
   renderFlowMatrix();
 }
 function closeFlowMatrix(){ FMX=null; const el=document.getElementById("flowmatrix"); if(el)el.hidden=true; document.body.style.overflow=""; }
-function fmxSetWhatif(kind){ if(!FMX)return; FMX.whatif={kind,arg:"",rhost:"",asrc:"any",adst:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
-function fmxSetArg(arg){ if(!FMX)return; FMX.whatif.arg=arg; fmxApply(); }
-function fmxSetRouteHost(h){ if(!FMX)return; FMX.whatif.rhost=h; FMX.whatif.arg=""; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
+function operatorTextAtom(value,maxLength){const text=String(value==null?"":value),max=maxLength||512;
+  if(!text||text.length>max)return null;
+  for(let i=0;i<text.length;i++){const cp=text.codePointAt(i);if(cp>0xffff)i++;
+    if(cp<0x20||(cp>=0x7f&&cp<=0x9f)||(cp>=0xd800&&cp<=0xdfff)||cp===0x61c||
+       (cp>=0x200b&&cp<=0x200f)||(cp>=0x2028&&cp<=0x202e)||
+       (cp>=0x2060&&cp<=0x206f)||cp===0xfeff)return null;}
+  return text;}
+function fmxSetWhatif(kind){ if(!FMX)return;
+  const selected=["none","host","link","route","acl"].includes(kind)?kind:"none";
+  FMX.whatif={kind:selected,arg:"",rhost:"",asrc:"any",adst:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
+function fmxSetArg(arg){ if(!FMX)return; FMX.whatif.arg=operatorTextAtom(arg,512)||""; fmxApply(); }
+function fmxSetRouteHost(h){ if(!FMX)return; const host=operatorTextAtom(h,512);
+  FMX.whatif.rhost=host&&fmxRouteHosts().includes(host)?host:""; FMX.whatif.arg="";
+  FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
 /* V3.23.138: add-a-deny-ACE what-if — deny the current L4 tuple from src VLAN (or any) → dst VLAN. */
-function fmxSetAclSrc(v){ if(!FMX)return; FMX.whatif.asrc=v; if(FMX.whatif.adst){FMX.whatif.arg=v+"|"+FMX.whatif.adst; fmxApply();} else renderFlowMatrix(); }
-function fmxSetAclDst(v){ if(!FMX)return; FMX.whatif.adst=v; if(v){FMX.whatif.arg=(FMX.whatif.asrc||"any")+"|"+v; fmxApply();} else {FMX.whatif.arg="";FMX.mut=null;FMX.diff=null;renderFlowMatrix();} }
+function fmxSetAclSrc(v){ if(!FMX)return; FMX.whatif.asrc=operatorTextAtom(v,512)||"";
+  if(FMX.whatif.adst)fmxApply(); else renderFlowMatrix(); }
+function fmxSetAclDst(v){ if(!FMX)return; FMX.whatif.adst=operatorTextAtom(v,512)||"";
+  if(FMX.whatif.adst)fmxApply(); else {FMX.mut=null;FMX.diff=null;renderFlowMatrix();} }
 /* V3.23.137: change the L4 tuple the matrix evaluates ACLs against — recomputes baseline (+ active what-if). */
 function fmxSetTuple(proto,dport){ if(!FMX)return;
-  if(proto)FLOW_PROTO=proto;
+  if(["tcp","udp","icmp","ip"].includes(proto))FLOW_PROTO=proto;
   if(dport!=null&&dport!==""){const nn=parseInt(dport,10); if(nn>=1&&nn<=65535)FLOW_DPORT=nn;}
   FMX.base=fmxCompute(FMX.reps);
-  if(FMX.whatif&&FMX.whatif.arg)fmxApply(); else renderFlowMatrix(); }
+  if(FMX.whatif)fmxApply(); else renderFlowMatrix(); }
+function fmxWhatifLabel(wf,proto,dport){if(!wf)return "invalid what-if";
+  const arg=operatorTextAtom(wf.arg,512),rhost=operatorTextAtom(wf.rhost,512);
+  const asrc=operatorTextAtom(wf.asrc,512),adst=operatorTextAtom(wf.adst,512);
+  if(wf.kind==="host")return arg?"fail switch "+shortName(arg):"invalid what-if";
+  if(wf.kind==="link")return arg?"fail link "+arg:"invalid what-if";
+  if(wf.kind==="route")return rhost&&arg?"remove route "+rhost+" "+arg:"invalid what-if";
+  if(wf.kind==="acl")return asrc&&adst?"deny "+String(proto).toUpperCase()+
+    ((proto==="tcp"||proto==="udp")?"/"+dport:"")+" "+asrc+" → V"+adst:"invalid what-if";
+  return wf.kind==="none"?"none":"invalid what-if";}
 function fmxApply(){ if(!FMX)return; const wf=FMX.whatif;
-  if(wf.kind==="none"||!wf.arg){ FMX.mut=null; FMX.diff=null; renderFlowMatrix(); return; }
+  if(wf.kind==="none"){ FMX.mut=null; FMX.diff=null; renderFlowMatrix(); return; }
   let runner=null;
-  if(wf.kind==="host"){ const c=fmxMutateModel({downHosts:new Set([wf.arg]),downLinks:new Set()}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
-  else if(wf.kind==="link"){ const c=fmxMutateModel({downHosts:new Set(),downLinks:new Set([wf.arg])}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
-  else if(wf.kind==="route"){ const k=wf.arg.indexOf("|"); const host=wf.arg.slice(0,k), prefix=wf.arg.slice(k+1);
-    if(host&&prefix){ const sn=fmxMutateSnap(host,prefix); runner=()=>fmxWithSnap(sn,()=>fmxCompute(FMX.reps)); } }
-  else if(wf.kind==="acl"){ const k=wf.arg.indexOf("|"); const sv=wf.arg.slice(0,k), dv=wf.arg.slice(k+1);
-    if(dv){ const denySpec={srcVlan:sv||"any",dstVlan:dv}; runner=()=>fmxCompute(FMX.reps,denySpec); } }
+  const arg=operatorTextAtom(wf.arg,512),rhost=operatorTextAtom(wf.rhost,512);
+  if(wf.kind==="host"&&arg&&MODEL.hosts.includes(arg)){
+    const c=fmxMutateModel({downHosts:new Set([arg]),downLinks:new Set()}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
+  else if(wf.kind==="link"&&arg&&MODEL.links.map(_linkSig2).includes(arg)){
+    const c=fmxMutateModel({downHosts:new Set(),downLinks:new Set([arg])}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
+  else if(wf.kind==="route"&&rhost&&arg&&routesFor(rhost).some(r=>r&&r.prefix===arg)){
+    const sn=fmxMutateSnap(rhost,arg); runner=()=>fmxWithSnap(sn,()=>fmxCompute(FMX.reps)); }
+  else if(wf.kind==="acl"){
+    const asrc=operatorTextAtom(wf.asrc,512),adst=operatorTextAtom(wf.adst,512);
+    const known=v=>FMX.reps.some(r=>String(r.vlan)===v);
+    if((asrc==="any"||known(asrc))&&adst&&known(adst)){
+      const denySpec={srcVlan:asrc,dstVlan:adst}; runner=()=>fmxCompute(FMX.reps,denySpec); } }
   if(!runner){FMX.mut=null;FMX.diff=null;renderFlowMatrix();return;}
   FMX.mut=runner();
   // diff vs baseline
@@ -6361,20 +6420,31 @@ function fmxApply(){ if(!FMX)return; const wf=FMX.whatif;
 }
 function fmxCellClick(i,j){ if(!FMX)return; if(i===j)return;
   const F=flowBetween(FMX.reps[i].ep,FMX.reps[j].ep); if(F){ closeFlowMatrix(); openFlowSim(F); } }
+function fmxCsvCell(value){const raw=String(value==null?"":value);
+  let text=raw===""?"":operatorTextAtom(raw,4096)||"[invalid cell]";
+  const visible=text.trimStart();if(visible.length>1&&"=+-@".includes(visible[0]))text="'"+text;
+  return '"'+text.split('"').join('""')+'"';}
+function fmxCsvRow(values){return values.map(fmxCsvCell).join(",");}
 function fmxCopy(){ if(!FMX)return; const reps=FMX.reps, g=(FMX.mut||FMX.base);
-  const wfLbl=FMX.whatif.kind==="host"?"fail switch "+shortName(FMX.whatif.arg)
-    :FMX.whatif.kind==="link"?"fail link "+FMX.whatif.arg
-    :FMX.whatif.kind==="route"?"remove route "+FMX.whatif.arg.replace("|"," ")
-    :FMX.whatif.kind==="acl"?("deny "+String(FLOW_PROTO).toUpperCase()+((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:"")+" "+FMX.whatif.arg.replace("|"," → V"))
-    :FMX.whatif.kind;
-  const L=[`Reachability matrix${FMX.mut?` — WHAT-IF: ${wfLbl}`:""}`,
-    `Rows = source VLAN, Cols = destination VLAN. R=reachable X=blocked ?=unknown`,""];
-  L.push("src\\dst,"+reps.map(r=>"V"+r.vlan).join(","));
-  g.forEach((row,i)=>{ L.push("V"+reps[i].vlan+","+row.map(c=>c.self?"-":c.unknown?"?":c.reach?"R":(c.l3&&c.acl==="deny"?"D":"X")).join(",")); });
-  const s=fmxSummary(g); L.push("",`R=reachable X=blocked(L1-L3) D=denied(L4 ACL) ?=unknown -=self`,`${s.reach}/${s.tot} reachable, ${s.blk} blocked, ${s.unk} unknown, ${s.asym} asymmetric.`);
-  if(FMX.diff)L.push(`What-if: ${FMX.diff.broke} flow(s) BROKE, ${FMX.diff.fixed} restored.`);
-  const txt=L.join("\n"); const done=()=>{const b=document.getElementById("fmxCopyBtn"); if(b){b.textContent="✓ Copied";setTimeout(()=>{if(b)b.textContent="⧉ Copy CSV";},1400);}};
-  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done).catch(done); else done();
+  const wfLbl=fmxWhatifLabel(FMX.whatif,FLOW_PROTO,FLOW_DPORT);
+  const width=Math.max(1,reps.length+1),row=values=>[
+    ...values,...Array(Math.max(0,width-values.length)).fill("")];
+  const rows=[row([`Reachability matrix${FMX.mut?` — WHAT-IF: ${wfLbl}`:""}`]),
+    row([`Rows = source VLAN, Cols = destination VLAN. R=reachable X=blocked ?=unknown`]),
+    row([]),row(["src\\dst",...reps.map(r=>"V"+r.vlan)])];
+  g.forEach((cells,i)=>{ rows.push(row(["V"+reps[i].vlan,...cells.map(c=>c.self?"-":c.unknown?"?":c.reach?"R":(c.l3&&c.acl==="deny"?"D":"X"))])); });
+  const s=fmxSummary(g); rows.push(row([]),
+    row([`R=reachable X=blocked(L1-L3) D=denied(L4 ACL) ?=unknown -=self`]),
+    row([`${s.reach}/${s.tot} reachable, ${s.blk} blocked, ${s.unk} unknown, ${s.asym} asymmetric.`]));
+  if(FMX.diff)rows.push(row([`What-if: ${FMX.diff.broke} flow(s) BROKE, ${FMX.diff.fixed} restored.`]));
+  const txt=rows.map(fmxCsvRow).join("\r\n");
+  const button=document.getElementById("fmxCopyBtn"),reset=()=>{if(button)button.textContent="⧉ Copy CSV";};
+  const done=()=>{if(button){button.textContent="✓ Copied";setTimeout(reset,1400);}};
+  const failed=()=>{if(button){button.textContent="Copy failed";setTimeout(reset,1800);}};
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done).catch(failed);
+    else failed();
+  }catch(_error){failed();}
 }
 function renderFlowMatrix(){ const S=FMX; if(!S)return;
   const reps=S.reps, n=reps.length, g=S.mut||S.base, diff=S.diff;
@@ -6390,8 +6460,8 @@ function renderFlowMatrix(){ const S=FMX; if(!S)return;
   const linkOpts=`<option value="">— pick a link —</option>`+linkSigs.map(sg=>{const[a,b]=sg.split("::");return `<option value="${esc(sg)}"${S.whatif.kind==="link"&&S.whatif.arg===sg?" selected":""}>${esc(shortName(a))} ↔ ${esc(shortName(b))}</option>`;}).join("");
   const rHosts=fmxRouteHosts();
   const rHostOpts=`<option value="">— pick a router —</option>`+rHosts.map(h=>`<option value="${esc(h)}"${S.whatif.rhost===h?" selected":""}>${esc(shortName(h))}</option>`).join("");
-  const rRoutes=(S.whatif.rhost&&SNAP.routes&&SNAP.routes[S.whatif.rhost])?SNAP.routes[S.whatif.rhost]:[];
-  const rPfxOpts=`<option value="">— pick a route/prefix —</option>`+rRoutes.map(r=>{const a=S.whatif.rhost+"|"+r.prefix;return `<option value="${esc(a)}"${S.whatif.arg===a?" selected":""}>${esc(r.prefix)} (${esc(r.source||"route")}${r.next_hop?" → "+esc(r.next_hop):""})</option>`;}).join("");
+  const rRoutes=routesFor(S.whatif.rhost);
+  const rPfxOpts=`<option value="">— pick a route/prefix —</option>`+rRoutes.map(r=>`<option value="${esc(r.prefix)}"${S.whatif.arg===r.prefix?" selected":""}>${esc(r.prefix)} (${esc(r.source||"route")}${r.next_hop?" → "+esc(r.next_hop):""})</option>`).join("");
   const aclSrcOpts=`<option value="any"${S.whatif.asrc==="any"?" selected":""}>Any src VLAN</option>`+reps.map(r=>`<option value="${r.vlan}"${S.whatif.asrc===String(r.vlan)?" selected":""}>src V${r.vlan}</option>`).join("");
   const aclDstOpts=`<option value="">— dst VLAN —</option>`+reps.map(r=>`<option value="${r.vlan}"${S.whatif.adst===String(r.vlan)?" selected":""}>dst V${r.vlan}</option>`).join("");
   const l4tuple=String(FLOW_PROTO).toUpperCase()+((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:"");
@@ -8577,7 +8647,6 @@ function _protoLabel(p){return ({ospf:"OSPF",eigrp:"EIGRP",bgp:"BGP",rip:"RIP",i
 function protoPill(p){const c=p==="ospf"?"pl-ok":p==="bgp"?"pl-watch":"pl-neutral";return `<span class="pill ${c}">${_protoLabel(p)}</span>`;}
 function rnFor(host){return (SNAP&&SNAP.routing_neighbors&&SNAP.routing_neighbors[host])||{ospf:[],eigrp:[],bgp:[]};}
 function redistFor(host){return (SNAP&&SNAP.redistribution&&SNAP.redistribution[host])||[];}
-function routesFor(host){return (SNAP&&SNAP.routes&&SNAP.routes[host])||[];}
 const _FHRP_GROUP_SCOPE="default/global IPv4 · direct literal local groups";
 const _FHRP_GROUP_EXCLUSIONS="VRFs, IPv6, templates/inheritance/dynamic constructs, secondary VIPs, expected member count, timers, authentication, preemption, tracking behavior, simultaneous election, failover, convergence, freshness, interoperability, and cutover authorization; NX-OS configured-group parsing is limited to nested HSRP";
 const _FHRP_GROUP_STATUS_ORDER=["degraded","review","not_verified","assessed","administratively_disabled"];
@@ -10118,8 +10187,8 @@ function allAdjacencies(){const out=[];
     for(const n of (rn.eigrp||[]))out.push({host:h,proto:"eigrp",peer:n.neighbor,state:n.state,via:n.interface,ok:adjHealthy("eigrp",n.state)});
     for(const n of (rn.bgp||[]))out.push({host:h,proto:"bgp",peer:n.neighbor,state:n.state,via:"AS "+n.as,ok:adjHealthy("bgp",n.state)});}
   return out;}
-function routeSourceDist(host){const c={},rs=host?{[host]:routesFor(host)}:(SNAP.routes||{});
-  for(const h in rs)for(const r of rs[h]){const s=(r.source||"?").toLowerCase().split("-")[0]; c[s]=(c[s]||0)+1;}
+function routeSourceDist(host){const c={},routes=_routeMap(),hosts=host?[host]:(routes?Object.keys(routes):[]);
+  for(const h of hosts)for(const r of routesFor(h)){const s=(r.source||"?").toLowerCase().split("-")[0]; c[s]=(c[s]||0)+1;}
   return c;}
 function distBars(dist){const tot=Object.values(dist).reduce((a,b)=>a+b,0)||1;
   return Object.entries(dist).sort((a,b)=>b[1]-a[1]).map(([s,n])=>{const pct=Math.round(100*n/tot);
@@ -12649,6 +12718,23 @@ function abFlow(boxes){return `<div class="ab-flow">`+boxes.map((x,i)=>
   `<div class="ab-fbox ${x.cls||""}" style="--i:${2*i}">${x.txt}</div>`).join("")+`</div>`;}
 function abSteps(items,cls){return `<ol class="ab-steps ${cls||""}">`+
   items.map((s,i)=>`<li style="--i:${i}">${s}</li>`).join("")+`</ol>`;}
+/* Project only the two authored emphasis tags into clipboard text. Dynamic values are already
+   escaped before these strings are assembled; unexpected raw markup fails closed. */
+const AB_COPY_ENTITIES=Object.freeze([
+  ["&amp;","&"],["&lt;","<"],["&gt;",">"],["&quot;",'"'],["&#39;","'"]
+]);
+function abCopyStepText(value){const input=String(value==null?"":value);let out="",bold=false;
+  for(let i=0;i<input.length;){
+    if(input.startsWith("<b>",i)){if(bold)return "[invalid step]";bold=true;i+=3;continue;}
+    if(input.startsWith("</b>",i)){if(!bold)return "[invalid step]";bold=false;i+=4;continue;}
+    if(input[i]==="<"||input[i]===">")return "[invalid step]";
+    const entity=AB_COPY_ENTITIES.find(([encoded])=>input.startsWith(encoded,i));
+    if(entity){out+=entity[1];i+=entity[0].length;continue;}
+    out+=input[i++];
+  }
+  return bold?"[invalid step]":operatorTextAtom(out,4096)||"[invalid step]";}
+function abCopyHeading(value){const host=operatorTextAtom(value,512);
+  return `CUTOVER MOP — ${host||"[invalid host]"}`;}
 function abX(label,inner){return `<details class="ab-x"><summary>${esc(label)}</summary>${inner}</details>`;}
 
 /* ---- senior AS-engineer handlers (V3.23.179) ----------------------------- */
@@ -12813,11 +12899,10 @@ function abH_cutover(h){const eps=abEps(h).length;const cap=abCap(h)||{};const n
     `Re-cable the old unit per the port map; power up and let STP/CDP settle.`,
     `Verify the same baselines (MAC count ${eps}, CDP uplinks, gateway pings) — then stand down the change.`,
     `Capture logs/configs for the PIR; do not retry in the same window.`];
-  const plain=(t)=>t.replace(/<[^>]+>/g,"");
-  const txt=`CUTOVER MOP — ${h}\n\nPRE-CHECKS\n`+pre.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n")+
-    `\n\nEXECUTION\n`+exec.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n")+
-    `\n\nVALIDATION\n`+val.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n")+
-    `\n\nROLLBACK\n`+rb.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n");
+  const txt=abCopyHeading(h)+`\n\nPRE-CHECKS\n`+pre.map((s,i)=>`${i+1}. ${abCopyStepText(s)}`).join("\n")+
+    `\n\nEXECUTION\n`+exec.map((s,i)=>`${i+1}. ${abCopyStepText(s)}`).join("\n")+
+    `\n\nVALIDATION\n`+val.map((s,i)=>`${i+1}. ${abCopyStepText(s)}`).join("\n")+
+    `\n\nROLLBACK\n`+rb.map((s,i)=>`${i+1}. ${abCopyStepText(s)}`).join("\n");
   let b=`<h4>Cutover MOP — ${esc(h)}</h4>`;
   if(doms.length)b+=abKv("Service tier",doms.map(d=>`${esc(d.domain)} ${abPill(d.tier)}`).join(" · "));
   b+=`<div class="ab-sec"><h4>1 · Pre-checks</h4>${abSteps(pre)}</div>`;

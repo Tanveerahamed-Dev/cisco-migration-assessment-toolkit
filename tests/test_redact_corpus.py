@@ -1,11 +1,11 @@
 """Plan-A Tier-2 #13 (K4): an adversarial redaction leak corpus.
 
-Multi-vendor config lines, each seeded with a UNIQUE sentinel secret value; `_scrub_secrets` must
+Multi-vendor config lines, each seeded with a UNIQUE sentinel secret value; `_redact_config_values` must
 leave ZERO sentinel surviving. This is the regression gate the share-safe promise lacked — two prior
 audit waves found real misses (55 serials survived --redact once). A survivor is unambiguous because
 every secret is a distinct SENTINEL token.
 """
-from cisco_toolkit.html import _scrub_secrets
+from cisco_toolkit.html import _redact_config_values
 
 # (label, config line, the secret SENTINEL that must NOT survive after scrubbing)
 CORPUS = [
@@ -34,21 +34,21 @@ CORPUS = [
 
 def test_no_seeded_secret_survives_scrub():
     survivors = [(label, line, out) for label, line, sentinel in CORPUS
-                 for out in [_scrub_secrets(line)] if sentinel in out]
-    assert not survivors, "secrets survived _scrub_secrets:\n" + "\n".join(
+                 for out in [_redact_config_values(line)] if sentinel in out]
+    assert not survivors, "secrets survived _redact_config_values:\n" + "\n".join(
         f"  [{lbl}] {ln!r} -> {o!r}" for lbl, ln, o in survivors)
 
 
 def test_scrub_preserves_context_and_is_idempotent():
     line = "snmp-server community SENTINELx ro"
-    once = _scrub_secrets(line)
+    once = _redact_config_values(line)
     assert "SENTINELx" not in once and "<redacted>" in once
     assert once.startswith("snmp-server community ")   # keyword context preserved, only the value replaced
     assert once.rstrip().endswith("ro")                # the trailing 'ro' access-level is NOT eaten
-    assert _scrub_secrets(once) == once                # idempotent — re-scrubbing an already-scrubbed line is a no-op
+    assert _redact_config_values(once) == once         # idempotent — re-redacting an already-redacted line is a no-op
 
 
 def test_non_secret_structural_fields_are_untouched():
     """Conservative by design: a bare 'key chain NAME' / 'crypto ... hash md5' must not be corrupted."""
     for line in ("key chain OSPF-KEYS", "crypto isakmp policy 10", "ip address 10.0.0.1 255.255.255.0"):
-        assert _scrub_secrets(line) == line
+        assert _redact_config_values(line) == line
