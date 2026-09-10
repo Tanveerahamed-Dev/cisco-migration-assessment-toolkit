@@ -49,6 +49,26 @@ const REQUIRED_COMPILER_GROUPS = Object.freeze([
   "tests",
   "workflows",
 ]);
+const FORBIDDEN_CONTENT_SCAN_SCOPE = "allowlisted_utf8_text_payloads_only";
+const REQUIRED_FORBIDDEN_CONTENT_RULES = Object.freeze([
+  "private_key_material",
+  "aws_access_key",
+  "github_access_token",
+  "openai_api_key",
+  "slack_access_token",
+  "google_api_key",
+]);
+const FORBIDDEN_CONTENT_SCAN_KEYS = Object.freeze([
+  "eligible_text_files",
+  "findings",
+  "findings_count",
+  "matched_values_retained",
+  "rules",
+  "scanned_text_files",
+  "scope",
+  "status",
+  "unresolved_reasons",
+]);
 const REQUIRED_INVARIANTS = Object.freeze([
   "every_safe_line_structurally_mapped",
   "every_safe_parsed_source_has_one_structural_root",
@@ -272,6 +292,38 @@ function stableJson(value) {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+const JAVASCRIPT_SOURCE_ESCAPES = Object.freeze({
+  "<": "\\u003C",
+  ">": "\\u003E",
+  "&": "\\u0026",
+  "/": "\\u002F",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029",
+});
+const GENERATED_MODULE_SPECIFIER =
+  /^(?:\.\/|\.\.\/\.\.\/)(?:[a-z0-9_-]+\/)*[a-z0-9_-]+\.mjs$/u;
+
+export function javascriptStringLiteral(value) {
+  if (typeof value !== "string") {
+    throw new Error("generated JavaScript string literal must receive a string");
+  }
+  return JSON.stringify(value).replace(
+    /[<>&/\u2028\u2029]/gu,
+    (character) => JAVASCRIPT_SOURCE_ESCAPES[character],
+  );
+}
+
+export function generatedModuleSpecifierLiteral(value) {
+  if (
+    typeof value !== "string" ||
+    value.length > 1024 ||
+    !GENERATED_MODULE_SPECIFIER.test(value)
+  ) {
+    throw new Error("generated module specifier is outside the strict relative-path grammar");
+  }
+  return javascriptStringLiteral(value);
 }
 
 function digestObject(value) {
@@ -570,6 +622,34 @@ function hasExactKeys(value, expected) {
     consequentialCanonicalJson(Object.keys(value).sort(compareUnicodeCodePoints)) ===
       consequentialCanonicalJson([...expected].sort(compareUnicodeCodePoints))
   );
+}
+
+function validatePassedForbiddenContentScan(completeness, files) {
+  const scan = completeness.privacy?.forbidden_content_scan;
+  const eligible = files.filter(
+    (file) =>
+      file.privacyExposure === "full" &&
+      file.language !== "binary" &&
+      typeof file.contentDigest === "string",
+  ).length;
+  if (
+    !hasExactKeys(scan, FORBIDDEN_CONTENT_SCAN_KEYS) ||
+    scan.status !== "passed" ||
+    scan.scope !== FORBIDDEN_CONTENT_SCAN_SCOPE ||
+    !Number.isSafeInteger(scan.eligible_text_files) ||
+    scan.eligible_text_files !== eligible ||
+    !Number.isSafeInteger(scan.scanned_text_files) ||
+    scan.scanned_text_files !== eligible ||
+    stableJson(scan.rules) !== stableJson(REQUIRED_FORBIDDEN_CONTENT_RULES) ||
+    scan.findings_count !== 0 ||
+    !Array.isArray(scan.findings) ||
+    scan.findings.length !== 0 ||
+    scan.matched_values_retained !== false ||
+    !Array.isArray(scan.unresolved_reasons) ||
+    scan.unresolved_reasons.length !== 0
+  ) {
+    throw new Error("compiler privacy scan is absent, malformed, incomplete, or failed");
+  }
 }
 
 function isNonblankString(value) {
@@ -2642,11 +2722,11 @@ function getRecordFragmentPlan(record, registry) {
 
 function fragmentedRecordIndexText(plan, { dossier = false } = {}) {
   const loaderText = plan.fragments
-    .map((fragment) => `() => import(${JSON.stringify(`../../${fragment.module}`)})`)
+    .map((fragment) => `() => import(${generatedModuleSpecifierLiteral(`../../${fragment.module}`)})`)
     .join(",");
   return (
     "export const records = Object.freeze([]);\n" +
-    `const expectedId = ${JSON.stringify(plan.id)};\n` +
+    `const expectedId = ${javascriptStringLiteral(plan.id)};\n` +
     `const expectedFragmentCount = ${plan.fragments.length};\n` +
     `const fragmentLoaders = Object.freeze([${loaderText}]);\n` +
     "export async function loadRecords() {\n" +
@@ -2944,10 +3024,10 @@ async function writeSearchProjection(staging, groups) {
   }
 
   const loaderLines = shardEntries.map(
-    (entry) => `  ${JSON.stringify(entry.prefix)}: () => import(${JSON.stringify(`./${entry.module.replace("search/", "")}`)}),`,
+    (entry) => `  ${javascriptStringLiteral(entry.prefix)}: () => import(${generatedModuleSpecifierLiteral(`./${entry.module.replace("search/", "")}`)}),`,
   ).join("\n");
   const documentLoaderLines = documentShardEntries.map(
-    (entry) => `  () => import(${JSON.stringify(`./${entry.module.replace("search/", "")}`)}),`,
+    (entry) => `  () => import(${generatedModuleSpecifierLiteral(`./${entry.module.replace("search/", "")}`)}),`,
   ).join("\n");
   const compactDocumentRoutes = documentShardEntries.map(
     ({ startOrdinal: start, endOrdinal: end, recordCount }) => ({
@@ -3434,7 +3514,7 @@ async function writeSourceProjection({
     Object.entries(sourceFiles).sort(([left], [right]) => left.localeCompare(right)),
   ));
   const loaderLines = sourceFileEntries.map(([, descriptor]) =>
-    `Object.freeze([${descriptor.chunks.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("source/", "")}`)})`).join(",")}]),`,
+    `Object.freeze([${descriptor.chunks.map((entry) => `() => import(${generatedModuleSpecifierLiteral(`./${entry.module.replace("source/", "")}`)})`).join(",")}]),`,
   ).join("");
   const sourceIndexBytes = Buffer.from(
     `export const sourceFiles = Object.freeze(Object.fromEntries(${stableJson(sourceFileEntries)}));\n` +
@@ -4281,12 +4361,12 @@ async function writeGraphProjection(staging, nodes, edges) {
   await writeFile(join(staging, ...summaryModule.split("/")), summaryBytes);
 
   const loaderLines = Object.entries(shardEntries).map(([community, kinds]) =>
-    `  ${JSON.stringify(community)}: Object.freeze({ nodes: Object.freeze([${kinds.nodes.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("graph/", "")}`)})`).join(",")}]), edges: Object.freeze([${kinds.edges.map((entry) => `() => import(${JSON.stringify(`./${entry.module.replace("graph/", "")}`)})`).join(",")}]) }),`,
+    `  ${javascriptStringLiteral(community)}: Object.freeze({ nodes: Object.freeze([${kinds.nodes.map((entry) => `() => import(${generatedModuleSpecifierLiteral(`./${entry.module.replace("graph/", "")}`)})`).join(",")}]), edges: Object.freeze([${kinds.edges.map((entry) => `() => import(${generatedModuleSpecifierLiteral(`./${entry.module.replace("graph/", "")}`)})`).join(",")}]) }),`,
   ).join("\n");
   const graphIndexBytes = Buffer.from(
     `export const graphManifest = ${stableJson({ nodeCount: nodes.length, edgeCount: edges.length, communities: orderedCommunities, shardMaxBytes: GRAPH_SHARD_MAX_BYTES })};\n` +
       `const communityLoaders = Object.freeze({\n${loaderLines}\n});\n` +
-      `export async function loadSummary() { const module = await import(${JSON.stringify(`./${summaryModule.replace("graph/", "")}`)}); return module.summary ?? module.default; }\n` +
+      `export async function loadSummary() { const module = await import(${generatedModuleSpecifierLiteral(`./${summaryModule.replace("graph/", "")}`)}); return module.summary ?? module.default; }\n` +
       "export async function loadCommunity(community) {\n" +
       "  const loaders = communityLoaders[String(community)];\n" +
       "  if (!loaders) return null;\n" +
@@ -4364,9 +4444,6 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
   ) {
     throw new Error("compiler release class and tracked-worktree state are inconsistent");
   }
-  if (completeness.privacy?.forbidden_content_scan?.status !== "passed") {
-    throw new Error("compiler privacy scan is absent or failed");
-  }
   if (
     !allowPreview && !isExactRelease
   ) {
@@ -4420,6 +4497,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
   ) {
     throw new Error("tracked/classified file denominator differs from the compiler file group");
   }
+  validatePassedForbiddenContentScan(completeness, [...filesByPath.values()]);
   const safeParsedFiles = [...filesByPath.values()].filter((file) =>
     file.privacyExposure === "full" &&
     file.parseStatus === "parsed" &&
@@ -4858,10 +4936,10 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
   const bucketLoaderLines = Object.entries(recordBucketEntries)
     .map(
       ([kind, entries]) =>
-        `  ${JSON.stringify(kind)}: Object.freeze({\n${entries
+        `  ${javascriptStringLiteral(kind)}: Object.freeze({\n${entries
           .map(
             (entry) =>
-              `    ${JSON.stringify(entry.prefix)}: () => import(${JSON.stringify(`./${entry.module}`)}),`,
+              `    ${javascriptStringLiteral(entry.prefix)}: () => import(${generatedModuleSpecifierLiteral(`./${entry.module}`)}),`,
           )
           .join("\n")}\n  }),`,
     )
@@ -4881,8 +4959,8 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       `export const metadataLoaders = Object.freeze({\n${Object.entries(metadataLoaderEntries)
         .map(
           ([group, entries]) =>
-            `  ${JSON.stringify(group)}: Object.freeze([${entries
-              .map((entry) => `() => import(${JSON.stringify(`./${entry.module}`)})`)
+            `  ${javascriptStringLiteral(group)}: Object.freeze([${entries
+              .map((entry) => `() => import(${generatedModuleSpecifierLiteral(`./${entry.module}`)})`)
               .join(",")}]),`,
         )
         .join("\n")}\n});\n` +
@@ -4929,13 +5007,13 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       "  if (direct) return direct;\n" +
       "  return typeof module.loadFragmentedRecord === \"function\" ? module.loadFragmentedRecord(id) : null;\n" +
       "}\n" +
-      `async function sourceProjection() { return import(${JSON.stringify(`./${sourceProjection.index.module}`)}); }\n` +
+      `async function sourceProjection() { return import(${generatedModuleSpecifierLiteral(`./${sourceProjection.index.module}`)}); }\n` +
       "export async function loadSource(path) { const module = await sourceProjection(); return module.getSourceFile(path); }\n" +
       "export async function loadSourceChunk(path, chunkIndex) { const module = await sourceProjection(); return module.loadSourceChunk(path, chunkIndex); }\n" +
       "export async function loadSourceWindow(path, line) { const module = await sourceProjection(); return module.loadSourceWindow(path, line); }\n" +
-      `async function searchProjection() { return import(${JSON.stringify(`./${searchProjection.index.module}`)}); }\n` +
+      `async function searchProjection() { return import(${generatedModuleSpecifierLiteral(`./${searchProjection.index.module}`)}); }\n` +
       "export async function searchRecords(tokens) { const module = await searchProjection(); return module.searchTerms(tokens); }\n" +
-      `async function graphProjection() { return import(${JSON.stringify(`./${graphProjection.index.module}`)}); }\n` +
+      `async function graphProjection() { return import(${generatedModuleSpecifierLiteral(`./${graphProjection.index.module}`)}); }\n` +
       "export async function loadGraphSummary() { const module = await graphProjection(); return module.loadSummary(); }\n" +
       "export async function loadGraphCommunity(community) { const module = await graphProjection(); return module.loadCommunity(community); }\n" +
       "export default projection;\n",

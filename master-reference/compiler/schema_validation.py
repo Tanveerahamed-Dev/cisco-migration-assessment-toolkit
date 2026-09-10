@@ -11,11 +11,84 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
+from atlas_privacy import FORBIDDEN_CONTENT_RULES
 from .graphify import GraphifyFailure, validate_graphify_metadata
 
 
 class SchemaValidationError(RuntimeError):
     """An emitted compiler artifact differs from its tracked schema."""
+
+
+class ForbiddenContentScanValidationError(RuntimeError):
+    """The compiler privacy scan cannot support a downstream pass claim."""
+
+
+FORBIDDEN_CONTENT_SCAN_SCOPE = "allowlisted_utf8_text_payloads_only"
+FORBIDDEN_CONTENT_SCAN_RULES = tuple(name for name, _pattern in FORBIDDEN_CONTENT_RULES)
+_FORBIDDEN_CONTENT_SCAN_KEYS = frozenset(
+    {
+        "status",
+        "scope",
+        "eligible_text_files",
+        "scanned_text_files",
+        "rules",
+        "findings_count",
+        "findings",
+        "matched_values_retained",
+        "unresolved_reasons",
+    }
+)
+
+
+def validate_passed_forbidden_content_scan(
+    completeness: dict[str, Any],
+    file_records: list[dict[str, Any]],
+) -> int:
+    """Reconcile a PASS claim against the independently loaded file denominator."""
+
+    privacy = completeness.get("privacy")
+    scan = privacy.get("forbidden_content_scan") if type(privacy) is dict else None
+    if type(scan) is not dict or set(scan) != _FORBIDDEN_CONTENT_SCAN_KEYS:
+        raise ForbiddenContentScanValidationError(
+            "compiler forbidden-content scan is absent, malformed, incomplete, or failed"
+        )
+    eligible = 0
+    if type(file_records) is not list:
+        raise ForbiddenContentScanValidationError(
+            "compiler forbidden-content scan is absent, malformed, incomplete, or failed"
+        )
+    for record in file_records:
+        if type(record) is not dict or type(record.get("classification_errors")) is not list:
+            raise ForbiddenContentScanValidationError(
+                "compiler forbidden-content scan is absent, malformed, incomplete, or failed"
+            )
+        if (
+            record.get("privacy_exposure") == "full"
+            and record.get("language") != "binary"
+            and type(record.get("content_digest")) is str
+        ):
+            eligible += 1
+    if (
+        scan.get("status") != "passed"
+        or scan.get("scope") != FORBIDDEN_CONTENT_SCAN_SCOPE
+        or type(scan.get("eligible_text_files")) is not int
+        or scan["eligible_text_files"] != eligible
+        or type(scan.get("scanned_text_files")) is not int
+        or scan["scanned_text_files"] != eligible
+        or type(scan.get("rules")) is not list
+        or tuple(scan["rules"]) != FORBIDDEN_CONTENT_SCAN_RULES
+        or type(scan.get("findings_count")) is not int
+        or scan["findings_count"] != 0
+        or type(scan.get("findings")) is not list
+        or scan["findings"]
+        or scan.get("matched_values_retained") is not False
+        or type(scan.get("unresolved_reasons")) is not list
+        or scan["unresolved_reasons"]
+    ):
+        raise ForbiddenContentScanValidationError(
+            "compiler forbidden-content scan is absent, malformed, incomplete, or failed"
+        )
+    return eligible
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -88,12 +161,20 @@ def validate_compiler_output(output: Path, schema_root: Path | None = None) -> d
         ) from exc
     record_validator = Draft202012Validator(schemas["atlas-records.schema.json"], registry=registry)
     chunks = 0
+    file_records: list[dict[str, Any]] = []
     for chunk in sorted((output / "chunks").rglob("*.json")):
-        _validate_schema(record_validator, _read_object(chunk), chunk.relative_to(output).as_posix())
+        envelope = _read_object(chunk)
+        _validate_schema(record_validator, envelope, chunk.relative_to(output).as_posix())
+        if envelope.get("record_type") == "files" and type(envelope.get("records")) is list:
+            file_records.extend(envelope["records"])
         chunks += 1
     expected_chunks = sum(int(group.get("chunk_count", 0)) for group in manifest["groups"].values())
     if chunks != expected_chunks:
         raise SchemaValidationError(f"schema-validation chunk census mismatch: expected {expected_chunks}, found {chunks}")
+    try:
+        validate_passed_forbidden_content_scan(completeness, file_records)
+    except ForbiddenContentScanValidationError as exc:
+        raise SchemaValidationError(str(exc)) from None
     return {"manifest": 1, "completeness": 1, "graphify_metadata": 1, "chunks": chunks}
 
 

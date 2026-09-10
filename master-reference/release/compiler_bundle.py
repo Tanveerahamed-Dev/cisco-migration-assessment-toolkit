@@ -38,6 +38,10 @@ from compiler.binary_review import (
     receipt_set_digest as binary_review_receipt_set_digest,
 )
 from compiler.compiler import RECORD_GROUPS
+from compiler.schema_validation import (
+    ForbiddenContentScanValidationError,
+    validate_passed_forbidden_content_scan,
+)
 from governance.consequential_claims import (
     CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
     CONTRACT_PATH as CONSEQUENTIAL_CLAIM_CONTRACT_PATH,
@@ -1688,6 +1692,11 @@ def load_compiler_bundle(
             if exposure == "metadata_only" and item.get("content_digest") is not None:
                 raise ReleaseInputError("metadata-only compiler file exposes a content digest")
             by_path[path] = item
+
+        try:
+            validate_passed_forbidden_content_scan(completeness, files)
+        except ForbiddenContentScanValidationError as exc:
+            raise ReleaseInputError(str(exc)) from None
 
         for item in records.get("source_text", []):
             path = item.get("path")

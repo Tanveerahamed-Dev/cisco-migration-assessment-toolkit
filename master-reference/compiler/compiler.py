@@ -139,6 +139,7 @@ GUI_FIELD_GAPS = {
     "downstream_consumers": ("gap.artifact-channel-parity",),
     "known_gaps": ("gap.accessibility-performance", "gap.white-label"),
 }
+_FORBIDDEN_CONTENT_RULE_NAMES = frozenset(name for name, _pattern in FORBIDDEN_CONTENT_RULES)
 
 
 class CompilationError(RuntimeError):
@@ -151,6 +152,36 @@ class CompilationError(RuntimeError):
         if len(self.errors) > 8:
             detail += f"; … {len(self.errors) - 8} more"
         super().__init__(detail or "repository compilation failed")
+
+
+def _categorical_forbidden_content_findings(
+    expected_path: str,
+    expected_line_count: int,
+    raw_findings: object,
+) -> list[dict[str, Any]]:
+    """Project scanner output onto the category-only persistence contract."""
+
+    if type(raw_findings) is not list:
+        raise ParseFailure(f"{expected_path}: forbidden-content finding is malformed")
+    projected: list[dict[str, Any]] = []
+    for finding in raw_findings:
+        if type(finding) is not dict:
+            raise ParseFailure(f"{expected_path}: forbidden-content finding is malformed")
+        path = finding.get("path")
+        line = finding.get("line")
+        rule = finding.get("rule")
+        if (
+            type(path) is not str
+            or path != expected_path
+            or type(line) is not int
+            or line < 1
+            or line > expected_line_count
+            or type(rule) is not str
+            or rule not in _FORBIDDEN_CONTENT_RULE_NAMES
+        ):
+            raise ParseFailure(f"{expected_path}: forbidden-content finding is malformed")
+        projected.append({"path": expected_path, "line": line, "rule": rule})
+    return projected
 
 
 @dataclass(frozen=True)
@@ -1622,6 +1653,8 @@ def _ledger(
     consequential_claim_denominator: dict[str, Any],
     binary_review: dict[str, Any],
     forbidden_content_findings: list[dict[str, Any]],
+    forbidden_content_scanned_files: int,
+    forbidden_content_scan_failures: set[str],
 ) -> dict[str, Any]:
     parse_status = Counter(str(row.get("parse_status")) for row in file_records)
     expected_lines = sum(int(row.get("nonblank_line_count") or 0) for row in file_records)
@@ -1957,6 +1990,21 @@ def _ledger(
         },
     ]
     completeness_id = stable_id("completeness", source_commit or "unknown", source_tree_digest or "unknown")
+    forbidden_content_scan_complete = (
+        forbidden_content_scanned_files == safe_text_scan_eligible
+        and not forbidden_content_scan_failures
+    )
+    forbidden_content_scan_status = (
+        "invalid"
+        if not forbidden_content_scan_complete
+        else "failed"
+        if forbidden_content_findings
+        else "passed"
+    )
+    forbidden_content_scan_unresolved = set(forbidden_content_scan_failures)
+    if forbidden_content_scanned_files != safe_text_scan_eligible:
+        forbidden_content_scan_unresolved.add("eligible_text_scan_incomplete")
+
     return {
         "id": completeness_id,
         "schema_version": SCHEMA_VERSION,
@@ -2026,9 +2074,10 @@ def _ledger(
             "network": "not_used",
             "symlinks": "not_followed",
             "forbidden_content_scan": {
-                "status": "passed" if not forbidden_content_findings else "failed",
+                "status": forbidden_content_scan_status,
                 "scope": "allowlisted_utf8_text_payloads_only",
                 "eligible_text_files": safe_text_scan_eligible,
+                "scanned_text_files": forbidden_content_scanned_files,
                 "rules": [name for name, _pattern in FORBIDDEN_CONTENT_RULES],
                 "findings_count": len(forbidden_content_findings),
                 "findings": sorted(
@@ -2036,6 +2085,7 @@ def _ledger(
                     key=lambda item: (str(item["path"]), int(item["line"]), str(item["rule"])),
                 ),
                 "matched_values_retained": False,
+                "unresolved_reasons": sorted(forbidden_content_scan_unresolved),
             },
             "binary_payload_scan": {
                 **binary_review,
@@ -2301,6 +2351,8 @@ def compile_repository(
     snapshot_digests: dict[str, str] = {}
     ts_inputs: list[dict[str, str]] = []
     privacy_findings: list[dict[str, Any]] = []
+    privacy_scanned_files = 0
+    privacy_scan_failures: set[str] = set()
     binary_review: dict[str, Any] = unavailable_binary_review_summary([], status="absent")
     consequential_claim_denominator = unavailable_bounded_curated_claim_summary()
 
@@ -2516,7 +2568,27 @@ def compile_repository(
                 fatal_errors.append(str(exc))
                 continue
             exact_text = data.decode("utf-8", errors="strict")
-            findings = forbidden_content_findings(entry.path, exact_text)
+            try:
+                raw_findings = forbidden_content_findings(entry.path, exact_text)
+            except Exception:
+                privacy_scan_failures.add("scanner_execution_failed")
+                file_record["parse_status"] = "parser_error"
+                file_record["unresolved_reasons"] = ["forbidden_content_scan_invalid"]
+                fatal_errors.append(f"{entry.path}: forbidden-content scan failed")
+                continue
+            try:
+                findings = _categorical_forbidden_content_findings(
+                    entry.path,
+                    exact_text.count("\n") + 1,
+                    raw_findings,
+                )
+            except Exception:
+                privacy_scan_failures.add("scanner_output_invalid")
+                file_record["parse_status"] = "parser_error"
+                file_record["unresolved_reasons"] = ["forbidden_content_scan_invalid"]
+                fatal_errors.append(f"{entry.path}: forbidden-content scanner output is invalid")
+                continue
+            privacy_scanned_files += 1
             if findings:
                 privacy_findings.extend(findings)
                 file_record["parse_status"] = "parser_error"
@@ -2891,6 +2963,8 @@ def compile_repository(
         consequential_claim_denominator=consequential_claim_denominator,
         binary_review=binary_review,
         forbidden_content_findings=privacy_findings,
+        forbidden_content_scanned_files=privacy_scanned_files,
+        forbidden_content_scan_failures=privacy_scan_failures,
     )
     if sanitized_errors or not all(item["passed"] for item in ledger["invariants"]):
         if not sanitized_errors:
