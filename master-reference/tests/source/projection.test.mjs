@@ -51,38 +51,64 @@ const SOURCE_DIGEST_POLICY = {
   fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1",
 };
 
-test("bounded compiler JSON is read twice through one identity-bound handle", async () => {
-  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-handle-read-"));
-  const path = join(scratch, "manifest.json");
-  const displaced = join(scratch, "manifest.original.json");
+test("bounded compiler JSON reads exact bytes through one identity-bound handle", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-stable-handle-"));
+  const manifest = join(scratch, "stable.json");
   const original = Buffer.from('{"value":"original"}\n', "utf8");
-  const replacement = Buffer.from('{"value":"replaced"}\n', "utf8");
-  await writeFile(path, original);
+  await writeFile(manifest, original, { flag: "wx", mode: 0o600 });
   try {
     const input = await realpath(scratch);
-    const stableHandle = await open(path, "r");
+    const stableHandle = await open(manifest, "r");
     try {
       assert.deepEqual(
-        await readBoundedCompilerJsonFromHandle(input, path, stableHandle),
+        await readBoundedCompilerJsonFromHandle(input, manifest, stableHandle),
         original,
       );
     } finally {
       await stableHandle.close();
     }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
-    const displacedHandle = await open(path, "r");
-    await rename(path, displaced);
-    await writeFile(path, replacement);
+test("bounded compiler JSON rejects an atomically displaced opened file", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-displaced-handle-"));
+  const manifest = join(scratch, "displacement.json");
+  const displaced = join(scratch, "displacement.original.json");
+  const stagedReplacement = join(scratch, "staged-replacement.json");
+  const original = Buffer.from('{"value":"original"}\n', "utf8");
+  const replacement = Buffer.from('{"value":"replaced"}\n', "utf8");
+  // Stage both inodes before retaining the first handle. The two renames then
+  // exercise a real pathname displacement without a create/truncate gap.
+  await writeFile(manifest, original, { flag: "wx", mode: 0o600 });
+  await writeFile(stagedReplacement, replacement, { flag: "wx", mode: 0o600 });
+  try {
+    const input = await realpath(scratch);
+    const displacedHandle = await open(manifest, "r");
     try {
+      await rename(manifest, displaced);
+      await rename(stagedReplacement, manifest);
       await assert.rejects(
-        readBoundedCompilerJsonFromHandle(input, path, displacedHandle),
+        readBoundedCompilerJsonFromHandle(input, manifest, displacedHandle),
         /opened-file identity is invalid/,
       );
     } finally {
       await displacedHandle.close();
     }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
-    const changingHandle = await open(path, "r");
+test("bounded compiler JSON rejects different bytes across repeated handle reads", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-changing-handle-"));
+  const manifest = join(scratch, "changing.json");
+  const original = Buffer.from('{"value":"original"}\n', "utf8");
+  await writeFile(manifest, original, { flag: "wx", mode: 0o600 });
+  try {
+    const input = await realpath(scratch);
+    const changingHandle = await open(manifest, "r");
     let nonemptyReads = 0;
     const mutatingView = {
       stat: (options) => changingHandle.stat(options),
@@ -97,7 +123,7 @@ test("bounded compiler JSON is read twice through one identity-bound handle", as
     };
     try {
       await assert.rejects(
-        readBoundedCompilerJsonFromHandle(input, path, mutatingView),
+        readBoundedCompilerJsonFromHandle(input, manifest, mutatingView),
         /changed during read/,
       );
     } finally {
