@@ -125,6 +125,17 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Frozen engine dispatch no longer writes an audit log into the immutable Atlas application
+  root.** A bundle-tree working directory now binds the log to the executable's `data` directory
+  and preflights that location before importing the engine; external per-job working directories
+  retain separate relative logs so concurrent AssessHub jobs cannot truncate one shared file.
+  Portable smoke now runs a copied bundle from its real field-layout working directory and
+  byte-compares every non-`data` entry before and after all four checks. This was found by
+  downloading the exact PR integration artifact, starting it from the extracted Atlas directory,
+  and rerunning installed verification; the prior build had created an empty root log that the
+  verifier correctly rejected as a possible client-evidence artifact. Frozen ingest/redaction now
+  also refuses a system temporary root inside Atlas, and alternate-drive qualification keeps its
+  scratch database outside the copied application so empty directories cannot evade member checks.
 - **Master Reference build tooling resolves the newly disclosed Sharp/libheif advisory.**
   Miniflare 5.20260801.1-alpha still declares Sharp 0.35.2, so its exact edge is
   project-scoped to Sharp 0.35.4, the first release patched for

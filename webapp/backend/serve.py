@@ -42,6 +42,7 @@ import threading
 from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
 
+from cisco_toolkit import EngineLogOpenError, engine_log_path, prepare_engine_log_file
 from cisco_toolkit.brand_tokens import APP_TITLE
 from cisco_toolkit.docmeta import artifact_family_metadata
 
@@ -791,7 +792,48 @@ def main(argv=None) -> int:
 
 def _main_scoped(argv: list[str]) -> int:
     if argv and argv[0] == ENGINE_SENTINEL:
-        return _run_engine(argv[1:])
+        log_path = None
+        if _frozen():
+            # Importing the engine installs its audit FileHandler. A bundle-tree cwd resolves to
+            # ``Atlas\data`` and is probed here; an external per-job cwd deliberately stays
+            # relative so concurrent AssessHub engine children retain isolated audit logs.
+            log_path = Path(engine_log_path(
+                frozen=True,
+                executable=sys.executable,
+                cwd=Path.cwd(),
+            ))
+            if log_path.is_absolute():
+                data_dir = log_path.parent
+                try:
+                    prepare_engine_log_file(log_path)
+                except EngineLogOpenError as exc:
+                    detail = exc.__cause__ if isinstance(exc.__cause__, OSError) else exc
+                    print(
+                        f"{APP_TITLE}: the data folder is not writable: {data_dir}\n"
+                        f"  {detail}\n"
+                        "Refusing to start the engine because its audit log must stay under data.",
+                        file=sys.stderr,
+                    )
+                    return 1
+        try:
+            return _run_engine(argv[1:])
+        except EngineLogOpenError as exc:
+            detail = exc.__cause__ if isinstance(exc.__cause__, OSError) else exc
+            if log_path is not None and log_path.is_absolute():
+                print(
+                    f"{APP_TITLE}: the data folder is not writable: {log_path.parent}\n"
+                    f"  {detail}\n"
+                    "Refusing to start the engine because its audit log must stay under data.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"{APP_TITLE}: the engine job folder is not writable: {Path.cwd()}\n"
+                    f"  {detail}\n"
+                    "Refusing to start the engine because its isolated audit log cannot open.",
+                    file=sys.stderr,
+                )
+            return 1
 
     parser = argparse.ArgumentParser(
         prog="assesshub",

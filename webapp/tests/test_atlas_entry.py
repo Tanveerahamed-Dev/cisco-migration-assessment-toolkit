@@ -86,6 +86,25 @@ def test_engine_argv_frozen_reinvokes_exe_with_sentinel(monkeypatch):
     assert ing._engine_argv() == [sys.executable, serve.ENGINE_SENTINEL]
 
 
+def test_frozen_engine_temp_parent_must_be_outside_the_application(monkeypatch, tmp_path):
+    bundle = tmp_path / "Atlas"
+    temp_inside = bundle / "data" / "temp"
+    temp_inside.mkdir(parents=True)
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(ing.tempfile, "gettempdir", lambda: str(temp_inside))
+
+    with pytest.raises(ing.EngineRunError, match="temporary directory is inside"):
+        ing._engine_temp_parent()
+
+    external = tmp_path / "external-temp"
+    external.mkdir()
+    monkeypatch.setattr(ing.tempfile, "gettempdir", lambda: str(external))
+    assert ing._engine_temp_parent() == external.resolve()
+
+
 def test_run_collection_zip_frozen_dispatch_skips_script_check(monkeypatch, tmp_path):
     """Frozen build: the repo-root .py does not exist on disk — dispatch must re-invoke the exe with
     the sentinel instead of failing the script-existence guard (or worse, respawning the app)."""
@@ -133,6 +152,138 @@ def test_main_calls_freeze_support_before_engine_dispatch(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["atlas"])
     assert serve.main([serve.ENGINE_SENTINEL]) == 0
     assert calls == ["freeze", "engine"]
+
+
+def test_frozen_engine_dispatch_preflights_its_data_log_before_import(monkeypatch, tmp_path):
+    from cisco_toolkit import __version__ as engine_schema_version
+
+    calls = []
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.chdir(bundle)
+    monkeypatch.setattr(
+        serve,
+        "prepare_engine_log_file",
+        lambda path: calls.append(("probe", path)) or (1, 2, 3),
+    )
+    monkeypatch.setattr(
+        serve,
+        "_load_engine_main",
+        lambda: lambda: (calls.append(("engine", None)), 0)[1],
+    )
+
+    assert serve.main([serve.ENGINE_SENTINEL, "--help"]) == 0
+    log_name = f"cisco_migration_autofill_v{engine_schema_version.replace('.', '_')}.log"
+    assert calls == [("probe", bundle / "data" / log_name), ("engine", None)]
+
+
+def test_frozen_engine_dispatch_refuses_unwritable_log_data_before_import(
+        monkeypatch, tmp_path, capsys):
+    from cisco_toolkit import EngineLogOpenError
+
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.chdir(bundle)
+    monkeypatch.setattr(
+        serve,
+        "prepare_engine_log_file",
+        lambda _path: (_ for _ in ()).throw(EngineLogOpenError("synthetic write refusal")),
+    )
+    monkeypatch.setattr(
+        serve,
+        "_load_engine_main",
+        lambda: pytest.fail("engine imported before frozen data writability was proved"),
+    )
+
+    assert serve.main([serve.ENGINE_SENTINEL, "--help"]) == 1
+    err = capsys.readouterr().err
+    assert "data folder is not writable" in err
+    assert "audit log must stay under data" in err
+
+
+def test_frozen_engine_dispatch_catches_log_open_race_without_traceback(
+        monkeypatch, tmp_path, capsys):
+    from cisco_toolkit import EngineLogOpenError
+
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.chdir(bundle)
+    monkeypatch.setattr(serve, "prepare_engine_log_file", lambda _path: (1, 2, 3))
+
+    def fail_after_probe():
+        try:
+            raise OSError("synthetic post-probe open race")
+        except OSError as exc:
+            raise EngineLogOpenError("engine audit log could not be opened") from exc
+
+    monkeypatch.setattr(serve, "_load_engine_main", fail_after_probe)
+    assert serve.main([serve.ENGINE_SENTINEL, "--help"]) == 1
+    err = capsys.readouterr().err
+    assert "synthetic post-probe open race" in err
+    assert "Traceback" not in err
+
+
+def test_frozen_external_engine_job_keeps_its_per_cwd_log_without_shared_probe(
+        monkeypatch, tmp_path):
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    job = tmp_path / "private-engine-job"
+    job.mkdir()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.chdir(job)
+    monkeypatch.setattr(
+        serve,
+        "prepare_engine_log_file",
+        lambda _path: pytest.fail("external engine job was collapsed onto shared Atlas data"),
+    )
+    monkeypatch.setattr(serve, "_load_engine_main", lambda: lambda: 0)
+
+    assert serve.main([serve.ENGINE_SENTINEL, "--help"]) == 0
+
+
+def test_frozen_external_engine_log_open_failure_is_a_plain_refusal(
+        monkeypatch, tmp_path, capsys):
+    from cisco_toolkit import EngineLogOpenError
+
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    job = tmp_path / "private-engine-job"
+    job.mkdir()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.chdir(job)
+    monkeypatch.setattr(
+        serve,
+        "prepare_engine_log_file",
+        lambda _path: pytest.fail("external job unexpectedly probed shared Atlas data"),
+    )
+    monkeypatch.setattr(
+        serve,
+        "_load_engine_main",
+        lambda: (_ for _ in ()).throw(EngineLogOpenError("synthetic isolated-log failure")),
+    )
+
+    assert serve.main([serve.ENGINE_SENTINEL, "--help"]) == 1
+    err = capsys.readouterr().err
+    assert "engine job folder is not writable" in err
+    assert "Traceback" not in err
 
 
 # ── entry module: production server invocation ──────────────────────────────────

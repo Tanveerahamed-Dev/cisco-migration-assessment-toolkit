@@ -26,9 +26,11 @@ import inspect
 import json
 import logging
 import os
+import subprocess
 import sys
 import textwrap
 import types
+from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
@@ -82,6 +84,168 @@ def _write_store(root, **decisions):
     store = {"schema": 1, "gates": {g: {"decision": d} for g, d in decisions.items()}, "audit": []}
     with open(os.path.join(docs, "engagement-state.json"), "w", encoding="utf-8") as f:
         json.dump(store, f)
+
+
+def test_frozen_engine_log_is_confined_only_when_cwd_is_inside_the_bundle(
+        monkeypatch, tmp_path):
+    """Bundle-root launch must not mutate the app, while external per-job cwd keeps log isolation."""
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"synthetic executable identity")
+    monkeypatch.setattr(cp.sys, "executable", str(executable))
+    monkeypatch.setattr(cp.sys, "frozen", False, raising=False)
+    monkeypatch.chdir(bundle)
+    assert cp._default_log_file() == cp._LOG_FILE_NAME
+
+    monkeypatch.setattr(cp.sys, "frozen", True, raising=False)
+    assert Path(cp._default_log_file()) == (
+        bundle / "data" / cp._LOG_FILE_NAME
+    ).resolve()
+
+    internal = bundle / "_internal"
+    internal.mkdir()
+    monkeypatch.chdir(internal)
+    assert Path(cp._default_log_file()) == (
+        bundle / "data" / cp._LOG_FILE_NAME
+    ).resolve()
+
+    isolated_job = tmp_path / "isolated-job-cwd"
+    isolated_job.mkdir()
+    monkeypatch.chdir(isolated_job)
+    assert cp._default_log_file() == cp._LOG_FILE_NAME
+
+    sibling_prefix = tmp_path / "Atlas-copy"
+    sibling_prefix.mkdir()
+    monkeypatch.chdir(sibling_prefix)
+    assert cp._default_log_file() == cp._LOG_FILE_NAME
+
+
+def test_log_open_failure_uses_the_dedicated_boundary(monkeypatch, tmp_path):
+    from cisco_toolkit import EngineLogOpenError
+
+    target = tmp_path / "Atlas" / "data" / cp._LOG_FILE_NAME
+    monkeypatch.setattr(cp, "LOG_FILE", str(target))
+    engine_logger = logging.getLogger("CiscoMigrationAutofillV3_14_6")
+    prior_handlers = list(engine_logger.handlers)
+
+    class FailingFileHandler:
+        def __init__(self, *_args, **_kwargs):
+            raise OSError("synthetic open race")
+
+    monkeypatch.setattr(cp.logging, "FileHandler", FailingFileHandler)
+
+    try:
+        with pytest.raises(EngineLogOpenError, match="could not be opened"):
+            cp.setup_logging()
+    finally:
+        engine_logger.handlers[:] = prior_handlers
+
+
+def test_engine_log_parent_reparse_is_rejected_before_file_creation(tmp_path):
+    from cisco_toolkit import EngineLogOpenError, prepare_engine_log_file
+
+    bundle = tmp_path / "Atlas"
+    outside = tmp_path / "outside"
+    bundle.mkdir()
+    outside.mkdir()
+    data = bundle / "data"
+    if os.name == "nt":
+        created = subprocess.run(
+            [os.environ.get("ComSpec", "cmd.exe"), "/c", "mklink", "/J", str(data), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode:
+            pytest.skip(f"directory junction unavailable: {created.stderr or created.stdout}")
+    else:
+        data.symlink_to(outside, target_is_directory=True)
+    try:
+        with pytest.raises(EngineLogOpenError, match="reparse or non-directory"):
+            prepare_engine_log_file(data / cp._LOG_FILE_NAME)
+        assert not (outside / cp._LOG_FILE_NAME).exists()
+    finally:
+        if os.name == "nt":
+            os.rmdir(data)
+        else:
+            data.unlink()
+
+
+def test_log_open_race_rejects_a_hardlink_without_truncating_external_bytes(
+        monkeypatch, tmp_path):
+    from cisco_toolkit import EngineLogOpenError
+
+    target = tmp_path / "Atlas" / "data" / cp._LOG_FILE_NAME
+    external = tmp_path / "external-audit.txt"
+    original = b"must survive the simulated path swap\n"
+    external.write_bytes(original)
+    monkeypatch.setattr(cp, "LOG_FILE", str(target))
+    engine_logger = logging.getLogger("CiscoMigrationAutofillV3_14_6")
+    prior_handlers = list(engine_logger.handlers)
+    real_file_handler = logging.FileHandler
+
+    class SwappingFileHandler(real_file_handler):
+        def __init__(self, filename, *args, **kwargs):
+            os.link(external, filename)
+            super().__init__(filename, *args, **kwargs)
+
+    monkeypatch.setattr(cp.logging, "FileHandler", SwappingFileHandler)
+    try:
+        with pytest.raises(EngineLogOpenError, match="not one regular non-reparse file"):
+            cp.setup_logging()
+        assert external.read_bytes() == original
+    finally:
+        engine_logger.handlers[:] = prior_handlers
+        if target.exists():
+            target.unlink()
+
+
+def test_setup_logging_opens_the_frozen_bundle_log_only_under_data(monkeypatch, tmp_path):
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    executable = bundle / "Atlas.exe"
+    executable.write_bytes(b"exe")
+    monkeypatch.setattr(cp.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cp.sys, "executable", str(executable))
+    monkeypatch.chdir(bundle)
+    monkeypatch.setattr(cp, "LOG_FILE", cp._default_log_file())
+    loggers = [logging.getLogger(name) for name in _TRACKED]
+    saved = [(logger, list(logger.handlers), logger.level, logger.propagate) for logger in loggers]
+    before = {id(handler) for logger in loggers for handler in logger.handlers}
+    try:
+        cp.setup_logging()
+        logging.getLogger("cisco_toolkit.gate_state").error("[GATE REFUSED] frozen audit probe")
+        target = bundle / "data" / cp._LOG_FILE_NAME
+        assert "frozen audit probe" in target.read_text(encoding="utf-8")
+        assert not (bundle / cp._LOG_FILE_NAME).exists()
+        file_handler = next(
+            handler
+            for handler in logging.getLogger("CiscoMigrationAutofillV3_14_6").handlers
+            if isinstance(handler, logging.FileHandler)
+        )
+        assert file_handler.mode == "w"
+        file_handler.close()
+        target.unlink()
+        external = tmp_path / "closed-handler-external.txt"
+        original = b"closed handler must not reopen through this hardlink\n"
+        external.write_bytes(original)
+        os.link(external, target)
+        logging.getLogger("CiscoMigrationAutofillV3_14_6").error("must not reopen")
+        assert external.read_bytes() == original
+        target.unlink()
+    finally:
+        opened = [
+            handler
+            for logger in loggers
+            for handler in logger.handlers
+            if id(handler) not in before
+        ]
+        for handler in dict.fromkeys(opened):
+            handler.close()
+        for logger, handlers, level, propagate in saved:
+            logger.handlers[:] = handlers
+            logger.level, logger.propagate = level, propagate
 
 
 def _manifest_for(tmp_path):
