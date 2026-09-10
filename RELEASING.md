@@ -91,7 +91,7 @@ they cannot disagree about a release's contents.
 `.github/workflows/portable-release.yml` is the only portable candidate lane. On pull requests it
 runs the Windows x64 actual-binary build without a write-capable repository token. A manual run
 must name an exact full commit already on `main` and a unique candidate tag matching the PEP 440
-project version (`3.33.0rc2` maps to `v3.33.0-rc.2`). It:
+project version (`3.33.0rc3` maps to `v3.33.0-rc.3`). It:
 
 1. pins Python, PyInstaller, Node, npm, and a hash-locked Windows dependency set;
 2. runs broad source/frontend tests on a separate read-only runner, while the artifact runner

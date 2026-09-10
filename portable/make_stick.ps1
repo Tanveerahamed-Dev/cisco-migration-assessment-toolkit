@@ -5,7 +5,7 @@ The active Atlas tree is never mirrored in place. Release packages are copied on
 volume, verified, extracted there, verified again, and moved into Atlas.incoming. Client data is
 moved as one directory only after the candidate and a same-volume database copy pass preflight.
 
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Package C:\release\Atlas-3.33.0rc2-windows-x64.zip
+  powershell -File portable\make_stick.ps1 -Dest E:\ -Package C:\release\Atlas-3.33.0rc3-windows-x64.zip
   powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback
 
 PowerShell 5.1-safe and ASCII-only. Parameters beginning with Test are executable fault-injection
