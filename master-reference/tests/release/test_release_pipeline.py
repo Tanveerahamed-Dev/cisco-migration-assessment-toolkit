@@ -34,6 +34,7 @@ from compiler.graphify import (  # noqa: E402
     GRAPHIFY_HYPEREDGE_REASON_ABSENT,
     OPAQUE_IDENTIFIER_POLICY,
 )
+from compiler.schema_validation import FORBIDDEN_CONTENT_SCAN_RULES  # noqa: E402
 from compiler.binary_review import unavailable_summary as unavailable_binary_review_summary  # noqa: E402
 from governance.consequential_claims import (  # noqa: E402
     CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
@@ -904,6 +905,17 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
             "vault": "not_read",
             "client_state": "not_read",
             "network": "not_used",
+            "forbidden_content_scan": {
+                "status": "passed",
+                "scope": "allowlisted_utf8_text_payloads_only",
+                "eligible_text_files": len(files),
+                "scanned_text_files": len(files),
+                "rules": list(FORBIDDEN_CONTENT_SCAN_RULES),
+                "findings_count": 0,
+                "findings": [],
+                "matched_values_retained": False,
+                "unresolved_reasons": [],
+            },
             "binary_payload_scan": {
                 **unavailable_binary_review_summary([], status="absent"),
                 "inventory_only_files": 0,
@@ -1229,6 +1241,22 @@ def _rewrite_chunk(
     _json(manifest_path, manifest)
 
 
+def _rewrite_compiler_completeness(
+    compiler: Path,
+    transform: Callable[[dict[str, object]], None],
+) -> None:
+    manifest_path = compiler / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    completeness_path = compiler / str(manifest["completeness"]["path"])
+    completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    transform(completeness)
+    raw = canonical_json(completeness)
+    _write(completeness_path, raw)
+    manifest["completeness"]["sha256"] = sha256_bytes(raw)
+    manifest["completeness"]["bytes"] = len(raw)
+    _write(manifest_path, canonical_json(manifest))
+
+
 def _replace_group_fixture(
     compiler: Path,
     group_name: str,
@@ -1432,6 +1460,62 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     _assert_pdf_gate_not_declared_legacy_null_source_oids_valid(repo, absent_gate)
     _assert_pdf_gate_not_declared_wrong_nonnull_source_oids_rejected(repo, absent_gate)
     _assert_pdf_gate_core_source_oid_tamper_rejected(repo, absent_gate)
+
+
+def test_compiler_bundle_rejects_rechained_forbidden_content_scan_claims(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    original = json.loads((compiler / "completeness.json").read_text(encoding="utf-8"))
+    finding = {"path": "pyproject.toml", "line": 1, "rule": "aws_access_key"}
+    mutations = {
+        "missing field": lambda scan: scan.pop("scanned_text_files"),
+        "extra field": lambda scan: scan.update({"unexpected": False}),
+        "non-passing status": lambda scan: scan.update({"status": "failed"}),
+        "scope drift": lambda scan: scan.update({"scope": "unbounded_text"}),
+        "self-claimed empty denominator": lambda scan: scan.update(
+            {"eligible_text_files": 0, "scanned_text_files": 0}
+        ),
+        "incomplete denominator": lambda scan: scan.update(
+            {"scanned_text_files": scan["scanned_text_files"] - 1}
+        ),
+        "boolean finding count": lambda scan: scan.update({"findings_count": False}),
+        "rule-set drift": lambda scan: scan.update({"rules": scan["rules"][1:]}),
+        "hidden finding": lambda scan: scan.update({"findings_count": 1, "findings": [finding]}),
+        "matched values retained": lambda scan: scan.update({"matched_values_retained": True}),
+        "unresolved scanner state": lambda scan: scan.update(
+            {"unresolved_reasons": ["scanner_output_invalid"]}
+        ),
+    }
+    for name, mutate in mutations.items():
+        def transform(completeness: dict[str, object]) -> None:
+            completeness.clear()
+            completeness.update(copy.deepcopy(original))
+            mutate(completeness["privacy"]["forbidden_content_scan"])
+
+        _rewrite_compiler_completeness(compiler, transform)
+        with pytest.raises(
+            ReleaseInputError,
+            match="compiler forbidden-content scan is absent, malformed, incomplete, or failed",
+        ):
+            compiler_bundle.load_compiler_bundle(compiler, repository_root=repo)
+
+    def add_classification_error(envelope: dict[str, object]) -> None:
+        envelope["records"][0]["classification_errors"] = ["synthetic_classification_error"]
+
+    _rewrite_chunk(compiler, "files", add_classification_error)
+
+    def hide_classified_file(completeness: dict[str, object]) -> None:
+        completeness.clear()
+        completeness.update(copy.deepcopy(original))
+        scan = completeness["privacy"]["forbidden_content_scan"]
+        scan["eligible_text_files"] -= 1
+        scan["scanned_text_files"] -= 1
+
+    _rewrite_compiler_completeness(compiler, hide_classified_file)
+    with pytest.raises(
+        ReleaseInputError,
+        match="compiler forbidden-content scan is absent, malformed, incomplete, or failed",
+    ):
+        compiler_bundle.load_compiler_bundle(compiler, repository_root=repo)
 
 
 def test_compiler_bundle_preserves_pending_binary_review_and_rejects_custody_or_digest_tamper(

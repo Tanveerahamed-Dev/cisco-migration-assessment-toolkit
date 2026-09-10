@@ -15,7 +15,9 @@ import {
 import {
   buildProjection,
   COMPILER_RECORD_KEYS_BY_GROUP,
+  generatedModuleSpecifierLiteral,
   isPythonStripEmpty,
+  javascriptStringLiteral,
   readBoundedCompilerJsonFromHandle,
   reconstructConsequentialClaimFacetRecords,
   validateConsequentialClaimCensus,
@@ -50,6 +52,40 @@ const SOURCE_DIGEST_POLICY = {
   textDigest: "verified_pre_projection_omitted_derivable_from_exact_emitted_text",
   fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1",
 };
+
+test("generated JavaScript literals escape code-breaking characters and constrain imports", () => {
+  const unsafe = `</script>&/\u2028\u2029`;
+  const encoded = javascriptStringLiteral(unsafe);
+  assert.equal(JSON.parse(encoded), unsafe);
+  assert.doesNotMatch(encoded, /[<>&/\u2028\u2029]/u);
+  assert.throws(
+    () => javascriptStringLiteral(Buffer.from("not a string")),
+    /must receive a string/,
+  );
+
+  for (const specifier of [
+    "./shards/abc-0123456789abcdef.mjs",
+    "../../fragments/0123456789abcdef01234567-0123456789abcdef/00000-0123456789abcdef.mjs",
+  ]) {
+    assert.equal(JSON.parse(generatedModuleSpecifierLiteral(specifier)), specifier);
+  }
+  for (const specifier of [
+    "https://example.invalid/module.mjs",
+    "./safe/../escape.mjs",
+    "../../fragments/../../escape.mjs",
+    ".\\module.mjs",
+    "./module.mjs?query=1",
+    "./module.mjs#fragment",
+    "./module\u2028break.mjs",
+    './module.mjs");globalThis.injected=true;//',
+    `./${"a".repeat(1024)}.mjs`,
+  ]) {
+    assert.throws(
+      () => generatedModuleSpecifierLiteral(specifier),
+      /outside the strict relative-path grammar/,
+    );
+  }
+});
 
 test("bounded compiler JSON reads exact bytes through one identity-bound handle", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-stable-handle-"));
@@ -405,6 +441,21 @@ async function writeVerifiedValue(input, descriptor, value) {
   const bytes = Buffer.from(`${stableJson(value)}\n`, "utf8");
   await writeFile(join(input, ...descriptor.path.split("/")), bytes);
   return { ...descriptor, bytes: bytes.byteLength, sha256: sha256(bytes) };
+}
+
+async function mutateCompletenessReceipt(input, mutate) {
+  const manifestPath = join(input, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const completeness = JSON.parse(
+    await readFile(join(input, ...manifest.completeness.path.split("/")), "utf8"),
+  );
+  await mutate(completeness);
+  manifest.completeness = await writeVerifiedValue(
+    input,
+    manifest.completeness,
+    completeness,
+  );
+  await writeFile(manifestPath, `${stableJson(manifest)}\n`, "utf8");
 }
 
 async function mutateCompilerGroup(input, group, mutate, { reconcileCount = true } = {}) {
@@ -1187,7 +1238,24 @@ async function makeCompilerFixture(root) {
     graphify: graphifyValue,
     privacy: {
       primary_corpus: "git_ls_files_only",
-      forbidden_content_scan: { status: "passed", findings_count: 0 },
+      forbidden_content_scan: {
+        status: "passed",
+        scope: "allowlisted_utf8_text_payloads_only",
+        eligible_text_files: 2,
+        scanned_text_files: 2,
+        rules: [
+          "private_key_material",
+          "aws_access_key",
+          "github_access_token",
+          "openai_api_key",
+          "slack_access_token",
+          "google_api_key",
+        ],
+        findings_count: 0,
+        findings: [],
+        matched_values_retained: false,
+        unresolved_reasons: [],
+      },
     },
     record_counts: Object.fromEntries(Object.entries(records).map(([name, value]) => [name, value.length])),
     invariants: [
@@ -2031,6 +2099,50 @@ test("projection removes staging when the bounded claim ledger is rechained", as
             name.startsWith(`.projection.staging-${process.pid}-`)),
           [],
         );
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("projection rejects self-receipted forbidden-content scan drift", async (context) => {
+  const finding = { path: "app/example.py", line: 1, rule: "aws_access_key" };
+  const mutations = {
+    "missing field": (scan) => { delete scan.scanned_text_files; },
+    "extra field": (scan) => { scan.unexpected = false; },
+    "non-passing status": (scan) => { scan.status = "failed"; },
+    "scope drift": (scan) => { scan.scope = "unbounded_text"; },
+    "self-claimed empty denominator": (scan) => {
+      scan.eligible_text_files = 0;
+      scan.scanned_text_files = 0;
+    },
+    "incomplete scan denominator": (scan) => { scan.scanned_text_files -= 1; },
+    "rule-set drift": (scan) => { scan.rules = scan.rules.slice(1); },
+    "hidden finding": (scan) => {
+      scan.findings_count = 1;
+      scan.findings = [finding];
+    },
+    "matched values retained": (scan) => { scan.matched_values_retained = true; },
+    "unresolved scanner state": (scan) => { scan.unresolved_reasons = ["scanner_output_invalid"]; },
+  };
+  for (const [label, mutate] of Object.entries(mutations)) {
+    await context.test(label, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-privacy-rechain-"));
+      try {
+        const unrelated = join(scratch, `.projection.staging-${process.pid}`);
+        await mkdir(unrelated);
+        await writeFile(join(unrelated, "sentinel.txt"), "unrelated\n", "utf8");
+        const { input } = await makeCompilerFixture(scratch);
+        await mutateCompletenessReceipt(input, (completeness) =>
+          mutate(completeness.privacy.forbidden_content_scan));
+        const output = join(scratch, "projection");
+        await assert.rejects(
+          buildProjection({ input, output }),
+          /^Error: compiler privacy scan is absent, malformed, incomplete, or failed$/,
+        );
+        await assert.rejects(readFile(join(output, "projection-manifest.json")));
+        assert.equal(await readFile(join(unrelated, "sentinel.txt"), "utf8"), "unrelated\n");
       } finally {
         await rm(scratch, { recursive: true, force: true });
       }

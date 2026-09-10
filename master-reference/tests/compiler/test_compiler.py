@@ -21,6 +21,7 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
+from atlas_privacy import forbidden_content_findings as detect_forbidden_content  # noqa: E402
 from compiler import CompilationError, compile_repository  # noqa: E402
 from compiler import binary_review as binary_review_module  # noqa: E402
 from compiler import compiler as compiler_module  # noqa: E402
@@ -35,6 +36,7 @@ from compiler.binary_review import (  # noqa: E402
     parse_tracked_binary_review,
 )
 from compiler.model import canonical_json, stable_id  # noqa: E402
+from compiler.parsers import ParseFailure  # noqa: E402
 from compiler.policy import classify_file  # noqa: E402
 from compiler.schema_validation import SchemaValidationError, validate_compiler_output  # noqa: E402
 
@@ -1997,6 +1999,36 @@ class CompilerTests(unittest.TestCase):
             with self.assertRaises(SchemaValidationError):
                 validate_compiler_output(output)
 
+    def test_schema_validation_recomputes_forbidden_content_scan_denominator(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {"README.md": "# Privacy denominator\n"})
+            output = base / "compiled"
+            compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            ledger_path = output / "completeness.json"
+            manifest_path = output / "manifest.json"
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            scan = ledger["privacy"]["forbidden_content_scan"]
+            self.assertEqual(scan["eligible_text_files"], 1)
+            self.assertEqual(scan["scanned_text_files"], 1)
+            scan["scanned_text_files"] = 0
+            ledger_raw = canonical_json(ledger)
+            ledger_path.write_bytes(ledger_raw)
+            manifest["completeness"].update(
+                {"sha256": hashlib.sha256(ledger_raw).hexdigest(), "bytes": len(ledger_raw)}
+            )
+            manifest_path.write_bytes(canonical_json(manifest))
+
+            with self.assertRaisesRegex(
+                SchemaValidationError,
+                "compiler forbidden-content scan is absent, malformed, incomplete, or failed",
+            ):
+                validate_compiler_output(output)
+
     def test_schema_validation_rejects_missing_graphify_exclusion_disposition(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -2644,16 +2676,43 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "binary_format_invalid")
 
     def test_high_confidence_secret_material_fails_without_retaining_value(self) -> None:
+        secret_header = "-----BEGIN " + "PRIVATE KEY-----\n"
+        sensitive_text = f"# Unsafe\n{secret_header}"
+        detected = detect_forbidden_content("README.md", sensitive_text)
+        categorical_finding = {"path": "README.md", "line": 2, "rule": "private_key_material"}
+        self.assertEqual(
+            detected,
+            [categorical_finding],
+        )
+        self.assertNotIn(secret_header.strip(), json.dumps(detected, sort_keys=True))
+
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             repository = base / "repo"
-            secret_header = "-----BEGIN " + "PRIVATE KEY-----\n"
-            initialize_repository(repository, {"README.md": f"# Unsafe\n{secret_header}"})
+            safe_text = "# Safe\nsynthetic privacy-gate input\n"
+            initialize_repository(repository, {"README.md": safe_text})
             output = base / "failed"
 
-            with self.assertRaises(CompilationError) as caught:
+            observed: list[tuple[str, str]] = []
+
+            def categorical_test_finding(path: str, text: str) -> list[dict[str, object]]:
+                observed.append((path, text))
+                if path != "README.md":
+                    return []
+                self.assertEqual(text, safe_text)
+                return [{**categorical_finding, "matched_value": "synthetic-test-canary"}]
+
+            with (
+                mock.patch.object(
+                    compiler_module,
+                    "forbidden_content_findings",
+                    side_effect=categorical_test_finding,
+                ),
+                self.assertRaises(CompilationError) as caught,
+            ):
                 compile_repository(repository, output)
 
+            self.assertIn(("README.md", safe_text), observed)
             self.assertIn("forbidden-content rule private_key_material", " ".join(caught.exception.errors))
             ledger_text = (output / "completeness.json").read_text(encoding="utf-8")
             ledger = json.loads(ledger_text)
@@ -2661,8 +2720,133 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(scan["status"], "failed")
             self.assertEqual(scan["findings_count"], 1)
             self.assertFalse(scan["matched_values_retained"])
+            self.assertEqual(scan["findings"], [categorical_finding])
+            self.assertNotIn("synthetic-test-canary", ledger_text)
             self.assertNotIn(secret_header.strip(), ledger_text)
             self.assertFalse((output / "manifest.json").exists())
+
+    def test_forbidden_content_finding_contract_rejects_malformed_categories(self) -> None:
+        class StringSubclass(str):
+            pass
+
+        malformed = {
+            "not_a_list": None,
+            "not_a_mapping": ["private_key_material"],
+            "different_path": [{"path": "other.md", "line": 1, "rule": "private_key_material"}],
+            "boolean_line": [{"path": "README.md", "line": True, "rule": "private_key_material"}],
+            "line_out_of_range": [{"path": "README.md", "line": 2, "rule": "private_key_material"}],
+            "huge_line": [{"path": "README.md", "line": 10**5000, "rule": "private_key_material"}],
+            "path_subclass": [
+                {"path": StringSubclass("README.md"), "line": 1, "rule": "private_key_material"}
+            ],
+            "rule_subclass": [
+                {"path": "README.md", "line": 1, "rule": StringSubclass("private_key_material")}
+            ],
+            "unknown_rule": [{"path": "README.md", "line": 1, "rule": "unreviewed_rule"}],
+        }
+        for name, findings in malformed.items():
+            with self.subTest(name=name), self.assertRaisesRegex(ParseFailure, "finding is malformed"):
+                compiler_module._categorical_forbidden_content_findings("README.md", 1, findings)
+
+    def test_forbidden_content_scan_schema_rejects_vacuous_or_contradictory_states(self) -> None:
+        ledger_schema = json.loads(
+            (MASTER_REFERENCE / "schema" / "completeness-ledger.schema.json").read_text(encoding="utf-8")
+        )
+        validator = Draft202012Validator(ledger_schema["$defs"]["forbiddenContentScan"])
+        passed = {
+            "status": "passed",
+            "scope": "allowlisted_utf8_text_payloads_only",
+            "eligible_text_files": 2,
+            "scanned_text_files": 2,
+            "rules": [name for name, _pattern in compiler_module.FORBIDDEN_CONTENT_RULES],
+            "findings_count": 0,
+            "findings": [],
+            "matched_values_retained": False,
+            "unresolved_reasons": [],
+        }
+        validator.validate(passed)
+        duplicate_finding = {"path": "README.md", "line": 1, "rule": "private_key_material"}
+        failed_with_two_occurrences = {
+            **passed,
+            "status": "failed",
+            "findings_count": 2,
+            "findings": [duplicate_finding, duplicate_finding],
+        }
+        validator.validate(failed_with_two_occurrences)
+        mutations = {
+            "missing denominator": lambda value: value.pop("scanned_text_files"),
+            "extra field": lambda value: value.update({"unexpected": False}),
+            "passing finding count": lambda value: value.update({"findings_count": 1}),
+            "passing finding": lambda value: value.update(
+                {"findings": [{"path": "README.md", "line": 1, "rule": "private_key_material"}]}
+            ),
+            "failed without finding": lambda value: value.update({"status": "failed"}),
+            "invalid without reason": lambda value: value.update({"status": "invalid"}),
+            "unknown reason": lambda value: value.update({"unresolved_reasons": ["uncontrolled_reason"]}),
+        }
+        for name, mutate in mutations.items():
+            candidate = copy.deepcopy(passed)
+            mutate(candidate)
+            with self.subTest(name=name), self.assertRaises(ValidationError):
+                validator.validate(candidate)
+
+    def test_forbidden_content_scanner_failures_are_non_disclosing_and_not_health(self) -> None:
+        class LyingPath(str):
+            def __ne__(self, other: object) -> bool:
+                return False
+
+        failures = {
+            "malformed": (None, "scanner_output_invalid"),
+            "path_subclass": (
+                [{"path": LyingPath("SENSITIVE_STR_SUBCLASS_CANARY"), "line": 1, "rule": "private_key_material"}],
+                "scanner_output_invalid",
+            ),
+            "huge_line": (
+                [{"path": "README.md", "line": 10**5000, "rule": "private_key_material"}],
+                "scanner_output_invalid",
+            ),
+            "exception": (RuntimeError("SENSITIVE_SCANNER_EXCEPTION_CANARY"), "scanner_execution_failed"),
+            "parse_failure_exception": (
+                ParseFailure("SENSITIVE_PARSEFAILURE_SCANNER_CANARY"),
+                "scanner_execution_failed",
+            ),
+        }
+        for name, (result, expected_reason) in failures.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                repository = base / "repo"
+                initialize_repository(repository, {"README.md": "# Safe\n"})
+                output = base / "failed"
+                scanner = mock.Mock(side_effect=result) if isinstance(result, Exception) else mock.Mock(return_value=result)
+
+                with (
+                    mock.patch.object(compiler_module, "forbidden_content_findings", scanner),
+                    self.assertRaises(CompilationError) as caught,
+                ):
+                    compile_repository(repository, output)
+
+                scanner.assert_called_once_with("README.md", "# Safe\n")
+                ledger_text = (output / "completeness.json").read_text(encoding="utf-8")
+                failure_text = (output / "failure.json").read_text(encoding="utf-8")
+                scan = json.loads(ledger_text)["privacy"]["forbidden_content_scan"]
+                self.assertEqual(scan["status"], "invalid")
+                self.assertEqual(scan["eligible_text_files"], 1)
+                self.assertEqual(scan["scanned_text_files"], 0)
+                self.assertEqual(scan["findings_count"], 0)
+                self.assertEqual(
+                    scan["unresolved_reasons"],
+                    ["eligible_text_scan_incomplete", expected_reason],
+                )
+                self.assertNotIn("SENSITIVE_SCANNER_EXCEPTION_CANARY", ledger_text)
+                self.assertNotIn("SENSITIVE_SCANNER_EXCEPTION_CANARY", failure_text)
+                self.assertNotIn("SENSITIVE_SCANNER_EXCEPTION_CANARY", " ".join(caught.exception.errors))
+                self.assertNotIn("SENSITIVE_PARSEFAILURE_SCANNER_CANARY", ledger_text)
+                self.assertNotIn("SENSITIVE_PARSEFAILURE_SCANNER_CANARY", failure_text)
+                self.assertNotIn("SENSITIVE_PARSEFAILURE_SCANNER_CANARY", " ".join(caught.exception.errors))
+                self.assertNotIn("SENSITIVE_STR_SUBCLASS_CANARY", ledger_text)
+                self.assertNotIn("SENSITIVE_STR_SUBCLASS_CANARY", failure_text)
+                self.assertNotIn("SENSITIVE_STR_SUBCLASS_CANARY", " ".join(caught.exception.errors))
+                self.assertFalse((output / "manifest.json").exists())
 
     def test_graphify_edge_cannot_smuggle_private_path_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

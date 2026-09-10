@@ -121,8 +121,9 @@
     "consequential_claim_denominator": {"$ref": "#/$defs/consequentialClaimDenominator"},
     "privacy": {
       "type": "object",
-      "required": ["binary_payload_scan"],
+      "required": ["forbidden_content_scan", "binary_payload_scan"],
       "properties": {
+        "forbidden_content_scan": {"$ref": "#/$defs/forbiddenContentScan"},
         "binary_payload_scan": {"$ref": "#/$defs/binaryReviewSummary"}
       }
     },
@@ -497,6 +498,102 @@
                   "consequential_claim_rendered_sink_universe_incomplete"
                 ]
               }
+            }
+          }
+        }
+      ]
+    },
+    "forbiddenContentScan": {
+      "type": "object",
+      "required": [
+        "status",
+        "scope",
+        "eligible_text_files",
+        "scanned_text_files",
+        "rules",
+        "findings_count",
+        "findings",
+        "matched_values_retained",
+        "unresolved_reasons"
+      ],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "invalid"]},
+        "scope": {"const": "allowlisted_utf8_text_payloads_only"},
+        "eligible_text_files": {"type": "integer", "minimum": 0},
+        "scanned_text_files": {"type": "integer", "minimum": 0},
+        "rules": {
+          "const": [
+            "private_key_material",
+            "aws_access_key",
+            "github_access_token",
+            "openai_api_key",
+            "slack_access_token",
+            "google_api_key"
+          ]
+        },
+        "findings_count": {"type": "integer", "minimum": 0},
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "line", "rule"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "line": {"type": "integer", "minimum": 1},
+              "rule": {
+                "enum": [
+                  "private_key_material",
+                  "aws_access_key",
+                  "github_access_token",
+                  "openai_api_key",
+                  "slack_access_token",
+                  "google_api_key"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "matched_values_retained": {"const": false},
+        "unresolved_reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "eligible_text_scan_incomplete",
+              "scanner_execution_failed",
+              "scanner_output_invalid"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "passed"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "findings_count": {"const": 0},
+              "findings": {"const": []},
+              "unresolved_reasons": {"const": []}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "failed"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "findings_count": {"minimum": 1},
+              "findings": {"minItems": 1},
+              "unresolved_reasons": {"const": []}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "invalid"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "unresolved_reasons": {"minItems": 1}
             }
           }
         }

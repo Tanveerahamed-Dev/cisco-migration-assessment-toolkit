@@ -125,6 +125,18 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Generated projection imports and compiler privacy findings now cross explicit code/data
+  boundaries.** Every generated dynamic-import specifier must match a bounded relative `.mjs`
+  grammar and is serialized through a JavaScript-source encoder that escapes HTML/script-breaking
+  characters and Unicode line separators with exact semantic round-trip tests. Compiler privacy
+  findings are re-projected onto the category-only `path`/`line`/`rule` contract before persistence;
+  malformed scanner output fails closed and extra values are discarded. The tracked schema fixes
+  the complete scan shape, while both projection and release intake independently reconcile its
+  scanned/eligible count against the verified file group. The private-key detector is still
+  exercised against the real synthetic marker in memory, while the compiler integration test
+  writes only non-sensitive content and proves categorical failure/non-retention. This
+  addresses the code-generation and clear-text-storage findings by changing the boundaries, not by
+  dismissing or excluding CodeQL results; fresh exact-head and exact-main analysis remains required.
 - **Frozen engine dispatch no longer writes an audit log into the immutable Atlas application
   root.** A bundle-tree working directory now binds the log to the executable's `data` directory
   and preflights that location before importing the engine; external per-job working directories
