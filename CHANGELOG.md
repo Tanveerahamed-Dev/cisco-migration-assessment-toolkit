@@ -125,6 +125,16 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Master Reference build tooling resolves the newly disclosed Sharp/libheif advisory.**
+  Miniflare 5.20260801.1-alpha still declares Sharp 0.35.2, so its exact edge is
+  project-scoped to Sharp 0.35.4, the first release patched for
+  GHSA-rgj7-g3m4-5g8c. Lock, installed-resolution, native-binding, exact
+  26-component `@img/sharp-*` family, SBOM topology and semantic-version tests
+  fail closed on an affected or unparseable unscoped npm Sharp component and a
+  prerelease, nested, missing or misdirected native component. The prior four-high
+  npm result is retained as advisory-feed drift;
+  this local dependency repair is not external applicability/VEX review or
+  release authorization.
 - **Python release archives now fail closed on same-source byte reproducibility.** CI, tagged
   release, self-hosted release, and the local verification runbook use one build owner that binds
   `SOURCE_DATE_EPOCH` to the exact selected commit and materializes two separate no-local LF-exact

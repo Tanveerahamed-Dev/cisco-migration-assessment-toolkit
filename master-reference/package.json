@@ -40,6 +40,9 @@
     "browserslist": "4.28.7",
     "fast-uri": "3.1.6",
     "nanoid": "3.3.18",
+    "miniflare@5.20260801.1-alpha": {
+      "sharp": "0.35.4"
+    },
     "vinext@0.0.50": {
       "image-size": "file:vendor/bounded-image-size"
     }

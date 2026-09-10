@@ -87,6 +87,84 @@ test("the lock resolves the Vinext image-size edge only to the tracked local pac
   assert.equal(lock.packages["node_modules/vinext/vendor/bounded-image-size"], undefined);
 });
 
+test("the exact Miniflare edge resolves only the patched sharp release", () => {
+  const manifest = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  const lock = JSON.parse(readFileSync(path.join(projectRoot, "package-lock.json"), "utf8"));
+  const miniflare = lock.packages["node_modules/miniflare"];
+  const sharp = lock.packages["node_modules/sharp"];
+
+  assert.equal(manifest.overrides.sharp, undefined);
+  assert.deepEqual(manifest.overrides["miniflare@5.20260801.1-alpha"], {
+    sharp: "0.35.4",
+  });
+  assert.equal(miniflare.version, "5.20260801.1-alpha");
+  assert.equal(miniflare.dependencies.sharp, "0.35.2");
+  assert.equal(sharp.version, "0.35.4");
+  assert.deepEqual(
+    Object.entries(lock.packages)
+      .filter(([key]) => key === "node_modules/sharp" || key.endsWith("/node_modules/sharp"))
+      .map(([key, value]) => ({ path: key, version: value.version })),
+    [{ path: "node_modules/sharp", version: "0.35.4" }],
+  );
+  assert.equal(
+    sharp.resolved,
+    "https://registry.npmjs.org/sharp/-/sharp-0.35.4.tgz",
+  );
+  assert.equal(
+    sharp.integrity,
+    "sha512-n++8XWcj+jCOr2IOl7h8LbKnGBDY4aPbmprMONBNFdn0ImXqpGVv5zliDs0V9HbmbCQLpbuo2ej9rAoOQTvMDA==",
+  );
+
+  const miniflareRequire = createRequire(path.join(projectRoot, "node_modules/miniflare/package.json"));
+  const installedSharp = JSON.parse(readFileSync(
+    path.join(path.dirname(miniflareRequire.resolve("sharp")), "..", "package.json"),
+    "utf8",
+  ));
+  assert.equal(installedSharp.version, "0.35.4");
+  assert.deepEqual(installedSharp.optionalDependencies, sharp.optionalDependencies);
+
+  const optionalClosure = Object.entries(sharp.optionalDependencies);
+  assert.equal(optionalClosure.length, 25);
+  for (const [name, version] of optionalClosure) {
+    assert.ok(name.startsWith("@img/sharp-"));
+    assert.equal(
+      version,
+      name.startsWith("@img/sharp-libvips-") ? "1.3.3" : "0.35.4",
+    );
+    assert.equal(lock.packages[`node_modules/${name}`].version, version);
+  }
+
+  const sharpClosureRows = Object.entries(lock.packages).filter(([key]) =>
+    key === "node_modules/sharp"
+    || key.endsWith("/node_modules/sharp")
+    || key.includes("node_modules/@img/sharp-"));
+  assert.equal(sharpClosureRows.length, 27);
+  for (const [key, value] of sharpClosureRows) {
+    if (key === "node_modules/sharp") {
+      assert.equal(value.version, "0.35.4");
+      continue;
+    }
+    assert.ok(key.startsWith("node_modules/@img/sharp-"));
+    assert.equal(
+      value.version,
+      key.includes("/sharp-libvips-") ? "1.3.3" : "0.35.4",
+    );
+  }
+});
+
+test("the patched Miniflare sharp edge loads its native binding", async () => {
+  const miniflareRequire = createRequire(path.join(projectRoot, "node_modules/miniflare/package.json"));
+  const sharpLibrary = miniflareRequire("sharp");
+  const metadata = await sharpLibrary(
+    path.join(projectRoot, "public/atlas-social-card.png"),
+    { limitInputPixels: 2_000_000 },
+  ).metadata();
+
+  assert.equal(metadata.format, "png");
+  assert.equal(metadata.width, 1731);
+  assert.equal(metadata.height, 909);
+});
+
 test("valid PNG IHDR dimensions are returned", () => {
   assert.deepEqual(imageSize(pngHeader(1731, 909)), {
     width: 1731,

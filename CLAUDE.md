@@ -104,7 +104,14 @@ hashes and render profile are reviewer assertions: v1 does not ingest PNG bytes 
 the PDF, so it does not establish PDF-to-PNG provenance.
 
 The dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is locked to the
-patched 3.3.18 line through both the Master Reference and AssessHub npm overrides. Vinext 0.0.50's exact
+patched 3.3.18 line through both the Master Reference and AssessHub npm overrides. Miniflare
+5.20260801.1-alpha declares an exact Sharp 0.35.2 build-tool edge; a Miniflare-identity-scoped override
+resolves that edge to Sharp 0.35.4, the first release patched for GHSA-rgj7-g3m4-5g8c. The source/lock
+contract and release SBOM gate bind the exact Miniflare-to-Sharp edge and complete 26-component
+`@img/sharp-*` native family, reject every unscoped npm Sharp version below 0.35.4, a 0.35.4 prerelease, and an
+unparseable version, and exercise the installed native binding against a tracked PNG. This closes
+that advisory in the current lock/install graph, not external
+source-authenticated applicability or VEX review. Vinext 0.0.50's exact
 `image-size` edge is scoped to the tracked `@atlas/bounded-image-size` package, whose source-bound
 PNG/SVG-only parser rejects the advisory-named HEIF, JXL and ICNS families and every other unsupported
 format. The source contract rejects static image imports, numbered metadata-route images and `next/image`

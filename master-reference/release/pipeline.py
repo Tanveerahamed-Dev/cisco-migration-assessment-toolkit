@@ -109,6 +109,53 @@ _IMAGE_SIZE_HIGH_ADVISORIES = (
     "GHSA-w3rx-r6r6-pgpr",
 )
 _NANOID_HIGH_ADVISORY = "GHSA-2v37-7h3g-55p8"
+_SHARP_HIGH_ADVISORY = "GHSA-rgj7-g3m4-5g8c"
+_SHARP_MINIFLARE_VERSION = "5.20260801.1-alpha"
+_SHARP_PATCHED_VERSION = "0.35.4"
+_SHARP_LIBVIPS_PATCHED_VERSION = "1.3.3"
+_SHARP_INTEGRITY = (
+    "sha512-n++8XWcj+jCOr2IOl7h8LbKnGBDY4aPbmprMONBNFdn0ImXqpGVv5zliDs0V9HbmbCQLpbuo2ej9rAoOQTvMDA=="
+)
+_SHARP_MINIFLARE_INTEGRITY = (
+    "sha512-BHPVzIDA6mbx7LefxpvkXW7DHx9FKB9GorZatbnrrFTt3CVMU8zuUpbgyCuebwDKcTTOZos43ta8GQ0eMVEpxA=="
+)
+_SHARP_PLATFORM_COMPONENTS = (
+    "sharp-darwin-arm64",
+    "sharp-darwin-x64",
+    "sharp-freebsd-wasm32",
+    "sharp-linux-arm",
+    "sharp-linux-arm64",
+    "sharp-linux-ppc64",
+    "sharp-linux-riscv64",
+    "sharp-linux-s390x",
+    "sharp-linux-x64",
+    "sharp-linuxmusl-arm64",
+    "sharp-linuxmusl-x64",
+    "sharp-wasm32",
+    "sharp-webcontainers-wasm32",
+    "sharp-win32-arm64",
+    "sharp-win32-ia32",
+    "sharp-win32-x64",
+)
+_SHARP_LIBVIPS_COMPONENTS = (
+    "sharp-libvips-darwin-arm64",
+    "sharp-libvips-darwin-x64",
+    "sharp-libvips-linux-arm",
+    "sharp-libvips-linux-arm64",
+    "sharp-libvips-linux-ppc64",
+    "sharp-libvips-linux-riscv64",
+    "sharp-libvips-linux-s390x",
+    "sharp-libvips-linux-x64",
+    "sharp-libvips-linuxmusl-arm64",
+    "sharp-libvips-linuxmusl-x64",
+)
+_SHARP_WRAPPER_CHILDREN = {
+    f"sharp-{component.removeprefix('sharp-libvips-')}": component
+    for component in _SHARP_LIBVIPS_COMPONENTS
+} | {
+    "sharp-freebsd-wasm32": "sharp-wasm32",
+    "sharp-webcontainers-wasm32": "sharp-wasm32",
+}
 _FFLATE_MODERATE_ADVISORY = "GHSA-px8p-9vwx-vf98"
 _FFLATE_AFFECTED_RANGES = (
     ((0, 4, 5), (0, 4, 9)),
@@ -121,6 +168,9 @@ _SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+_FOREIGN_UNSCOPED_SHARP_PURL_RE = re.compile(
+    r"^pkg:(?!npm(?:/|$))[a-z][a-z0-9.+-]*/sharp@[A-Za-z0-9][A-Za-z0-9._+!-]*$"
 )
 
 RENDERED_SINK_LINEAGE_CONTRACT_PATH = "master-reference/governance/rendered-sink-lineage-contract.json"
@@ -191,6 +241,23 @@ def _is_affected_fflate(value: object) -> bool:
     return False
 
 
+def _is_affected_sharp(value: object) -> bool:
+    comparison = _semver_compare_to_stable(value, (0, 35, 4))
+    return comparison is None or comparison < 0
+
+
+def _is_unscoped_npm_sharp_component(component: dict[str, Any]) -> bool:
+    if component.get("name") != "sharp" or component.get("group", "") != "":
+        return False
+    purl = component.get("purl")
+    # Exclude only a positively formed foreign-ecosystem identity. Missing,
+    # malformed, encoded or npm-shaped purls remain in scope and fail closed.
+    return not (
+        isinstance(purl, str)
+        and _FOREIGN_UNSCOPED_SHARP_PURL_RE.fullmatch(purl) is not None
+    )
+
+
 def _sbom_component_properties(component: dict[str, Any]) -> dict[str, str]:
     properties: dict[str, str] = {}
     for item in component.get("properties", []):
@@ -201,6 +268,157 @@ def _sbom_component_properties(component: dict[str, Any]) -> dict[str, str]:
         if isinstance(name, str) and isinstance(value, str) and name not in properties:
             properties[name] = value
     return properties
+
+
+def _npm_lock_component_matches(
+    component: dict[str, Any],
+    *,
+    group: str,
+    name: str,
+    version: str,
+    lockfile_path: str,
+    integrity: str | None = None,
+) -> bool:
+    properties = _sbom_component_properties(component)
+    package_name = f"{group}/{name}" if group else name
+    expected_url = f"https://registry.npmjs.org/{package_name}/-/{name}-{version}.tgz"
+    observed_integrity = properties.get("atlas:npmIntegrity")
+    return (
+        component.get("group", "") == group
+        and component.get("name") == name
+        and component.get("version") == version
+        and component.get("externalReferences") == [{"type": "distribution", "url": expected_url}]
+        and properties.get("atlas:lockfile") == "master-reference/package-lock.json"
+        and properties.get("atlas:lockfilePath") == lockfile_path
+        and properties.get("atlas:recordKind") == "resolved-third-party-component"
+        and properties.get("atlas:resolution") == "lockfile-distribution-bound"
+        and properties.get("atlas:developmentOnly") == "true"
+        and properties.get("atlas:distributionEvidenceStatus")
+        == "https-distribution-url-and-valid-sri"
+        and isinstance(observed_integrity, str)
+        and observed_integrity.startswith("sha512-")
+        and (integrity is None or observed_integrity == integrity)
+    )
+
+
+def _verified_miniflare_sharp_closure(sbom: dict[str, Any]) -> bool:
+    components_by_ref: dict[str, dict[str, Any]] = {}
+    for component in sbom.get("components", []):
+        if not isinstance(component, dict) or not isinstance(component.get("bom-ref"), str):
+            continue
+        ref = component["bom-ref"]
+        if ref in components_by_ref:
+            return False
+        components_by_ref[ref] = component
+
+    dependencies: dict[str, set[str]] = {}
+    for row in sbom.get("dependencies", []):
+        if not isinstance(row, dict) or not isinstance(row.get("ref"), str):
+            continue
+        ref = row["ref"]
+        targets = row.get("dependsOn")
+        if (
+            ref in dependencies
+            or not isinstance(targets, list)
+            or any(not isinstance(target, str) for target in targets)
+            or len(targets) != len(set(targets))
+        ):
+            return False
+        dependencies[ref] = set(targets)
+
+    miniflare_refs = {
+        ref
+        for ref, component in components_by_ref.items()
+        if _npm_lock_component_matches(
+            component,
+            group="",
+            name="miniflare",
+            version=_SHARP_MINIFLARE_VERSION,
+            lockfile_path="node_modules/miniflare",
+            integrity=_SHARP_MINIFLARE_INTEGRITY,
+        )
+    }
+    sharp_refs = {
+        ref
+        for ref, component in components_by_ref.items()
+        if _npm_lock_component_matches(
+            component,
+            group="",
+            name="sharp",
+            version=_SHARP_PATCHED_VERSION,
+            lockfile_path="node_modules/sharp",
+            integrity=_SHARP_INTEGRITY,
+        )
+    }
+    if len(miniflare_refs) != 1 or len(sharp_refs) != 1:
+        return False
+    miniflare_ref = next(iter(miniflare_refs))
+    sharp_ref = next(iter(sharp_refs))
+
+    expected_versions = {
+        **{name: _SHARP_PATCHED_VERSION for name in _SHARP_PLATFORM_COMPONENTS},
+        **{name: _SHARP_LIBVIPS_PATCHED_VERSION for name in _SHARP_LIBVIPS_COMPONENTS},
+    }
+    family_refs: dict[str, str] = {}
+    for name, version in expected_versions.items():
+        refs = {
+            ref
+            for ref, component in components_by_ref.items()
+            if _npm_lock_component_matches(
+                component,
+                group="@img",
+                name=name,
+                version=version,
+                lockfile_path=f"node_modules/@img/{name}",
+            )
+        }
+        if len(refs) != 1:
+            return False
+        family_refs[name] = next(iter(refs))
+
+    expected_paths = {
+        "node_modules/miniflare",
+        "node_modules/sharp",
+        *(f"node_modules/@img/{name}" for name in expected_versions),
+    }
+    context_paths: list[str] = []
+    for component in components_by_ref.values():
+        properties = _sbom_component_properties(component)
+        if properties.get("atlas:lockfile") != "master-reference/package-lock.json":
+            continue
+        lockfile_path = properties.get("atlas:lockfilePath")
+        if not isinstance(lockfile_path, str):
+            continue
+        if (
+            lockfile_path in {"node_modules/miniflare", "node_modules/sharp"}
+            or lockfile_path.endswith("/node_modules/sharp")
+            or "node_modules/@img/sharp-" in lockfile_path
+        ):
+            context_paths.append(lockfile_path)
+    if len(context_paths) != len(expected_paths) or set(context_paths) != expected_paths:
+        return False
+
+    if miniflare_ref not in dependencies or sharp_ref not in dependencies:
+        return False
+    inbound: dict[str, set[str]] = {}
+    for source_ref, target_refs in dependencies.items():
+        for target_ref in target_refs:
+            inbound.setdefault(target_ref, set()).add(source_ref)
+    if sharp_ref not in dependencies[miniflare_ref] or inbound.get(sharp_ref, set()) != {miniflare_ref}:
+        return False
+
+    family_ref_set = set(family_refs.values())
+    expected_direct_family = family_ref_set - {family_refs["sharp-wasm32"]}
+    if dependencies[sharp_ref] & family_ref_set != expected_direct_family:
+        return False
+    for name, ref in family_refs.items():
+        if ref not in dependencies:
+            return False
+        child = _SHARP_WRAPPER_CHILDREN.get(name)
+        expected_children = {family_refs[child]} if child else set()
+        if dependencies[ref] & family_ref_set != expected_children:
+            return False
+    return True
 
 
 def _verified_bounded_image_replacement_aliases(sbom: dict[str, Any]) -> set[str]:
@@ -284,6 +502,19 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
     """Describe the tracked dependency state without pretending an SBOM is a VEX."""
 
     components = sbom.get("components", [])
+    sharp_context_present = any(
+        isinstance(component, dict)
+        and _sbom_component_properties(component).get("atlas:lockfile")
+        == "master-reference/package-lock.json"
+        and (
+            _sbom_component_properties(component).get("atlas:lockfilePath")
+            in {"node_modules/miniflare", "node_modules/sharp"}
+            or "node_modules/@img/sharp-"
+            in _sbom_component_properties(component).get("atlas:lockfilePath", "")
+        )
+        for component in components
+    )
+    sharp_closure_verified = sharp_context_present and _verified_miniflare_sharp_closure(sbom)
     bounded_image_aliases = _verified_bounded_image_replacement_aliases(sbom)
     next_component_versions = sorted(
         {
@@ -332,6 +563,15 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             and _is_affected_fflate(component.get("version"))
         }
     )
+    affected_sharp_versions = sorted(
+        {
+            str(component.get("version"))
+            for component in components
+            if isinstance(component, dict)
+            and _is_unscoped_npm_sharp_component(component)
+            and _is_affected_sharp(component.get("version"))
+        }
+    )
     limits: list[str] = []
     if affected_image_size_versions:
         advisories = ", ".join(_IMAGE_SIZE_HIGH_ADVISORIES)
@@ -360,6 +600,28 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "within its admitted line. A higher-severity npm audit threshold can exit zero while "
             "this advisory remains; that is not advisory absence or applicability/VEX evidence."
         )
+    if affected_sharp_versions:
+        limits.append(
+            "The whole-repository SBOM contains sharp version(s) "
+            f"{', '.join(affected_sharp_versions)} below the patched 0.35.4 boundary for "
+            f"high-severity advisory {_SHARP_HIGH_ADVISORY}. The edge is introduced by Miniflare "
+            "build tooling rather than the deployed runtime, but build-time-only reachability "
+            "does not waive the finding. Update the exact owning lockfile before treating the "
+            "dependency assessment as current."
+        )
+    if sharp_context_present and not sharp_closure_verified:
+        limits.append(
+            "The Master Reference SBOM does not prove the exact Miniflare-to-Sharp 0.35.4 "
+            "edge and complete patched @img/sharp native dependency family. A patched top-level "
+            "version cannot hide a missing, stale, nested or misdirected native component."
+        )
+    elif sharp_closure_verified:
+        limits.append(
+            "The exact Miniflare build-tool edge resolves to Sharp 0.35.4 and its complete "
+            "patched @img/sharp native dependency family. This source/lock/SBOM consistency "
+            "check closes GHSA-rgj7-g3m4-5g8c in the current build graph only; it is not an "
+            "externally authenticated applicability/VEX review."
+        )
     if bounded_image_aliases:
         limits.append(
             "The Vinext image-size dependency edge resolves to the tracked local "
@@ -380,6 +642,13 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "waiver. This gate therefore treats every Next component as unassessed until exact source "
             "removes the distribution or an independently reviewable compiled-package assessment is supplied."
         )
+    if affected_sharp_versions and (
+        affected_image_size_versions
+        or affected_nanoid_versions
+        or affected_fflate_versions
+        or next_vendored_image_parser
+    ):
+        return "blocked_multiple_unremediated_dependency_advisories", limits
     if affected_fflate_versions and (
         affected_image_size_versions or affected_nanoid_versions or next_vendored_image_parser
     ):
@@ -390,6 +659,10 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
         return "blocked_image_size_unpatched_build_time_high_advisories", limits
     if affected_nanoid_versions:
         return "blocked_nanoid_unremediated_high_advisory", limits
+    if affected_sharp_versions:
+        return "blocked_sharp_unremediated_high_advisory", limits
+    if sharp_context_present and not sharp_closure_verified:
+        return "blocked_sharp_dependency_topology_unverified", limits
     if affected_fflate_versions:
         return "blocked_fflate_unremediated_moderate_advisory", limits
     limits.append(
