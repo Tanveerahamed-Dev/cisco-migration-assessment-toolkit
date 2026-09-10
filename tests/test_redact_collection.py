@@ -4,7 +4,7 @@ The gap: --redact makes the DELIVERABLES share-safe but the raw collection dir (
 .txt captures, running-configs included) keeps every password / community / key in
 CLEARTEXT on the consulting laptop, and nothing ever said so. This slice adds:
 - redact_collection_dir(): opt-in IN-PLACE scrub of secret VALUES across the captures,
-  reusing the same conservative _scrub_secrets deny-list (IPs / hostnames / MACs are
+  reusing the same conservative _redact_config_values deny-list (IPs / hostnames / MACs are
   KEPT so the dir stays analyzable and --compare-able; never auto-deleted);
 - a loud [SENSITIVE] warning on every run naming the dir;
 - --redact-collection CLI wiring (scrub runs AFTER analysis so the current run reads

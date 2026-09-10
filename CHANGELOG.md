@@ -125,6 +125,80 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **Frozen engine dispatch no longer writes an audit log into the immutable Atlas application
+  root.** A bundle-tree working directory now binds the log to the executable's `data` directory
+  and preflights that location before importing the engine; external per-job working directories
+  retain separate relative logs so concurrent AssessHub jobs cannot truncate one shared file.
+  Portable smoke now runs a copied bundle from its real field-layout working directory and
+  byte-compares every non-`data` entry before and after all four checks. This was found by
+  downloading the exact PR integration artifact, starting it from the extracted Atlas directory,
+  and rerunning installed verification; the prior build had created an empty root log that the
+  verifier correctly rejected as a possible client-evidence artifact. Frozen ingest/redaction now
+  also refuses a system temporary root inside Atlas, and alternate-drive qualification keeps its
+  scratch database outside the copied application so empty directories cannot evade member checks.
+- **Master Reference build tooling resolves the newly disclosed Sharp/libheif advisory.**
+  Miniflare 5.20260801.1-alpha still declares Sharp 0.35.2, so its exact edge is
+  project-scoped to Sharp 0.35.4, the first release patched for
+  GHSA-rgj7-g3m4-5g8c. Lock, installed-resolution, native-binding, exact
+  26-component `@img/sharp-*` family, SBOM topology and semantic-version tests
+  fail closed on an affected or unparseable unscoped npm Sharp component and a
+  prerelease, nested, missing or misdirected native component. The prior four-high
+  npm result is retained as advisory-feed drift;
+  this local dependency repair is not external applicability/VEX review or
+  release authorization.
+- **Python release archives now fail closed on same-source byte reproducibility.** CI, tagged
+  release, self-hosted release, and the local verification runbook use one build owner that binds
+  `SOURCE_DATE_EPOCH` to the exact selected commit and materializes two separate no-local LF-exact
+  clones. Each cold candidate builds and bounded-canonicalizes its sdist, builds its wheel from that
+  canonical sdist, and is verified against the unchanged commit/tree before exact stable-handle
+  comparison. One retained set is staged, remeasured after the final original-source check, and
+  renamed into an output path checked absent immediately beforehand, remeasured after rename, and
+  quarantined on mismatch. This is executed-toolchain reproducibility evidence under the workflow's
+  nonconcurrent output-parent assumption,
+  not independent provenance, review, cross-platform equivalence, signing, qualification,
+  promotion, or publication authority.
+- **Additional CodeQL-reported boundaries are hardened without broad suppression.** AssessHub now
+  captures bounded same-handle-verified immutable SPA bytes at app construction and reconciles an
+  exact pre/post physical-tree census before accepting them. One strict local Vite boot shell,
+  nonblank referenced assets, and pinned HTML/JavaScript/CSS media types form the shared structural
+  readiness contract for selftest and production boot. GET, HEAD, content-hash revalidation, and
+  bounded single ranges perform no request-time filesystem operation; every post-construction
+  startup path closes the SQLite store. Explorer what-if execution and copy labels use structured,
+  model-bound,
+  control-safe fields; route maps require own valid arrays/rows and clone without prototype hazards,
+  while copied matrices use rectangular quote-all CSV with formula neutralization and honest failure
+  status. Clipboard plan text accepts only balanced authored emphasis and rejects raw markup or
+  control text. Redaction naming describes redacted output rather than secret storage; URL/script
+  negative tests use exact values and sentinels instead of sanitizer-shaped assertions. Fresh hosted
+  CodeQL remains required for closure; synthetic-key test findings and external-module data-as-code
+  findings remain individually reviewable rather than mass-dismissed.
+- **Python release verification and the historical Release-1 replay profile now advance as one
+  reconciled dependency change.** The Master Reference verification toolchain uses cryptography
+  50.0.1, Ruff 0.16.6, ReportLab 5.0.1, and pypdf 6.17.0 (including its Roman-numeral
+  input limit), while the separately provisioned Windows replay profile uses lxml 6.1.3 and
+  setuptools 84.0.0. The Release-1 generator refreshed only the exact 2,340-byte
+  executable-profile manifest. Its independent digest pin and the dependent non-authoritative
+  Release-2 census and proposal
+  bindings were refreshed separately; the approved historical source bundle, retrospective
+  vectors, semantic roster, `AUDIT_ONLY` authority, null Release-2 gate, and non-promotion
+  boundary remain byte-identical.
+- **The portable build-tool pip pin is now one reconciled owner set.** The project build extra,
+  Windows hash lock, portable toolchain contract, release verifier, and hosted bootstrap all use
+  pip 26.2.1, moving the executed toolchain beyond all five development-scope advisory ranges
+  without silently testing an older Atlas build toolchain. Mutation tests independently break each
+  owner and require reconciliation; pip remains build-only and is not represented as a bundled
+  Atlas runtime dependency. Existing RC1/RC2 artifacts and receipts remain immutable and do not
+  inherit this source change; hosted alert closure still requires evaluation on integrated main.
+- **Five Release-1 CodeQL security defects are remediated at their owning boundaries.** The three
+  Master Reference lineage validators now share a bounded single-pass ASCII semantic-identifier
+  parser instead of an ambiguously nested regular expression. The docs-only fabric verifier serves
+  one fixed HTML asset through an exact request allowlist rather than joining request text into a
+  filesystem path. Compiler JSON intake now opens the final entry first with non-following,
+  nonblocking flags where the platform supplies them, binds that handle to a contained pathname,
+  reads it twice, and revalidates exact file identity and metadata before accepting bytes.
+  Adversarial tests cover the former repeated-hyphen input, encoded traversal requests, pathname
+  replacement, changed second reads, and POSIX named-pipe blocking. A fresh CodeQL analysis remains
+  the authority for hosted alert closure.
 - **Atlas runtime diagnostics no longer reflect client-controlled paths, parser details, gate
   records, or snapshot values into unstructured logs and responses.** Generated deliverable temp
   names now use a fixed prefix after closed-registry selection; invalid JSON responses carry only

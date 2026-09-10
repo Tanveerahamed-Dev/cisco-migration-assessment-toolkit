@@ -78,13 +78,13 @@ def test_same_site_sibling_cannot_csrf_cookie_authenticated_write(tmp_path, monk
 def test_nonloopback_bearer_is_rejected_over_plain_http(tmp_path, monkeypatch):
     monkeypatch.setenv("ASSESSHUB_TOKEN", "field-secret")
     monkeypatch.setattr(app_module, "_client_is_loopback", lambda request: False)
-    app = create_app(db_path=str(tmp_path / "remote-tls.db"))
+    database = str(tmp_path / "remote-tls.db")
     headers = {"Authorization": "Bearer field-secret"}
-    with TestClient(app, base_url="http://assesshub.example") as client:
+    with TestClient(create_app(db_path=database), base_url="http://assesshub.example") as client:
         response = client.get("/api/campaigns", headers=headers)
         assert response.status_code == 403
         assert "HTTPS" in response.json()["detail"]
-    with TestClient(app, base_url="https://assesshub.example") as client:
+    with TestClient(create_app(db_path=database), base_url="https://assesshub.example") as client:
         assert client.get("/api/campaigns", headers=headers).status_code == 200
 
 
@@ -313,13 +313,13 @@ def test_api_and_pir_preserve_legacy_persisted_success_outcome(tmp_path, monkeyp
     with TestClient(app, base_url="http://localhost") as client:
         api_response = client.get(f"/api/executions/{execution_id}")
         response = client.get(f"/api/executions/{execution_id}/report")
+        # Neither read surface reinterprets or rewrites the historical legacy outcome.
+        assert store.get_execution(execution_id)["state"]["outcome"] == execution.OUTCOME_SUCCESS
 
     assert api_response.status_code == 200
     assert api_response.json()["outcome"] == execution.OUTCOME_SUCCESS
     assert response.status_code == 200
     assert captured["state"]["outcome"] == execution.OUTCOME_SUCCESS
-    # Neither read surface reinterprets or rewrites the historical legacy outcome.
-    assert store.get_execution(execution_id)["state"]["outcome"] == execution.OUTCOME_SUCCESS
 
 
 def test_finished_v2_read_view_recomputes_outcome_under_current_evidence_rules():

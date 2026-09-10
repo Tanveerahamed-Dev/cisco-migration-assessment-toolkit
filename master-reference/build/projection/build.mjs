@@ -5,6 +5,7 @@
  * file is isolated behind one static lazy import in index.mjs.
  */
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   access,
   lstat,
@@ -1866,58 +1867,130 @@ function safeRelative(value) {
 async function safeInputPath(input, relative) {
   const parts = safeRelative(relative);
   let current = input;
-  for (const [index, part] of parts.entries()) {
+  for (const part of parts.slice(0, -1)) {
     current = join(current, part);
     let info;
     try {
-      info = await lstat(current);
+      info = await lstat(current, { bigint: true });
     } catch {
       throw new Error("compiler input path metadata read failed");
     }
     if (info.isSymbolicLink()) throw new Error("symlink compiler input refused");
-    if (index < parts.length - 1 && !info.isDirectory()) {
+    if (!info.isDirectory()) {
       throw new Error("compiler input path parent is not a directory");
     }
   }
-  const absolute = resolve(current);
-  let finalInfo;
-  try {
-    finalInfo = await lstat(absolute);
-  } catch {
-    throw new Error("compiler input path metadata read failed");
-  }
-  if (!absolute.startsWith(`${input}${sep}`) || !finalInfo.isFile()) {
-    throw new Error("compiler input is not a contained regular file");
+  const absolute = resolve(input, ...parts);
+  if (!absolute.startsWith(`${input}${sep}`)) {
+    throw new Error("compiler input is not contained");
   }
   return absolute;
 }
 
-async function readBoundedCompilerJson(path) {
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileSnapshot(left, right) {
+  return (
+    sameFileIdentity(left, right) &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+async function readHandleBytes(handle, expectedBytes) {
+  const buffer = Buffer.allocUnsafe(expectedBytes + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
+
+async function handleBytesStillMatch(handle, expected) {
+  const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, expected.byteLength + 1));
+  let offset = 0;
+  while (offset <= expected.byteLength) {
+    const requested = Math.min(chunk.byteLength, expected.byteLength + 1 - offset);
+    const { bytesRead } = await handle.read(chunk, 0, requested, offset);
+    if (bytesRead === 0) break;
+    if (
+      offset + bytesRead > expected.byteLength ||
+      !chunk.subarray(0, bytesRead).equals(expected.subarray(offset, offset + bytesRead))
+    ) {
+      return false;
+    }
+    offset += bytesRead;
+  }
+  return offset === expected.byteLength;
+}
+
+export async function readBoundedCompilerJsonFromHandle(input, path, handle) {
   let before;
+  let pathBefore;
+  let canonicalBefore;
+  try {
+    before = await handle.stat({ bigint: true });
+    pathBefore = await lstat(path, { bigint: true });
+    canonicalBefore = await realpath(path);
+  } catch {
+    throw new Error("bounded compiler JSON opened-file identity is invalid");
+  }
+  if (
+    !before.isFile() ||
+    !pathBefore.isFile() ||
+    !canonicalBefore.startsWith(`${input}${sep}`) ||
+    !sameFileIdentity(before, pathBefore) ||
+    before.size < 1n ||
+    before.size > BigInt(COMPILER_JSON_MAX_BYTES)
+  ) {
+    throw new Error("bounded compiler JSON opened-file identity is invalid");
+  }
+
+  const buffer = await readHandleBytes(handle, Number(before.size));
+  if (
+    buffer.byteLength !== Number(before.size) ||
+    !(await handleBytesStillMatch(handle, buffer))
+  ) {
+    throw new Error("bounded compiler JSON changed during read");
+  }
+
+  let after;
+  let pathAfter;
+  let canonicalAfter;
+  try {
+    after = await handle.stat({ bigint: true });
+    pathAfter = await lstat(path, { bigint: true });
+    canonicalAfter = await realpath(path);
+  } catch {
+    throw new Error("bounded compiler JSON changed during read");
+  }
+  if (
+    !after.isFile() ||
+    !pathAfter.isFile() ||
+    canonicalAfter !== canonicalBefore ||
+    !canonicalAfter.startsWith(`${input}${sep}`) ||
+    !sameFileSnapshot(before, after) ||
+    !sameFileSnapshot(pathBefore, pathAfter) ||
+    !sameFileIdentity(after, pathAfter)
+  ) {
+    throw new Error("bounded compiler JSON changed during read");
+  }
+  return buffer;
+}
+
+async function readBoundedCompilerJson(input, path) {
   let handle;
   try {
-    before = await lstat(path);
-    if (!before.isFile() || before.size < 1 || before.size > COMPILER_JSON_MAX_BYTES) {
-      throw new Error("bounded compiler JSON metadata is invalid");
-    }
-    handle = await open(path, "r");
-    const buffer = Buffer.allocUnsafe(Math.min(before.size + 1, COMPILER_JSON_MAX_BYTES + 1));
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    const after = await handle.stat();
-    if (
-      !after.isFile() ||
-      after.size !== before.size ||
-      after.mtimeMs !== before.mtimeMs ||
-      offset !== after.size
-    ) {
-      throw new Error("bounded compiler JSON changed during read");
-    }
-    return buffer.subarray(0, offset);
+    const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+    const nonBlocking = fsConstants.O_NONBLOCK ?? 0;
+    handle = await open(path, fsConstants.O_RDONLY | noFollow | nonBlocking);
+    return await readBoundedCompilerJsonFromHandle(input, path, handle);
   } catch {
     throw new Error("bounded compiler JSON read failed");
   } finally {
@@ -1933,7 +2006,7 @@ async function readCanonicalJson(input, relative) {
   const path = await safeInputPath(input, relative);
   let bytes;
   try {
-    bytes = await readBoundedCompilerJson(path);
+    bytes = await readBoundedCompilerJson(input, path);
   } catch {
     throw new Error("compiler JSON read failed");
   }
@@ -1960,7 +2033,7 @@ async function readVerified(input, descriptor, expectedPath) {
   const path = await safeInputPath(input, descriptor.path);
   let bytes;
   try {
-    bytes = await readBoundedCompilerJson(path);
+    bytes = await readBoundedCompilerJson(input, path);
   } catch {
     throw new Error("compiler receipt read failed");
   }

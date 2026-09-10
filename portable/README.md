@@ -22,7 +22,14 @@ bytes before extraction. It never executes a registry-fetched npm or Python pack
 tracked hash contract is checked.
 
 The tracked Windows workflow first reproduces the SPA. The controller then invokes the real
-PyInstaller build, runs the four-step smoke and additional Windows qualification, creates the
+PyInstaller build, copies it into a temporary field-layout directory, runs the four-step smoke and
+requires every non-`data` entry to remain byte-identical. Frozen bundle-root engine dispatch writes
+its audit log under that copy's `data` directory; external per-job working directories retain
+isolated logs. This proves the field guide's one-writable-directory boundary without mutating the
+retained build or collapsing concurrent jobs onto one log. Frozen ingest refuses a configured
+system temporary directory inside the Atlas application, and alternate-drive scratch state remains
+outside the copied application. The controller then runs additional
+Windows qualification and creates the
 portable ZIP/member manifest/checksums/CycloneDX SBOM/toolchain/signing/qualification/provenance
 receipts plus the complete available runtime license texts and three explicitly legal-review-pending
 dataset notices, and reopens the ZIP through an independent verifier. `SELF_CONSISTENCY_PASS` is
@@ -139,6 +146,10 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
 
 ## Known limits (deliberate)
 
+- Frozen bundle-root log placement rejects an existing reparse/symlink parent or target, a
+  multiply-linked target, and a persistent parent/file identity change around open. It does not
+  claim protection from a hostile same-host writer that swaps and restores path components entirely
+  between those checks; keep the installed Atlas directory under operator-controlled ACLs.
 - **Unsigned candidates are draft-only.** Current Microsoft guidance says Smart App Control can
   check every executable, not merely downloaded files, and enterprise policy can prevent a
   SmartScreen bypass. FAT/exFAT therefore does not make unsigned execution broadly safe. The repo

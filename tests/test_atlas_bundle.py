@@ -4,9 +4,12 @@ Pins the frozen bundle's contract WITHOUT running PyInstaller: the assets --self
 all be in datas, the dynamic imports static analysis cannot see must all be hidden-imports, and
 the dist destination must be the exact directory the entry module probes when frozen."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from portable import atlas_bundle
 
@@ -35,6 +38,73 @@ def test_smoke_server_is_reaped_after_forced_termination():
     server = Server()
     _stop_server(server, timeout=3)
     assert server.calls == ["terminate", ("wait", 3), "kill", ("wait", 3)]
+
+
+def test_smoke_directory_census_allows_only_detached_runtime_data(tmp_path):
+    from cisco_toolkit import __version__ as engine_schema_version
+    from portable.build_atlas import _bundle_directory_state, _detach_runtime_data, _directory_gap
+
+    bundle = tmp_path / "Atlas"
+    internal = bundle / "_internal"
+    internal.mkdir(parents=True)
+    (bundle / "Atlas.exe").write_bytes(b"original executable")
+    (internal / "runtime.bin").write_bytes(b"runtime")
+    before = _bundle_directory_state(bundle)
+
+    data = bundle / "data"
+    data.mkdir()
+    (data / "assesshub.db").write_bytes(b"mutable database")
+    log_name = f"cisco_migration_autofill_v{engine_schema_version.replace('.', '_')}.log"
+    (data / log_name).write_bytes(b"audit")
+    _detach_runtime_data(bundle, tmp_path / "runtime-data")
+    assert _directory_gap(before, _bundle_directory_state(bundle)) == ""
+
+    (bundle / "unexpected-empty-directory").mkdir()
+    gap = _directory_gap(before, _bundle_directory_state(bundle))
+    assert "added=" in gap and "unexpected-empty-directory" in gap
+
+
+def test_smoke_detaches_only_a_real_runtime_data_directory(tmp_path):
+    from portable.build_atlas import _detach_runtime_data
+
+    bundle = tmp_path / "Atlas"
+    data = bundle / "data"
+    data.mkdir(parents=True)
+    (data / "assesshub.db").write_bytes(b"database")
+    detached = tmp_path / "runtime-data"
+
+    _detach_runtime_data(bundle, detached)
+    assert not data.exists()
+    assert (detached / "assesshub.db").read_bytes() == b"database"
+
+
+def test_smoke_directory_census_refuses_a_reparse_subtree(tmp_path):
+    from portable.build_atlas import _bundle_directory_state
+
+    bundle = tmp_path / "Atlas"
+    outside = tmp_path / "outside"
+    bundle.mkdir()
+    outside.mkdir()
+    link = bundle / "linked"
+    if os.name == "nt":
+        created = subprocess.run(
+            [os.environ.get("ComSpec", "cmd.exe"), "/c", "mklink", "/J", str(link), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode:
+            pytest.skip(f"directory junction unavailable: {created.stderr or created.stdout}")
+    else:
+        link.symlink_to(outside, target_is_directory=True)
+    try:
+        with pytest.raises(SystemExit, match="reparse or symbolic-link"):
+            _bundle_directory_state(bundle)
+    finally:
+        if os.name == "nt":
+            os.rmdir(link)
+        else:
+            link.unlink()
 
 
 def test_exe_name_is_the_brand_constant():

@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 from portable import release_contract
 
@@ -15,14 +23,91 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "portable-release.yml"
 
 
+def _assert_pip_owner_reconciliation(
+    *,
+    contract: dict,
+    release_contract_version: str,
+    pyproject_text: str,
+    lock_text: str,
+    workflow_text: str,
+) -> None:
+    expected = contract["pip"]
+    assert expected == release_contract_version == "26.2.1"
+
+    project = tomllib.loads(pyproject_text)
+    dependency_groups = [
+        ("project", project["project"].get("dependencies", [])),
+        *project["project"]["optional-dependencies"].items(),
+    ]
+    pip_project_rows = []
+    for group, rows in dependency_groups:
+        try:
+            requirements = [Requirement(row) for row in rows]
+        except InvalidRequirement as error:
+            raise AssertionError("project contains an invalid requirement") from error
+        pip_project_rows.extend(
+            (group, requirement)
+            for requirement in requirements
+            if canonicalize_name(requirement.name) == "pip"
+        )
+    assert len(pip_project_rows) == 1
+    pip_group, pip_build = pip_project_rows[0]
+    assert pip_group == "build"
+    assert str(pip_build.specifier) == f"=={expected}"
+    assert not pip_build.extras and pip_build.marker is None and pip_build.url is None
+
+    locked_pip_versions = [
+        version
+        for name, version in re.findall(
+            r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", lock_text, re.MULTILINE
+        )
+        if release_contract._distribution_name(name) == "pip"
+    ]
+    assert locked_pip_versions == [expected]
+
+    workflow_pip_installs = []
+    for raw_line in workflow_text.splitlines():
+        if not re.search(r"\b(?:python\s+-m\s+)?pip\s+install\b", raw_line, re.IGNORECASE):
+            continue
+        try:
+            tokens = shlex.split(raw_line.strip())
+        except ValueError as error:
+            raise AssertionError("workflow contains malformed shell syntax") from error
+        lowered = [token.lower() for token in tokens]
+        arguments = None
+        for index in range(len(tokens)):
+            if lowered[index : index + 4] == ["python", "-m", "pip", "install"]:
+                arguments = tokens[index + 4 :]
+                break
+            if lowered[index : index + 2] == ["pip", "install"]:
+                arguments = tokens[index + 2 :]
+                break
+        if arguments is None:
+            continue
+        for token in arguments:
+            try:
+                requirement = Requirement(token)
+            except InvalidRequirement:
+                continue
+            if canonicalize_name(requirement.name) == "pip":
+                workflow_pip_installs.append((raw_line.strip(), requirement))
+    assert len(workflow_pip_installs) == 1
+    workflow_line, workflow_pip = workflow_pip_installs[0]
+    assert workflow_line == f"python -m pip install --upgrade 'pip=={expected}'"
+    assert str(workflow_pip.specifier) == f"=={expected}"
+    assert not workflow_pip.extras and workflow_pip.marker is None and workflow_pip.url is None
+
+
 def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     contract = json.loads((ROOT / "portable" / "toolchain.json").read_text(encoding="utf-8"))
     lock = (ROOT / "portable" / "windows-x64-requirements.lock").read_text(encoding="utf-8")
+    pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
     assert contract == {
         "schema": "atlas.portable-toolchain-contract/1",
         "platform": "windows-x64",
         "python": "3.12.10",
-        "pip": "25.3",
+        "pip": "26.2.1",
         "pyinstaller": "6.22.2",
         "node": "v24.19.0",
         "npm": "11.16.0",
@@ -44,6 +129,14 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     } == {key: contract[key] for key in ("python", "pip", "pyinstaller", "node", "npm")}
     assert contract["npm_tarball"]["sha512_hex"] == release_contract.NPM_TARBALL_SHA512_HEX
     assert contract["npm_tarball"]["sha512_base64"] == release_contract.NPM_TARBALL_SHA512_BASE64
+    _assert_pip_owner_reconciliation(
+        contract=contract,
+        release_contract_version=release_contract.PIP_VERSION,
+        pyproject_text=pyproject_text,
+        lock_text=lock,
+        workflow_text=workflow_text,
+    )
+    assert "pip" not in release_contract.EXPECTED_BUNDLED_PYTHON
     locked_versions = {
         release_contract._distribution_name(match.group(1)): match.group(2)
         for match in re.finditer(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", lock, re.MULTILINE)
@@ -59,9 +152,83 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     assert "cyclonedx-python-lib==11.12.0 " in lock
     assert "jsonschema==4.26.0 " in lock
     assert "jsonschema-specifications==2025.9.1 " in lock
-    assert "pip==25.3 " in lock
     assert "--hash=sha256:" in lock
     assert "\r" not in lock
+
+
+@pytest.mark.parametrize(
+    "mutated_owner",
+    [
+        "toolchain",
+        "release_contract",
+        "pyproject",
+        "pyproject_alias",
+        "pyproject_dev_alias",
+        "lock",
+        "workflow",
+        "workflow_unpinned",
+    ],
+)
+def test_each_portable_pip_owner_is_required_for_reconciliation(mutated_owner: str) -> None:
+    contract = json.loads((ROOT / "portable" / "toolchain.json").read_text(encoding="utf-8"))
+    release_contract_version = release_contract.PIP_VERSION
+    pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    lock_text = (ROOT / "portable" / "windows-x64-requirements.lock").read_text(
+        encoding="utf-8"
+    )
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    original = (
+        json.dumps(contract, sort_keys=True),
+        release_contract_version,
+        pyproject_text,
+        lock_text,
+        workflow_text,
+    )
+
+    if mutated_owner == "toolchain":
+        contract["pip"] = "26.2.0"
+    elif mutated_owner == "release_contract":
+        release_contract_version = "26.2.0"
+    elif mutated_owner == "pyproject":
+        pyproject_text = pyproject_text.replace("pip==26.2.1", "pip==26.2.0")
+    elif mutated_owner == "pyproject_alias":
+        pyproject_text = pyproject_text.replace(
+            'build = ["pip==26.2.1",',
+            'build = ["pip==26.2.1", "Pip>=99",',
+        )
+    elif mutated_owner == "pyproject_dev_alias":
+        pyproject_text = pyproject_text.replace(
+            "dev = [\n",
+            'dev = [\n    "Pip>=99",\n',
+            1,
+        )
+    elif mutated_owner == "lock":
+        lock_text = lock_text.replace("pip==26.2.1", "pip==26.2.0")
+    elif mutated_owner == "workflow":
+        workflow_text = workflow_text.replace("pip==26.2.1", "pip==26.2.0")
+    else:
+        workflow_text = workflow_text.replace(
+            "python -m pip install --upgrade 'pip==26.2.1'",
+            "python -m pip install --upgrade 'pip==26.2.1'\n"
+            "          python -m pip install --upgrade pip",
+        )
+
+    assert (
+        json.dumps(contract, sort_keys=True),
+        release_contract_version,
+        pyproject_text,
+        lock_text,
+        workflow_text,
+    ) != original
+
+    with pytest.raises(AssertionError):
+        _assert_pip_owner_reconciliation(
+            contract=contract,
+            release_contract_version=release_contract_version,
+            pyproject_text=pyproject_text,
+            lock_text=lock_text,
+            workflow_text=workflow_text,
+        )
 
 
 def test_portable_workflow_separates_untrusted_build_from_draft_write_authority() -> None:

@@ -10,6 +10,7 @@ import type {
   HorizonView,
   HorizonWatchFamily,
 } from "./types";
+import { isSemanticIdentifier } from "./semanticIdentifier.ts";
 
 const MATURITY_LEVELS = [
   "research",
@@ -185,7 +186,7 @@ function nonemptyString(value: unknown, path: string): string {
 
 function identifier(value: unknown, path: string): string {
   const id = nonemptyString(value, path);
-  if (!/^[a-z0-9]+(?:[.-][a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(id)) {
+  if (!isSemanticIdentifier(id)) {
     fail(path, "expected a bounded semantic identifier");
   }
   return id;

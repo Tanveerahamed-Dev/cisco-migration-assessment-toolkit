@@ -143,9 +143,13 @@ jobs:
           --expected-tree "${{ steps.source.outputs.tree }}"
           --allow-untracked-prefix webapp/frontend/node_modules
           --allow-untracked-prefix dist
-      - name: Build the release archives once
+      - name: Produce one byte-reproduced release archive set
         if: steps.existing.outputs.exists == 'false'
-        run: python -m build --sdist --wheel --outdir dist
+        run: >-
+          python tools/build_reproducible_distributions.py
+          --expected-commit "${{ steps.source.outputs.commit }}"
+          --expected-tree "${{ steps.source.outputs.tree }}"
+          --outdir dist
       - name: Prove archive creation did not change the tagged source
         run: >-
           python .github/scripts/verify_checkout_immutable.py

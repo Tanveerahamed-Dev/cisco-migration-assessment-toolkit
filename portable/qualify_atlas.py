@@ -135,7 +135,10 @@ def _drive_letters(parent: Path, bundle_name: str, environment: dict[str, str]) 
             raise PortableReleaseError(f"could not create SUBST drive {mapped}")
         try:
             exe = Path(mapped + "\\") / bundle_name / "Atlas.exe"
-            db = Path(mapped + "\\") / bundle_name / f"qualification-{letter}" / "hub.db"
+            # Keep qualification state beside, never inside, the immutable Atlas application.
+            # The mapped path still exercises the alternate drive; putting an empty directory in
+            # the bundle used to evade collect_members(), which owns files rather than directories.
+            db = Path(mapped + "\\") / f"qualification-{letter}" / "hub.db"
             version = _run([str(exe), "--version"], environment=environment, timeout=120)
             selftest = _run(
                 [str(exe), "--selftest", "--db", str(db)],
@@ -529,6 +532,7 @@ def qualify(repository_root: str | Path, bundle_root: str | Path, *, run_redacti
         shutil.copytree(bundle, relocated)
         if collect_members(relocated) != members:
             raise PortableReleaseError("relocated qualification bundle differs before execution")
+        relocated_directories = build_atlas._bundle_directory_state(relocated)
         smoke = build_atlas.smoke(_port(), dist=relocated, environment=environment)
         drives = _drive_letters(relocated_parent, relocated.name, environment)
         database = _database_preflight(
@@ -539,8 +543,21 @@ def qualify(repository_root: str | Path, bundle_root: str | Path, *, run_redacti
             if run_redaction
             else {"status": "not_run"}
         )
+        final_directories = build_atlas._bundle_directory_state(relocated)
+        directory_gap = build_atlas._directory_gap(
+            relocated_directories,
+            final_directories,
+        )
+        if directory_gap:
+            raise PortableReleaseError(
+                f"relocated qualification directory set changed during execution: {directory_gap}"
+            )
         if collect_members(relocated) != members:
             raise PortableReleaseError("relocated qualification bundle changed during execution")
+        if build_atlas._bundle_directory_state(relocated) != final_directories:
+            raise PortableReleaseError(
+                "relocated qualification directory set changed during final member verification"
+            )
     checks = [
         {"id": key, "status": value} for key, value in sorted(smoke.items())
     ] + [

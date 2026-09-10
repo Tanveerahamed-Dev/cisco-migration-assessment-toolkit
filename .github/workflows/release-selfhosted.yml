@@ -155,9 +155,9 @@ jobs:
           npm run build
       - name: Prove the SPA build reproduced the immutable tagged source
         run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" .github/scripts/verify_checkout_immutable.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix dist'
-      - name: Build the release archives once
+      - name: Produce one byte-reproduced release archive set
         if: steps.existing.outputs.exists == 'false'
-        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" -m build --sdist --wheel --outdir dist'
+        run: '& "$env:RUNNER_TEMP\rel-venv\Scripts\python.exe" tools/build_reproducible_distributions.py --expected-commit "${{ steps.source.outputs.commit }}" --expected-tree "${{ steps.source.outputs.tree }}" --outdir dist'
       - name: Verify archive metadata
         run: |
           $archives = Get-ChildItem dist -File | Where-Object { $_.Name -match "\.(whl|tar\.gz)$" } | ForEach-Object { $_.FullName }

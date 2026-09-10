@@ -309,7 +309,12 @@ from cisco_toolkit.model import InterfaceData, DevicePhysical
 # NEW-V3.23.40 (PHASE 2.7 step 30): the version string, hoisted into cisco_toolkit/__init__.py
 # (single source of truth); imported back here so LOG_FILE / argparse keep working + snapshot_state
 # (now in cisco_toolkit.html) reads the same value.
-from cisco_toolkit import __version__
+from cisco_toolkit import (
+    EngineLogOpenError,
+    __version__,
+    engine_log_path,
+    prepare_engine_log_file,
+)
 # NEW-V3.23.20-.25 (PHASE 2.7 steps 10-15): analyze-layer symbols imported back so the
 # Excel writers + the physical/L3/flow functions + main() still in this file keep working.
 # ScoringConfig / SCORING / _host_role are NOT re-exported anymore (step 15 moved their last
@@ -567,7 +572,31 @@ except ImportError:
 # CONFIG
 # =============================================================================
 # __version__ moved to cisco_toolkit/__init__.py (PHASE 2.7 step 30); imported back near the top of this file.
-LOG_FILE              = f"cisco_migration_autofill_v{__version__.replace('.', '_')}.log"
+_LOG_FILE_NAME        = engine_log_path(
+    frozen=False,
+    executable=sys.executable,
+    cwd=Path.cwd(),
+    version=__version__,
+)
+
+
+def _default_log_file() -> str:
+    """Return the engine audit-log destination for this execution form.
+
+    Source and installed console-script runs retain the historical per-working-directory log.
+    Frozen engine children launched in AssessHub's external per-job working directories retain
+    that isolation too. A frozen invocation whose cwd is inside its installed Atlas tree is bound
+    to ``Atlas\\data`` so Explorer/double-click launch cannot mutate the application root.
+    """
+    return engine_log_path(
+        frozen=bool(getattr(sys, "frozen", False)),
+        executable=sys.executable,
+        cwd=Path.cwd(),
+        version=__version__,
+    )
+
+
+LOG_FILE              = _default_log_file()
 COLLECTION_DIR        = "migration_collection_{}"
 DEFAULT_TEMPLATE_FILE = "Migration_Assessment_Template_Updated.xlsx"
 DEFAULT_OUTPUT_FILE   = "Migration_Assessment_AUTOFILLED_{}.xlsx"
@@ -935,17 +964,65 @@ def setup_logging(level=logging.INFO):
     # `stream is not None` matters: FileHandler.close() sets stream=None/_closed=True, and a closed
     # mode="w" handler REFUSES to reopen on emit -- reusing one would silently discard every
     # subsequent record, the exact failure class this guard exists to prevent. Bound worth knowing:
-    # LOG_FILE is relative, so this matches per-CWD. Nothing in the engine chdirs, but a host that
-    # does gets a separate log per directory (and, on returning, a fresh mode="w" file).
+    # Source/console-script LOG_FILE is relative, so this matches per-CWD. Frozen Atlas instead
+    # binds a bundle-tree cwd to the writable ``data`` directory beside Atlas.exe; external
+    # per-job cwd remains relative. The frozen entry point performs its friendly write probe before
+    # import, and the dedicated exception closes the remaining probe-to-open race without relabeling
+    # an unrelated import/runtime OSError.
+    log_path = Path(LOG_FILE)
+    parent_identity = prepare_engine_log_file(log_path)
     fh = next((h for h in logger.handlers
                if isinstance(h, logging.FileHandler)
                and getattr(h, "stream", None) is not None
                and os.path.abspath(getattr(h, "baseFilename", "")) == os.path.abspath(LOG_FILE)), None)
     if logger.handlers:
         logger.handlers.clear()
+    opened_here = False
     if fh is None:
-        fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+        try:
+            # An absolute frozen target opens non-destructively. Only after the parent, target path,
+            # and opened handle rejoin do we truncate through that same handle. A swapped hardlink
+            # or reparse target is therefore rejected without destroying its prior contents.
+            fh = logging.FileHandler(
+                log_path,
+                mode="a" if parent_identity is not None else "w",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            raise EngineLogOpenError("engine audit log could not be opened") from exc
+        opened_here = True
         fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    if parent_identity is not None:
+        try:
+            final_parent_identity = prepare_engine_log_file(log_path)
+            stream_metadata = os.fstat(fh.stream.fileno())
+            path_metadata = log_path.stat()
+            same_file = (stream_metadata.st_dev, stream_metadata.st_ino) == (
+                path_metadata.st_dev,
+                path_metadata.st_ino,
+            )
+        except (OSError, EngineLogOpenError) as exc:
+            if opened_here:
+                fh.close()
+            if isinstance(exc, EngineLogOpenError):
+                raise
+            raise EngineLogOpenError("engine audit-log identity could not be verified") from exc
+        if final_parent_identity != parent_identity or not same_file:
+            if opened_here:
+                fh.close()
+            raise EngineLogOpenError("engine audit-log identity changed while it was opened")
+        if opened_here:
+            try:
+                fh.stream.seek(0)
+                fh.stream.truncate(0)
+                fh.stream.flush()
+                # FileHandler.emit() may reopen a closed handler unless its mode is ``w``. The
+                # non-destructive ``a`` was needed only for pre-truncate identity verification;
+                # restore the historical closed-handler refusal before this handler is published.
+                fh.mode = "w"
+            except OSError as exc:
+                fh.close()
+                raise EngineLogOpenError("verified engine audit log could not be reset") from exc
     fh.setLevel(level)
     logger.addHandler(fh)
     ch = logging.StreamHandler()

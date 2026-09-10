@@ -526,9 +526,29 @@ def _engine_argv() -> List[str]:
     return [sys.executable, str(_ENGINE_SCRIPT)]
 
 
+def _engine_temp_parent() -> Path:
+    """Return a temp parent that cannot collapse frozen engine jobs into the Atlas tree."""
+    try:
+        parent = Path(tempfile.gettempdir()).resolve(strict=True)
+    except OSError as exc:
+        raise EngineRunError("System temporary directory is unavailable for the engine job.") from exc
+    if getattr(sys, "frozen", False):
+        bundle = Path(sys.executable).resolve().parent
+        try:
+            parent.relative_to(bundle)
+        except ValueError:
+            pass
+        else:
+            raise EngineRunError(
+                "System temporary directory is inside the Atlas application folder; refusing "
+                "to create engine work or logs there. Configure TEMP/TMP outside Atlas."
+            )
+    return parent
+
+
 def run_collection_zip(source: bytes | bytearray | BinaryIO) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Extract the ZIP, run the engine over it, and return ``(snapshot_dict, ingest_report)``."""
-    workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
+    workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_", dir=_engine_temp_parent()))
     try:
         extracted = workdir / "extracted"
         extracted.mkdir()
@@ -856,7 +876,7 @@ def run_collection_folder(path: Any, *, contain: bool = False) -> Tuple[Dict[str
     exposure. It defaults False for the in-process/CLI callers, where the operator IS the caller and
     naming any folder on their own machine is the point (``--redact-folder``)."""
     folder, n_files = _resolve_and_scan(path, contain=contain)
-    workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
+    workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_", dir=_engine_temp_parent()))
     try:
         staged = workdir / "custody"
         bindings = _stage_physical_tree(folder, staged)
@@ -1822,7 +1842,7 @@ def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: boo
     if not getattr(sys, "frozen", False) and not _ENGINE_SCRIPT.is_file():
         raise EngineRunError(f"Engine entry point not found at {_ENGINE_SCRIPT}")
 
-    workdir = Path(tempfile.mkdtemp(prefix="atlas_redact_"))
+    workdir = Path(tempfile.mkdtemp(prefix="atlas_redact_", dir=_engine_temp_parent()))
     try:
         staged_source = workdir / "custody"
         source_bindings = _stage_physical_tree(source, staged_source)

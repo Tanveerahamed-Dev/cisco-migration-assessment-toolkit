@@ -42,6 +42,7 @@ import threading
 from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
 
+from cisco_toolkit import EngineLogOpenError, engine_log_path, prepare_engine_log_file
 from cisco_toolkit.brand_tokens import APP_TITLE
 from cisco_toolkit.docmeta import artifact_family_metadata
 
@@ -417,8 +418,15 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
           else "python-pptx not importable — the executive deck is dead (ADR-0004 D2)")
 
     dist = Path(dist_dir) if dist_dir is not None else _resolve_dist(None)
-    check("frontend-dist", None if (dist / "index.html").is_file()
-          else f"no index.html under {dist} — the UI would be dead (API-only)")
+    from . import app as app_module
+
+    frontend_index = app_module._frontend_file_index(dist)
+    check(
+        "frontend-dist",
+        None if frontend_index is not None
+        else f"frontend under {dist} failed bounded immutable startup indexing — the UI would "
+             "be dead (API-only)",
+    )
 
     if _frozen():
         check("engine-entry", None if _ilu.find_spec("COLLECT_PARSE_V3_23_0")
@@ -784,7 +792,48 @@ def main(argv=None) -> int:
 
 def _main_scoped(argv: list[str]) -> int:
     if argv and argv[0] == ENGINE_SENTINEL:
-        return _run_engine(argv[1:])
+        log_path = None
+        if _frozen():
+            # Importing the engine installs its audit FileHandler. A bundle-tree cwd resolves to
+            # ``Atlas\data`` and is probed here; an external per-job cwd deliberately stays
+            # relative so concurrent AssessHub engine children retain isolated audit logs.
+            log_path = Path(engine_log_path(
+                frozen=True,
+                executable=sys.executable,
+                cwd=Path.cwd(),
+            ))
+            if log_path.is_absolute():
+                data_dir = log_path.parent
+                try:
+                    prepare_engine_log_file(log_path)
+                except EngineLogOpenError as exc:
+                    detail = exc.__cause__ if isinstance(exc.__cause__, OSError) else exc
+                    print(
+                        f"{APP_TITLE}: the data folder is not writable: {data_dir}\n"
+                        f"  {detail}\n"
+                        "Refusing to start the engine because its audit log must stay under data.",
+                        file=sys.stderr,
+                    )
+                    return 1
+        try:
+            return _run_engine(argv[1:])
+        except EngineLogOpenError as exc:
+            detail = exc.__cause__ if isinstance(exc.__cause__, OSError) else exc
+            if log_path is not None and log_path.is_absolute():
+                print(
+                    f"{APP_TITLE}: the data folder is not writable: {log_path.parent}\n"
+                    f"  {detail}\n"
+                    "Refusing to start the engine because its audit log must stay under data.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"{APP_TITLE}: the engine job folder is not writable: {Path.cwd()}\n"
+                    f"  {detail}\n"
+                    "Refusing to start the engine because its isolated audit log cannot open.",
+                    file=sys.stderr,
+                )
+            return 1
 
     parser = argparse.ArgumentParser(
         prog="assesshub",
@@ -965,6 +1014,11 @@ def _main_scoped(argv: list[str]) -> int:
 
     from .app import create_app  # lazy: the engine-child path never pays the fastapi import
     from .storage import StoreCorruptError
+    try:
+        import uvicorn  # establish the server dependency before opening the owned SQLite store
+    except ImportError as exc:
+        print(f"{APP_TITLE}: server runtime is unavailable - {exc}", file=sys.stderr)
+        return 1
 
     dist = _resolve_dist(args.dist)
     # Field refusal #2 — corrupt store: refuse to serve, leave the file for a human restore.
@@ -982,23 +1036,33 @@ def _main_scoped(argv: list[str]) -> int:
               f"  The file was not modified. Close any other Atlas window and try again "
               f"(README-FIELD.txt, 'Corruption').", file=sys.stderr)
         return 1
-    scheme = "https" if args.ssl_certfile else "http"
-    url_host = f"[{args.host}]" if ":" in args.host and not args.host.startswith("[") else args.host
-    url = f"{scheme}://{url_host}:{args.port}/"
-    note = "" if (dist / "index.html").is_file() else \
-        "   [frontend dist missing — API only; run --selftest]"
-    print(f"{_version_line()}\n  {url}{note}")
-    if not args.no_browser:
-        _schedule_browser_open(url)
+    try:
+        if not app.state.frontend_ready:
+            print(
+                f"{APP_TITLE}: refusing to start - frontend distribution failed bounded immutable "
+                f"startup indexing ({app.state.frontend_status}). Run --selftest for details.",
+                file=sys.stderr,
+            )
+            return 1
+        scheme = "https" if args.ssl_certfile else "http"
+        url_host = (
+            f"[{args.host}]" if ":" in args.host and not args.host.startswith("[") else args.host
+        )
+        url = f"{scheme}://{url_host}:{args.port}/"
+        print(f"{_version_line()}\n  {url}")
+        if not args.no_browser:
+            _schedule_browser_open(url)
 
-    import uvicorn  # lazy for the same reason
-
-    uvicorn_kwargs = {"host": args.host, "port": args.port, "log_level": "info"}
-    if args.ssl_certfile:
-        uvicorn_kwargs.update(
-            ssl_certfile=str(args.ssl_certfile), ssl_keyfile=str(args.ssl_keyfile))
-    uvicorn.run(app, **uvicorn_kwargs)
-    return 0
+        uvicorn_kwargs = {"host": args.host, "port": args.port, "log_level": "info"}
+        if args.ssl_certfile:
+            uvicorn_kwargs.update(
+                ssl_certfile=str(args.ssl_certfile), ssl_keyfile=str(args.ssl_keyfile))
+        uvicorn.run(app, **uvicorn_kwargs)
+        return 0
+    finally:
+        # Own the store across every post-construction startup path. Uvicorn normally drives the
+        # FastAPI lifespan; this also closes after presentation, browser, or server-run failures.
+        app.state.store.close()
 
 
 if __name__ == "__main__":  # python -m webapp.backend.serve

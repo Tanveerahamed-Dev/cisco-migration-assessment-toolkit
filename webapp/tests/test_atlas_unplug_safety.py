@@ -26,6 +26,7 @@ import backend.serve as serve  # noqa: E402
 import backend.storage as storage_module  # noqa: E402
 from backend.app import create_app  # noqa: E402
 from backend.storage import Store, StoreCorruptError  # noqa: E402
+from frontend_fixture import write_frontend_dist  # noqa: E402
 
 
 _orig_connect = sqlite3.connect  # kept before any monkeypatching, for tests that need a real one
@@ -337,8 +338,7 @@ def test_create_app_threads_boot_hardening_to_store(tmp_path):
 # ── serve.main: the field-facing refusals ───────────────────────────────────────
 def _dist(tmp_path) -> Path:
     d = tmp_path / "dist"
-    d.mkdir(exist_ok=True)
-    (d / "index.html").write_text("<html>", encoding="utf-8")
+    write_frontend_dist(d)
     return d
 
 
@@ -370,10 +370,16 @@ def test_serve_main_turns_boot_hardening_on(monkeypatch, tmp_path):
     import backend.app as app_module
 
     rec = {}
+    closes = []
 
     def fake_create_app(**kw):
         rec.update(kw)
-        return object()
+        return types.SimpleNamespace(
+            state=types.SimpleNamespace(
+                frontend_ready=True,
+                store=types.SimpleNamespace(close=lambda: closes.append(True)),
+            ),
+        )
 
     monkeypatch.setattr(app_module, "create_app", fake_create_app)
     monkeypatch.setitem(sys.modules, "uvicorn",
@@ -382,6 +388,7 @@ def test_serve_main_turns_boot_hardening_on(monkeypatch, tmp_path):
                      "--dist", str(_dist(tmp_path)), "--no-browser"])
     assert rc == 0
     assert rec["boot_hardening"] is True
+    assert closes == [True]
 
 
 # ── durability pragmas + selftest surface ───────────────────────────────────────

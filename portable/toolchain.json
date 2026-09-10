@@ -2,7 +2,7 @@
   "schema": "atlas.portable-toolchain-contract/1",
   "platform": "windows-x64",
   "python": "3.12.10",
-  "pip": "25.3",
+  "pip": "26.2.1",
   "pyinstaller": "6.22.2",
   "node": "v24.19.0",
   "npm": "11.16.0",

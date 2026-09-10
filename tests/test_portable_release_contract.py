@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from cisco_toolkit import __version__ as ENGINE_VERSION
 from portable import release_contract as subject
 from portable_release_test_support import LONGEST_RUNTIME_MEMBER
 
@@ -674,6 +675,7 @@ def test_release_verifier_rejects_member_and_cross_receipt_mutations(tmp_path: P
         "_internal/customer.pcapng",
         "_internal/running-config.txt",
         "_internal/customer.log",
+        f"cisco_migration_autofill_v{ENGINE_VERSION.replace('.', '_')}.log",
         "_internal/Assessment.xlsx",
         "_internal/openai/client.pyc",
         ".obsidian/graph.json",

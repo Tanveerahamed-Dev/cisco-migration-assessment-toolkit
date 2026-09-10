@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   beginCommunitySelection,
@@ -14,11 +16,13 @@ import {
   buildProjection,
   COMPILER_RECORD_KEYS_BY_GROUP,
   isPythonStripEmpty,
+  readBoundedCompilerJsonFromHandle,
   reconstructConsequentialClaimFacetRecords,
   validateConsequentialClaimCensus,
   validateSymbolMetadataRoute,
 } from "../../build/projection/build.mjs";
 
+const execFileAsync = promisify(execFile);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const gitBlobOid = (value) => createHash("sha1")
   .update(Buffer.from(`blob ${value.byteLength}\0`, "ascii"))
@@ -46,6 +50,123 @@ const SOURCE_DIGEST_POLICY = {
   textDigest: "verified_pre_projection_omitted_derivable_from_exact_emitted_text",
   fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1",
 };
+
+test("bounded compiler JSON reads exact bytes through one identity-bound handle", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-stable-handle-"));
+  const manifest = join(scratch, "stable.json");
+  const original = Buffer.from('{"value":"original"}\n', "utf8");
+  await writeFile(manifest, original, { flag: "wx", mode: 0o600 });
+  try {
+    const input = await realpath(scratch);
+    const stableHandle = await open(manifest, "r");
+    try {
+      assert.deepEqual(
+        await readBoundedCompilerJsonFromHandle(input, manifest, stableHandle),
+        original,
+      );
+    } finally {
+      await stableHandle.close();
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("bounded compiler JSON rejects an atomically displaced opened file", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-displaced-handle-"));
+  const manifest = join(scratch, "displacement.json");
+  const displaced = join(scratch, "displacement.original.json");
+  const stagedReplacement = join(scratch, "staged-replacement.json");
+  const original = Buffer.from('{"value":"original"}\n', "utf8");
+  const replacement = Buffer.from('{"value":"replaced"}\n', "utf8");
+  // Stage both inodes before retaining the first handle. The two renames then
+  // exercise a real pathname displacement without a create/truncate gap.
+  await writeFile(manifest, original, { flag: "wx", mode: 0o600 });
+  await writeFile(stagedReplacement, replacement, { flag: "wx", mode: 0o600 });
+  try {
+    const input = await realpath(scratch);
+    const displacedHandle = await open(manifest, "r");
+    try {
+      await rename(manifest, displaced);
+      await rename(stagedReplacement, manifest);
+      await assert.rejects(
+        readBoundedCompilerJsonFromHandle(input, manifest, displacedHandle),
+        /opened-file identity is invalid/,
+      );
+    } finally {
+      await displacedHandle.close();
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("bounded compiler JSON rejects different bytes across repeated handle reads", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-changing-handle-"));
+  const manifest = join(scratch, "changing.json");
+  const original = Buffer.from('{"value":"original"}\n', "utf8");
+  await writeFile(manifest, original, { flag: "wx", mode: 0o600 });
+  try {
+    const input = await realpath(scratch);
+    const changingHandle = await open(manifest, "r");
+    let nonemptyReads = 0;
+    const mutatingView = {
+      stat: (options) => changingHandle.stat(options),
+      async read(buffer, offset, length, position) {
+        const result = await changingHandle.read(buffer, offset, length, position);
+        if (result.bytesRead > 0) {
+          nonemptyReads += 1;
+          if (nonemptyReads === 2) buffer[offset] ^= 0x01;
+        }
+        return result;
+      },
+    };
+    try {
+      await assert.rejects(
+        readBoundedCompilerJsonFromHandle(input, manifest, mutatingView),
+        /changed during read/,
+      );
+    } finally {
+      await changingHandle.close();
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test(
+  "projection refuses a final FIFO without blocking before the file-type check",
+  { skip: process.platform === "win32" ? "POSIX FIFO contract" : false },
+  async () => {
+    const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-fifo-"));
+    const input = join(scratch, "compiler");
+    const output = join(scratch, "projection");
+    await mkdir(input);
+    const manifest = join(input, "manifest.json");
+    try {
+      execFileSync("mkfifo", [manifest], { stdio: "ignore" });
+      const moduleUrl = new URL("../../build/projection/build.mjs", import.meta.url).href;
+      const script = [
+        `import { buildProjection } from ${JSON.stringify(moduleUrl)};`,
+        "try {",
+        "  await buildProjection({ input: process.argv[1], output: process.argv[2] });",
+        "  process.exitCode = 2;",
+        "} catch (error) {",
+        "  process.stdout.write(error instanceof Error ? error.message : String(error));",
+        "}",
+      ].join("\n");
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ["--input-type=module", "--eval", script, input, output],
+        { timeout: 2_000, windowsHide: true },
+      );
+      assert.equal(stdout, "compiler JSON read failed");
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 const SOURCE_SEGMENT_BASE_KEYS = [
   "behaviorGroup",
   "callersAndDependencies",

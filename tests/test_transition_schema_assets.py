@@ -64,7 +64,7 @@ _WINDOWS_EXECUTION_ENVIRONMENT_V5_SCHEMA_RESOURCE = (
     "schemas/atlas-r2-windows-execution-environment-manifest-v5.schema.json"
 )
 _QCP_DIGEST = "sha256:5c820c7128b50abf40d3f23dbb01251795a977d22b3c05e327b5c4eef432f8ac"
-_TCB_CENSUS_DIGEST = "sha256:17dc20726a9d5f773ac347e04343cd723ad4e573afa13436ef695ccb22fe8506"
+_TCB_CENSUS_DIGEST = "sha256:f22e200259fc2b309e75aaa1631aa62fb056ec6855dc6e5351cbeaf91b73d4b3"
 
 
 def _resource_bytes(relative: str) -> bytes:

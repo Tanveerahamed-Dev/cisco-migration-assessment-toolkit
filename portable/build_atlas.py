@@ -2,12 +2,13 @@
 
     python portable/build_atlas.py [--skip-build] [--port 8479]
 
-Refuses to build with missing assets, runs PyInstaller over portable/atlas.spec, then treats the
-RESULT as untrusted and proves it the same way the field would:
+Refuses to build with missing assets, runs PyInstaller over portable/atlas.spec, then copies the
+RESULT into an isolated field-layout directory and proves it the same way the field would:
 
 1. ``Atlas.exe --selftest``     must exit 0 with every check green (fail-loud assets all bundled)
 2. ``Atlas.exe --version``      must report the checkout release (never stale pip metadata)
 3. ``Atlas.exe --run-engine --help``  must reach the ENGINE's argparse (the frozen dispatch child)
+   while writing its audit log only under ``Atlas\\data``; every other bundle member remains exact
 4. boot the server, then over HTTP: /api/health, /api/meta (app identity block), and / must serve
    the SPA's index.html — proving the bundled webapp_dist is found via the _MEIPASS probe.
 
@@ -21,6 +22,7 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -59,6 +61,69 @@ def _run(
     return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
                           stdin=subprocess.DEVNULL, timeout=timeout,
                           cwd=str(Path(cwd).resolve(strict=True)), **kw)
+
+
+def _bundle_directory_state(root: Path) -> frozenset[str]:
+    """Non-following directory census; file bytes/types are owned by ``collect_members``."""
+    root = Path(root).resolve(strict=True)
+    directories: set[str] = set()
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as scan:
+                entries = sorted(scan, key=lambda entry: entry.name.casefold())
+        except OSError as exc:
+            raise SystemExit("field-layout directory census failed") from exc
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise SystemExit("field-layout entry metadata could not be read") from exc
+            reparse = int(getattr(metadata, "st_file_attributes", 0)) & int(
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+            if entry.is_symlink() or reparse:
+                raise SystemExit("field-layout bundle contains a reparse or symbolic-link entry")
+            relative = path.relative_to(root).as_posix()
+            if stat.S_ISDIR(metadata.st_mode):
+                directories.add(relative)
+                pending.append(path)
+            elif not stat.S_ISREG(metadata.st_mode):
+                raise SystemExit("field-layout bundle contains a special entry")
+    return frozenset(directories)
+
+
+def _directory_gap(before: frozenset[str], after: frozenset[str]) -> str:
+    added = sorted(after - before)
+    removed = sorted(before - after)
+    parts = []
+    if added:
+        parts.append(f"added={added[:5]!r}")
+    if removed:
+        parts.append(f"removed={removed[:5]!r}")
+    return "; ".join(parts)
+
+
+def _detach_runtime_data(bundle: Path, destination: Path) -> None:
+    """Move the only mutable subtree away before authoritative member comparison."""
+    data = bundle / "data"
+    if not os.path.lexists(data):
+        raise SystemExit("field-layout smoke did not create the Atlas data directory")
+    metadata = data.lstat()
+    reparse = int(getattr(metadata, "st_file_attributes", 0)) & int(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+    if data.is_symlink() or reparse or not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit("field-layout smoke data path is not one real directory")
+    if data.resolve(strict=True).parent != bundle.resolve(strict=True):
+        raise SystemExit("field-layout smoke data directory escapes the copied bundle")
+    if os.path.lexists(destination):
+        raise SystemExit("field-layout smoke data destination already exists")
+    os.replace(data, destination)
+    if os.path.lexists(data):
+        raise SystemExit("field-layout smoke data directory was not detached atomically")
 
 
 def _stop_server(server: subprocess.Popen, *, timeout: int = 10) -> None:
@@ -186,11 +251,13 @@ def build() -> None:
 
 
 def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = None) -> dict:
-    dist = Path(dist)
-    exe = dist / f"{exe_name()}.exe"
+    dist = Path(dist).resolve(strict=True)
+    source_exe = dist / f"{exe_name()}.exe"
     runtime_env = dict(os.environ if environment is None else environment)
-    if not exe.is_file():
-        raise SystemExit(f"no exe at {exe} — build first")
+    if not source_exe.is_file():
+        raise SystemExit(f"no exe at {source_exe} — build first")
+    if os.path.lexists(dist / "data"):
+        raise SystemExit("build output already contains runtime data — use a fresh bundle")
     for src in root_files(ROOT):
         if not (dist / Path(src).name).is_file():
             raise SystemExit(
@@ -199,15 +266,28 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             )
 
     with tempfile.TemporaryDirectory(prefix="atlas_smoke_") as td:
+        from portable.release_contract import collect_members
+
         smoke_root = Path(td).resolve(strict=True)
-        db = str(smoke_root / "data" / "hub.db")
+        smoke_bundle = smoke_root / exe_name()
+        source_directories = _bundle_directory_state(dist)
+        source_members = collect_members(dist)
+        shutil.copytree(dist, smoke_bundle, copy_function=shutil.copy2)
+        copied_directories = _bundle_directory_state(smoke_bundle)
+        copy_gap = _directory_gap(source_directories, copied_directories)
+        if copy_gap:
+            raise SystemExit(f"field-layout smoke copy differs from build output: {copy_gap}")
+        if collect_members(smoke_bundle) != source_members:
+            raise SystemExit("field-layout smoke copy has a different verified member set")
+        exe = smoke_bundle / f"{exe_name()}.exe"
+        db = str(smoke_bundle / "data" / "hub.db")
 
         print("[smoke 1/4] --selftest")
         p = _run(
             [str(exe), "--selftest", "--db", db],
             timeout=180,
             env=runtime_env,
-            cwd=smoke_root,
+            cwd=smoke_bundle,
         )
         print("\n".join("    " + ln for ln in (p.stdout or "").strip().splitlines()))
         if p.returncode != 0:
@@ -219,12 +299,12 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             )
 
         print("[smoke 2/4] --version")
-        p = _run([str(exe), "--version"], timeout=120, env=runtime_env, cwd=smoke_root)
+        p = _run([str(exe), "--version"], timeout=120, env=runtime_env, cwd=smoke_bundle)
         print(f"    {p.stdout.strip()}")
         gap = version_gap(p.stdout, expected_release()) if p.returncode == 0 else "non-zero exit"
         if gap:
             raise SystemExit(f"--version FAILED (exit {p.returncode}): {gap}\n{p.stderr!r}")
-        resource = _windows_version_info(exe, runtime_env, cwd=smoke_root)
+        resource = _windows_version_info(exe, runtime_env, cwd=smoke_bundle)
         resource_gap = windows_version_info_gap(resource, version_expectations(ROOT))
         if resource_gap:
             raise SystemExit(f"--version resource FAILED: {resource_gap}")
@@ -235,11 +315,19 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             [str(exe), "--run-engine", "--help"],
             timeout=180,
             env=runtime_env,
-            cwd=smoke_root,
+            cwd=smoke_bundle,
         )
         if p.returncode != 0 or "cisco-assess" not in p.stdout:
             raise SystemExit(f"engine dispatch FAILED (exit {p.returncode}):\n{p.stderr[-800:]}")
+        from cisco_toolkit import __version__ as engine_schema_version
+
+        engine_log = smoke_bundle / "data" / (
+            f"cisco_migration_autofill_v{engine_schema_version.replace('.', '_')}.log"
+        )
+        if not engine_log.is_file():
+            raise SystemExit("frozen engine dispatch did not place its audit log under Atlas\\data")
         print("    engine argparse reached (usage: cisco-assess …)")
+        print("    engine audit log confined to Atlas\\data")
 
         print(f"[smoke 4/4] serve + HTTP probes on 127.0.0.1:{port}")
         instance_nonce = secrets.token_urlsafe(24)
@@ -248,7 +336,7 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
         srv = subprocess.Popen([str(exe), "--no-browser", "--port", str(port), "--db", db],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
-                               env=child_env, cwd=str(smoke_root))
+                               env=child_env, cwd=str(smoke_bundle))
         try:
             base = f"http://127.0.0.1:{port}"
             deadline = time.monotonic() + 60
@@ -289,7 +377,25 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
         finally:
             _stop_server(srv)
 
-    print(f"[ok] bundle verified: {dist}")
+        _detach_runtime_data(smoke_bundle, smoke_root / "runtime-data")
+        final_copied_directories = _bundle_directory_state(smoke_bundle)
+        immutable_gap = _directory_gap(copied_directories, final_copied_directories)
+        if immutable_gap:
+            raise SystemExit(f"smoke mutated the immutable Atlas application tree: {immutable_gap}")
+        if collect_members(smoke_bundle) != source_members:
+            raise SystemExit("smoke changed the verified Atlas application member set")
+        if _bundle_directory_state(smoke_bundle) != final_copied_directories:
+            raise SystemExit("smoke directory set changed during final member verification")
+
+    retained_directories = _bundle_directory_state(dist)
+    retained_gap = _directory_gap(source_directories, retained_directories)
+    if retained_gap:
+        raise SystemExit(f"retained build directory set changed during smoke: {retained_gap}")
+    if collect_members(dist) != source_members:
+        raise SystemExit("retained build output changed while its field-layout copy was tested")
+    if _bundle_directory_state(dist) != retained_directories:
+        raise SystemExit("retained build directory set changed during final member verification")
+    print(f"[ok] field-layout copy verified from: {dist}")
     return {
         "selftest": "pass",
         "version": "pass",

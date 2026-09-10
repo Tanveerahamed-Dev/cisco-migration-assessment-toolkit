@@ -25,11 +25,35 @@ import {
   coreOutcomeSlotId,
   requireCoreOutcome,
 } from "../../app/atlas/coreOutcomeLineage.ts";
+import { isSemanticIdentifier } from "../../app/atlas/semanticIdentifier.ts";
 
 const execFileAsync = promisify(execFile);
 
 const contentRoot = new URL("../../content/", import.meta.url);
 const repositoryRoot = new URL("../../../", import.meta.url);
+
+test("semantic identifiers use a closed linear-time ASCII grammar", () => {
+  for (const accepted of [
+    "atlas.core",
+    "cap.engine.training-curriculum",
+    "owner.release-1",
+    "a-0-0-0",
+  ]) {
+    assert.equal(isSemanticIdentifier(accepted), true, accepted);
+  }
+  for (const rejected of [
+    "atlas",
+    ".atlas",
+    "atlas.",
+    "atlas..core",
+    "atlas.-core",
+    "Atlas.core",
+    "atlas_core",
+    `a${"-0".repeat(100_000)}!`,
+  ]) {
+    assert.equal(isSemanticIdentifier(rejected), false, rejected.slice(0, 80));
+  }
+});
 
 async function load(name) {
   return JSON.parse(await readFile(new URL(name, contentRoot), "utf8"));

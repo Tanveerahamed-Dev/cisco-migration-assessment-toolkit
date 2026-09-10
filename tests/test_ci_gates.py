@@ -760,14 +760,14 @@ def test_transition_runtime_test_profile_rejects_mutations(mutation):
     elif mutation == "extra":
         changed = original + b"unexpected-replay-package==1.0\n"
     elif mutation == "drifted":
-        changed = original.replace(b"lxml==6.1.1", b"lxml==6.1.2")
+        changed = original.replace(b"lxml==6.1.3", b"lxml==6.1.2")
     elif mutation == "order":
         changed = original.replace(
-            b"defusedxml==0.7.1\nlxml==6.1.1",
-            b"lxml==6.1.1\ndefusedxml==0.7.1",
+            b"defusedxml==0.7.1\nlxml==6.1.3",
+            b"lxml==6.1.3\ndefusedxml==0.7.1",
         )
     elif mutation == "duplicate":
-        changed = original + b"LXML==6.1.1\n"
+        changed = original + b"LXML==6.1.3\n"
     elif mutation == "non_exact":
         changed = original.replace(b"numpy==2.5.1", b"numpy>=2.5.1")
     elif mutation == "bom":
@@ -780,6 +780,7 @@ def test_transition_runtime_test_profile_rejects_mutations(mutation):
         changed = original + b"\xff"
     else:
         changed = b"# comments only\n"
+    assert changed != original
     with pytest.raises(RuntimeError):
         release1_replay.verify_transition_runtime_test_profile(
             changed,

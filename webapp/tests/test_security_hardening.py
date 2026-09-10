@@ -15,6 +15,7 @@ Model under test:
   Host, so loopback position alone can't authorize the (blind) write. Token mode is Host-agnostic.
 - The explorer iframe is sandboxed WITHOUT allow-same-origin (the explorer feature-detects
   storage for opaque origins, so this is loss-free)."""
+import hashlib
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` i
 from backend import app as app_module  # noqa: E402
 from backend import deliverables as deliverables_module  # noqa: E402
 from backend.app import create_app  # noqa: E402
+from frontend_fixture import write_frontend_dist  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -402,13 +404,9 @@ def test_explorer_iframe_is_sandboxed_without_same_origin():
 
 
 def test_spa_catchall_refuses_path_traversal(tmp_path, monkeypatch):
-    """The SPA history-fallback (app.py:755) sits BELOW the /api access guard — no token, no loopback
-    check. A `..` traversal (sent percent-encoded so it reaches the server undecoded — httpx keeps %2e)
-    must be CONTAINED to the dist dir: it falls back to index.html, never reads an out-of-dist file.
-    Pre-fix this served any file the process could read (the client-snapshot DB, source, keys)."""
+    """The unguarded SPA fallback serves only its startup-indexed distribution files."""
     dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><title>SPA-SHELL</title>", encoding="utf-8")
+    write_frontend_dist(dist)
     (dist / "app.js").write_text("console.log('legit-asset')", encoding="utf-8")
     secret = tmp_path / "secret.txt"                         # a sibling OUTSIDE dist
     secret.write_text("TOP-SECRET-SNAPSHOT-DB", encoding="utf-8")
@@ -421,46 +419,664 @@ def test_spa_catchall_refuses_path_traversal(tmp_path, monkeypatch):
         assert "TOP-SECRET" not in c.get("/%2e%2e%2f%2e%2e%2fsecret.txt").text  # deeper encoded traversal too
 
 
+def test_create_app_lifespan_closes_the_store(tmp_path, monkeypatch):
+    database = tmp_path / "lifespan.db"
+    app = create_app(db_path=str(database), dist_dir=tmp_path / "missing-dist")
+    store = app.state.store
+    real_close = store.close
+    closes = 0
+
+    def traced_close():
+        nonlocal closes
+        closes += 1
+        real_close()
+
+    monkeypatch.setattr(store, "close", traced_close)
+    with TestClient(app, base_url="http://localhost") as client:
+        assert client.get("/api/health").status_code == 200
+    assert closes == 1
+    database.replace(tmp_path / "closed.db")
+
+
 @pytest.mark.parametrize(
     "hostile_path",
     (
         "//198.51.100.7/share/secret.txt",
         "\\\\198.51.100.7\\share\\secret.txt",
         "C:/Windows/win.ini",
+        "C:\\Windows\\win.ini",
         "../secret.txt",
         "safe/../../secret.txt",
+        "safe\\nested.js",
         "safe/secret.txt\x00",
+        "index.html:alternate-stream",
+        "CON",
+        "missing.js",
     ),
 )
-def test_spa_rejects_hostile_paths_before_request_derived_resolution(
-    tmp_path, monkeypatch, hostile_path,
+def test_spa_requests_perform_no_request_derived_filesystem_operations(
+    tmp_path, monkeypatch, hostile_path, request,
 ):
-    """Mutation pin for the CodeQL path findings: containment is not post-sink theatre.
+    """No request byte reaches Path construction, resolution, metadata, or response selection."""
+    dist = tmp_path / "dist"
+    index_bytes, _module = write_frontend_dist(dist)
+    nested = dist / "safe"
+    nested.mkdir()
+    asset = nested / "nested.js"
+    asset_bytes = b"console.log('trusted')"
+    asset.write_bytes(asset_bytes)
+    app = create_app(db_path=str(tmp_path / "hostile.db"), dist_dir=dist)
+    request.addfinalizer(app.state.store.close)
+    spa = next(route.endpoint for route in app.routes if route.path == "/{full_path:path}")
 
-    All hostile path classes must select the fixed SPA shell before a request-derived Path reaches
-    resolve().  The trusted dist root itself is expected to resolve once per call.
-    """
+    def request_time_filesystem_operation_forbidden(*_args, **_kwargs):
+        raise AssertionError("SPA request performed a filesystem path operation")
+
+    for name in ("resolve", "exists", "is_dir", "is_file", "is_relative_to"):
+        monkeypatch.setattr(Path, name, request_time_filesystem_operation_forbidden)
+    http_request = app_module.Request({"type": "http", "method": "GET", "headers": []})
+    response = spa(http_request, hostile_path)
+    assert response.body == index_bytes
+
+    trusted = spa(http_request, "safe/nested.js")
+    assert trusted.body == asset_bytes
+
+
+def test_spa_unknown_asset_requests_never_reach_realpath(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist, asset_bytes=b"trusted")
+    app = create_app(db_path=str(tmp_path / "asset-path.db"), dist_dir=dist)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        def request_time_realpath_forbidden(*_args, **_kwargs):
+            raise AssertionError("asset request reached os.path.realpath")
+
+        monkeypatch.setattr(app_module.os.path, "realpath", request_time_realpath_forbidden)
+        for path in (
+            "/assets/C:%5CWindows%5Cwin.ini",
+            "/assets/%5C%5C198.51.100.7%5Cshare%5Csecret.txt",
+        ):
+            assert client.get(path).status_code == 404
+
+
+def test_spa_file_index_is_immutable_after_app_construction(tmp_path, request):
+    dist = tmp_path / "dist"
+    index_bytes, original_asset = write_frontend_dist(
+        dist, asset_bytes=b"original asset",
+    )
+    assets = dist / "assets"
+    app = create_app(db_path=str(tmp_path / "immutable.db"), dist_dir=dist)
+    request.addfinalizer(app.state.store.close)
+    spa = next(route.endpoint for route in app.routes if route.path == "/{full_path:path}")
+    request = app_module.Request({"type": "http", "method": "GET", "headers": []})
+
+    late = dist / "late.js"
+    late.write_text("console.log('late')", encoding="utf-8")
+    assert spa(request, "late.js").body == index_bytes
+    (assets / "late.js").write_text("console.log('late asset')", encoding="utf-8")
+    original_asset.write_bytes(b"replacement asset")
+    assert spa(request, "assets/app.js").body == b"original asset"
+    original_asset.unlink()
+    assert spa(request, "assets/app.js").body == b"original asset"
+    with TestClient(app, base_url="http://localhost") as client:
+        assert client.get("/assets/late.js").status_code == 404
+        assert client.get("/assets/app.js").content == b"original asset"
+
+
+def test_spa_file_index_link_rejection_is_not_platform_vacuous(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    classified_link = dist / "linked.txt"
+    classified_link.write_text("must not be indexed", encoding="utf-8")
+    real_link_check = app_module._is_filesystem_link
+
+    monkeypatch.setattr(
+        app_module,
+        "_is_filesystem_link",
+        lambda path: path == classified_link or real_link_check(path),
+    )
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_rejects_windows_reparse_points_on_older_python(
+    tmp_path, monkeypatch,
+):
+    candidate = tmp_path / "junction"
+    candidate.mkdir()
+    reparse_flag = 0x400
+    monkeypatch.setattr(
+        app_module.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_flag,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_module.os,
+        "lstat",
+        lambda _path: type("ReparseStat", (), {"st_file_attributes": reparse_flag})(),
+    )
+    monkeypatch.setattr(Path, "is_symlink", lambda _path: False)
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False, raising=False)
+    assert app_module._is_filesystem_link(candidate) is True
+
+
+def test_spa_file_index_direct_symlink_check_is_independently_pinned(
+    tmp_path, monkeypatch,
+):
+    candidate = tmp_path / "synthetic-link"
+    candidate.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(
+        app_module.os,
+        "lstat",
+        lambda _path: type("PlainStat", (), {"st_file_attributes": 0})(),
+    )
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == candidate)
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False, raising=False)
+    assert app_module._is_filesystem_link(candidate) is True
+
+
+def test_spa_file_index_refuses_partial_output_on_link_metadata_error(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    unreadable = dist / "unreadable.js"
+    unreadable.write_text("fixture", encoding="utf-8")
+    real_lstat = app_module.os.lstat
+
+    def metadata_refused(path):
+        if Path(path) == unreadable:
+            raise PermissionError("synthetic link metadata refusal")
+        return real_lstat(path)
+
+    monkeypatch.setattr(app_module.os, "lstat", metadata_refused)
+    with pytest.raises(PermissionError):
+        app_module._is_filesystem_link(unreadable)
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_rejects_a_link_classified_root(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    real_link_check = app_module._is_filesystem_link
+    monkeypatch.setattr(
+        app_module,
+        "_is_filesystem_link",
+        lambda path: path == dist or real_link_check(path),
+    )
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_independently_rejects_resolved_escape(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    candidate = dist / "escape.txt"
+    candidate.write_text("placeholder", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must not be indexed", encoding="utf-8")
+    real_resolve = Path.resolve
+
+    monkeypatch.setattr(app_module, "_is_filesystem_link", lambda _path: False)
+
+    def escaping_resolve(path, *args, **kwargs):
+        if path == candidate:
+            return outside
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", escaping_resolve)
+    monkeypatch.setattr(
+        app_module,
+        "_read_frontend_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resolved escape reached the file reader")
+        ),
+    )
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_same_handle_reader_rejects_parent_retarget_after_open(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    candidate = assets / "app.js"
+    candidate.write_bytes(b"trusted")
+    outside = tmp_path / "outside.js"
+    outside.write_bytes(b"outside")
+    resolved_dist = dist.resolve()
+    resolved_candidate = candidate.resolve()
+    real_resolve = Path.resolve
+
+    def retargeted_resolve(path, *args, **kwargs):
+        if path == resolved_candidate:
+            return outside
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", retargeted_resolve)
+    assert app_module._read_frontend_file(resolved_candidate, resolved_dist) is None
+
+
+def test_spa_file_index_rejects_hard_linked_members(tmp_path):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    outside = tmp_path / "outside.js"
+    outside.write_bytes(b"outside")
+    linked = dist / "linked.js"
+    try:
+        app_module.os.link(outside, linked)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable: {exc}")
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_enforces_file_total_and_count_ceilings(tmp_path, monkeypatch):
     dist = tmp_path / "dist"
     dist.mkdir()
     index = dist / "index.html"
-    index.write_text("<!doctype html><title>SPA-SHELL</title>", encoding="utf-8")
-    app = create_app(db_path=str(tmp_path / "hostile.db"), dist_dir=dist)
-    spa = next(route.endpoint for route in app.routes if route.path == "/{full_path:path}")
+    asset = dist / "app.js"
+    index.write_bytes(b"1234")
+    asset.write_bytes(b"5678")
 
-    resolved = []
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_FILE_BYTES", 3)
+    assert app_module._frontend_file_index(dist) is None
+
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_FILE_BYTES", 8)
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_TOTAL_BYTES", 7)
+    assert app_module._frontend_file_index(dist) is None
+
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_TOTAL_BYTES", 16)
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_FILES", 1)
+    assert app_module._frontend_file_index(dist) is None
+
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_FILES", 4)
+    monkeypatch.setattr(app_module, "_FRONTEND_MAX_ENTRIES", 1)
+    assert app_module._frontend_file_index(dist) is None
+
+
+@pytest.mark.parametrize("mutation", ("add-member", "rewrite-index"))
+def test_spa_file_index_reconciles_the_whole_tree_after_member_reads(
+    tmp_path, monkeypatch, mutation,
+):
+    dist = tmp_path / "dist"
+    _index_bytes, module = write_frontend_dist(dist)
+    index = dist / "index.html"
+    real_reader = app_module._read_frontend_file
+    mutated = False
+
+    def mutate_between_members(path, root):
+        nonlocal mutated
+        content = real_reader(path, root)
+        if path == module and not mutated:
+            mutated = True
+            if mutation == "add-member":
+                (dist / "assets" / "late.js").write_bytes(b"late member")
+            else:
+                index.write_bytes(
+                    index.read_bytes().replace(b"SPA-SHELL", b"NEW-CROSS-TIME-SHELL")
+                )
+        return content
+
+    monkeypatch.setattr(app_module, "_read_frontend_file", mutate_between_members)
+    assert app_module._frontend_file_index(dist) is None
+    assert mutated is True
+
+
+def test_spa_file_index_aborts_on_the_first_guarded_reader_refusal(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    _index_bytes, module = write_frontend_dist(dist)
+    real_reader = app_module._read_frontend_file
+    calls = 0
+
+    def refuse_first_read(path, root):
+        nonlocal calls
+        if path == module:
+            calls += 1
+            if calls == 1:
+                return None
+        return real_reader(path, root)
+
+    monkeypatch.setattr(app_module, "_read_frontend_file", refuse_first_read)
+    assert app_module._frontend_file_index(dist) is None
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_index",
+    (
+        b"",
+        b"<!doctype html><html><head></head><body><div id='root'></div></body></html>",
+        b"<!doctype html><html><head><script type='module' src='/assets/app.js'></script>"
+        b"</head><body><div id='root'></div>",
+    ),
+)
+def test_spa_file_index_rejects_empty_or_truncated_boot_shells(tmp_path, invalid_index):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    (dist / "index.html").write_bytes(invalid_index)
+    assert app_module._frontend_file_index(dist) is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "base", "integrity", "meta-csp", "meta-refresh", "duplicate-src", "template",
+        "self-closing-script",
+    ),
+)
+def test_spa_file_index_rejects_browser_parser_differentials(tmp_path, mutation):
+    dist = tmp_path / "dist"
+    index_bytes, _module = write_frontend_dist(dist)
+    text = index_bytes.decode("utf-8")
+    if mutation == "base":
+        text = text.replace("<head>", '<head><base href="/elsewhere/">')
+    elif mutation == "integrity":
+        text = text.replace("<script type=", '<script integrity="sha256-wrong" type=')
+    elif mutation == "meta-csp":
+        text = text.replace(
+            "<head>",
+            '<head><meta http-equiv="Content-Security-Policy" content="script-src none">',
+        )
+    elif mutation == "meta-refresh":
+        text = text.replace(
+            "<head>",
+            '<head><meta http-equiv="refresh" content="0;url=https://example.invalid/">',
+        )
+    elif mutation == "duplicate-src":
+        text = text.replace(
+            'src="/assets/app.js"',
+            'src="https://example.invalid/x.js" src="/assets/app.js"',
+        )
+    elif mutation == "template":
+        text = text.replace("<script ", "<template><script ").replace(
+            "</script>", "</script></template>",
+        )
+    else:
+        text = text.replace("></script>", "/>")
+    (dist / "index.html").write_text(text, encoding="utf-8")
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_rejects_encoded_dot_segments_and_blank_module(tmp_path):
+    dist = tmp_path / "encoded"
+    write_frontend_dist(dist)
+    encoded_dir = dist / "assets" / "%2e%2e"
+    encoded_dir.mkdir()
+    (encoded_dir / "app.js").write_bytes(b"encoded alias")
+    index = dist / "index.html"
+    index.write_bytes(index.read_bytes().replace(b"/assets/app.js", b"/assets/%2e%2e/app.js"))
+    assert app_module._frontend_file_index(dist) is None
+
+    blank = tmp_path / "blank"
+    write_frontend_dist(blank, asset_bytes=b" \r\n")
+    assert app_module._frontend_file_index(blank) is None
+
+
+def test_spa_file_index_rejects_encoded_dot_segment_reference(tmp_path):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    encoded_dir = dist / "assets" / "%2e%2e"
+    encoded_dir.mkdir()
+    (encoded_dir / "app.js").write_bytes(b"encoded alias")
+    index = dist / "index.html"
+    index.write_bytes(index.read_bytes().replace(b"/assets/app.js", b"/assets/%2e%2e/app.js"))
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_rejects_blank_boot_module(tmp_path):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist, asset_bytes=b" \r\n")
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_etags_bind_each_exact_representation(tmp_path):
+    dist = tmp_path / "dist"
+    _index_bytes, module = write_frontend_dist(dist, asset_bytes=b"module-one")
+    other = dist / "assets" / "other.js"
+    other.write_bytes(b"module-two")
+    result = app_module._frontend_file_index(dist)
+    assert result is not None
+    indexed = result[1]
+    first = indexed[module.relative_to(dist).as_posix()]
+    second = indexed[other.relative_to(dist).as_posix()]
+    assert first.etag == f'"{hashlib.sha256(first.content).hexdigest()}"'
+    assert second.etag == f'"{hashlib.sha256(second.content).hexdigest()}"'
+    assert first.etag != second.etag
+
+
+def test_spa_file_index_pins_boot_media_types_against_host_registry(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    _index_bytes, module = write_frontend_dist(dist)
+    monkeypatch.setattr(
+        app_module.mimetypes,
+        "guess_type",
+        lambda _path: (_ for _ in ()).throw(AssertionError("pinned type reached host registry")),
+    )
+    result = app_module._frontend_file_index(dist)
+    assert result is not None
+    indexed = result[1]
+    assert indexed["index.html"].media_type == "text/html"
+    assert indexed[module.relative_to(dist).as_posix()].media_type == "text/javascript"
+
+
+def test_spa_reader_rejects_divergent_second_read_and_closes_handle(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    candidate = dist / "app.js"
+    candidate.write_bytes(b"stable")
+    resolved = candidate.resolve()
+    real_open = app_module.os.open
+    real_read = app_module.os.read
+    real_lseek = app_module.os.lseek
+    opened = []
+    second_pass = False
+
+    def traced_open(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def traced_lseek(*args, **kwargs):
+        nonlocal second_pass
+        second_pass = True
+        return real_lseek(*args, **kwargs)
+
+    def divergent_read(*args, **kwargs):
+        data = real_read(*args, **kwargs)
+        if second_pass and data:
+            return b"X" + data[1:]
+        return data
+
+    monkeypatch.setattr(app_module.os, "open", traced_open)
+    monkeypatch.setattr(app_module.os, "lseek", traced_lseek)
+    monkeypatch.setattr(app_module.os, "read", divergent_read)
+    assert app_module._read_frontend_file(resolved, dist.resolve()) is None
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        app_module.os.fstat(opened[0])
+
+
+def test_spa_reader_rejects_handle_metadata_drift(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    candidate = dist / "app.js"
+    candidate.write_bytes(b"stable")
+    real_fstat = app_module.os.fstat
+    calls = 0
+
+    def drifting_fstat(descriptor):
+        nonlocal calls
+        calls += 1
+        value = real_fstat(descriptor)
+        if calls == 2:
+            return type("DriftedStat", (), {
+                "st_dev": value.st_dev,
+                "st_ino": value.st_ino,
+                "st_size": value.st_size,
+                "st_mtime_ns": value.st_mtime_ns + 1,
+                "st_ctime_ns": value.st_ctime_ns,
+                "st_nlink": value.st_nlink,
+            })()
+        return value
+
+    monkeypatch.setattr(app_module.os, "fstat", drifting_fstat)
+    assert app_module._read_frontend_file(candidate.resolve(), dist.resolve()) is None
+    assert calls == 2
+
+
+def test_spa_reader_closes_handle_when_read_fails(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    candidate = dist / "app.js"
+    candidate.write_bytes(b"stable")
+    real_open = app_module.os.open
+    opened = []
+
+    def traced_open(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(app_module.os, "open", traced_open)
+    monkeypatch.setattr(
+        app_module.os,
+        "read",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic read failure")),
+    )
+    assert app_module._read_frontend_file(candidate.resolve(), dist.resolve()) is None
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        app_module.os.fstat(opened[0])
+
+
+def test_spa_single_range_parser_is_ascii_bounded_and_case_insensitive():
+    assert app_module._single_byte_range("BYTES=0-1", 10) == (0, 1)
+    assert app_module._single_byte_range("bytes=-3", 10) == (7, 9)
+    assert app_module._single_byte_range("bytes=²-", 10) is None
+    assert app_module._single_byte_range("bytes=0-1,4-5", 10) is None
+    assert app_module._single_byte_range("items=0-1", 10) is None
+
+    entry = app_module._FrontendFile(
+        content=b"0123456789",
+        media_type="text/plain",
+        etag='"content-etag"',
+    )
+    non_ascii = app_module.Request({
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"range", b"bytes=\xb2-")],
+    })
+    non_ascii_response = app_module._frontend_response(entry, non_ascii)
+    assert non_ascii_response.status_code == 416
+    assert non_ascii_response.headers["content-range"] == "bytes */10"
+    unsupported = app_module.Request({
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"range", b"items=0-1")],
+    })
+    unsupported_response = app_module._frontend_response(entry, unsupported)
+    assert unsupported_response.status_code == 200
+    assert unsupported_response.body == entry.content
+    head = app_module.Request({
+        "type": "http",
+        "method": "HEAD",
+        "headers": [(b"range", b"bytes=0-1")],
+    })
+    head_response = app_module._frontend_response(entry, head)
+    assert head_response.status_code == 200 and head_response.body == b""
+    assert head_response.headers["content-length"] == "10"
+    oversized_precondition = app_module.Request({
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"if-none-match", b"x" * 4_097)],
+    })
+    assert app_module._frontend_response(entry, oversized_precondition).status_code == 431
+
+
+def test_spa_file_index_rejects_linked_directories_before_walk_descends(
+    tmp_path, monkeypatch,
+):
+    dist = tmp_path / "dist"
+    linked = dist / "linked"
+    safe = dist / "safe"
+    write_frontend_dist(dist)
+    linked.mkdir()
+    safe.mkdir()
+    (linked / "secret.js").write_text("must not be indexed", encoding="utf-8")
+    (safe / "app.js").write_text("must be indexed", encoding="utf-8")
+
+    real_link_check = app_module._is_filesystem_link
+    monkeypatch.setattr(
+        app_module,
+        "_is_filesystem_link",
+        lambda path: path == linked or real_link_check(path),
+    )
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_revalidates_child_before_scandir(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    child = dist / "child"
+    outside = tmp_path / "outside"
+    write_frontend_dist(dist)
+    child.mkdir()
+    outside.mkdir()
+    (child / "app.js").write_text("trusted", encoding="utf-8")
     real_resolve = Path.resolve
+    real_scandir = app_module.os.scandir
 
-    def traced_resolve(path, *args, **kwargs):
-        resolved.append(str(path))
+    def retargeted_resolve(path, *args, **kwargs):
+        if path == child:
+            return outside
         return real_resolve(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "resolve", traced_resolve)
-    response = spa(hostile_path)
+    def guarded_scandir(path):
+        if Path(path) == child:
+            raise AssertionError("stale child reached scandir")
+        return real_scandir(path)
 
-    assert Path(response.path) == index
-    assert set(resolved) <= {str(dist), str(index)}, (
-        f"hostile request path reached resolve(): {hostile_path!r} -> {resolved!r}"
-    )
+    monkeypatch.setattr(Path, "resolve", retargeted_resolve)
+    monkeypatch.setattr(app_module.os, "scandir", guarded_scandir)
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_fails_closed_on_enumeration_error(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+
+    def failing_scandir(_root):
+        raise PermissionError("synthetic enumeration refusal")
+
+    monkeypatch.setattr(app_module.os, "scandir", failing_scandir)
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_refuses_out_of_root_symlinks(tmp_path):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET-SNAPSHOT-DB", encoding="utf-8")
+    link = dist / "linked.txt"
+    try:
+        link.symlink_to(secret)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    assert app_module._frontend_file_index(dist) is None
+
+
+def test_spa_file_index_rejects_same_root_alias_retarget(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    write_frontend_dist(dist)
+    candidate = dist / "app.js"
+    candidate.write_bytes(b"candidate")
+    other = dist / "other.js"
+    other.write_bytes(b"other")
+    real_resolve = Path.resolve
+
+    def aliased_resolve(path, *args, **kwargs):
+        if path == candidate:
+            return other
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", aliased_resolve)
+    assert app_module._frontend_file_index(dist) is None
 
 
 @pytest.mark.parametrize(

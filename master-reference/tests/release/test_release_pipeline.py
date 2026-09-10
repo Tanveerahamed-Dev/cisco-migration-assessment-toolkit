@@ -2103,7 +2103,7 @@ def test_dependency_assessment_preserves_the_next_vendored_parser_block(version:
     assert "current source-authenticated advisory" in limits[2]
 
 
-def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> None:
+def _tracked_dependency_sbom() -> dict[str, object]:
     repo = MASTER_REFERENCE.parent
     sources = {
         relative: (repo / relative).read_bytes()
@@ -2112,8 +2112,22 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
     vendor_root = MASTER_REFERENCE / "vendor" / "bounded-image-size"
     for source_path in sorted(path for path in vendor_root.rglob("*") if path.is_file()):
         sources[source_path.relative_to(repo).as_posix()] = source_path.read_bytes()
+    return build_cyclonedx(sources, "a" * 40, "b" * 64)
 
-    sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+
+def _component_ref_for_lock_path(sbom: dict[str, object], lockfile_path: str) -> str:
+    matches = [
+        str(component["bom-ref"])
+        for component in sbom["components"]  # type: ignore[index]
+        if release_pipeline._sbom_component_properties(component).get("atlas:lockfilePath")
+        == lockfile_path
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> None:
+    sbom = _tracked_dependency_sbom()
     gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
     component_rows = {
         component["name"]: (component, release_pipeline._sbom_component_properties(component))
@@ -2128,7 +2142,8 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
     }
 
     assert gate == "blocked_external_current_advisory_applicability_review_required"
-    assert len(limits) == 2
+    assert len(limits) == 3
+    assert release_pipeline._verified_miniflare_sharp_closure(sbom) is True
     assert "next" not in component_rows
     assert component_rows["image-size"][0].get("version") is None
     assert component_rows["bounded-image-size"][0]["licenses"] == [
@@ -2148,7 +2163,74 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         ("webapp/frontend/package-lock.json", "0.8.3"),
     }
     assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
-    assert "current source-authenticated advisory" in limits[1]
+    assert "GHSA-rgj7-g3m4-5g8c in the current build graph only" in limits[0]
+    assert "current source-authenticated advisory" in limits[2]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_miniflare_edge",
+        "missing_sharp_native_edge",
+        "duplicate_dependency_target",
+        "misdirected_native_wrapper_edge",
+        "stale_native_version",
+        "stale_libvips_version",
+        "nested_native_duplicate",
+    ),
+)
+def test_dependency_assessment_rejects_incomplete_sharp_native_closure(mutation: str) -> None:
+    sbom = copy.deepcopy(_tracked_dependency_sbom())
+    miniflare_ref = _component_ref_for_lock_path(sbom, "node_modules/miniflare")
+    sharp_ref = _component_ref_for_lock_path(sbom, "node_modules/sharp")
+    native_ref = _component_ref_for_lock_path(sbom, "node_modules/@img/sharp-win32-x64")
+
+    if mutation == "missing_miniflare_edge":
+        row = next(item for item in sbom["dependencies"] if item["ref"] == miniflare_ref)  # type: ignore[index]
+        row["dependsOn"].remove(sharp_ref)
+    elif mutation == "missing_sharp_native_edge":
+        row = next(item for item in sbom["dependencies"] if item["ref"] == sharp_ref)  # type: ignore[index]
+        row["dependsOn"].remove(native_ref)
+    elif mutation == "duplicate_dependency_target":
+        row = next(item for item in sbom["dependencies"] if item["ref"] == sharp_ref)  # type: ignore[index]
+        row["dependsOn"].append(native_ref)
+    elif mutation == "misdirected_native_wrapper_edge":
+        wrapper_ref = _component_ref_for_lock_path(sbom, "node_modules/@img/sharp-linux-x64")
+        wrong_child_ref = _component_ref_for_lock_path(
+            sbom,
+            "node_modules/@img/sharp-libvips-linux-arm64",
+        )
+        row = next(item for item in sbom["dependencies"] if item["ref"] == wrapper_ref)  # type: ignore[index]
+        row["dependsOn"] = [wrong_child_ref]
+    elif mutation in {"stale_native_version", "stale_libvips_version"}:
+        target_name = (
+            "sharp-win32-x64" if mutation == "stale_native_version" else "sharp-libvips-linux-x64"
+        )
+        component = next(  # type: ignore[index]
+            item for item in sbom["components"] if item.get("name") == target_name
+        )
+        component["version"] = "0.35.2" if mutation == "stale_native_version" else "1.3.1"
+    else:
+        original = next(  # type: ignore[index]
+            item for item in sbom["components"] if item.get("name") == "sharp-win32-x64"
+        )
+        duplicate = copy.deepcopy(original)
+        duplicate["bom-ref"] = "duplicate-sharp-native"
+        properties = duplicate["properties"]
+        path_property = next(
+            item for item in properties if item.get("name") == "atlas:lockfilePath"
+        )
+        path_property["value"] = "node_modules/sharp/node_modules/@img/sharp-win32-x64"
+        sbom["components"].append(duplicate)  # type: ignore[index]
+        sbom["dependencies"].append(  # type: ignore[index]
+            {"ref": "duplicate-sharp-native", "dependsOn": []}
+        )
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert release_pipeline._verified_miniflare_sharp_closure(sbom) is False
+    assert gate == "blocked_sharp_dependency_topology_unverified"
+    assert any("does not prove the exact Miniflare-to-Sharp 0.35.4 edge" in limit for limit in limits)
 
 
 def test_dependency_sources_preserve_the_scoped_override_and_full_local_package(
@@ -2304,6 +2386,121 @@ def test_dependency_assessment_does_not_flag_patched_nanoid_only() -> None:
     assert gate == "blocked_external_current_advisory_applicability_review_required"
     assert len(limits) == 1
     assert "GHSA-2v37-7h3g-55p8" not in limits[0]
+
+
+@pytest.mark.parametrize(
+    ("version", "affected"),
+    (
+        ("0.35.2", True),
+        ("0.35.3+build.1", True),
+        ("0.35.4-beta.1", True),
+        ("0.35.4", False),
+        ("0.35.4+build.1", False),
+        ("0.36.0", False),
+        ("unparseable", True),
+        (None, True),
+    ),
+)
+def test_dependency_assessment_models_sharp_advisory_boundary_fail_closed(
+    version: object,
+    affected: bool,
+) -> None:
+    assert release_pipeline._is_affected_sharp(version) is affected
+
+
+def test_dependency_assessment_cannot_hide_vulnerable_sharp_behind_patched_copy() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "sharp", "version": "0.35.2"},
+                {"name": "sharp", "version": "0.35.4"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_sharp_unremediated_high_advisory"
+    assert len(limits) == 1
+    assert "GHSA-rgj7-g3m4-5g8c" in limits[0]
+    assert "sharp version(s) 0.35.2 below" in limits[0]
+    assert "0.35.2, 0.35.4" not in limits[0]
+
+
+def test_dependency_assessment_does_not_flag_patched_sharp_only() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {"components": [{"name": "sharp", "version": "0.35.4"}]}
+    )
+
+    assert gate == "blocked_external_current_advisory_applicability_review_required"
+    assert len(limits) == 1
+    assert "GHSA-rgj7-g3m4-5g8c" not in limits[0]
+
+
+@pytest.mark.parametrize(
+    "component",
+    (
+        {
+            "group": "@example",
+            "name": "sharp",
+            "version": "0.1.0",
+            "purl": "pkg:npm/%40example/sharp@0.1.0",
+        },
+        {
+            "group": "",
+            "name": "sharp",
+            "version": "0.1.0",
+            "purl": "pkg:pypi/sharp@0.1.0",
+        },
+    ),
+)
+def test_dependency_assessment_does_not_apply_npm_sharp_advisory_to_namesakes(
+    component: dict[str, object],
+) -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {"components": [component]}
+    )
+
+    assert gate == "blocked_external_current_advisory_applicability_review_required"
+    assert "GHSA-rgj7-g3m4-5g8c" not in " ".join(limits)
+
+
+@pytest.mark.parametrize(
+    "purl",
+    (
+        "pkg:",
+        "pkg:npm/sharp",
+        "pkg:npm/%73harp@0.35.2",
+        "pkg:pypi/sharp",
+        "not-a-purl",
+    ),
+)
+def test_dependency_assessment_keeps_ambiguous_unscoped_sharp_fail_closed(
+    purl: str,
+) -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"group": "", "name": "sharp", "version": "0.35.2", "purl": purl}
+            ]
+        }
+    )
+
+    assert gate == "blocked_sharp_unremediated_high_advisory"
+    assert "GHSA-rgj7-g3m4-5g8c" in " ".join(limits)
+
+
+def test_dependency_assessment_reports_sharp_with_another_modeled_blocker() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"name": "sharp", "version": "0.35.2"},
+                {"name": "nanoid", "version": "3.3.16"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_multiple_unremediated_dependency_advisories"
+    assert any("GHSA-rgj7-g3m4-5g8c" in limit for limit in limits)
+    assert any("GHSA-2v37-7h3g-55p8" in limit for limit in limits)
 
 
 @pytest.mark.parametrize(

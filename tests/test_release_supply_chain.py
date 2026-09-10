@@ -13,10 +13,65 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 _FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_ALTERNATE_DISTRIBUTION_BUILD = re.compile(
+    r"(?i)(?:"
+    r"\b(?:python(?:3|\.exe)?|py)\b.{0,120}\s-m\s+build\b|"
+    r"\bpip(?:3|\.exe)?\s+wheel\b|"
+    r"\b(?:hatch|flit|poetry|pdm|uv)\s+build\b|"
+    r"\bsetup\.py\b.{0,80}\b(?:sdist|bdist_wheel)\b"
+    r")"
+)
 
 
 def _workflow(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def _workflow_paths(root: Path = WORKFLOWS) -> list[Path]:
+    return sorted({*root.glob("*.yml"), *root.glob("*.yaml")})
+
+
+def _alternate_distribution_builds(root: Path = WORKFLOWS) -> list[str]:
+    return [
+        path.name
+        for path in _workflow_paths(root)
+        if _ALTERNATE_DISTRIBUTION_BUILD.search(
+            _without_comments(path.read_text(encoding="utf-8"))
+        )
+    ]
+
+
+def _workflow_named_steps(text: str) -> list[tuple[str, str]]:
+    pattern = re.compile(
+        r"(?ms)^      - name: (?P<name>[^\n]+)\n"
+        r"(?P<body>.*?)(?=^      - (?:name|uses):|\Z)"
+    )
+    return [(match.group("name"), match.group("body")) for match in pattern.finditer(text)]
+
+
+def _without_comments(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def _assert_distribution_build_owner(text: str, *, fresh_only: bool) -> None:
+    owner = "tools/build_reproducible_distributions.py"
+    uncommented = _without_comments(text)
+    assert uncommented.count(owner) == 1
+    owner_steps = [
+        (name, body)
+        for name, body in _workflow_named_steps(uncommented)
+        if owner in body
+    ]
+    assert len(owner_steps) == 1
+    _name, step = owner_steps[0]
+    assert step.count(owner) == 1
+    assert '--expected-commit "${{ steps.source.outputs.commit }}"' in step
+    assert '--expected-tree "${{ steps.source.outputs.tree }}"' in step
+    assert "--outdir dist" in step
+    assert ("if: steps.existing.outputs.exists == 'false'" in step) is fresh_only
+    assert "-m build" not in uncommented
 
 
 def _release_module():
@@ -75,7 +130,7 @@ def _clean_repository(tmp_path: Path) -> tuple[Path, str, str]:
 
 def test_every_action_is_pinned_to_an_immutable_commit():
     offenders = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in _workflow_paths():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if not stripped.startswith("- uses:"):
@@ -121,7 +176,7 @@ def test_tracked_literal_self_hosted_workflows_are_manual_dispatch_only():
     covers the exact current literal selector; it is not a server-side runner access policy."""
     offenders = []
     self_hosted_workflows = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in _workflow_paths():
         body = "\n".join(
             line for line in path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("#")
@@ -142,7 +197,7 @@ def test_tracked_literal_self_hosted_workflows_are_manual_dispatch_only():
         + ", ".join(offenders)
     )
     # NON-VACUITY: the sweep saw both current manual fallbacks.
-    bodies = {p.name: p.read_text(encoding="utf-8") for p in WORKFLOWS.glob("*.yml")}
+    bodies = {p.name: p.read_text(encoding="utf-8") for p in _workflow_paths()}
     assert any("pull_request" in b for b in bodies.values())
     assert self_hosted_workflows == ["main-selfhosted.yml", "release-selfhosted.yml"]
 
@@ -305,6 +360,7 @@ def test_publish_promotes_release_assets_without_rebuilding():
     assert "release:" not in body
     assert "gh release download" in body
     assert "python -m build" not in body
+    assert "build_reproducible_distributions.py" not in body
     assert "dist/*.whl" in body and "dist/*.tar.gz" in body
     assert "id-token: write" in body
     assert "attestations: true" in body
@@ -325,7 +381,95 @@ def test_publish_promotes_release_assets_without_rebuilding():
     assert 'download "${{ inputs.tag }}"' not in body
 
 
-def test_release_builds_once_and_reuses_assets_on_rerun():
+@pytest.mark.parametrize(
+    ("workflow", "fresh_only"),
+    (
+        ("ci.yml", False),
+        ("release.yml", True),
+        ("release-selfhosted.yml", True),
+    ),
+)
+def test_every_distribution_build_uses_the_commit_bound_two_build_owner(
+    workflow, fresh_only,
+):
+    body = _workflow(workflow)
+    owner = "tools/build_reproducible_distributions.py"
+    _assert_distribution_build_owner(body, fresh_only=fresh_only)
+    owner_at = body.index(owner)
+    assert body.index('"build==1.5.0"') < owner_at
+    assert owner_at < body.index("-m twine check")
+
+
+def test_distribution_build_owner_is_exhaustive_and_publish_remains_build_free():
+    owner = "tools/build_reproducible_distributions.py"
+    consumers = {
+        path.name
+        for path in _workflow_paths()
+        if owner in _without_comments(path.read_text(encoding="utf-8"))
+    }
+    assert consumers == {"ci.yml", "release.yml", "release-selfhosted.yml"}
+
+    publish = _without_comments(_workflow("publish.yml"))
+    assert owner not in publish
+    assert re.search(r"(?i)(?:python(?:3|\.exe)?|py).{0,120}-m\s+build\b", publish) is None
+    assert _alternate_distribution_builds() == []
+
+
+def test_workflow_inventory_and_alternate_builder_scan_include_yaml(tmp_path):
+    (tmp_path / "normal.yml").write_text("name: normal\n", encoding="utf-8")
+    (tmp_path / "rogue.yaml").write_text(
+        "name: rogue\njobs:\n  build:\n    steps:\n"
+        "      - run: python -m build --sdist --wheel\n",
+        encoding="utf-8",
+    )
+    assert [path.name for path in _workflow_paths(tmp_path)] == [
+        "normal.yml",
+        "rogue.yaml",
+    ]
+    assert _alternate_distribution_builds(tmp_path) == ["rogue.yaml"]
+
+
+def test_distribution_build_owner_rejects_an_unnamed_duplicate_step():
+    body = _workflow("ci.yml")
+    duplicate = (
+        "\n      - run: python tools/build_reproducible_distributions.py "
+        "--expected-commit deadbeef --expected-tree deadbeef --outdir dist\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_distribution_build_owner(body + duplicate, fresh_only=False)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    (
+        ("--expected-commit", "--unbound-commit"),
+        ("--expected-tree", "--unbound-tree"),
+        ("--outdir dist", "--outdir elsewhere"),
+        ("if: steps.existing.outputs.exists == 'false'", "if: always()"),
+    ),
+)
+def test_release_distribution_owner_contract_rejects_mutations(old, new):
+    body = _workflow("release.yml")
+    owner = "tools/build_reproducible_distributions.py"
+    owner_step = next(step for _name, step in _workflow_named_steps(body) if owner in step)
+    assert old in owner_step
+    mutated = body.replace(owner_step, owner_step.replace(old, new, 1), 1)
+    with pytest.raises(AssertionError):
+        _assert_distribution_build_owner(mutated, fresh_only=True)
+
+
+def test_local_release_runbook_uses_the_same_reproducible_build_owner():
+    body = (ROOT / "RELEASING.md").read_text(encoding="utf-8")
+    owner_at = body.index("python tools/build_reproducible_distributions.py")
+    section = body[owner_at:owner_at + 300]
+    assert "python -m build --sdist --wheel" not in body
+    assert '--expected-commit "$source_commit"' in section
+    assert '--expected-tree "$source_tree"' in section
+    assert "--outdir dist" in section
+    assert 'source_tree="$(git rev-parse "${source_commit}^{tree}")"' in body
+
+
+def test_release_produces_one_retained_set_and_reuses_assets_on_rerun():
     body = _workflow("release.yml")
     assert "gh release view" in body
     assert "gh release download" in body

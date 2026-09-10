@@ -89,21 +89,21 @@ def test_authentication_key_digest_scrub_preserves_algorithm_context():
     the real digest EXPOSED in a --redact deliverable (offline-crackable). The key prefix now absorbs the
     hash-algorithm label so only the secret AFTER it is redacted, while the 'md5'/'sha' context survives.
     Conservative: anchored on 'key', so a bare 'hash md5' algorithm choice is never corrupted."""
-    from cisco_toolkit.html import _scrub_secrets
-    assert _scrub_secrets("ntp authentication-key 1 md5 NtpMd5DigestXYZ") == \
+    from cisco_toolkit.html import _redact_config_values
+    assert _redact_config_values("ntp authentication-key 1 md5 NtpMd5DigestXYZ") == \
         "ntp authentication-key 1 md5 <redacted>"
-    assert _scrub_secrets("ip ospf message-digest-key 7 md5 7 OspfMd5DigestABC") == \
+    assert _redact_config_values("ip ospf message-digest-key 7 md5 7 OspfMd5DigestABC") == \
         "ip ospf message-digest-key 7 md5 7 <redacted>"
-    assert _scrub_secrets("authentication-key 1 hmac-sha-256 ShaDigest256Val") == \
+    assert _redact_config_values("authentication-key 1 hmac-sha-256 ShaDigest256Val") == \
         "authentication-key 1 hmac-sha-256 <redacted>"
     # regression: standalone keychain 'key 7 <hex>' (no algorithm token) still redacts the value
-    assert _scrub_secrets("key 7 02050D480809") == "key 7 <redacted>"
+    assert _redact_config_values("key 7 02050D480809") == "key 7 <redacted>"
     # conservative — 'hash md5' as an IKE/ISAKMP algorithm choice (no key-id + secret) must NOT corrupt
     # the following structured token (this is what a broad '\\bmd5 <next>' rule would have broken)
-    assert _scrub_secrets("hash md5\n encryption aes-256") == "hash md5\n encryption aes-256"
+    assert _redact_config_values("hash md5\n encryption aes-256") == "hash md5\n encryption aes-256"
     # idempotent
-    once = _scrub_secrets("ntp authentication-key 1 md5 NtpMd5DigestXYZ")
-    assert _scrub_secrets(once) == once
+    once = _redact_config_values("ntp authentication-key 1 md5 NtpMd5DigestXYZ")
+    assert _redact_config_values(once) == once
     # end-to-end: the digest must not survive a full redact_snapshot
     snap = {"raw_config": ["ntp authentication-key 1 md5 NtpMd5DigestXYZ"]}
     assert "NtpMd5DigestXYZ" not in json.dumps(html.redact_snapshot(snap))
@@ -193,11 +193,13 @@ def test_bare_key_rule_preserves_structural_follow_words():
     sequentially over the accumulating string the bare-key rule re-fired on the pre-shared-key rule's output and
     mangled the 'local'/'remote' direction qualifier. Those structural words must survive; a genuine key still
     redacts."""
-    from cisco_toolkit.html import _scrub_secrets
-    assert _scrub_secrets("key chain OSPF-KC") == "key chain OSPF-KC"          # 'chain' + name preserved
-    assert _scrub_secrets("pre-shared-key local THEKEY") == "pre-shared-key local <redacted>"   # 'local' kept
-    assert _scrub_secrets("pre-shared-key remote OTHERKEY") == "pre-shared-key remote <redacted>"
-    assert "13061E010803" not in _scrub_secrets("key 7 13061E010803")          # genuine key still redacted
+    from cisco_toolkit.html import _redact_config_values
+    assert _redact_config_values("key chain OSPF-KC") == "key chain OSPF-KC"  # 'chain' + name preserved
+    assert _redact_config_values("pre-shared-key local THEKEY") == \
+        "pre-shared-key local <redacted>"  # 'local' kept
+    assert _redact_config_values("pre-shared-key remote OTHERKEY") == \
+        "pre-shared-key remote <redacted>"
+    assert "13061E010803" not in _redact_config_values("key 7 13061E010803")  # genuine key still redacted
 
 
 def test_redact_catches_compound_credential_key_names():
@@ -261,15 +263,19 @@ def test_redact_vendor_enc_passphrase_and_junos_psk_not_stranded():
     "<x>"` forms -- capturing the `ENC`/`ascii-text` token as the 'secret' and STRANDING the real hash / blob /
     PSK after it. `set passphrase <x>` (FortiOS WPA / SSL-VPN) was uncovered entirely. None of the encrypted
     material may survive, and the surrounding keyword context is preserved."""
-    from cisco_toolkit.html import _scrub_secrets
-    assert _scrub_secrets("set password ENC SH2KpL9mNvBxHash==") == "set password ENC <redacted>"
-    assert _scrub_secrets("set private-key ENC AKxBlob9876") == "set private-key ENC <redacted>"
-    assert _scrub_secrets("set passphrase CorpWiFiP@ssw0rd2026") == "set passphrase <redacted>"
-    assert "MyJunosPSK2026" not in _scrub_secrets('pre-shared-key ascii-text "MyJunosPSK2026"')
+    from cisco_toolkit.html import _redact_config_values
+    assert _redact_config_values("set password ENC SH2KpL9mNvBxHash==") == \
+        "set password ENC <redacted>"
+    assert _redact_config_values("set private-key ENC AKxBlob9876") == \
+        "set private-key ENC <redacted>"
+    assert _redact_config_values("set passphrase CorpWiFiP@ssw0rd2026") == \
+        "set passphrase <redacted>"
+    assert "MyJunosPSK2026" not in _redact_config_values(
+        'pre-shared-key ascii-text "MyJunosPSK2026"')
     # regression: the digest forms that RELY on `\\bkey` matching inside the hyphenated keyword must still redact
-    assert _scrub_secrets("ntp authentication-key 1 md5 NtpMd5DigestXYZ") == \
+    assert _redact_config_values("ntp authentication-key 1 md5 NtpMd5DigestXYZ") == \
         "ntp authentication-key 1 md5 <redacted>"
-    assert _scrub_secrets("ip ospf message-digest-key 7 md5 7 OspfMd5DigestABC") == \
+    assert _redact_config_values("ip ospf message-digest-key 7 md5 7 OspfMd5DigestABC") == \
         "ip ospf message-digest-key 7 md5 7 <redacted>"
     # end-to-end through redact_snapshot
     snap = {"raw_config": [

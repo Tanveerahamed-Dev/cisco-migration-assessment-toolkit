@@ -5,6 +5,7 @@ import type {
   CapabilityEntryContract,
   CapabilityState,
 } from "./types";
+import { isSemanticIdentifier } from "./semanticIdentifier.ts";
 
 const CAPABILITY_STATES = [
   "current",
@@ -146,7 +147,7 @@ function identifier(value: unknown, path: string, prefix: string): string {
   const id = nonemptyString(value, path);
   if (
     !id.startsWith(prefix) ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(id) ||
+    !isSemanticIdentifier(id) ||
     id.length > 160
   ) {
     fail(path, "expected a bounded semantic identifier");

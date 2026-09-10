@@ -46,6 +46,17 @@ lock and local-package source receipt, exercise real tracked PNG/SVG assets,
 reject static image imports and metadata-route files across the exact Git-owned
 JS/TS path set, and run hostile inputs in watchdog subprocesses.
 
+Miniflare 5.20260801.1-alpha separately declares Sharp 0.35.2 for local
+Cloudflare build tooling. A Miniflare-version-scoped override resolves that
+single edge to Sharp 0.35.4, the first release patched for
+GHSA-rgj7-g3m4-5g8c. Contract tests bind the manifest, lock and installed
+resolution, the complete 26-component `@img/sharp-*` native family, and the
+Miniflare-to-Sharp SBOM edge. A native PNG metadata smoke runs through the
+resolved Sharp binding. The release gate also rejects every unscoped npm Sharp version below
+0.35.4, 0.35.4 prereleases, host-path duplicates, missing or misdirected native
+edges, and unparseable versions. This is an out-of-range transitive substitution
+with local compatibility evidence, not external applicability or VEX authority.
+
 This is a narrow Vinext-edge replacement, not an advisory waiver. Next is absent
 from the current direct dependencies, lock, installed graph, SBOM, and built
 output; the release pipeline fails closed if any future Next component appears.
