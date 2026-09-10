@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       draft_tag:
-        description: "Unique draft candidate tag, e.g. v3.33.0-rc.1"
+        description: "Unique draft candidate tag, e.g. v3.33.0-rc.3"
         required: true
         type: string
       attach_draft:

@@ -26,6 +26,7 @@ registry row itself names as consumer) rather than a private re-parse: the manif
 self-declared `n` is NOT covered by the feed's SHA-256, so the reconcile target is the count of
 *verified* entries, and a feed the gate refuses can't back the row's claims at all.
 """
+import json
 import os
 import re
 import subprocess
@@ -126,12 +127,26 @@ def _tracked(subdir: str, pattern: str) -> list:
 
 
 def _pyproject_version() -> str:
-    """One parser on every supported interpreter (a tomllib/regex split gave 3.10 and 3.11+
-    different failure behavior for the same tree). The key is unique in this repo's pyproject."""
+    """Use one table-scoped parser on every supported interpreter.
+
+    A tomllib/regex split gave 3.10 and 3.11+ different failure behavior for the same tree. Keep
+    the cross-version parser small, but bind it to the unique authoritative ``[project]`` table so
+    an unrelated tool's ``version`` key cannot become the release owner.
+    """
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
-    assert m, "pyproject.toml no longer carries a [project] version -- the owner itself moved"
-    return m.group(1)
+    headers = list(re.finditer(r"^\[project\][ \t]*(?:#.*)?$", text, re.MULTILINE))
+    assert len(headers) == 1, "pyproject.toml must carry one authoritative [project] table"
+    start = headers[0].end()
+    next_table = re.search(r"^\[[^\r\n]+\][ \t]*(?:#.*)?$", text[start:], re.MULTILINE)
+    section = text[start:start + next_table.start()] if next_table else text[start:]
+    assignments = re.findall(
+        r'''^version[ \t]*=[ \t]*(?:"([^"]+)"|'([^']+)')[ \t]*(?:#.*)?$''',
+        section,
+        re.MULTILINE,
+    )
+    assert len(assignments) == 1, "[project] must carry exactly one simple release version"
+    double_quoted, single_quoted = assignments[0]
+    return double_quoted or single_quoted
 
 
 # --- (b) cached VALUES must reconcile to the owner named on the same row -------------------------
@@ -148,6 +163,159 @@ def test_release_version_cache_reconciles_to_pyproject():
     assert cached.group(1) == owner, (
         f"docs/ssot.md caches release version {cached.group(1)} but the owner it names "
         f"(pyproject.toml) says {owner} -- update the cache from the owner"
+    )
+
+
+def test_release_candidate_examples_reconcile_to_pyproject():
+    """Current operator examples must derive from the release owner, not a prior RC literal."""
+    version = _pyproject_version()
+    parsed = re.fullmatch(
+        r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\."
+        r"(?P<patch>0|[1-9][0-9]*)rc(?P<ordinal>[1-9][0-9]*)",
+        version,
+    )
+    assert parsed, (
+        "portable candidate examples require canonical epoch-zero X.Y.ZrcN release identity; "
+        f"pyproject.toml declares {version!r}"
+    )
+    base = ".".join(parsed.group(name) for name in ("major", "minor", "patch"))
+    tag = f"v{base}-rc.{parsed.group('ordinal')}"
+    archive = f"Atlas-{version}-windows-x64.zip"
+
+    releasing = (ROOT / "RELEASING.md").read_text(encoding="utf-8")
+    unfenced_lines: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in releasing.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            candidate = marker.group(1)
+            if fence is None:
+                fence = (candidate[0], len(candidate))
+            elif (
+                candidate[0] == fence[0]
+                and len(candidate) >= fence[1]
+                and re.fullmatch(rf"^ {{0,3}}{re.escape(fence[0])}{{{fence[1]},}}[ \t]*$", line)
+            ):
+                fence = None
+            continue
+        if fence is None:
+            unfenced_lines.append(line)
+    assert fence is None, "RELEASING.md contains an unmatched Markdown fence"
+    unfenced_releasing = "\n".join(unfenced_lines)
+    assert unfenced_releasing.count("<!--") == unfenced_releasing.count("-->"), (
+        "RELEASING.md contains an unmatched HTML comment boundary"
+    )
+    visible_releasing = re.sub(r"<!--.*?-->", "", unfenced_releasing, flags=re.DOTALL)
+    assert "<!--" not in visible_releasing and "-->" not in visible_releasing, (
+        "RELEASING.md contains an unmatched or nested HTML comment boundary"
+    )
+    heading = "## Build the Windows x64 portable release candidate"
+    visible_lines = visible_releasing.splitlines()
+    heading_rows = [index for index, line in enumerate(visible_lines) if line == heading]
+    assert len(heading_rows) == 1, "RELEASING.md lost the unique visible portable operator H2"
+    section_end = next(
+        (
+            index
+            for index in range(heading_rows[0] + 1, len(visible_lines))
+            if visible_lines[index].startswith("## ")
+        ),
+        len(visible_lines),
+    )
+    release_section = "\n".join(visible_lines[heading_rows[0] + 1:section_end])
+    mapping_lines = [
+        line.strip()
+        for line in release_section.splitlines()
+        if "project version" in line
+        or " maps to " in line
+        or re.search(
+            r"(?:v)?[0-9]+\.[0-9]+\.[0-9]+(?:rc|-rc)",
+            line,
+            re.IGNORECASE,
+        )
+    ]
+    assert len(mapping_lines) == 1, (
+        "portable operator section must contain exactly one project-version/tag mapping line; "
+        f"found {mapping_lines!r}"
+    )
+    mapping = re.fullmatch(
+        r"project version \(`(?P<version>[0-9]+\.[0-9]+\.[0-9]+rc[0-9]+)` maps to "
+        r"`(?P<tag>v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+)`\)\. It:",
+        mapping_lines[0],
+    )
+    assert mapping and (mapping.group("version"), mapping.group("tag")) == (version, tag), (
+        "RELEASING.md portable operator mapping must equal the pyproject-derived version/tag; "
+        f"expected {(version, tag)!r}, found {mapping_lines[0]!r}"
+    )
+
+    installer = (ROOT / "portable" / "make_stick.ps1").read_text(encoding="utf-8")
+    package_commands = [
+        line.strip()
+        for line in installer.splitlines()
+        if line.strip().casefold().startswith("powershell ")
+        and "portable\\make_stick.ps1" in line.casefold()
+        and "-package" in line.casefold()
+    ]
+    archive_lines = [
+        line.strip()
+        for line in installer.splitlines()
+        if "atlas-" in line.casefold() and "windows-x64.zip" in line.casefold()
+    ]
+    assert len(package_commands) == 1 and archive_lines == package_commands, (
+        "make_stick.ps1 must contain one operator -Package command and no decoy archive example; "
+        f"commands={package_commands!r}, archive_lines={archive_lines!r}"
+    )
+    package_match = re.fullmatch(
+        r"powershell -File portable\\make_stick\.ps1 -Dest \S+ -Package (?P<package>\S+)",
+        package_commands[0],
+        re.IGNORECASE,
+    )
+    package_name = package_match.group("package").rsplit("\\", 1)[-1] if package_match else None
+    assert package_name == archive, (
+        "make_stick.ps1 operator -Package command must use the pyproject-derived portable ZIP; "
+        f"expected {archive!r}, found {package_name!r}"
+    )
+
+    workflow = (ROOT / ".github" / "workflows" / "portable-release.yml").read_text(encoding="utf-8")
+    workflow_lines = workflow.splitlines()
+
+    def yaml_block(lines: list[str], header: str, indentation: int) -> list[str]:
+        expected = f"{' ' * indentation}{header}:"
+        starts = [index for index, line in enumerate(lines) if line == expected]
+        assert len(starts) == 1, f"portable workflow must contain one {header!r} block at indent {indentation}"
+        block: list[str] = []
+        for line in lines[starts[0] + 1:]:
+            stripped = line.lstrip()
+            child_indentation = len(line) - len(stripped)
+            if stripped and not stripped.startswith("#") and child_indentation <= indentation:
+                break
+            block.append(line)
+        return block
+
+    on_block = yaml_block(workflow_lines, "on", 0)
+    dispatch_block = yaml_block(on_block, "workflow_dispatch", 2)
+    inputs_block = yaml_block(dispatch_block, "inputs", 4)
+    draft_block = yaml_block(inputs_block, "draft_tag", 6)
+    description_rows = [
+        line.strip().split(":", 1)[1].strip()
+        for line in draft_block
+        if re.fullmatch(r" {8}description:\s*.*", line)
+        and not line.lstrip().startswith("#")
+    ]
+    assert len(description_rows) == 1, (
+        "draft_tag input must contain exactly one real description field; "
+        f"found {description_rows!r}"
+    )
+    scalar = description_rows[0]
+    if len(scalar) >= 2 and scalar[0] == scalar[-1] == '"':
+        description = json.loads(scalar)
+    elif len(scalar) >= 2 and scalar[0] == scalar[-1] == "'":
+        description = scalar[1:-1].replace("''", "'")
+    else:
+        description = scalar
+    expected_description = f"Unique draft candidate tag, e.g. {tag}"
+    assert description == expected_description, (
+        "workflow_dispatch.inputs.draft_tag.description must be the exact pyproject-derived example; "
+        f"expected {expected_description!r}, found {description!r}"
     )
 
 

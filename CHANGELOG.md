@@ -77,6 +77,14 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Release-candidate identity advances to `3.33.0rc3` after the integrated Release-1 closure
+  work.** A successor portable draft must use `v3.33.0-rc.3` and rebuild every package, portable
+  member, manifest, digest, attestation, and receipt from the later exact `main`; the existing RC1
+  and RC2 drafts are retained unchanged as historical evidence bound to their original sources and hashes.
+  This candidate includes the dependency, portable runtime-write, and remaining CodeQL boundary
+  remediations. The snapshot schema remains independently versioned at `3.23.0`, and this version
+  change establishes no independent human review, production signing, legal approval, physical or
+  field qualification, operator acceptance, publication, or GA authority.
 - **GitHub-hosted CI is now the automatic and canonical validation path.** Because the repository
   is intentionally public and the protected `main` branch already requires the hosted Ubuntu,
   Windows, distribution, security, Master Reference, and Atlas gates, `main-selfhosted` no longer
