@@ -1,0 +1,341 @@
+/*
+ * DataGrid.css — the visual layer of the dense grid.
+ *
+ * Every value resolves to a token in src/core/tokens.css. No hex literal, no px font-size, no bare
+ * duration. Rows carry no border, no background and no elevation of their own: separation is a
+ * single hairline, hover is a fill change, and nothing lifts. Card padding in a working list halves
+ * the number of rows on screen, which is the whole thing a dense grid exists to avoid.
+ */
+
+.ag {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  block-size: 100%;
+}
+
+/* The grid IS the scroll container: the header sticks to it, and the windowing hook measures the
+   box the rows actually scroll inside. `overflow: auto` — never `hidden` — because an ancestor
+   with `overflow: hidden` clips the focus ring on a cell, which is the single most common silent
+   regression in a dense grid and passes visual review every time. */
+.ag__grid {
+  position: relative;
+  overflow: auto;
+  /* The sticky column header is drawn INSIDE this scroll box and overlays it. So a viewport
+     shorter than that header is not a short grid, it is a blank one: every data row is behind the
+     header, `elementFromPoint` at a row's own centre returns the header's sort button, and a click
+     aimed at a finding silently re-sorts the grid instead. Measured at 1920x1080 with a trace
+     open: an 85px viewport under a 56px header left a 29px strip and 0 of 146 rows hit-testable.
+     This floor is the grid's OWN contract — its sticky header plus a usable run of rows — so it
+     holds wherever the grid is mounted instead of being re-derived per container. Callers size
+     their tracks against it (see --rail-a-queue-min in shell.css); they must not override it.
+     19rem / 304px is MEASURED, not derived from --row-grid: that token is 2rem, but the queue
+     renders at data-density="comfortable" where a data row is 49px and a severity group header is
+     29px, so a floor computed from the token under-reserves by roughly half. The budget is the
+     28px sticky header, which overlays the box rather than sitting above it, plus a severity group
+     header and four 49px data rows whose CENTRES clear that overlay.
+     The number was tuned against review/layout-guard.mjs rather than arithmetic, because the only
+     figure that means anything to a click is how many rows return themselves from
+     elementFromPoint: the guard counts exactly that, at four viewports, and fails if this drifts. */
+  min-height: 19rem;
+  flex: 1 1 auto;
+  scroll-padding-block: var(--row-colhead) var(--sp-2);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  letter-spacing: var(--ls-1);
+  color: var(--text);
+}
+
+.ag__row {
+  display: grid;
+  grid-template-columns: var(--ag-cols);
+  align-items: center;
+  column-gap: var(--sp-2);
+  padding-inline: var(--sp-2);
+  border-block-end: var(--hairline) solid var(--border);
+}
+
+/* ── header ──────────────────────────────────────────────────────────────────
+   Sticky, on --surface-2 so it separates from the rows by value rather than by a heavier rule.
+   z-index sits above rows and below every overlay layer. */
+.ag__head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--surface-2);
+}
+
+.ag__row--head {
+  min-block-size: var(--row-colhead);
+  border-block-end: var(--hairline) solid var(--border-strong);
+}
+
+/* The sort control's target is the header CELL, floored at the WCAG 2.5.8 24x24 minimum rather
+   than the brief's roomier 56px: a 24px-wide severity column cannot carry a 56px header without
+   overflowing its own track, and shrinking the column to buy the header is density spent on
+   nothing. 24 x 28 clears the criterion. */
+.ag__cell--head {
+  position: relative;
+  min-inline-size: var(--target-min);
+  min-block-size: var(--row-colhead);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  text-transform: none;
+}
+
+/* A header whose column is too narrow for words (a glyph column) keeps its accessible name in the
+   cell's own `aria-label` (see DataGrid.tsx) and shows nothing — it must never show a truncated
+   first letter, which reads as data.
+
+   The SORT GLYPH goes with the word. Hiding only the text left a bare caret sitting at the far
+   left of the header row, belonging to no named column: the reader is shown a sort control and
+   never told what it sorts. The column stays sortable — the cell is still the button, and the
+   Order control names the field in words — but nothing is painted that claims to be a header. */
+.ag__cell--head[data-col="sev"] .ag__headtext,
+.ag__cell--head[data-col="drill"] .ag__headtext,
+.ag__cell--head[data-col="sev"] .ag__sortglyph,
+.ag__cell--head[data-col="drill"] .ag__sortglyph {
+  /* `fixed`, not `absolute` — see .visually-hidden in src/ui/primitives.css. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.ag__sortbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--target-min);
+  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.ag__sortglyph {
+  inline-size: 0.75rem;
+  block-size: 0.75rem;
+  flex: none;
+  /* A11Y AUDIT FIX, 2026-09-21 (D4). This was 0.55, which put the IDLE glyph under the 3:1
+     non-text floor in both themes: `--text-muted` composited over the header fill measured
+     #969ca7 on #eef0f4 = 2.42:1 (light) and #5b6472 on #131923 = 2.94:1 (dark), per
+     review/_audit_a11y_d4c.mjs. The SORTED glyph was always fine (5.28:1 / 9.30:1 below), so what
+     was failing was the affordance hint — the mark that tells a reader this column can be
+     ordered at all — on every column that is not the sorted one.
+
+     0.72 is the smallest step that clears the floor in BOTH themes rather than only the darker
+     one: it composites to 3.40:1 light and 3.96:1 dark. The glyph stays quieter than its label,
+     which is the point of it; it is now quiet rather than invisible. */
+  opacity: 0.72;
+}
+
+.ag__cell--head[aria-sort="ascending"],
+.ag__cell--head[aria-sort="descending"] {
+  color: var(--text);
+}
+
+.ag__cell--head[aria-sort="ascending"] .ag__sortglyph,
+.ag__cell--head[aria-sort="descending"] .ag__sortglyph {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* ── resizer ─────────────────────────────────────────────────────────────────
+   A pointer affordance only; Shift+Arrow on the header cell is the keyboard twin (WCAG 2.5.7), so
+   this is deliberately not a tab stop. 8px wide over a 1px rule keeps the grab area honest. */
+.ag__resizer {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: calc(var(--sp-1) * -1);
+  inline-size: var(--sp-2);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.ag__resizer::after {
+  content: "";
+  position: absolute;
+  inset-block: var(--sp-1);
+  inset-inline-start: 50%;
+  inline-size: var(--hairline);
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--dur-instant) linear;
+}
+
+.ag__resizer:hover::after {
+  opacity: 1;
+}
+
+/* ── cells ──────────────────────────────────────────────────────────────────── */
+
+.ag__cell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  /* Not `hidden`: a clipped focus ring is a named defect. The cell's own content clips instead. */
+  overflow: visible;
+}
+
+.ag__cell[data-align="end"] {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The roving cell shows the ring on :focus, not only :focus-visible. In a grid the focused cell
+   IS the navigation position, so it has to be visible after a click as well as after a key. */
+.ag__cell:focus {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: calc(var(--focus-ring-offset) * -1);
+  border-radius: var(--radius-sm);
+}
+
+.ag__cell[aria-selected="true"] {
+  background: var(--surface-2);
+}
+
+/* ── rows ───────────────────────────────────────────────────────────────────── */
+
+.ag__row--data {
+  cursor: default;
+  transition: background-color var(--dur-instant) linear;
+}
+
+.ag__row--data:hover {
+  background: var(--surface-2);
+}
+
+/* Selection is a left marker plus a fill — two channels, so it survives a greyscale capture and
+   does not rely on a fill that hover also uses. */
+.ag__row--data[data-active="yes"] {
+  background: var(--surface-3);
+  box-shadow: inset calc(var(--sp-1) / 2) 0 0 0 var(--accent);
+}
+
+.ag__row--data[data-batched="yes"] {
+  box-shadow: inset calc(var(--sp-1) / 2) 0 0 0 var(--claim-scoped);
+}
+
+.ag__row--data[data-active="yes"][data-batched="yes"] {
+  box-shadow:
+    inset calc(var(--sp-1) / 2) 0 0 0 var(--accent),
+    inset var(--sp-2) 0 0 calc(var(--sp-1) * -1) var(--claim-scoped);
+}
+
+/* Rows that name whatever is selected on another surface — the findings on the selected device,
+   or on either end of the selected cable. The mark is on the TRAILING edge, so it composes with
+   selection and the batch (both leading-edge) instead of overwriting them, and it is drawn as a
+   box rather than a fill so it survives a greyscale capture (D8). */
+.ag__row--data[data-related="yes"] {
+  position: relative;
+}
+
+.ag__row--data[data-related="yes"]::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  inline-size: calc(var(--sp-1) / 2);
+  background: var(--claim-scoped);
+  pointer-events: none;
+}
+
+/* ── group headers ──────────────────────────────────────────────────────────── */
+
+.ag__row--group {
+  grid-template-columns: 1fr;
+  background: var(--surface-1);
+  border-block-end: var(--hairline) solid var(--border);
+  padding-inline: 0;
+}
+
+.ag__groupcell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-block-size: var(--row-hop);
+  inline-size: 100%;
+  padding-inline: var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.ag__groupchevron {
+  inline-size: 0.75rem;
+  block-size: 0.75rem;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.ag__grouplabel {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A group of rows with no observed value for the grouping key is a finding in itself, so it takes
+   the unobserved ink and the dashed edge rather than reading as just another bucket. */
+.ag__grouplabel[data-observed="no"] {
+  color: var(--unobserved);
+  border-block-end: var(--hairline) dashed var(--unobserved-edge);
+}
+
+.ag__groupcount {
+  min-inline-size: 1.5rem;
+  padding-inline: var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-medium);
+  text-align: center;
+}
+
+.ag__groupdetail {
+  margin-inline-start: auto;
+  color: var(--text-faint);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-0);
+  text-transform: none;
+}
+
+/* ── empty ──────────────────────────────────────────────────────────────────── */
+
+.ag__empty {
+  padding: var(--sp-4) var(--sp-3);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+/* ── forced colours ─────────────────────────────────────────────────────────── */
+
+@media (forced-colors: active) {
+  .ag__row--data[data-active="yes"],
+  .ag__row--data[data-batched="yes"] {
+    /* A system-coloured inset shadow is dropped by the forced-colours pass, so the selected row
+       would otherwise be indistinguishable. An outline survives. */
+    outline: var(--hairline) solid Highlight;
+    outline-offset: calc(var(--hairline) * -1);
+  }
+
+  /* A forced-colours pass drops the pseudo-element's background with everything else. The mark has
+     to be made of something the pass keeps, so it becomes a border on the pseudo-element. */
+  .ag__row--data[data-related="yes"]::after {
+    border-inline-end: calc(var(--sp-1) / 2) solid CanvasText;
+  }
+}

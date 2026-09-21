@@ -1,0 +1,719 @@
+/*
+ * PriorityQueue.css — the left rail.
+ *
+ * Every value resolves to a token in src/core/tokens.css: no hex literal, no px font-size, no bare
+ * duration. Chrome is achromatic; the only colour in this panel is the severity glyph, the
+ * unobserved mark and the single --accent on the active row, so a Critical finding is the loudest
+ * thing in the rail.
+ */
+
+.pq {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+  block-size: 100%;
+  background: var(--surface-1);
+  border-inline-end: var(--hairline) solid var(--border);
+}
+
+/* ── corpus switch ──────────────────────────────────────────────────────────── */
+
+.pq-corpus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-2) 0;
+}
+
+.pq-corpus__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--target-min);
+  padding: 0 var(--sp-2);
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.pq-corpus__btn:hover {
+  background: var(--surface-2);
+}
+
+/* Selected state carries a border and an ink change as well as the fill, so it survives a
+   greyscale capture and forced colours. */
+.pq-corpus__btn[aria-checked="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.pq-corpus__count {
+  padding-inline: var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.pq-corpus__btn[aria-checked="true"] .pq-corpus__count {
+  background: var(--bg);
+}
+
+/* One clause plus a disclosure, on one line. What used to sit here was a three-line paragraph —
+   about a fifth of the panel's height spent on documentation before the first result appeared. */
+.pq-corpus__note,
+.pq-account__scope {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 1 0 100%;
+  margin: var(--sp-1) 0 0;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+}
+
+/* The disclosed paragraph itself: full sentences, nothing shortened, just not in the working
+   surface until it is asked for. */
+.pq-note__full {
+  max-inline-size: 34ch;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+/* ── query bar ───────────────────────────────────────────────────────────────
+   The highlight layer and the input share one box and one font, so the painted tokens sit exactly
+   under the real characters. Any divergence in font, size, padding or letter-spacing between the
+   two shows up as drifting colour under the caret, so they are declared together. */
+
+.pq-query {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2);
+  padding-inline: var(--sp-2);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.pq-query:focus-within {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.pq-query__glyph {
+  inline-size: 0.875rem;
+  block-size: 0.875rem;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.pq-query__box {
+  position: relative;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: var(--row-tab);
+}
+
+/* Both layers are block boxes with an explicit line-height equal to the box height, so the glyphs
+   land on the same baseline. A flex box here would centre the input's text by a different rule
+   than the ink layer's, and the painted tokens would sit a pixel off the real characters. */
+.pq-query__ink,
+.pq-query__input {
+  position: absolute;
+  inset: 0;
+  display: block;
+  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  line-height: var(--row-tab);
+  letter-spacing: var(--ls-1);
+  white-space: pre;
+  overflow: hidden;
+  text-indent: 0;
+}
+
+.pq-query__ink {
+  pointer-events: none;
+  color: var(--text);
+  /* A query wider than the field used to end flush against the border, so the reader could not
+     tell a finished filter from a clipped one. The ramp is the signal; `black`/`transparent` here
+     are mask alpha stops, not design colours, so they are deliberately not tokens. */
+  mask-image: linear-gradient(to right, black calc(100% - var(--sp-3)), transparent 100%);
+}
+
+.pq-query__input {
+  background: transparent;
+  /* The real characters are transparent; the ink layer under them is what the reader sees. The
+     caret keeps its own colour so it stays visible. */
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.pq-query__input::placeholder {
+  color: var(--text-faint);
+}
+
+.pq-query__input:focus {
+  outline: none;
+}
+
+.pq-tok[data-kind="key"] {
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+.pq-tok[data-kind="operator"] {
+  color: var(--text-faint);
+}
+
+.pq-tok[data-kind="value"] {
+  color: var(--text);
+}
+
+/* A value the parser found legal but that matches nothing in THIS snapshot. Not an error — the
+   query is well formed — so it is marked, not reddened. */
+.pq-tok[data-unmatchable="yes"] {
+  color: var(--unobserved);
+  text-decoration: underline dashed var(--unobserved-edge);
+  text-underline-offset: 0.2em;
+}
+
+/* An unrecognised key is a different thing: the engine cannot answer it at all, and a filter that
+   silently matches everything would be a lie about the data. */
+.pq-tok[data-kind="error"] {
+  color: var(--sev-critical);
+  text-decoration: underline wavy var(--sev-critical);
+  text-underline-offset: 0.2em;
+}
+
+.pq-ghost {
+  color: var(--text-faint);
+}
+
+.pq-query__note {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline: 0;
+  z-index: var(--z-popover);
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+}
+
+.pq-suggest {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline: 0;
+  z-index: var(--z-popover);
+  max-block-size: 16rem;
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-1);
+  overflow-y: auto;
+  list-style: none;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+}
+
+.pq-suggest__opt {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-block-size: var(--target-min);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.pq-suggest__opt[aria-selected="true"] {
+  background: var(--surface-2);
+}
+
+.pq-suggest__value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+}
+
+.pq-suggest__detail {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pq-suggest__count {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── scope chips ────────────────────────────────────────────────────────────── */
+
+.pq-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  padding-inline: var(--sp-2);
+  padding-block-end: var(--sp-2);
+}
+
+/* ── inline display controls ─────────────────────────────────────────────────
+   Inline and always visible, not behind a settings dialog: grouping and ordering are part of
+   reading the list, not a preference you set once. */
+
+.pq-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+
+.pq-controls .ui-field {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  gap: 0;
+}
+
+.pq-controls .ui-label {
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.pq-controls .pq-select {
+  min-inline-size: 0;
+  inline-size: 100%;
+  font-size: var(--fs-1);
+}
+
+.pq-display {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  inline-size: 20rem;
+  max-inline-size: 80vw;
+}
+
+.pq-display__hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+}
+
+.pq-display__cols {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: var(--sp-2) 0 0;
+  border: 0;
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.pq-display__cols legend {
+  padding: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+}
+
+.pq-display__col {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-block-size: var(--target-min);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.pq-display__domain {
+  margin-inline-start: auto;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── accounting ─────────────────────────────────────────────────────────────── */
+
+.pq-account {
+  padding: 0 var(--sp-2) var(--sp-2);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  color: var(--text-muted);
+}
+
+.pq-account__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.pq-account__shown {
+  color: var(--text);
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.pq-account__ex {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Undetermined takes the unobserved ink everywhere it appears, because it is the same claim:
+   nobody decided this, and it must never read as a decided negative. */
+.pq-account__un {
+  color: var(--unobserved);
+  font-variant-numeric: tabular-nums;
+}
+
+.pq-account__problem {
+  margin-block-start: var(--sp-1);
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--sev-critical);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.pq-account__problem p {
+  margin: 0;
+}
+
+.pq-account__note,
+.pq-account__scope {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-faint);
+}
+
+.pq-clauses {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pq-clause {
+  padding: var(--sp-1) var(--sp-2);
+  border-inline-start: 2px solid var(--border-strong);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.pq-clause[data-problem="yes"] {
+  border-inline-start-color: var(--sev-critical);
+}
+
+.pq-clause__name {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-weight: var(--fw-medium);
+}
+
+.pq-clause__nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-block-start: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pq-clause__nums [data-undetermined="yes"] {
+  color: var(--unobserved);
+}
+
+.pq-clause__without {
+  color: var(--text-faint);
+}
+
+.pq-clause__note {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-faint);
+  line-height: var(--lh-2);
+}
+
+/* ── rows ───────────────────────────────────────────────────────────────────── */
+
+.pq .ag {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+/* The two densities, stated as the measured numbers they are.
+   compact  — the brief's single-line row: 32px, the floor that fits a 24px target with 4px padding.
+   comfortable — two lines at 46px: 19.5px of title, 16px of metadata, 8px of padding, 2px between.
+   The default is comfortable because at a 300px rail the single-line row leaves roughly 36px for
+   the title, and a 36px title is not information. */
+.pq .ag[data-density="compact"] .ag__row--data {
+  min-block-size: var(--row-grid);
+}
+
+/* Measured: 4px + 19.5px title + 4px + 14.85px metadata + 4px = 46.35px, inside the 32-56px
+   band the brief sets for a multi-device row. `align-items` stays centre (inherited) so the
+   severity glyph sits on the title's optical line instead of hanging above it. */
+.pq .ag[data-density="comfortable"] .ag__row--data {
+  min-block-size: var(--row-grid);
+  max-block-size: var(--row-grid-max);
+  padding-block: var(--sp-1);
+  row-gap: var(--sp-1);
+}
+
+/* ONE header line. The row below it is two lines, and a header that is also two lines puts its
+   second line immediately above the first row's FIRST line — a label sitting over cells it does
+   not name. So the header is a single row over the line-1 tracks, and it is not allowed to grow. */
+.pq .ag[data-density="comfortable"] .ag__row--head {
+  min-block-size: var(--row-colhead);
+  max-block-size: var(--row-colhead);
+  padding-block: 0;
+  row-gap: 0;
+  grid-template-rows: var(--row-colhead);
+}
+
+/* The demoted metadata headers keep their accessible NAME and paint nothing: their values are
+   inline chips in the row, and the Order control names every sortable field in words — it is the
+   sort control for these columns, for every reader.
+
+   Selected by `data-headhidden`, which DataGrid writes from the one `headerHidden` flag the
+   layout above sets. It used to be `:not([data-col=sev]):not([data-col=id]):not(...)` — a list of
+   the columns that are NOT demoted, maintained by hand in a second file, which is how the clipped
+   cells came to still carry a 1px sort button the stylesheet knew was invisible and the component
+   did not. */
+.pq .ag__cell--head[data-headhidden="yes"] {
+  /* `fixed`, not `absolute` — see .visually-hidden in src/ui/primitives.css. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  min-inline-size: 0;
+  min-block-size: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+/* An addressable reference, not noise. At --text-muted beside a 13px title the id read as a smear
+   the eye skips, which is the opposite of what an identifier is for: it is the thing you quote in
+   a ticket. Raised to full ink at regular weight (the title carries the weight), right-aligned in
+   its own track so the digits form a column, and separated from the title by a hairline so the
+   gutter is legible as a gutter. */
+.pq-id {
+  display: block;
+  padding-inline-end: var(--sp-1);
+  border-inline-end: var(--hairline) solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-0);
+  text-align: end;
+}
+
+/* The id track at 1.75rem clipped "F001" against its own rule. */
+.pq {
+  --ag-w-id: 2.75rem;
+}
+
+/* A right-aligned column wants a right-aligned header, or the header names a column whose values
+   start somewhere else. */
+.pq .ag__cell--head[data-col="id"] .ag__sortbtn {
+  justify-content: flex-end;
+}
+
+/* One line, ellipsis, and the full string stays in the DOM so the accessible name is never the
+   truncated one. Truncation is a viewport fact, not a data fact. */
+.pq-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  inline-size: 100%;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  letter-spacing: var(--ls-2);
+  white-space: nowrap;
+}
+
+/* The differentiator, first. It takes only the width it needs and never shrinks, because shrinking
+   the one field that distinguishes six adjacent rows defeats the point of putting it here. */
+.pq-title__host {
+  flex: none;
+  max-inline-size: 11ch;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  text-overflow: ellipsis;
+}
+
+.pq-title__host--absent {
+  max-inline-size: none;
+}
+
+.pq-title__more {
+  margin-inline-start: 2px;
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+}
+
+.pq-title__text {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pq .ag__row--data[data-active="yes"] .pq-title {
+  font-weight: var(--fw-medium);
+}
+
+/* Line-2 metadata is no longer under a column header (the header is one row and labels line 1),
+   so each value has to say what it is by its own shape. A chip does that; bare muted text in an
+   unlabelled position does not. */
+.pq-meta {
+  display: inline-block;
+  max-inline-size: 100%;
+  padding-inline: var(--sp-1);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.pq-num {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.pq-hosts {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  overflow: hidden;
+}
+
+.pq-host {
+  padding-inline: var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+}
+
+.pq-host--more {
+  background: none;
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+}
+
+/* ── narrow rails: the grid scrolls inside its own region, the page never does ── */
+
+@media (max-width: 48rem) {
+  .pq .ag__grid {
+    overflow-x: auto;
+  }
+}
+
+/* ── the empty result ────────────────────────────────────────────────────────
+   Beside the counts, not inside the grid: with empty groups on, the grid still holds the zero
+   buckets, and those buckets are the denominator rather than the explanation. */
+
+.pq-empty {
+  margin: 0 var(--sp-2) var(--sp-2);
+  padding: var(--sp-3);
+  border: var(--hairline) dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.pq-corpus__group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+/* ── column rhythm, set from measurement rather than from taste ──────────────
+   Measured in a real browser at the 300px reference rail: with the default 8px column gap and a
+   40px identifier track the title cell came out at 161px, roughly 27ch — below the 32ch floor the
+   brief sets for a finding title. A 4px gap and a 28px identifier track (an `F001` renders 26px
+   at --fs-0 in the mono face) return 20px to the title, which is the only track that can use it.
+   The identifier keeps a 24px target because the whole CELL is the target, not the glyph. */
+.pq .ag__row {
+  column-gap: var(--sp-1);
+}
+
+.pq .ag[data-density="comfortable"] .ag__row--head {
+  /* The header labels line 2 as well as line 1, so it is two lines tall. Tightening its own
+     padding is what keeps a two-line header from costing a row and a half of the list. */
+  padding-block: 0 var(--sp-1);
+  row-gap: 0;
+}
+
+/* ── batch bar ───────────────────────────────────────────────────────────────
+   Only present when a batch exists. An always-present bar holding "0 selected" is chrome that
+   costs a row of the list on every screen where nobody is batching. */
+
+.pq-batch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-block-start: var(--hairline) solid var(--border);
+  background: var(--surface-2);
+}
+
+.pq-batch__count {
+  color: var(--text);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-0);
+}

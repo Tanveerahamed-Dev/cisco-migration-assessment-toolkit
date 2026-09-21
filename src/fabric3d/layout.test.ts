@@ -1,0 +1,916 @@
+/**
+ * layout.test.ts — the 3-D layout engine verified against the REAL compiled fabric.
+ *
+ * Every assertion runs over `src/data/fabric.json` as compiled from the engine snapshot. No
+ * hand-built fixture: a fixture shaped the way the layout expects would simply agree with a layout
+ * bug. Where an assertion depends on a fact of THIS fabric (core1/core2 being the hub tier, no
+ * cable needing a detour at the shipped tier pitch) the test states that fact explicitly, so a
+ * data refresh fails loudly instead of silently weakening the test.
+ *
+ * The geometric claims — crossings, clearance, frustum containment — are re-derived here with the
+ * test's own arithmetic rather than by calling the engine's helpers. A verifier that reuses the
+ * proposer's maths proves only that the maths is self-consistent.
+ *
+ * Three route-hint branches exist and all three are exercised below against real device records:
+ * two by adding one link between REAL hosts (a link record cloned from a real one, so its shape
+ * comes from the real producer), and one by flattening the tier pitch until real cables genuinely
+ * graze real chassis. None of them fires on the shipped fabric at the shipped pitch — which is a
+ * claim, not an assumption, and the "absent hint" test below proves it.
+ */
+import { describe, expect, it } from "vitest";
+import { fabric } from "../core/data";
+import type { Link } from "../core/types";
+import {
+  CHASSIS_EXTENT,
+  INTRA_TIER_BOW,
+  JITTER_AMPLITUDE,
+  MIN_NODE_SEPARATION,
+  ROUTE_CLEARANCE,
+  ROUTE_T_MARGIN,
+  computeLayout,
+  focusFraming,
+  type FabricLayout,
+  type LayoutNode,
+  type RouteHint,
+  type Vec3,
+} from "./layout";
+
+const OPTS = { devices: fabric.devices, links: fabric.links, tiers: fabric.tiers } as const;
+const layout = computeLayout(OPTS);
+
+/** A link record cloned from a real one, re-pointed at two real hosts. Shape from the producer. */
+const linkTemplate = fabric.links.find((l) => l.id === "L18")!;
+const relinked = (id: string, a: string, b: string): Link => ({ ...linkTemplate, id, a, b });
+
+/* ── test-local geometry, deliberately independent of layout.ts ────────────── */
+
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a: Vec3, b: Vec3): Vec3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
+const norm = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+const at = (n: LayoutNode): Vec3 => [n.x, n.y, n.z];
+const distance = (a: Vec3, b: Vec3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+/** Distance from `p` to segment ab, plus the clamped parameter along the segment. */
+function pointSegment(p: Vec3, a: Vec3, b: Vec3): { d: number; t: number } {
+  const ab = sub(b, a);
+  const len2 = dot(ab, ab);
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, dot(sub(p, a), ab) / len2));
+  const c: Vec3 = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+  return { d: distance(p, c), t };
+}
+
+/** A point on the quadratic Bezier the RouteHint's `mid` is the control point of. */
+function bezier(a: Vec3, c: Vec3, b: Vec3, t: number): Vec3 {
+  const u = 1 - t;
+  return [
+    u * u * a[0] + 2 * u * t * c[0] + t * t * b[0],
+    u * u * a[1] + 2 * u * t * c[1] + t * t * b[1],
+    u * u * a[2] + 2 * u * t * c[2] + t * t * b[2],
+  ];
+}
+
+/**
+ * Clearance of the SUGGESTED curve, by dense point sampling — deliberately a different method from
+ * the engine's polyline measure, so agreement between them is evidence rather than tautology.
+ * 400 samples over a curve a few hundred units long puts the sampling gap far below the 12-unit
+ * threshold being tested, and point sampling can only OVERSTATE clearance, so a violation it finds
+ * is real.
+ */
+function curveClearance(
+  l: FabricLayout,
+  h: RouteHint,
+  a: LayoutNode,
+  b: LayoutNode,
+): { min: number; worst: string } {
+  let min = Infinity;
+  let worst = "";
+  for (let i = 0; i <= 400; i += 1) {
+    const t = i / 400;
+    if (t <= ROUTE_T_MARGIN || t >= 1 - ROUTE_T_MARGIN) continue;
+    const p = bezier(at(a), h.mid, at(b), t);
+    for (const n of l.nodes) {
+      if (n.id === a.id || n.id === b.id) continue;
+      const d = distance(p, at(n));
+      if (d < min) {
+        min = d;
+        worst = n.id;
+      }
+    }
+  }
+  return { min, worst };
+}
+
+/**
+ * Every hint in a layout, checked against the test's own curve maths. The engine may report a hint
+ * as unresolved — that is honest and allowed — but it may never report "cleared" for a curve that
+ * this independent measurement finds still inside ROUTE_CLEARANCE.
+ */
+function auditHints(l: FabricLayout, links: readonly Link[], label: string): string[] {
+  const byLink = new Map(links.map((k) => [k.id, k]));
+  const lies: string[] = [];
+  for (const h of l.routeHints) {
+    const link = byLink.get(h.linkId)!;
+    const a = l.byId.get(link.a)!;
+    const b = l.byId.get(link.b)!;
+    const { min, worst } = curveClearance(l, h, a, b);
+    if (typeof h.routedClearance !== "number" || !Number.isFinite(h.routedClearance)) {
+      lies.push(`${label}/${h.linkId}: emitted a hint with no measured curve clearance`);
+      continue;
+    }
+    if (h.resolution !== "cleared" && h.resolution !== "unresolved") {
+      lies.push(`${label}/${h.linkId}: emitted a hint with no resolution (${String(h.resolution)})`);
+      continue;
+    }
+    if (Math.abs(h.routedClearance - min) > 1.5) {
+      lies.push(
+        `${label}/${h.linkId}: engine says curve clears ${h.routedClearance.toFixed(2)}, ` +
+          `independent measure ${min.toFixed(2)} (${worst})`,
+      );
+    }
+    if (h.resolution === "cleared" && min < ROUTE_CLEARANCE) {
+      lies.push(
+        `${label}/${h.linkId}: claims "cleared" but the suggested curve passes ${min.toFixed(2)} ` +
+          `from ${worst} (limit ${ROUTE_CLEARANCE})`,
+      );
+    }
+    if (h.resolution === "cleared" && h.routedBlockedBy.length > 0) {
+      lies.push(`${label}/${h.linkId}: claims "cleared" while naming residual blockers`);
+    }
+    if (h.resolution === "unresolved" && h.routedBlockedBy.length === 0) {
+      lies.push(`${label}/${h.linkId}: claims "unresolved" but names nothing still in the way`);
+    }
+    // `apexOffset` must describe the curve that was actually published, not the control point that
+    // produced it. This is the arithmetic the whole defect turned on: a constant applied to the
+    // control point delivers half of what it names, and only measuring the drawn apex catches it.
+    const chordMid: Vec3 = [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
+    const drawnApex = distance(bezier(at(a), h.mid, at(b), 0.5), chordMid);
+    if (Math.abs(drawnApex - h.apexOffset) > 1e-6) {
+      lies.push(
+        `${label}/${h.linkId}: reports apexOffset ${h.apexOffset.toFixed(2)} but the published ` +
+          `curve rises only ${drawnApex.toFixed(2)} off the chord`,
+      );
+    }
+  }
+  return lies;
+}
+
+/**
+ * Crossings between adjacent layers, counted on the ordering the engine published: two edges
+ * cross iff their endpoint ranks are inverted. This is the Sugiyama measure the sweeps claim to
+ * reduce, computed here so the engine's own diagnostic can be checked against it.
+ */
+function countCrossings(l: FabricLayout, links: readonly Link[]): number {
+  const edges: { layer: number; u: number; v: number }[] = [];
+  for (const link of links) {
+    const a = l.byId.get(link.a);
+    const b = l.byId.get(link.b);
+    if (!a || !b || Math.abs(a.layer - b.layer) !== 1) continue;
+    const upper = a.layer < b.layer ? a : b;
+    const lower = a.layer < b.layer ? b : a;
+    edges.push({ layer: upper.layer, u: upper.rank, v: lower.rank });
+  }
+  let crossings = 0;
+  for (let i = 0; i < edges.length; i += 1) {
+    for (let j = i + 1; j < edges.length; j += 1) {
+      const e = edges[i]!;
+      const f = edges[j]!;
+      if (e.layer !== f.layer) continue;
+      if ((e.u - f.u) * (e.v - f.v) < 0) crossings += 1;
+    }
+  }
+  return crossings;
+}
+
+/* ── placement completeness ────────────────────────────────────────────────── */
+
+describe("computeLayout — placement", () => {
+  it("places every device in the fabric, dropping none", () => {
+    expect(layout.nodes).toHaveLength(fabric.devices.length);
+    expect(layout.byId.size).toBe(fabric.devices.length);
+    const placed = new Set(layout.nodes.map((n) => n.id));
+    const missing = fabric.devices.filter((d) => !placed.has(d.id)).map((d) => d.id);
+    expect(missing).toEqual([]);
+  });
+
+  it("carries each device's citation onto its node", () => {
+    for (const d of fabric.devices) {
+      const n = layout.byId.get(d.id)!;
+      expect(n.cite).toBe(d.cite);
+      expect(n.cite.length).toBeGreaterThan(0);
+      expect(n.collected).toBe(d.collected);
+    }
+  });
+
+  it("gives every coordinate a finite value", () => {
+    const bad = layout.nodes.filter(
+      (n) => !Number.isFinite(n.x) || !Number.isFinite(n.y) || !Number.isFinite(n.z),
+    );
+    expect(bad).toEqual([]);
+  });
+
+  it("keeps every pair of nodes at least MIN_NODE_SEPARATION apart", () => {
+    let min = Infinity;
+    let worst = "";
+    for (let i = 0; i < layout.nodes.length; i += 1) {
+      for (let j = i + 1; j < layout.nodes.length; j += 1) {
+        const a = layout.nodes[i]!;
+        const b = layout.nodes[j]!;
+        const d = distance(at(a), at(b));
+        if (d < min) {
+          min = d;
+          worst = `${a.id}↔${b.id}`;
+        }
+      }
+    }
+    expect(min, `closest pair ${worst} at ${min.toFixed(3)}`).toBeGreaterThanOrEqual(
+      MIN_NODE_SEPARATION - 1e-9,
+    );
+    // The constant must stay a real floor, not a number so slack it can never bite.
+    expect(min).toBeLessThan(MIN_NODE_SEPARATION * 2);
+  });
+
+  it("never lets two chassis volumes intersect", () => {
+    const overlaps: string[] = [];
+    for (let i = 0; i < layout.nodes.length; i += 1) {
+      for (let j = i + 1; j < layout.nodes.length; j += 1) {
+        const a = layout.nodes[i]!;
+        const b = layout.nodes[j]!;
+        if (
+          Math.abs(a.x - b.x) < CHASSIS_EXTENT.width &&
+          Math.abs(a.y - b.y) < CHASSIS_EXTENT.height &&
+          Math.abs(a.z - b.z) < CHASSIS_EXTENT.depth
+        ) {
+          overlaps.push(`${a.id}↔${b.id}`);
+        }
+      }
+    }
+    expect(overlaps).toEqual([]);
+  });
+});
+
+/* ── tier structure ────────────────────────────────────────────────────────── */
+
+describe("computeLayout — tier structure", () => {
+  it("puts every node of a tier on exactly one Y plane", () => {
+    const yByTier = new Map<number, number>();
+    const offenders: string[] = [];
+    for (const n of layout.nodes) {
+      const seen = yByTier.get(n.tier);
+      if (seen === undefined) yByTier.set(n.tier, n.y);
+      else if (seen !== n.y) offenders.push(`${n.id} y=${n.y} ≠ ${seen}`);
+    }
+    expect(offenders).toEqual([]);
+    expect(yByTier.size).toBe(fabric.tiers.length);
+  });
+
+  it("puts the hub tier at the top — core1/core2 are the highest plane", () => {
+    const maxY = Math.max(...layout.nodes.map((n) => n.y));
+    const top = layout.nodes.filter((n) => n.y === maxY).map((n) => n.id).sort();
+    expect(top).toEqual(["core1", "core2"]);
+    const y = (id: string): number => layout.byId.get(id)!.y;
+    expect(y("access1")).toBeLessThan(y("core1"));
+    expect(y("dist1")).toBeLessThan(y("core1"));
+    expect(y("AP-floor1")).toBeLessThan(y("access1"));
+    expect(y("podacc1")).toBeLessThan(y("dist1"));
+  });
+
+  it("derives the hub tier from the engine's own centrality, not from a hostname", () => {
+    const { rootTier } = layout.diagnostics;
+    expect(rootTier.tier).toBe(2);
+    expect(rootTier.basis).toBe("link-betweenness");
+    // L27 core1↔core2 carries betweenness 99.5, the highest in the snapshot.
+    expect(rootTier.maxBetweenness).toBe(99.5);
+    const observed = fabric.links.filter((l) => l.betweenness !== null);
+    expect(rootTier.maxBetweenness).toBe(Math.max(...observed.map((l) => l.betweenness!)));
+  });
+
+  it("reports tier bounds that actually contain their nodes", () => {
+    expect(layout.tierBounds).toHaveLength(fabric.tiers.length);
+    for (const b of layout.tierBounds) {
+      const members = layout.nodes.filter((n) => n.tier === b.tier);
+      expect(members.length).toBe(b.count);
+      expect(members.map((n) => n.id).sort()).toEqual([...b.nodeIds].sort());
+      for (const n of members) {
+        expect(n.y).toBe(b.y);
+        expect(n.x).toBeGreaterThanOrEqual(b.minX - 1e-9);
+        expect(n.x).toBeLessThanOrEqual(b.maxX + 1e-9);
+        expect(n.z).toBeGreaterThanOrEqual(b.minZ - 1e-9);
+        expect(n.z).toBeLessThanOrEqual(b.maxZ + 1e-9);
+      }
+    }
+  });
+
+  it("spreads a wide tier over X and Z instead of a single flat line", () => {
+    const access = layout.nodes.filter((n) => n.tier === 1);
+    expect(access).toHaveLength(17);
+    expect(new Set(access.map((n) => Math.round(n.z))).size).toBeGreaterThan(1);
+    const spanX = Math.max(...access.map((n) => n.x)) - Math.min(...access.map((n) => n.x));
+    const spanZ = Math.max(...access.map((n) => n.z)) - Math.min(...access.map((n) => n.z));
+    expect(spanZ).toBeGreaterThan(CHASSIS_EXTENT.depth);
+    // Wider than deep, so an oblique camera does not hide the back of the tier behind the front.
+    expect(spanX).toBeGreaterThan(spanZ);
+    expect(spanX / spanZ).toBeLessThan(6);
+  });
+
+  it("clusters topology-only nodes under the devices that reported them", () => {
+    const access = layout.nodes.filter((n) => n.tier === 1);
+    const ap = layout.byId.get("AP-floor1")!;
+    expect(ap.collected).toBe(false);
+    expect(ap.degree).toBe(17);
+    expect(ap.x).toBeGreaterThanOrEqual(Math.min(...access.map((n) => n.x)));
+    expect(ap.x).toBeLessThanOrEqual(Math.max(...access.map((n) => n.x)));
+
+    // podacc1/2 hang off dist1/dist2 only, so their block must sit beneath that pod, not beside it.
+    const mean = (ids: string[]): number =>
+      ids.reduce((s, id) => s + layout.byId.get(id)!.x, 0) / ids.length;
+    expect(Math.abs(mean(["podacc1", "podacc2"]) - mean(["dist1", "dist2"]))).toBeLessThan(
+      CHASSIS_EXTENT.width,
+    );
+  });
+
+  it("keeps each tier contiguous in rank and monotonic in X", () => {
+    const byLayer = new Map<number, LayoutNode[]>();
+    for (const n of layout.nodes) byLayer.set(n.layer, [...(byLayer.get(n.layer) ?? []), n]);
+    for (const [, members] of byLayer) {
+      const ordered = [...members].sort((a, b) => a.rank - b.rank);
+      expect(ordered.map((n) => n.rank)).toEqual(ordered.map((_, i) => i));
+      // A tier occupies one unbroken run of ranks: a WAN router must not be interleaved into a
+      // row of access switches, however few crossings that would shave.
+      const runs: number[] = [];
+      for (const n of ordered) if (runs[runs.length - 1] !== n.tier) runs.push(n.tier);
+      expect(runs).toEqual([...new Set(runs)]);
+      // X is non-decreasing in rank (within jitter), which is what makes the crossing count above
+      // describe what the viewer actually sees from the default camera.
+      for (let i = 1; i < ordered.length; i += 1) {
+        expect(ordered[i]!.x).toBeGreaterThanOrEqual(ordered[i - 1]!.x - 2 * JITTER_AMPLITUDE);
+      }
+    }
+  });
+});
+
+/* ── determinism ───────────────────────────────────────────────────────────── */
+
+describe("computeLayout — determinism", () => {
+  it("returns a deeply equal result for the same input", () => {
+    expect(computeLayout(OPTS)).toEqual(computeLayout(OPTS));
+  });
+
+  it("is independent of the order devices and links arrive in", () => {
+    const reversed = computeLayout({
+      devices: [...fabric.devices].reverse(),
+      links: [...fabric.links].reverse(),
+      tiers: fabric.tiers,
+    });
+    for (const n of layout.nodes) {
+      const other = reversed.byId.get(n.id)!;
+      expect([other.x, other.y, other.z, other.rank]).toEqual([n.x, n.y, n.z, n.rank]);
+    }
+  });
+
+  it("derives jitter from the seed alone, and never from the structure", () => {
+    const a = computeLayout({ ...OPTS, seed: 7 });
+    const b = computeLayout({ ...OPTS, seed: 7 });
+    expect(a.nodes.map((n) => n.x)).toEqual(b.nodes.map((n) => n.x));
+    const c = computeLayout({ ...OPTS, seed: 8 });
+    expect(c.nodes.map((n) => n.rank)).toEqual(a.nodes.map((n) => n.rank));
+    expect(c.nodes.map((n) => n.x)).not.toEqual(a.nodes.map((n) => n.x));
+  });
+});
+
+/* ── crossing reduction ────────────────────────────────────────────────────── */
+
+describe("computeLayout — crossing reduction", () => {
+  it("produces measurably fewer crossings than the naive snapshot ordering", () => {
+    const naive = computeLayout({ ...OPTS, sweeps: 0 });
+    const naiveCrossings = countCrossings(naive, fabric.links);
+    const sweptCrossings = countCrossings(layout, fabric.links);
+    expect(naiveCrossings).toBeGreaterThan(0);
+    expect(
+      sweptCrossings,
+      `barycentre sweeps: ${naiveCrossings} → ${sweptCrossings} crossings`,
+    ).toBeLessThan(naiveCrossings);
+    // Not a rounding win: the sweeps must remove most of them, or the ordering step is decoration.
+    expect(sweptCrossings).toBeLessThanOrEqual(naiveCrossings / 2);
+    // The engine's own counters must agree with this independent count, or its diagnostics lie.
+    expect(layout.diagnostics.crossingsFinal).toBe(sweptCrossings);
+    expect(naive.diagnostics.crossingsInitial).toBe(naiveCrossings);
+    expect(naive.diagnostics.crossingsFinal).toBe(naiveCrossings);
+  });
+
+  it("never returns an ordering worse than the one it started from", () => {
+    expect(layout.diagnostics.crossingsFinal).toBeLessThanOrEqual(
+      layout.diagnostics.crossingsInitial,
+    );
+    expect(layout.diagnostics.sweeps).toBeGreaterThan(0);
+  });
+});
+
+/* ── camera framing ────────────────────────────────────────────────────────── */
+
+describe("computeLayout — camera framing", () => {
+  it("returns a bounding sphere that contains every node", () => {
+    const { center, radius } = layout.framing.boundingSphere;
+    expect(radius).toBeGreaterThan(0);
+    const outside = layout.nodes
+      .filter((n) => distance(at(n), center) > radius + 1e-9)
+      .map((n) => n.id);
+    expect(outside).toEqual([]);
+  });
+
+  it("frames the whole fabric inside the declared frustum", () => {
+    const { position, target, fovDeg, aspect, near, far } = layout.framing;
+    const forward = norm(sub(target, position));
+    const right = norm(cross(forward, [0, 1, 0]));
+    const up = cross(right, forward);
+    const tanV = Math.tan((fovDeg * Math.PI) / 360);
+    const tanH = tanV * aspect;
+    for (const n of layout.nodes) {
+      const d = sub(at(n), position);
+      const depth = dot(d, forward);
+      expect(depth).toBeGreaterThan(near);
+      expect(depth).toBeLessThan(far);
+      expect(Math.abs(dot(d, up))).toBeLessThanOrEqual(depth * tanV);
+      expect(Math.abs(dot(d, right))).toBeLessThanOrEqual(depth * tanH);
+    }
+  });
+
+  it("frames a device and its neighbours on focus, and refuses an unknown host", () => {
+    const f = focusFraming(layout, "dist1");
+    expect(f).not.toBeNull();
+    const neighbourhood = ["dist1", ...(layout.adjacency.get("dist1") ?? [])];
+    expect(neighbourhood.length).toBeGreaterThan(1);
+    const outside = neighbourhood.filter(
+      (id) => distance(at(layout.byId.get(id)!), f!.boundingSphere.center) > f!.boundingSphere.radius + 1e-9,
+    );
+    expect(outside).toEqual([]);
+    // Drilling in must actually narrow the view, and a wider hop radius must widen it again.
+    expect(f!.boundingSphere.radius).toBeLessThan(layout.framing.boundingSphere.radius);
+    expect(focusFraming(layout, "dist1", 0)!.boundingSphere.radius).toBeLessThan(
+      f!.boundingSphere.radius,
+    );
+    // Absence is not a default view: an unknown host yields null, never the overview framing.
+    expect(focusFraming(layout, "no-such-host")).toBeNull();
+  });
+});
+
+/* ── cable routing hints ───────────────────────────────────────────────────── */
+
+describe("computeLayout — route hints", () => {
+  it("only hints links that exist, with finite midpoints", () => {
+    // The shipped fabric produces NO hints, so running this over `layout` would assert nothing at
+    // all — a green test proving only that a loop body never executed. It runs instead over the
+    // flattest pitch that makes real cables graze real chassis, and the count is asserted first so
+    // a data or constant change that empties the list fails here instead of passing vacuously.
+    const flat = computeLayout({ ...OPTS, tierYPitch: 26 });
+    expect(flat.routeHints.length).toBeGreaterThan(0);
+    const ids = new Set(fabric.links.map((l) => l.id));
+    for (const h of flat.routeHints) {
+      expect(ids.has(h.linkId)).toBe(true);
+      expect(h.mid.every((v) => Number.isFinite(v))).toBe(true);
+      expect(h.reason.length).toBeGreaterThan(0);
+      expect(h.blockedBy.length).toBeGreaterThan(0);
+    }
+    expect(flat.linkMidpoints.size).toBe(flat.routeHints.length);
+    for (const h of flat.routeHints) expect(flat.linkMidpoints.get(h.linkId)).toEqual(h.mid);
+    // And the shipped fabric's empty list is still a checked fact, not an untested assumption.
+    expect(layout.linkMidpoints.size).toBe(layout.routeHints.length);
+  });
+
+  it("proves the claim behind an ABSENT hint: the straight route really is clear", () => {
+    const hinted = new Set(layout.routeHints.map((h) => h.linkId));
+    const violations: string[] = [];
+    for (const link of fabric.links) {
+      if (hinted.has(link.id)) continue;
+      const a = layout.byId.get(link.a);
+      const b = layout.byId.get(link.b);
+      if (!a || !b) continue;
+      for (const n of layout.nodes) {
+        if (n.id === a.id || n.id === b.id) continue;
+        const { d, t } = pointSegment(at(n), at(a), at(b));
+        if (t <= ROUTE_T_MARGIN || t >= 1 - ROUTE_T_MARGIN) continue;
+        if (d < ROUTE_CLEARANCE) violations.push(`${link.id} grazes ${n.id} at ${d.toFixed(1)}`);
+      }
+    }
+    expect(violations).toEqual([]);
+    // On the shipped fabric at the shipped pitch every cable is clear — stated, not assumed.
+    expect(layout.routeHints).toEqual([]);
+  });
+
+  it("holds the layering invariant that makes an inter-tier detour unnecessary", () => {
+    // Layers are BFS depths over the tier graph and every link is an edge of it, so no link can
+    // span non-adjacent layers. Published as data so the invariant is checked, not asserted.
+    expect(layout.diagnostics.linksSpanningNonAdjacentLayers).toEqual([]);
+    const spans = fabric.links.filter((l) => {
+      const a = layout.byId.get(l.a);
+      const b = layout.byId.get(l.b);
+      return a && b && Math.abs(a.layer - b.layer) >= 2;
+    });
+    expect(spans.map((l) => l.id)).toEqual([]);
+  });
+
+  it("bows a cable that runs inside one tier past other chassis", () => {
+    // access1↔access9 are both real tier-1 switches; the link record is cloned from a real one.
+    const l = computeLayout({ ...OPTS, links: [...fabric.links, relinked("INTRA", "access1", "access9")] });
+    const hint = l.routeHints.find((h) => h.linkId === "INTRA");
+    expect(hint?.kind).toBe("intra-tier");
+    expect(hint!.blockedBy.length).toBeGreaterThan(0);
+    expect(hint!.clearance).toBeLessThan(ROUTE_CLEARANCE);
+    const plane = l.byId.get("access1")!.y;
+    expect(l.byId.get("access9")!.y).toBe(plane);
+    expect(hint!.mid[1]).toBeGreaterThan(plane);
+  });
+
+  it("routes a cable between two blocks on one plane behind the fabric", () => {
+    // access1 (tier 1) and dist1 (tier 3) are hop-equal, so they share a Y plane: the contract's
+    // "non-adjacent tiers" case, reachable exactly here.
+    const l = computeLayout({ ...OPTS, links: [...fabric.links, relinked("CROSS", "access1", "dist1")] });
+    const hint = l.routeHints.find((h) => h.linkId === "CROSS");
+    expect(hint?.kind).toBe("cross-tier-plane");
+    expect(l.byId.get("access1")!.y).toBe(l.byId.get("dist1")!.y);
+    expect(l.byId.get("access1")!.tier).not.toBe(l.byId.get("dist1")!.tier);
+    // Behind the fabric, never across its face.
+    expect(hint!.mid[2]).toBeLessThan(l.bounds.min[2]);
+  });
+
+  it("detours a real cable that a flatter tier pitch would push into a chassis", () => {
+    // Same fabric, same links: at a 36-unit pitch core1↔dist1 passes within ROUTE_CLEARANCE of a
+    // real chassis, and the engine says so instead of drawing the cable through it.
+    const flat = computeLayout({ ...OPTS, tierYPitch: 36 });
+    const hint = flat.routeHints.find((h) => h.linkId === "L26");
+    expect(hint?.kind).toBe("adjacent-obstructed");
+    expect(hint!.clearance).toBeLessThan(ROUTE_CLEARANCE);
+    const a = flat.byId.get("core1")!;
+    const b = flat.byId.get("dist1")!;
+    expect(Math.abs(a.layer - b.layer)).toBe(1);
+    // The detour has to move the cable off the straight line it was failing on.
+    const straightMid: Vec3 = [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
+    expect(Math.abs(hint!.mid[2] - straightMid[2])).toBeGreaterThan(ROUTE_CLEARANCE);
+  });
+
+  it("never lets a flattened pitch break the separation guarantee it promised", () => {
+    const flat = computeLayout({ ...OPTS, tierYPitch: 1 });
+    let min = Infinity;
+    for (let i = 0; i < flat.nodes.length; i += 1) {
+      for (let j = i + 1; j < flat.nodes.length; j += 1) {
+        min = Math.min(min, distance(at(flat.nodes[i]!), at(flat.nodes[j]!)));
+      }
+    }
+    expect(min).toBeGreaterThanOrEqual(MIN_NODE_SEPARATION - 1e-9);
+  });
+});
+
+/* ── refuter regressions ───────────────────────────────────────────────────────
+   Each test below reproduces a confirmed defect found by an adversarial read of this module. They
+   are grouped so the shape of each failure stays legible: a claim the code did not compute, a
+   positional artifact published as evidence, an unvalidated input, and missing evidence rendered
+   as a structural fact. */
+
+describe("computeLayout — the suggested detour is measured, not assumed", () => {
+  /** Every configuration in this repo known to produce a hint, with the link table each needs. */
+  const hintingCases = (): { label: string; layout: FabricLayout; links: readonly Link[] }[] => {
+    const cases: { label: string; layout: FabricLayout; links: readonly Link[] }[] = [];
+    // MIN_NODE_SEPARATION is the flattest fabric the engine will build, and the one where a detour
+    // has least room to work — the configuration most likely to expose a false claim of clearance.
+    for (const pitch of [MIN_NODE_SEPARATION, 26, 28, 32, 36]) {
+      cases.push({
+        label: `pitch${pitch}`,
+        layout: computeLayout({ ...OPTS, tierYPitch: pitch }),
+        links: fabric.links,
+      });
+    }
+    for (const [id, a, b, pitch] of [
+      ["CROSS", "access1", "dist1", undefined],
+      ["INTRA", "access1", "access9", undefined],
+      // Reaches the branch where no detour in the ladder clears; see the "could not clear" test.
+      ["TIGHT", "access11", "dist1", MIN_NODE_SEPARATION],
+    ] as const) {
+      const links = [...fabric.links, relinked(id, a, b)];
+      cases.push({
+        label: id,
+        layout: computeLayout({ ...OPTS, links, ...(pitch === undefined ? {} : { tierYPitch: pitch }) }),
+        links,
+      });
+    }
+    return cases;
+  };
+
+  it("never claims a detour clears a chassis it still passes through", () => {
+    const cases = hintingCases();
+    const hinted = cases.reduce((s, c) => s + c.layout.routeHints.length, 0);
+    // Guard against the vacuous-green shape: this suite must actually exercise hint branches.
+    expect(hinted, "no configuration produced a hint — the audit below proves nothing").toBeGreaterThan(8);
+    const lies = cases.flatMap((c) => auditHints(c.layout, c.links, c.label));
+    expect(lies).toEqual([]);
+  });
+
+  it("clears the case the CROSS detour was written for, and says by how much", () => {
+    // Regression: the control point was pushed SPAN_CLEARANCE behind the fabric, but a quadratic's
+    // apex reaches only half its control offset, so the drawn curve still passed 10.54 from
+    // access17 — inside the very ROUTE_CLEARANCE that declared the straight route obstructed.
+    const links = [...fabric.links, relinked("CROSS", "access1", "dist1")];
+    const l = computeLayout({ ...OPTS, links });
+    const h = l.routeHints.find((x) => x.linkId === "CROSS")!;
+    expect(h.kind).toBe("cross-tier-plane");
+    expect(h.clearance!).toBeLessThan(ROUTE_CLEARANCE); // the straight route really was blocked
+    const measured = curveClearance(l, h, l.byId.get("access1")!, l.byId.get("dist1")!);
+    expect(
+      measured.min,
+      `suggested curve passes ${measured.min.toFixed(2)} from ${measured.worst}`,
+    ).toBeGreaterThanOrEqual(ROUTE_CLEARANCE);
+    expect(h.resolution).toBe("cleared");
+    expect(h.routedBlockedBy).toEqual([]);
+    expect(h.mid[2]).toBeLessThan(l.bounds.min[2]);
+  });
+
+  it("makes INTRA_TIER_BOW describe the drawn cable, not the control point", () => {
+    // The constant names an APEX. access1↔access9 clears on the first candidate, so the published
+    // curve must rise exactly INTRA_TIER_BOW above the chord — the figure the comment promises.
+    const links = [...fabric.links, relinked("INTRA", "access1", "access9")];
+    const l = computeLayout({ ...OPTS, links });
+    const h = l.routeHints.find((x) => x.linkId === "INTRA")!;
+    expect(h.kind).toBe("intra-tier");
+    expect(h.resolution).toBe("cleared");
+    expect(h.apexOffset).toBe(INTRA_TIER_BOW);
+    const a = l.byId.get("access1")!;
+    const b = l.byId.get("access9")!;
+    const apex = bezier(at(a), h.mid, at(b), 0.5);
+    // Same plane, so the whole apex is vertical: the bow's height IS the documented constant.
+    expect(apex[1] - a.y).toBeCloseTo(INTRA_TIER_BOW, 9);
+    expect(h.mid[1] - a.y).toBeCloseTo(2 * INTRA_TIER_BOW, 9);
+  });
+
+  it("clears the intra-tier bow across every real tier-1 pair that needs one", () => {
+    // Regression: 8 of the 72 hinted tier-1 pairs bowed to an apex of 13.00 against a 12-unit
+    // threshold and still grazed access8. The sweep is over every real pair, not the ones that
+    // happened to fail, because a fix scoped to the failing names is not a fix.
+    const t1 = fabric.devices.filter((d) => d.tier === 1).map((d) => d.host);
+    const lies: string[] = [];
+    let hinted = 0;
+    for (let i = 0; i < t1.length; i += 1) {
+      for (let j = i + 1; j < t1.length; j += 1) {
+        const links = [...fabric.links, relinked("PAIR", t1[i]!, t1[j]!)];
+        const l = computeLayout({ ...OPTS, links });
+        const h = l.routeHints.find((x) => x.linkId === "PAIR");
+        if (h === undefined) continue;
+        hinted += 1;
+        const m = curveClearance(l, h, l.byId.get(t1[i]!)!, l.byId.get(t1[j]!)!);
+        if (h.resolution === "cleared" && m.min < ROUTE_CLEARANCE) {
+          lies.push(`${t1[i]}-${t1[j]}: "cleared" at ${m.min.toFixed(2)} from ${m.worst}`);
+        }
+      }
+    }
+    expect(hinted).toBeGreaterThan(50);
+    expect(lies).toEqual([]);
+  });
+
+  it("reports a detour it could not clear instead of publishing it as clean", () => {
+    // The escalation ladder is bounded, so "cleared" must be a computed outcome and not a
+    // guaranteed one. Whatever the outcome, the hint carries the measurement that decided it.
+    let unresolved = 0;
+    for (const c of hintingCases()) {
+      for (const h of c.layout.routeHints) {
+        expect(h.routedClearance).not.toBeNull();
+        expect(Number.isFinite(h.routedClearance!)).toBe(true);
+        expect(["cleared", "unresolved"]).toContain(h.resolution);
+        if (h.resolution === "unresolved") {
+          unresolved += 1;
+          expect(h.routedBlockedBy.length).toBeGreaterThan(0);
+          expect(h.routedClearance!).toBeLessThan(ROUTE_CLEARANCE);
+          // The prose must carry the failure too: a renderer that shows only `reason` still says so.
+          expect(h.reason).toContain("still within");
+        }
+      }
+    }
+    // The honest branch is not dead code, and this suite is not passing it by: at the flattest
+    // fabric the engine will build, a real cable exists that no detour in the ladder clears.
+    expect(unresolved, "the unresolved branch never fired — this test proves nothing about it")
+      .toBeGreaterThan(0);
+  });
+
+  it("names what is still in the way when it gives up, rather than going quiet", () => {
+    // access11↔dist1 at the flattest pitch: the detour swings SPAN_CLEARANCE behind the fabric and
+    // still cannot get the cable's shoulders past the access row, because the obstruction is near
+    // the endpoints where a mid-point control has least leverage. That is a real limit of a
+    // quadratic route, and the correct output is to say so — not to publish the curve as solved.
+    const links = [...fabric.links, relinked("TIGHT", "access11", "dist1")];
+    const l = computeLayout({ ...OPTS, links, tierYPitch: MIN_NODE_SEPARATION });
+    const h = l.routeHints.find((x) => x.linkId === "TIGHT")!;
+    expect(h.resolution).toBe("unresolved");
+    expect(h.routedBlockedBy.length).toBeGreaterThan(0);
+    // It is still the BEST curve found, not a giving-up-in-place: it must beat the straight route.
+    expect(h.routedClearance!).toBeGreaterThan(h.clearance!);
+    expect(h.routedClearance!).toBeLessThan(ROUTE_CLEARANCE);
+    const measured = curveClearance(l, h, l.byId.get("access11")!, l.byId.get("dist1")!);
+    expect(Math.abs(measured.min - h.routedClearance!)).toBeLessThan(1.5);
+    expect(h.routedBlockedBy).toContain(measured.worst);
+  });
+});
+
+describe("computeLayout — the cable map is a partition, not a tier numbering", () => {
+  /** The snapshot's own device records with one device's tier field cleared. */
+  const devicesMinusWanTier = fabric.devices.map((d) =>
+    d.id === "wan-edge-rtr1.lab" ? { ...d, tier: null } : d,
+  );
+
+  it("does not let the partition's array order become a device's observed tier", () => {
+    // Regression: `tiers.forEach((hosts, index) => ...index)` published the ARRAY POSITION as the
+    // tier of a device whose record had none — and since there was no record value to disagree
+    // with, no diagnostic named it. Reordering the same partition moved the device's Y plane.
+    const full = computeLayout({ devices: devicesMinusWanTier, links: fabric.links, tiers: fabric.tiers });
+    const withoutAp = computeLayout({
+      devices: devicesMinusWanTier,
+      links: fabric.links,
+      // Same partition, same evidence — one group the wan router is not a member of removed.
+      tiers: fabric.tiers.filter((t) => !t.includes("AP-floor1")),
+    });
+    const permuted = computeLayout({
+      devices: devicesMinusWanTier,
+      links: fabric.links,
+      tiers: [...fabric.tiers].reverse(),
+    });
+    for (const other of [withoutAp, permuted]) {
+      expect(other.diagnostics.tierDisagreements).toEqual([]);
+      for (const n of full.nodes) {
+        const o = other.byId.get(n.id)!;
+        expect(
+          [o.observedTier, o.tier, o.x, o.y, o.z],
+          `${n.id} moved when the cable map's list order changed`,
+        ).toEqual([n.observedTier, n.tier, n.x, n.y, n.z]);
+      }
+    }
+    // The tier it takes is the one its own group's members are recorded at — evidence, not index.
+    expect(full.byId.get("wan-edge-rtr1.lab")!.observedTier).toBe(3);
+  });
+
+  it("refuses to invent a tier for a group whose members have no recorded tier", () => {
+    // podacc1/podacc2 are a whole cable-map group; clear both records and the group can no longer
+    // vouch for a number. Absence must stay absence rather than collapsing to a list index.
+    const devices = fabric.devices.map((d) =>
+      d.id === "podacc1" || d.id === "podacc2" ? { ...d, tier: null } : d,
+    );
+    const l = computeLayout({ devices, links: fabric.links, tiers: fabric.tiers });
+    expect(l.diagnostics.devicesWithoutObservedTier).toEqual(["podacc1", "podacc2"]);
+    expect(l.byId.get("podacc1")!.observedTier).toBeNull();
+    expect(l.byId.get("podacc2")!.observedTier).toBeNull();
+    expect(l.diagnostics.syntheticTier).not.toBeNull();
+    const bucket = l.tierBounds.find((b) => b.tier === l.diagnostics.syntheticTier)!;
+    expect(bucket.observedTier).toBeNull();
+  });
+
+  it("publishes how each cable-map group was reconciled, including the ones it could not be", () => {
+    const l = computeLayout(OPTS);
+    expect(l.diagnostics.cableMapGroups).toHaveLength(fabric.tiers.length);
+    for (const g of l.diagnostics.cableMapGroups) {
+      expect(g.members).toBe(fabric.tiers[g.index]!.length);
+      expect(g.basis).toBe("device-consensus");
+      expect(g.tier).not.toBeNull();
+    }
+    // Every group on this fabric resolves; a group that cannot must say so rather than take a number.
+    const split = [...fabric.tiers, ["core1", "podacc1"]];
+    const conflicted = computeLayout({ ...OPTS, tiers: split });
+    const last = conflicted.diagnostics.cableMapGroups[split.length - 1]!;
+    expect(last.basis).toBe("no-consensus");
+    expect(last.tier).toBeNull();
+  });
+});
+
+describe("computeLayout — option validation", () => {
+  it("rejects a non-finite option instead of returning a NaN fabric", () => {
+    // Regression: Math.max(MIN_NODE_SEPARATION, NaN) is NaN, so every Y, the bounding sphere and
+    // the camera came back NaN with no throw and no diagnostic.
+    for (const bad of [NaN, Infinity, -Infinity]) {
+      expect(() => computeLayout({ ...OPTS, tierYPitch: bad })).toThrow(/tierYPitch/);
+      expect(() => computeLayout({ ...OPTS, margin: bad })).toThrow(/margin/);
+      expect(() => computeLayout({ ...OPTS, seed: bad })).toThrow(/seed/);
+      expect(() => computeLayout({ ...OPTS, sweeps: bad })).toThrow(/sweeps/);
+    }
+    // aspect 0 produced an Infinity camera distance; fov outside (0,180) has no frustum at all.
+    expect(() => computeLayout({ ...OPTS, aspect: 0 })).toThrow(/aspect/);
+    expect(() => computeLayout({ ...OPTS, aspect: -1 })).toThrow(/aspect/);
+    expect(() => computeLayout({ ...OPTS, fovDeg: 0 })).toThrow(/fovDeg/);
+    expect(() => computeLayout({ ...OPTS, fovDeg: 180 })).toThrow(/fovDeg/);
+    expect(() => computeLayout({ ...OPTS, margin: 0 })).toThrow(/margin/);
+  });
+
+  it("still clamps a finite pitch that would let two chassis touch across planes", () => {
+    const flat = computeLayout({ ...OPTS, tierYPitch: -1000 });
+    expect(flat.layerY.every((y) => Number.isFinite(y))).toBe(true);
+    const planes = [...new Set(flat.layerY)].sort((a, b) => a - b);
+    for (let i = 1; i < planes.length; i += 1) {
+      expect(planes[i]! - planes[i - 1]!).toBeGreaterThanOrEqual(MIN_NODE_SEPARATION - 1e-9);
+    }
+  });
+
+  it("checks the finiteness of its own output, not just of its inputs", () => {
+    const l = computeLayout(OPTS);
+    const bad = l.nodes.filter(
+      (n) => !Number.isFinite(n.x) || !Number.isFinite(n.y) || !Number.isFinite(n.z),
+    );
+    expect(bad).toEqual([]);
+    expect(Number.isFinite(l.framing.boundingSphere.radius)).toBe(true);
+    expect(l.framing.position.every((v) => Number.isFinite(v))).toBe(true);
+    expect(Number.isFinite(l.framing.near) && Number.isFinite(l.framing.far)).toBe(true);
+  });
+});
+
+describe("computeLayout — a dropped link is not an absence of neighbours", () => {
+  /**
+   * core1's 11 links still NAME core1, but each far end now names a host with no device record.
+   * That is the shape the defect lives in: the evidence of core1's adjacency is present and
+   * unusable, which is not the same fact as core1 having no neighbours.
+   */
+  const ghosted = computeLayout({
+    devices: fabric.devices,
+    links: fabric.links.map((l) =>
+      l.a === "core1" ? { ...l, b: "ghost-x" } : l.b === "core1" ? { ...l, a: "ghost-x" } : l,
+    ),
+    tiers: fabric.tiers,
+  });
+
+  it("never reports a device whose links were dropped as structurally isolated", () => {
+    // Regression: core1 — the most connected device in the fabric — came back degree 0 and named
+    // in isolatedHosts, identical in shape to a device that genuinely has no neighbours.
+    expect(ghosted.diagnostics.linksWithUnplacedEndpoint).toHaveLength(11);
+    expect(ghosted.diagnostics.isolatedHosts).not.toContain("core1");
+    const dropped = ghosted.diagnostics.hostsWithDroppedAdjacency.find((h) => h.host === "core1")!;
+    expect(dropped.droppedLinks).toHaveLength(11);
+    expect(ghosted.byId.get("core1")!.droppedAdjacency).toBe(11);
+    expect(ghosted.byId.get("core1")!.degree).toBe(0);
+  });
+
+  it("still reports a genuinely disconnected device as isolated", () => {
+    // The distinguishing evidence must actually distinguish: same shape, opposite cause.
+    const cut = computeLayout({
+      devices: fabric.devices,
+      links: fabric.links.filter((l) => l.a !== "podacc1" && l.b !== "podacc1"),
+      tiers: fabric.tiers,
+    });
+    expect(cut.diagnostics.isolatedHosts).toContain("podacc1");
+    expect(cut.diagnostics.linksWithUnplacedEndpoint).toEqual([]);
+    expect(cut.diagnostics.hostsWithDroppedAdjacency).toEqual([]);
+    expect(cut.byId.get("podacc1")!.droppedAdjacency).toBe(0);
+  });
+
+  it("carries the dropped-link denominator onto the hub-tier evidence computed without them", () => {
+    // rootTier's betweenness statistics are computed on the surviving graph; a reader cannot judge
+    // that basis without knowing how much of the graph never reached it.
+    expect(ghosted.diagnostics.rootTier.droppedLinks).toBe(11);
+    expect(ghosted.diagnostics.rootTier.detail).toContain("11");
+    expect(layout.diagnostics.rootTier.droppedLinks).toBe(0);
+    expect(layout.diagnostics.hostsWithDroppedAdjacency).toEqual([]);
+    for (const n of layout.nodes) expect(n.droppedAdjacency).toBe(0);
+  });
+});
+
+/* ── diagnostics + budget ──────────────────────────────────────────────────── */
+
+describe("computeLayout — honesty and budget", () => {
+  it("reports no synthetic tier for this fabric, because every device has an observed one", () => {
+    const d = layout.diagnostics;
+    expect(d.devicesWithoutObservedTier).toEqual([]);
+    expect(d.syntheticTier).toBeNull();
+    expect(d.tierDisagreements).toEqual([]);
+    expect(d.cableMapHostsWithoutDevice).toEqual([]);
+    expect(d.linksWithUnplacedEndpoint).toEqual([]);
+    expect(d.tiersUnreachableFromRoot).toEqual([]);
+    expect(d.isolatedHosts).toEqual([]);
+    for (const n of layout.nodes) expect(n.observedTier).toBe(n.tier);
+  });
+
+  it("places a device with no observed tier instead of dropping it, and says so", () => {
+    // Real device records with the tier field cleared: the snapshot's own shape, minus one field.
+    const devices = fabric.devices.map((d) => (d.id === "wan-edge-rtr1.lab" ? { ...d, tier: null } : d));
+    const l = computeLayout({ devices, links: fabric.links, tiers: [] });
+    expect(l.byId.has("wan-edge-rtr1.lab")).toBe(true);
+    expect(l.diagnostics.devicesWithoutObservedTier).toEqual(["wan-edge-rtr1.lab"]);
+    expect(l.diagnostics.syntheticTier).not.toBeNull();
+    // The bucket it was drawn in must never read back as an observed tier.
+    expect(l.byId.get("wan-edge-rtr1.lab")!.observedTier).toBeNull();
+    expect(l.tierBounds.find((b) => b.tier === l.diagnostics.syntheticTier)!.observedTier).toBeNull();
+  });
+
+  /* This one was already written correctly and is deliberately left alone. It asserts a MEDIAN of
+     seven runs, which absorbs a scheduler stall, against a bound roughly an order of magnitude
+     above the operation's real cost — so it catches an algorithmic blow-up without firing when the
+     host is busy. It is the only wall-clock assertion in the suite that has never flaked, and the
+     technique is the reason. The other two were rewritten to match it, not the other way round. */
+  it("lays out the full 26-node fabric in under 50 ms", () => {
+    const runs: number[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const t0 = performance.now();
+      computeLayout({ ...OPTS, seed: 100 + i });
+      runs.push(performance.now() - t0);
+    }
+    runs.sort((a, b) => a - b);
+    const median = runs[3]!;
+    expect(median, `median ${median.toFixed(2)} ms, slowest ${runs[6]!.toFixed(2)} ms`).toBeLessThan(50);
+  });
+});

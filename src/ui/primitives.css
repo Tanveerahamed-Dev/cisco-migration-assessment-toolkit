@@ -1,0 +1,989 @@
+/*
+ * primitives.css — the visual layer of the component vocabulary.
+ *
+ * Every value here resolves to a token in src/core/tokens.css. There is no hex literal, no px
+ * font-size and no bare duration in this file, and there must never be one: a literal colour in a
+ * component is how a design system stops being one.
+ *
+ * The restraint is deliberate and it is the product's whole argument. No gradient is used as
+ * decoration. No drop shadow appears on anything that is not actually floating. Corners are 3 or
+ * 5px, not inflated. Chrome is achromatic: --accent appears on the brand mark, the primary
+ * action, link emphasis and the active tab underline, and nowhere else. Hover is a fill change,
+ * never a border change and never a lift. Colour appears only where it carries meaning, so that
+ * a Critical finding is the loudest thing on screen.
+ */
+
+/* `position: fixed` with an explicit anchor, NOT `absolute` with none.
+   An absolutely-positioned box with no offsets keeps its STATIC position, and its containing
+   block is the nearest positioned ancestor — the initial containing block when there is none. A
+   visually-hidden span emitted deep inside a tall scroller (a grid body 7,000px long) therefore
+   landed at its static page offset, escaped every `overflow` clip on the way up (a scroller does
+   not clip a descendant it is not the containing block of), and stretched the document to 3,493px
+   against a 1,080px viewport — which let the whole application scroll and carried the header and
+   the coverage status bar off screen.
+   Fixed positioning takes the box out of document flow AND out of the document's scrollable area
+   in every containing block, so no future use of this utility can reintroduce that. It is still
+   in DOM order, so screen readers announce it exactly as before. */
+.visually-hidden {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ══ not observed ══════════════════════════════════════════════════════════
+   THE most important treatment in the system. Four channels carry it: the --unobserved ink, a
+   DASHED edge (no other chip in this app is dashed), a 45-degree HATCH fill, and the literal
+   words. Remove any one of them and a reader can mistake "we never collected this" for either
+   "zero" or "fine". The dashed edge is not a style choice. */
+.ui-notobs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--row-hop-sub);
+  padding: 0 var(--sp-1);
+  border: 1px dashed var(--unobserved-edge);
+  border-radius: var(--radius-sm);
+  background-image: var(--unobserved-hatch);
+  color: var(--unobserved);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.ui-notobs__glyph {
+  width: 0.75em;
+  height: 0.75em;
+}
+
+.ui-notobs__why {
+  color: var(--text-muted);
+  font-weight: var(--fw-regular);
+  white-space: normal;
+  /* The collector's reason is prose and is kept verbatim; it wraps rather than truncating,
+     because a truncated reason is not a reason. */
+}
+
+/* Compact drops the REASON and tightens the box. It never drops the words: a dashed frame on its
+   own is a shape a reader has to guess at, and guessing is how absence becomes health. */
+.ui-notobs--compact {
+  min-height: 1rem;
+  padding: 0 3px;
+  gap: 2px;
+}
+
+/* ══ buttons ══════════════════════════════════════════════════════════════ */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 1.75rem; /* 28px — clears the 24px target floor with room for a 1px edge */
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-instant) linear,
+    color var(--dur-instant) linear;
+}
+
+.ui-btn[data-size="sm"] {
+  min-height: var(--target-min); /* 24px — the floor, never below it */
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-0);
+  gap: var(--sp-1);
+}
+
+.ui-btn--icon {
+  padding: 0;
+  min-width: 1.75rem;
+}
+
+.ui-btn--icon[data-size="sm"] {
+  min-width: var(--target-min);
+}
+
+.ui-btn__icon {
+  display: inline-flex;
+  font-size: 0.875em;
+}
+
+.ui-btn[data-variant="secondary"] {
+  border-color: var(--border-strong);
+  background: var(--bg);
+}
+.ui-btn[data-variant="secondary"]:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.ui-btn[data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.ui-btn[data-variant="primary"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.ui-btn[data-variant="primary"]:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent) 88%, var(--text));
+}
+
+/* Destructive, and OUTLINED rather than filled. A solid alarm-coloured block competes with the
+   severity chips for the eye, and a button the user might press twice a session must not be
+   louder than a Critical finding. The border, the ink and the word all say destructive. */
+.ui-btn[data-variant="danger"] {
+  border-color: var(--sev-critical);
+  color: var(--sev-critical);
+  background: transparent;
+}
+.ui-btn[data-variant="danger"]:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--sev-critical) 14%, transparent);
+}
+
+.ui-btn:disabled {
+  /* Disabled is communicated by the cursor, the aria state and the absence of hover — not by a
+     colour that could be mistaken for the --unobserved treatment. */
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-btn[aria-pressed="true"],
+.ui-btn[data-active="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ══ chip ═════════════════════════════════════════════════════════════════ */
+
+/* The floor belongs on the TARGET, not on the box around it — see `.ui-chip__body` below. This
+   `min-height` keeps a chip with no interactive part 24px tall; it is not what makes the button
+   inside one 24px tall, and reading it as though it were is how the remove control shipped at
+   24.0 x 22.0 px. */
+.ui-chip {
+  display: inline-flex;
+  align-items: stretch;
+  min-height: var(--target-min);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: 1;
+  overflow: hidden;
+}
+
+.ui-chip[data-tone="accent"] {
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+.ui-chip--mono .ui-chip__body {
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+}
+
+/* BOTH segments of a chip carry the 24px floor themselves.
+   `box-sizing: border-box` is global (shell.css), so the chip's own 24px min-height is measured
+   ACROSS its 1px border on each edge and leaves its stretched children 22px. Measured before this
+   was fixed: `button.ui-chip__remove` 24.0 x 22.0 px — a 2.5.8 failure that depended on the
+   spacing exception to be tolerable, produced by a rule that looked like it already set the floor.
+   The chip is 26px tall as a result; the target is 24 and owes nothing to an exception. */
+.ui-chip__body,
+.ui-chip__remove {
+  min-block-size: var(--target-min);
+}
+
+.ui-chip__body {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+button.ui-chip__body {
+  cursor: pointer;
+}
+button.ui-chip__body:hover {
+  background: var(--surface-3);
+}
+
+.ui-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* A 24x24 target around a 10px glyph: the hit area is grown with padding, never by shrinking
+     the target (WCAG 2.5.8). The block axis is set with `.ui-chip__body` above. */
+  min-width: var(--target-min);
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.625rem;
+  cursor: pointer;
+}
+.ui-chip__remove:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ══ severity ═════════════════════════════════════════════════════════════
+   Filled pill, --chip-ink text: light theme is white ink on a deep fill, dark theme is near-black
+   ink on a bright fill. Every one of those pairings was measured (tokens.css) and the worst is
+   5.76:1. */
+
+.ui-sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 1.0625rem; /* 17px — a label, not a target; it is never the only click affordance */
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--sev-fill);
+  color: var(--chip-ink);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+}
+
+.ui-sev__glyph {
+  width: 0.6875em;
+  height: 0.6875em;
+}
+
+.ui-sev--compact {
+  padding: 0 3px;
+  gap: 2px;
+}
+
+.ui-sev[data-severity="Critical"] {
+  --sev-fill: var(--sev-critical);
+}
+.ui-sev[data-severity="High"] {
+  --sev-fill: var(--sev-high);
+}
+.ui-sev[data-severity="Medium"] {
+  --sev-fill: var(--sev-medium);
+}
+.ui-sev[data-severity="Low"] {
+  --sev-fill: var(--sev-low);
+}
+.ui-sev[data-severity="Info"] {
+  --sev-fill: var(--sev-info);
+}
+
+/* ══ operational state ════════════════════════════════════════════════════ */
+
+.ui-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+  line-height: 1;
+  color: var(--state-ink);
+  white-space: nowrap;
+}
+
+.ui-state__glyph {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+.ui-state__text {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-state[data-state="up"] {
+  --state-ink: var(--state-up);
+}
+.ui-state[data-state="down"] {
+  --state-ink: var(--state-down);
+}
+.ui-state[data-state="unknown"] {
+  --state-ink: var(--state-unknown);
+}
+
+/* ══ health band ══════════════════════════════════════════════════════════ */
+
+/* OUTLINED, where severity is FILLED. Two different kinds of claim must not look like the same
+   kind of object: a filled chip is a finding's severity, an outlined pill is a device's health
+   band. It also keeps a screen full of healthy devices quiet, so the few bad ones carry. */
+.ui-band {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.0625rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--band-fill);
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--band-fill) 10%, transparent);
+  color: var(--band-fill);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  letter-spacing: var(--ls-0);
+}
+
+.ui-band[data-band="Excellent"] {
+  --band-fill: var(--band-excellent);
+}
+.ui-band[data-band="Good"] {
+  --band-fill: var(--band-good);
+}
+.ui-band[data-band="Fair"] {
+  --band-fill: var(--band-fair);
+}
+.ui-band[data-band="Poor"] {
+  --band-fill: var(--band-poor);
+}
+.ui-band[data-band="Critical"] {
+  --band-fill: var(--band-critical);
+}
+
+/* ══ keycap ═══════════════════════════════════════════════════════════════ */
+
+.ui-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  line-height: 1;
+}
+
+/* ══ form controls ════════════════════════════════════════════════════════ */
+
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.ui-label {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+}
+
+.ui-label__req {
+  text-transform: none;
+  color: var(--text-faint);
+  font-weight: var(--fw-regular);
+}
+
+.ui-field__hint {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+}
+
+.ui-field__error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--sev-critical);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-0);
+}
+/* The error is not carried by colour alone: a solid left rule marks the message as an error even
+   with the hue removed, and aria-invalid carries it to assistive technology. */
+.ui-field__error::before {
+  content: "";
+  width: 2px;
+  align-self: stretch;
+  background: var(--sev-critical);
+}
+
+.ui-input,
+.ui-select__el {
+  min-height: 1.75rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-1);
+  min-width: 0;
+  width: 100%;
+}
+
+.ui-input--mono {
+  font-family: var(--font-mono);
+}
+
+.ui-input::placeholder {
+  color: var(--text-faint);
+}
+
+.ui-input[aria-invalid="true"] {
+  border-color: var(--sev-critical);
+}
+
+.ui-select {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.ui-select__el {
+  appearance: none;
+  padding-right: var(--sp-5);
+}
+
+.ui-select__chev {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: var(--sp-2);
+  margin: auto;
+  width: 0.75rem;
+  height: 0.75rem;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ui-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--target-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.ui-switch__track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 1.75rem;
+  height: 1rem;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.ui-switch__knob {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: var(--radius-pill);
+  background: var(--text-muted);
+  color: var(--accent);
+  font-size: 0.5rem;
+  /* Knob POSITION is the non-colour channel; the check glyph is a third. */
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.ui-switch[aria-checked="true"] .ui-switch__track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ui-switch[aria-checked="true"] .ui-switch__knob {
+  background: var(--accent-text);
+  transform: translateX(0.75rem);
+}
+
+.ui-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ══ tabs ═════════════════════════════════════════════════════════════════ */
+
+.ui-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ui-tabs::-webkit-scrollbar {
+  height: 0;
+}
+
+.ui-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--row-tab);
+  min-width: 3rem;
+  /* Never shrink below the label.
+   *
+   * `.ui-tabs` already declares `overflow-x: auto`, but a flex item defaults to `flex-shrink: 1`,
+   * so the items compressed to fit instead of overflowing — and because the label is
+   * `white-space: nowrap`, the text then spilled OUT of its own compressed box and printed on top
+   * of the next tab. Measured 2026-09-21 on the device pane at 2400px: the tablist reported
+   * scrollWidth === clientWidth === 419 while its six tabs occupied 470px, and the strip read
+   * "SummaryPorts 4 Routing …not observed… Findings 18Raw" as overlapping glyphs. Pinning the
+   * basis makes the line genuinely overflow, which is what turns the declared scroll on. */
+  flex: 0 0 auto;
+  padding: 0 var(--sp-3);
+  border: 0;
+  /* The active-tab underline is drawn INSIDE the button so the 1px tablist border is not doubled
+     and the tab strip keeps a single hairline baseline. */
+  box-shadow: inset 0 -2px 0 transparent;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ui-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.ui-tab[aria-selected="true"] {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* There is deliberately NO disabled tab rule here any more.
+ *
+ * A11Y AUDIT FIX, 2026-09-21 (D4). `opacity: 0.5` on a disabled tab was the LOWEST-CONTRAST text
+ * in the product: the device pane's "ACL — no ACL collected" label measured 2.26:1 / 2.18:1 in
+ * light and 2.68:1 / 3.30:1 in dark, against a 4.5:1 floor. The dimming came from the state, not
+ * from the token — the un-disabled sibling carrying the identical sentence ("no RIB collected")
+ * measured fine. And the dimmed string was the coverage-honesty claim itself, which is the one
+ * kind of text in this product that may never be the hardest to read.
+ *
+ * The tab state went with it (see Tabs in primitives.tsx): a tab whose panel explains an absence
+ * is a working tab, so it is styled like one. The absence is carried by the label's own
+ * `--unobserved` ink, which is contrast-checked (6.20:1 light, 9.93:1 dark). */
+
+.ui-tab__count {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-tab[aria-selected="true"] .ui-tab__count {
+  color: var(--text-muted);
+}
+
+.ui-tabpanel {
+  min-height: 0;
+}
+
+/* ══ disclosure ═══════════════════════════════════════════════════════════ */
+
+.ui-disclosure__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--row-hop);
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  text-align: start;
+  cursor: pointer;
+}
+
+.ui-disclosure__trigger:hover {
+  background: var(--surface-2);
+}
+
+.ui-disclosure__chev {
+  width: 0.75rem;
+  height: 0.75rem;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.ui-disclosure[data-open="true"] .ui-disclosure__chev {
+  transform: rotate(90deg);
+}
+
+.ui-disclosure__region {
+  padding: var(--sp-1) var(--sp-2) var(--sp-2) var(--sp-5);
+}
+
+/* ══ overlays ═════════════════════════════════════════════════════════════
+   The anchors use display:contents so wrapping a control in a Tooltip or Popover adds no box to
+   the layout — a wrapper that introduced an inline-block would silently break every flex row it
+   was dropped into. */
+
+.ui-tt-anchor,
+.ui-pop-anchor {
+  display: contents;
+}
+
+.ui-tooltip {
+  position: fixed;
+  top: var(--tt-top);
+  left: var(--tt-left);
+  z-index: var(--z-tooltip);
+  max-width: 34ch;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  color: var(--text);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  box-shadow: var(--shadow-2);
+}
+
+.ui-tooltip[data-placement="top"] {
+  transform: translate(-50%, calc(-100% - var(--sp-2)));
+}
+
+.ui-tooltip[data-placement="bottom"] {
+  transform: translate(-50%, var(--sp-2));
+}
+
+.ui-popover {
+  position: fixed;
+  top: var(--pop-top);
+  left: var(--pop-left);
+  z-index: var(--z-popover);
+  min-width: 14rem;
+  max-width: min(28rem, 92vw);
+  max-height: 70vh;
+  overflow: auto;
+  margin-top: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+}
+
+.ui-popover[data-align="end"] {
+  transform: translateX(-100%);
+}
+
+.ui-dialog__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  background: var(--scrim);
+}
+
+.ui-dialog {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-dialog);
+  display: flex;
+  flex-direction: column;
+  width: min(34rem, 92vw);
+  max-height: 76vh;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-3);
+}
+
+.ui-dialog[data-width="sm"] {
+  width: min(24rem, 92vw);
+}
+.ui-dialog[data-width="lg"] {
+  width: min(48rem, 94vw);
+}
+
+.ui-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.ui-dialog__title {
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.ui-dialog__desc {
+  padding: var(--sp-2) var(--sp-4) 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.ui-dialog__body {
+  padding: var(--sp-3) var(--sp-4);
+  overflow: auto;
+  min-height: 0;
+}
+
+.ui-dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+/* ══ toolbar ══════════════════════════════════════════════════════════════ */
+
+.ui-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.ui-toolbar[aria-orientation="vertical"] {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ══ quantities ═══════════════════════════════════════════════════════════ */
+
+.ui-meter {
+  display: grid;
+  grid-template-columns: minmax(6rem, 1fr) minmax(3rem, 5rem) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--row-kv);
+  font-size: var(--fs-1);
+}
+
+.ui-meter[data-unobserved="true"] {
+  grid-template-columns: minmax(6rem, 1fr) auto;
+}
+
+.ui-meter__label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-meter__value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.ui-meter__track,
+.ui-bar {
+  display: block;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.ui-meter__fill,
+.ui-bar__fill {
+  display: block;
+  height: 100%;
+  background: var(--tone-ink, var(--text-muted));
+}
+
+[data-tone="accent"] {
+  --tone-ink: var(--accent);
+}
+[data-tone="up"] {
+  --tone-ink: var(--state-up);
+}
+[data-tone="down"] {
+  --tone-ink: var(--state-down);
+}
+[data-tone="unknown"] {
+  --tone-ink: var(--state-unknown);
+}
+[data-tone="critical"] {
+  --tone-ink: var(--sev-critical);
+}
+[data-tone="high"] {
+  --tone-ink: var(--sev-high);
+}
+
+.ui-spark {
+  display: inline-block;
+  vertical-align: middle;
+  overflow: visible;
+}
+
+.ui-spark__line {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* A missing sample is a visible tick in the --unobserved ink, never a point on the line. */
+.ui-spark__gap {
+  stroke: var(--unobserved);
+  stroke-width: 1.5;
+  stroke-dasharray: 1.5 1;
+}
+
+/* ══ misc ═════════════════════════════════════════════════════════════════ */
+
+.ui-copyable {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.ui-copyable__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+.ui-copyable__value--mono {
+  font-family: var(--font-mono);
+}
+
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-4);
+  max-width: 48ch;
+}
+
+.ui-empty__title {
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.ui-empty__reason {
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+}
+
+.ui-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ui-skeleton__line {
+  display: block;
+  block-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* A citation chip is a TARGET — it opens the source record — so it carries the 24px floor like
+   every other one. It used to be `min-height: 1rem`, and 36 of them rendered at 16px tall; the
+   only thing keeping that inside WCAG 2.5.8 was the spacing exception, measured centre-to-centre
+   at 47.7–67.2px and undocumented (the brief requires every such exception to be enumerated in a
+   file that does not exist). The hit area is grown with block padding, which is what the brief
+   asks for — the glyph and the text are unchanged, so the chip reads exactly as before. */
+.ui-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-block-size: var(--target-min);
+  padding: var(--sp-1) 3px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  line-height: 1;
+  letter-spacing: var(--ls-0);
+  cursor: pointer;
+  max-width: 28ch;
+}
+
+.ui-cite:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.ui-cite__glyph {
+  width: 0.6875em;
+  height: 0.6875em;
+  flex: none;
+}
+
+.ui-cite__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Forced colours: the hatch and the token fills are replaced by the system palette, so the SHAPE
+   channels have to survive on their own. Keep the dashed edge and the glyphs; drop nothing else. */
+@media (forced-colors: active) {
+  .ui-sev,
+  .ui-band {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .ui-notobs {
+    border-style: dashed;
+    forced-color-adjust: none;
+  }
+
+  .ui-tab[aria-selected="true"] {
+    box-shadow: inset 0 -2px 0 Highlight;
+  }
+}

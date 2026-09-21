@@ -1,0 +1,535 @@
+/*
+ * EvidencePane.css — the finding-to-configuration chain.
+ *
+ * Every value resolves to a token in src/core/tokens.css: no hex literal, no px font size, no
+ * bare duration.
+ *
+ * The one piece of deliberate visual weight in this pane is the chain rail — a single hairline
+ * running down the left of the ordered list with numbered nodes on it. It is achromatic, because
+ * the chain is chrome and the severity badge at the top must stay the loudest thing on the
+ * surface. A tinted chain would compete with the finding it exists to explain.
+ */
+
+.ev {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  block-size: 100%;
+  background: var(--surface-1);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  letter-spacing: var(--ls-2);
+}
+
+.ev__head {
+  flex: 0 0 auto;
+  padding: var(--sp-3);
+  border-block-end: var(--hairline) solid var(--border);
+}
+
+/* The hoisted configuration control (see EvidencePane.tsx). It lives in the header because the
+   chain's own copy of it is below the fold at every viewport this application declares, which made
+   A1's two-click path really click, scroll, click. */
+.ev__jump {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-block-start: var(--sp-3);
+}
+
+.ev__jump-note {
+  color: var(--text-faint);
+  font-size: var(--fs-1);
+}
+
+.ev__idline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-block-end: var(--sp-2);
+}
+
+.ev__id {
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+
+.ev__title {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+  max-inline-size: 60ch;
+}
+
+/* Both class names, so this wins on specificity rather than on stylesheet order: the two files
+   are separate modules and a bundler is free to emit them in either sequence. */
+.dp-kv.ev__facts {
+  grid-template-columns: minmax(4.5rem, 6rem) minmax(0, 1fr);
+}
+
+.ev__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  scroll-padding-block-end: var(--statusbar-h);
+}
+
+.ev-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-wrap {
+  overflow-wrap: anywhere;
+}
+
+.ev-prose {
+  margin: 0;
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+.ev-sub {
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+
+/* ══ layer composition ═════════════════════════════════════════════════════ */
+
+.ev-layers {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-block-end: var(--sp-2);
+}
+
+.ev-layer {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--row-kv);
+  padding: 0 var(--sp-2);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+
+.ev-layers__note {
+  flex: 1 1 18ch;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+/* ══ the chain ═════════════════════════════════════════════════════════════ */
+
+.ev-chain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ev-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--sp-5) minmax(0, 1fr);
+  gap: var(--sp-2);
+  padding-block: var(--sp-2) var(--sp-4);
+}
+
+/* The rail: one hairline from this node to the next. The last step has none, so the chain
+   visibly terminates rather than trailing off. */
+.ev-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  inset-block: var(--sp-5) 0;
+  inset-inline-start: calc(var(--sp-5) / 2);
+  inline-size: var(--hairline);
+  background: var(--border-strong);
+}
+
+.ev-step__num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--sp-5);
+  block-size: var(--sp-5);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-step__body {
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-start;
+}
+
+.ev-step__title {
+  margin: 0;
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-2);
+}
+
+.ev-step__text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+/* An absence statement is not a footnote: it is the answer to the question the reader asked. */
+.ev-step__text--absent {
+  padding: var(--sp-2);
+  border-inline-start: 3px solid var(--claim-indeterminate);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text);
+}
+
+/* ══ navigable rows ════════════════════════════════════════════════════════ */
+
+.ev-devices,
+.ev-families,
+.ev-siblings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  inline-size: 100%;
+}
+
+.ev-siblings {
+  flex-direction: column;
+  gap: 0;
+}
+
+.ev-devices__item,
+.ev-families__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.ev-devbtn {
+  appearance: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-block-size: var(--target-min);
+  padding: var(--sp-1) var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.ev-devbtn:hover {
+  background: var(--surface-2);
+}
+
+.ev-devbtn:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 1px var(--bg) inset;
+}
+
+.ev-devbtn__meta {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+}
+
+.ev-siblings__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-block: var(--sp-1);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.ev-siblings__item:first-child {
+  border-block-start: 0;
+}
+
+.ev-siblings__btn {
+  border: 0;
+  background: none;
+  padding: var(--sp-1) 0;
+  min-inline-size: 0;
+}
+
+.ev-siblings__btn:hover {
+  background: none;
+  color: var(--accent);
+}
+
+.ev-siblings__title {
+  overflow-wrap: anywhere;
+}
+
+.ev-siblings__more {
+  padding-block: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+}
+
+.ev-cfgactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ══ the configuration excerpt ═════════════════════════════════════════════ */
+
+.ev-cfg {
+  inline-size: 100%;
+  margin-block-start: var(--sp-2);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+  overflow: auto;
+}
+
+.ev-cfg__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-block-end: var(--hairline) solid var(--border);
+  background: var(--surface-2);
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+}
+
+.ev-cfg__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+}
+
+.ev-cfg__title:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.ev-cfg__how {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.ev-cfg__toolbar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+
+.ev-cfg__count {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-cfg__lines {
+  margin: 0;
+  padding: 0 0 var(--sp-2);
+  list-style: none;
+}
+
+.ev-cfg__line {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) 0;
+}
+
+.ev-cfg__gutter {
+  text-align: end;
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  border-inline-end: var(--hairline) solid var(--border);
+  padding-inline-end: var(--sp-2);
+  align-self: stretch;
+}
+
+.ev-cfg__text {
+  min-inline-size: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  overflow-wrap: anywhere;
+}
+
+.ev-cfg__text code {
+  font: inherit;
+}
+
+/* The matched line is marked by a band AND a heavier inline rule, so the highlight survives a
+   greyscale capture and a reader who cannot separate the two fills by hue. */
+.ev-cfg__line--match {
+  background: var(--surface-3);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.ev-cfg__line--unevaluable .ev-cfg__text {
+  color: var(--text);
+}
+
+.ev-cfg__flag {
+  display: block;
+  margin-block-start: var(--sp-1);
+  font-family: var(--font-ui);
+  font-size: var(--fs-0);
+  color: var(--claim-indeterminate);
+}
+
+/* A counted bar, never an ellipsis: the number is what makes the excerpt auditable. */
+.ev-cfg__elide {
+  margin: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-block: var(--hairline) dashed var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  text-align: center;
+}
+
+.ev-cfg__parsed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+
+.ev-cfg__banner {
+  margin: 0;
+  padding: var(--sp-2);
+  border: var(--hairline) dashed var(--unobserved-edge);
+  border-radius: var(--radius-sm);
+  background-image: var(--unobserved-hatch);
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+.ev-cfg__literal {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.ev-cfg__literal-k {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  color: var(--text-faint);
+}
+
+.ev-cfg__literal-v {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  overflow-wrap: anywhere;
+}
+
+.ev-cfg__literal-v code {
+  font: inherit;
+}
+
+.ev-cfg__routes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ev-cfg__route {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding-block: var(--sp-1);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.ev-cfg__route:first-child {
+  border-block-start: 0;
+}
+
+.ev-cfg__route-prefix {
+  font-weight: var(--fw-medium);
+}
+
+.ev-cfg__route-body {
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.ev-cfg__foot {
+  padding: var(--sp-2) var(--sp-3);
+  border-block-start: var(--hairline) solid var(--border);
+  background: var(--surface-2);
+}
+
+.ev-binding {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  overflow-wrap: anywhere;
+}
+
+/* ══ reduced motion ════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  .ev *,
+  .ev *::before,
+  .ev *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

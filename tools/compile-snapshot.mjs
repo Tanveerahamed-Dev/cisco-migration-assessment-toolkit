@@ -1,0 +1,438 @@
+/**
+ * compile-snapshot.mjs — the ONLY bridge between the assessment engine's evidence snapshot
+ * and Atlas Scope's UI model.
+ *
+ * Doctrine (CLAUDE.md, SSOT + coverage-honesty):
+ *   - Every field emitted here is READ from the snapshot; nothing is invented, defaulted to a
+ *     healthy value, or interpolated. Absence is emitted as `null` and rendered as "not observed".
+ *   - Every record carries `cite`: a dotted path back into the snapshot so the Inspector can show
+ *     the raw evidence a claim rests on. A claim with no `cite` is a bug.
+ *   - The source file's sha256 + byte length are stamped into `meta` so a rendered view can be
+ *     bound to the exact bytes it was compiled from.
+ */
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SRC = resolve(HERE, "../../webapp/sample_data/sample_fleet.snapshot.json");
+const OUT = resolve(HERE, "../src/data/fabric.json");
+
+const raw = readFileSync(SRC);
+const snap = JSON.parse(raw.toString("utf8"));
+const sha256 = createHash("sha256").update(raw).digest("hex");
+
+/** Absence is absence. "", "-", "N/A" and the engine's explicit [NOT OBSERVED] marker all mean unobserved. */
+const NOT_OBSERVED = /^\s*\[NOT OBSERVED\]/i;
+const val = (v) => {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (t === "" || t === "-" || t === "N/A" || NOT_OBSERVED.test(t)) return null;
+    return t;
+  }
+  if (typeof v === "number" && !Number.isFinite(v)) return null;
+  return v;
+};
+/** Keep the engine's own unobserved prose when it carries a REASON worth showing. */
+const reason = (v) => (typeof v === "string" && NOT_OBSERVED.test(v.trim()) ? v.trim() : null);
+/**
+ * A number is a number the snapshot ACTUALLY carried, or nothing.
+ *
+ * The previous implementation stripped every non-digit character before calling Number(), which
+ * turned the snapshot's own absence markers into measurements: `num("")`, `num("N/A")`,
+ * `num("unknown")` and `num("[NOT OBSERVED]")` all returned 0, and `num("Gi0/1")` returned 1.
+ * Measured 2026-09-21 on the shipped data: 92 of 122 port-health rows rendered a clean
+ * 0 / 0 / 0 / 0 error profile — 73 of them on ports whose own source record says the counters
+ * were never read — and 19 of 44 cables rendered "Speed 0 Mbps" and were announced as
+ * "0 megabit per second". `orNotObserved` cannot rescue any of that, because by the time a
+ * surface sees the value it is a real, finite number. Absence laundered into a healthy-looking
+ * zero is precisely the defect class this project exists to refuse.
+ *
+ * So: no character stripping, ever. A string is accepted only if the WHOLE of it parses.
+ */
+const num = (v) => {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+};
+const arr = (v) => (Array.isArray(v) ? v : []);
+/**
+ * String arrays, with a loud refusal instead of `[object Object]`.
+ *
+ * `arr(x).map(String)` over a list of OBJECTS emits the literal string "[object Object]", and it
+ * does it silently: the field is present, non-empty, and typed `string[]`, so every honesty guard
+ * downstream sees a value and renders it. Measured 2026-09-21: all 44 compiled links carried
+ * `members: ["[object Object]"]`, printed verbatim as the "Port channel" value on both of the
+ * fabric's port-channels, and the honest "members not observed" branch was unreachable because
+ * the array was never empty. This helper makes that shape a BUILD FAILURE rather than a shipped
+ * string — the structural fix, so the next `.map(String)` over an object cannot repeat it.
+ */
+const strs = (v, where) =>
+  arr(v)
+    .map((x) => {
+      if (typeof x === "string") return x.trim();
+      if (typeof x === "number" || typeof x === "boolean") return String(x);
+      throw new Error(
+        `compile-snapshot: ${where} contains a non-primitive member ` +
+          `(${JSON.stringify(x).slice(0, 120)}). Stringifying it would emit "[object Object]". ` +
+          `Compile it structurally instead.`,
+      );
+    })
+    .filter((s) => s !== "");
+const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+
+/* devices ------------------------------------------------------------------ */
+const cableNodes = arr(snap.cable_map?.nodes);
+const nodeByHost = new Map(cableNodes.map((n) => [n.host, n]));
+const healthByHost = new Map(arr(snap.health_scores).map((h) => [h.switch, h]));
+const impactByHost = new Map(arr(snap.failure_impact).map((f) => [f.host, f]));
+
+/* Hosts the fabric must render = cable-map nodes union inventoried devices. A cable-map-only node
+   (an AP, a phone, an uncollected neighbour) is REAL topology; dropping it would silently shrink
+   the blast radius. It is emitted with collected:false so the UI can never imply we assessed it. */
+const hosts = [...new Set([...cableNodes.map((n) => n.host), ...Object.keys(obj(snap.devices))])].sort();
+
+const devices = hosts.map((host) => {
+  const d = obj(snap.devices)[host];
+  const n = nodeByHost.get(host);
+  const h = healthByHost.get(host);
+  const fi = impactByHost.get(host);
+  return {
+    id: host,
+    host,
+    collected: d ? true : Boolean(n?.collected),
+    inventoried: Boolean(d),
+    kind: val(n?.kind) ?? (d ? "switch" : "unknown"),
+    role: val(h?.role) ?? val(n?.role),
+    tier: Number.isFinite(n?.tier) ? n.tier : null,
+    order: Number.isFinite(n?.order) ? n.order : 0,
+    opStatus: val(n?.op_status) ?? "unknown",
+    badges: strs(n?.badges, `cable_map.nodes[host=${host}].badges`),
+    platform: val(d?.platform),
+    model: val(d?.model),
+    serial: val(d?.serial_number) ?? val(d?.chassis_serial),
+    swVersion: val(d?.sw_version),
+    uptime: val(d?.uptime),
+    powerSupplies: num(d?.num_power_supplies),
+    modules: num(d?.num_modules),
+    score: Number.isFinite(h?.score) ? h.score : null,
+    band: val(h?.band),
+    criticality: Number.isFinite(h?.criticality) ? h.criticality : null,
+    dataQuality: Number.isFinite(h?.data_quality) ? h.data_quality : null,
+    deductions: strs(h?.deductions, `health_scores[switch=${host}].deductions`),
+    impact: fi
+      ? {
+          severity: val(fi.severity),
+          vlans: num(fi.vlans_impacted),
+          stranded: num(fi.stranded),
+          hard: num(fi.hard),
+          backup: num(fi.backup),
+          fhrp: num(fi.fhrp),
+          detail: val(fi.detail),
+          cite: `failure_impact[host=${host}]`,
+        }
+      : null,
+    cite: d ? `devices.${host}` : `cable_map.nodes[host=${host}]`,
+  };
+});
+
+/* links -------------------------------------------------------------------- */
+const centralityKey = (a, ap, b, bp) => [`${a}|${ap}`, `${b}|${bp}`].sort().join("::");
+const centrality = new Map();
+for (const c of arr(snap.link_centrality)) {
+  centrality.set(centralityKey(c.a_host, c.a_port, c.b_host, c.b_port), c);
+}
+const links = arr(snap.cable_map?.cables).map((c, i) => {
+  const cen = centrality.get(centralityKey(c.a, c.a_port, c.b, c.b_port));
+  return {
+    id: `L${i}`,
+    a: c.a,
+    aPort: val(c.a_port),
+    b: c.b,
+    bPort: val(c.b_port),
+    isPortChannel: Boolean(c.is_pc),
+    /* A member is a PAIR of ports, not a name. The source carries
+       `{a_port, b_port}` objects; `.map(String)` destroyed them into "[object Object]" before any
+       surface could show them. They are compiled to the pair the reader wants to see
+       ("Po1 ↔ Po1"), and a member whose ports are BOTH unobserved contributes nothing — which is
+       what makes DevicePane's "members not observed" branch reachable again. */
+    members: arr(c.members)
+      .map((m, mi) => {
+        if (typeof m === "string" || typeof m === "number") return strs([m], `cable_map.cables[${i}].members[${mi}]`)[0] ?? null;
+        const a = val(m?.a_port);
+        const b = val(m?.b_port);
+        if (a === null && b === null) return null;
+        return `${a ?? "port not observed"} ↔ ${b ?? "port not observed"}`;
+      })
+      .filter((m) => m !== null),
+    speedMbps: num(c.speed),
+    opStatus: val(c.op_status) ?? "unknown",
+    confirmation: val(c.confirmation),
+    betweenness: cen && Number.isFinite(cen.betweenness) ? cen.betweenness : null,
+    /* The one field on this object whose FALSE value is a safety claim ("a redundant path exists
+       around this link"). `Boolean(undefined)` would publish that claim from a missing field, so
+       it is read as a boolean or not at all — the same guard its numeric siblings already carry. */
+    isBridge: cen && typeof cen.is_bridge === "boolean" ? cen.is_bridge : null,
+    pairsCut: cen && Number.isFinite(cen.pairs_cut) ? cen.pairs_cut : null,
+    centralityRank: cen && Number.isFinite(cen.rank) ? cen.rank : null,
+    cite: `cable_map.cables[${i}]`,
+  };
+});
+
+/* findings (punchlist) ------------------------------------------------------ */
+const findings = arr(snap.punchlist).map((p, i) => ({
+  id: `F${String(i + 1).padStart(3, "0")}`,
+  severity: val(p.severity) ?? "Info",
+  rank: num(p.rank),
+  priority: num(p.priority),
+  category: val(p.category),
+  devices: strs(p.devices, `punchlist[${i}].devices`),
+  wave: val(p.wave),
+  title: val(p.title) ?? "(untitled finding)",
+  detail: val(p.detail),
+  remediation: val(p.remediation),
+  cite: `punchlist[${i}]`,
+}));
+
+const crossLayer = arr(snap.cross_layer).map((c, i) => ({
+  id: val(c.id) ?? `CL-${i}`,
+  severity: val(c.severity) ?? "Info",
+  layers: val(c.layers),
+  title: val(c.title) ?? "",
+  detail: val(c.detail),
+  recommendation: val(c.recommendation),
+  hosts: strs(c.hosts, `cross_layer[${i}].hosts`),
+  cite: `cross_layer[${i}]`,
+}));
+
+/* forwarding substrate: routes, ACLs, SVIs ---------------------------------- */
+const routes = {};
+for (const [host, rs] of Object.entries(obj(snap.routes))) {
+  routes[host] = arr(rs)
+    .map((r, i) => ({
+      prefix: val(r.prefix),
+      source: val(r.source),
+      nextHop: val(r.next_hop),
+      outIntf: val(r.out_intf),
+      adminDistance: num(r.admin_distance),
+      cite: `routes.${host}[${i}]`,
+    }))
+    .filter((r) => r.prefix);
+}
+/**
+ * A match field may name an OBJECT-GROUP instead of an address/wildcard pair. Dropping that
+ * reference (and the groups below) made the application tell users that a group's members "were
+ * not collected" while the source file carried them — a model gap reported as a collection gap,
+ * which is the one kind of error this project cannot tolerate.
+ */
+const matchField = (f) =>
+  f ? { ip: val(f.ip), wild: val(f.wild), group: val(f.group) } : null;
+
+const acls = {};
+for (const [host, named] of Object.entries(obj(snap.acls))) {
+  acls[host] = {};
+  for (const [name, lines] of Object.entries(obj(named))) {
+    acls[host][name] = arr(lines).map((l, i) => ({
+      index: i,
+      action: val(l.action),
+      raw: val(l.raw),
+      proto: val(l.proto),
+      src: matchField(l.src),
+      dst: matchField(l.dst),
+      sport: l.sport ?? null,
+      dport: l.dport ?? null,
+      /* The producer's OWN verdict on whether it could model this line, plus the qualifiers that
+         defeated it. Carrying these is what stops the application re-deriving evaluability from
+         the raw text and drifting away from the parser that produced it — the recurring
+         parser-versus-detector defect this repository names explicitly. The producer's answer is
+         ground truth; a consumer's re-derivation is at best a second opinion. */
+      unevaluable: l.unevaluable === true,
+      unmodeledQualifiers: strs(l.unmodeled_qualifiers, `acls.${host}.${name}[${i}].unmodeled_qualifiers`),
+      /* Individually named because each defeats a DIFFERENT part of the model, and a reader is
+         owed the specific reason rather than a generic "cannot evaluate":
+           established — stateful; a forward-direction model cannot decide it
+           icmpType    — an ICMP qualifier the matcher does not implement
+           timeRange   — the rule is only active inside a named window, so ANY verdict on it is
+                         conditional even when the packet plainly matches */
+      established: l.established === true,
+      icmpType: val(l.icmp_type),
+      timeRange: val(l.time_range),
+      cite: `acls.${host}.${name}[${i}]`,
+    }));
+  }
+}
+
+/** Object groups referenced by ACL match fields. Present in the snapshot; previously discarded. */
+const objectGroups = {};
+for (const [host, groups] of Object.entries(obj(snap.object_groups))) {
+  objectGroups[host] = {};
+  for (const [name, g] of Object.entries(obj(groups))) {
+    objectGroups[host][name] = {
+      kind: val(g.kind),
+      members: arr(g.members).map((m) => ({ ip: val(m.ip), wild: val(m.wild) })),
+      cite: `object_groups.${host}.${name}`,
+    };
+  }
+}
+const aclFindings = arr(snap.acl_line_reachability?.findings).map((f, i) => ({
+  host: val(f.host),
+  acl: val(f.acl),
+  lineIndex: num(f.line_index),
+  action: val(f.action),
+  raw: val(f.raw),
+  verdict: val(f.verdict),
+  reason: val(f.reason),
+  detail: val(f.detail),
+  blockingLines: arr(f.blocking_lines),
+  sourceCommand: val(f.source_command),
+  cite: val(f.citation) ?? `acl_line_reachability.findings[${i}]`,
+}));
+
+const l3 = arr(snap.l3_forwarding).map((r, i) => ({
+  host: val(r.switch),
+  vlan: num(r.vlan),
+  sviIp: val(r.svi_ip),
+  fhrp: val(r.fhrp),
+  fhrpRole: val(r.role),
+  vip: val(r.vip),
+  routingSource: val(r.routing_source),
+  nextHop: val(r.next_hop),
+  primarySubnet: val(r.primary_subnet),
+  secondary: val(r.secondary),
+  tracking: val(r.tracking),
+  trackingUnobserved: reason(r.tracking),
+  risk: val(r.risk),
+  riskUnobserved: reason(r.risk),
+  severity: val(r.severity),
+  cite: `l3_forwarding[${i}]`,
+}));
+
+/* per-port and per-protocol evidence ---------------------------------------- */
+const interfaces = {};
+for (const [host, ports] of Object.entries(obj(snap.interfaces))) {
+  interfaces[host] = Object.entries(obj(ports)).map(([port, p]) => ({
+    port,
+    status: val(p.status),
+    duplex: val(p.duplex),
+    speed: val(p.speed),
+    portType: val(p.port_type),
+    linkType: val(p.link_type),
+    description: val(p.description),
+    portChannel: val(p.port_channel),
+    pcProtocol: val(p.port_channel_protocol),
+    runConfigObserved: Boolean(p.run_config_observed),
+    cite: `interfaces.${host}.${port}`,
+  }));
+}
+const physical = arr(snap.physical_health).map((p, i) => ({
+  host: val(p.switch),
+  port: val(p.port),
+  status: val(p.status),
+  speed: val(p.speed),
+  duplex: val(p.duplex),
+  media: val(p.media),
+  inputErrors: num(p.input_errors),
+  crcErrors: num(p.crc_errors),
+  outputErrors: num(p.output_errors),
+  /* Present in every source row and previously dropped on the floor. A counter the collector DID
+     read is evidence; discarding it is a self-inflicted coverage gap. */
+  lateCollisions: num(p.late_collisions),
+  outputDrops: num(p.output_drops),
+  poe: val(p.poe),
+  risk: val(p.risk),
+  /* The engine's own explanation for why this port has no counters — "[NOT OBSERVED] - no 'show
+     interfaces' counters for this port; L1 error rate NOT assessed" — which `val()` nulls. Carried
+     through so the reader gets the REASON, exactly as `l3.riskUnobserved` already does. */
+  riskUnobserved: reason(p.risk),
+  severity: val(p.severity),
+  cite: `physical_health[${i}]`,
+}));
+const protocols = arr(snap.protocol_health).map((p, i) => ({
+  host: val(p.switch),
+  protocol: val(p.protocol),
+  severity: val(p.severity),
+  summary: val(p.summary),
+  detail: val(p.detail),
+  cite: `protocol_health[${i}]`,
+}));
+const endpoints = arr(snap.endpoint_identity).map((e, i) => ({
+  host: val(e.host),
+  port: val(e.port),
+  vlan: val(e.vlan),
+  ip: val(e.ip),
+  mac: val(e.mac),
+  macCount: num(e.mac_count),
+  vendor: val(e.vendor),
+  endpointClass: val(e.endpoint_class),
+  confidence: val(e.confidence),
+  evidence: val(e.evidence),
+  cite: `endpoint_identity[${i}]`,
+}));
+
+/* coverage honesty: what the snapshot does NOT contain ----------------------- */
+const coverage = {
+  devicesInventoried: devices.filter((d) => d.inventoried).length,
+  devicesOnTopologyOnly: devices.filter((d) => !d.inventoried).length,
+  hostsWithRoutes: Object.keys(routes).length,
+  hostsWithAcls: Object.keys(acls).length,
+  hostsWithObjectGroups: Object.keys(objectGroups).length,
+  /* Lines the PRODUCER could not model. These are the hot path for honesty: a definite verdict
+     that silently steps over one of them is an overclaim. */
+  aclLinesUnevaluable: Object.values(acls).flatMap((n) => Object.values(n).flat()).filter((l) => l.unevaluable).length,
+  aclLinesTotal: Object.values(acls).flatMap((n) => Object.values(n).flat()).length,
+  hostsWithInterfaces: Object.keys(interfaces).length,
+  routableHosts: Object.keys(routes).sort(),
+  aclHosts: Object.keys(acls).sort(),
+  linksWithCentrality: links.filter((l) => l.betweenness !== null).length,
+  aclSummary: obj(snap.acl_line_reachability?.summary),
+  cite: "collection_completeness / coverage_matrix",
+};
+
+const out = {
+  meta: {
+    source: "webapp/sample_data/sample_fleet.snapshot.json",
+    sourceBytes: raw.length,
+    sourceSha256: sha256,
+    schema: val(snap.schema),
+    scriptVersion: val(snap.script_version),
+    collectedAt: val(snap.collected_at),
+    generatedAt: val(snap.generated_at),
+  },
+  tiers: arr(snap.cable_map?.tiers).map((t, i) => strs(t, `cable_map.tiers[${i}]`)),
+  devices,
+  links,
+  findings,
+  crossLayer,
+  routes,
+  acls,
+  aclFindings,
+  l3,
+  objectGroups,
+  interfaces,
+  physical,
+  protocols,
+  endpoints,
+  coverage,
+};
+
+mkdirSync(dirname(OUT), { recursive: true });
+const text = JSON.stringify(out);
+writeFileSync(OUT, text, "utf8");
+console.log(`compiled ${SRC}`);
+console.log(`     -> ${OUT}  (${(text.length / 1024).toFixed(0)} KB)`);
+console.log(`  sha256(source) = ${sha256}`);
+console.log(
+  `  devices=${devices.length} (inventoried=${coverage.devicesInventoried}, topology-only=${coverage.devicesOnTopologyOnly})`,
+);
+console.log(`  links=${links.length}  findings=${findings.length}  crossLayer=${crossLayer.length}`);
+console.log(
+  `  routes-hosts=${coverage.hostsWithRoutes}  acl-hosts=${coverage.hostsWithAcls}  iface-hosts=${coverage.hostsWithInterfaces}`,
+);
+console.log(
+  `  physical=${physical.length}  protocols=${protocols.length}  endpoints=${endpoints.length}  aclFindings=${aclFindings.length}`,
+);

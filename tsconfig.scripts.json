@@ -1,0 +1,42 @@
+{
+  /* The build/data scripts, type-checked for real.
+   *
+   * `tsconfig.json` lists "tools" and "e2e" in its `include`, which READS as coverage and is not:
+   * `allowJs` is off, so `npx tsc -p tsconfig.json --noEmit --listFiles` returns 77 entries and not
+   * one of them is a .mjs file, and `e2e/` does not exist at all. The F1 evidence command therefore
+   * says nothing whatever about `tools/compile-snapshot.mjs` — the only bridge between the
+   * assessment snapshot and everything the UI renders.
+   *
+   * This config is the coverage that claim implies. `src/core/scripts-typecheck.test.ts` runs it,
+   * so it is a gate rather than a file someone might remember to invoke.
+   *
+   * WHAT IS OUT OF SCOPE, measured rather than waved at. `review/*.mjs` is NOT included: checking
+   * the six tracked harnesses under the same settings produces 19 diagnostics, all of one shape —
+   * code inside `page.evaluate()` runs in the BROWSER, so it legitimately names `window`,
+   * `document` and the harness globals (`__atlasScene`, `__ev`, `__long`) that a Node type
+   * environment has never heard of, and Playwright's option unions reject the plain strings those
+   * scripts build viewports from. Fixing that is annotation work in files another review lane is
+   * actively editing, so it is named here instead of being silently implied.
+   *
+   * `noImplicitAny` is off for the same honest reason: the scripts are plain JavaScript with no
+   * annotations, and 24 of the 24 diagnostics it produced on `tools/` were "parameter implicitly
+   * has an 'any' type" — a request to rewrite the file in JSDoc, not a defect report. Everything
+   * else strict mode checks (wrong property, wrong arity, a null that is not handled, an unreachable
+   * branch) stays on, and that is the class the missing coverage was hiding.
+   */
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noImplicitAny": false,
+    "allowJs": true,
+    "checkJs": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["tools/**/*.mjs"]
+}

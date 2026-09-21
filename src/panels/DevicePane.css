@@ -1,0 +1,838 @@
+/*
+ * DevicePane.css — the right rail's device and cable surface.
+ *
+ * Every value resolves to a token in src/core/tokens.css. There is no hex literal, no px font
+ * size and no bare duration here.
+ *
+ * Two rules carry most of the visual argument and both are structural rather than decorative:
+ *
+ *   1. NO ancestor of a focusable cell sets `overflow: hidden`. The grid scrolls with
+ *      `overflow: auto` and carries padding equal to the focus-ring offset, so a ring on the
+ *      first or last column is never clipped. A clipped ring passes visual review — the reviewer
+ *      looks at a row in the middle — and that is exactly why it is written down here.
+ *   2. Rows carry no border, no background and no elevation of their own. Separation is one
+ *      hairline or nothing; hover is a fill change. Card padding in a dense list halves the
+ *      number of rows on screen and buys no information.
+ */
+
+.dp {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  block-size: 100%;
+  background: var(--surface-1);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  letter-spacing: var(--ls-2);
+}
+
+.dp__head {
+  flex: 0 0 auto;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  border-block-end: var(--hairline) solid var(--border);
+}
+
+.dp__title {
+  margin: 0;
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.dp__sub {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.dp__tabs {
+  flex: 0 0 auto;
+}
+
+.dp__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow: auto;
+  scroll-padding-block-start: var(--row-tab);
+  scroll-padding-block-end: var(--statusbar-h);
+}
+
+.dp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+}
+
+/* ══ banners ═══════════════════════════════════════════════════════════════
+   The uncollected banner reuses the not-observed grammar deliberately — dashed edge, hatch, the
+   words — because it says the same thing at device scale that `not observed` says at field
+   scale. A reader who has learned one has learned the other. */
+.dp-banner {
+  padding: var(--sp-3);
+  border: var(--hairline) dashed var(--unobserved-edge);
+  border-radius: var(--radius-md);
+  background-image: var(--unobserved-hatch);
+}
+
+.dp-banner__title {
+  margin: 0 0 var(--sp-1);
+  color: var(--unobserved);
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+}
+
+.dp-banner__text {
+  margin: 0 0 var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 62ch;
+}
+
+.dp-banner--partial {
+  border-style: solid;
+  background-image: none;
+  background: var(--surface-2);
+}
+
+/* ══ sections ══════════════════════════════════════════════════════════════ */
+
+.dp-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.dp-sec__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding-block-end: var(--sp-1);
+  border-block-end: var(--hairline) solid var(--border);
+}
+
+.dp-sec__title {
+  margin: 0;
+  font-size: var(--fs-1);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* One treatment per structural level. `.dp-sub` sits at the same level inside a section as
+   `.dp-sec__title` does at the top of one — both introduce a block of rows — so it carries the
+   identical uppercase / tracked / ruled treatment. Sentence case with no rule beside a tracked,
+   ruled caption reads as two different kinds of heading and makes the reader look for a
+   distinction that is not there. */
+.dp-sub {
+  margin: var(--sp-3) 0 0;
+  padding-block-end: var(--sp-1);
+  border-block-end: var(--hairline) solid var(--border);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dp-sec__note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+.dp-quiet {
+  color: var(--text-faint);
+}
+
+.dp-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.dp-wrap {
+  overflow-wrap: anywhere;
+}
+
+.dp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+/* ══ key/value ═════════════════════════════════════════════════════════════ */
+
+.dp-kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 9rem) minmax(0, 1fr);
+  column-gap: var(--sp-3);
+}
+
+.dp-kv__row {
+  display: contents;
+}
+
+.dp-kv__k,
+.dp-kv__v {
+  min-block-size: var(--row-kv);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-block: var(--sp-1);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.dp-kv__row:first-child .dp-kv__k,
+.dp-kv__row:first-child .dp-kv__v {
+  border-block-start: 0;
+}
+
+.dp-kv__k {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+}
+
+.dp-kv__v {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.dp-kv__row--wide .dp-kv__v {
+  line-height: var(--lh-2);
+}
+
+.dp-kv__cite {
+  margin-inline-start: auto;
+}
+
+/* ══ health ════════════════════════════════════════════════════════════════ */
+
+/*
+ * Score obeys the same two-column grid as every other row in this pane.
+ *
+ * It used to be a Meter sitting OUTSIDE the key/value grid, and a Meter carries its own three-column
+ * grid: its label took the 1fr track, which pushed the bar to roughly 55 % of the pane width and
+ * left a 4px fill pinned at the bar's left end reading as a stray pip. The band then stacked under
+ * a right-aligned "Band" caption outside the column structure entirely — three different alignments
+ * in one row of a pane whose whole value is that you can read down it.
+ *
+ * Now the `dt` carries the label, the Meter's own label is reduced to the accessible name the
+ * `role="meter"` needs, and the bar fills the value column with the number and the band pill on its
+ * baseline.
+ */
+.dp-kv__v .ui-meter {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /* `flex: 1 1 auto` and NOT `inline-size: 100%`: the value cell wraps, so a full-width meter
+     pushes the band pill onto a second line and the row loses its single baseline again — the
+     exact stacking this fix exists to remove. */
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+
+/* `fixed`, not `absolute` — see .visually-hidden in src/ui/primitives.css for the whole argument.
+   Short version: absolute with no offsets keeps its static position against the nearest positioned
+   ancestor, or against the initial containing block when there is none, so it escapes every
+   scroller it sits in and stretches the document. This exact rule was measured extending the page
+   to 887px against an 800px viewport. */
+.dp-kv__v .ui-meter__label {
+  position: fixed;
+  top: 0;
+  left: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.dp-kv__v .ui-meter__track {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.dp-kv__v .ui-meter__value {
+  flex: none;
+}
+
+.dp-deduct {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dp-deduct__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem 3rem;
+  align-items: center;
+  gap: var(--sp-2);
+  min-block-size: var(--row-kv);
+  padding-block: var(--sp-1);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.dp-deduct__row:first-child {
+  border-block-start: 0;
+}
+
+.dp-deduct__label {
+  font-size: var(--fs-1);
+  overflow-wrap: anywhere;
+}
+
+.dp-deduct__bar {
+  block-size: var(--sp-1);
+  background: var(--surface-3);
+  border-radius: var(--radius-sm);
+}
+
+.dp-deduct__fill {
+  display: block;
+  block-size: 100%;
+  background: var(--text-faint);
+  border-radius: var(--radius-sm);
+}
+
+.dp-deduct__pts {
+  text-align: end;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.dp-arith {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2);
+  border-inline-start: 2px solid var(--border-strong);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+/* ══ the two-column comparison ═════════════════════════════════════════════ */
+
+.dp-cmp {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+}
+
+@media (min-width: 60rem) {
+  .dp-cmp {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.dp-cmp__col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-inline-size: 0;
+}
+
+.dp-cmp__head {
+  margin: 0;
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.dp-certainty {
+  font-weight: var(--fw-medium);
+}
+
+.dp-certainty[data-certainty="observed"] { color: var(--claim-observed); }
+.dp-certainty[data-certainty="uncertain"] { color: var(--claim-indeterminate); }
+.dp-certainty[data-certainty="not-determinable"] { color: var(--claim-indeterminate); }
+
+.dp-claim {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  max-inline-size: 78ch;
+}
+
+/* A disagreement is a finding. It is never folded away, and when it is live it is bordered in
+   the indeterminate violet rather than in a severity colour: the two sources differ, which is
+   not itself a network fault. */
+.dp-disagree {
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.dp-disagree--live {
+  border-color: var(--claim-indeterminate);
+  border-inline-start-width: 3px;
+}
+
+.dp-disagree__head {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dp-disagree--live .dp-disagree__head {
+  color: var(--claim-indeterminate);
+}
+
+.dp-disagree__body,
+.dp-disagree__t9 {
+  margin: 0;
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 78ch;
+}
+
+.dp-disagree__t9 {
+  margin-block-start: var(--sp-2);
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.dp-caveats {
+  margin: 0;
+  padding-inline-start: var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.dp-caveats li {
+  margin-block-end: var(--sp-1);
+  max-inline-size: 76ch;
+}
+
+.dp-altproj {
+  margin: 0;
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  color: var(--text-muted);
+}
+
+.dp-altproj__k {
+  display: block;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+}
+
+/* ══ lists ═════════════════════════════════════════════════════════════════ */
+
+.dp-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dp-list__row {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-block-size: var(--row-grid);
+  padding-block: var(--sp-1);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.dp-list__row:first-child {
+  border-block-start: 0;
+}
+
+.dp-list__row:hover {
+  background: var(--surface-2);
+}
+
+.dp-list__row[data-selected="true"] {
+  background: var(--surface-3);
+}
+
+.dp-list__lead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.dp-list__main {
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  overflow-wrap: anywhere;
+}
+
+.dp-linkbtn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  min-block-size: var(--target-min);
+}
+
+.dp-linkbtn:hover {
+  color: var(--accent);
+}
+
+.dp-linkbtn:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.dp-verdict {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  color: var(--claim-indeterminate);
+}
+
+.dp-verdict[data-verdict="permit"],
+.dp-verdict[data-verdict="deny"] {
+  color: var(--text-muted);
+}
+
+.dp-raw {
+  display: block;
+  margin-block-start: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.dp-sevcounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dp-sevcounts__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.dp-sevcounts__n {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.dp-layers {
+  display: inline-flex;
+  gap: var(--sp-1);
+  margin-inline-start: var(--sp-2);
+}
+
+/* Layer chips are achromatic on purpose: the layer is a fact about the finding's composition,
+   not a severity, and giving it chroma would compete with the severity badge beside it. */
+.dp-layer {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-1);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+/* ══ L3 blocks ═════════════════════════════════════════════════════════════ */
+
+.dp-l3 {
+  padding-block: var(--sp-2);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.dp-l3__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-block-end: var(--sp-1);
+}
+
+.dp-l3__vlan {
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+}
+
+.dp-scope {
+  margin: 0;
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 78ch;
+}
+
+.dp-scope--absent {
+  border-color: var(--claim-indeterminate);
+  border-inline-start-width: 3px;
+}
+
+/* ══ ACL lines ═════════════════════════════════════════════════════════════ */
+
+.dp-acl {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dp-acl__line {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding-block: var(--sp-1);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.dp-acl__line:first-child {
+  border-block-start: 0;
+}
+
+.dp-acl__idx {
+  text-align: end;
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.dp-acl__text {
+  min-inline-size: 0;
+}
+
+.dp-acl__line--unevaluable {
+  background: var(--surface-2);
+}
+
+.dp-acl__flag {
+  display: block;
+  margin-block-start: var(--sp-1);
+  color: var(--claim-indeterminate);
+  font-size: var(--fs-0);
+}
+
+.dp-acl__line[data-match="true"] {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* ══ link ends ═════════════════════════════════════════════════════════════ */
+
+.dp-linkends {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--sp-5) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.dp-linkend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.dp-linkend:hover {
+  background: var(--surface-2);
+}
+
+.dp-linkend__host {
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+}
+
+.dp-linkends__joint {
+  block-size: var(--hairline);
+  background: var(--border-strong);
+}
+
+/* ══ raw ═══════════════════════════════════════════════════════════════════ */
+
+.dp-json {
+  margin: 0;
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  line-height: var(--lh-1);
+  overflow: auto;
+  max-block-size: 34rem;
+  tab-size: 2;
+}
+
+.dp-json:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* ══ tab label with its reason ═════════════════════════════════════════════
+   A disabled tab that shows only its name reads as "nothing to see here". The reason is what
+   turns it into "we did not collect this", so the reason travels on the tab itself. */
+.dp-tabwhy {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: var(--lh-0);
+}
+
+.dp-tabwhy__why {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-0);
+  color: var(--unobserved);
+}
+
+/* ══ the record grid ═══════════════════════════════════════════════════════ */
+
+.rg__scroll {
+  /* `auto`, never `hidden`: a focus ring on a cell must survive, and the padding is exactly the
+     ring offset so the first and last columns keep theirs too. */
+  overflow: auto;
+  padding: var(--focus-ring-offset);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  max-block-size: 30rem;
+  scroll-padding-inline-start: 7.5rem;
+}
+
+.rg {
+  display: block;
+  min-inline-size: max-content;
+  font-size: var(--fs-1);
+}
+
+.rg__row {
+  display: grid;
+  grid-template-columns: var(--rg-cols);
+  align-items: stretch;
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.rg__row:first-child {
+  border-block-start: 0;
+}
+
+.rg__row:not(.rg__row--head):hover .rg__cell {
+  background: var(--surface-2);
+}
+
+.rg__cell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--row-inspect);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-1);
+  overflow-wrap: anywhere;
+}
+
+.rg__cell[data-align="end"] {
+  justify-content: flex-end;
+  text-align: end;
+}
+
+.rg__cell[data-sticky="true"] {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  border-inline-end: var(--hairline) solid var(--border);
+}
+
+/* DEVIATION from the global focus token, stated rather than hidden: the ring is drawn INSIDE the
+   cell. A positive offset would be painted under the neighbouring cell on a sticky first column,
+   and clipped at the scroll container's edge on the last. `outline` is still the mechanism, so it
+   survives forced-colors; only the offset's sign differs, and the 2px perimeter is unchanged. */
+.rg__cell:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: calc(var(--focus-ring-offset) * -1);
+  box-shadow: 0 0 0 1px var(--bg) inset;
+}
+
+.rg__row--head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+}
+
+.rg__cell--head {
+  min-block-size: var(--row-colhead);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+  border-block-end: var(--hairline) solid var(--border-strong);
+}
+
+.rg__cell--head[data-sticky="true"] {
+  z-index: 3;
+}
+
+.rg__cites {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+/* ══ reduced motion ════════════════════════════════════════════════════════
+   Nothing on this pane animates. The rule is present so that a future hover transition cannot be
+   added without meeting it. */
+@media (prefers-reduced-motion: reduce) {
+  .dp *,
+  .dp *::before,
+  .dp *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

@@ -1,0 +1,1022 @@
+/*
+ * chrome.css — the persistent frame: header, status bar, coverage disclosure, theme control.
+ *
+ * SCOPE. This file styles the INSIDES of those four components only. `shell.css` owns the grid,
+ * the region geometry and the hairlines between regions, and nothing here re-declares them —
+ * two files sizing one region is how a 1px seam becomes a 2px seam on one breakpoint and nobody
+ * can find out why.
+ *
+ * DISCIPLINE. No hex literal, no px font size, no magic duration. The chrome is ACHROMATIC: the
+ * only chromatic tokens used here are `--accent` on the brand mark and the active-surface
+ * underline, the claim-strength tokens in the legend where the word is always present, and the
+ * absence family in the coverage table. A status bar that tints its own furniture cannot make a
+ * Critical finding louder than itself.
+ *
+ * DENSITY. The header is 44px and the status bar is 26px. Everything in them is --fs-0 or --fs-1
+ * on a 4px lattice, and every interactive target still clears the 24px floor (WCAG 2.5.8) —
+ * the hit areas are grown with padding, never bought back by shrinking a control.
+ */
+
+/* ══ header ════════════════════════════════════════════════════════════════ */
+
+.hdr {
+  gap: var(--sp-3);
+}
+
+.hdr-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  min-width: 0;
+}
+
+.hdr-brand__mark {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.hdr-brand__name {
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-3);
+  white-space: nowrap;
+}
+
+/* ── snapshot identity ──────────────────────────────────────────────────────
+   Two 11px lines inside a 44px bar. It is a button because the full sha256, the byte count and
+   the compile time live behind it — but the identity itself is never behind anything. */
+.hdr-snap {
+  display: grid;
+  gap: 1px;
+  flex: none;
+  max-width: 22rem;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  text-align: start;
+  cursor: pointer;
+}
+
+.hdr-snap:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.hdr-snap__line1,
+.hdr-snap__line2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+}
+
+.hdr-snap__file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.hdr-snap__line2 {
+  color: var(--text-faint);
+}
+
+.hdr-snap__schema,
+.hdr-snap__when {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.hdr-snap__schema {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hdr-snap__sha {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.hdr-snap__key {
+  color: var(--text-faint);
+}
+
+.hdr-snap__dot {
+  /* --border-strong is a CONTROL-EDGE token (3.85:1 on s1) and this separator is a TEXT GLYPH.
+     It is aria-hidden decoration, so SC 1.4.3's Incidental clause exempts it — but a token that
+     only passes because nobody is supposed to read it is one refactor away from being a real
+     1.4.3 failure. --text-faint is the floor of the neutral text ladder (5.36:1 light,
+     5.65:1 dark) and is what the metadata either side of the dot already uses. */
+  color: var(--text-faint);
+}
+
+/* ── the snapshot provenance panel ───────────────────────────────────────── */
+
+.snapdetail {
+  display: grid;
+  gap: var(--sp-3);
+  max-width: 26rem;
+  padding: var(--sp-1);
+}
+
+.snapdetail__title {
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.snapdetail__list {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.snapdetail__row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-height: var(--row-kv);
+}
+
+.snapdetail__row dt {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+}
+
+.snapdetail__row dd {
+  min-width: 0;
+  font-size: var(--fs-1);
+  overflow-wrap: anywhere;
+}
+
+.snapdetail__row code {
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+.snapdetail__note {
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  border-top: var(--hairline) solid var(--border);
+  padding-top: var(--sp-2);
+}
+
+/* ── the global query bar ───────────────────────────────────────────────────
+   The focus ring sits on the FORM, not the input, so the glyph, the keycap and the clear button
+   are inside the indicated region. The input's own ring is suppressed for the same reason: two
+   concentric rings read as a rendering fault. */
+.hdr-query {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 26rem;
+  min-width: 8rem;
+  max-width: 42rem;
+  min-height: 1.75rem;
+  padding-inline: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.hdr-query:focus-within {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.hdr-query__glyph {
+  width: 0.875em;
+  height: 0.875em;
+  color: var(--text-faint);
+  flex: none;
+}
+
+/* The INPUT is the target, not the bar around it: the form has 4.6px of block padding either side
+   and clicking that padding does not focus the field, which was measured. So the input stretches
+   to the bar's full height rather than sitting 18.8px tall inside a 28px box — the same pixels, now
+   all of them live, and the 2.5.8 floor met without leaning on the spacing exception. */
+.hdr-query__input {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-block-size: var(--target-min);
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.hdr-query__input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.hdr-query__input::placeholder {
+  color: var(--text-faint);
+}
+
+/* ── surface switcher ───────────────────────────────────────────────────────
+   The active surface is marked three ways — ink, fill and an accent underline — so the state
+   survives greyscale and a forced-colours palette. */
+.hdr-surfaces {
+  flex: none;
+  gap: 2px;
+}
+
+.hdr-surface {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 1.75rem;
+  min-width: 3rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.hdr-surface:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.hdr-surface[aria-pressed="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.hdr-surface[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: var(--sp-2);
+  bottom: -1px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.hdr-surface__count {
+  min-width: 1rem;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.hdr-util {
+  flex: none;
+}
+
+.hdr-more {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-height: 1.75rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.hdr-more__panel {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.hdr-more__panel .ui-toolbar {
+  flex-wrap: wrap;
+}
+
+.hdr-more__utils {
+  display: grid;
+  gap: var(--sp-1);
+  justify-items: start;
+  border-top: var(--hairline) solid var(--border);
+  padding-top: var(--sp-2);
+}
+
+/* ══ theme control ═════════════════════════════════════════════════════════
+   Three radios, one tab stop. The checked option is carried by fill AND by the accent underline,
+   never by colour alone. */
+
+.thm {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.thm__opt {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 24px square: the WCAG 2.5.8 floor, reached with padding rather than by growing the glyph. */
+  min-width: var(--target-min);
+  min-height: var(--target-min);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.thm__opt:hover {
+  color: var(--text);
+}
+
+.thm__opt[aria-checked="true"] {
+  border-color: var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.thm__opt[aria-checked="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 25%;
+  bottom: 2px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.thm__glyph {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* ══ keyboard reference ════════════════════════════════════════════════════ */
+
+.kbdhelp {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.kbdhelp__label {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+}
+
+.kbdhelp__table {
+  width: 100%;
+  font-size: var(--fs-1);
+}
+
+.kbdhelp__table th {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: var(--hairline) solid var(--border);
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  text-align: start;
+}
+
+.kbdhelp__table td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: var(--hairline) solid var(--border);
+  vertical-align: top;
+}
+
+.kbdhelp__keys {
+  display: flex;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.kbdhelp__scope {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.kbdhelp__empty {
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+/* ══ status bar ════════════════════════════════════════════════════════════ */
+
+.sb {
+  gap: var(--sp-3);
+}
+
+/* Nothing in the status bar shrinks. `shell.css` makes the bar a horizontal scroll region and
+   every item inside it is `white-space: nowrap`, so a shrinking flex item does not wrap — it
+   overflows its own box and paints on top of its neighbour. That failure looks like a rendering
+   fault and it lands on the one line in the product whose job is to be readable at all times. */
+.sb > * {
+  flex: none;
+}
+
+.sb__spacer {
+  flex: 1 1 auto;
+  min-width: var(--sp-2);
+}
+
+.sb__group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.sb__key {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+}
+
+/* A denominator is a control: it opens the disclosure that explains it. The hit area is grown to
+   the 24px floor with padding, inside a 26px bar, by letting it bleed over the full bar height. */
+.sb__cov {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--target-min);
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The ring is drawn INSIDE these two controls. `shell.css` gives `.app__status` an `overflow-x`,
+   which makes the block axis a scroll region too, so a ring at a positive offset on a 24px
+   control inside a 26px bar is clipped top and bottom — the single most common way a focus
+   indicator disappears without anyone noticing, because it still looks fine on whichever control
+   happens to sit mid-region. An inset ring keeps the full 2px perimeter that WCAG 2.4.13 asks
+   for; only its offset changes. The header's identity block does the same, because its two 11px
+   lines plus a 2px offset would otherwise overhang the 44px bar. */
+.sb__cov:focus-visible,
+.hdr-snap:focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-w));
+}
+
+.sb__cov:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.sb__cov[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.sb__sep {
+  width: 1px;
+  height: 0.875rem;
+  flex: none;
+  background: var(--border);
+}
+
+.sb__snap,
+.sb__sel,
+.sb__scene {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.sb__sha,
+.sb__sel-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+.sb__when {
+  color: var(--text-faint);
+}
+
+.sb__sel-none {
+  color: var(--text-faint);
+}
+
+/* The scene readout is a control once there is a reading to disclose, so it takes the same
+   affordance as the coverage denominators. Kept as a separate selector rather than adding
+   `.sb__cov` semantics here, because the two say different things: a denominator opens the row
+   that explains it, this opens the measurements the permanent line deliberately does not draw. */
+.sb__scene--btn {
+  min-height: var(--target-min);
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  cursor: pointer;
+}
+
+.sb__scene--btn:focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-w));
+}
+
+.sb__scene--btn:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.sb__scene--btn[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+
+.sb__tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-muted);
+}
+
+/* A reduced quality tier is named in words and marked with a glyph. A degradation the reader
+   cannot see is a silent lie about what is on screen, and a colour alone would not survive a
+   greyscale capture. */
+.sb__scene:not([data-tier="high"]) .sb__tier {
+  color: var(--text);
+}
+
+
+.sb__reduced {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.sb__converged {
+  color: var(--text-faint);
+}
+
+.sb__dot {
+  color: var(--border-strong);
+}
+
+/* ══ coverage disclosure ═══════════════════════════════════════════════════
+   Docked above the status bar rather than inside it: `.app__status` is a 26px scroll region and
+   an absolutely positioned child of it would be clipped on both axes. Not modal — the
+   investigation behind it stays live, because a coverage figure is read AGAINST what is on
+   screen, not instead of it. */
+
+.covpanel {
+  position: fixed;
+  inset-inline: 0;
+  bottom: var(--statusbar-h);
+  z-index: var(--z-overlay);
+  max-height: min(60vh, 34rem);
+  overflow: auto;
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--border-strong);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+}
+
+.covpanel__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.covpanel__title {
+  grid-column: 1;
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.covpanel__lede {
+  grid-column: 1;
+  max-width: 88ch;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.covpanel__head .ui-btn {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.covpanel__legend {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.covpanel__legend[data-highlight] {
+  border-top-color: var(--border-strong);
+}
+
+.covpanel__subtitle {
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-2);
+  font-weight: var(--fw-semibold);
+}
+
+/* Renderer diagnostics. The ONLY place a frame-timing figure is drawn in this product (see
+   StatusBar.tsx's header and acceptance F6); it exists behind a click so the permanent chrome
+   stays a function of the data. */
+.covpanel__renderer {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.covpanel__renderer[data-highlight] {
+  border-top-color: var(--border-strong);
+}
+
+.covpanel__note {
+  margin: 0 0 var(--sp-2);
+  max-width: 96ch;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.covpanel__diag {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.covpanel__diag-row {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.covpanel__diag-row dt {
+  color: var(--text-muted);
+}
+
+.covpanel__diag-row dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.covpanel__badges {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.covpanel__badge-row {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.covpanel__badge-row dd {
+  color: var(--text-muted);
+  max-width: 96ch;
+}
+
+.covpanel__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  border: 1px solid currentcolor;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+}
+
+.covpanel__badge[data-badge="SCOPED"] {
+  color: var(--claim-scoped);
+}
+.covpanel__badge[data-badge="OBSERVED"] {
+  color: var(--claim-observed);
+}
+.covpanel__badge[data-badge="INDETERMINATE"] {
+  color: var(--claim-indeterminate);
+}
+/* --claim-out-of-scope is a NON-TEXT token (3.85:1). The word is drawn in --text-muted and only
+   the border carries the token, so the badge never falls below the 4.5:1 text floor. */
+.covpanel__badge[data-badge="OUT OF SCOPE"] {
+  color: var(--text-muted);
+  border-color: var(--claim-out-of-scope);
+  border-style: dashed;
+}
+
+/* ══ the coverage table ════════════════════════════════════════════════════ */
+
+/* The table scrolls inside its OWN region. Below about 60rem the seven columns cannot all fit,
+   and the alternative — letting the label column collapse — shreds "Collector reached the device"
+   into a five-line vertical strip that nobody can scan. WCAG 1.4.10 asks that the page body never
+   scroll in two dimensions; it permits a wide table to scroll inside itself. */
+.cov {
+  overflow-x: auto;
+  scroll-padding-inline: var(--sp-2);
+}
+
+.cov__table {
+  width: 100%;
+  min-width: 46rem;
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.cov__table th,
+.cov__table td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: var(--hairline) solid var(--border);
+  text-align: start;
+  vertical-align: baseline;
+}
+
+.cov__table thead th {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+}
+
+.cov__table tbody tr[data-highlight="true"] {
+  background: var(--surface-2);
+}
+
+.cov__table tbody tr[data-highlight="true"] .cov__label {
+  font-weight: var(--fw-semibold);
+}
+
+.cov__c-label {
+  width: 32%;
+  min-width: 13rem;
+}
+
+.cov__c-num {
+  width: 5.5rem;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.cov__c-of {
+  color: var(--text-faint);
+}
+
+.cov__c-bar {
+  width: 22%;
+  min-width: 8rem;
+}
+
+.cov__c-cite {
+  width: 16rem;
+}
+
+.cov__label {
+  display: block;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.cov__meaning {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-0);
+}
+
+/* The three states differ in ink, in fill and in height, so the picture survives greyscale. The
+   numbers in the row are the accessible data; this bar is decoration over them. */
+.cov__stack {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  height: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.cov__seg {
+  height: 100%;
+}
+
+.cov__seg[data-state="observed"] {
+  background: var(--claim-observed);
+}
+
+.cov__seg[data-state="absent"] {
+  background-color: color-mix(in oklab, var(--unobserved) 18%, transparent);
+  background-image: var(--unobserved-hatch);
+  border-inline: 1px dashed var(--unobserved-edge);
+}
+
+.cov__seg[data-state="na"] {
+  height: 40%;
+  background: var(--claim-out-of-scope);
+}
+
+.cov__c-num[data-state="observed"] {
+  color: var(--text);
+}
+
+.cov__c-num[data-state="absent"] {
+  color: var(--unobserved);
+  font-weight: var(--fw-medium);
+}
+
+.cov__c-num[data-state="na"] {
+  color: var(--text-muted);
+}
+
+.cov__cite {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+}
+
+/* A disagreement between our count and the snapshot's own figure gets a full-width row of its
+   own. Both numbers are shown; neither is suppressed. */
+.cov__disagreement td {
+  color: var(--claim-indeterminate);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  background: color-mix(in oklab, var(--claim-indeterminate) 10%, transparent);
+}
+
+.cov__notes {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.cov__note {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: var(--sp-3);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+}
+
+.cov__note dt {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+}
+
+.cov__note dd {
+  max-width: 96ch;
+  color: var(--text-muted);
+}
+
+.cov__note[data-tone="indeterminate"] dd {
+  color: var(--claim-indeterminate);
+}
+
+/* The named members of the undecidable ACL set. A count without its members tells the reader how
+   big the hole is; only the names tell them whether the hole is where their question lives — so
+   each member is a separate row with its line text and every reason it cannot be decided. */
+.cov__members {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.cov__members li {
+  padding-inline-start: 0.6rem;
+  border-inline-start: 2px solid var(--claim-indeterminate, currentColor);
+  line-height: 1.45;
+}
+
+.cov__members code {
+  display: block;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text, currentColor);
+}
+
+/* ══ narrow viewports ══════════════════════════════════════════════════════
+   The collapse ladder in shell.css takes the frame to one column at 1023px and drops the canvas
+   at 767px. Here the chrome follows: the identity keeps its file name as long as it fits, the
+   coverage table drops its widest columns rather than scrolling the page in two dimensions, and
+   nothing is removed that was not moved somewhere reachable. */
+
+@media (max-width: 79.9375rem) {
+  .hdr-snap {
+    max-width: 16rem;
+  }
+
+  .cov__c-cite {
+    width: 10rem;
+  }
+}
+
+@media (max-width: 63.9375rem) {
+  .hdr-brand__name {
+    /* The mark stays; the wordmark is the first thing a dense bar can afford to lose. */
+    display: none;
+  }
+
+  .covpanel {
+    max-height: min(72vh, 40rem);
+  }
+
+  /* The Source column is NOT dropped here. Hiding it would remove the citation behind every
+     figure in the table at exactly the widths where a reader is most likely to be checking one
+     on a small screen; the table scrolls inside its own region instead. */
+}
+
+@media (max-width: 47.9375rem) {
+  /* 320px budget: mark 32 + identity 90 + query 96 + More 60 + three 12px gaps = 314. */
+  .hdr-query {
+    flex-basis: 8rem;
+    min-width: 6rem;
+  }
+
+  .covpanel {
+    position: fixed;
+    inset: auto 0 0 0;
+    max-height: 82vh;
+  }
+
+  .cov__meaning {
+    display: none;
+  }
+}
+
+/* Forced colours: fills and hatches are replaced by the system palette, so the shape channels do
+   the work. Keep the dashed absence edge and give the flat segments a visible border. */
+@media (forced-colors: active) {
+  .cov__seg {
+    border: 1px solid CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .cov__seg[data-state="observed"] {
+    background: CanvasText;
+  }
+
+  .cov__seg[data-state="absent"],
+  .cov__seg[data-state="na"] {
+    background: Canvas;
+  }
+
+  .hdr-surface[aria-pressed="true"],
+  .thm__opt[aria-checked="true"] {
+    border-color: Highlight;
+  }
+}
+
+@media print {
+  /* The disclosure is a screen affordance; on paper the table is the point and it prints open. */
+  .covpanel {
+    position: static;
+    max-height: none;
+    box-shadow: none;
+  }
+}

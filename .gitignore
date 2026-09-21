@@ -1,0 +1,48 @@
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Review artefacts are REGENERATED, never authored: capture.mjs rebuilds shots/, blind-pair.mjs
+# rebuilds blind/, measure-inp.mjs rebuilds reports/. Committing them would put megabytes of
+# third-party product screenshots into the history and make every visual change a binary diff.
+# The scripts that produce them ARE tracked, which is what makes the review reproducible.
+review/shots/
+review/blind/
+review/reports/
+
+# Scratch written by review and audit agents while they work. Untracked AND ignored is the
+# difference between "not part of the tree" and "about to be swept into a `git add -A`": .audit/
+# held 20+ probe scripts and a shots/ folder during this build with nothing declaring them
+# disposable. src/core/source-hygiene.test.ts skips ignored directories for the same reason.
+#
+# THE CLASS, NOT THE ONE DIRECTORY NAME. The rule above was written for `.audit/` and applied to
+# `.audit/` — and the agents then wrote their scratch somewhere else. Measured 2026-09-21:
+# `.probe/` (18 .mjs plus a shots/ tree), 93 `review/_audit_*.mjs`, 2 `review/_repair_*.mjs` and
+# seven loose files at the repository root were all untracked AND unignored, so the first
+# `git add -A` would have swept roughly a hundred probe scripts and 600 KB of probe PNGs into the
+# first commit. A remedy aimed at a directory NAME instead of at the class it means is the exact
+# defect shape this repository documents elsewhere, committed by its own ignore file.
+#
+# So the class is named by what these files ARE — an agent wrote it to look at something — using
+# the prefixes the agents actually use, at any depth, plus the directories and the generated
+# tool output. Preferred convention remains: put probes under `.audit/`. These patterns are the
+# backstop for when that is forgotten, not a licence to skip it.
+#
+# NOTE this does NOT weaken `src/core/source-hygiene.test.ts`. Its walk skips a fixed list of
+# DIRECTORIES, not gitignored paths, so a probe dropped in `src/` is still walked, still collected
+# by the test glob, and still caught by its structural zero-assertion gate — which is what caught
+# `src/_audit_honesty.test.ts`. Ignoring stops a probe being COMMITTED; that gate stops it RUNNING.
+.audit/
+shots/
+_audit_*
+_repair_*
+_probe_*
+.probe/
+
+# Playwright's own output directory, and the criterion-indexed dumps audit runs leave at the root
+# (`d4_contrast.json`, `d7_reduce.png`, `d7_report.json` — named for the acceptance criterion the
+# run was measuring). Generated, per-run, and never read twice.
+test-results/
+/d[0-9]_*.json
+/d[0-9]_*.png

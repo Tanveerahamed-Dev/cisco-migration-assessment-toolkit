@@ -1,0 +1,474 @@
+/*
+ * App.css — only what the SHELL owns.
+ *
+ * The frame geometry, the responsive ladder, focus, scrollbars and the skip link live in
+ * shell.css and are not restated here. Component styling lives with its component. What is left
+ * for this file is the handful of things only the integrator renders: the query-bar token row,
+ * the rail-B pane switch, the single-column pane control, the stage's loading state, the surface
+ * error state, and the link-envelope notice.
+ *
+ * Every value is a token from src/core/tokens.css. A literal colour or px font size in here is a
+ * defect, not a shortcut.
+ */
+
+/* `hidden` must win over the display the rail and the pane already carry. Without this the
+   attribute is inert on a flex or grid child and a "hidden" region stays on screen while being
+   removed from the accessibility tree — visible to the eye, gone to a screen reader, which is the
+   worst of both. */
+.rail[hidden],
+.railb__pane[hidden] {
+  display: none !important;
+}
+
+/* ── the query bar: the investigation question as removable tokens ─────────── */
+
+.qbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.qbar::-webkit-scrollbar {
+  height: 0;
+}
+
+.qbar__label {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  text-transform: uppercase;
+}
+
+.qbar__tokens {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* The empty state is a statement about scope, not an absence of chrome: with nothing selected and
+   nothing filtered, the investigation really is the whole snapshot, and saying so is the honest
+   reading of an empty token row. */
+/* It wraps. It is a sentence, not a token, and a sentence pinned to one line is 631 CSS px wide —
+   measured — which is wider than the whole frame below 768px. The token row beside it scrolls; the
+   sentence must not make the row scroll on a first visit, when there is nothing to scroll to. */
+.qbar__empty {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+/* No result count lives here. The queue's own accounting line and the status bar already own the
+   denominators, and a third place stating them is a third place for them to disagree. */
+.qbar__clear {
+  flex: none;
+  margin-inline-start: auto;
+  min-height: var(--target-min);
+  padding-inline: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  cursor: pointer;
+}
+.qbar__clear:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* ── the link-envelope notice ──────────────────────────────────────────────── */
+
+/* A refused link is a standing fact about what is on screen, so it is a bar and not a toast: it
+   stays until dismissed, and dismissing it is an explicit act. */
+.url-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: var(--hairline) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.url-notice__mark {
+  flex: none;
+  margin-block-start: 0.1em;
+  color: var(--claim-out-of-scope);
+  font-weight: var(--fw-semibold);
+}
+
+.url-notice__text {
+  min-width: 0;
+}
+
+.url-notice__dismiss {
+  flex: none;
+  margin-inline-start: auto;
+  min-height: var(--target-min);
+  min-width: var(--target-min);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  cursor: pointer;
+}
+.url-notice__dismiss:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* ── rail A slots ──────────────────────────────────────────────────────────── */
+
+.rail__slot {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The queue is the rail's flexible child when no path panel is present; when one is, the grid in
+   shell.css gives it the third row and this has no effect. */
+.rail--a:not([data-split="true"]) .rail__slot--queue {
+  flex: 1 1 auto;
+}
+
+/* ── rail B: which evidence, and the two panes ─────────────────────────────── */
+
+.railb__switch {
+  display: flex;
+  flex: none;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: var(--hairline) solid var(--border);
+  background: var(--surface-1);
+}
+
+.railb__switch-btn {
+  min-height: var(--target-min);
+  padding-inline: var(--sp-3);
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.railb__switch-btn:hover {
+  color: var(--text);
+}
+/* The chosen option carries a filled ground AND a border, so the state survives a greyscale
+   capture and forced-colors alike — colour alone would fail 1.4.1. */
+.railb__switch-btn[aria-checked="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.railb__pane {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── the single-column pane control ────────────────────────────────────────── */
+
+.paneswitch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-block-end: var(--hairline) solid var(--border);
+  background: var(--surface-1);
+}
+
+/* ── single column: the frame's own children, in the ladder's order ──────────
+   shell.css declares two grid rows for `.app__body` below 1024px — the stage and one panel. The
+   frame actually renders up to five children into that box (the link notice, the pane control,
+   both rails and the stage), and a two-row template silently squeezes the extra ones: measured at
+   900px, the stage collapsed to 85px against a declared floor of 320.
+
+   So below 1024px the body becomes a flex column sized for the children that exist, and `order`
+   puts the stage first VISUALLY while the DOM keeps the focus order of design brief 2.4.3 —
+   header, query bar, Rail A, stage, Rail B. Reordering the DOM instead would make the tab order
+   disagree with the reading order, which WCAG 2.4.3 exists to prevent. */
+@media (max-width: 63.9375rem) {
+  .app__body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .url-notice {
+    order: 0;
+    flex: none;
+  }
+
+  .paneswitch {
+    order: 1;
+    flex: none;
+  }
+
+  .app__stage {
+    order: 2;
+    flex: none;
+    /* The brief's 46vh with a 20rem floor. `max()` rather than `minmax()` because this is a flex
+       item, and a flex item with a percentage basis inside an auto-height column resolves to
+       content height — which is how the stage ended up 85px tall. */
+    block-size: max(20rem, 46vh);
+  }
+
+  .rail--a,
+  .rail--b {
+    order: 3;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+
+/* Below 768px the page itself scrolls (shell.css lifts `overflow: hidden` from the body), so the
+   rails size to their content and the stage keeps its declared height only while it is shown. */
+@media (max-width: 47.9375rem) {
+  .rail--a,
+  .rail--b {
+    flex: none;
+  }
+}
+
+.paneswitch__group {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.paneswitch__btn,
+.paneswitch__fabric {
+  min-height: var(--target-min);
+  padding-inline: var(--sp-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.paneswitch__btn[aria-checked="true"],
+.paneswitch__fabric[aria-pressed="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.paneswitch__fabric {
+  margin-inline-start: auto;
+}
+
+/* ── stage: renderer pending ───────────────────────────────────────────────── */
+
+.stage-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  height: 100%;
+  padding: var(--sp-5);
+  background: var(--stage-bg);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* The determinate half of the pending state: one row per tier, one box per device, drawn from
+   `fabric.tiers`. Deliberately static — a shimmer here would be the second looping animation in
+   the product and it would be decoration, not information. */
+.stage-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: center;
+  width: 100%;
+  max-width: 44rem;
+}
+
+.stage-skeleton__tier {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
+.stage-skeleton__label {
+  flex: 0 0 auto;
+  min-width: 6.5rem;
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  text-align: end;
+}
+
+.stage-skeleton__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  flex: 1 1 auto;
+}
+
+.stage-skeleton__node {
+  width: var(--sp-4);
+  height: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 2px);
+  background: var(--surface-2, transparent);
+}
+
+.stage-pending__text {
+  max-width: 52ch;
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.stage-pending__spinner {
+  width: var(--sp-5);
+  height: var(--sp-5);
+  border: 2px solid var(--border);
+  border-block-start-color: var(--accent);
+  border-radius: var(--radius-pill);
+  animation: stage-pending-spin 900ms linear infinite;
+}
+
+/* The only looping animation in the application, and it loops for the one legitimate reason:
+   it marks work whose duration is not known in advance (design brief 4.8). It stops existing the
+   moment the chunk lands, and reduced motion replaces the rotation with a static ring. */
+@keyframes stage-pending-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-pending__spinner {
+    animation: none;
+    border-block-start-color: var(--accent);
+  }
+}
+
+/* ── stage: the scene is warming up ────────────────────────────────────────────
+   Drawn OVER the canvas rather than in place of it, because by this point the canvas exists and
+   the renderer owns it — unmounting it to show a message would throw away the context that is
+   being built. See `StageWarmup` in surfaces.tsx for what this is and what it measures.
+
+   Bottom-anchored and narrow: this is a statement about work in progress, not a modal. It must not
+   cover the fabric as it starts to appear, and it must not move the layout when it goes — so it is
+   positioned, not a flow item. `pointer-events: none` because nothing here is operable; the Reset
+   view / Fabric list controls underneath it stay clickable throughout. */
+.stage-warmup {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-1);
+  border-block-start: 1px solid var(--border);
+  color: var(--text-muted);
+  text-align: center;
+  pointer-events: none;
+}
+
+.stage-warmup__bar {
+  inline-size: min(28rem, 100%);
+  block-size: var(--sp-1);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.stage-warmup__fill {
+  block-size: 100%;
+  background: var(--accent);
+}
+
+/* The denominator is not known yet, so the bar says so with a partial, static fill rather than
+   with a value it does not have. Static: an indeterminate SHIMMER here would be a second looping
+   animation whose only job is decoration, and the text beside it already carries the state. */
+.stage-warmup__bar[data-known="false"] .stage-warmup__fill {
+  inline-size: 25%;
+  background: var(--border-strong);
+}
+
+.stage-warmup__text {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--fs-0);
+  line-height: var(--lh-1);
+}
+
+/* ── a surface that failed to render ───────────────────────────────────────── */
+
+.surface-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  margin: var(--sp-3);
+  padding: var(--sp-4);
+  border: var(--hairline) solid var(--sev-high);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  overflow: auto;
+}
+
+.surface-error__title {
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  font-weight: var(--fw-semibold);
+}
+
+.surface-error__body {
+  max-width: 64ch;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.surface-error__detail {
+  align-self: stretch;
+  max-height: 12em;
+  overflow: auto;
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--sev-high);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.surface-error__retry {
+  min-height: var(--target-min);
+  padding-inline: var(--sp-3);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}

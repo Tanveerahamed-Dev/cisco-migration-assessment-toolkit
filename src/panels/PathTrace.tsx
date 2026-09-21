@@ -1,0 +1,1363 @@
+/**
+ * PathTrace.tsx — the path-trace investigation surface.
+ *
+ * Two questions live here, and the second is the one that matters.
+ *
+ *   TRACE     "can A reach B, and what stopped it?" — one five-tuple, one traversal, one verdict,
+ *             with the deciding line of configuration on the hop that decided it.
+ *   INTENT    "is it EVER possible for A to reach B?" — a universal claim over a finite flow space
+ *             this snapshot can actually derive, searched exhaustively for its own negation.
+ *
+ * The second is Batfish's move and it is the reason this surface is more than a path tool: a
+ * successful sample path proves nothing about a flow class, and a tool that only ever shows sample
+ * paths lets a reader conclude something it never tested. So the intent search enumerates, traces
+ * every flow, and reports exactly three outcomes that are never blurred into each other —
+ * COUNTEREXAMPLE FOUND, NO COUNTEREXAMPLE FOUND, INDETERMINATE — each carrying the size and the
+ * shape of the space it searched.
+ *
+ * What keeps the second question honest, mechanically:
+ *   - the flow space is DERIVED from the snapshot (real subnets, real endpoint addresses, the
+ *     services the collected ACLs actually name). Nothing is typed from nothing.
+ *   - an undecided flow is never counted as consistent with the intent. A space containing one
+ *     undecided flow is INDETERMINATE, not "no counterexample found".
+ *   - "no counterexample found" ALWAYS carries the unmodelled-hosts sentence while any host in the
+ *     topology has no collected RIB. On partial data, a bare "no counterexample found" is exactly
+ *     the false-health claim this product exists to prevent.
+ *   - the cap is part of the result. A capped enumeration reported as exhaustive is a lie about the
+ *     proof, so a search that dropped flows cannot return "no counterexample found" at all.
+ *
+ * Responsiveness (acceptance E5): the search is the one thing here that can exceed the 200 ms
+ * interaction budget, so it is budgeted separately — chunked, yielding to the event loop between
+ * chunks, reporting real progress against a known denominator, and cancellable. It never blocks
+ * the input handler and it is never hidden behind a frozen UI.
+ */
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactElement,
+} from "react";
+import { deviceById, fabric, linksByHost } from "../core/data";
+import { useInvestigation } from "../core/store";
+import type { Cite, Flow, Trace, TraceOutcome } from "../core/types";
+import { counterexample, suggestedFlows, traceFlow, type SuggestedFlow } from "../forwarding/engine";
+import {
+  formatIpv4,
+  formatPrefix,
+  hostAddressIn,
+  parseInterfaceAddress,
+  parseIpv4,
+  prefixContains,
+  wildcardSpecificity,
+  type Prefix,
+} from "../forwarding/ip";
+import { IconSearch, IconSortNone } from "../ui/icons";
+import {
+  Button,
+  Cite as CiteLink,
+  IconButton,
+  Input,
+  LiveRegion,
+  Select,
+  TabPanel,
+  Tabs,
+} from "../ui/primitives";
+import { ClaimCard, IntentClaimCard } from "./ClaimCard";
+import { HopList } from "./HopList";
+import "./PathTrace.css";
+
+/* ══ the flow form ═════════════════════════════════════════════════════════ */
+
+export interface FlowFormState {
+  srcIp: string;
+  dstIp: string;
+  protocol: Flow["protocol"];
+  dstPort: string;
+}
+
+export interface FlowFormErrors {
+  srcIp?: string;
+  dstIp?: string;
+  dstPort?: string;
+}
+
+const PORTED = (p: Flow["protocol"]): boolean => p === "tcp" || p === "udp";
+
+/**
+ * Validate one address field and say precisely what is wrong with it.
+ *
+ * "Invalid input" is not a message, it is a shrug. Each branch below names the thing that is wrong
+ * and shows a real address from this snapshot, because the most common failure is not a typo — it
+ * is a reader who does not yet know which addresses this collection can answer questions about.
+ */
+function addressError(label: string, raw: string): string | undefined {
+  const v = raw.trim();
+  if (v === "") return `Enter a ${label} IPv4 address, for example ${EXAMPLE_ADDRESS}.`;
+  if (v.includes("/")) {
+    return `${v} names a subnet. This traces one flow, so enter a single address inside it — for example ${EXAMPLE_ADDRESS}.`;
+  }
+  if (parseIpv4(v) === null) {
+    return `${v} is not an IPv4 address. Use four dot-separated numbers, each 0 to 255, for example ${EXAMPLE_ADDRESS}.`;
+  }
+  return undefined;
+}
+
+export function validateFlowForm(state: FlowFormState): { errors: FlowFormErrors; flow: Flow | null } {
+  const errors: FlowFormErrors = {};
+  const src = addressError("source", state.srcIp);
+  if (src) errors.srcIp = src;
+  const dst = addressError("destination", state.dstIp);
+  if (dst) errors.dstIp = dst;
+
+  const portText = state.dstPort.trim();
+  let dstPort: number | null = null;
+  if (PORTED(state.protocol) && portText !== "") {
+    const n = Number(portText);
+    if (!/^\d+$/.test(portText) || !Number.isInteger(n)) {
+      errors.dstPort = `${portText} is not a port number. Enter a whole number between 1 and 65535, or leave it empty.`;
+    } else if (n < 1 || n > 65535) {
+      errors.dstPort = `${n} is outside the port range. Enter a number between 1 and 65535.`;
+    } else {
+      dstPort = n;
+    }
+  }
+
+  if (Object.keys(errors).length > 0) return { errors, flow: null };
+  return {
+    errors,
+    flow: {
+      srcIp: state.srcIp.trim(),
+      dstIp: state.dstIp.trim(),
+      protocol: state.protocol,
+      dstPort: PORTED(state.protocol) ? dstPort : null,
+      srcPort: null,
+    },
+  };
+}
+
+/* ══ evidence derived once, at module load ═════════════════════════════════
+   Nothing below traces a flow: building the catalogue must stay free, because it happens whether
+   or not the reader ever opens the intent tab. The traces happen only when a search is run. */
+
+interface SubnetEvidence {
+  prefix: Prefix;
+  text: string;
+  vlan: number | null;
+  gateways: string[];
+  /** The FHRP virtual address, when the collection recorded one. */
+  vip: string | null;
+  cite: Cite;
+}
+
+/** Every subnet this collection actually observed, from the collected L3 interfaces. */
+const OBSERVED_SUBNETS: readonly SubnetEvidence[] = (() => {
+  const by = new Map<string, SubnetEvidence>();
+  for (const r of fabric.l3) {
+    if (r.host === null || r.sviIp === null) continue;
+    const addr = parseInterfaceAddress(r.sviIp);
+    if (addr === null) continue;
+    const text = formatPrefix(addr.prefix);
+    const cur = by.get(text);
+    if (cur) {
+      if (!cur.gateways.includes(r.host)) cur.gateways.push(r.host);
+      if (cur.vip === null) cur.vip = r.vip;
+      continue;
+    }
+    by.set(text, { prefix: addr.prefix, text, vlan: r.vlan, gateways: [r.host], vip: r.vip, cite: r.cite });
+  }
+  return [...by.values()].sort((a, b) => a.text.localeCompare(b.text));
+})();
+
+/** Router-owned addresses, excluded from the source sets: a gateway is not a client. */
+const ROUTER_ADDRESSES: ReadonlySet<number> = (() => {
+  const s = new Set<number>();
+  for (const r of fabric.l3) {
+    const addr = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+    if (addr !== null) s.add(addr.ip);
+    const vip = r.vip === null ? null : parseIpv4(r.vip);
+    if (vip !== null) s.add(vip);
+  }
+  return s;
+})();
+
+const EXAMPLE_ADDRESS: string = (() => {
+  const ep = fabric.endpoints.find((e) => e.ip !== null && parseIpv4(e.ip) !== null);
+  return ep?.ip ?? "10.0.0.1";
+})();
+
+export interface IntentAddress {
+  ip: string;
+  /** `observed` was seen in an endpoint record; `derived` is a usable address inside a real subnet. */
+  provenance: "observed" | "derived";
+  cite: Cite;
+  note: string;
+}
+
+export interface IntentService {
+  protocol: Flow["protocol"];
+  dstPort: number | null;
+  label: string;
+  cite: Cite;
+}
+
+export interface IntentSpace {
+  prefix: string;
+  label: string;
+  usableHosts: number;
+  enumerated: number;
+  cite: Cite;
+}
+
+export type IntentKind = "none-reach" | "all-reach";
+
+export interface Intent {
+  id: string;
+  /** The universal claim, as one sentence. This is what the search tries to refute. */
+  claim: string;
+  kind: IntentKind;
+  /** Why this claim is worth searching, naming the record that motivates it. */
+  rationale: string;
+  sources: IntentAddress[];
+  destinations: IntentAddress[];
+  services: readonly IntentService[];
+  sourceSpace: IntentSpace;
+  destSpace: IntentSpace;
+}
+
+/** Deterministic host offsets inside a subnet. No randomness: two runs enumerate the same flows. */
+const DERIVED_OFFSETS: readonly number[] = [10, 50, 100, 200];
+
+const usableHostsIn = (p: Prefix): number => (p.bits >= 31 ? 2 ** (32 - p.bits) : 2 ** (32 - p.bits) - 2);
+
+function addressesIn(sub: SubnetEvidence, max: number, includeRouters: boolean): IntentAddress[] {
+  const out: IntentAddress[] = [];
+  const seen = new Set<number>();
+
+  const observed = fabric.endpoints
+    .flatMap((e) => {
+      const ip = e.ip === null ? null : parseIpv4(e.ip);
+      return ip === null || !prefixContains(sub.prefix, ip) ? [] : [{ ip, e }];
+    })
+    .sort((a, b) => a.ip - b.ip);
+
+  for (const { ip, e } of observed) {
+    if (out.length >= max || seen.has(ip)) continue;
+    seen.add(ip);
+    out.push({
+      ip: formatIpv4(ip),
+      provenance: "observed",
+      cite: e.cite,
+      note: `observed as an endpoint on ${e.host ?? "an unnamed host"} ${e.port ?? "(no port recorded)"}`,
+    });
+  }
+
+  for (const off of DERIVED_OFFSETS) {
+    if (out.length >= max) break;
+    const ip = hostAddressIn(sub.prefix, off);
+    if (ip === null || seen.has(ip)) continue;
+    if (!includeRouters && ROUTER_ADDRESSES.has(ip)) continue;
+    seen.add(ip);
+    out.push({
+      ip: formatIpv4(ip),
+      provenance: "derived",
+      cite: sub.cite,
+      /* Derived, and said so. An unlabelled address reads as observed, and "we saw this host" is a
+         much stronger statement than "this address is inside a subnet we saw". */
+      note: `not itself observed — a usable host address inside ${sub.text}, which ${sub.gateways.join(" and ")} gateway${sub.gateways.length === 1 ? "s" : ""}`,
+    });
+  }
+  return out;
+}
+
+const spaceOf = (sub: SubnetEvidence, addrs: readonly IntentAddress[]): IntentSpace => ({
+  prefix: sub.text,
+  label: sub.vlan === null ? sub.text : `VLAN ${sub.vlan}`,
+  usableHosts: usableHostsIn(sub.prefix),
+  enumerated: addrs.length,
+  cite: sub.cite,
+});
+
+/**
+ * The services to search: exactly the protocol/port pairs the collected ACLs name.
+ *
+ * Choosing them from the ACL text rather than from a list of well-known ports is what makes the
+ * search relevant to THIS network: the lines that exist are the lines that can decide a flow, and
+ * a service no collected rule mentions can only ever fall through to a catch-all.
+ */
+const ACL_SERVICES: readonly IntentService[] = (() => {
+  const by = new Map<string, IntentService>();
+  // Sorted, then values only: the host and ACL name fix the ORDER of the walk, and the citation on
+  // each line already names both, so nothing here needs to carry them separately.
+  const hosts = Object.entries(fabric.acls).sort(([a], [b]) => a.localeCompare(b));
+  for (const [, named] of hosts) {
+    for (const [, lines] of Object.entries(named).sort(([a], [b]) => a.localeCompare(b))) {
+      for (const line of lines) {
+        const proto = (line.proto ?? "").toLowerCase();
+        if (proto !== "tcp" && proto !== "udp" && proto !== "icmp") continue;
+        const op = line.dport === null ? "" : line.dport.op.toLowerCase();
+        const port =
+          proto === "icmp" ? null : op === "eq" || op === "range" ? (line.dport?.val ?? null) : null;
+        if (proto !== "icmp" && port === null) continue;
+        const label = port === null ? proto : `${proto}/${port}`;
+        if (by.has(label)) continue;
+        by.set(label, {
+          protocol: proto as Flow["protocol"],
+          dstPort: port,
+          label,
+          cite: line.cite,
+        });
+      }
+    }
+  }
+  return [...by.values()].sort((a, b) => a.label.localeCompare(b.label));
+})();
+
+/** Destination prefixes a collected ACL names explicitly — the things policy is written about. */
+const PROTECTED_PREFIXES: readonly { text: string; cite: Cite; acl: string; host: string }[] = (() => {
+  const out: { text: string; cite: Cite; acl: string; host: string }[] = [];
+  const seen = new Set<string>();
+  for (const [host, named] of Object.entries(fabric.acls).sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [acl, lines] of Object.entries(named).sort(([a], [b]) => a.localeCompare(b))) {
+      for (const line of lines) {
+        const d = line.dst;
+        if (d === null || d.ip === null || d.wild === null) continue;
+        /* `wildcardSpecificity` takes the wildcard VALUE, not a prefix length: feeding it the
+           output of `parseWildcard` (which already returns a length) silently produced /30s here
+           and emptied the whole catalogue. Parsed as an address, exactly as the engine does. */
+        const bits = wildcardSpecificity(parseIpv4(d.wild) ?? 0xffffffff);
+        // A /0 is "any" and a /32 is one host: neither is a subnet policy is written ABOUT.
+        if (bits === 0 || bits === 32) continue;
+        const text = `${d.ip}/${bits}`;
+        if (seen.has(text)) continue;
+        seen.add(text);
+        out.push({ text, cite: line.cite, acl, host });
+      }
+    }
+  }
+  return out;
+})();
+
+const SRC_MAX = 4;
+const DST_MAX = 3;
+
+/**
+ * The intents on offer, constructed from the snapshot rather than written down.
+ *
+ * Two shapes, both of which a reader can check against the data:
+ *   - for every observed subnet, "no flow from here reaches the subnet an ACL protects";
+ *   - for every observed subnet with a recorded gateway address, "every address observed here
+ *     reaches that gateway".
+ * If the snapshot named no protected prefix, or observed no subnet, the catalogue is empty and the
+ * UI says so — an offer of intents this data cannot support would be worse than none.
+ */
+export function intentCatalog(): Intent[] {
+  const out: Intent[] = [];
+  const protectedTarget = PROTECTED_PREFIXES[0] ?? null;
+
+  if (protectedTarget !== null) {
+    const dstSub = OBSERVED_SUBNETS.find((s) => s.text === protectedTarget.text) ?? null;
+    if (dstSub !== null) {
+      const dstAddrs = addressesIn(dstSub, DST_MAX, false);
+      for (const src of OBSERVED_SUBNETS) {
+        if (src.text === dstSub.text) continue;
+        const srcAddrs = addressesIn(src, SRC_MAX, false);
+        if (srcAddrs.length === 0 || dstAddrs.length === 0) continue;
+        out.push({
+          id: `no-reach-${src.text}-${dstSub.text}`.replace(/[./]/g, "_"),
+          kind: "none-reach",
+          claim: `No flow from ${src.vlan === null ? src.text : `VLAN ${src.vlan} (${src.text})`} reaches ${dstSub.text}.`,
+          rationale: `${dstSub.text} is the destination ${protectedTarget.host} names in ACL ${protectedTarget.acl} (${protectedTarget.cite}), so whether ${src.text} can reach it is a policy question this snapshot can be searched over.`,
+          sources: srcAddrs,
+          destinations: dstAddrs,
+          services: ACL_SERVICES,
+          sourceSpace: spaceOf(src, srcAddrs),
+          destSpace: spaceOf(dstSub, dstAddrs),
+        });
+      }
+    }
+  }
+
+  for (const sub of OBSERVED_SUBNETS) {
+    if (sub.vip === null) continue;
+    const srcAddrs = addressesIn(sub, SRC_MAX, false);
+    const observedHere = srcAddrs.filter((a) => a.provenance === "observed");
+    if (observedHere.length === 0) continue;
+    const gateway: IntentAddress = {
+      ip: sub.vip,
+      provenance: "observed",
+      cite: sub.cite,
+      note: `the virtual gateway address recorded for ${sub.text} on ${sub.gateways.join(" and ")}`,
+    };
+    out.push({
+      id: `reach-gateway-${sub.text}`.replace(/[./]/g, "_"),
+      kind: "all-reach",
+      /* The claim says "every address in", not "every address observed in": the search enumerates
+         observed addresses AND derived ones, and a claim narrower than the space it searches would
+         misdescribe its own result. The address list marks which is which, and the search-cost
+         block states how many of the subnet's usable addresses were enumerated. */
+      claim: `Every address in ${sub.vlan === null ? sub.text : `VLAN ${sub.vlan} (${sub.text})`} reaches its gateway ${sub.vip}.`,
+      rationale: `${sub.vip} is the gateway address the collection recorded for ${sub.text} (${sub.cite}), and ${observedHere.length} address(es) here were actually observed on the wire; a client that cannot reach its own gateway is a first-order fault, so the claim is worth refuting.`,
+      sources: srcAddrs,
+      destinations: [gateway],
+      services: ACL_SERVICES,
+      sourceSpace: spaceOf(sub, srcAddrs),
+      destSpace: spaceOf(sub, [gateway]),
+    });
+  }
+
+  return out;
+}
+
+/* ══ the intent search ═════════════════════════════════════════════════════ */
+
+/** The responsiveness cap. Exceeding it withdraws the verdict rather than shrinking it silently. */
+export const INTENT_FLOW_CAP = 400;
+
+/** Flows traced between two yields. Sized so a chunk stays well inside one animation frame. */
+const CHUNK = 12;
+
+export interface IntentPlan {
+  intent: Intent;
+  flows: Flow[];
+  enumerated: number;
+  dropped: number;
+  cap: number;
+}
+
+export function planIntent(intent: Intent, cap: number = INTENT_FLOW_CAP): IntentPlan {
+  const flows: Flow[] = [];
+  let enumerated = 0;
+  for (const s of intent.sources) {
+    for (const d of intent.destinations) {
+      if (s.ip === d.ip) continue; // a flow to itself is not a question, and it must not pad the denominator
+      for (const svc of intent.services) {
+        enumerated += 1;
+        if (flows.length < cap) {
+          flows.push({
+            srcIp: s.ip,
+            dstIp: d.ip,
+            protocol: svc.protocol,
+            dstPort: svc.dstPort,
+            srcPort: null,
+          });
+        }
+      }
+    }
+  }
+  return { intent, flows, enumerated, dropped: enumerated - flows.length, cap };
+}
+
+export interface IntentFinding {
+  flow: Flow;
+  trace: Trace;
+}
+
+export interface ReasonRow {
+  reason: string;
+  count: number;
+  cite: Cite;
+}
+
+export type IntentOutcome = "counterexample-found" | "no-counterexample-found" | "indeterminate";
+
+export interface IntentVerdict {
+  intent: Intent;
+  outcome: IntentOutcome;
+  counterexamples: IntentFinding[];
+  enumerated: number;
+  searched: number;
+  dropped: number;
+  cap: number;
+  decided: number;
+  undecided: number;
+  satisfying: number;
+  /** The sentence that names the bound. Rendered first, never collapsed. */
+  boundSentence: string;
+  /** Mandatory whenever any host in the topology has no collected RIB. */
+  unmodelledSentence: string | null;
+  intendedEffect: string;
+  collateral: string[];
+  undecidedReasons: ReasonRow[];
+  decidedReasons: ReasonRow[];
+  hostsTouched: string[];
+  unmodelledHostsSeen: string[];
+  /**
+   * The deduped union of `Trace.caveats` across every flow this search actually traced.
+   *
+   * WHY A UNIVERSAL CLAIM NEEDS THESE MORE THAN A SINGLE TRACE DOES. A single trace card renders
+   * its caveats and the reader sees eleven bounds under one answer about one flow. The intent card
+   * makes the strongest claim in the product — "no counterexample found" over a whole flow class —
+   * and used to render none of them at all, discarding every caveat the constituent traces
+   * produced. The bounds that matter most (an FHRP role read as a point-in-time observation, an
+   * ACL never applied because no `ip access-group` binding was collected, forward-direction only,
+   * ECMP not modelled) bound a universal statement far harder than they bound one flow.
+   */
+  caveats: IntentCaveat[];
+}
+
+export interface IntentCaveat {
+  /** The caveat text, verbatim from the trace that produced it. */
+  text: string;
+  /** How many of the searched flows carried it. `searched` means every one of them. */
+  flows: number;
+}
+
+export interface IntentSearch {
+  plan: IntentPlan;
+  cursor: number;
+  counterexamples: IntentFinding[];
+  satisfying: number;
+  undecided: number;
+  outcomeCounts: Record<TraceOutcome, number>;
+  decidedReasons: Map<string, ReasonRow>;
+  undecidedReasons: Map<string, ReasonRow>;
+  hostsTouched: Set<string>;
+  unmodelledHostsSeen: Set<string>;
+  /** Terminal hop verdicts among the flows consistent with the intent — the collateral question. */
+  satisfyingVerdicts: Map<string, number>;
+  /** Caveat text → how many searched flows carried it. Deduped here so the union is O(1) to read. */
+  caveats: Map<string, number>;
+}
+
+/**
+ * Does this flow contradict the intent?
+ *
+ * `indeterminate` and `out-of-scope` are neither — they are undecided, and an undecided flow never
+ * counts towards the intent holding. Folding them into "consistent" is how a search over partial
+ * evidence reports a clean sweep it did not perform.
+ */
+function contradicts(kind: IntentKind, outcome: TraceOutcome): boolean | null {
+  if (outcome === "indeterminate" || outcome === "out-of-scope") return null;
+  return kind === "none-reach" ? outcome === "delivered" : outcome !== "delivered";
+}
+
+export function startIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP): IntentSearch {
+  return {
+    plan: planIntent(intent, cap),
+    cursor: 0,
+    counterexamples: [],
+    satisfying: 0,
+    undecided: 0,
+    outcomeCounts: { delivered: 0, dropped: 0, denied: 0, indeterminate: 0, "out-of-scope": 0 },
+    decidedReasons: new Map(),
+    undecidedReasons: new Map(),
+    hostsTouched: new Set(),
+    unmodelledHostsSeen: new Set(),
+    satisfyingVerdicts: new Map(),
+    caveats: new Map(),
+  };
+}
+
+/** Group by the CITATION that ended the trace, so one bucket is one piece of evidence. */
+function record(into: Map<string, ReasonRow>, trace: Trace): void {
+  const last = trace.hops[trace.hops.length - 1] ?? null;
+  const ev = last?.decidedBy ?? null;
+  const key = ev === null ? "no-hop" : ev.cite;
+  const reason =
+    ev === null
+      ? "the flow was refused before any device was consulted — the source address is outside every subnet this collection observed"
+      : `${last?.host ?? "an unnamed host"}: ${ev.label}`;
+  const cite = ev?.cite ?? fabric.coverage.cite;
+  const row = into.get(key);
+  if (row) row.count += 1;
+  else into.set(key, { reason, count: 1, cite });
+}
+
+/** Trace up to `budget` flows. Mutates in place: the caller owns the yield between chunks. */
+export function stepIntentSearch(s: IntentSearch, budget: number): void {
+  const end = Math.min(s.cursor + budget, s.plan.flows.length);
+  for (; s.cursor < end; s.cursor += 1) {
+    const flow = s.plan.flows[s.cursor];
+    if (flow === undefined) continue;
+    const trace = traceFlow(flow);
+    s.outcomeCounts[trace.outcome] += 1;
+    for (const h of trace.hops) s.hostsTouched.add(h.host);
+    for (const h of trace.unmodelledHosts) s.unmodelledHostsSeen.add(h);
+    /* Every bound the constituent traces produced is kept. Discarding them was how the strongest
+       claim in the product came to carry fewer caveats than the weakest one. */
+    for (const cv of trace.caveats) s.caveats.set(cv, (s.caveats.get(cv) ?? 0) + 1);
+
+    const verdict = contradicts(s.plan.intent.kind, trace.outcome);
+    if (verdict === null) {
+      s.undecided += 1;
+      record(s.undecidedReasons, trace);
+    } else if (verdict) {
+      s.counterexamples.push({ flow, trace });
+      record(s.decidedReasons, trace);
+    } else {
+      s.satisfying += 1;
+      record(s.decidedReasons, trace);
+      const last = trace.hops[trace.hops.length - 1];
+      if (last) s.satisfyingVerdicts.set(last.verdict, (s.satisfyingVerdicts.get(last.verdict) ?? 0) + 1);
+    }
+  }
+}
+
+const byCountDesc = (a: ReasonRow, b: ReasonRow): number => b.count - a.count || a.reason.localeCompare(b.reason);
+
+export function finishIntentSearch(s: IntentSearch): IntentVerdict {
+  const c = fabric.coverage;
+  const total = fabric.devices.length;
+  const withoutRib = total - c.hostsWithRoutes;
+  const searched = s.cursor;
+  const decided = searched - s.undecided;
+  const { dropped, cap, enumerated, intent } = s.plan;
+
+  /* A capped search cannot return "no counterexample found": the flows it never traced could each
+     be the counterexample. Reporting it as a clean result is the exact overclaim this surface is
+     built to refuse, so the cap forces INDETERMINATE and says how many were dropped. */
+  const outcome: IntentOutcome =
+    s.counterexamples.length > 0
+      ? "counterexample-found"
+      : s.undecided > 0 || dropped > 0
+        ? "indeterminate"
+        : "no-counterexample-found";
+
+  const under = `under the collected RIBs of ${c.routableHosts.join(" and ")} only (${c.hostsWithRoutes} of ${total} hosts)`;
+  const spaceText = `${searched} flows derivable from ${intent.sources.length} source address(es) and ${intent.destinations.length} destination address(es) across ${intent.services.length} service(s)`;
+
+  const first = s.counterexamples[0];
+  const boundSentence =
+    outcome === "counterexample-found" && first !== undefined
+      ? `A counterexample was found: ${first.flow.protocol} ${first.flow.srcIp} to ${first.flow.dstIp}${
+          first.flow.dstPort === null ? "" : `:${first.flow.dstPort}`
+        } is ${first.trace.outcome}, which contradicts the intent. ${s.counterexamples.length} of the ${searched} flows searched contradict it, ${under}.${
+          dropped > 0
+            ? ` ${dropped} of the ${enumerated} flows this intent implies were never traced because the enumeration was capped at ${cap}, so the contradicting count is a lower bound.`
+            : ""
+        }`
+      : outcome === "no-counterexample-found"
+        ? `No counterexample was found among the ${spaceText}, ${under}.`
+        : `${s.undecided} of the ${searched} flows searched could not be decided${
+            dropped > 0 ? `, and ${dropped} of the ${enumerated} flows this intent implies were never traced because the enumeration was capped at ${cap}` : ""
+          }, so this intent is undecided over its own flow space, ${under}.`;
+
+  /* The mandatory sentence. It is not conditional on the outcome and it is not conditional on
+     whether the search happened to touch an unmodelled host: while ANY host lacks a RIB, a flow
+     that would have crossed it could violate the intent without this search seeing it. */
+  /* The hosts are NAMED, not merely counted. A count tells the reader how big the hole is; only
+     the names tell them whether the hole is where their question lives. They are derived here
+     rather than stored, so the sentence cannot go stale against the model: every device that is
+     not in `coverage.routableHosts` has no collected RIB. */
+  const unmodelledHosts = fabric.devices.map((d) => d.host).filter((h) => !c.routableHosts.includes(h));
+  const unmodelledSentence =
+    withoutRib > 0
+      ? `Flows through the ${withoutRib} host(s) with no collected RIB were not modelled and could violate this intent (${unmodelledHosts.join(", ")}).${
+          s.unmodelledHostsSeen.size > 0
+            ? ` ${[...s.unmodelledHostsSeen].sort().join(", ")} ${s.unmodelledHostsSeen.size === 1 ? "was" : "were"} reached by this search itself and could not be modelled there.`
+            : ""
+        }`
+      : null;
+
+  const intendedEffect =
+    intent.kind === "none-reach"
+      ? `The intent asserts that nothing from ${intent.sourceSpace.prefix} reaches ${intent.destSpace.prefix}. Inside the searched space, ${s.counterexamples.length} flow(s) reach it, ${s.satisfying} do not, and ${s.undecided} could not be decided.`
+      : `The intent asserts that everything observed in ${intent.sourceSpace.prefix} reaches ${intent.destinations[0]?.ip ?? "its gateway"}. Inside the searched space, ${s.satisfying} flow(s) reach it, ${s.counterexamples.length} do not, and ${s.undecided} could not be decided.`;
+
+  const collateral: string[] = [];
+  const counts = Object.entries(s.outcomeCounts)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${n} ${k}`)
+    .join(", ");
+  collateral.push(`Outcomes inside the searched space: ${counts || "none — no flow was traced"}.`);
+  collateral.push(
+    s.hostsTouched.size === 0
+      ? "No host was traversed: every flow was refused before a device was consulted."
+      : `Hosts traversed: ${[...s.hostsTouched].sort().join(", ")}. No other device in the topology was consulted, so nothing here describes them.`,
+  );
+
+  /* The intended-versus-unintended reading. An intent that holds because no route exists is a
+     different fact from an intent that holds because a filter denies the traffic, and the
+     difference decides what a change would break: adding a route would silently end the first. */
+  const noRoute = s.satisfyingVerdicts.get("no-route") ?? 0;
+  const denied = s.satisfyingVerdicts.get("denied") ?? 0;
+  if (intent.kind === "none-reach" && s.satisfying > 0) {
+    if (noRoute === s.satisfying) {
+      collateral.push(
+        `Every flow consistent with this intent stops for want of a route, not because a filter denied it. That is an absence of forwarding, not a policy decision: a route added later would end this result without any change to an ACL.`,
+      );
+    } else if (denied > 0 && noRoute > 0) {
+      collateral.push(
+        `${denied} flow(s) are stopped by a filter and ${noRoute} for want of a route. The two rest on different evidence, and only the first would survive a routing change.`,
+      );
+    }
+  }
+  if (dropped > 0) {
+    collateral.push(
+      `${dropped} of the ${enumerated} enumerated flows were not traced because of the ${cap}-flow cap, so this result says nothing whatever about them.`,
+    );
+  }
+
+  /* The deduped union of every constituent trace's caveats. Ordered by how much of the searched
+     space each one bounds — a caveat carried by every flow bounds the universal claim completely,
+     one carried by a handful bounds it only there — then alphabetically so the list is stable.
+     A search that traced nothing says so rather than rendering an empty, reassuring list. */
+  const caveats: IntentCaveat[] =
+    searched === 0
+      ? [
+          {
+            text: "No flow was traced, so this result carries no per-flow bound at all. The scope sentences above are the only limits stated, and they are not a substitute for having searched.",
+            flows: 0,
+          },
+        ]
+      : [...s.caveats.entries()]
+          .map(([text, flows]) => ({ text, flows }))
+          .sort((a, b) => b.flows - a.flows || a.text.localeCompare(b.text));
+
+  const undecidedReasons = [...s.undecidedReasons.values()].sort(byCountDesc);
+  if (dropped > 0) {
+    undecidedReasons.push({
+      reason: `not traced at all — the enumeration was capped at ${cap} flows for responsiveness`,
+      count: dropped,
+      cite: fabric.coverage.cite,
+    });
+  }
+
+  return {
+    intent,
+    outcome,
+    counterexamples: s.counterexamples,
+    enumerated,
+    searched,
+    dropped,
+    cap,
+    decided,
+    undecided: s.undecided,
+    satisfying: s.satisfying,
+    boundSentence,
+    unmodelledSentence,
+    intendedEffect,
+    collateral,
+    undecidedReasons,
+    decidedReasons: [...s.decidedReasons.values()].sort(byCountDesc),
+    hostsTouched: [...s.hostsTouched].sort(),
+    unmodelledHostsSeen: [...s.unmodelledHostsSeen].sort(),
+    caveats,
+  };
+}
+
+/** The whole search, synchronously. The UI never calls this; tests and a headless run do. */
+export function runIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP): IntentVerdict {
+  const s = startIntentSearch(intent, cap);
+  stepIntentSearch(s, s.plan.flows.length);
+  return finishIntentSearch(s);
+}
+
+/* ══ the surface ═══════════════════════════════════════════════════════════ */
+
+const flowKey = (f: Flow): string => `${f.protocol}|${f.srcIp}|${f.dstIp}|${f.dstPort ?? ""}`;
+
+const PROTOCOL_OPTIONS = [
+  { value: "tcp", label: "TCP" },
+  { value: "udp", label: "UDP" },
+  { value: "icmp", label: "ICMP" },
+  { value: "ip", label: "IP (any protocol)" },
+] as const;
+
+const PRESET_OUTCOME_WORD: Readonly<Record<TraceOutcome, string>> = {
+  delivered: "delivered",
+  dropped: "dropped",
+  denied: "denied",
+  indeterminate: "indeterminate",
+  "out-of-scope": "outside the evidence",
+};
+
+function Presets({ onPick, title }: { onPick: (f: Flow) => void; title: string }): ReactElement {
+  /* Derived from the snapshot and TRACED by the engine at module load, so each one advertises the
+     outcome it actually produced. A form with no starting point is a dead end for anyone who does
+     not already know which addresses this collection can answer for. */
+  const flows: SuggestedFlow[] = useMemo(() => suggestedFlows(), []);
+  return (
+    <div className="pt-presets">
+      <h3 className="pt-presets__title">{title}</h3>
+      <ul className="pt-presets__list">
+        {flows.map((s) => (
+          <li key={s.id} className="pt-preset">
+            <button type="button" className="pt-preset__btn" onClick={() => onPick(s.flow)}>
+              <span className="pt-preset__head">
+                <span className="pt-preset__title">{s.title}</span>
+                <span className="pt-preset__outcome" data-outcome={s.expectedOutcome}>
+                  {PRESET_OUTCOME_WORD[s.expectedOutcome]}
+                </span>
+              </span>
+              <span className="pt-preset__flow">
+                {`${s.flow.protocol} ${s.flow.srcIp} → ${s.flow.dstIp}${s.flow.dstPort === null ? "" : `:${s.flow.dstPort}`}`}
+              </span>
+              <span className="pt-preset__why">{s.rationale}</span>
+              <span className="pt-preset__prov" data-kind={s.srcProvenance.kind}>
+                {s.srcProvenance.note}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export interface PathTraceProps {
+  /** Opens the raw snapshot record behind a citation. Wired to the Inspector by the shell. */
+  onOpenCite?: (cite: Cite) => void;
+  /** The region id from the layout contract. Override only if the shell owns the element. */
+  id?: string;
+}
+
+export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): ReactElement {
+  const flow = useInvestigation((s) => s.flow);
+  const trace = useInvestigation((s) => s.trace);
+  const hopIndex = useInvestigation((s) => s.hopIndex);
+  const setFlow = useInvestigation((s) => s.setFlow);
+  const setTrace = useInvestigation((s) => s.setTrace);
+  const selectHop = useInvestigation((s) => s.selectHop);
+  const selectDevice = useInvestigation((s) => s.selectDevice);
+  const selectLink = useInvestigation((s) => s.selectLink);
+
+  const [mode, setMode] = useState<string>("trace");
+  const [form, setForm] = useState<FlowFormState>({
+    srcIp: "",
+    dstIp: "",
+    protocol: "tcp",
+    dstPort: "",
+  });
+  const [errors, setErrors] = useState<FlowFormErrors>({});
+  const [announce, setAnnounce] = useState("");
+  const srcRef = useRef<HTMLInputElement>(null);
+  const dstRef = useRef<HTMLInputElement>(null);
+  const portRef = useRef<HTMLInputElement>(null);
+  const formId = useId();
+
+  /* The store owns the flow, so a flow that arrives from anywhere — this form, a preset, a
+     counterexample, a shared URL — is traced the same way. That is what makes a link reproducible:
+     the URL carries the flow, and the flow alone regenerates the result. */
+  useEffect(() => {
+    if (flow === null) return;
+    if (trace !== null && flowKey(trace.flow) === flowKey(flow)) return;
+    setTrace(traceFlow(flow));
+  }, [flow, trace, setTrace]);
+
+  /* Everything below reads `shown`, not `trace`. See `run`. */
+
+  // Keep the form showing the flow that produced the visible result, however that flow arrived.
+  useEffect(() => {
+    if (flow === null) return;
+    setForm({
+      srcIp: flow.srcIp,
+      dstIp: flow.dstIp,
+      protocol: flow.protocol,
+      dstPort: flow.dstPort === null ? "" : String(flow.dstPort),
+    });
+    setErrors({});
+  }, [flow]);
+
+
+  /* ══ the re-aim commit is SPLIT — acceptance E2/E3 ═══════════════════════════════════════
+   *
+   * THE DEFECT. Running a path trace was the one journey over the 200 ms laboratory bar:
+   * measured on the release build with a hardware renderer, p95 224 ms, worst 384 ms, at or
+   * over 200 ms in 9 of 12 runs, and 22 long tasks over 50 ms ON its own interaction path with
+   * the worst at 350 ms. Long Animation Frames attribution put 752 ms over 19 repetitions into
+   * one script: `react :: event-listener :: DIV#root.onsubmit`, worst 57 ms — eight times the
+   * fabric's whole per-frame cost.
+   *
+   * THE TRACE IS NOT THE COST. `Trace.elapsedMs` is measured, not estimated: 0.03-0.21 ms per
+   * flow. The cost is the React commit that re-aims four surfaces from one store write, and
+   * a `useSyncExternalStore` update is specified urgent — React will not time-slice it, so
+   * `startTransition` cannot break it up. Design brief 8.3 rule 3 is the written answer and was
+   * never implemented: paint the acknowledgement frame first, then
+   * `requestAnimationFrame(() => setTimeout(rest, 0))` the expensive part.
+   *
+   * WHAT THIS DOES. The trace is computed synchronously in the handler (sub-millisecond) and
+   * shown from LOCAL state, so the interaction commits this panel alone — the verdict word, the
+   * hops and the selected hop are on screen in the acknowledgement frame. The store write that
+   * re-aims the queue, the device pane, the evidence rail and the fabric is handed to a later
+   * task, off the interaction path.
+   *
+   * IT ALSO HALVES THE WORK. `setFlow` alone used to commit every surface with the NEW flow and
+   * the OLD trace, and the effect below then committed them all again with the trace. Writing
+   * both in one batch means the effect finds the keys already matching and does nothing: one
+   * commit where there were two.
+   *
+   * NOT a spinner and not a delay: the panel's own content is complete in the first frame. What
+   * arrives a frame later is the OTHER surfaces re-aiming, which is what cost the 200 ms. */
+  const [pending, setPending] = useState<{ flow: Flow; trace: Trace } | null>(null);
+
+  /** What THIS panel draws: the locally-committed trace until the store catches up. */
+  const shown = pending?.trace ?? trace;
+  /** `setTrace` parks on the first hop; the acknowledgement frame must agree with it. */
+  const shownHopIndex = pending === null ? hopIndex : pending.trace.hops.length > 0 ? 0 : null;
+
+  const run = useCallback(
+    (next: Flow) => {
+      setMode("trace");
+      const traced = traceFlow(next);
+      setPending({ flow: next, trace: traced });
+      const commitRest = (): void => {
+        /* One batch. See above: two writes here are one commit, not two. */
+        setFlow(next);
+        setTrace(traced);
+      };
+      /* rAF puts this after the acknowledgement frame has been PAINTED; the setTimeout inside
+         it puts it in a task of its own rather than inside the frame callback, where it would
+         extend that same animation frame and defeat the split. Both are feature-detected: a
+         jsdom render has neither, and a trace that only ran in a browser would be untestable. */
+      if (typeof requestAnimationFrame === "function" && typeof setTimeout === "function") {
+        requestAnimationFrame(() => setTimeout(commitRest, 0));
+      } else {
+        commitRest();
+      }
+    },
+    [setFlow, setTrace],
+  );
+
+  /* The local acknowledgement is released the moment the store holds the same answer. Comparing
+     FLOW KEYS rather than object identity: the store is the owner, and once it agrees there is
+     nothing left for the local copy to say. */
+  useEffect(() => {
+    if (pending === null) return;
+    if (trace !== null && flowKey(trace.flow) === flowKey(pending.flow)) setPending(null);
+  }, [pending, trace]);
+
+  /* Keyed on what the panel DRAWS, so the announcement goes out with the acknowledgement frame
+     rather than a task later when the other surfaces land. */
+  useEffect(() => {
+    if (shown === null) return;
+    setAnnounce(`Result: ${shown.outcome}. ${shown.claim}`);
+  }, [shown]);
+
+  const onSubmit = useCallback(
+    (e: FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const { errors: found, flow: built } = validateFlowForm(form);
+      setErrors(found);
+      if (built === null) {
+        /* Focus the first field that is wrong. An error message the reader has to hunt for is an
+           error message they will not read. */
+        const target = found.srcIp ? srcRef.current : found.dstIp ? dstRef.current : portRef.current;
+        target?.focus();
+        setAnnounce(
+          `The flow was not run. ${[found.srcIp, found.dstIp, found.dstPort].filter(Boolean).join(" ")}`,
+        );
+        return;
+      }
+      /* Through `run`, so the submit button and every preset/counterexample share ONE commit
+         path. A second copy of the split here is a second thing to get wrong. */
+      run(built);
+    },
+    [form, run],
+  );
+
+  /**
+   * The ONE way this form writes a field, and the reason it is a named helper rather than four
+   * inline arrow functions.
+   *
+   * Every `onChange` here used to read the value from inside the `setForm` updater:
+   *
+   *     onChange={(e) => setForm((f) => ({ ...f, dstPort: e.currentTarget.value }))}
+   *
+   * A functional updater does not run at the time the event fires. React may call it later — and
+   * StrictMode deliberately calls it TWICE, the second time during the render pass — by which point
+   * React has nulled `currentTarget` on the pooled-in-spirit synthetic event. The updater then
+   * throws `Cannot read properties of null (reading 'value')` mid-render, which the error boundary
+   * catches, and `#rail-path` is replaced by "The path panel stopped rendering". Measured
+   * 2026-09-21 on the dev server: ONE real keystroke into Source IP, Destination IP or Destination
+   * port, or one change of the Protocol select, destroyed the panel every time
+   * (`review/_audit_pathtrace_repro.mjs`). Production survived only because StrictMode's
+   * double-invoke is development-only — React makes no promise about WHEN an updater runs, so that
+   * was luck, not safety.
+   *
+   * `setField` takes the value as an argument, so the read happens in the handler, synchronously,
+   * while `currentTarget` is still live. The signature is the fix: there is no longer a shape of
+   * this call in which an event can be captured by the updater at all.
+   */
+  const setField = useCallback(<K extends keyof FlowFormState>(key: K, value: FlowFormState[K]) => {
+    setForm((f) => ({ ...f, [key]: value }));
+  }, []);
+
+  const swap = useCallback(() => {
+    setForm((f) => ({ ...f, srcIp: f.dstIp, dstIp: f.srcIp }));
+  }, []);
+
+  /**
+   * A4: selecting a hop must RE-AIM the other surfaces, not merely move a marker inside this panel.
+   *
+   * The store's `selectHop` writes `hopIndex` and nothing else, so with device access13 selected and
+   * the denied trace open, clicking "Hop 1 of 1: core1 denied" left the device pane still showing
+   * access13 ("Routing: no RIB collected"), the evidence rail still on access13, and the fabric
+   * selection unmoved — the hop click led nowhere. The hop is one of the four selections A4 names,
+   * so it re-aims the device pane, the evidence rail and the fabric exactly as the others do.
+   *
+   * The host is resolved by id FIRST and then by host name rather than assuming the two are the
+   * same string. They are identical for all 26 devices in this snapshot, and a lookup that silently
+   * depends on that is one that breaks on the next snapshot with no failing test to say so.
+   */
+  const selectHopAndAim = useCallback(
+    (i: number | null) => {
+      selectHop(i);
+      if (i === null || shown === null) return;
+      const hop = shown.hops.find((h) => h.index === i);
+      if (hop === undefined) return;
+      const device = deviceById.get(hop.host) ?? fabric.devices.find((d) => d.host === hop.host);
+      if (device === undefined) return;
+      selectDevice(device.id, { surface: "path" });
+      /* Then the egress cable, when the hop names a next host we actually hold a link to. This runs
+         AFTER selectDevice because selectDevice clears linkId by contract. A hop with no next host,
+         or one whose next hop belongs to no collected device, selects no link rather than guessing. */
+      if (hop.nextHost !== null) {
+        const link = (linksByHost.get(hop.host) ?? []).find(
+          (l) => l.a === hop.nextHost || l.b === hop.nextHost,
+        );
+        selectLink(link === undefined ? null : link.id);
+      }
+    },
+    [selectHop, selectDevice, selectLink, shown],
+  );
+
+  const counter = useMemo(() => (shown === null ? null : counterexample(shown.flow, shown)), [shown]);
+
+  const errorSummary = [errors.srcIp, errors.dstIp, errors.dstPort].filter(Boolean);
+
+  return (
+    <section id={id} className="pathtrace" aria-label="Path investigation">
+      <Tabs
+        id={`${formId}-mode`}
+        label="Path investigation mode"
+        value={mode}
+        onChange={setMode}
+        items={[
+          { id: "trace", label: "Trace a flow" },
+          { id: "intent", label: "Verify an intent" },
+        ]}
+      />
+
+      <TabPanel id={`${formId}-mode`} tabId="trace" active={mode === "trace"} className="pt-panel">
+        <form className="pt-form" onSubmit={onSubmit} noValidate>
+          <div className="pt-form__addresses">
+            <Input
+              ref={srcRef}
+              label="Source IP"
+              mono
+              inputMode="decimal"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={EXAMPLE_ADDRESS}
+              value={form.srcIp}
+              onChange={(e) => setField("srcIp", e.currentTarget.value)}
+              {...(errors.srcIp ? { error: errors.srcIp } : {})}
+            />
+            <IconButton
+              label="Swap the source and destination addresses"
+              icon={<IconSortNone />}
+              className="pt-form__swap"
+              onClick={swap}
+            />
+            <Input
+              ref={dstRef}
+              label="Destination IP"
+              mono
+              inputMode="decimal"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={EXAMPLE_ADDRESS}
+              value={form.dstIp}
+              onChange={(e) => setField("dstIp", e.currentTarget.value)}
+              {...(errors.dstIp ? { error: errors.dstIp } : {})}
+            />
+          </div>
+
+          <div className="pt-form__service">
+            <Select
+              label="Protocol"
+              value={form.protocol}
+              onChange={(e) => setField("protocol", e.currentTarget.value as Flow["protocol"])}
+              options={PROTOCOL_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            />
+            {/* Progressive disclosure: a destination port is meaningless for ICMP and for a bare
+                IP question, and a field that cannot affect the answer invites one that does not. */}
+            {PORTED(form.protocol) ? (
+              <Input
+                ref={portRef}
+                label="Destination port"
+                mono
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="443"
+                hint="Leave empty to ask about the protocol alone. A rule that matches on a port cannot then be decided, and the result will say so."
+                value={form.dstPort}
+                onChange={(e) => setField("dstPort", e.currentTarget.value)}
+                {...(errors.dstPort ? { error: errors.dstPort } : {})}
+              />
+            ) : null}
+          </div>
+
+          {errorSummary.length > 0 ? (
+            <div className="pt-form__errors" role="alert">
+              <p>
+                {`The flow was not run. ${errorSummary.length} field${errorSummary.length === 1 ? "" : "s"} need${errorSummary.length === 1 ? "s" : ""} attention:`}
+              </p>
+              <ul>
+                {errorSummary.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="pt-form__actions">
+            <Button type="submit" variant="primary" icon={<IconSearch />}>
+              Trace this flow
+            </Button>
+            <span className="pt-form__scope">
+              {`Forwarding is modelled on ${fabric.coverage.routableHosts.join(", ")} only — ${fabric.coverage.hostsWithRoutes} of ${fabric.devices.length} hosts have a collected routing table.`}
+            </span>
+          </div>
+        </form>
+
+        {shown === null ? (
+          <Presets onPick={run} title="Questions this snapshot can answer" />
+        ) : (
+          <div className="pt-result">
+            <ClaimCard
+              trace={shown}
+              counterexample={counter}
+              onRunFlow={run}
+              {...(onOpenCite ? { onOpenCite } : {})}
+            />
+            <h3 className="pt-result__title">{`Hops (${shown.hops.length})`}</h3>
+            <HopList
+              trace={shown}
+              activeIndex={shownHopIndex}
+              onSelect={selectHopAndAim}
+              {...(onOpenCite ? { onOpenCite } : {})}
+            />
+            <Presets onPick={run} title="Other questions this snapshot can answer" />
+          </div>
+        )}
+      </TabPanel>
+
+      <TabPanel id={`${formId}-mode`} tabId="intent" active={mode === "intent"} className="pt-panel">
+        <IntentMode onRunFlow={run} {...(onOpenCite ? { onOpenCite } : {})} />
+      </TabPanel>
+
+      <LiveRegion message={announce} />
+    </section>
+  );
+}
+
+/* ══ intent mode ═══════════════════════════════════════════════════════════ */
+
+type SearchPhase =
+  | { kind: "idle" }
+  | { kind: "running"; done: number; total: number }
+  | { kind: "cancelled"; done: number; total: number }
+  | { kind: "done"; verdict: IntentVerdict };
+
+function IntentMode({
+  onRunFlow,
+  onOpenCite,
+}: {
+  onRunFlow: (f: Flow) => void;
+  onOpenCite?: (c: Cite) => void;
+}): ReactElement {
+  const catalog = useMemo(() => intentCatalog(), []);
+  const [selectedId, setSelectedId] = useState<string>(catalog[0]?.id ?? "");
+  const [phase, setPhase] = useState<SearchPhase>({ kind: "idle" });
+  const [announce, setAnnounce] = useState("");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelled = useRef(false);
+  /* Every search carries a generation. A chunk loop left over from a previous intent would
+     otherwise finish and write ITS verdict into the panel now showing a different intent — a
+     result attached to the wrong claim, which is worse than no result. */
+  const generation = useRef(0);
+
+  const intent = catalog.find((i) => i.id === selectedId) ?? catalog[0] ?? null;
+  const plan = useMemo(() => (intent === null ? null : planIntent(intent)), [intent]);
+
+  const stop = useCallback(() => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+
+  // A search must not outlive the panel: an orphaned chunk loop would keep tracing forever.
+  useEffect(() => stop, [stop]);
+
+  const start = useCallback(() => {
+    if (intent === null) return;
+    stop();
+    cancelled.current = false;
+    generation.current += 1;
+    const mine = generation.current;
+    const search = startIntentSearch(intent);
+    const total = search.plan.flows.length;
+    setPhase({ kind: "running", done: 0, total });
+    setAnnounce(`Searching ${total} flows for a counterexample.`);
+
+    const tick = (): void => {
+      if (generation.current !== mine) return;
+      if (cancelled.current) {
+        setPhase({ kind: "cancelled", done: search.cursor, total });
+        setAnnounce(`Search cancelled after ${search.cursor} of ${total} flows. No verdict is given.`);
+        return;
+      }
+      stepIntentSearch(search, CHUNK);
+      if (search.cursor >= total) {
+        const verdict = finishIntentSearch(search);
+        setPhase({ kind: "done", verdict });
+        /* The announcement carries the SAME sentences as the card, unmodelled-hosts sentence
+           included. It is the only non-visual form of this verdict, and dropping the mandatory
+           sentence from it shipped "no counterexample found" to a screen-reader user without the
+           bound that makes it honest — the visual path honoured the rule, the announced path did
+           not. This file's own header calls that sentence unconditional; here it is. */
+        setAnnounce(
+          [verdict.outcome.replace(/-/g, " "), verdict.boundSentence, verdict.unmodelledSentence]
+            .filter((s): s is string => typeof s === "string" && s.length > 0)
+            .map((s) => (/[.!?]$/.test(s.trim()) ? s.trim() : `${s.trim()}.`))
+            .join(" "),
+        );
+        return;
+      }
+      setPhase({ kind: "running", done: search.cursor, total });
+      /* setTimeout rather than a tight loop or a microtask: it returns to the event loop, so a
+         keystroke or a click lands between chunks instead of behind the whole search. */
+      timer.current = setTimeout(tick, 0);
+    };
+    timer.current = setTimeout(tick, 0);
+  }, [intent, stop]);
+
+  const cancel = useCallback(() => {
+    cancelled.current = true;
+    stop();
+    setPhase((p) =>
+      p.kind === "running" ? { kind: "cancelled", done: p.done, total: p.total } : p,
+    );
+  }, [stop]);
+
+  if (intent === null || plan === null) {
+    return (
+      <p className="pt-intent__none">
+        This snapshot names no destination prefix in a collected ACL and no observed subnet with a
+        gateway address, so no intent can be constructed from it. Offering one anyway would mean
+        inventing the addresses it searches.
+      </p>
+    );
+  }
+
+  return (
+    <div className="pt-intent">
+      <p className="pt-intent__lead">
+        State a universal claim, then search the flow space this snapshot can derive for a flow that
+        contradicts it. A search that finds nothing is bounded by the space it searched, and that
+        bound is reported with the result.
+      </p>
+
+      <Select
+        label="Intent to search"
+        value={selectedId}
+        onChange={(e) => {
+          // Retire any running search before the claim it belongs to leaves the screen.
+          generation.current += 1;
+          stop();
+          setSelectedId(e.currentTarget.value);
+          setPhase({ kind: "idle" });
+        }}
+        options={catalog.map((i) => ({ value: i.id, label: i.claim }))}
+      />
+
+      <div className="pt-intent__plan">
+        <p className="pt-intent__claim">{intent.claim}</p>
+        <p className="pt-intent__why">{intent.rationale}</p>
+        <dl className="pt-intent__facts">
+          <div>
+            <dt>Sources</dt>
+            <dd>
+              {intent.sources.map((a) => (
+                <span key={a.ip} className="pt-addr" data-prov={a.provenance}>
+                  <span className="pt-addr__ip">{a.ip}</span>
+                  <span className="pt-addr__prov">{a.provenance}</span>
+                  <CiteLink cite={a.cite} onOpen={(c) => onOpenCite?.(c)} />
+                </span>
+              ))}
+            </dd>
+          </div>
+          <div>
+            <dt>Destinations</dt>
+            <dd>
+              {intent.destinations.map((a) => (
+                <span key={a.ip} className="pt-addr" data-prov={a.provenance}>
+                  <span className="pt-addr__ip">{a.ip}</span>
+                  <span className="pt-addr__prov">{a.provenance}</span>
+                  <CiteLink cite={a.cite} onOpen={(c) => onOpenCite?.(c)} />
+                </span>
+              ))}
+            </dd>
+          </div>
+          <div>
+            <dt>Services</dt>
+            <dd>
+              {intent.services.map((s) => (
+                <span key={s.label} className="pt-addr">
+                  <span className="pt-addr__ip">{s.label}</span>
+                  <CiteLink cite={s.cite} onOpen={(c) => onOpenCite?.(c)} />
+                </span>
+              ))}
+            </dd>
+          </div>
+          <div>
+            <dt>Flow space</dt>
+            <dd>
+              {`${plan.enumerated} flows${plan.dropped > 0 ? `, of which ${plan.dropped} exceed the ${plan.cap}-flow cap and would not be traced` : ""}. Each one is traced; the search does not stop at the first counterexample.`}
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      <div className="pt-intent__actions">
+        {phase.kind === "running" ? (
+          <Button variant="secondary" onClick={cancel}>
+            Cancel the search
+          </Button>
+        ) : (
+          <Button variant="primary" icon={<IconSearch />} onClick={start}>
+            Search for a counterexample
+          </Button>
+        )}
+        {phase.kind === "running" ? (
+          <span
+            className="pt-progress"
+            role="progressbar"
+            aria-label="Counterexample search"
+            aria-valuemin={0}
+            aria-valuemax={phase.total}
+            aria-valuenow={phase.done}
+            aria-valuetext={`${phase.done} of ${phase.total} flows traced`}
+          >
+            <span
+              className="pt-progress__fill"
+              style={{ inlineSize: `${phase.total === 0 ? 0 : (phase.done / phase.total) * 100}%` }}
+            />
+            <span className="pt-progress__text">{`${phase.done} / ${phase.total} flows`}</span>
+          </span>
+        ) : null}
+      </div>
+
+      {phase.kind === "cancelled" ? (
+        <p className="pt-intent__cancelled">
+          {`Search cancelled after ${phase.done} of ${phase.total} flows. No verdict is offered: a partial search cannot support one, and the flows already traced are not a sample of anything in particular.`}
+        </p>
+      ) : null}
+
+      {phase.kind === "done" ? (
+        <IntentClaimCard
+          verdict={phase.verdict}
+          onRunFlow={onRunFlow}
+          {...(onOpenCite ? { onOpenCite } : {})}
+        />
+      ) : null}
+
+      <LiveRegion message={announce} />
+    </div>
+  );
+}

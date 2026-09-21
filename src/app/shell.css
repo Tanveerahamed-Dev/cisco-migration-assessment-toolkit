@@ -1,0 +1,639 @@
+/*
+ * shell.css — reset, base typography and the application frame.
+ *
+ * This file owns the FRAME and nothing else: the grid, the hairlines between regions, the focus
+ * treatment, the skip link, scrollbars and the responsive collapse ladder. Component styling
+ * lives with its component.
+ *
+ * REGION CONTRACT — the ids in design-brief.md section 2.1 are load-bearing. Every surface agent
+ * mounts into the class/id pair named here, and nothing else re-declares this geometry:
+ *
+ *   .app            grid rows: header / query bar / body / status bar
+ *     .app__header    #app-header     always present
+ *     .app__query     #query-bar      always present
+ *     .app__body      grid cols: rail A / stage / rail B
+ *       .rail.rail--a   contains #rail-path (conditional) and #rail-queue (always)
+ *       .app__stage     #stage        the canvas, its DOM mirror and the HUD
+ *       .rail.rail--b   #rail-evidence
+ *     .app__status    #status-bar     always present
+ *
+ * #rail-path is ABSENT FROM THE DOM until the question is asked — not present and empty. A panel
+ * that says "no path yet" is chrome; a panel that appears when the question is asked is an answer.
+ * "Asked" means a flow exists OR the reader has selected the path surface: pressing Path is asking,
+ * and what mounts then is the flow form and the suggested-flow presets, not a placeholder. See
+ * RailA in src/app/surfaces.tsx.
+ *
+ * Widths are rem against a 16px root, never px literals. The px figures in comments are the
+ * computed result so a screenshot can be verified, not values to hardcode elsewhere.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  /* 2.5.7 / 2.5.8 depend on a predictable root. Do not scale this. */
+  font-size: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-body);
+  letter-spacing: var(--ls-2);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Identifiers, counts, IP addresses and elapsed times all sit in columns. Tabular figures are
+     the difference between a scannable column and a ragged one. */
+  font-variant-numeric: tabular-nums;
+  overscroll-behavior: none;
+  /* The frame is the scroller; the page body never scrolls in two dimensions (WCAG 1.4.10). */
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+p,
+figure,
+dl,
+dd {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-size: 1em;
+}
+
+pre {
+  margin: 0;
+}
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+svg {
+  display: block;
+  flex: none;
+}
+
+img,
+canvas {
+  max-width: 100%;
+}
+
+hr {
+  border: 0;
+  border-top: var(--hairline) solid var(--border);
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.18em;
+}
+
+/* ── focus ────────────────────────────────────────────────────────────────────
+   WCAG 2.2 2.4.11 (focus not obscured) and 2.4.13 (focus appearance): at least a 2px perimeter
+   at >= 3:1 against adjacent colour. --focus clears 4.17:1 against the worst ground it lands on
+   (surface-3, light) and 6.38:1 on dark.
+   `outline`, never `box-shadow`: outline survives forced-colors / Windows High Contrast.
+   The inset ring is a SEPARATE box-shadow whose only job is to keep the outline legible when the
+   row underneath is hover-filled; if it is dropped by forced-colors nothing is lost. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 1px var(--bg) inset;
+  border-radius: var(--radius-sm);
+}
+
+/* Scroll regions clip an outline drawn at the very edge of their content. Nothing here sets
+   overflow:hidden on an ancestor of a focusable cell — that is the single most common silent
+   regression in a dense grid, and it passes visual review because the ring is visible on
+   whichever row happens to sit mid-viewport. Scroll padding keeps a focused row clear of both
+   edges when it is scrolled into view. */
+.scroll-y {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-padding-block: var(--sp-2);
+  min-height: 0;
+}
+
+/*
+ * THE CUT-ROW SCRIM.
+ *
+ * Every scroll region in this shell ends flush against the next region's edge, so the last row
+ * visible in it was bisected mid-glyph with nothing to say whether that was the end of the list or
+ * the middle of it. Three panes failed identically — the queue, the legend and the evidence rail —
+ * which is one layout bug, not three, so the remedy is one rule that every scroll region gets
+ * rather than three per-pane patches.
+ *
+ * `.scroll-y` gets it automatically. A component that owns its own scroller (because it needs
+ * different overflow behaviour) opts in by adding `scroll-scrim` to that element's class list.
+ */
+.scroll-y,
+.scroll-scrim {
+  /* Somewhere for the last row to finish, so the end of the list is not also a cut. */
+  padding-block-end: var(--sp-3);
+  background-image:
+    /* 1. the COVER, attached `local`, so it travels with the content and sits exactly over the
+          shadow once the reader has reached the end. It must match the pane's own fill. */
+    linear-gradient(to top, var(--scroll-scrim-bg, var(--bg)) 40%, transparent 100%),
+    /* 2. the SHADOW, attached `scroll`, so it is pinned to the bottom edge of the box and is
+          revealed exactly when there is content past it. */
+    linear-gradient(to top, var(--scroll-scrim-ink, rgb(0 0 0 / 22%)) 0, transparent 100%);
+  background-position: bottom center, bottom center;
+  background-size:
+    100% var(--sp-5),
+    100% var(--sp-5);
+  background-repeat: no-repeat, no-repeat;
+  background-attachment: local, scroll;
+}
+
+/* The scrim is a cue, not a veil: on a surface whose fill is not --bg, name the fill so the cover
+   is invisible at rest instead of painting a band across the last row. */
+.rail .scroll-y,
+.rail .scroll-scrim {
+  --scroll-scrim-bg: var(--surface-1);
+}
+
+/* Same two-block theme pattern tokens.css uses: the media query for the OS preference, the
+   attribute for an explicit choice, so a user's pick wins in both directions. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .scroll-y,
+  :root:not([data-theme="light"]) .scroll-scrim {
+    --scroll-scrim-ink: rgb(0 0 0 / 52%);
+  }
+}
+
+[data-theme="dark"] .scroll-y,
+[data-theme="dark"] .scroll-scrim {
+  --scroll-scrim-ink: rgb(0 0 0 / 52%);
+}
+
+.scroll-x {
+  overflow-x: auto;
+  scroll-padding-inline: var(--sp-2);
+  min-width: 0;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--accent) 35%, transparent);
+}
+
+/* ── scrollbars: present, quiet, and never a layout shift ─────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-pill);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── skip link ───────────────────────────────────────────────────────────────
+   Off-screen until focused, then pinned over the header. It must be the first focusable thing in
+   the document (WCAG 2.4.1). */
+.skip-link {
+  position: absolute;
+  left: var(--sp-2);
+  top: calc(var(--sp-2) - 4rem);
+  z-index: var(--z-skiplink);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  background: var(--overlay);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  text-decoration: none;
+  transition: top var(--dur-fast) var(--ease-out);
+}
+.skip-link:focus-visible {
+  top: var(--sp-2);
+}
+
+/* Kept byte-for-byte in step with the same rule in src/ui/primitives.css — see the comment there
+   for why this is `fixed` with an explicit anchor rather than `absolute` with none. */
+.visually-hidden {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── the application frame ───────────────────────────────────────────────────
+   Rails are fixed-width so the Stage never reflows as content changes width. An investigation
+   surface that jitters while you read it is not usable. */
+.app {
+  display: grid;
+  grid-template-rows: var(--header-h) var(--querybar-h) minmax(0, 1fr) var(--statusbar-h);
+  height: 100%;
+  background: var(--bg);
+  isolation: isolate;
+  /* The frame is a fixed-height simultaneous-surface layout: the header, the scope bar and the
+     coverage status bar are permanent and must never leave the viewport. `overflow: hidden` is
+     what makes that structural rather than aspirational — without it a single escaping box (see
+     .visually-hidden) or any scrollIntoView deep inside a panel scrolls the whole application.
+     Panel content scrolls inside its own region; the page itself does not scroll at all. */
+  overflow: hidden;
+}
+
+.app__header,
+.app__query,
+.app__status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-inline: var(--sp-4);
+  min-width: 0;
+}
+
+.app__header {
+  border-bottom: var(--hairline) solid var(--border);
+  background: var(--surface-1);
+}
+
+.app__query {
+  border-bottom: var(--hairline) solid var(--border);
+  background: var(--bg);
+  gap: var(--sp-2);
+  overflow: hidden;
+}
+
+.app__status {
+  border-top: var(--hairline) solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  gap: var(--sp-4);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.app__body {
+  display: grid;
+  grid-template-columns: var(--rail-left) minmax(0, 1fr) var(--rail-right);
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The 1px seams between regions are borders on the rails, so the Stage keeps every pixel of its
+   declared width: 1440 - 300 - 380 - 2 = 758px. */
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.rail--a {
+  border-right: var(--hairline) solid var(--border);
+}
+
+.rail--b {
+  border-left: var(--hairline) solid var(--border);
+}
+
+.app__stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--stage-bg);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* The inspector is bottom-docked OVER the stage and never covers the rails, so the claim it is
+   explaining stays visible above it. */
+.app__stage--with-inspector {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+/* A transient overlay must leave its origin visible behind it. The Stage stays readable at
+   reduced contrast rather than being hidden or blurred — you cannot check a picture you cannot
+   see, and a blur is decoration. */
+.stage-dim {
+  opacity: 0.6;
+  transition: opacity var(--dur-medium) var(--ease-out);
+}
+
+/* ── rail A: path over queue, with a draggable splitter ──────────────────────
+   Defaults to 60/40 when a trace exists. --rail-a-split is written by the rail's own component
+   as the user drags; the 30%/80% clamp lives with the drag handler because CSS cannot express
+   "clamp while dragging, keep on release". */
+.rail--a[data-split="true"] {
+  display: grid;
+  /* The split is the path panel's SHARE, not its entitlement.
+     Two sizing functions carry that, and both matter:
+       - the path track is `minmax(0, <split>)`, so the split is a ceiling it may shrink below
+         rather than a fixed length that inflates to the panel's content height;
+       - the queue track's minimum is `min-content`, so it keeps whatever its own filters, corpus
+         switch and grid floor (.ag__grid min-height in DataGrid.css) actually need.
+     Grid then resolves the queue's minimum FIRST and gives the path panel what is left. The path
+     panel is a .scroll-y and scrolls internally, so it loses nothing by yielding; the queue, which
+     is where an investigation starts, can no longer be driven to a blank strip by a trace opening
+     above it. The floor is declared once, on the grid, and the arithmetic here follows it — there
+     is deliberately no per-viewport list of exceptions. */
+  /* The queue's floor: its own chrome above the grid — the corpus switch, the query box, the
+     filter controls and the account scope line, MEASURED at 13.75rem / 220px — plus the 19rem
+     min-height .ag__grid declares for itself in DataGrid.css. Keep the second term equal to that
+     one; it is restated rather than inherited because a custom property cannot be read upward from
+     a descendant.
+     `min-content` is deliberately NOT used: .ag__grid is a scroll container, so its min-content
+     height in the block axis is its whole ~7,000px of rows, which inflates the track instead of
+     flooring it.
+     Both terms are measured constants and both can rot if the queue's chrome or its row density
+     changes. review/layout-guard.mjs is what stops that happening silently: it counts the finding
+     rows that are really hit-testable, in a real browser, at four viewports, with and without a
+     trace open, and fails loudly when this drifts. */
+  --rail-a-queue-min: calc(13.75rem + 19rem);
+  grid-template-rows:
+    minmax(
+      0,
+      min(
+        var(--rail-a-split, 60%),
+        /* ...but never below 10rem, which is the tab row plus the first fields of the flow form.
+           On a short rail — the stacked and single-column rungs, where the stage sits above rail A
+           and leaves it ~376px — the queue's floor alone exceeds the whole rail, and without this
+           the path track resolved to 0 and the flow form vanished entirely.
+           A LENGTH and not a percentage: a percentage floor grows with the rail, so on the 1280x800
+           rung it reserved 207px for a panel that needed 198px and took the difference out of the
+           queue, pushing it back under its own floor. Neither panel may starve the other, and the
+           one that yields should be the one that scrolls internally. */
+        max(10rem, calc(100% - var(--rail-a-queue-min) - var(--sp-2)))
+      )
+    )
+    auto
+    minmax(0, 1fr);
+}
+
+/* The POINTER TARGET is 24px tall (SC 2.5.8 Target Size (Minimum), on its own size rather than
+   on the spacing exception — the old 8px handle passed only because the nearest control happened
+   to sit exactly 12.0px from its centre, which is the radius of the required circle: a
+   zero-margin pass that any layout tweak would have silently turned into a failure). What is
+   DRAWN is still a hairline rule plus the grab pill, so the rail does not gain a chunky bar: the
+   extra height is transparent padding, which is also what makes the handle usable with a tremor. */
+.splitter {
+  height: var(--sp-5); /* 24px */
+  flex: none;
+  border: 0;
+  background: transparent;
+  cursor: row-resize;
+  touch-action: none;
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+/* the separator rule, centred in the target */
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: calc(50% - var(--hairline) / 2);
+  height: var(--hairline);
+  background: var(--border);
+}
+/* the grab pill, painted over the rule */
+.splitter::before {
+  content: "";
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: var(--sp-6);
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+
+/* ── responsive collapse ladder (design brief section 2.5) ───────────────────
+   Every step keeps the Stage visible and keeps the grid scrollable inside its own region. The
+   page body itself never scrolls horizontally. */
+
+/* >= 1600px — the Stage takes the extra width, not the rails. Rail A grows only 40px, which is
+   exactly what stops a finding title truncating at 1440 (acceptance C3). */
+@media (min-width: 100rem) {
+  :root {
+    --header-h: 3rem; /*      48px */
+    --querybar-h: 2.75rem; /* 44px */
+    --rail-left: 21.25rem; /* 340px */
+    --rail-right: 26.25rem; /* 420px */
+  }
+}
+
+/* 1024–1279px — Rail B becomes a right-anchored overlay drawer over the Stage. The Stage is
+   dimmed, not hidden, and keeps >= 360px. The drawer is toggled by `E` and by any evidence
+   affordance; its open state is `data-drawer="open"` on .app. */
+@media (max-width: 79.9375rem) {
+  :root {
+    --rail-left: 17.5rem; /* 280px */
+  }
+
+  .app__body {
+    grid-template-columns: var(--rail-left) minmax(22.5rem, 1fr);
+  }
+
+  .rail--b {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 0;
+    width: min(23.75rem, 100%);
+    z-index: var(--z-overlay);
+    background: var(--overlay);
+    box-shadow: var(--shadow-2);
+    transform: translateX(100%);
+    visibility: hidden;
+    transition:
+      transform var(--dur-medium) var(--ease-out),
+      visibility 0s linear var(--dur-medium);
+  }
+
+  .app[data-drawer="open"] .rail--b {
+    transform: none;
+    visibility: visible;
+    transition:
+      transform var(--dur-medium) var(--ease-out),
+      visibility 0s;
+  }
+
+  .app__stage {
+    position: static;
+  }
+
+  .app__body {
+    position: relative;
+  }
+}
+
+/* 768–1023px — single column: query bar, Stage at 46vh, then one full-width panel chosen by a
+   segmented control. The Inspector becomes a full-width sheet. */
+@media (max-width: 63.9375rem) {
+  .app__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(20rem, 46vh) minmax(0, 1fr);
+  }
+
+  .rail--a,
+  .rail--b {
+    border: 0;
+    border-top: var(--hairline) solid var(--border);
+  }
+
+  .rail--b {
+    position: static;
+    width: auto;
+    transform: none;
+    visibility: visible;
+    box-shadow: none;
+    background: var(--bg);
+  }
+
+  /* Only the panel the segmented control selects is in the DOM flow; the others are hidden with
+     the `hidden` attribute by the shell so they are removed from the accessibility tree too. */
+  .app[data-pane="queue"] .rail--b,
+  .app[data-pane="evidence"] .rail--a {
+    display: none;
+  }
+}
+
+/* <= 767px down to 320 CSS px — the 1.4.10 reflow answer for the canvas. The Stage collapses and
+   the DOM mirror table is shown in its place; 3-D sits behind an explicit toggle. At 320px a
+   26-node fabric is not legible, and pretending otherwise is decoration. */
+@media (max-width: 47.9375rem) {
+  :root {
+    --header-h: 2.75rem;
+    --querybar-h: auto;
+  }
+
+  body {
+    overflow: auto;
+  }
+
+  .app {
+    grid-template-rows: var(--header-h) auto auto var(--statusbar-h);
+    height: auto;
+    min-height: 100%;
+  }
+
+  .app__query {
+    flex-wrap: wrap;
+    padding-block: var(--sp-2);
+    overflow: visible;
+  }
+
+  .app__body {
+    grid-template-rows: auto;
+  }
+
+  .app__stage {
+    display: none;
+  }
+
+  .app[data-fabric3d="on"] .app__stage {
+    display: grid;
+    min-height: 20rem;
+  }
+
+  .rail--a,
+  .rail--b {
+    display: block;
+  }
+
+  .app[data-pane] .rail--a,
+  .app[data-pane] .rail--b {
+    display: block;
+  }
+
+  /* A wide table scrolls inside its own region. The page never scrolls in two dimensions. */
+  .scroll-x {
+    max-width: 100vw;
+  }
+}
+
+/* Print: the frame is a screen construct. Give the reader the evidence, not the chrome. */
+@media print {
+  /* Colour is re-pointed at the light palette inside tokens.css, where hex values are allowed.
+     A component stylesheet stating a literal colour — even for print — is the start of the drift
+     this design system exists to prevent. */
+  body {
+    overflow: visible;
+  }
+  .app {
+    display: block;
+    height: auto;
+  }
+  .app__stage,
+  .skip-link,
+  .splitter {
+    display: none;
+  }
+}
