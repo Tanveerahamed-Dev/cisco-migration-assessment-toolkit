@@ -17,7 +17,7 @@
  *   strands → a port-channel is drawn as a bundle; a graph bridge is drawn doubled
  *
  * `null` never becomes a healthy default. A link whose centrality was never computed — 19 of the
- * 44 in this snapshot — is drawn in `--claim-indeterminate` with a short dash and reports
+ * 44 in this snapshot — is drawn in `--claim-indeterminate` with a long, tick-broken dash and reports
  * `notObserved: ["centrality"]`, because "we did not measure whether cutting this partitions the
  * graph" and "cutting this is safe" are opposite claims.
  */
@@ -34,7 +34,190 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import type { Link } from "../../core/types";
 import { RECEDE_ATTRIBUTE, type TokenPalette } from "../materials";
+import { RECEDE_DEPTH } from "../emphasis";
+import { BACKDROP_DISPLAY_SPAN, agxForward, agxInverse } from "../env";
 import type { Vec3 } from "../layout";
+
+/* ── cable ink: the contrast floor, as a property of the colour pipeline ─────────────────────────
+ *
+ * MEASURED (independent audit, D4): with a finding selected, off-subject cables reached the screen
+ * at 1.09-1.49:1 on the light stage and 1.92-2.67:1 on the dark one, against a WCAG 1.4.11 floor of
+ * 3:1 — while every token they were painted in passes on paper. Two things in the pipeline, not the
+ * tokens, did that:
+ *
+ *   1. The token was written into the composer's LINEAR HDR buffer as-is and then went through AgX
+ *      with everything else, so what landed was AgX(token), not the token.
+ *   2. Recession thinned ALPHA. The backdrop's pre-image on the light stage is ~4-6 linear (see
+ *      env.ts createBackdrop), so blending even a third of it into a cable before the tone map
+ *      washes the cable into the ground. On the dark stage it multiplied radiance toward black.
+ *
+ * So the ink is now DISPLAY-referred, like the backdrop: the colour a cable should land on is
+ * decided in display space, held to a contrast floor against the worst-case ground the backdrop
+ * gradient can put behind it, and only then converted to the AgX pre-image that is written into
+ * the buffer. Recession is a colour, not an alpha: a second, precomputed display colour — the ink
+ * desaturated and pulled toward the ground until it sits exactly on its own (lower) floor. Both are
+ * guarded for EVERY token, so no future token choice can reintroduce the failure.
+ */
+/** Full-presence display contrast against the worst ground. 3:1 is the WCAG floor; the margin is
+ *  for SMAA, which on a 1-2 px stroke pulls the strongest pixel ~20-25 % toward the ground
+ *  (MEASURED, review/_r3d_cc.mjs: a receded dot designed at 3.8:1 landed at 2.9-3.0:1). */
+export const CABLE_INK_FLOOR = 4.6;
+/** A fully receded cable lands here: still legible context, quieter than the subject (which also
+ *  keeps its chroma). The brief quotes 3.36:1 for a dimmed off-path link; that figure is the INK,
+ *  and SMAA's measured loss on thin strokes is why the ink sits above it. */
+export const CABLE_RECEDED_FLOOR = 4.0;
+/** How much hue a receded cable keeps. Matches the chassis, which desaturate as they recede. */
+const RECEDED_CHROMA = 0.35;
+/** Instance attribute carrying each segment's receded ink (AgX pre-image, linear). */
+export const RECEDE_INK_ATTRIBUTE = "aRecedeInk";
+
+const luminance = (c: Vec3): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+/** WCAG contrast of two relative luminances (linear-light, 0..1). */
+export function contrastOfLuminance(a: number, b: number): number {
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** The ground a cable has to hold its contrast against, and which way the ink must go to do it. */
+export function cableGround(tokens: TokenPalette): { y: number; inkDarker: boolean } {
+  const s = tokens.color("--stage-bg");
+  const stageY = luminance([s.r, s.g, s.b]);
+  const span = BACKDROP_DISPLAY_SPAN[tokens.theme === "dark" ? "dark" : "light"];
+  // A pale ground takes dark ink and vice versa. Decided from the ground itself, not the theme
+  // name, so a retuned stage cannot silently flip the direction the floor pushes.
+  const inkDarker = stageY > 0.18;
+  // The worst case is the end of the backdrop gradient CLOSEST to the ink: its darkest end for dark
+  // ink, its brightest end for light ink.
+  const k = inkDarker ? Math.min(span.top, span.bottom) : Math.max(span.top, span.bottom);
+  return { y: Math.min(1, stageY * k), inkDarker };
+}
+
+/**
+ * Move `c` to luminance `y`: DOWN by scaling toward black (keeps chroma), UP by mixing toward white
+ * (the only way up that cannot leave the gamut). Chosen by the direction of travel, not by theme —
+ * the ink floor moves dark ink down on the pale stage, and recession moves light ink down on the
+ * dark one; an earlier version keyed this on the theme and silently left dark-stage recession as a
+ * no-op (the receded fan measured 8.7:1, i.e. not receded at all).
+ */
+function toLuminance(c: Vec3, y: number): Vec3 {
+  const cy = luminance(c);
+  if (y <= cy) {
+    if (cy <= 1e-6) return [y, y, y];
+    const k = y / cy;
+    return [c[0] * k, c[1] * k, c[2] * k];
+  }
+  if (cy >= 1 - 1e-6) return [1, 1, 1];
+  const t = Math.min(1, Math.max(0, (y - cy) / (1 - cy)));
+  return [c[0] + (1 - c[0]) * t, c[1] + (1 - c[1]) * t, c[2] + (1 - c[2]) * t];
+}
+
+/** The luminance that sits exactly `floor`:1 from the ground, on the ink's side of it. */
+function floorLuminance(groundY: number, floor: number, inkDarker: boolean): number {
+  return inkDarker
+    ? Math.max(0, (groundY + 0.05) / floor - 0.05)
+    : Math.min(1, floor * (groundY + 0.05) - 0.05);
+}
+
+export interface CableInk {
+  /** Display colours (linear sRGB, what the screen should show). */
+  display: { ink: Vec3; receded: Vec3 };
+  /** The same two colours as AgX pre-images — what is written into the HDR buffer. */
+  ink: Color;
+  receded: Color;
+}
+
+/**
+ * Resolve one colour token into the pair of cable inks. Pure given the palette; memoised per
+ * palette by the caller. Total over every token: a token that already clears the floor is left
+ * exactly as designed, one that does not is moved along its own luminance axis until it does.
+ */
+export function cableInk(tokens: TokenPalette, token: string, restChroma = 1): CableInk {
+  const { y: groundY, inkDarker } = cableGround(tokens);
+  const raw = tokens.color(token);
+  let ink: Vec3 = [raw.r, raw.g, raw.b];
+  if (restChroma < 1) {
+    // Chroma pulled toward the ink's own luminance BEFORE the floor is applied, so the contrast
+    // floor is held by the colour actually drawn, not by the token it was derived from.
+    const y0 = luminance(ink);
+    ink = [y0 + (ink[0] - y0) * restChroma, y0 + (ink[1] - y0) * restChroma, y0 + (ink[2] - y0) * restChroma];
+  }
+  const inkFloorY = floorLuminance(groundY, CABLE_INK_FLOOR, inkDarker);
+  const passes = inkDarker ? luminance(ink) <= inkFloorY : luminance(ink) >= inkFloorY;
+  if (!passes) ink = toLuminance(ink, inkFloorY);
+
+  const iy = luminance(ink);
+  const desat: Vec3 = [
+    iy + (ink[0] - iy) * RECEDED_CHROMA,
+    iy + (ink[1] - iy) * RECEDED_CHROMA,
+    iy + (ink[2] - iy) * RECEDED_CHROMA,
+  ];
+  const recededY = floorLuminance(groundY, CABLE_RECEDED_FLOOR, inkDarker);
+  // Never let "receded" be LOUDER than present: an ink that only just clears its own floor keeps
+  // its luminance and recedes by chroma alone.
+  const closer = inkDarker ? Math.max(recededY, iy) : Math.min(recededY, iy);
+  const receded = toLuminance(desat, closer);
+
+  const pre = (c: Vec3): Color => {
+    const [r, g, b] = agxInverse(c);
+    return new Color(r, g, b);
+  };
+  return { display: { ink, receded }, ink: pre(ink), receded: pre(receded) };
+}
+
+/** What AgX will actually put on screen for a pre-image — exported for the contrast ratchet. */
+export function displayedLuminance(pre: Color): number {
+  return luminance(agxForward([pre.r, pre.g, pre.b]));
+}
+
+/** Memoised `cableInk` for one palette; a new palette (theme change) gets a new table. */
+function inkTable(tokens: TokenPalette): (token: string, restChroma?: number) => CableInk {
+  const cache = new Map<string, CableInk>();
+  return (token, restChroma = 1) => {
+    const key = `${token}|${restChroma}`;
+    let hit = cache.get(key);
+    if (hit === undefined) {
+      hit = cableInk(tokens, token, restChroma);
+      cache.set(key, hit);
+    }
+    return hit;
+  };
+}
+
+/**
+ * Chroma a cable keeps AT REST, by what its colour encodes.
+ *
+ * design-brief.md §1: "Chroma is spent on severity and operational state only." A bridge is a
+ * topology ROLE. At full chroma `--link-bridge` was the most saturated hue in every overview frame
+ * — 17 magenta access uplinks outshouting the Critical band channel (C5 critic, 2026-09-22). The
+ * role is still carried by its own hue AND by the doubled rails (a shape channel, so never colour
+ * alone); it simply stops being the loudest thing on the stage. Keyed on the visual's encoding
+ * (`LinkVisual.roleOnly`), not on a token name at the call site.
+ */
+export const ROLE_REST_CHROMA = 0.5;
+function restChromaOf(visual: LinkVisual): number {
+  return visual.roleOnly ? ROLE_REST_CHROMA : 1;
+}
+
+/**
+ * Screen-space gap between a cable's parallel rails, in CSS pixels.
+ *
+ * Rails used to be separate polylines offset in WORLD units (bridge +-0.45, port-channel strands
+ * 0.62 apart). At the overview a unit projects to well under a pixel, so the two 2.7 px strokes
+ * overlapped and their AA ramps beat against each other into a dark stipple inside every bundle —
+ * aliasing on the fabric's dominant long diagonals (C5 critic: holes of 2f1b30 / 0c0f16 between
+ * magenta strand pixels at DPR 1, both tiers). A world-unit gap is only a gap at some dolly. So the
+ * rails are now drawn by ONE stroke whose shader cuts gaps of a fixed pixel width across it: the
+ * rails stay separate at every zoom and every DPR, and a bridge's gap stays visibly wider than a
+ * port channel's, which is the shape channel the legend promises.
+ */
+export const BRIDGE_RAIL_GAP_PX = 3;
+export const STRAND_RAIL_GAP_PX = 2;
+export function railsOf(visual: LinkVisual): { rails: number; gapPx: number } {
+  const rails = visual.strands * (visual.doubled ? 2 : 1);
+  return { rails, gapPx: visual.doubled ? BRIDGE_RAIL_GAP_PX : STRAND_RAIL_GAP_PX };
+}
 
 export type DashStyle = "solid" | "dashed" | "dotted" | "short";
 
@@ -47,19 +230,47 @@ export interface LinkVisual {
   dash: DashStyle;
   /** Parallel strands. > 1 only for a port channel: one cable drawn for a bundle is a lie. */
   strands: number;
-  /** A second offset polyline: this link's removal partitions the graph. */
+  /** Drawn with a second rail: this link's removal partitions the graph. */
   doubled: boolean;
+  /** The colour encodes a topology ROLE only (no severity, no state): quieter at rest. */
+  roleOnly: boolean;
   /** Fields that were null or absent in the snapshot. Rendered as unmeasured, never as healthy. */
   notObserved: string[];
   /** One sentence a tooltip or legend can print verbatim. */
   reason: string;
+  /**
+   * What the DRAWN pattern asserts, one entry per channel that asserts something (the dash/colour
+   * of a state, the short-dash centrality gap, the doubled bridge rail). Set in the same branch
+   * that picks the pattern, so it cannot describe a different cable than the one drawn. Every
+   * non-canvas surface that states a link's status in short form (the Fabric list row,
+   * FabricA11yTree `linkCutMeta`) must carry each of these — see link-encoding.parity.test.tsx.
+   * `key` is the phrase a row must contain; `words` is how to say it when the row does not yet;
+   * `gap` marks an absence rather than an observation.
+   */
+  drawnClaims: DrawnClaim[];
 }
 
+export interface DrawnClaim {
+  key: string;
+  words: string;
+  gap: boolean;
+}
+
+/**
+ * The thinnest stroke any cable may draw, in CSS pixels (design-brief's 2 CSS px minimum stroke).
+ *
+ * The steps used to start at 1.5. MEASURED (independent audit C5, 2026-09-22, DSF 2): a grey
+ * speed-not-observed link came out ~1.7 CSS px across its section, under the brief's floor, and at
+ * close range cables read thinner than the ports they enter. The whole ladder is shifted up by the
+ * same 0.5 px, so the four steps keep their exact 0.6 px spacing and the thinnest still means
+ * "speed not observed"; only the floor moved.
+ */
+export const MIN_STROKE_PX = 2;
 /** Width steps. The thinnest is reserved for "speed not observed" so absence has its own weight. */
-const WIDTH_SPEED_UNOBSERVED = 1.5;
-const WIDTH_100M = 2.1;
-const WIDTH_1G = 2.7;
-const WIDTH_FAST = 3.3;
+const WIDTH_SPEED_UNOBSERVED = MIN_STROKE_PX;
+const WIDTH_100M = 2.6;
+const WIDTH_1G = 3.2;
+const WIDTH_FAST = 3.8;
 
 /**
  * Width of the analytic edge filter on a cable, in pixels — and, by the same number, how much
@@ -69,7 +280,7 @@ const WIDTH_FAST = 3.3;
  * intact. The filter is linear and centred ON the nominal edge, so half of it falls inside the
  * stroke and half in the margin the quad was widened by; the ink that lands on screen is therefore
  * the nominal width, at every width. The four speed steps keep their exact relative weight
- * (1.5 : 2.1 : 2.7 : 3.3) and only the outer EXTENT grows, by the same amount on every cable —
+ * (2.0 : 2.6 : 3.2 : 3.8) and only the outer EXTENT grows, by the same amount on every cable —
  * a constant, not a distortion of the encoding.
  *
  * It was measured, not chosen. On review/_audit_cableaa.mjs at `high` (real GPU, dark), the share
@@ -95,13 +306,15 @@ const WIDTH_FAST = 3.3;
  * filters (`fwidth` is). They coincide at DPR 1; at DPR 2 the residual is a fraction of a pixel.
  */
 const CABLE_EDGE_AA_PX = 1.6;
-
+/** Radiance at a stroke's edge relative to its crown — the cylindrical shading term. */
+const CABLE_TUBE_EDGE = 0.68;
 /**
  * Classify one link into its visual channels. Pure, total, and the natural unit test for the whole
  * encoding: the honesty rules are all expressible as assertions on the returned record.
  */
 export function classifyLink(link: Link): LinkVisual {
   const notObserved: string[] = [];
+  const drawnClaims: DrawnClaim[] = [];
 
   const speed = link.speedMbps;
   let widthPx: number;
@@ -127,6 +340,7 @@ export function classifyLink(link: Link): LinkVisual {
     dash = "dashed";
     colorToken = "--state-down";
     reason = "operational state: down";
+    drawnClaims.push({ key: "state down", words: "state down", gap: false });
   } else if (status === "up") {
     dash = "solid";
     colorToken = "--claim-out-of-scope";
@@ -137,14 +351,18 @@ export function classifyLink(link: Link): LinkVisual {
     dash = "dotted";
     colorToken = "--state-unknown";
     notObserved.push("operational state");
+    drawnClaims.push({ key: "state not observed", words: "state not observed", gap: true });
     reason = `operational state not observed (${status})`;
   }
 
   let doubled = false;
   if (link.isBridge === true) {
     doubled = true;
-    colorToken = "--sev-high";
+    // A topology ROLE, not a severity: its own token so a cut-edge never reads as a High finding.
+    colorToken = "--link-bridge";
     reason = `${reason}; cutting this link partitions the graph`;
+    // The rail is the SNAPSHOT's flag; the row attributes it rather than stating it as fact.
+    drawnClaims.push({ key: "cut partitions", words: "snapshot: cut partitions", gap: false });
   } else if (link.isBridge === null) {
     notObserved.push("centrality");
     if (status === "up") {
@@ -152,6 +370,7 @@ export function classifyLink(link: Link): LinkVisual {
       // is DOWN and also unmeasured is drawn down — the observed failure outranks the gap.
       dash = "short";
       colorToken = "--claim-indeterminate";
+      drawnClaims.push({ key: "centrality not computed", words: "centrality not computed", gap: true });
     }
     reason = `${reason}; centrality not computed for this link`;
   } else {
@@ -171,7 +390,8 @@ export function classifyLink(link: Link): LinkVisual {
     reason = `${reason}; port channel`;
   }
 
-  return { linkId: link.id, widthPx, colorToken, dash, strands, doubled, notObserved, reason };
+  const roleOnly = colorToken === "--link-bridge";
+  return { linkId: link.id, widthPx, colorToken, dash, strands, doubled, roleOnly, notObserved, reason, drawnClaims };
 }
 
 /* ── routing ───────────────────────────────────────────────────────────────── */
@@ -179,7 +399,6 @@ export function classifyLink(link: Link): LinkVisual {
 const _a = new Vector3();
 const _b = new Vector3();
 const _mid = new Vector3();
-const _perp = new Vector3();
 const _p = new Vector3();
 const _q = new Vector3();
 
@@ -211,6 +430,57 @@ export function surfaceAnchor(
   const t = Math.min(tx, tz) + 0.45;
   // Slightly below the centre plane: cables leave a chassis at its ports, not through its lid.
   return out.set(centre[0] + ux * t, centre[1] - half[1] * 0.22, centre[2] + uz * t);
+}
+
+const _towardsA: [number, number, number] = [0, 0, 0];
+const _towardsB: [number, number, number] = [0, 0, 0];
+
+/**
+ * Anchor BOTH ends of a link, which is not the same as anchoring each end independently.
+ *
+ * `surfaceAnchor` picks the face an end leaves by from the XZ direction to the other end. That is
+ * right until the two chassis are STACKED — one tier directly above the other, as `dist1`/`podacc1`
+ * and `dist2`/`podacc2` are in this snapshot (XZ offsets under half a unit, 64 units apart in Y).
+ * Then the direction is noise, and the two ends take OPPOSITE faces: podacc1 left by its −X face,
+ * dist1 by its +X face, and the cable ran diagonally across podacc1's whole footprint while it
+ * climbed. MEASURED (render audit #8 + a sampled-polyline probe): 13 of 29 samples of L39 and 12 of
+ * 29 of L43 lay inside their own endpoint's footprint above its lid, which is the cable seen
+ * running across the lid and cut off where it met the chassis — the reverse of "cables leave a
+ * chassis at its ports, not through its lid". Every other link in the snapshot was clear.
+ *
+ * So when the two footprints overlap in plan, both ends leave by the SAME side and the cable rises
+ * beside the stack instead of across it. The side follows the sign of the residual X offset, so it
+ * is deterministic and still a function of the data.
+ */
+export function anchorLink(
+  a: { centre: Vec3; half: readonly [number, number, number] },
+  b: { centre: Vec3; half: readonly [number, number, number] },
+  outA: Vector3,
+  outB: Vector3,
+): Vector3 {
+  const dx = b.centre[0] - a.centre[0];
+  const dz = b.centre[2] - a.centre[2];
+  const stacked = Math.abs(dx) < a.half[0] + b.half[0] && Math.abs(dz) < a.half[2] + b.half[2];
+  if (!stacked) {
+    surfaceAnchor(a.centre, a.half, b.centre, outA);
+    surfaceAnchor(b.centre, b.half, a.centre, outB);
+    return outA;
+  }
+  const side = dx >= 0 ? 1 : -1;
+  _towardsA[0] = a.centre[0] + side * 1000;
+  _towardsA[1] = a.centre[1];
+  _towardsA[2] = a.centre[2];
+  _towardsB[0] = b.centre[0] + side * 1000;
+  _towardsB[1] = b.centre[1];
+  _towardsB[2] = b.centre[2];
+  surfaceAnchor(a.centre, a.half, _towardsA, outA);
+  surfaceAnchor(b.centre, b.half, _towardsB, outB);
+  /* Both ends on the OUTER envelope of the stack: with the residual offset, the nearer face of one
+     chassis sits inside the other's footprint by that offset, and the riser would graze its lid. */
+  const x = side > 0 ? Math.max(outA.x, outB.x) : Math.min(outA.x, outB.x);
+  outA.x = x;
+  outB.x = x;
+  return outA;
 }
 
 /**
@@ -255,19 +525,6 @@ export function routeCable(
   return segments + 1;
 }
 
-/** Horizontal perpendicular to a cable, for bundling strands and doubling a bridge. */
-function perpendicular(points: Float32Array, count: number, out: Vector3): Vector3 {
-  const lastX = points[(count - 1) * 3] ?? 0;
-  const lastZ = points[(count - 1) * 3 + 2] ?? 0;
-  const firstX = points[0] ?? 0;
-  const firstZ = points[2] ?? 0;
-  const dx = lastX - firstX;
-  const dz = lastZ - firstZ;
-  const len = Math.hypot(dx, dz);
-  if (len < 1e-6) return out.set(1, 0, 0);
-  return out.set(-dz / len, 0, dx / len);
-}
-
 /* ── batching ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -302,8 +559,20 @@ const DASH_PARAMS: Readonly<Record<DashStyle, { dashSize: number; gapSize: numbe
   // span and the ~140-unit scene the brief's figures were written against.
   solid: { dashSize: 1, gapSize: 0 },
   dashed: { dashSize: 3.8, gapSize: 2.6 },
-  dotted: { dashSize: 0.85, gapSize: 2.4 },
-  short: { dashSize: 2.4, gapSize: 2.4 },
+  /* Deviates from the brief's scaled 0.83 / 2.36. At the overview dolly that dot was ~1 px long, so
+     SMAA treated each one as an isolated speck and blended it into the ground: MEASURED (audit D4)
+     the dotted core2→wan-edge link peaked at 1.09:1 light / 1.92:1 dark. A dot must be long enough
+     to keep one full-ink pixel after the AA pass; it reads as dotted beside `short` (7.2/1.8, mostly ink)
+     because its gap is nearly twice its dash. */
+  dotted: { dashSize: 1.8, gapSize: 2.8 },
+  /* Deviates from the brief's short-dash 1.0 / 1.0 (and from the 2.4 / 2.4 that replaced it).
+     MEASURED (independent audit D8, legend + fabric under html{filter:grayscale(1)}): "centrality
+     not computed" at 2.4 / 2.4 and "state unknown" dotted at 1.8 / 2.8 were both thin broken
+     lines of about the same period, so in greyscale the two states differed only by hue. This is
+     now a LONG dash with a short gap — a line that is mostly ink, broken by ticks — which is the
+     opposite silhouette to dotted (mostly gap) and a different ratio from `dashed` (down, 3.8 /
+     2.6), so all four operational/centrality patterns read by shape alone. */
+  short: { dashSize: 7.2, gapSize: 1.8 },
 });
 
 /**
@@ -329,6 +598,10 @@ export interface CableMaterialOptions {
    * exactly how the trace path first shipped.
    */
   vertexColors?: boolean;
+  /** Parallel rails drawn by this one stroke, each `widthPx` wide (default 1). */
+  rails?: number;
+  /** Gap between rails, in CSS pixels. */
+  railGapPx?: number;
 }
 
 export function createCableMaterial(
@@ -338,11 +611,14 @@ export function createCableMaterial(
   opts: CableMaterialOptions = {},
 ): LineMaterial {
   const params = DASH_PARAMS[dash];
+  const rails = Math.max(1, Math.round(opts.rails ?? 1));
+  const gapPx = rails > 1 ? Math.max(STRAND_RAIL_GAP_PX, opts.railGapPx ?? STRAND_RAIL_GAP_PX) : 0;
+  const nominalPx = rails * widthPx + (rails - 1) * gapPx;
   const mat = new LineMaterial({
     color: 0xffffff,
     // + CABLE_EDGE_AA_PX so the coverage ramp is added outside the encoded width, not taken
-    // out of it. See the constant: the ink this carries is exactly widthPx.
-    linewidth: widthPx + CABLE_EDGE_AA_PX,
+    // out of it. See the constant: the ink this carries is exactly widthPx per rail.
+    linewidth: nominalPx + CABLE_EDGE_AA_PX,
     worldUnits: false,
     vertexColors: opts.vertexColors !== false,
     transparent: true,
@@ -368,7 +644,7 @@ export function createCableMaterial(
    * steps; with it OFF, 609 of 828 — 77.1 % against 73.6 %. It was slightly WORSE than nothing,
    * which is what an unused multisample coverage path does when the composer runs multisampling: 0.
    * The stair-stepping is fixed in postfx.ts, by feeding SMAA an image it can actually read. */
-  patchRecession(mat, widthPx);
+  patchRecession(mat, nominalPx, rails > 1 ? { rails, railPx: widthPx, gapPx } : null);
   return mat;
 }
 
@@ -402,43 +678,93 @@ export function createCableMaterial(
  * MEASURED, review/_audit_cableaa.mjs at `high` on a real GPU, background-to-cable crossings that
  * are zero-intermediate hard steps: see docs/render-decisions.md for the full table.
  */
-function patchRecession(mat: LineMaterial, nominalWidthPx: number): void {
+function patchRecession(
+  mat: LineMaterial,
+  nominalWidthPx: number,
+  railSpec: { rails: number; railPx: number; gapPx: number } | null = null,
+): void {
   /* Where the NOMINAL edge sits in the drawn quad. vUv.x spans [-1, 1] over the drawn half-width,
      which is (nominalWidthPx + CABLE_EDGE_AA_PX) / 2, so the encoded edge is at this fraction. */
   const edgeU = nominalWidthPx / (nominalWidthPx + CABLE_EDGE_AA_PX);
   mat.vertexShader = mat.vertexShader
     .replace(
       "attribute vec3 instanceStart;",
-      "attribute vec3 instanceStart;\n\t\tattribute float aRecede;\n\t\tvarying float vRecede;",
+      `attribute vec3 instanceStart;\n\t\tattribute float aRecede;\n\t\tvarying float vRecede;\n\t\tattribute vec3 ${RECEDE_INK_ATTRIBUTE};\n\t\tvarying vec3 vRecedeInk;`,
     )
     .replace(
       "float aspect = resolution.x / resolution.y;",
-      "vRecede = aRecede;\n\t\t\tfloat aspect = resolution.x / resolution.y;",
+      `vRecede = aRecede;\n\t\t\tvRecedeInk = ${RECEDE_INK_ATTRIBUTE};\n\t\t\tfloat aspect = resolution.x / resolution.y;`,
     );
   mat.fragmentShader = mat.fragmentShader
-    .replace("uniform vec3 diffuse;", "uniform vec3 diffuse;\n\t\tvarying float vRecede;")
+    .replace(
+      "uniform vec3 diffuse;",
+      "uniform vec3 diffuse;\n\t\tvarying float vRecede;\n\t\tvarying vec3 vRecedeInk;",
+    )
     .replace(
       "gl_FragColor = vec4( diffuseColor.rgb, alpha );",
       [
-        // Matched to the chassis recession in materials.ts: desaturate, then dim the radiance,
-        // then thin the alpha. A cable that only lost saturation would stay just as prominent,
-        // because an off-path cable is already achromatic.
-        "float _r = clamp( vRecede, 0.0, 1.0 );",
-        "float _lum = dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );",
-        "vec3 _rgb = mix( diffuseColor.rgb, vec3( _lum ), _r ) * ( 1.0 - _r * 0.72 );",
-        // One device pixel, measured in the coordinate the stroke's edge is expressed in.
-        "float _px = max( fwidth( vUv.x ), 1e-5 );",
-        /* Distance from this fragment to the stroke's TRUE edge, in device pixels, run through a
-           filter CABLE_EDGE_AA_PX pixels wide and centred ON the edge — so half the ramp falls
-           inside the nominal stroke and half in the margin the quad was widened by. Coverage, not
-           blur: a fragment a filter-width inside is opaque, one exactly on the edge is half
-           covered, and the ramp is the same width at every dolly, line width and pixel ratio. */
-        `float _d = ( ${edgeU.toFixed(5)} - abs( vUv.x ) ) / _px;`,
-        `float _cov = clamp( _d / ${CABLE_EDGE_AA_PX.toFixed(2)} + 0.5, 0.0, 1.0 );`,
-        "gl_FragColor = vec4( _rgb, alpha * ( 1.0 - _r * 0.55 ) * _cov );",
+        /* Recession is a COLOUR, never an alpha (see `cableInk`): it walks from the segment's ink
+           to its receded ink, both precomputed per token to clear their own contrast floors. It
+           used to thin alpha and dim radiance toward black, which on the light stage blended the
+           backdrop's ~5-linear pre-image into the cable and measured 1.09-1.49:1. Normalised so the
+           deepest recession the emphasis pass asks for lands exactly on the receded ink. A line
+           with no recession attribute (trace, blocked segment, wireframe) reads 0 and is exact. */
+        `float _r = clamp( vRecede / ${RECEDE_DEPTH.toFixed(4)}, 0.0, 1.0 );`,
+        "vec3 _rgb = mix( diffuseColor.rgb, vRecedeInk, _r );",
+        /* A cable is a round thing lit from above, not a flat vector stroke: a cheap cylindrical
+           term across the width — the ink exactly on the crown, darker toward both edges. The
+           crown carries the ink unmodified, so the contrast floor is held by every stroke's
+           strongest pixel. */
+        `float _u = clamp( abs( vUv.x ) / ${edgeU.toFixed(5)}, 0.0, 1.0 );`,
+        `_rgb *= mix( ${CABLE_TUBE_EDGE.toFixed(3)}, 1.0, sqrt( max( 0.0, 1.0 - _u * _u ) ) );`,
+        /* One device pixel, measured in the coordinate the stroke's edge is expressed in. The
+           gradient LENGTH, not fwidth: fwidth is |dFdx| + |dFdy|, which overstates a pixel by up to
+           sqrt(2) on a diagonal cable and so thinned every diagonal stroke's opaque core. */
+        "float _px = max( length( vec2( dFdx( vUv.x ), dFdy( vUv.x ) ) ), 1e-5 );",
+        /* Coverage, in device pixels from the centreline. A one-pixel filter centred ON the nominal
+           edge — half inside the stroke, half in the margin the quad was widened by — so the ink
+           carried is the encoded width. But the OPAQUE CORE never falls below one device pixel.
+           The previous 1.6 px filter was wider than the thinnest encoded stroke (1.5 px, "speed
+           not observed"), so that class had no opaque pixel at all; every pixel of it was a
+           partial-coverage blend. And a partial blend here is not a mild tint: it happens in the
+           LINEAR HDR buffer before AgX, where the light stage's pre-image is ~5, so 40 % of the
+           ground made the pixel almost the ground. MEASURED (audit D4): the dashed fan's strongest
+           pixel was 1.25:1. Every class now carries at least one full-ink pixel across its width,
+           which is what the contrast floor in `cableInk` is a floor FOR. */
+        "float _dist = abs( vUv.x ) / _px;",
+        `float _core = max( ${edgeU.toFixed(5)} / _px - 0.5, 0.5 );`,
+        "float _cov = clamp( _core + 1.0 - _dist, 0.0, 1.0 );",
+        ...(railSpec === null ? [] : railCut(railSpec, nominalWidthPx)),
+        "gl_FragColor = vec4( _rgb, alpha * _cov );",
       ].join("\n\t\t\t"),
     );
   mat.needsUpdate = true;
+}
+
+/**
+ * GLSL that cuts a multi-rail stroke into its rails (see BRIDGE_RAIL_GAP_PX). Runs after the outer
+ * coverage and tube term of the single-rail path, and replaces the tube term with one per rail so
+ * each rail keeps its own lit crown. Positions are in CSS pixels across the nominal width; one
+ * device pixel in the same units is `_px` scaled by the drawn half-width, so the gap edges get the
+ * same one-device-pixel filter as the outer edges.
+ */
+function railCut(spec: { rails: number; railPx: number; gapPx: number }, nominalPx: number): string[] {
+  const half = (nominalPx + CABLE_EDGE_AA_PX) / 2;
+  const pitch = spec.railPx + spec.gapPx;
+  const f = (n: number): string => n.toFixed(5);
+  return [
+    `float _cssPerU = ${f(half)};`,
+    "float _dpx = max( _px * _cssPerU, 1e-4 );",
+    `float _t = vUv.x * _cssPerU + ${f(nominalPx / 2)};`,
+    `float _tt = clamp( _t, 0.0, ${f(nominalPx)} );`,
+    `float _loc = mod( _tt, ${f(pitch)} );`,
+    // Signed distance into the nearest rail (negative inside a gap), in CSS px.
+    `float _sd = _loc < ${f(spec.railPx)} ? min( _loc, ${f(spec.railPx)} - _loc ) : -min( _loc - ${f(spec.railPx)}, ${f(pitch)} - _loc );`,
+    "_sd -= abs( _t - _tt );",
+    "_cov = min( _cov, clamp( _sd / _dpx + 0.5, 0.0, 1.0 ) );",
+    `float _ru = clamp( abs( min( _loc, ${f(spec.railPx)} ) - ${f(spec.railPx / 2)} ) / ${f(spec.railPx / 2)}, 0.0, 1.0 );`,
+    `_rgb = mix( diffuseColor.rgb, vRecedeInk, _r ) * mix( ${CABLE_TUBE_EDGE.toFixed(3)}, 1.0, sqrt( max( 0.0, 1.0 - _ru * _ru ) ) );`,
+  ];
 }
 
 interface Accum {
@@ -446,8 +772,12 @@ interface Accum {
   dash: DashStyle;
   widthPx: number;
   opacity: number;
+  rails: number;
+  gapPx: number;
   positions: number[];
   colors: number[];
+  /** Receded ink per segment (one vec3 per instance), parallel to segmentLinkIds. */
+  recededInks: number[];
   distances: number[];
   segmentLinkIds: string[];
 }
@@ -467,7 +797,7 @@ export function buildCables(input: CableBuildInput): CableSet {
   const endpoints = new Map<string, { a: Vector3; b: Vector3 }>();
   const polylines = new Map<string, Float32Array>();
   const accum = new Map<string, Accum>();
-  const colour = new Color();
+  const inkOf = inkTable(tokens);
   const sample = new Float32Array((segments + 1) * 3);
 
   for (const link of links) {
@@ -478,16 +808,16 @@ export function buildCables(input: CableBuildInput): CableSet {
     const visual = classifyLink(link);
     visuals.set(link.id, visual);
 
-    surfaceAnchor(av.centre, av.half, bv.centre, _p);
-    surfaceAnchor(bv.centre, bv.half, av.centre, _q);
+    anchorLink(av, bv, _p, _q);
     const count = routeCable(_p, _q, input.midpointOf(link.id), segments, sample);
     polylines.set(link.id, sample.slice(0, count * 3));
     endpoints.set(link.id, { a: _p.clone(), b: _q.clone() });
 
-    colour.copy(tokens.color(visual.colorToken));
+    const { ink: colour, receded } = inkOf(visual.colorToken, restChromaOf(visual));
     const opacity =
       visual.colorToken === "--claim-out-of-scope" ? ORDINARY_OPACITY : BASE_OPACITY;
-    const key = `${visual.dash}|${visual.widthPx}|${opacity}`;
+    const { rails, gapPx } = railsOf(visual);
+    const key = `${visual.dash}|${visual.widthPx}|${opacity}|${rails}x${gapPx}`;
     let bucket = accum.get(key);
     if (bucket === undefined) {
       bucket = {
@@ -495,43 +825,34 @@ export function buildCables(input: CableBuildInput): CableSet {
         dash: visual.dash,
         widthPx: visual.widthPx,
         opacity,
+        rails,
+        gapPx,
         positions: [],
         colors: [],
+        recededInks: [],
         distances: [],
         segmentLinkIds: [],
       };
       accum.set(key, bucket);
     }
 
-    perpendicular(sample, count, _perp);
-    const strandGap = 0.62;
-    const offsets: number[] = [];
-    for (let s = 0; s < visual.strands; s += 1) {
-      offsets.push((s - (visual.strands - 1) / 2) * strandGap);
-    }
-    if (visual.doubled) {
-      // The bridge channel: a second rail either side of wherever the bundle already sits.
-      const spread = 0.45;
-      const widened: number[] = [];
-      for (const o of offsets) widened.push(o - spread, o + spread);
-      offsets.length = 0;
-      offsets.push(...widened);
-    }
-
-    for (const off of offsets) {
+    /* Strands and bridge rails are cut in SCREEN space by the material (railsOf), so every link is
+       one centreline polyline here: a world-unit offset is only a gap at some dolly. */
+    {
       // Distance resets to zero at the start of every strand, so a dash pattern begins at the
       // chassis instead of inheriting a phase from whichever link was batched before it.
       let run = 0;
       for (let i = 0; i < count - 1; i += 1) {
-        const x0 = (sample[i * 3] ?? 0) + _perp.x * off;
+        const x0 = sample[i * 3] ?? 0;
         const y0 = sample[i * 3 + 1] ?? 0;
-        const z0 = (sample[i * 3 + 2] ?? 0) + _perp.z * off;
-        const x1 = (sample[(i + 1) * 3] ?? 0) + _perp.x * off;
+        const z0 = sample[i * 3 + 2] ?? 0;
+        const x1 = sample[(i + 1) * 3] ?? 0;
         const y1 = sample[(i + 1) * 3 + 1] ?? 0;
-        const z1 = (sample[(i + 1) * 3 + 2] ?? 0) + _perp.z * off;
+        const z1 = sample[(i + 1) * 3 + 2] ?? 0;
         const segLen = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
         bucket.positions.push(x0, y0, z0, x1, y1, z1);
         bucket.colors.push(colour.r, colour.g, colour.b, colour.r, colour.g, colour.b);
+        bucket.recededInks.push(receded.r, receded.g, receded.b);
         bucket.distances.push(run, run + segLen);
         bucket.segmentLinkIds.push(link.id);
         run += segLen;
@@ -549,9 +870,16 @@ export function buildCables(input: CableBuildInput): CableSet {
     geometry.setAttribute("instanceDistanceEnd", new InterleavedBufferAttribute(distanceBuffer, 1, 1));
     const recede = new InstancedBufferAttribute(new Float32Array(bucket.segmentLinkIds.length), 1);
     recede.setUsage(DynamicDrawUsage);
+    geometry.setAttribute(
+      RECEDE_INK_ATTRIBUTE,
+      new InstancedBufferAttribute(new Float32Array(bucket.recededInks), 3),
+    );
     geometry.setAttribute(RECEDE_ATTRIBUTE, recede);
 
-    const material = createCableMaterial(bucket.dash, bucket.widthPx, bucket.opacity);
+    const material = createCableMaterial(bucket.dash, bucket.widthPx, bucket.opacity, {
+      rails: bucket.rails,
+      railGapPx: bucket.gapPx,
+    });
     const object = new LineSegments2(geometry, material);
     object.name = `cables:${bucket.key}`;
     object.frustumCulled = false; // a single batch spans the whole fabric; its bounds are never off-screen
@@ -572,6 +900,7 @@ export function buildCables(input: CableBuildInput): CableSet {
       for (const b of batches) b.material.resolution.set(width, height);
     },
     retint(next: TokenPalette): void {
+      const nextInk = inkTable(next);
       for (const b of batches) {
         const colours = b.object.geometry.getAttribute("instanceColorStart") as
           | InterleavedBufferAttribute
@@ -579,17 +908,24 @@ export function buildCables(input: CableBuildInput): CableSet {
         const ends = b.object.geometry.getAttribute("instanceColorEnd") as
           | InterleavedBufferAttribute
           | undefined;
+        const recededInks = b.object.geometry.getAttribute(RECEDE_INK_ATTRIBUTE) as
+          | InstancedBufferAttribute
+          | undefined;
         if (colours === undefined || ends === undefined) continue;
         for (let i = 0; i < b.segmentLinkIds.length; i += 1) {
           const id = b.segmentLinkIds[i];
           const v = id === undefined ? undefined : set.visuals.get(id);
           if (v === undefined) continue;
-          const c = next.color(v.colorToken);
+          // Both inks are re-resolved against the NEW ground: a floor held on one stage says
+          // nothing about the other.
+          const { ink: c, receded: rc } = nextInk(v.colorToken, restChromaOf(v));
           colours.setXYZ(i, c.r, c.g, c.b);
           ends.setXYZ(i, c.r, c.g, c.b);
+          recededInks?.setXYZ(i, rc.r, rc.g, rc.b);
         }
         colours.needsUpdate = true;
         ends.needsUpdate = true;
+        if (recededInks !== undefined) recededInks.needsUpdate = true;
       }
     },
     dispose(): void {

@@ -42,6 +42,19 @@ const layout = computeLayout(OPTS);
 const linkTemplate = fabric.links.find((l) => l.id === "L18")!;
 const relinked = (id: string, a: string, b: string): Link => ({ ...linkTemplate, id, a, b });
 
+/**
+ * A STAR of extra links from `hub` to every other device in `to`, each id `${prefix}:${host}`.
+ *
+ * Why a star and not one extra link: since the tiers wrap column-major into a near-square block,
+ * the crossing sweeps place any ONE added pair rank-adjacent — measured, all 210 single extra
+ * layer-1 pairs came out with a clear straight cable — so a single pair no longer reaches the
+ * detour branches. A hub linked to its whole tier cannot be adjacent to all of them, which is the
+ * obstruction the detour code exists for.
+ */
+const star = (prefix: string, hub: string, to: readonly string[]): Link[] =>
+  to.filter((h) => h !== hub).map((h) => relinked(`${prefix}:${h}`, hub, h));
+const TIER1 = fabric.devices.filter((d) => d.tier === 1).map((d) => d.host);
+
 /* ── test-local geometry, deliberately independent of layout.ts ────────────── */
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -92,9 +105,13 @@ function curveClearance(
 ): { min: number; worst: string } {
   let min = Infinity;
   let worst = "";
+  /* The same closed domain the engine measures, [ROUTE_T_MARGIN, 1 − ROUTE_T_MARGIN], endpoints
+     included. This used to start one step INSIDE it (t > margin), which was invisible while every
+     detour was short; a hub-star detour (see `star`) sweeps wide enough that one 1/400 step near
+     the end is ~2 units of cable, and the two measures then disagreed by more than the tolerance
+     with the ENGINE the conservative one (14.78 vs 16.66 from access1). */
   for (let i = 0; i <= 400; i += 1) {
-    const t = i / 400;
-    if (t <= ROUTE_T_MARGIN || t >= 1 - ROUTE_T_MARGIN) continue;
+    const t = ROUTE_T_MARGIN + ((1 - 2 * ROUTE_T_MARGIN) * i) / 400;
     const p = bezier(at(a), h.mid, at(b), t);
     for (const n of l.nodes) {
       if (n.id === a.id || n.id === b.id) continue;
@@ -315,9 +332,27 @@ describe("computeLayout — tier structure", () => {
     const spanX = Math.max(...access.map((n) => n.x)) - Math.min(...access.map((n) => n.x));
     const spanZ = Math.max(...access.map((n) => n.z)) - Math.min(...access.map((n) => n.z));
     expect(spanZ).toBeGreaterThan(CHASSIS_EXTENT.depth);
-    // Wider than deep, so an oblique camera does not hide the back of the tier behind the front.
-    expect(spanX).toBeGreaterThan(spanZ);
-    expect(spanX / spanZ).toBeLessThan(6);
+    // Near-square, not a 3:1 strip. The strip put six chassis per row at the stage's full width,
+    // which left each label ~60 px for an ~80 px name: the blind panel measured 11 of 26 labels
+    // dropped and four more sitting on other devices' chassis. The camera now looks down steeply
+    // (VIEW_DIRECTION), so a deeper block no longer hides its back rows behind the front ones.
+    expect(spanX / spanZ).toBeLessThan(1.5);
+    expect(spanZ / spanX).toBeLessThan(1.5);
+  });
+
+  it("steps each layer toward the camera so no tier hangs over the one beneath it", () => {
+    // Every node of layer k+1 is in front of (larger Z than) every node of layer k, with at least
+    // a chassis depth of clear air — the property that keeps the tiers in separate screen bands.
+    const maxLayer = Math.max(...layout.nodes.map((n) => n.layer));
+    for (let k = 0; k < maxLayer; k += 1) {
+      const upper = layout.nodes.filter((n) => n.layer === k);
+      const lower = layout.nodes.filter((n) => n.layer === k + 1);
+      const upperFront = Math.max(...upper.map((n) => n.z));
+      const lowerBack = Math.min(...lower.map((n) => n.z));
+      expect(lowerBack - upperFront, `layer ${k + 1} overlaps layer ${k} in Z`).toBeGreaterThan(
+        CHASSIS_EXTENT.depth,
+      );
+    }
   });
 
   it("clusters topology-only nodes under the devices that reported them", () => {
@@ -517,14 +552,15 @@ describe("computeLayout — route hints", () => {
   });
 
   it("bows a cable that runs inside one tier past other chassis", () => {
-    // access1↔access9 are both real tier-1 switches; the link record is cloned from a real one.
-    const l = computeLayout({ ...OPTS, links: [...fabric.links, relinked("INTRA", "access1", "access9")] });
-    const hint = l.routeHints.find((h) => h.linkId === "INTRA");
+    // access1 linked to its whole tier (see `star`); access1↔access16 are both real tier-1
+    // switches and the link record is cloned from a real one.
+    const l = computeLayout({ ...OPTS, links: [...fabric.links, ...star("INTRA", "access1", TIER1)] });
+    const hint = l.routeHints.find((h) => h.linkId === "INTRA:access16");
     expect(hint?.kind).toBe("intra-tier");
     expect(hint!.blockedBy.length).toBeGreaterThan(0);
     expect(hint!.clearance).toBeLessThan(ROUTE_CLEARANCE);
     const plane = l.byId.get("access1")!.y;
-    expect(l.byId.get("access9")!.y).toBe(plane);
+    expect(l.byId.get("access16")!.y).toBe(plane);
     expect(hint!.mid[1]).toBeGreaterThan(plane);
   });
 
@@ -541,14 +577,16 @@ describe("computeLayout — route hints", () => {
   });
 
   it("detours a real cable that a flatter tier pitch would push into a chassis", () => {
-    // Same fabric, same links: at a 36-unit pitch core1↔dist1 passes within ROUTE_CLEARANCE of a
-    // real chassis, and the engine says so instead of drawing the cable through it.
+    // Same fabric, same links: at a 36-unit pitch core1↔access2 (L19) runs down its column over
+    // access4 within ROUTE_CLEARANCE, and the engine says so instead of drawing the cable through it.
     const flat = computeLayout({ ...OPTS, tierYPitch: 36 });
-    const hint = flat.routeHints.find((h) => h.linkId === "L26");
+    const link = fabric.links.find((l) => l.id === "L19")!;
+    expect([link.a, link.b].sort()).toEqual(["access2", "core1"]);
+    const hint = flat.routeHints.find((h) => h.linkId === "L19");
     expect(hint?.kind).toBe("adjacent-obstructed");
     expect(hint!.clearance).toBeLessThan(ROUTE_CLEARANCE);
     const a = flat.byId.get("core1")!;
-    const b = flat.byId.get("dist1")!;
+    const b = flat.byId.get("access2")!;
     expect(Math.abs(a.layer - b.layer)).toBe(1);
     // The detour has to move the cable off the straight line it was failing on.
     const straightMid: Vec3 = [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
@@ -586,13 +624,13 @@ describe("computeLayout — the suggested detour is measured, not assumed", () =
         links: fabric.links,
       });
     }
-    for (const [id, a, b, pitch] of [
-      ["CROSS", "access1", "dist1", undefined],
-      ["INTRA", "access1", "access9", undefined],
+    for (const [id, extra, pitch] of [
+      ["CROSS", [relinked("CROSS", "access1", "dist1")], undefined],
+      ["INTRA", star("INTRA", "access1", TIER1), undefined],
       // Reaches the branch where no detour in the ladder clears; see the "could not clear" test.
-      ["TIGHT", "access11", "dist1", MIN_NODE_SEPARATION],
+      ["TIGHT", star("TIGHT", "dist1", TIER1), MIN_NODE_SEPARATION],
     ] as const) {
-      const links = [...fabric.links, relinked(id, a, b)];
+      const links = [...fabric.links, ...extra];
       cases.push({
         label: id,
         layout: computeLayout({ ...OPTS, links, ...(pitch === undefined ? {} : { tierYPitch: pitch }) }),
@@ -631,16 +669,16 @@ describe("computeLayout — the suggested detour is measured, not assumed", () =
   });
 
   it("makes INTRA_TIER_BOW describe the drawn cable, not the control point", () => {
-    // The constant names an APEX. access1↔access9 clears on the first candidate, so the published
+    // The constant names an APEX. access1↔access16 clears on the first candidate, so the published
     // curve must rise exactly INTRA_TIER_BOW above the chord — the figure the comment promises.
-    const links = [...fabric.links, relinked("INTRA", "access1", "access9")];
+    const links = [...fabric.links, ...star("INTRA", "access1", TIER1)];
     const l = computeLayout({ ...OPTS, links });
-    const h = l.routeHints.find((x) => x.linkId === "INTRA")!;
+    const h = l.routeHints.find((x) => x.linkId === "INTRA:access16")!;
     expect(h.kind).toBe("intra-tier");
     expect(h.resolution).toBe("cleared");
     expect(h.apexOffset).toBe(INTRA_TIER_BOW);
     const a = l.byId.get("access1")!;
-    const b = l.byId.get("access9")!;
+    const b = l.byId.get("access16")!;
     const apex = bezier(at(a), h.mid, at(b), 0.5);
     // Same plane, so the whole apex is vertical: the bow's height IS the documented constant.
     expect(apex[1] - a.y).toBeCloseTo(INTRA_TIER_BOW, 9);
@@ -650,20 +688,20 @@ describe("computeLayout — the suggested detour is measured, not assumed", () =
   it("clears the intra-tier bow across every real tier-1 pair that needs one", () => {
     // Regression: 8 of the 72 hinted tier-1 pairs bowed to an apex of 13.00 against a 12-unit
     // threshold and still grazed access8. The sweep is over every real pair, not the ones that
-    // happened to fail, because a fix scoped to the failing names is not a fix.
-    const t1 = fabric.devices.filter((d) => d.tier === 1).map((d) => d.host);
+    // happened to fail, because a fix scoped to the failing names is not a fix. Every tier-1 switch
+    // is made a hub of its whole tier in turn (see `star` for why a lone pair no longer obstructs).
     const lies: string[] = [];
     let hinted = 0;
-    for (let i = 0; i < t1.length; i += 1) {
-      for (let j = i + 1; j < t1.length; j += 1) {
-        const links = [...fabric.links, relinked("PAIR", t1[i]!, t1[j]!)];
-        const l = computeLayout({ ...OPTS, links });
-        const h = l.routeHints.find((x) => x.linkId === "PAIR");
-        if (h === undefined) continue;
+    for (const hub of TIER1) {
+      const links = [...fabric.links, ...star("PAIR", hub, TIER1)];
+      const l = computeLayout({ ...OPTS, links });
+      for (const h of l.routeHints) {
+        if (!h.linkId.startsWith("PAIR:")) continue;
+        const other = h.linkId.slice("PAIR:".length);
         hinted += 1;
-        const m = curveClearance(l, h, l.byId.get(t1[i]!)!, l.byId.get(t1[j]!)!);
+        const m = curveClearance(l, h, l.byId.get(hub)!, l.byId.get(other)!);
         if (h.resolution === "cleared" && m.min < ROUTE_CLEARANCE) {
-          lies.push(`${t1[i]}-${t1[j]}: "cleared" at ${m.min.toFixed(2)} from ${m.worst}`);
+          lies.push(`${hub}-${other}: "cleared" at ${m.min.toFixed(2)} from ${m.worst}`);
         }
       }
     }
@@ -696,19 +734,20 @@ describe("computeLayout — the suggested detour is measured, not assumed", () =
   });
 
   it("names what is still in the way when it gives up, rather than going quiet", () => {
-    // access11↔dist1 at the flattest pitch: the detour swings SPAN_CLEARANCE behind the fabric and
-    // still cannot get the cable's shoulders past the access row, because the obstruction is near
-    // the endpoints where a mid-point control has least leverage. That is a real limit of a
-    // quadratic route, and the correct output is to say so — not to publish the curve as solved.
-    const links = [...fabric.links, relinked("TIGHT", "access11", "dist1")];
+    // dist1↔access2 at the flattest pitch, with dist1 linked to the whole access tier: the detour
+    // swings SPAN_CLEARANCE behind the fabric and still cannot get the cable's shoulders past the
+    // access block, because the obstruction is near the endpoints where a mid-point control has
+    // least leverage. That is a real limit of a quadratic route, and the correct output is to say
+    // so — not to publish the curve as solved.
+    const links = [...fabric.links, ...star("TIGHT", "dist1", TIER1)];
     const l = computeLayout({ ...OPTS, links, tierYPitch: MIN_NODE_SEPARATION });
-    const h = l.routeHints.find((x) => x.linkId === "TIGHT")!;
+    const h = l.routeHints.find((x) => x.linkId === "TIGHT:access2")!;
     expect(h.resolution).toBe("unresolved");
     expect(h.routedBlockedBy.length).toBeGreaterThan(0);
     // It is still the BEST curve found, not a giving-up-in-place: it must beat the straight route.
     expect(h.routedClearance!).toBeGreaterThan(h.clearance!);
     expect(h.routedClearance!).toBeLessThan(ROUTE_CLEARANCE);
-    const measured = curveClearance(l, h, l.byId.get("access11")!, l.byId.get("dist1")!);
+    const measured = curveClearance(l, h, l.byId.get("dist1")!, l.byId.get("access2")!);
     expect(Math.abs(measured.min - h.routedClearance!)).toBeLessThan(1.5);
     expect(h.routedBlockedBy).toContain(measured.worst);
   });

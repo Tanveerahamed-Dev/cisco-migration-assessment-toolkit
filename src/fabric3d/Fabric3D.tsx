@@ -14,23 +14,36 @@
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import { failureImpact, linkFailureImpact } from "../analysis/blast";
-import { bandOfHop } from "../core/claims";
+import { DEFAULT_GRAPH_OPTIONS, failureImpact, linkFailureImpact, type Certainty, type ProjectionDelta } from "../analysis/blast";
+import { cableCountPhrase, hostCableAccount } from "../analysis/port-claims";
+import { presentBand } from "../core/band-qualification";
+import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
 import type { Device, Link, Trace } from "../core/types";
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
-import { FabricA11yTree } from "./FabricA11yTree";
+import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
 import { createHoverChannel, FabricLabels, type HoverChannel } from "./FabricLabels";
 import { publishSceneStats, releaseSceneStats } from "./telemetry";
 import { FabricLegend } from "./FabricLegend";
+import { CANVAS_ARIA_KEYSHORTCUTS, viewKeyMove } from "./canvasKeys";
 import { computeLayout } from "./layout";
 import { exposeSceneForCapture } from "./devHandle";
 import { createScene, type FabricSceneEx } from "./scene";
+import { setStageOcclusion, type StageOcclusionPx } from "./camera";
+import { prepareProceduralMaps, proceduralMapsReady } from "./materials";
+import { ALL_CHASSIS_KINDS, chassisPrepared, prepareChassis, type ChassisBuildOptions } from "./geometry/chassis";
+import { SCENE_DETAIL } from "./quality";
 
 import "./Fabric3D.css";
+
+/** The chassis tessellation every tier builds with (quality.ts SCENE_DETAIL), for prepareChassis. */
+const SCENE_DETAIL_CHASSIS: ChassisBuildOptions = {
+  bevelSegments: SCENE_DETAIL.chassisBevelSegments,
+  fineDetail: SCENE_DETAIL.chassisFineDetail,
+};
 
 /** Pointer travel (CSS px) above which a press is an orbit drag, not a click on a node. */
 const DRAG_SLOP = 4;
@@ -38,6 +51,8 @@ const DRAG_SLOP = 4;
 /** One wheel notch. The contract exposes no dolly verb, so keyboard zoom speaks the scene's
  *  own input language rather than inventing a camera API the scene does not implement. */
 const KEY_ZOOM_DELTA = 120;
+/** Minimum spacing between two drawing-buffer resizes while a size keeps changing (see the resize effect). */
+const RESIZE_SETTLE_MS = 150;
 
 /** Half-angle of the cone an arrow key searches, as a cosine. 60° keeps a diagonal neighbour
  *  reachable while refusing to call a node "to the right" when it is mostly above. */
@@ -193,6 +208,50 @@ function nextInDirection(
   return best ? best.id : null;
 }
 
+/**
+ * The stage area an OPEN overlay panel covers, measured from the canvas edges.
+ *
+ * The rule is structural, not a list of panels: every panel that floats over the stage
+ * (`[data-stage-overlay]`) and is actually on screen is measured, and one that spans most of the
+ * stage's height is a band on the side it sits on (the Fabric list), while one that only occupies a
+ * corner (the Legend) is left to the fixed chrome insets — shrinking the whole framing for a corner
+ * would make every view smaller to clear a box that covers none of the fabric's middle.
+ */
+function measureStageOcclusion(canvas: HTMLCanvasElement): StageOcclusionPx | null {
+  const stage = canvas.getBoundingClientRect();
+  if (stage.width < 2 || stage.height < 2) return null;
+  const host = canvas.closest(".fabric3d") ?? canvas.parentElement;
+  if (host === null) return null;
+  const out: StageOcclusionPx = { top: 0, bottom: 0, left: 0, right: 0 };
+  let any = false;
+  for (const el of host.querySelectorAll<HTMLElement>("[data-stage-overlay]")) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue; // visually hidden (the clipped list is 1x1)
+    const left = Math.max(r.left, stage.left);
+    const right = Math.min(r.right, stage.right);
+    const top = Math.max(r.top, stage.top);
+    const bottom = Math.min(r.bottom, stage.bottom);
+    if (right <= left || bottom <= top) continue;
+    const midX = stage.left + stage.width / 2;
+    const midY = stage.top + stage.height / 2;
+    if ((bottom - top) / stage.height > 0.5) {
+      if ((left + right) / 2 < midX) out.left = Math.max(out.left, right - stage.left);
+      else out.right = Math.max(out.right, stage.right - left);
+      any = true;
+    } else if ((right - left) / stage.width > 0.5) {
+      if ((top + bottom) / 2 < midY) out.top = Math.max(out.top, bottom - stage.top);
+      else out.bottom = Math.max(out.bottom, stage.bottom - top);
+      any = true;
+    }
+  }
+  return any ? out : null;
+}
+
+function syncStageOcclusion(canvas: HTMLCanvasElement | null): void {
+  if (canvas === null) return;
+  setStageOcclusion(canvas, measureStageOcclusion(canvas));
+}
+
 /** Fallback traversal for the window before the first frame, when nothing projects yet. Clamped
  *  rather than wrapping: a keyboard user in a spatial view should not teleport across the fabric. */
 function stepByOrder(devices: readonly Device[], current: string | null, delta: 1 | -1): string | null {
@@ -208,7 +267,9 @@ function stepByOrder(devices: readonly Device[], current: string | null, delta: 
 export function describeDevice(id: string): string {
   const d = deviceById.get(id);
   if (!d) return `Device ${id} selected. No device record in this snapshot.`;
-  const degree = linksByHost.get(d.host)?.length ?? linksByHost.get(d.id)?.length ?? 0;
+  /* The cable count goes through the link pane's port-dispute detector: AP-floor1 is named on 17
+     cable records that all claim its one port Gi0, so "17 links" would state 16 more than can exist. */
+  const cables = cableCountPhrase(hostCableAccount(d.host, linksByHost.get(d.host) ?? linksByHost.get(d.id) ?? []));
   /* A finding tally for a device nobody assessed is a zero produced by never having looked, and
      this announcement is the ONLY channel a screen-reader user has here — there is no visible
      panel beside it to carry the qualification. DevicePane already refuses to state this number
@@ -226,11 +287,13 @@ export function describeDevice(id: string): string {
     `${d.host} selected.`,
     `${d.kind}.`,
     d.collected ? "Collected." : "Topology only: this device was never collected.",
-    `Health band ${d.band ?? "not observed"}.`,
+    /* The band as the ONE owner presents it: a favourable band on a host with unassessed scoring
+       domains is announced as partial with the gaps named, exactly as DevicePane draws it (B1). */
+    presentBand(d).sentence,
     `Role ${d.role ?? "not observed"}.`,
     `Tier ${d.tier === null ? "not observed" : d.tier}.`,
     `Operational state ${d.opStatus}.`,
-    `${degree} ${degree === 1 ? "link" : "links"}.`,
+    `${cables.charAt(0).toUpperCase()}${cables.slice(1)}.`,
     findingClause,
   ].join(" ");
 }
@@ -243,11 +306,9 @@ function describeLink(id: string): string {
     `${l.a} ${l.aPort ?? "port not observed"} to ${l.b} ${l.bPort ?? "port not observed"}.`,
     `Operational state ${l.opStatus}.`,
     l.speedMbps === null ? "Speed not observed." : `${l.speedMbps} megabit per second.`,
-    l.isBridge === null
-      ? "Centrality was not computed for this link, so whether cutting it partitions the fabric is unknown."
-      : l.isBridge
-        ? "Cutting this link partitions the fabric."
-        : "A redundant path exists around this link.",
+    /* From the same computation the Inspector reads, with its certainty — never the snapshot's
+       bridge flag stated as fact (see linkCutSentence in FabricA11yTree.tsx for the measured disagreement on L7). */
+    linkCutSentence(l),
   ].join(" ");
 }
 
@@ -258,12 +319,40 @@ interface Blocked {
   link: string | null;
 }
 
+interface BlastOverlay {
+  stranded: readonly string[];
+  host: string | null;
+  link: string | null;
+  certainty: Certainty | null;
+  /** "" when observed; otherwise the parenthetical every surface of the overlay must carry. */
+  qualifier: string;
+  /** Set when the question was asked and NOT answered, so the canvas can say so instead of drawing
+   *  nothing — a blank overlay reads the same as "this failure strands nothing". */
+  undetermined: { subject: string; short: string; why: string } | null;
+}
+
 /** Reference-stable "no blast radius", so an unrelated re-render cannot invalidate the memo. */
-const NO_BLAST: { stranded: readonly string[]; host: string | null; link: string | null } = {
+const NO_BLAST: BlastOverlay = {
   stranded: [],
   host: null,
   link: null,
+  certainty: null,
+  qualifier: "",
+  undetermined: null,
 };
+
+/**
+ * The certainty clause a stranded count must travel with: empty for an observed radius, otherwise
+ * "uncertain" plus every alternate projection whose count differs ("0 under the all-nodes
+ * projection"). Built from the analysis result, never restated.
+ */
+export function blastQualifier(certainty: Certainty, count: number, alternates: readonly ProjectionDelta[]): string {
+  if (certainty === "observed") return "";
+  const others = alternates
+    .filter((a) => a.differs && a.newlyStrandedCount !== count)
+    .map((a) => `${a.newlyStrandedCount} under the ${a.options.transit === DEFAULT_GRAPH_OPTIONS.transit ? `unknown-status "${a.options.unknownStatus}"` : a.options.transit} projection`);
+  return others.length === 0 ? certainty : `${certainty}; ${others.join(", ")}`;
+}
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
 const NO_BLOCK: Blocked = { host: null, link: null };
@@ -277,16 +366,21 @@ const NO_BLOCK: Blocked = { host: null, link: null };
  * hop, and only when that hop actually says `delivered`: a run of `forwarded` hops that simply ran
  * out is not a delivery, and marking it as one would be this defect with the sign flipped.
  */
-function traceMarkOf(trace: Trace | null): TraceMark | null {
+export function traceMarkOf(trace: Trace | null): TraceMark | null {
   if (!trace || trace.hops.length === 0) return null;
-  const stop = trace.hops.find((h) => bandOfHop(h) !== "RESOLVED");
+  /* The band of each hop IN ITS TRACE (`bandOfHopIn`), never the context-free verdict band. The
+     context-free one drew "✓ DELIVERED HERE" on core1 for a delivery whose own card and hop list
+     said filtering there was never decided (2026-09-21 critic, B1): the same trace, two answers. */
+  const stop = trace.hops.find((h) => bandOfHopIn(h, trace) !== "RESOLVED");
   if (stop === undefined) {
     const last = trace.hops[trace.hops.length - 1];
-    return last !== undefined && last.verdict === "delivered"
-      ? { host: last.host, link: null, kind: "delivered" }
-      : null;
+    if (last === undefined || last.verdict !== "delivered") return null;
+    /* A delivery whose hops all resolved can still be undecided as a WHOLE (an alternate ingress
+       the flow may enter by instead). The mark follows the trace's band, so it cannot promise more
+       than the card. */
+    return { host: last.host, link: null, kind: bandOfTrace(trace) === "RESOLVED" ? "delivered" : "undetermined" };
   }
-  const kind: TraceMarkKind = bandOfHop(stop) === "REFUTED" ? "blocked" : "undetermined";
+  const kind: TraceMarkKind = bandOfHopIn(stop, trace) === "REFUTED" && bandOfTrace(trace) === "REFUTED" ? "blocked" : "undetermined";
   /* The cable is resolved for the REFUTED case alone. It feeds the scene's alarm channel, and
      alarming the cable out of a hop the engine could not decide would restate the same overclaim
      one object further along. */
@@ -312,6 +406,7 @@ const blockedOf = (mark: TraceMark | null): Blocked =>
 
 /* ── component ─────────────────────────────────────────────────────────────── */
 
+/* determinism: the `quality` prop is the tier a CALLER requests, not one measured from frames. */
 export function Fabric3D({
   devices = fabric.devices,
   links = fabric.links,
@@ -356,6 +451,33 @@ export function Fabric3D({
   const [treeVisible, setTreeVisible] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [sceneError, setSceneError] = useState<string | null>(null);
+  /*
+   * The procedural map bytes are generated in yielding slices BEFORE the scene is built, instead of
+   * inside `createScene`, where they were one ~0.5-0.8 s synchronous block in the mount effect
+   * (acceptance E5; see materials.ts :: generateProceduralPixels). Until they exist the stage has no
+   * scene, which the stage already reports as "Building the 3-D fabric" (surfaces.tsx: a mounted
+   * fabric with null stats counts as warming), so the wait is communicated, not frozen.
+   */
+  /* The chassis geometry follows the same rule (geometry/chassis.ts :: prepareChassis): it was ~a
+     quarter of the one long createScene task a cold-load keystroke waited behind (E5). It is
+     tier-independent, so it is prepared at the scene's own SCENE_DETAIL, one kind per slice. */
+  const [mapsReady, setMapsReady] = useState(
+    () => proceduralMapsReady() && chassisPrepared(ALL_CHASSIS_KINDS, SCENE_DETAIL_CHASSIS),
+  );
+  useEffect(() => {
+    if (mapsReady) return;
+    let live = true;
+    /* Every kind, not only the ones on screen: readiness then cannot depend on the device list,
+       and the one kind not in use costs one more short slice. */
+    void prepareProceduralMaps()
+      .then(() => prepareChassis(ALL_CHASSIS_KINDS, SCENE_DETAIL_CHASSIS))
+      .then(() => {
+        if (live) setMapsReady(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [mapsReady]);
   /**
    * A STANDING draw-call breach, with the numbers that make it checkable.
    *
@@ -376,11 +498,18 @@ export function Fabric3D({
   const onEvent = useCallback((e: SceneEvent) => {
     switch (e.type) {
       case "pick":
-        applyPick(e.result);
+        /* NOT applied. The stage's own pointerup (below, in the scene-lifetime effect) is the ONE
+           path a canvas click selects through; it carries the drag slop and the warm-up gate.
+           RESPONSIVENESS FIX (acceptance E2/E3, journey 2): both used to apply the same click, so
+           every canvas pick was two raycasts and two store writes. Worse, the first write's React
+           commit ran in the microtask checkpoint BETWEEN the two pointerup listeners, and the second
+           listener's hit-test then forced a layout of everything that commit had just changed —
+           measured on the release build as a second `CANVAS.onpointerup` script with 5-45 ms of
+           `forcedStyleAndLayoutDuration` on every device click. */
         break;
       case "hover":
         hover.set(
-          e.result === null
+          e.result === null || !isDrawn(sceneRef.current)
             ? { deviceId: null, linkId: null }
             : e.result.kind === "device"
               ? { deviceId: e.result.id, linkId: null }
@@ -388,9 +517,15 @@ export function Fabric3D({
         );
         break;
       case "stats": {
+        /* The warm-up publishes its end on the frame it ends (scene.ts resets the throttle), so
+           this is where a finished warm-up is latched even if no pointer asks in between. */
+        notePresented(sceneRef.current);
         // Only the tier and a STANDING budget breach are surfaced, and only when they change: fps
         // is a per-frame value and rendering it would put React back on the frame path it was kept
         // off. The stats event fires at most twice a second, so this costs nothing per frame.
+        /* determinism: the tier is picked from frame times and reaches the DOM as a word (the
+           status text below). review/capture.mjs fails any capture whose tier is not "high", so a
+           comparable capture always carries the same word. */
         setQualityTier((prev) => (prev === e.stats.quality ? prev : e.stats.quality));
         /* Read the WIDENED stats off the handle. `SceneEvent` is declared in the frozen contract
            and its payload is typed `SceneStats`, which does not name `overBudget`; the handle
@@ -431,7 +566,7 @@ export function Fabric3D({
    */
   useEffect(() => {
     const slot = canvasSlotRef.current;
-    if (!slot) return;
+    if (!slot || !mapsReady) return;
 
     const canvas = slot.ownerDocument.createElement("canvas");
     canvas.className = "fabric3d__canvas";
@@ -439,15 +574,13 @@ export function Fabric3D({
     canvas.setAttribute("role", "application");
     canvas.setAttribute("aria-label", "Network fabric, three-dimensional view");
     canvas.setAttribute("aria-describedby", helpId);
-    canvas.setAttribute(
-      "aria-keyshortcuts",
-      "ArrowUp ArrowDown ArrowLeft ArrowRight Enter Escape Home Plus Minus",
-    );
+    canvas.setAttribute("aria-keyshortcuts", CANVAS_ARIA_KEYSHORTCUTS);
     canvas.dataset.testid = "fabric3d-canvas";
     canvas.dataset.hovering = "false";
     slot.appendChild(canvas);
     canvasRef.current = canvas;
 
+    /* determinism: `o.quality` is the CALLER's requested tier (a prop), not a measurement. */
     const o = optsRef.current;
     let scene: FabricSceneEx;
     try {
@@ -493,7 +626,7 @@ export function Fabric3D({
     const runHover = () => {
       hoverFrame = 0;
       if (!hoverAt) return;
-      const r = pickAt(hoverAt.x, hoverAt.y);
+      const r = isDrawn(scene) ? pickAt(hoverAt.x, hoverAt.y) : null;
       hover.set(
         r === null
           ? { deviceId: null, linkId: null }
@@ -533,7 +666,7 @@ export function Fabric3D({
     const onPointerUp = (e: PointerEvent) => {
       const wasClick = press.down && !press.moved;
       endPress();
-      if (!wasClick) return;
+      if (!wasClick || !isDrawn(scene)) return;
       applyPick(pickAt(e.clientX, e.clientY));
     };
 
@@ -550,6 +683,7 @@ export function Fabric3D({
     };
 
     const onDoubleClick = (e: MouseEvent) => {
+      if (!isDrawn(scene)) return;
       const r = pickAt(e.clientX, e.clientY);
       if (r && r.kind === "device") {
         useInvestigation.getState().selectDevice(r.id, { surface: "fabric" });
@@ -572,6 +706,20 @@ export function Fabric3D({
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
+      /* VIEW KEYS FIRST (acceptance D1): Shift+arrows orbit and Alt+arrows pan, as a drag of a fixed
+         fraction of the canvas height (canvasKeys.ts owns the scheme and the step). They go through
+         the scene's orbitBy/panBy, which replay OrbitControls' own drag handlers — the pointer's
+         camera path — so a key press and a drag of that many pixels land on the same pose, reduced
+         motion included (camera.keyboard.test.ts). Checked before the modifier bail-out below,
+         because Alt is one of their modifiers. */
+      const view = viewKeyMove(e, canvas.clientHeight);
+      if (view !== null) {
+        e.preventDefault();
+        const ex = scene as Partial<Pick<FabricSceneEx, "orbitBy" | "panBy">>;
+        if (view.verb === "orbit") ex.orbitBy?.(view.dx, view.dy);
+        else ex.panBy?.(view.dx, view.dy);
+        return;
+      }
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       const st = useInvestigation.getState();
       const dir = DIRECTIONS[e.key];
@@ -605,6 +753,7 @@ export function Fabric3D({
           break;
         case "Home":
           e.preventDefault();
+          syncStageOcclusion(canvasRef.current);
           scene.resetCamera();
           break;
         case "+":
@@ -650,7 +799,7 @@ export function Fabric3D({
       scene.dispose();
       canvas.remove();
     };
-  }, [onEvent, hover, helpId, reducedMotion]);
+  }, [onEvent, hover, helpId, reducedMotion, mapsReady]);
 
   /* ── data: replaced imperatively, never by rebuilding the scene ──────────── */
 
@@ -670,6 +819,10 @@ export function Fabric3D({
     const isFresh = prev.scene !== scene;
     if (!isFresh && (prev.devices !== devices || prev.links !== links || prev.layout !== layout)) {
       scene.setData(devices, links, layout);
+      /* A topology change rebuilds the graph and restarts the warm-up: the frame still on screen
+         is a picture of the OLD topology and no longer licenses a pointer pick (see isDrawn). A
+         same-topology update restarts nothing and keeps the latch. */
+      if ((scene.stats().warmupStage ?? null) !== null) presented.delete(scene);
     }
     appliedRef.current = { scene, devices, links, layout };
   }, [sceneEpoch, devices, links, layout]);
@@ -710,20 +863,72 @@ export function Fabric3D({
    * The same `failureImpact` / `linkFailureImpact` the Inspector reads, so the two surfaces cannot
    * tell different stories about one graph.
    */
-  const blast = useMemo((): { stranded: readonly string[]; host: string | null; link: string | null } => {
-    if (linkId !== null) {
-      const r = linkFailureImpact(linkId);
-      return r.newlyStranded.length === 0
-        ? NO_BLAST
-        : { stranded: r.newlyStranded, host: null, link: linkId };
-    }
+  /* A5: ONE QUESTION PER PICTURE. A trace re-aims the selection to its active hop's host (App.tsx,
+     acceptance A4), and that selection used to switch the blast radius on as a side effect: the
+     trace's own source switch read "⊘ STRANDED" and core1 read "⚠ CUT POINT" beside
+     "✓ DELIVERED HERE" — a failure hypothesis nobody asked, drawn over the packet's answer. While
+     the selection IS the trace's hop, the question on screen is the trace, so no blast radius is
+     drawn. Selecting any other device (or a link) is an explicit new question and draws it as
+     before; the Inspector's text is unaffected either way. */
+  const activeHopHost = trace === null || hopIndex === null ? null : (trace.hops[hopIndex]?.host ?? null);
+  const selectionIsTraceHop =
+    activeHopHost !== null &&
+    linkId === null &&
+    deviceId !== null &&
+    (deviceId === activeHopHost || deviceById.get(deviceId)?.host === activeHopHost);
+  /* A6 over A5, reconciled rather than traded (2026-09-21). Suppressing the blast radius for the
+     trace's hop meant that during any investigation the fabric's most important cut point — core1,
+     which strands 9 hosts and which every flow in this snapshot crosses or neighbours — could not
+     show its blast radius on the fabric at all; only the Inspector said it. The default stays A5's
+     "one question per picture", but the other question is now ONE explicit press away, on the
+     fabric itself, and the control only exists when the hop host really is a cut point. It resets
+     whenever the hop changes, so a stale hypothesis is never left drawn over a new packet. */
+  const [hopBlastShown, setHopBlastShown] = useState(false);
+  useEffect(() => {
+    setHopBlastShown(false);
+  }, [activeHopHost, trace]);
+  /* The hop's blast radius, WITH its certainty (2026-09-22 critic, B1). The button used to quote
+     newlyStranded alone — "core1 strands 9" — while the same computation said `uncertain`: core1
+     Gi1/0/40 is on two cables of which at most one is real, and the all-nodes projection strands 0.
+     A count stated without the certainty the analysis attached to it is a stronger claim than the
+     analysis makes, so the label, title and marks now carry it. */
+  const hopBlast = useMemo(
+    () => (selectionIsTraceHop && activeHopHost !== null ? failureImpact(activeHopHost) : null),
+    [selectionIsTraceHop, activeHopHost],
+  );
+  const hopBlastCount = hopBlast?.newlyStranded.length ?? 0;
+  const hopBlastQualifier = hopBlast === null ? "" : blastQualifier(hopBlast.certainty, hopBlastCount, hopBlast.alternateProjections);
+  const blast = useMemo((): BlastOverlay => {
+    if (selectionIsTraceHop && !hopBlastShown) return NO_BLAST;
+    const pick = (
+      r: { newlyStranded: string[]; certainty: Certainty; alternateProjections: ProjectionDelta[]; caveats: string[] },
+      host: string | null,
+      link: string | null,
+      subject: string,
+    ): BlastOverlay => {
+      /* Not determinable is NOT "strands nothing": it is stated on the canvas, never drawn as blank. */
+      if (r.certainty === "not-determinable") {
+        const why = r.caveats[0] ?? "the analysis declined to compute it";
+        const short = host !== null && deviceById.get(host)?.collected === false ? "device never collected" : "see the Inspector for why";
+        return { ...NO_BLAST, undetermined: { subject, short, why } };
+      }
+      if (r.newlyStranded.length === 0) return NO_BLAST;
+      return {
+        stranded: r.newlyStranded,
+        host,
+        link,
+        certainty: r.certainty,
+        qualifier: blastQualifier(r.certainty, r.newlyStranded.length, r.alternateProjections),
+        undetermined: null,
+      };
+    };
+    if (linkId !== null) return pick(linkFailureImpact(linkId), null, linkId, linkId);
     if (deviceId !== null) {
       const host = deviceById.get(deviceId)?.host ?? deviceId;
-      const r = failureImpact(host);
-      return r.newlyStranded.length === 0 ? NO_BLAST : { stranded: r.newlyStranded, host, link: null };
+      return pick(failureImpact(host), host, null, host);
     }
     return NO_BLAST;
-  }, [deviceId, linkId]);
+  }, [deviceId, linkId, selectionIsTraceHop, hopBlastShown]);
 
   /** Stranded host NAMES resolved to device ids, which is what the highlight set is keyed on. */
   const strandedIds = useMemo((): ReadonlySet<string> => {
@@ -830,6 +1035,13 @@ export function Fabric3D({
 
   const cutPointId = blast.host;
 
+  /** A4: the selected finding, for the label layer's own mark. Same lookup the highlight uses. */
+  const labelFinding = useMemo(() => {
+    if (findingId === null) return null;
+    const f = fabric.findings.find((x) => x.id === findingId);
+    return f === undefined ? null : { id: f.id, severity: String(f.severity).toLowerCase(), hosts: new Set(f.devices) };
+  }, [findingId]);
+
   useEffect(() => {
     sceneRef.current?.setHighlight(highlight);
   }, [sceneEpoch, highlight]);
@@ -840,17 +1052,34 @@ export function Fabric3D({
     const host = hostRef.current;
     if (!host) return;
     let frame = 0;
+    let settle: ReturnType<typeof setTimeout> | null = null;
     let pending: { w: number; h: number } | null = null;
+    let applied: { w: number; h: number } | null = null;
 
+    /* RESPONSIVENESS FIX, 2026-09-21 (acceptance E5: viewport resizes measured at 380-451 ms, one
+       Fabric3D rAF alone 377 ms). A resize reallocates every render target of the post chain and
+       repaints through all of them, and a dragged window edge or a rail resize delivers a new size
+       on EVERY frame — so the fabric re-sized itself up to sixty times a second. It now follows the
+       drag at most once per RESIZE_SETTLE_MS: the first size lands on the next frame, sizes in
+       between are coalesced, and the last one always lands. Between two applied sizes the canvas
+       is simply stretched by CSS (`inline-size: 100%`), which is the browser's own behaviour for a
+       resized canvas and never a blank one. */
     const flush = () => {
       frame = 0;
-      if (pending) sceneRef.current?.resize(pending.w, pending.h);
+      if (!pending) return;
+      if (applied && applied.w === pending.w && applied.h === pending.h) return;
+      applied = pending;
+      sceneRef.current?.resize(pending.w, pending.h);
+      settle = setTimeout(() => {
+        settle = null;
+        if (pending && frame === 0) frame = requestAnimationFrame(flush);
+      }, RESIZE_SETTLE_MS);
     };
     const push = (w: number, h: number) => {
       // A zero-sized canvas is a division by zero in the projection matrix; clamp rather than
       // forwarding a collapsed layout to the renderer.
       pending = { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
-      if (frame === 0) frame = requestAnimationFrame(flush);
+      if (frame === 0 && settle === null) frame = requestAnimationFrame(flush);
     };
 
     const rect = host.getBoundingClientRect();
@@ -868,6 +1097,7 @@ export function Fabric3D({
     return () => {
       ro?.disconnect();
       if (frame !== 0) cancelAnimationFrame(frame);
+      if (settle !== null) clearTimeout(settle);
     };
   }, [sceneEpoch]);
 
@@ -886,7 +1116,15 @@ export function Fabric3D({
     }
   }, [deviceId, linkId]);
 
+  /* An open Fabric list covers the left of the stage. The framing is told before any whole-fabric
+     or device framing, and again whenever the list is shown or hidden, so Reset view frames the
+     fabric in the stage the reader can SEE (camera.ts :: setStageOcclusion). */
+  useEffect(() => {
+    syncStageOcclusion(canvasRef.current);
+  }, [treeVisible, sceneError]);
+
   const resetView = useCallback(() => {
+    syncStageOcclusion(canvasRef.current);
     sceneRef.current?.resetCamera();
     canvasRef.current?.focus({ preventScroll: true });
   }, []);
@@ -912,7 +1150,11 @@ export function Fabric3D({
         : `Render quality tier in force: ${qualityTier}. Draw calls are within the frame's budget.`;
 
   return (
-    <div className={className === undefined ? "fabric3d" : `fabric3d ${className}`} ref={hostRef}>
+    /* `data-fabric-surface` marks what counts as input ON the fabric (canvas, labels, HUD): input
+       anywhere else lets the scene hold an owed render until the burst pauses — see
+       ./panelInput. */
+    <div className={className === undefined ? "fabric3d" : `fabric3d ${className}`} ref={hostRef} data-fabric-surface="">
+
       {/* React never puts children in this slot, so the imperatively-owned canvas cannot collide
           with reconciliation. */}
       <div className="fabric3d__canvas-host" ref={canvasSlotRef} />
@@ -936,10 +1178,12 @@ export function Fabric3D({
         alarm={labelAlarm}
         cutPointId={cutPointId}
         strandedIds={strandedIds}
+        strandedQualifier={blast.qualifier}
+        finding={labelFinding}
         coordinateSpace="canvas"
       />
 
-      <div className="fabric3d__hud">
+      <div className="fabric3d__hud" data-label-keepout="">
         <span
           className="fabric3d__quality"
           data-degraded={degraded ? "true" : "false"}
@@ -979,6 +1223,32 @@ export function Fabric3D({
             A description rather than a renamed label: the accessible name stays exactly the
             visible words, which is what SC 2.5.3 is about and what lets the voice-control user
             say "Fabric list". */}
+        {selectionIsTraceHop && hopBlastCount > 0 && activeHopHost !== null ? (
+          <button
+            type="button"
+            className="fabric3d__btn"
+            aria-pressed={hopBlastShown}
+            data-hop-blast={hopBlastShown ? "shown" : "hidden"}
+            data-certainty={hopBlast?.certainty ?? ""}
+            title={`Removing ${activeHopHost} would strand ${hopBlastCount} host${hopBlastCount === 1 ? "" : "s"}${
+              hopBlastQualifier === "" ? "" : ` — ${hopBlastQualifier}: ${(hopBlast?.caveats ?? []).join(" ").replace(/.s*$/, "")}`
+            }. Drawn on request while a trace is shown, so the failure hypothesis never overwrites the packet's answer.`}
+            onClick={() => setHopBlastShown((v) => !v)}
+          >
+            {`Blast radius: ${activeHopHost} strands ${hopBlastCount}${hopBlastQualifier === "" ? "" : ` (${hopBlastQualifier})`}`}
+          </button>
+        ) : null}
+        {/* A blast question asked and NOT answered is said on the canvas. Without this an
+            uncollected host drew no overlay at all, which looks the same as "strands nothing". */}
+        {blast.undetermined !== null ? (
+          <span className="fabric3d__quality" role="note" data-blast="not-determinable" title={blast.undetermined.why}>
+            {`Blast radius not determinable: ${blast.undetermined.subject} ${blast.undetermined.short}`}
+          </span>
+        ) : blast.stranded.length > 0 && blast.qualifier !== "" ? (
+          <span className="fabric3d__quality" role="note" data-blast={blast.certainty ?? ""}>
+            {`Stranded marks are ${blast.qualifier}`}
+          </span>
+        ) : null}
         <button
           type="button"
           className="fabric3d__btn"
@@ -1020,7 +1290,8 @@ export function Fabric3D({
       <p id={helpId} className="fabric3d__sr-only">
         Three-dimensional fabric view. Arrow keys move the selection to the nearest device in that
         direction on screen. Enter frames the camera on the selected device. Escape clears the
-        selection. Home frames the whole fabric. Plus and minus zoom. The Fabric list button opens
+        selection. Home frames the whole fabric. Plus and minus zoom. Shift with an arrow key orbits the
+        camera and Alt (Option) with an arrow key pans it. The Fabric list button opens
         an equivalent tree of tiers, devices and links that does not require the canvas.
       </p>
       <div className="fabric3d__sr-only" role="status" aria-live="polite">
@@ -1028,6 +1299,43 @@ export function Fabric3D({
       </div>
     </div>
   );
+}
+
+/**
+ * Is there a picture of THIS geometry on screen? Every POINTER pick and hover passes through here.
+ *
+ * COLD LOAD. While the scene warms up for the first time the canvas is blank ("Building the 3-D
+ * fabric — N of M shader programs linked"), but the geometry the picker ray-casts against already
+ * exists. MEASURED: on `?d=access1` one click on the blank warming canvas hit empty ground, and the
+ * empty pick CLEARED the URL-restored selection — the Inspector went to "Nothing is selected" with
+ * nothing visible to explain why; a double-click on `?l=L26` did the same. A pointer pick is a
+ * choice made by LOOKING at the fabric, so until it is drawn there is nothing to choose from: every
+ * pointer pick — hit or empty — and every hover is ignored. The gate is on the pick itself rather
+ * than only on the empty case, because selecting a device the reader cannot see is the same defect
+ * in the other direction. Keyboard traversal is untouched: it walks the named device list.
+ *
+ * RE-WARM-UP (A4 audit fix, 2026-09-21). This gate used to be "no warm-up is running", and a
+ * warm-up also runs AFTER the first paint — an adaptive tier step, a theme change. MEASURED by the
+ * A4 critic: ~1.3 s after selecting dist2 a re-warm-up held `warmupStage !== null` for ~0.5 s, and
+ * a click on core1 in that window was silently discarded while the canvas still showed the
+ * complete previous frame (repro: `setQuality` then a device click — the URL stayed on the old
+ * device for 2 of 3 clicks). That frame IS the fabric the reader is choosing from, and a tier or
+ * theme change moves no geometry, so a pick against it is the pick they meant. The gate is now
+ * "has this scene presented a frame of its current geometry": latched the first time the scene is
+ * seen drawing, and cleared only when a data change rebuilds the graph (the frame on screen is then
+ * of a different topology — see the setData effect). That covers the structural class rather than
+ * a list of warm-up causes: any re-warm-up that keeps the geometry keeps the fabric clickable.
+ */
+const presented = new WeakMap<FabricSceneEx, true>();
+
+function notePresented(scene: FabricSceneEx | null): void {
+  if (scene !== null && (scene.stats().warmupStage ?? null) === null) presented.set(scene, true);
+}
+
+function isDrawn(scene: FabricSceneEx | null): boolean {
+  if (scene === null) return false;
+  notePresented(scene);
+  return presented.get(scene) === true;
 }
 
 function applyPick(r: PickResult | null): void {

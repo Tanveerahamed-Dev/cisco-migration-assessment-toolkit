@@ -74,3 +74,14 @@ describe("the access point's curved body", () => {
     }
   });
 });
+
+describe("uncollected silhouette is tier-independent", () => {
+  it("keeps every box edge for rack kinds, whatever bevel the tier would tessellate", async () => {
+    const { chassisSilhouette } = await import("./chassis");
+    for (const kind of ["router", "switch"]) {
+      // 144 vertices = the reference body's full outline. The high tier's own body gave 72: the
+      // twelve corner edges fell under the 24-degree threshold and the ghost read as opaque.
+      expect(chassisSilhouette(kind).getAttribute("position").count).toBeGreaterThanOrEqual(144);
+    }
+  });
+});

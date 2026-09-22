@@ -1,0 +1,1549 @@
+{
+ "meta": {
+  "source": "webapp/sample_data/sample_fleet.snapshot.json",
+  "sourceSha256": "9cc348bd58bbc2ed204692b42fec3c51a64c530f0b900e26ee7911f4357f5dfd",
+  "sourceBytes": 3148592
+ },
+ "hosts": {
+  "access1": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access1.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access1.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access1.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access1.Gi0/10"
+   }
+  ],
+  "access10": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access10.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access10.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access10.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "20",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access10.Gi0/10"
+   }
+  ],
+  "access11": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access11.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access11.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access11.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "20",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access11.Gi0/10"
+   }
+  ],
+  "access12": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access12.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access12.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access12.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "20",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access12.Gi0/10"
+   }
+  ],
+  "access13": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access13.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access13.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access13.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access13.Gi0/10"
+   },
+   {
+    "port": "Gi0/11",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access13.Gi0/11"
+   },
+   {
+    "port": "Gi0/12",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access13.Gi0/12"
+   }
+  ],
+  "access14": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access14.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access14.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access14.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access14.Gi0/10"
+   },
+   {
+    "port": "Gi0/11",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access14.Gi0/11"
+   },
+   {
+    "port": "Gi0/12",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access14.Gi0/12"
+   }
+  ],
+  "access15": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access15.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access15.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access15.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access15.Gi0/10"
+   },
+   {
+    "port": "Gi0/11",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access15.Gi0/11"
+   },
+   {
+    "port": "Gi0/12",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access15.Gi0/12"
+   }
+  ],
+  "access16": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access16.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access16.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access16.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access16.Gi0/10"
+   },
+   {
+    "port": "Gi0/11",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access16.Gi0/11"
+   },
+   {
+    "port": "Gi0/12",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access16.Gi0/12"
+   }
+  ],
+  "access17": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access17.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access17.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access17.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access17.Gi0/10"
+   },
+   {
+    "port": "Gi0/11",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access17.Gi0/11"
+   },
+   {
+    "port": "Gi0/12",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.access17.Gi0/12"
+   }
+  ],
+  "access2": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access2.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access2.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access2.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access2.Gi0/10"
+   }
+  ],
+  "access3": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access3.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access3.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access3.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access3.Gi0/10"
+   }
+  ],
+  "access4": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access4.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access4.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access4.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access4.Gi0/10"
+   }
+  ],
+  "access5": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access5.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access5.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access5.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access5.Gi0/10"
+   }
+  ],
+  "access6": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access6.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access6.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access6.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "30",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access6.Gi0/10"
+   }
+  ],
+  "access7": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access7.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access7.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access7.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "20",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access7.Gi0/10"
+   }
+  ],
+  "access8": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access8.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access8.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access8.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "20",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access8.Gi0/10"
+   }
+  ],
+  "access9": [
+   {
+    "port": "Gi0/1",
+    "vlan": "10,20",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access9.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access9.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access9.Gi0/3"
+   },
+   {
+    "port": "Gi0/10",
+    "vlan": "20",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.access9.Gi0/10"
+   }
+  ],
+  "core1": [
+   {
+    "port": "Gi1/0/1",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Gi1/0/1"
+   },
+   {
+    "port": "Gi1/0/2",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Gi1/0/2"
+   },
+   {
+    "port": "Gi1/0/24",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Gi1/0/24"
+   },
+   {
+    "port": "Gi1/0/5",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [
+     "interface_acl_in",
+     "interface_acl_out"
+    ],
+    "gateUnmodeled": [
+     "candidate_projection_incomplete"
+    ],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Gi1/0/5"
+   },
+   {
+    "port": "Gi1/0/9",
+    "vlan": "10",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Gi1/0/9"
+   },
+   {
+    "port": "Po1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Po1"
+   },
+   {
+    "port": "Vlan10",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Vlan10"
+   },
+   {
+    "port": "Vlan20",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": "VOICE_FILTER",
+    "aclOut": null,
+    "gateCandidates": [
+     "interface_acl_in"
+    ],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Vlan20"
+   },
+   {
+    "port": "Vlan30",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": "PROTECT_SERVERS",
+    "gateCandidates": [
+     "interface_acl_out"
+    ],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core1.Vlan30"
+   },
+   {
+    "port": "Gi1/0/26",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/26"
+   },
+   {
+    "port": "Gi1/0/28",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/28"
+   },
+   {
+    "port": "Gi1/0/30",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/30"
+   },
+   {
+    "port": "Gi1/0/32",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/32"
+   },
+   {
+    "port": "Gi1/0/34",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/34"
+   },
+   {
+    "port": "Gi1/0/36",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/36"
+   },
+   {
+    "port": "Gi1/0/38",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/38"
+   },
+   {
+    "port": "Gi1/0/40",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core1.Gi1/0/40"
+   }
+  ],
+  "core2": [
+   {
+    "port": "Eth1/1",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core2.Eth1/1"
+   },
+   {
+    "port": "Eth1/2",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core2.Eth1/2"
+   },
+   {
+    "port": "Po1",
+    "vlan": "10,20,30",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core2.Po1"
+   },
+   {
+    "port": "Vlan10",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core2.Vlan10"
+   },
+   {
+    "port": "Vlan20",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.core2.Vlan20"
+   },
+   {
+    "port": "Eth1/47",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/47"
+   },
+   {
+    "port": "Eth1/20",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/20"
+   },
+   {
+    "port": "Eth1/30",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/30"
+   },
+   {
+    "port": "Eth1/3",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/3"
+   },
+   {
+    "port": "Eth1/5",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/5"
+   },
+   {
+    "port": "Eth1/7",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/7"
+   },
+   {
+    "port": "Eth1/9",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/9"
+   },
+   {
+    "port": "Eth1/11",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/11"
+   },
+   {
+    "port": "Eth1/13",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/13"
+   },
+   {
+    "port": "Eth1/15",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/15"
+   },
+   {
+    "port": "Eth1/17",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": false,
+    "cite": "interfaces.core2.Eth1/17"
+   }
+  ],
+  "dist1": [
+   {
+    "port": "Gi1/0/1",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Gi1/0/1"
+   },
+   {
+    "port": "Gi1/0/2",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Gi1/0/2"
+   },
+   {
+    "port": "Gi1/0/3",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Gi1/0/3"
+   },
+   {
+    "port": "Gi1/0/10",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Gi1/0/10"
+   },
+   {
+    "port": "Gi1/0/11",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Gi1/0/11"
+   },
+   {
+    "port": "Po1",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Po1"
+   },
+   {
+    "port": "Vlan40",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Vlan40"
+   },
+   {
+    "port": "Vlan41",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist1.Vlan41"
+   }
+  ],
+  "dist2": [
+   {
+    "port": "Gi1/0/1",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Gi1/0/1"
+   },
+   {
+    "port": "Gi1/0/2",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Gi1/0/2"
+   },
+   {
+    "port": "Gi1/0/3",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Gi1/0/3"
+   },
+   {
+    "port": "Gi1/0/10",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Gi1/0/10"
+   },
+   {
+    "port": "Gi1/0/11",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Gi1/0/11"
+   },
+   {
+    "port": "Po1",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Po1"
+   },
+   {
+    "port": "Vlan40",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Vlan40"
+   },
+   {
+    "port": "Vlan41",
+    "vlan": null,
+    "switchportMode": null,
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.dist2.Vlan41"
+   }
+  ],
+  "podacc1": [
+   {
+    "port": "Gi0/1",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc1.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc1.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "40",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc1.Gi0/3"
+   },
+   {
+    "port": "Gi0/4",
+    "vlan": "41",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc1.Gi0/4"
+   }
+  ],
+  "podacc2": [
+   {
+    "port": "Gi0/1",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc2.Gi0/1"
+   },
+   {
+    "port": "Gi0/2",
+    "vlan": "40,41",
+    "switchportMode": "Trunk",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc2.Gi0/2"
+   },
+   {
+    "port": "Gi0/3",
+    "vlan": "40",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc2.Gi0/3"
+   },
+   {
+    "port": "Gi0/4",
+    "vlan": "41",
+    "switchportMode": "Access",
+    "aclIn": null,
+    "aclOut": null,
+    "gateCandidates": [],
+    "gateUnmodeled": [],
+    "runConfigObserved": true,
+    "cite": "interfaces.podacc2.Gi0/4"
+   }
+  ]
+ }
+}

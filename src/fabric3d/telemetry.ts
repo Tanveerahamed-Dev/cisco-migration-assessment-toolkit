@@ -70,7 +70,9 @@ function renderedKey(s: SceneStatsEx | null): string {
      notifications during the warm-up itself, which is exactly when something is drawing them. */
   return (
     `${Math.round(s.fps)}|${s.quality}|${s.converged ? 1 : 0}|${s.qualityAuto ? 1 : 0}` +
-    `|${s.warmupStage ?? "-"}|${s.programsLinked}/${s.programsTotal}`
+    `|${s.warmupStage ?? "-"}|${s.programsLinked}/${s.programsTotal}` +
+    /* The E4 bar flag is DRAWN on the permanent line (app/StatusBar.tsx), so its change must reach it. */
+    `|${s.frameRateBelowBar ? 1 : 0}`
   );
 }
 
@@ -103,8 +105,23 @@ export function publishSceneStats(next: SceneStatsEx | null): void {
   if (current === next) return;
   /* The stored value is ALWAYS current: a reader that asks between notifications gets the latest
      reading, never a stale one. Only the notification is throttled. */
+  const previous = current;
   current = next;
   if (renderedKey(next) === lastKey) return;
+  /* A warm-up STARTING or ENDING is published at once, throttle or not. The stage draws "Building
+     the 3-D fabric" off this reading, so a throttled end left that sentence on screen for up to a
+     second over a fabric that was already drawn (seen in a theme round trip, which now warms up
+     rather than stalling the click), and a throttled start left a busy stage unexplained. Only the
+     edges bypass the window; progress WITHIN a warm-up is still throttled. */
+  const warmingBefore = previous !== null && previous.warmupStage !== null;
+  const warmingNow = next !== null && next.warmupStage !== null;
+  if (warmingBefore !== warmingNow) {
+    if (window_ !== null) clearTimeout(window_);
+    pending = false;
+    notify();
+    openWindow();
+    return;
+  }
   if (window_ !== null) {
     /* Trailing edge: the last reading of a throttled window must still reach the screen, or a tier
        step-down could sit unreported for as long as the scene kept emitting. */

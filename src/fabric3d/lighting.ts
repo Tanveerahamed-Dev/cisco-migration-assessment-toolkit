@@ -138,6 +138,44 @@ export function createLighting(tokens: TokenPalette, profile: QualityProfile): L
   rim.castShadow = false;
   group.add(rim);
 
+  /* FRAME-COST FIX, 2026-09-21 (acceptance E2/E3/E4 — the path-trace re-aim and sustained fps).
+   *
+   * MEASURED on an unminified release build with three.js instrumented (review/_probe_j4_programs.mjs):
+   * across 10 path-trace repetitions, EVERY lit material in the scene re-entered
+   * `WebGLRenderer.getProgram` on EVERY rendered frame — ~1,585 re-entries for the chassis
+   * material alone over ~317 frames — with `materialProperties.lightsStateVersion !==
+   * lights.state.version` as the reason. CPU profile of the same run: `getParameters` 571 ms +
+   * `getProgramCacheKey` 174 ms + `getProgram` 167 ms self time, all per-frame overhead that
+   * produces no pixel.
+   *
+   * The cause is layers, not lights. The post chain renders the SAME scene several times a frame
+   * with the camera narrowed to one layer: SelectiveBloomEffect's depth pass on layer 24, each
+   * OutlineEffect's depth and mask passes on 25 and 26 (see layers.ts). three.js collects lights by
+   * `object.layers.test(camera.layers)`, so in those passes the rig vanished; the light hash
+   * changed; `lights.state.version` incremented; and on the very next full pass every lit material
+   * saw a new version and recomputed its program parameters. Twice or more per frame, forever,
+   * whenever a selection or trace is live — which is exactly when the reader is interacting.
+   *
+   * Every pass that narrows the layers draws with an OVERRIDE material that ignores lights
+   * (MeshDepthMaterial, DepthComparisonMaterial), so putting the rig on every layer changes no
+   * pixel — it only makes the light list, and therefore the light hash, identical in every pass.
+   * `enableAll` rather than the three selection layers by name: a guard scoped to today's list of
+   * layers is the shape that breaks when the next pass is added (layers.ts exists because
+   * postprocessing allocates layers behind our back).
+   *
+   * That change alone would move the shadow render INTO those passes, because the key would now
+   * be visible to them and `shadow.autoUpdate` defaults to true (OutlineEffect's mask pass does
+   * not set `skipShadowMapUpdate`). So the shadow map becomes explicitly driven, which it should
+   * have been anyway: a directional shadow map depends on the light and the casters, NOT on the
+   * camera, and in this fabric neither moves between rebuilds — instance matrices are written once
+   * per build (scene.ts) and the flow overlay does not cast. The map is re-rendered exactly when
+   * one of its inputs changes: `fit` (layout, which every rebuild calls), `applyProfile` (tier,
+   * map size, shadows on/off). Measured before: 0.94 shadow renders per animated frame, every one
+   * of them redrawing an identical depth map. */
+  for (const light of [key, fill, rim]) light.layers.enableAll();
+  key.shadow.autoUpdate = false;
+  key.shadow.needsUpdate = true;
+
   const rig: LightingRig = {
     group,
     key,
@@ -178,6 +216,8 @@ export function createLighting(tokens: TokenPalette, profile: QualityProfile): L
       cam.updateProjectionMatrix();
       // The frustum just changed, so the texel changed, so the bias changes with it.
       key.shadow.normalBias = normalBiasFor(key.shadow.mapSize.x, radius);
+      // A fit is a new layout (every rebuild calls it): the one event that moves casters.
+      key.shadow.needsUpdate = true;
     },
 
     retint(tokens2: TokenPalette): void {

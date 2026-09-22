@@ -20,6 +20,7 @@ import { useInvestigation } from "../core/store";
 import { SEVERITY_ORDER } from "../core/types";
 import { OPEN_CITE_EVENT } from "../panels/DevicePane";
 import { openInspector, setInspectorCite } from "../panels/Inspector";
+import { flowKey } from "../panels/PathTrace";
 import { Chip } from "../ui/primitives";
 import { CommandPalette } from "./CommandPalette";
 import {
@@ -286,10 +287,30 @@ export function App(): ReactElement {
      whatever was selected before the trace began. Wired here rather than in the path panel because
      the rule is about the shared context, not about that panel. The link is cleared implicitly by
      `selectDevice`, which is correct: a hop names a host, not a cable. */
+  /* ...EXCEPT on a URL restore that names its own device. A flow with no trace yet exists only
+     after the URL was read (first load or Back; every interactive writer sets flow and trace in
+     one batch). If that link also carries `d=`, the reader's device choice IS part of the
+     investigation — "dist1 selected while investigating this flow" — and the trace landing on its
+     hop must not overwrite it with the hop's host. The restored (flow, hop) pair is recorded here,
+     from this render's values, and the hop effect below skips exactly that one landing. A link
+     with no `d=` is not recorded, so the device still defaults to the hop's host. Consumed once:
+     a later re-run of the same flow, or a hop step, re-aims as before. */
+  const restoredAim = useRef<string | null>(null);
+  useEffect(() => {
+    if (flow === null || trace !== null) return;
+    restoredAim.current = deviceId === null ? null : `${flowKey(flow)}#${hopIndex ?? 0}`;
+  }, [flow, trace, deviceId, hopIndex]);
+
   useEffect(() => {
     if (hopIndex === null || trace === null) return;
     const hop = trace.hops[hopIndex];
     if (hop === undefined) return;
+    const landing = `${flowKey(trace.flow)}#${hopIndex}`;
+    if (restoredAim.current !== null) {
+      const restored = restoredAim.current === landing;
+      restoredAim.current = null;
+      if (restored) return;
+    }
     if (useInvestigation.getState().deviceId === hop.host) return;
     useInvestigation.getState().selectDevice(hop.host);
   }, [hopIndex, trace]);

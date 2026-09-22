@@ -16,9 +16,18 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { bandOfOutcome } from "../core/claims";
+import { PerspectiveCamera, Vector3 } from "three";
+
+import { bandOfOutcome, bandOfTrace } from "../core/claims";
 import { traceFlow } from "../forwarding/engine";
-import { createFlowOverlay, type TraceSegmentSource } from "./flow";
+import {
+  createFlowOverlay,
+  GLYPH_CLEARANCE,
+  placeTerminalGlyph,
+  STOP_GLYPH_RADIUS,
+  UNDECIDED_GLYPH_RADIUS,
+  type TraceSegmentSource,
+} from "./flow";
 import { readTokens } from "./materials";
 
 /**
@@ -35,9 +44,7 @@ const segmentSource = (): TraceSegmentSource => ({
   anchorOf: (host: string) => ({ x: host.length * 10, y: 0, z: 0, top: 12 }),
 });
 
-const DELIVERED = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp" as const, dstPort: 443, srcPort: null };
-const DENIED = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp" as const, dstPort: 3389, srcPort: null };
-const UNDECIDED = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "icmp" as const, dstPort: null, srcPort: null };
+
 
 /**
  * Which terminal marks are drawn for a real trace of this flow.
@@ -64,8 +71,12 @@ function terminalOf(
       ? {
           ...real,
           hops: [
-            { ...first, nextHost: "core2" },
-            { ...first, index: 1, host: "core2", nextHost: null },
+            /* The derived hop repeats the producer's own host rather than naming another device:
+               the canvas bands the trace with `bandOfTrace`, which reads every hop's evidence, and
+               an invented "core2" hop imported core2's incomplete routing table into a decided
+               denial and undecided it. Repeating the host adds a drawn segment and no evidence. */
+            { ...first, nextHost: first.host },
+            { ...first, index: 1, nextHost: null },
           ],
         }
       : real;
@@ -84,65 +95,79 @@ function terminalOf(
   }
 }
 
-describe("the trace's terminal mark has three states, not two", () => {
-  it("the snapshot really does produce one of each outcome band", () => {
-    // Guard the guard: if the producer stopped emitting an indeterminate outcome, every assertion
-    // below would still pass while testing nothing.
-    expect(bandOfOutcome(traceFlow(DELIVERED).outcome)).toBe("RESOLVED");
-    expect(bandOfOutcome(traceFlow(DENIED).outcome)).toBe("REFUTED");
-    expect(bandOfOutcome(traceFlow(UNDECIDED).outcome)).toBe("UNDETERMINED");
+/* The three-state tests ("RESOLVED ends in neither, REFUTED in the alarm, UNDETERMINED in the ring")
+   and the band-agreement sweep moved to flow-terminal.counterfactual.test.ts on 2026-09-22: they
+   were exercised on flows sourced by core1's own SVI addresses, which the engine now refuses as
+   router-originated (auditor, B2), and with every remaining trace resting on an incomplete routing
+   table (auditor, B1) the shipped snapshot has no RESOLVED or REFUTED trace to draw. */
+
+describe("the terminal mark follows the TRACE band, not the outcome word (C5 critic)", () => {
+  /* tcp 10.0.20.10 -> 10.0.40.50:22 is the word "dropped" (no route at core2) over a routing table
+     the snapshot shows to be incomplete, so `bandOfTrace` is UNDETERMINED. The canvas used to band
+     it by the outcome word and drew the red stop octagon under a label reading "? UNDECIDED". */
+  const PARTIAL_RIB_DROP = { srcIp: "10.0.20.10", dstIp: "10.0.40.50", protocol: "tcp" as const, dstPort: 22, srcPort: null };
+
+  it("the case is real: an undecided refusal exists in this snapshot", () => {
+    const t = traceFlow(PARTIAL_RIB_DROP);
+    expect(bandOfOutcome(t.outcome), `outcome word ${t.outcome}`).toBe("REFUTED");
+    expect(bandOfTrace(t)).toBe("UNDETERMINED");
   });
 
-  it("a REFUTED trace ends in the alarm, and only a REFUTED one does", () => {
-    const denied = terminalOf(DENIED);
-    expect(denied.stop, "a denied flow keeps the octagonal alarm").toBe(true);
-    expect(denied.undecided).toBe(false);
-    // Over a drawn path, it also keeps the 6 px critical terminal segment.
-    expect(terminalOf(DENIED, true).alarmSegment).toBe(true);
+  it("an undecided refusal ends in the ring, never in the alarm", () => {
+    const m = terminalOf(PARTIAL_RIB_DROP);
+    expect(m.stop).toBe(false);
+    expect(m.undecided).toBe(true);
+    expect(terminalOf(PARTIAL_RIB_DROP, true).alarmSegment).toBe(false);
   });
 
-  it("an UNDETERMINED trace ends in the ring, never in the alarm", () => {
-    const undecided = terminalOf(UNDECIDED);
-    expect(undecided.undecided, "the open ring marks where deciding stopped").toBe(true);
-    expect(
-      undecided.stop,
-      "the engine declined to decide this flow; the canvas may not assert that it was stopped",
-    ).toBe(false);
-    expect(
-      terminalOf(UNDECIDED, true).alarmSegment,
-      "and it may not paint the critical terminal segment either, even over a drawn path",
-    ).toBe(false);
-  });
-
-  it("a RESOLVED trace ends in neither", () => {
-    const delivered = terminalOf(DELIVERED);
-    expect(delivered.stop).toBe(false);
-    expect(delivered.undecided).toBe(false);
-    expect(delivered.alarmSegment).toBe(false);
-  });
-
-  it("the denied and the undecided endings are not the same picture", () => {
-    /* The assertion the predecessor of this file could not make: the two states differ in the
-       objects drawn, not only in a colour or a word somewhere else on the page. */
-    const denied = terminalOf(DENIED);
-    const undecided = terminalOf(UNDECIDED);
-    expect([denied.stop, denied.undecided, denied.alarmSegment]).not.toEqual([
-      undecided.stop,
-      undecided.undecided,
-      undecided.alarmSegment,
-    ]);
-  });
-
-  it("clearing the trace clears both terminal marks", () => {
-    const overlay = createFlowOverlay(readTokens("dark"));
-    try {
-      overlay.setTrace(traceFlow(UNDECIDED), 0, segmentSource());
-      expect(overlay.emissiveObjects().find((o) => o.name === "trace-undecided")?.visible).toBe(true);
-      overlay.setTrace(null, null, segmentSource());
-      expect(overlay.emissiveObjects().find((o) => o.name === "trace-undecided")?.visible).toBe(false);
-      expect(overlay.emissiveObjects().find((o) => o.name === "trace-stop")?.visible).toBe(false);
-    } finally {
-      overlay.dispose();
+  it("a trace refused before any hop draws no terminal mark at all", () => {
+    /* The flows the three-state tests used to call RESOLVED and REFUTED: both are sourced by core1's
+       own address and are now refused as router-originated, so nothing is drawn — neither the alarm
+       nor a green ending that would read as a decided result. */
+    for (const flow of [
+      { srcIp: "10.0.30.1", dstIp: "10.0.10.50", protocol: "tcp" as const, dstPort: 22, srcPort: null },
+      { srcIp: "10.0.20.2", dstIp: "10.0.10.50", protocol: "tcp" as const, dstPort: 22, srcPort: null },
+    ]) {
+      expect(traceFlow(flow).hops).toEqual([]);
+      const m = terminalOf(flow);
+      expect(m.stop).toBe(false);
+      expect(m.alarmSegment).toBe(false);
+      expect(bandOfTrace(traceFlow(flow))).toBe("UNDETERMINED");
     }
+  });
+});
+
+describe("a terminal glyph never occupies its chassis' space or screen area (C5 critic)", () => {
+  const half = [8, 1.6, 6] as const;
+  const anchor = { x: 40, y: 10, z: -20, top: 11.6, half };
+  const chassisR = Math.hypot(...half);
+
+  it("is disjoint from the chassis bounding sphere, across the line of sight, at every orbit", () => {
+    const cam = new PerspectiveCamera(40, 1.6, 1, 2000);
+    const out = new Vector3();
+    const view = new Vector3();
+    const offset = new Vector3();
+    let checked = 0;
+    for (const polarDeg of [5, 30, 55, 80, 89]) {
+      for (const azDeg of [0, 45, 120, 200, 300]) {
+        const p = (polarDeg * Math.PI) / 180;
+        const a = (azDeg * Math.PI) / 180;
+        cam.position.set(anchor.x + 200 * Math.sin(p) * Math.sin(a), anchor.y + 200 * Math.cos(p), anchor.z + 200 * Math.sin(p) * Math.cos(a));
+        cam.lookAt(anchor.x, anchor.y, anchor.z);
+        cam.updateMatrixWorld();
+        for (const r of [STOP_GLYPH_RADIUS, UNDECIDED_GLYPH_RADIUS]) {
+          placeTerminalGlyph(anchor, cam.quaternion, r, out);
+          offset.set(out.x - anchor.x, out.y - anchor.y, out.z - anchor.z);
+          // In space: the glyph's bounding sphere does not reach the chassis' (hence nor its AABB).
+          expect(offset.length() - r - chassisR).toBeGreaterThanOrEqual(GLYPH_CLEARANCE - 1e-6);
+          // On screen: the offset is perpendicular to the line of sight, so the separation is the
+          // full offset, not a foreshortened part of it.
+          cam.getWorldDirection(view);
+          expect(Math.abs(offset.dot(view))).toBeLessThan(1e-6 * offset.length() + 1e-9);
+          checked += 1;
+        }
+      }
+    }
+    expect(checked).toBe(50);
   });
 });

@@ -37,7 +37,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createLighting } from "./lighting";
 import { readTokens } from "./materials";
-import { profileFor } from "./quality";
+import { SHADOW_MAP_IN_USE, SHADOW_MAP_REASON, profileFor } from "./quality";
 
 /** The real fabric's order of magnitude: ~360 across, ~60 tall. */
 const BOUNDS = { min: [-180, -30, -180] as [number, number, number], max: [180, 30, 180] as [number, number, number] };
@@ -100,5 +100,59 @@ describe("shadow bias", () => {
     } finally {
       rig.dispose();
     }
+  });
+});
+
+/* FRAME-COST contract (lighting.ts, "FRAME-COST FIX"). These pin the two properties whose absence
+   was measured as per-frame waste: a light list that differed between post passes (so every lit
+   material recomputed its program every frame), and a shadow map redrawn every frame although
+   none of its inputs had moved. They do NOT prove the frame got faster — that is
+   review/measure-fps.mjs and review/measure-inp.mjs on a real GPU. */
+describe("lighting — frame cost", () => {
+  it("puts every light on every layer, so layer-narrowed post passes see the same light list", () => {
+    const rig = createLighting(readTokens("dark"), profileFor("high"));
+    try {
+      for (const light of [rig.key, rig.fill, rig.rim]) {
+        // Every layer a pass could narrow to, including ones postprocessing allocates later.
+        for (let layer = 0; layer < 32; layer += 1) expect(light.layers.isEnabled(layer)).toBe(true);
+      }
+    } finally {
+      rig.dispose();
+    }
+  });
+
+  it("drives the shadow map explicitly: redrawn on a fit or a profile change, never per frame", () => {
+    const rig = createLighting(readTokens("dark"), profileFor("high"));
+    try {
+      expect(rig.key.shadow.autoUpdate).toBe(false);
+      expect(rig.key.shadow.needsUpdate).toBe(true); // the first frame draws it
+      rig.key.shadow.needsUpdate = false; // what WebGLShadowMap does after drawing
+      rig.fit(BOUNDS);
+      expect(rig.key.shadow.needsUpdate).toBe(true);
+      rig.key.shadow.needsUpdate = false;
+      rig.applyProfile(profileFor("low"));
+      expect(rig.key.shadow.needsUpdate).toBe(true);
+      rig.key.shadow.needsUpdate = false;
+      rig.retint(readTokens("light")); // intensity only: the depth map is unchanged
+      expect(rig.key.shadow.needsUpdate).toBe(false);
+    } finally {
+      rig.dispose();
+    }
+  });
+});
+
+describe("the shadow map decision (render audit #6)", () => {
+  it("is off at every tier, and every tier says so", () => {
+    expect(SHADOW_MAP_IN_USE).toBe(false);
+    for (const t of ["high", "balanced", "low"] as const) expect(profileFor(t).shadows).toBe(false);
+    expect(SHADOW_MAP_REASON).toMatch(/shadow map off at every tier/);
+    // The reason must reach stats(): an off switch nobody is told about is a silent degradation.
+    const scene = readFileSync(resolve(__dirname, "scene.ts"), "utf8");
+    /* Either spelling of "append the reason when the map is off" — the qualityReasons literal was
+       restructured when the E4 below-bar sentence joined it, and a tripwire pinned to one spelling
+       then failed on correct code. What it guards is that the reason is conditioned on the flag. */
+    expect(scene).toMatch(
+      /SHADOW_MAP_IN_USE \? decision\.reasons : \[\.\.\.decision\.reasons, SHADOW_MAP_REASON\]|\.\.\.\(SHADOW_MAP_IN_USE \? \[\] : \[SHADOW_MAP_REASON\]\)/,
+    );
   });
 });

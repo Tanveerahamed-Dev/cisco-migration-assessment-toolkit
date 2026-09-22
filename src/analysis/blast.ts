@@ -32,6 +32,7 @@
  */
 import { deviceById, endpointsByHost, fabric, linkById } from "../core/data";
 import type { Cite, Device, FailureImpact, Link, OpStatus } from "../core/types";
+import { cableCountPhrase, disputeSentence, findPortDisputes, hostCableAccount, type PortDispute } from "./port-claims";
 
 /* ── graph contract ─────────────────────────────────────────────────────────── */
 
@@ -960,6 +961,32 @@ function describeDelta(
   return out;
 }
 
+/**
+ * The alternate projection's answer when the REPORTED projection has no answer to compare it with.
+ *
+ * If the element is not modelled under the reported projection (a device that does not transit, a
+ * cable that does not carry), the reported pane says its blast radius is not observed. Diffing
+ * against a removal of something that is not in the graph used to manufacture a baseline — "2
+ * component(s) remain instead of 1" — so a value the pane had just declared unobserved came back as
+ * a concrete "1 component", which reads as "no partition". There is no base number, so none is quoted.
+ */
+function unbasedDelta(alt: TopologyGraph, there: RemovalOutcome, thereEps: number | null, element: string, verb: string): ProjectionDelta {
+  const stranded = there.newlyStranded.length;
+  const reason =
+    `Under this projection ${there.componentsAfter} component(s) remain and ${stranded} host(s) are stranded` +
+    `${thereEps === null ? "" : `, with ${thereEps} observed endpoint(s) behind the cut`}. ` +
+    `There is no reported count to compare this with: ${element} does not ${verb} under the reported projection, so its blast radius there is not observed rather than zero.`;
+  return {
+    options: alt.options,
+    differs: true,
+    differences: [reason],
+    componentsAfter: there.componentsAfter,
+    newlyStrandedCount: stranded,
+    strandedEndpointTotal: thereEps,
+    note: reason,
+  };
+}
+
 const deltaNote = (differences: readonly string[]): string =>
   differences.length === 0
     ? "Same answer under this projection."
@@ -1084,7 +1111,7 @@ export function failureImpact(hostId: string, graph?: TopologyGraph): HostFailur
     const reason =
       presence === "absent-from-topology"
         ? `${hostId} is not present in this topology projection. That is not a claim that its failure has no impact — it is an absence of evidence about it.`
-        : `${hostId} was never collected (${collected === false ? "collected:false" : "no device record"}), so what rides on it, and what it forwards, was never observed. Its cables are real; its internals are unknown.`;
+        : `${hostId} was never collected (${collected === false ? "collected:false" : "no device record"}), so what rides on it, and what it forwards, was never observed. The cable map records cables to it (how many can be real is stated below); its internals are unknown.`;
     return {
       kind: "host",
       hostId,
@@ -1110,7 +1137,17 @@ export function failureImpact(hostId: string, graph?: TopologyGraph): HostFailur
       caveats: [
         reason,
         ...(severedLinks.length > 0
-          ? [`${severedLinks.length} cable(s) terminate on it (${severedLinks.map((s) => s.linkId).join(", ")}); their far ends lose this adjacency.`]
+          ? [
+              (() => {
+                /* Stated through the same one-port-one-cable detector as the link pane: when the
+                   host's own port is claimed by several cables, the records are not all cables. */
+                const acct = hostCableAccount(hostId, touching, findPortDisputes(g.source.links));
+                const list = severedLinks.map((s) => s.linkId).join(", ");
+                return acct.disputedLinkIds.length === 0
+                  ? `${severedLinks.length} cable(s) terminate on it (${list}); their far ends lose this adjacency.`
+                  : `${cableCountPhrase(acct)}. Records: ${list}; the far end of each one that is real loses this adjacency.`;
+              })(),
+            ]
           : []),
       ],
       assumptions: g.assumptions,
@@ -1141,9 +1178,24 @@ export function failureImpact(hostId: string, graph?: TopologyGraph): HostFailur
     const near = new Set([hostId, ...outcome.newlyStranded]);
     return near.has(l.a) || near.has(l.b);
   });
-  const uncertain = uncertainNear.length > 0 || alternates.some((a) => a.differs && a.options.transit === g.options.transit);
+  /* A cable near the radius whose port the cable map also places on another cable: the radius was
+     computed over an adjacency that may not exist (./port-claims.ts). */
+  const nearHosts = new Set([hostId, ...outcome.newlyStranded]);
+  const disputedNear = findPortDisputes(g.source.links).filter((d) =>
+    d.claims.some((c) => {
+      const l = g.source.links.find((s) => s.id === c.linkId);
+      return l !== undefined && g.edges.some((e) => e.linkId === l.id) && (nearHosts.has(l.a) || nearHosts.has(l.b));
+    }),
+  );
+  const uncertain =
+    uncertainNear.length > 0 || disputedNear.length > 0 || alternates.some((a) => a.differs && a.options.transit === g.options.transit);
 
   const caveats: string[] = [];
+  for (const d of disputedNear) {
+    caveats.push(
+      `${d.host} ${d.port} is placed on ${d.claims.length} cables (${d.claims.map((c) => `${c.linkId}: ${c.confirmation ?? "confirmation not recorded"}`).join("; ")}); at most one is real and this radius was computed with every carrying one of them in place, so it may be wrong where they reach.`,
+    );
+  }
   if (uncertainNear.length > 0) {
     caveats.push(
       `Cable(s) ${uncertainNear.join(", ")} touch the blast radius and have no observed status; if they carry, this radius is smaller than stated.`,
@@ -1205,7 +1257,7 @@ export function failureImpact(hostId: string, graph?: TopologyGraph): HostFailur
   };
 }
 
-function compareEngineImpact(device: Device | null, ourStranded: string[] | null): EngineImpactComparison {
+export function compareEngineImpact(device: Device | null, ourStranded: string[] | null): EngineImpactComparison {
   const record = device?.impact ?? null;
   const note =
     "The engine's failure_impact counts VLAN-scoped endpoints from its own L2 analysis; ours counts endpoint records " +
@@ -1219,7 +1271,13 @@ function compareEngineImpact(device: Device | null, ourStranded: string[] | null
   if (ourStranded === null) {
     return { record, basis: "different-measure", qualitative: "ours-not-determined", note };
   }
+  /* A half-null record is not "no impact": a null count is an unanswered question, never 0. One
+     positive count is a positive observation on its own; but "no impact" needs BOTH counts present
+     and zero, otherwise the engine was silent on the half that could have said otherwise. */
   const engineImpact = (record.stranded ?? 0) > 0 || (record.hard ?? 0) > 0;
+  if (!engineImpact && (record.stranded === null || record.hard === null)) {
+    return { record, basis: "different-measure", qualitative: "engine-silent", note };
+  }
   const oursImpact = ourStranded.length > 0;
   const qualitative = engineImpact
     ? oursImpact
@@ -1246,8 +1304,9 @@ function projectionDelta(g: TopologyGraph, patch: Partial<GraphOptions>, hostId:
     };
   }
   const there = removalOutcome(alt, { node: hostId });
-  const here = removalOutcome(g, { node: hostId });
   const thereEps = strandedEndpoints([hostId], there.newlyStranded);
+  if (!g.adjacency.has(hostId)) return unbasedDelta(alt, there, thereEps.floorTotal, hostId, "transit");
+  const here = removalOutcome(g, { node: hostId });
   const hereEps = strandedEndpoints([hostId], here.newlyStranded);
   const differences = describeDelta(here, there, hereEps.floorTotal, thereEps.floorTotal);
   return {
@@ -1370,6 +1429,12 @@ export function linkFailureImpact(linkId: string, graph?: TopologyGraph): LinkFa
     cite: engineRec?.cite ?? null,
   });
 
+  /* A port the cable map places on more than one cable (./port-claims.ts). At most one of those
+     cables is real and the evidence does not say which, so a radius computed over this one is a
+     radius over a cable that may not exist (2026-09-22 critic, B1). */
+  const disputes = disputesIn(g, linkId);
+  const disputeCaveats = disputes.map((d) => disputeSentence(linkId, d));
+
   if (presence !== "carrying") {
     const why =
       presence === "absent-from-topology"
@@ -1395,8 +1460,8 @@ export function linkFailureImpact(linkId: string, graph?: TopologyGraph): LinkFa
       strandedEndpoints: NOT_DETERMINABLE_ENDPOINTS(why),
       engine: engineBlock(null),
       alternateProjections: [],
-      certainty: presence === "not-carrying-observed-down" ? "observed" : "not-determinable",
-      caveats: [why],
+      certainty: presence === "not-carrying-observed-down" && disputes.length === 0 ? "observed" : "not-determinable",
+      caveats: [why, ...disputeCaveats],
       assumptions: g.assumptions,
       claim: `No blast radius computed for ${linkId}: ${why}`,
     };
@@ -1441,6 +1506,34 @@ export function linkFailureImpact(linkId: string, graph?: TopologyGraph): LinkFa
     );
   }
 
+  if (disputes.length > 0) {
+    const why = `${linkId} shares a port with another cable in the cable map, so whether ${linkId} exists at all is disputed and its failure impact is not determinable`;
+    const conditional =
+      `Were ${linkId} the real cable, this projection would have it ${ourBridge ? "partition the graph" : "not partition the graph"}, stranding ` +
+      `${outcome.newlyStranded.length === 0 ? "no host" : outcome.newlyStranded.join(", ")} — stated as a conditional, not as the result.`;
+    return {
+      kind: "link",
+      linkId,
+      a: edge?.a ?? null,
+      b: edge?.b ?? null,
+      graphOptions: g.options,
+      presence,
+      isBridge: null,
+      componentsBefore: outcome.componentsBefore,
+      componentsAfter: outcome.componentsBefore,
+      newlyStranded: [],
+      alreadyDisconnected: outcome.alreadyDisconnected,
+      strandedNonTransit: [],
+      strandedEndpoints: NOT_DETERMINABLE_ENDPOINTS(`${why}.`),
+      engine: engineBlock(null),
+      alternateProjections: [],
+      certainty: "not-determinable",
+      caveats: [...disputeCaveats, conditional, ...caveats],
+      assumptions: g.assumptions,
+      claim: `No blast radius is given for ${linkId}: ${why}.`,
+    };
+  }
+
   const altUnknown =
     g.uncertainLinkIds.length > 0 ? [projectionDeltaLink(g, { unknownStatus: flip(g.options.unknownStatus) }, linkId)] : [];
   const alternates = [projectionDeltaLink(g, { transit: flipTransit(g.options.transit) }, linkId), ...altUnknown];
@@ -1470,6 +1563,11 @@ export function linkFailureImpact(linkId: string, graph?: TopologyGraph): LinkFa
   };
 }
 
+/** The port disputes `linkId` is party to, over THIS graph's own cable map (not the shipped one). */
+function disputesIn(g: TopologyGraph, linkId: string): PortDispute[] {
+  return findPortDisputes(g.source.links).filter((d) => d.claims.some((c) => c.linkId === linkId));
+}
+
 function projectionDeltaLink(g: TopologyGraph, patch: Partial<GraphOptions>, linkId: string): ProjectionDelta {
   const alt = alternateGraph(g, patch);
   if (!alt.edges.some((e) => e.linkId === linkId)) {
@@ -1484,9 +1582,10 @@ function projectionDeltaLink(g: TopologyGraph, patch: Partial<GraphOptions>, lin
       note: reason,
     };
   }
-  const here = removalOutcome(g, { link: linkId });
   const there = removalOutcome(alt, { link: linkId });
   const thereEps = strandedEndpoints([], there.newlyStranded);
+  if (!g.edges.some((e) => e.linkId === linkId)) return unbasedDelta(alt, there, thereEps.floorTotal, linkId, "carry");
+  const here = removalOutcome(g, { link: linkId });
   const differences = describeDelta(here, there, strandedEndpoints([], here.newlyStranded).floorTotal, thereEps.floorTotal);
   return {
     options: alt.options,

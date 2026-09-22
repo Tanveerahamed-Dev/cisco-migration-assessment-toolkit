@@ -25,8 +25,10 @@
  */
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -60,6 +62,7 @@ import {
   type QueryToken,
   type SortSpec,
 } from "../core/query";
+import { bandKey, bandKeyLabel } from "../core/band-qualification";
 import { useInvestigation } from "../core/store";
 import type { Cite, CrossLayerFinding, Finding } from "../core/types";
 import { SEVERITY_ORDER } from "../core/types";
@@ -78,6 +81,7 @@ import {
   orNotObserved,
 } from "../ui/primitives";
 import { DataGrid, type GridColumn, type GridNode, type GridSort } from "./DataGrid";
+import { deferPastPaint } from "./deferPastPaint";
 import "./PriorityQueue.css";
 
 /* One shared empty set, so "nothing is related" is reference-stable and cannot re-render the grid
@@ -86,6 +90,9 @@ const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 /* ── preferences: furniture, so localStorage and never the URL (design-brief §5.4) ─────────── */
 
+/** One press of "Narrower" / "Wider" in the Display dialog. Coarser than the 8 px Shift+Arrow step
+ *  on a header cell: a pointer press is slower than a key repeat. */
+const COLUMN_WIDTH_STEP_PX = 16;
 const PREF_PREFIX = "atlas-scope.queue.";
 
 const readPref = (key: string): string | null => {
@@ -170,6 +177,24 @@ interface CorpusSpec<T> {
 
 /** Values a grouping key can take in THIS snapshot, so empty buckets are data-driven. */
 const domainValues = (key: string): readonly string[] => (valueDomain(key) ?? []).map((d) => d.value);
+
+/** Grouping keys that name a device or a device attribute: the attribute each one reads. */
+const DEVICE_ATTRIBUTE: Readonly<Record<string, (d: (typeof fabric.devices)[number]) => string | null>> = {
+  host: (d) => d.host,
+  role: (d) => d.role,
+  // The band owner's key ("Excellent-partial" for a qualified band), the same key the groups use.
+  band: bandKey,
+};
+
+/** Was an (empty) bucket of this grouping key actually searched? Always true for keys that do not
+ *  name a device. For a device-keyed bucket, true only when at least one COLLECTED device carries
+ *  the value: a bucket whose every device was never collected is silence, not a zero. */
+export function searchedByCollection(key: string, value: string): boolean {
+  const pick = DEVICE_ATTRIBUTE[key];
+  if (!pick) return true;
+  const want = value.toLowerCase();
+  return fabric.devices.some((d) => d.collected && (pick(d) ?? "").toLowerCase() === want);
+}
 
 /* ── shared cell renderers ──────────────────────────────────────────────────── */
 
@@ -390,13 +415,15 @@ function buildFindingColumns(onDrill: (f: Finding) => void): GridColumn<Finding>
       header: "Evidence",
       width: "1.5rem",
       interactive: true,
+      soleControl: true,
       align: "end",
-      render: (f) => (
+      cellLabel: (f) => `Open the source record for ${f.id} at ${f.cite}`,
+      render: (f, cell) => (
         <IconButton
           size="sm"
           label={`Open the source record for ${f.id} at ${f.cite}`}
           icon={<IconCite />}
-          tabIndex={-1}
+          tabIndex={cell.tabIndex}
           onClick={(e) => {
             e.stopPropagation();
             onDrill(f);
@@ -459,13 +486,15 @@ function buildCrossColumns(onDrill: (c: CrossLayerFinding) => void): GridColumn<
       header: "Evidence",
       width: "1.5rem",
       interactive: true,
+      soleControl: true,
       align: "end",
-      render: (c) => (
+      cellLabel: (c) => `Open the source record for ${c.id} at ${c.cite}`,
+      render: (c, cell) => (
         <IconButton
           size="sm"
           label={`Open the source record for ${c.id} at ${c.cite}`}
           icon={<IconCite />}
-          tabIndex={-1}
+          tabIndex={cell.tabIndex}
           onClick={(e) => {
             e.stopPropagation();
             onDrill(c);
@@ -605,9 +634,19 @@ export function PriorityQueue({
   const toggleSeverity = useInvestigation((s) => s.toggleSeverity);
   const toggleRole = useInvestigation((s) => s.toggleRole);
   const setOnlyUncollected = useInvestigation((s) => s.setOnlyUncollected);
-  const findingId = useInvestigation((s) => s.findingId);
-  const deviceId = useInvestigation((s) => s.deviceId);
-  const linkId = useInvestigation((s) => s.linkId);
+  /* The shared selection is read DEFERRED (acceptance E3, journeys 1 and 4). A selection made on
+     another surface — a trace landing, a device picked in 3-D, a finding chosen in the Inspector —
+     is one urgent store write that re-renders every subscriber in one task. The queue's share of
+     that work (marking the related rows, then measuring and scrolling to the revealed one) is the
+     largest single piece of it, so the queue takes it in a deferred render: React commits it in a
+     task of its own after the other surfaces, and time-slices its render phase. The queue's OWN
+     clicks do not wait on this — they are marked from local state (see pendingFinding). */
+  const findingId = useDeferredValue(useInvestigation((s) => s.findingId));
+  const urgentDeviceId = useInvestigation((s) => s.deviceId);
+  const urgentLinkId = useInvestigation((s) => s.linkId);
+  const deviceId = useDeferredValue(urgentDeviceId);
+  const linkId = useDeferredValue(urgentLinkId);
+  const hopIndex = useDeferredValue(useInvestigation((s) => s.hopIndex));
   const selectFinding = useInvestigation((s) => s.selectFinding);
   const setEvidenceTab = useInvestigation((s) => s.setEvidenceTab);
 
@@ -649,6 +688,26 @@ export function PriorityQueue({
   const [ordering, setOrdering] = useState<Ordering>(RANKED);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
 
+  /* The rail's content-box width, published as `--pq-inline` for the category track. Replaces a
+     `container-type: inline-size` query container whose every layout re-resolved all 146 row grids
+     — see the note on `.pq` in PriorityQueue.css for the measurement. */
+  const rootRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (el === null || typeof ResizeObserver === "undefined") return;
+    let last = -1;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w === last) continue;
+        last = w;
+        el.style.setProperty("--pq-inline", `${w}px`);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const queryInputRef = useRef<HTMLInputElement | null>(null);
   /**
    * The painted-token layer under the real characters. It is a SEPARATE box from the input, so it
@@ -667,31 +726,80 @@ export function PriorityQueue({
 
   /* ── the drill and selection handlers ── */
 
+  /* The caller's callbacks are read through a ref, NOT listed as dependencies.
+     RESPONSIVENESS FIX, 2026-09-21 (acceptance E2/E3, journey 1): the app passes
+     `onOpenEvidence={(cite) => onOpenCite(cite)}`, a fresh function on every render of the
+     surface, and every selection re-renders that surface. Listed as a dependency it rebuilt
+     `openEvidence`, which rebuilt the column set, which re-rendered all 146 rows of the grid
+     inside the click — the long `DIV#root.onclick` task. The queue must not depend on every caller
+     remembering to memoise; the ref makes the identity of the handlers the queue's own business. */
+  const callerRef = useRef({ onOpenEvidence, onSelectFinding });
+  useLayoutEffect(() => {
+    callerRef.current = { onOpenEvidence, onSelectFinding };
+  });
+
   const openEvidence = useCallback(
     (cite: Cite, id: string): void => {
-      if (onOpenEvidence) {
-        onOpenEvidence(cite, id);
+      const open = callerRef.current.onOpenEvidence;
+      if (open) {
+        open(cite, id);
         return;
       }
       if (findingById.has(id)) selectFinding(id);
       setEvidenceTab("raw");
     },
-    [onOpenEvidence, selectFinding, setEvidenceTab],
+    [selectFinding, setEvidenceTab],
   );
+
+  /* ══ the selection commit is SPLIT — acceptance E3, journey 1 ═══════════════════════════
+   *
+   * THE DEFECT (critic, release build, headed): selecting a finding ran a 57-195 ms task INSIDE
+   * the click handler on every repetition — LoAF `DIV#root.onclick`, max 170 ms. `selectFinding`
+   * is a store write, a store write is an urgent `useSyncExternalStore` update, and it re-aimed
+   * the queue, the device pane, the evidence rail, the Inspector, the status bar and the fabric in
+   * that one task. PathTrace.run had already been split for exactly this reason; this handler had
+   * not.
+   *
+   * WHAT THIS DOES. The row the reader clicked is marked from LOCAL state, so the click commits
+   * this panel alone and the acknowledgement frame already shows the new active row. The shared
+   * write that re-aims every other surface goes to `deferPastPaint` — a task of its own after that
+   * frame is painted. `selectSeq` makes a later click, or an Escape, supersede a write that has
+   * not landed yet, so a quick second click can never be overwritten by the first. */
+  const [pendingFinding, setPendingFinding] = useState<{ id: string | null } | null>(null);
+  const selectSeq = useRef(0);
+  /** What THIS panel marks: the locally-committed selection until the store catches up. */
+  const shownFindingId = pendingFinding === null ? findingId : pendingFinding.id;
+  useEffect(() => {
+    if (pendingFinding !== null && findingId === pendingFinding.id) setPendingFinding(null);
+  }, [pendingFinding, findingId]);
 
   const selectRow = useCallback(
     (id: string): void => {
-      if (onSelectFinding) {
-        onSelectFinding(id);
+      const select = callerRef.current.onSelectFinding;
+      if (select) {
+        select(id);
         return;
       }
-      /* Re-aiming, not resetting: the device, the flow and the camera are untouched, and Rail B
-         swaps to the tab that can actually show this record (design-brief §5.1, interaction 1). */
-      selectFinding(id);
-      setEvidenceTab("findings");
+      const seq = ++selectSeq.current;
+      setPendingFinding({ id });
+      deferPastPaint(() => {
+        if (selectSeq.current !== seq) return;
+        /* Re-aiming, not resetting: the device, the flow and the camera are untouched, and Rail B
+           swaps to the tab that can actually show this record (design-brief §5.1, interaction 1).
+           Two setters, one task: React batches them into one commit. */
+        selectFinding(id);
+        setEvidenceTab("findings");
+      });
     },
-    [onSelectFinding, selectFinding, setEvidenceTab],
+    [selectFinding, setEvidenceTab],
   );
+
+  /** Clear the selection NOW, superseding any selection write that has not landed yet. */
+  const clearSelection = useCallback((): void => {
+    selectSeq.current += 1;
+    setPendingFinding(null);
+    selectFinding(null);
+  }, [selectFinding]);
 
   /* ── corpora ── */
 
@@ -808,9 +916,18 @@ export function PriorityQueue({
     return out;
   }, [severities, roles, onlyUncollected]);
 
+  /* The FILTER reads a deferred copy of the text; the field's echo (and its token ink) reads
+     `draft` itself. RESPONSIVENESS FIX, 2026-09-21 (E2/E3, J3b): a query typed in the header
+     reaches this surface as a store write, and re-filtering and re-rendering the 146-row grid in
+     that same urgent render put 50-211 ms of React work between one keystroke and the next. As a
+     deferred value the recompute is a transition render: React time-slices it, and abandons it
+     when the next keystroke arrives, so the grid catches up once typing pauses instead of on every
+     character (design brief 8.2 journey 3: "debounced and chunked"). `busy` below stays true
+     until the grid answers the text on screen. */
+  const filterText = useDeferredValue(draft);
   const effective = useMemo(
-    () => [...scopeClauses, draft.trim()].filter((s) => s.length > 0).join(" "),
-    [scopeClauses, draft],
+    () => [...scopeClauses, filterText.trim()].filter((s) => s.length > 0).join(" "),
+    [scopeClauses, filterText],
   );
 
   const parsedDraft = useMemo(() => parseQuery(draft), [draft]);
@@ -820,15 +937,32 @@ export function PriorityQueue({
 
   const collapseKey = (g: string): string => `${corpus}:${groupKey}:${g}`;
 
+  /* Every device the query's device clauses resolve to was never collected: the result is silence,
+     not observation. An empty "Critical 0 / High 0 …" bucket list would then print zeros marked
+     observed (data-observed="yes") for boxes nobody assessed, while the Device pane refuses to tally
+     the very same scope ("finding counts: not observed"). So in that scope no empty bucket is drawn;
+     the evidence-scope note beside the grid says why the list is empty. Derived from the clause
+     scopes the query engine already computes, not from the one `is:uncollected` chip, so
+     `host:AP-floor1` and any other all-uncollected scope take the same rule (critic B1). */
+  const evidenceBlind = result.clauses.some((c) => c.scope.kind === "device-scope" && c.scope.evidenceBlind);
+
   const groups = useMemo(() => {
     const key = spec.groupKeys.some((g) => g.value === groupKey) ? groupKey : "severity";
     const built = spec.group(result.items, key);
+    if (evidenceBlind) return built.filter((g) => g.items.length > 0);
     if (!showEmptyGroups || key === "none") return built;
     const vocabulary = spec.groupKeys.find((g) => g.value === key)?.vocabulary() ?? [];
     const seen = new Set(built.map((g) => g.key));
     const missing = vocabulary
       .filter((v) => !seen.has(v))
-      .map<Group<Finding | CrossLayerFinding>>((v) => ({ key: v, label: v, observed: true, items: [] }));
+      /* An empty bucket is a claim, "searched, and nothing matched". For a device-keyed grouping
+         (host, role, band) that holds only when a COLLECTED device carries the value; a bucket
+         whose every device was never collected was never searched. Such buckets are left out
+         rather than printed as an observed zero — the evidence-scope note beside the grid already
+         names how many devices were never collected (critic B1: "AP-FLOOR1 0" read exactly like
+         an assessed, clean box while the Device pane said "Finding count not observed"). */
+      .filter((v) => searchedByCollection(key, v))
+      .map<Group<Finding | CrossLayerFinding>>((v) => ({ key: v, label: key === "band" ? bandKeyLabel(v) : v, observed: true, items: [] }));
     if (missing.length === 0) return built;
     /* A fixed vocabulary keeps its own order; anything else appends the empty buckets after the
        populated ones, sorted, so the list order never depends on which values happened to survive
@@ -845,7 +979,7 @@ export function PriorityQueue({
     const populated = built.filter((g) => g.key !== UNOBSERVED_GROUP);
     const extra = [...missing].sort((a, b) => cmpStr(a.key, b.key));
     return unobserved ? [...populated, ...extra, unobserved] : [...populated, ...extra];
-  }, [spec, groupKey, result.items, showEmptyGroups]);
+  }, [spec, groupKey, result.items, showEmptyGroups, evidenceBlind]);
 
   const nodes = useMemo<GridNode<Finding | CrossLayerFinding>[]>(() => {
     const out: GridNode<Finding | CrossLayerFinding>[] = [];
@@ -867,7 +1001,12 @@ export function PriorityQueue({
         });
         if (isCollapsed) continue;
       }
-      for (const item of items) out.push({ kind: "row", id: spec.idOf(item), item });
+      /* A multi-valued group key (host, layer) lists one item under every group it belongs to, so
+         the row's React identity is qualified by its group; `id` stays the item's own. */
+      for (const item of items) {
+        const id = spec.idOf(item);
+        out.push(single ? { kind: "row", id, item } : { kind: "row", id, item, key: JSON.stringify([g.key, id]) });
+      }
     }
     return out;
     // `collapseKey` closes over corpus + groupKey, both already listed.
@@ -909,43 +1048,66 @@ export function PriorityQueue({
     if (density === "compact" || !title) {
       return { columns: visibleColumns, template: visibleColumns.map(track).join(" ") };
     }
-    const n = metas.length;
-    const cols: string[] = [...lead.map(track), "minmax(0, 1fr)", ...metas.slice(1).map(track)];
-    if (drill) cols.push(track(drill));
-    const lastCol = cols.length;
     /*
-     * THE HEADER IS ONE ROW, ALWAYS.
+     * THE FIRST METADATA COLUMN RIDES ON THE TITLE LINE.
+     *
+     * Every row used to push its category onto a second line as an outlined chip, so a 32px row
+     * became 49px to carry one repeated word and the rail showed half the findings it could. The
+     * brief's row anatomy puts the category in its own track on line 1; that is where it goes, as
+     * a right-aligned muted tag, and the row is one line again. Only columns the reader ADDS
+     * through Display (wave, priority, rank ...) wrap onto a second line, under the title.
+     */
+    const [inline, ...wrapped] = metas;
+    /*
+     * THE HEADER IS ONE ROW, ALWAYS — AND EVERY GRID COLUMN HAS A REAL HEADER IN IT.
      *
      * A two-line data row previously produced a two-line header, and the second header line then
-     * sat immediately above the FIRST row's first line rather than above the cells it named — a
-     * column header that labels the wrong line is worse than none. A single header row can only
-     * honestly label the line-1 tracks, so that is what it labels; the line-2 metadata is demoted
-     * to self-describing inline chips in the row, and every one of those columns stays sortable
-     * through the Order control. `headerPlace` parks the demoted header cells on row 1, and
-     * `headerHidden` is the fact that they are CLIPPED there — one flag, set at the one place that
-     * demotes them, which both the stylesheet (`[data-headhidden]`) and DataGrid read.
+     * sat immediately above the FIRST row's first line rather than above the cells it named. The
+     * next version kept one header row but left the line-2 columns in the grid's column model with
+     * their header cells clipped to 1x1 px (`headerHidden`). That is a column a keyboard cannot
+     * keep: ArrowRight along the header skipped it, ArrowUp from one of its data cells landed on a
+     * DIFFERENT column (APG: Up/Down keep the column), its resize separator was exposed at 8x1 px
+     * and could not be reached by pointer or key, and aria-colcount counted a column no sighted
+     * reader could find (A11Y critic, 2026-09-21, D2/D5).
      *
-     * It used to be two independent statements of the same fact: this map, and a CSS selector
-     * listing the four columns that are NOT demoted by name. They disagreed. The clipped cells
-     * kept rendering a sort button, which measured 1x24 px at y=-11 — invisible, unclickable, and
-     * still announced through `aria-sort` and still operable with Enter. A demoted column is now
-     * demoted on every surface at once.
+     * So the columns the reader adds through Display are no longer grid columns at all in this
+     * density: they are FOLDED into the title cell as its second line, each chip carrying its own
+     * field name, and aria-colcount counts only the columns that have a visible header. They stay
+     * sortable through the Order control, which names every field in words; switching to compact
+     * density restores them as full columns with their own headers and resizers.
      */
-    const headRow1 = (from: number, to: number): string => `1 / ${from} / 2 / ${to}`;
-    const placed = visibleColumns.map((c) => {
-      if (c.id === "sev") return { ...c, place: "1 / 1 / 2 / 2" };
-      if (c.id === "id") return { ...c, place: "1 / 2 / 2 / 3" };
-      if (c === title) return { ...c, place: `1 / 3 / 2 / span ${Math.max(1, n)}` };
-      if (c === drill)
-        return {
-          ...c,
-          place: `1 / ${lastCol} / ${n > 0 ? 3 : 2} / ${lastCol + 1}`,
-          headerPlace: headRow1(lastCol, lastCol + 1),
-        };
-      const i = metas.indexOf(c);
-      return { ...c, place: `2 / ${3 + i} / 3 / ${4 + i}`, headerPlace: headRow1(3, 4), headerHidden: true };
-    });
-    return { columns: placed, template: cols.join(" ") };
+    const folded = wrapped;
+    const titleCol: GridColumn<Finding | CrossLayerFinding> =
+      folded.length === 0
+        ? title
+        : {
+            ...title,
+            render: (item, cell) => (
+              <span className="pq-fold">
+                {title.render(item, cell)}
+                <span className="pq-fold__line2">
+                  {folded.map((c) => {
+                    const out = c.render(item, { tabIndex: -1 });
+                    const absent = out === null || out === undefined || out === false || out === "";
+                    return (
+                      <span key={c.id} className="pq-fold__item" data-col={c.id}>
+                        <span className="pq-fold__key">{c.headerLabel ?? c.header}</span>
+                        {absent ? (
+                          <NotObserved compact {...(c.unobservedWhat ? { what: c.unobservedWhat } : {})} />
+                        ) : (
+                          out
+                        )}
+                      </span>
+                    );
+                  })}
+                </span>
+              </span>
+            ),
+          };
+    const gridColumns = [...lead, titleCol, ...(inline ? [inline] : []), ...(drill ? [drill] : [])];
+    const placed = gridColumns.map((c, i) => ({ ...c, place: `1 / ${i + 1} / 2 / ${i + 2}` }));
+    const template = gridColumns.map((c) => (c === titleCol ? "minmax(0, 1fr)" : track(c))).join(" ");
+    return { columns: placed, template };
   }, [visibleColumns, density]);
 
   /* ── sort wiring ── */
@@ -1010,11 +1172,33 @@ export function PriorityQueue({
      highlighted row is whichever record bridges to the selected finding — not a second, parallel
      selection state that could disagree with the rest of the application. */
   const activeRowId = useMemo((): string | null => {
-    if (corpus === "findings") return findingId;
-    if (findingId === null) return null;
-    for (const [rowId, target] of crossLayerBridge) if (target === findingId) return rowId;
+    if (corpus === "findings") return shownFindingId;
+    if (shownFindingId === null) return null;
+    for (const [rowId, target] of crossLayerBridge) if (target === shownFindingId) return rowId;
     return null;
-  }, [corpus, findingId]);
+  }, [corpus, shownFindingId]);
+
+  /* A finding selected from ANOTHER surface (the palette, the Evidence rail, the URL) while the
+     cross-layer table is showing must still land on a row. Only the findings with a cross-layer
+     record that joins to them uniquely have a row there, so for the rest the selected row was not
+     in the DOM at all — neither marked nor revealed — while every other surface said it was
+     selected (2026-09-22 critic, A4). When the new selection has no cross-layer row, the queue
+     re-aims to the punchlist, which holds every finding. It fires on a CHANGE of selection only,
+     so a reader who deliberately switches to the cross-layer table afterwards is not bounced back. */
+  // null, not the mounted selection: a deep link (?f=F001) onto a persisted cross-layer choice is
+  // a selection arriving from another surface too.
+  const lastAimedFinding = useRef<string | null>(null);
+  const corpusRef = useRef(corpus);
+  corpusRef.current = corpus;
+  const setCorpusRef = useRef(setCorpus);
+  setCorpusRef.current = setCorpus;
+  useEffect(() => {
+    if (findingId === lastAimedFinding.current) return;
+    lastAimedFinding.current = findingId;
+    if (findingId === null || corpusRef.current !== "cross-layer") return;
+    for (const target of crossLayerBridge.values()) if (target === findingId) return;
+    setCorpusRef.current("findings");
+  }, [findingId]);
 
   /* ── re-aiming on a device or a cable ────────────────────────────────────────
    *
@@ -1032,25 +1216,75 @@ export function PriorityQueue({
    * A link resolves to BOTH its endpoints, because a cable's findings are the findings of the two
    * boxes it joins; neither end is the cable.
    */
-  const related = useMemo((): { ids: ReadonlySet<string>; hosts: string[] } => {
+  /* The count is taken over the WHOLE shown corpus — every group, folded or not — because the
+     sentence it feeds is "N of <shown> shown findings name <host>", and <shown> counts folded rows
+     too. Counting only the rendered rows made that sentence false whenever a group was collapsed
+     (a persisted, ordinary state): with Medium folded, core1 read "21 of 146" while the Device pane
+     on the same screen said 32. The rows that are named but folded away are reported per group so
+     the reader can find every one of them. */
+  const relatedFor = useCallback((devId: string | null, lnkId: string | null): {
+    ids: ReadonlySet<string>;
+    hosts: string[];
+    folded: { label: string; count: number }[];
+  } => {
     const hosts: string[] = [];
-    if (linkId !== null) {
-      const l = linkById.get(linkId);
+    if (lnkId !== null) {
+      const l = linkById.get(lnkId);
       if (l) hosts.push(l.a, l.b);
-    } else if (deviceId !== null) {
-      const d = deviceById.get(deviceId);
-      hosts.push(d ? d.host : deviceId);
+    } else if (devId !== null) {
+      const d = deviceById.get(devId);
+      hosts.push(d ? d.host : devId);
     }
-    if (hosts.length === 0) return { ids: EMPTY_IDS, hosts };
+    if (hosts.length === 0) return { ids: EMPTY_IDS, hosts, folded: [] };
     const want = new Set(hosts);
     const ids = new Set<string>();
-    for (const n of nodes) {
-      if (n.kind !== "row") continue;
-      const named = "devices" in n.item ? n.item.devices : n.item.hosts;
-      if (named.some((h) => want.has(h))) ids.add(n.id);
+    const folded: { label: string; count: number }[] = [];
+    const single = groups.length === 1 && groups[0]?.key === "all";
+    for (const g of groups) {
+      const isCollapsed = !single && collapsedRaw.has(collapseKey(g.key));
+      let inGroup = 0;
+      for (const item of g.items) {
+        const named = "devices" in item ? item.devices : item.hosts;
+        if (!named.some((h) => want.has(h))) continue;
+        ids.add(spec.idOf(item));
+        inGroup += 1;
+      }
+      if (isCollapsed && inGroup > 0) folded.push({ label: g.observed ? g.label : `${g.label} · ${groupKey}`, count: inGroup });
     }
-    return { ids, hosts };
-  }, [deviceId, linkId, nodes]);
+    return { ids, hosts, folded };
+    // `collapseKey` closes over corpus + groupKey, both already listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, collapsedRaw, spec, corpus, groupKey]);
+  /* The ROW MARKS follow the deferred selection (E3, above). The STATEMENT does not: it is one
+     O(findings) count, and reading it deferred left "N of 146 shown findings name core1" on screen
+     for 7-8 s after core2 was clicked on a loaded host (2026-09-21 critic, A4) — a sentence about
+     the wrong device. It follows the urgent selection, and says so while the marks catch up. */
+  const related = useMemo(() => relatedFor(deviceId, linkId), [relatedFor, deviceId, linkId]);
+  const relatedNow = useMemo(() => relatedFor(urgentDeviceId, urgentLinkId), [relatedFor, urgentDeviceId, urgentLinkId]);
+  const marksPending = urgentDeviceId !== deviceId || urgentLinkId !== linkId;
+  const relatedFolded = relatedNow.folded.reduce((a, f) => a + f.count, 0);
+
+  /* A selection must never land inside a collapsed group. With Critical and High collapsed from a
+     previous session, `?f=F002` produced a queue with no marked row at all — no aria-current, no
+     F002 row — while the URL, the evidence pane and the live region all said F002 was selected.
+     The group that holds the selected row is expanded when the SELECTION changes (not on every
+     collapse), so a reader can still fold that group deliberately afterwards. The collapsed set is
+     read through a ref for exactly that reason: it is not a trigger. */
+  const collapsedRef = useRef(collapsedRaw);
+  collapsedRef.current = collapsedRaw;
+  useEffect(() => {
+    if (activeRowId === null) return;
+    const holder = groups.find((g) => g.items.some((it) => spec.idOf(it) === activeRowId));
+    if (!holder) return;
+    const k = collapseKey(holder.key);
+    if (!collapsedRef.current.has(k)) return;
+    const next = new Set(collapsedRef.current);
+    next.delete(k);
+    setCollapsedRaw(next);
+    // Keyed on the selection and the grouping, deliberately not on `groups` identity or the
+    // collapsed set, so filtering or folding never re-opens a group behind the reader's back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRowId, corpus, groupKey]);
 
   /* What the grid should put in front of the reader. A selected finding wins: it is the stronger
      statement of what is being read. With no finding, the first row naming the selected box is
@@ -1080,6 +1314,27 @@ export function PriorityQueue({
       return next;
     });
   }, []);
+
+  /* The rows the grid actually renders. Ctrl+A is described as "every shown row", so it selects
+     exactly these — a row folded inside a collapsed group is not shown. It previously batched
+     `result.items` (146) while 42 rows were on screen, so what was announced and what was
+     selected disagreed. */
+  const shownIds = useMemo(() => nodes.filter((n) => n.kind === "row").map((n) => n.id), [nodes]);
+  /* A batch can still hold rows that are now folded (batched, then collapsed). Say how many, so
+     the count is never a number the reader cannot find on screen. */
+  const batchFolded = useMemo(() => {
+    if (batch.size === 0) return 0;
+    const onScreen = new Set(shownIds);
+    let n = 0;
+    for (const id of batch) if (!onScreen.has(id)) n += 1;
+    return n;
+  }, [batch, shownIds]);
+  const batchLabel =
+    batch.size === 0
+      ? ""
+      : batchFolded > 0
+        ? `${batch.size} selected, ${batchFolded} in collapsed groups`
+        : `${batch.size} selected`;
 
   const copyBatch = useCallback((): void => {
     const rows = result.items.filter((r) => batch.has(spec.idOf(r)));
@@ -1145,7 +1400,7 @@ export function PriorityQueue({
   ];
 
   return (
-    <section className={["pq", className].filter(Boolean).join(" ")} aria-label="Priority queue">
+    <section className={["pq", className].filter(Boolean).join(" ")} aria-label="Priority queue" ref={rootRef}>
       {/* ── corpus ── */}
       <div className="pq-corpus">
         {/* APG radio group: ONE tab stop, arrows move and select. Two buttons is not many, but a
@@ -1403,8 +1658,9 @@ export function PriorityQueue({
               describedBy={`${accountingId}-density`}
             />
             <p className="pq-display__hint" id={`${accountingId}-density`}>
-              Two lines fit the category and the devices beside the title at this rail width. One
-              line is denser and hides them unless you turn them back on below.
+              On, the category sits at the end of the title line and any further column you turn on
+              below wraps onto a second line. Off, every row is one line and the metadata columns
+              are hidden unless you turn them back on below.
             </p>
             <fieldset className="pq-display__cols">
               <legend>Columns</legend>
@@ -1436,6 +1692,58 @@ export function PriorityQueue({
                   );
                 })}
             </fieldset>
+            {/* The drag handle on a header rule has a pointer-free twin on the header cell
+                (Shift+Arrow), but that twin is invisible and needs a keyboard. MEASURED (A11Y
+                critic, D1 / WCAG 2.5.7): the separator could only be dragged. These buttons are
+                the single-pointer, discoverable alternative, bound by the same column bounds. */}
+            {spec.columns.some((c) => c.resizable && !hidden.has(c.id)) ? (
+              <fieldset className="pq-display__cols">
+                <legend>Column widths</legend>
+                {spec.columns
+                  .filter((c) => c.resizable && !hidden.has(c.id))
+                  .map((c) => {
+                    const name = c.headerLabel ?? c.header;
+                    const px = columnWidths[c.id];
+                    const stepBy = (delta: number): void => {
+                      const measured = rootRef.current
+                        ?.querySelector<HTMLElement>(`[role="columnheader"][data-col="${c.id}"]`)
+                        ?.getBoundingClientRect().width;
+                      const base = px ?? Math.round(measured ?? c.minPx ?? 32);
+                      const next = Math.round(Math.min(Math.max(base + delta, c.minPx ?? 32), c.maxPx ?? 640));
+                      setColumnWidths((prev) => ({ ...prev, [c.id]: next }));
+                    };
+                    return (
+                      <div key={c.id} className="pq-display__col pq-display__width" role="group" aria-label={`${name} column width`}>
+                        <span>{name}</span>
+                        <span className="pq-display__domain" aria-live="polite">
+                          {px === undefined ? "auto" : `${px} px`}
+                        </span>
+                        <Button size="sm" aria-label={`Narrow the ${name} column`} onClick={() => stepBy(-COLUMN_WIDTH_STEP_PX)}>
+                          Narrower
+                        </Button>
+                        <Button size="sm" aria-label={`Widen the ${name} column`} onClick={() => stepBy(COLUMN_WIDTH_STEP_PX)}>
+                          Wider
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Reset the ${name} column to its automatic width`}
+                          disabled={px === undefined}
+                          onClick={() =>
+                            setColumnWidths((prev) => {
+                              const next = { ...prev };
+                              delete next[c.id];
+                              return next;
+                            })
+                          }
+                        >
+                          Auto
+                        </Button>
+                      </div>
+                    );
+                  })}
+              </fieldset>
+            ) : null}
           </div>
         </Popover>
       </div>
@@ -1444,7 +1752,14 @@ export function PriorityQueue({
       <div className="pq-account" id={accountingId}>
         <p className="pq-account__line">
           <strong className="pq-account__shown">{shown}</strong>
-          <span>{` of ${total} ${spec.noun} shown`}</span>
+          {/* The noun is carried by the corpus switch directly above; it stays in the accessible
+              text so the description read with the grid still says what was counted. Dropping it
+              visually is what lets the shown count and the coverage clause share ONE line. */}
+          <span>
+            {` of ${total} `}
+            <span className="visually-hidden">{`${spec.noun} `}</span>
+            {"shown"}
+          </span>
           {result.excludedTotal > 0 ? <span className="pq-account__ex">{`${result.excludedTotal} excluded`}</span> : null}
           {result.undeterminedTotal > 0 ? (
             <span className="pq-account__un">{`${result.undeterminedTotal} undetermined`}</span>
@@ -1464,11 +1779,17 @@ export function PriorityQueue({
         {/* The marking has to be stated as well as drawn: a trailing-edge bar is not readable from
             a screen reader, and a count of zero here is an ABSENCE of published findings within
             the current scope, never a statement that the box is healthy (B1). */}
-        {related.hosts.length > 0 ? (
-          <p className="pq-account__note">
-            {related.ids.size === 0
-              ? `No shown ${spec.noun} name ${related.hosts.join(" or ")}. That is the absence of a published record within the current scope, not an assessment that ${related.hosts.length > 1 ? "those hosts are" : "that host is"} healthy.`
-              : `${related.ids.size} of ${shown} shown ${spec.noun} name ${related.hosts.join(" or ")} — marked on the row's trailing edge.`}
+        {relatedNow.hosts.length > 0 ? (
+          <p className="pq-account__note" data-marks-pending={marksPending || undefined}>
+            {relatedNow.ids.size === 0
+              ? `No shown ${spec.noun} name ${relatedNow.hosts.join(" or ")}. That is the absence of a published record within the current scope, not an assessment that ${relatedNow.hosts.length > 1 ? "those hosts are" : "that host is"} healthy.`
+              : marksPending
+                ? `${relatedNow.ids.size} of ${shown} shown ${spec.noun} name ${relatedNow.hosts.join(" or ")} — marking the rows.`
+              : relatedFolded === 0
+                ? `${relatedNow.ids.size} of ${shown} shown ${spec.noun} name ${relatedNow.hosts.join(" or ")} — marked on the row's trailing edge.`
+                : `${relatedNow.ids.size} of ${shown} shown ${spec.noun} name ${relatedNow.hosts.join(" or ")} — ${relatedNow.ids.size - relatedFolded} marked on the row's trailing edge, ${relatedNow.folded
+                    .map((f) => `${f.count} in the collapsed ${f.label} group`)
+                    .join(", ")}.`}
           </p>
         ) : null}
 
@@ -1503,6 +1824,7 @@ export function PriorityQueue({
                 <span className="pq-clause__nums">
                   <span>{`${result.textOutcome.matched} matched`}</span>
                   <span>{`${result.textOutcome.excluded} excluded`}</span>
+                  {result.textOutcome.undetermined > 0 ? <span>{`${result.textOutcome.undetermined} undecided`}</span> : null}
                 </span>
               </li>
             ) : null}
@@ -1561,13 +1883,14 @@ export function PriorityQueue({
       <p className="visually-hidden" id={`${accountingId}-selkeys`}>
         Multi-select: shift plus space, or x, adds one row to the batch. Shift plus up or down
         arrow, and shift plus page up or page down, extend the selection from the anchor row.
-        Control plus A selects every shown row. Escape clears the batch.
+        Control plus A selects every shown row; rows inside collapsed groups are not selected.
+        Escape clears the batch, then the selection; it does not leave the grid.
       </p>
 
       {/* ── the batch ── */}
       {batch.size > 0 ? (
         <div className="pq-batch">
-          <span className="pq-batch__count">{`${batch.size} selected`}</span>
+          <span className="pq-batch__count">{batchLabel}</span>
           <Button size="sm" onClick={copyBatch}>
             Copy with citations
           </Button>
@@ -1586,8 +1909,52 @@ export function PriorityQueue({
         layout={density === "comfortable" ? "stacked" : "line"}
         density={density}
         activeId={activeRowId}
+        /* The rows on screen answer `query`; the reader has typed `draft`. For the length of the
+           debounce those are different questions, and the grid is showing the older one — which is
+           exactly what `aria-busy` is for. Measured by review/audit-e5-sweep.mjs at 233-396 ms per
+           recompute, which was silent to assistive technology because nothing ever passed this
+           prop. It is deliberately NOT held true across the recompute commit itself: that commit is
+           synchronous, so there is no moment in it for a reader to observe. */
+        busy={draft !== query || filterText !== draft}
         revealId={revealId}
+        /* What re-runs the reveal. With a finding selected, ONLY the finding: a device, link or hop
+           picked on another surface does not change what this queue is showing, and A4 says the
+           reader's scroll position survives a device change. MEASURED before this (1920x1080,
+           f=F106): the reader scrolled the queue to 1404/1904/2604/4704 px, then one device pick
+           from the canvas, the Fabric list, the palette, a chain chip or a hop threw every one of
+           them back to 3404 — the row they had deliberately scrolled away from. The hold (below, in
+           DataGrid) still keeps a row the reader has NOT scrolled away in view when a trace reflows
+           the rail. With no finding selected, `revealId` IS derived from the device/link, so the
+           whole selection keys the reveal and the first row naming it is brought into view. */
+        revealKey={
+          activeRowId !== null
+            ? `f|${activeRowId}`
+            : `d|${deviceId ?? ""}|${linkId ?? ""}|${hopIndex ?? ""}`
+        }
         relatedIds={related.ids}
+        /* Worded from the SAME deferred selection as the marks, so a row's description can never
+           name a different host from the mark drawn on it. */
+        {...(related.hosts.length > 0
+          ? {
+              relatedDescription:
+                linkId !== null
+                  ? `names an end of the selected link, ${related.hosts.join(" or ")}`
+                  : `names the selected device ${related.hosts.join(" or ")}`,
+            }
+          : {})}
+        /* aria-sort can only state a single-column order; the default ranking is composite, so
+           the order the reader is looking at is also stated in words (A11Y critic, D2). The words
+           are the Order control's own option label, so the two cannot disagree. */
+        orderDescription={`Order: ${
+          orderOptions.find(
+            (o) =>
+              o.value ===
+              (ordering.kind === "ranked" ? "ranked" : `${ordering.spec.field}:${ordering.spec.direction}`),
+          )?.label ?? spec.rankedLabel
+        }. ${(() => {
+          const g = groupOptions.find((o) => o.value === groupKey) ?? groupOptions.find((o) => o.value === "severity");
+          return !g || g.value === "none" ? "Not grouped." : `Grouped by ${g.label}, ordered within each group.`;
+        })()}`}
         sort={gridSort}
         onSort={onSort}
         onActivate={(item, id) => {
@@ -1604,7 +1971,7 @@ export function PriorityQueue({
         batchIds={batch}
         onToggleBatch={toggleBatch}
         onSelectRange={(_items, ids) => setBatch(new Set(ids))}
-        onSelectAll={() => setBatch(new Set(result.items.map((r) => spec.idOf(r))))}
+        onSelectAll={() => setBatch(new Set(shownIds))}
         onEscape={() => {
           /* Widest state first: a user pressing Escape is undoing the last thing they added, and
              leaving the grid is the last resort rather than the first. */
@@ -1612,11 +1979,13 @@ export function PriorityQueue({
             setBatch(new Set<string>());
             return true;
           }
-          if (findingId === null) return false;
-          selectFinding(null);
+          if (shownFindingId !== null) clearSelection();
+          /* Escape never MOVES focus out of the grid. It used to fall through to DataGrid's exit
+             and land on the "Filter findings" input when there was nothing to clear, so an Escape
+             pressed on a column header teleported the keyboard to a different region (A11Y critic
+             2026-09-21, D3). Escape undoes state; Tab and Shift+Tab leave. */
           return true;
         }}
-        exitFocusRef={queryInputRef}
         columnWidths={columnWidths}
         onResizeColumn={(id, px) =>
           setColumnWidths((prev) => {
@@ -1638,6 +2007,9 @@ export function PriorityQueue({
 
       <LiveRegion message={announce} />
       <LiveRegion message={copied} />
+      {/* The batch count was visible only; a keyboard batch (x, shift+arrows, Ctrl+A) gave a
+          screen-reader user no statement of how many rows it now holds. */}
+      <LiveRegion message={batchLabel} />
     </section>
   );
 }

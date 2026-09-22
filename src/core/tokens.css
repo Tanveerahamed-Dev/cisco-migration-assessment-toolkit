@@ -67,8 +67,15 @@
   --lh-5: 1.2;
   --lh-tight: 1.25;
   --lh-body: 1.5;
+  /* A list-row title sits on a 20px line (13/20), so a title row lands on the 4px lattice and the
+     title's x-height centres on the 24px severity glyph beside it. 1.5 gave 19.5px. */
+  --lh-row-title: 1.25rem;
 
   --ls-0: 0.01em;
+  /* Uppercase labels (group headers, field labels, legends) are tracked open. Set in capitals at
+     the 11px floor with the body's 0.01em they read as a smudge the same weight as the metadata
+     beside them; +0.06em is what makes a CRITICAL group header a landmark rather than a row. */
+  --ls-caps: 0.06em;
   --ls-1: 0;
   --ls-2: -0.006em;
   --ls-3: -0.01em;
@@ -185,6 +192,12 @@
   --claim-out-of-scope: #747e91; /*  3.85 s1 · 3.30 s3 — NON-TEXT only (rules, hatching), and
                                        always accompanied by the word */
 
+  /* ── LINK TOPOLOGY ROLE — its own hue family, deliberately NOT a severity token. A bridge cable
+     (cutting it partitions the graph) was drawn in --sev-high, so one orange meant both "High
+     severity finding" on badges and "cut-edge" on cables. Magenta is the one hue no severity,
+     state, band or claim token uses. */
+  --link-bridge: #9c1f8f; /*         6.57 s1 · 5.64 s3 */
+
   /* ── NOT OBSERVED — light. The canonical absence treatment. ────────────────
      Rendering rule, enforced by <NotObserved> in src/ui/primitives.tsx and by nothing else:
        ink        --unobserved
@@ -197,10 +210,19 @@
      know" do not collapse into one another. */
   --unobserved: #68557e; /*      6.20:1 s1 · 5.31:1 s3 */
   --unobserved-edge: #7c7396; /* 4.16:1 s1 · 3.57:1 s3 — non-text floor is 3:1 */
+  /* The STRIPE is OPAQUE — a fixed mix of the ink into the page ground — not a translucent wash.
+     A translucent stripe compounds: a not-observed chip inside a hatched hop painted two layers,
+     and the doubled stripe took .ui-notobs__text to 3.90:1 and --text-faint captions to 4.36:1 in
+     light, 4.32:1 in dark (A11Y critic 2026-09-21, D4, measured on rendered pixels). An opaque
+     stripe is the same colour however many hatched boxes nest, and it is the same colour on every
+     surface, so the worst case is ONE number per theme: --text-faint against the stripe, 4.75
+     light and 5.14 dark at 12% (src/ui/hatch-contrast.test.ts pins it). On the darker
+     surfaces the stripe is LIGHTER than the ground in light theme, which raises contrast; the
+     hatch stays visible as texture either way, and it is one of four channels, not the only one. */
   --unobserved-hatch: repeating-linear-gradient(
     45deg,
     transparent 0 3px,
-    color-mix(in oklab, var(--unobserved) 14%, transparent) 3px 4px
+    color-mix(in oklab, var(--unobserved) 12%, var(--bg)) 3px 4px
   );
 
   /* ── elevation — light: a 1px --border plus at most --shadow-1. --shadow-2 is reserved for the
@@ -288,6 +310,7 @@
     --claim-scoped: #89c1f3; /*        9.90 · 8.26 */
     --claim-indeterminate: #bea5e7; /* 8.76 · 7.31 */
     --claim-out-of-scope: #61728f; /*  3.89 · 3.24 — non-text only */
+    --link-bridge: #e879dc; /*         7.39 · 6.17 */
 
     --unobserved: #c4b6d7; /*      9.93:1 s1 · 8.29:1 s3 */
     --unobserved-edge: #8079a0; /* 4.65:1 s1 · 3.88:1 s3 */
@@ -341,6 +364,7 @@
   --claim-scoped: #89c1f3;
   --claim-indeterminate: #bea5e7;
   --claim-out-of-scope: #61728f;
+  --link-bridge: #e879dc;
 
   --unobserved: #c4b6d7;
   --unobserved-edge: #8079a0;
@@ -388,6 +412,7 @@
     --sev-medium: #6e5000;
     --sev-low: #246190;
     --sev-info: #58677c;
+    --link-bridge: #9c1f8f;
     --unobserved: #68557e;
     --unobserved-edge: #7c7396;
   }

@@ -207,9 +207,26 @@ describe("failure impact", () => {
   });
 
   it("carries a disagreement block on every device with an impact comparison", () => {
-    act(() => useInvestigation.getState().selectDevice("core1"));
-    const c = mount(<DevicePane />);
-    expect(panel(c, "summary").querySelector(".dp-disagree")).not.toBeNull();
+    // ImpactSection is unconditional on the summary panel, so "every device with an impact
+    // comparison" is every device. Each one is mounted, read and unmounted before the next: the
+    // pane's element ids are fixed, and 26 live copies would make an id lookup ambiguous.
+    expect(fabric.devices.length).toBeGreaterThan(1);
+    let compared = 0;
+    for (const d of fabric.devices) {
+      act(() => useInvestigation.getState().selectDevice(d.id));
+      const c = mount(<DevicePane />);
+      const summary = panel(c, "summary");
+      if (summary.querySelectorAll(".dp-cmp__head").length > 0) {
+        compared++;
+        const block = summary.querySelector(".dp-disagree");
+        expect(block, `${d.host}: comparison without a disagreement block`).not.toBeNull();
+        expect(block!.querySelector(".dp-disagree__head")?.textContent?.trim(), d.host).toBeTruthy();
+      }
+      const m = mounted.pop()!;
+      act(() => m.root.unmount());
+      m.container.remove();
+    }
+    expect(compared, "every device renders the impact comparison").toBe(fabric.devices.length);
   });
 });
 
@@ -390,9 +407,25 @@ describe("configEvidenceFor", () => {
     }
   });
 
+  /* Pinned to known ids, not to "some finding came back empty": selecting a finding BECAUSE it
+     returned nothing and then asserting it exists could only fail if every finding got evidence.
+     The census below is the compiled snapshot's own: six findings quote a port in their detail;
+     the other 140 name devices but no configuration line. F001 and F003 both name core1 (the host
+     with the richest evidence), so returning its records for them would be exactly the guess this
+     test forbids. */
   it("returns nothing for a finding that names no configuration, rather than guessing", () => {
-    const f = fabric.findings.find((x) => configEvidenceFor(x).length === 0);
-    expect(f).toBeDefined();
+    const byId = (id: string) => {
+      const f = fabric.findings.find((x) => x.id === id);
+      expect(f, `precondition: ${id} is in the snapshot`).toBeDefined();
+      return f!;
+    };
+    for (const id of ["F001", "F003"]) {
+      const f = byId(id);
+      expect(f.devices, `precondition: ${id} names a device`).toContain("core1");
+      expect(configEvidenceFor(f)).toEqual([]);
+    }
+    const named = fabric.findings.filter((x) => configEvidenceFor(x).length > 0).map((x) => x.id);
+    expect(named.sort()).toEqual(["F002", "F136", "F137", "F138", "F139", "F140"]);
   });
 });
 
@@ -502,5 +535,31 @@ describe("EvidencePane", () => {
     act(() => useInvestigation.getState().selectFinding("F-does-not-exist"));
     const c = mount(<EvidencePane />);
     expect(c.textContent ?? "").toContain("no such record exists in this snapshot");
+  });
+});
+
+/* ══ two records, one field: disagreement is shown, never coalesced away ═══ */
+
+describe("a port field both records carry and disagree on", () => {
+  /* REGRESSION: the Duplex column rendered `intf.duplex ?? phys.duplex`, so on 73 ports where the
+     interface record said "Full" and the physical-health row said "unknown" the table printed a
+     clean "Full" — on hosts carrying an open duplex-mismatch finding. */
+  it("renders both values on a real disagreeing port", () => {
+    const hit = fabric.devices
+      .flatMap((d) => joinPorts(d.host).map((r) => ({ host: d.host, r })))
+      .find(({ r }) => r.intf?.duplex != null && r.phys?.duplex != null && r.intf.duplex.toLowerCase() !== r.phys.duplex.toLowerCase());
+    expect(hit, "the snapshot should contain a port whose two records disagree on duplex").toBeDefined();
+    const { host, r } = hit!;
+    act(() => {
+      useInvestigation.getState().selectDevice(host);
+      useInvestigation.getState().setEvidenceTab("ports");
+    });
+    const c = mount(<DevicePane />);
+    const split = [...panel(c, "ports").querySelectorAll<HTMLElement>(".dp-split[data-disagree='true']")].find((el) =>
+      (el.textContent ?? "").includes(`interface ${r.intf!.duplex}, physical-health ${r.phys!.duplex}`),
+    );
+    expect(split).toBeDefined();
+    expect(split!.textContent).toContain(r.intf!.duplex!);
+    expect(split!.textContent).toContain(r.phys!.duplex!);
   });
 });

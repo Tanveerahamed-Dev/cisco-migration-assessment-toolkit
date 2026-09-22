@@ -387,6 +387,18 @@ describe("every test the runner collects asserts something", () => {
     expect(vitestConfig).toContain(`include: ["src/**/*.test.ts", "src/**/*.test.tsx"]`);
   });
 
+  it("excludes only the underscore scratch class, and that class hides nothing authored", () => {
+    /* vitest.config.ts excludes every `src/` path with a segment starting `_`, so a probe an agent
+       parks there cannot run as part of the suite. An exclusion is also a way to silence a real
+       test, so both halves are pinned: the exclude list is exactly Vitest's defaults plus that one
+       class, and no file under `src/` actually carries such a segment — which means the class is
+       empty in the authored tree and the exclusion only ever bites scratch. */
+    expect(vitestConfig).toContain(`exclude: [...configDefaults.exclude, "src/**/_*/**", "src/**/_*"]`);
+    expect(vitestConfig.match(/\bexclude\s*:/g) ?? []).toHaveLength(1);
+    const underscored = files.map(rel).filter((f) => f.startsWith("src/") && f.split("/").some((seg) => seg.startsWith("_")));
+    expect(underscored, `files under src/ the runner now skips:\n${underscored.join("\n")}`).toEqual([]);
+  });
+
   const collected = files
     .map(rel)
     .filter((f) => f.startsWith("src/") && (f.endsWith(".test.ts") || f.endsWith(".test.tsx")));

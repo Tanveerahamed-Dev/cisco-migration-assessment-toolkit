@@ -76,8 +76,9 @@ describe("buildFabricGraph — every device is placed, none is omitted", () => {
       expect(ghostInstances).toBe(uncollected.length);
 
       // ...and they carry the two positive "not observed" marks, not merely a different colour.
-      expect(graph.hatch).not.toBeNull();
-      expect(graph.hatch?.count).toBe(uncollected.length);
+      // Two decal meshes, one per lid shape (rectangular rack lids, the round access-point lid).
+      expect(graph.hatch !== null || graph.hatchRound !== null).toBe(true);
+      expect((graph.hatch?.count ?? 0) + (graph.hatchRound?.count ?? 0)).toBe(uncollected.length);
       expect(graph.ghostEdges).not.toBeNull();
     } finally {
       graph.dispose();
@@ -235,10 +236,27 @@ describe("link encoding honesty, against the real snapshot", () => {
 
   it("draws a port channel as a bundle and claims no member count it does not have", () => {
     const pc = links.filter((l) => l.isPortChannel);
+    // The shipped data has port channels, and every one of them lacks a member list (measured:
+    // 44 of 44 links carry < 2 members). So the real-data loop exercises ONLY the gap branch; the
+    // >= 2-member branch is pinned by the explicit cases below, derived from a real port channel.
+    expect(pc.length).toBeGreaterThan(0);
     for (const l of pc) {
       const v = classifyLink(l);
       expect(v.strands).toBeGreaterThanOrEqual(2);
-      if (l.members.length < 2) expect(v.notObserved).toContain("port-channel member count");
+      expect(v.notObserved.includes("port-channel member count")).toBe(l.members.length < 2);
+    }
+    const base = pc[0]!;
+    const cases: Array<[string[], number, boolean]> = [
+      [[], 2, true],
+      [["Eth1/1"], 2, true],
+      [["Eth1/1", "Eth1/2"], 2, false],
+      [["Eth1/1", "Eth1/2", "Eth1/3"], 3, false],
+      [["Eth1/1", "Eth1/2", "Eth1/3", "Eth1/4", "Eth1/5", "Eth1/6"], 4, false],
+    ];
+    for (const [members, strands, gap] of cases) {
+      const v = classifyLink({ ...base, members });
+      expect(v.strands).toBe(strands);
+      expect(v.notObserved.includes("port-channel member count")).toBe(gap);
     }
   });
 });
@@ -249,6 +267,57 @@ describe("cable routing", () => {
     surfaceAnchor([0, 0, 0], [8, 1.5, 5], [100, 0, 0], out);
     expect(out.x).toBeGreaterThan(8);
     expect(Math.abs(out.z)).toBeLessThan(0.001);
+  });
+
+  it("never runs a cable across its own endpoint's lid — including a vertically stacked pair", () => {
+    /* Render audit #8. dist1/podacc1 and dist2/podacc2 are stacked (XZ offsets under half a unit),
+       so the per-end face choice took OPPOSITE faces and L39/L43 crossed podacc1/podacc2's whole
+       footprint while climbing: 13 and 12 of 29 samples over the lid. Asserted on the REAL graph's
+       sampled polylines, so it is the producer's output under test, not a re-derivation.
+
+       The shipped layout no longer stacks those pairs (each layer now steps toward the camera in Z),
+       so the stacked case is reconstructed exactly: podacc1/podacc2 are moved onto dist1/dist2's
+       X/Z, keeping their own Y plane. Both the shipped graph and the stacked one are asserted. */
+    const at = (id: string) => layout.byId.get(id)!;
+    const stackedNodes = layout.nodes.map((n) =>
+      n.id === "podacc1" ? { ...n, x: at("dist1").x, z: at("dist1").z }
+      : n.id === "podacc2" ? { ...n, x: at("dist2").x, z: at("dist2").z }
+      : n,
+    );
+    const stackedLayout = { ...layout, nodes: stackedNodes, byId: new Map(stackedNodes.map((n) => [n.id, n])) };
+    for (const [graph, mustStack] of [
+      [buildDark(), false],
+      [buildFabricGraph({ devices, links, layout: stackedLayout, theme: "dark", profile }), true],
+    ] as const) {
+    const crossings: string[] = [];
+    let stackedSeen = 0;
+    for (const link of links) {
+      const poly = graph.cables.polylines.get(link.id);
+      if (poly === undefined) continue;
+      const a = graph.slots.get(link.a);
+      const b = graph.slots.get(link.b);
+      if (a === undefined || b === undefined) continue;
+      if (Math.abs(a.centre[0] - b.centre[0]) < a.half[0] + b.half[0] && Math.abs(a.centre[2] - b.centre[2]) < a.half[2] + b.half[2]) {
+        stackedSeen += 1;
+      }
+      for (const s of [a, b]) {
+        for (let i = 0; i < poly.length / 3; i += 1) {
+          const x = poly[i * 3] ?? 0;
+          const y = poly[i * 3 + 1] ?? 0;
+          const z = poly[i * 3 + 2] ?? 0;
+          if (Math.abs(x - s.centre[0]) < s.half[0] && Math.abs(z - s.centre[2]) < s.half[2] && y > s.centre[1] - s.half[1]) {
+            crossings.push(`${link.id} over ${s.id}`);
+            break;
+          }
+        }
+      }
+    }
+    if (mustStack) {
+      expect(stackedSeen, "the stacked case this guards must exist in the data, or the test is inert").toBeGreaterThan(0);
+    }
+    expect(crossings).toEqual([]);
+    disposeScene(graph.scene);
+    }
   });
 
   it("is deterministic: two runs produce identical samples", () => {
@@ -413,7 +482,10 @@ describe("createScene without a GPU", () => {
         { devices, links, layout, theme: "dark", reducedMotion: false },
         { onEvent: () => {} },
       ),
-    ).toThrow();
+      /* Anchored to the failure it is about. A bare `.toThrow()` was satisfied by ANY earlier
+         exception — a TypeError from a regression before the renderer is constructed would have
+         passed as "fails loudly without a GPU". What throws here is three's WebGLRenderer. */
+    ).toThrow(/WebGL context/);
   });
 });
 
@@ -465,7 +537,13 @@ describe("shader patches — the two silent-failure classes this subsystem actua
   });
 });
 
-describe("the render loop allocates nothing (structural)", () => {
+/* TRIPWIRES, NOT F2 EVIDENCE. The describe blocks below tagged "(tripwire: source text)" read
+   scene.ts as a string. They catch a known defect shape coming back; they do not exercise
+   behaviour, a behaviour-preserving rewrite may trip them, and they must not be counted as F2's
+   "tests that exercise real behaviour". The behavioural proof for the render loop is the browser
+   harness — `review/capture.mjs app`, which fails closed when the scene handle is absent or the
+   render has not settled on screen — cited separately in docs/acceptance.md F2. */
+describe("the render loop allocates nothing (tripwire: source text)", () => {
   it("constructs no object inside frame()", () => {
     // Structural, and deliberately so: this reads the source rather than measuring the heap. It
     // cannot see allocations inside the functions frame() calls — those are held to the same rule
@@ -493,14 +571,18 @@ describe("the render loop allocates nothing (structural)", () => {
    while the next frame took 483 ms (review/_audit_perf_fpsema.mjs). The real verification is that
    probe against a browser; this is the tripwire that says a seed came back.
 */
-describe("frame-rate telemetry is not seeded with a plausible reading (structural)", () => {
+describe("frame-rate telemetry is not seeded with a plausible reading (tripwire: source text)", () => {
   const source = readFileSync(resolve(process.cwd(), "src/fabric3d/scene.ts"), "utf8");
 
   it("does not initialise the reported frame figures to a healthy value", () => {
     expect(source).toMatch(/let fpsEma = 0;/);
     expect(source).toMatch(/let lastFrameMs = 0;/);
-    expect(source).not.toMatch(/let fpsEma = 60/);
-    expect(source).not.toMatch(/let lastFrameMs = 16\.7/);
+    /* Any assignment of a non-zero LITERAL to either figure, anywhere in the file — not only the
+       two historical seeds at their declaration. A later `fpsEma = 60` would otherwise pass. */
+    //    Comments are stripped first: the file's own history note quotes the old seeds.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    expect(code).not.toMatch(/\bfpsEma\s*=\s*(?!0\s*;)\d/);
+    expect(code).not.toMatch(/\blastFrameMs\s*=\s*(?!0\s*;)\d/);
   });
 
   it("counts timed frames and refuses to publish a reading before there is one", () => {
@@ -508,7 +590,10 @@ describe("frame-rate telemetry is not seeded with a plausible reading (structura
     expect(source).toMatch(/framesTimed \+= 1;/);
     const start = source.indexOf("function emitStats(now: number): void {");
     expect(start).toBeGreaterThan(-1);
-    const body = source.slice(start, start + 900);
+    // The whole function, to its closing brace at this indentation — not a fixed-width window.
+    const end = source.indexOf("\n  }\n", start);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
     // The guard must come BEFORE the throttle, or the first reading escapes on the first call.
     const guard = body.indexOf("if (framesTimed === 0) return;");
     const throttle = body.indexOf("lastStatsEmit");

@@ -83,6 +83,43 @@
   scroll-padding-block-end: var(--statusbar-h);
 }
 
+/* The at-rest preview of the top-ranked finding (EvidencePane.tsx). A bordered card, not the
+   chain's header styling, so it cannot be mistaken for a selected finding. */
+.ev-preview {
+  padding: var(--sp-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.ev-preview__kicker {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+
+.ev-preview__title {
+  margin: 0 0 var(--sp-1);
+  font-weight: var(--fw-semibold);
+  max-inline-size: 60ch;
+}
+
+.ev-preview__hosts {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-muted);
+}
+
+.ev-preview__cat {
+  font-family: var(--font-ui);
+}
+
+.ev-preview__detail {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .ev-mono {
   font-family: var(--font-mono);
   font-size: var(--fs-1);
@@ -90,7 +127,6 @@
 }
 
 .ev-wrap {
-  overflow-wrap: anywhere;
 }
 
 .ev-prose {
@@ -244,7 +280,7 @@
   gap: var(--sp-2);
   min-block-size: var(--target-min);
   padding: var(--sp-1) var(--sp-2);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
   border-radius: var(--radius-md);
   background: var(--surface-1);
   color: inherit;
@@ -294,7 +330,6 @@
 }
 
 .ev-siblings__title {
-  overflow-wrap: anywhere;
 }
 
 .ev-siblings__more {
@@ -332,6 +367,8 @@
   position: sticky;
   inset-block-start: 0;
   z-index: 1;
+  /* sticky-layer: pinned; see .ag__head in src/panels/DataGrid.css for the measurement. */
+  will-change: transform;
 }
 
 .ev-cfg__title {
@@ -398,7 +435,6 @@
   min-inline-size: 0;
   font-family: var(--font-mono);
   font-size: var(--fs-1);
-  overflow-wrap: anywhere;
 }
 
 .ev-cfg__text code {
@@ -473,7 +509,6 @@
 .ev-cfg__literal-v {
   font-family: var(--font-mono);
   font-size: var(--fs-1);
-  overflow-wrap: anywhere;
 }
 
 .ev-cfg__literal-v code {
@@ -506,7 +541,6 @@
 .ev-cfg__route-body {
   font-size: var(--fs-1);
   color: var(--text-muted);
-  overflow-wrap: anywhere;
 }
 
 .ev-cfg__foot {
@@ -520,7 +554,6 @@
   color: var(--text-faint);
   font-size: var(--fs-0);
   letter-spacing: var(--ls-0);
-  overflow-wrap: anywhere;
 }
 
 /* ══ reduced motion ════════════════════════════════════════════════════════ */
@@ -532,4 +565,41 @@
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
   }
+}
+
+/* A fleet-wide finding's own denominator beside the coverage. The disagreement row carries the
+   indeterminate rule, like every other absence statement in this pane. */
+.ev-denominator {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+.ev-denominator [data-disagreement="true"] {
+  padding: var(--sp-2);
+  border-inline-start: 3px solid var(--claim-indeterminate);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* The stated cap on the step-4 record list: a full-width line above the buttons it counts. */
+.ev-cfgactions__cap {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* The finding-vs-device subject note: a key hint inside its button. */
+.ev__kbd {
+  margin-inline-start: var(--sp-2);
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border, currentColor);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
 }

@@ -21,12 +21,21 @@ import {
   T1_verdict,
   T10_SAMPLE_PATH,
   bandOfOutcome,
+  bandOfTrace,
   claimBadge,
+  isDecidedOutcome,
+  isInvalidInput,
   scopeTuple,
   sharePayload,
+  undecidedOutcomeWord,
   type ClaimBadge,
 } from "../core/claims";
-import { aclUndecidability } from "../core/acl-coverage";
+import {
+  aclUndecidability,
+  type AclUndecidability,
+  type UndecidableAclLine,
+  type UndecidableSource,
+} from "../core/acl-coverage";
 import { fabric } from "../core/data";
 import type { Cite, Flow, Trace, TraceOutcome } from "../core/types";
 import type { CounterexampleResult } from "../forwarding/engine";
@@ -65,10 +74,12 @@ const OUTCOME_ICON: Readonly<Record<TraceOutcome, Glyph>> = {
 };
 
 const BADGE_HELP: Readonly<Record<ClaimBadge, string>> = {
-  SCOPED: "every host on this path had a collected routing table and every evidence item was decided",
-  OBSERVED: "the traversal completed, but over evidence that does not cover the whole path",
+  SCOPED:
+    "every host on this path had a collected routing table the snapshot does not show to be incomplete for this route decision, and collected ACLs, every other ingress the source could take reproduced this result, the gateway port it arrives by had observed filtering, and every evidence item consulted was decided",
+  PARTIAL: "the traversal completed, but over evidence that does not cover the whole path — the scope below names what is missing",
   INDETERMINATE: "the model could not decide this flow; the reasons are listed below",
   "OUT OF SCOPE": "the question falls outside what this collection observed, so it was not evaluated",
+  "INVALID INPUT": "the question is not a well-formed flow, so nothing was simulated — correct the input and run it again",
 };
 
 /* Reason rows are grouped by the CITATION that ended each trace, so one row is one piece of
@@ -76,6 +87,32 @@ const BADGE_HELP: Readonly<Record<ClaimBadge, string>> = {
    address while standing for several — said out loud rather than left for a reader to trip over. */
 const REASON_GROUPING =
   "Grouped by the record that decided them. The wording of each row comes from the first flow in its group, so an address inside it is an example rather than the whole group.";
+
+/**
+ * The fields in which the counterexample differs from the traced flow, named — never a fixed
+ * phrase. The search may change the destination address, the port or the protocol; the sentence
+ * used to say "neighbouring traffic between the same addresses" whichever it changed, which was
+ * false whenever it moved the destination (2026-09-21 critic, B8).
+ */
+function flowDifferences(a: Flow, b: Flow): string[] {
+  const out: string[] = [];
+  if (a.srcIp !== b.srcIp) out.push(`its source (${b.srcIp} instead of ${a.srcIp})`);
+  if (a.dstIp !== b.dstIp) out.push(`its destination (${b.dstIp} instead of ${a.dstIp})`);
+  if (a.protocol !== b.protocol) out.push(`its protocol (${b.protocol} instead of ${a.protocol})`);
+  else if (a.dstPort !== b.dstPort) out.push(`its destination port (${b.dstPort ?? "any"} instead of ${a.dstPort ?? "any"})`);
+  return out;
+}
+
+/* The headline word for an outcome the engine returned but did not decide is built from the
+   ACTUAL undecided inputs (claims.ts `undecidedOutcomeWord`), never from a fixed map keyed on the
+   outcome: "denied by list text — binding not observed" was drawn over a denial whose binding WAS
+   observed and which was undecided by its FHRP-alternate ingress (2026-09-21 critic, A3). */
+
+/** The word for ANY trace this card draws — the verdict, a counterexample, an intent's first contradiction. */
+/** The card's headline word for a trace. Exported so the live-region announcement speaks the SAME
+ *  word the card draws — it once announced the raw outcome ("Result: dropped") under a headline
+ *  reading "dropped for want of a collected route — not decided" (2026-09-22 critic, B2). */
+export const outcomeWordOf = (t: Trace): string => (isInvalidInput(t) ? "invalid input" : (undecidedOutcomeWord(t) ?? OUTCOME_WORD[t.outcome]));
 
 const flowText = (f: Flow): string =>
   `${f.protocol} ${f.srcIp} → ${f.dstIp}${f.protocol === "tcp" || f.protocol === "udp" ? `:${f.dstPort ?? "any port"}` : ""}`;
@@ -124,12 +161,78 @@ function Section({
 
 /* ── the scope block: the denominators, read from the compiled coverage ─────── */
 
+/* Why a line is in the general undecidable union, per source: `many` introduces a labelled member
+   list, `one` names the doubt about a single line that nevertheless decided this flow. Keyed on the
+   owner's `UndecidableSource`, so a source added there fails type-checking here instead of silently
+   dropping out of the sentence. */
+const UNDECIDABLE_BY: Readonly<Record<UndecidableSource, { many: (n: number) => string; one: string }>> = {
+  engine: { many: (n) => `this model refuses to evaluate ${n}`, one: "this model does not evaluate it in general" },
+  producer: { many: (n) => `the collector's parser could not model ${n}`, one: "the collector's parser flagged it as not fully modelled" },
+  snapshot: {
+    many: (n) => `the snapshot's own reachability analysis could not prove ${n} live or dead`,
+    one: "the snapshot's own reachability analysis could not prove it live or dead",
+  },
+};
+const UNDECIDABLE_ORDER: readonly UndecidableSource[] = ["engine", "producer", "snapshot"];
+
+/**
+ * The ACL row of the scope block (A3 audit fix, 2026-09-21).
+ *
+ * It used to print the whole general undecidable union — the deciding line included — under
+ * "cannot be decided in general", then add a sentence explaining that the listing did not weaken
+ * the verdict. A reader met "the deciding line is undecidable" first and the retraction second. Now
+ * the union is split by REASON, each reason with its own members, and a line that decided THIS
+ * flow is taken out of the "cannot be decided" sentence and stated on its own, with the general
+ * doubt about it named for what it is. Every member of the union is still named — the count moves
+ * from one sentence to the other, the coverage does not shrink.
+ */
+function aclScopeSentence(u: AclUndecidability, decidedHere: readonly UndecidableAclLine[]): string {
+  if (u.total === 0) return "No access-list line was collected, so no ACL verdict is modelled at all.";
+  const decided = new Set(decidedHere.map((m) => m.cite));
+  const general = u.members.filter((m) => !decided.has(m.cite));
+  const labels = (ms: readonly UndecidableAclLine[]): string => ms.map((m) => m.label).join(", ");
+  const one = decidedHere.length === 1;
+  const byReason = UNDECIDABLE_ORDER.flatMap((src) => {
+    const ms = general.filter((m) => m.sources.includes(src));
+    return ms.length === 0 ? [] : [`${UNDECIDABLE_BY[src].many(ms.length)} (${labels(ms)})`];
+  });
+  const head =
+    general.length === 0
+      ? `No other collected ACL line (of ${u.total}) is reported undecidable by this model, the collector's parser or the snapshot's reachability analysis.`
+      : `${general.length} of the ${u.total} collected ACL lines cannot be decided in general${
+          decidedHere.length === 0 ? "" : ` — not counting the ${one ? "line" : "lines"} that decided this flow`
+        }. By reason, and a line can carry more than one: ${byReason.join("; ")}. That is a statement about each line across every possible flow, not about this one.`;
+  if (decidedHere.length === 0) return head;
+  const doubts = UNDECIDABLE_ORDER.filter((src) => decidedHere.some((m) => m.sources.includes(src)));
+  return (
+    `${head} ${labels(decidedHere)} decided this flow: ${one ? "it was" : "they were"} evaluated in full against it.` +
+    (doubts.length === 0
+      ? ""
+      : ` Separately, ${doubts.map((src) => UNDECIDABLE_BY[src].one).join(", and ")} across every possible flow; that does not bear on this one.`)
+  );
+}
+
 function ScopeBlock({ trace, onOpenCite }: { trace: Trace; onOpenCite: (c: Cite) => void }): ReactElement {
   const s = scopeTuple(trace);
   const c = fabric.coverage;
   const undecidable = aclUndecidability();
   const total = fabric.devices.length;
   const withoutRib = total - c.hostsWithRoutes;
+  /* Members of the general undecidable union that THIS flow nevertheless decided on (A3). The
+     union mixes per-line questions — including the snapshot's dead-line reachability verdict — with
+     nothing flow-specific, so without this the scope block listed the very line the verdict quotes
+     as "cannot be decided" beside a badge saying every evidence item was decided. A hop decided by
+     an ACL line is decided unless the hop is unmodelled (HopList's "undecided" rule). Lines already
+     explained in the Filtering row below (a binding gap) are left to that row. */
+  const explainedBelow = new Set(s.policyGaps.flatMap((g) => (g.kind === "acl-uncollected" ? [] : [g.cite])));
+  const decidedCites = new Set(
+    trace.hops.flatMap((h) =>
+      h.decidedBy?.kind === "acl" && h.verdict !== "unmodeled" && !explainedBelow.has(h.decidedBy.cite)
+        ? [h.decidedBy.cite]
+        : [],
+    ),
+  );
+  const decidedHere = undecidable.members.filter((m) => decidedCites.has(m.cite));
   return (
     <Section title="Scope of this result" tone="scope">
       <p className="claim__scope-line">{T1_verdict(trace)}</p>
@@ -144,7 +247,7 @@ function ScopeBlock({ trace, onOpenCite }: { trace: Trace; onOpenCite: (c: Cite)
         <li>
           <span className="claim__k">ACLs</span>
           <span>
-            {`collected for ${c.hostsWithAcls} of ${total} hosts: ${c.aclHosts.join(", ") || "no host"}. ${undecidable.count} of ${undecidable.total} collected ACL lines cannot be decided${undecidable.count === 0 ? "" : ` (${undecidable.members.map((m) => m.label).join(", ")})`} — the union of what this model refuses to evaluate, what the collector's parser could not model, and what the snapshot's own reachability analysis returned indeterminate.`}
+            {`collected for ${c.hostsWithAcls} of ${total} hosts: ${c.aclHosts.join(", ") || "no host"}. ${aclScopeSentence(undecidable, decidedHere)}`}
           </span>
           <CiteLink cite={c.cite} onOpen={onOpenCite} />
         </li>
@@ -154,6 +257,29 @@ function ScopeBlock({ trace, onOpenCite }: { trace: Trace; onOpenCite: (c: Cite)
             {`${withoutRib} of ${total} hosts have no collected routing table. A hop through any of them is reported as not modelled, never as forwarded.`}
           </span>
         </li>
+        {s.policyGaps.length > 0 ? (
+          <li data-emphasis="true">
+            <span className="claim__k">Filtering</span>
+            <span>
+              {s.policyGaps
+                .map((g) => {
+                  if (g.kind === "acl-uncollected") return `${g.label}.`;
+                  /* The denying line can be a member of the undecidable union above. That union is a
+                     statement about the line across ALL flows; this flow is decided by it only
+                     because every field it matches on is readable for this flow. Said here, so the
+                     list above and the verdict do not read as a contradiction. */
+                  const listed = undecidable.members.find((m) => m.cite === g.cite);
+                  return (
+                    `${g.label}.` +
+                    (listed === undefined
+                      ? ""
+                      : ` ${listed.label} is listed above as undecidable in general (${listed.reasons.join("; ")}); for this flow its fields could be read, so it decides what the list would do — not whether the list is applied.`)
+                  );
+                })
+                .join(" ")}
+            </span>
+          </li>
+        ) : null}
         {trace.unmodelledHosts.length > 0 ? (
           <li data-emphasis="true">
             <span className="claim__k">On this path</span>
@@ -183,14 +309,36 @@ function CounterBlock({
   onOpenCite: (c: Cite) => void;
 }): ReactElement {
   const blocked = trace.hops.find((h) => h.verdict === "denied" || h.verdict === "no-route") ?? null;
+  /* "The nearest flow that behaves differently" presumes a decided baseline to differ FROM. Over an
+     undecided result (an unbound-list denial, a delivery with unobserved filtering) the nearby flow
+     is still worth offering, but it is labelled as relative to an undecided result and the
+     intended/not-established pair — which reads the baseline as settled — is not drawn. */
+  const decided = isDecidedOutcome(trace);
+  /* The OFFERED flow is judged by the same rule. The engine offers a flow decided on the modelled
+     path, which still shares the source's ingress assumption — so its own outcome can be undecided,
+     and it was drawn as a green "DELIVERED" beside a card that called the identical assumption
+     UNDETERMINED (2026-09-21 critic, B1). Its word and band now come from `bandOfTrace`. */
+  const counterDecided = result.found && isDecidedOutcome(result.trace);
+  const diffs = result.found ? flowDifferences(trace.flow, result.flow) : [];
   return (
     <>
-      <Section title="Counterexample — the nearest flow that behaves differently" tone="counter">
+      <Section
+        title={
+          decided && (!result.found || counterDecided)
+            ? "Counterexample — the nearest flow that behaves differently"
+            : decided
+              ? "Nearby flow with a different outcome — its own outcome is UNDECIDED, so not a counterexample"
+              : "Nearby flow with a different outcome — relative to an UNDECIDED result, so not a counterexample"
+        }
+        tone="counter"
+      >
         {result.found ? (
           <div className="claim__counter">
             <p className="claim__counter-flow">
               <span className="claim__mono">{flowText(result.flow)}</span>
-              <span className="claim__counter-outcome">{OUTCOME_WORD[result.trace.outcome]}</span>
+              <span className="claim__counter-outcome" data-band={bandOfTrace(result.trace)}>
+                {outcomeWordOf(result.trace)}
+              </span>
             </p>
             <p className="claim__counter-why">{result.rationale}</p>
             {onRunFlow ? (
@@ -206,7 +354,7 @@ function CounterBlock({
         )}
       </Section>
 
-      {result.found && blocked !== null && blocked.decidedBy !== null ? (
+      {decided && counterDecided && result.found && blocked !== null && blocked.decidedBy !== null ? (
         <Section title="Intended effect, and what this result does not establish" tone="intent">
           <dl className="claim__pair">
             <dt>Intended</dt>
@@ -216,7 +364,7 @@ function CounterBlock({
             </dd>
             <dt>Not established</dt>
             <dd>
-              {`that neighbouring traffic between the same addresses is treated the same way — ${flowText(
+              {`that ${diffs.length === 0 ? "a neighbouring flow" : `a flow differing in ${diffs.join(" and ")}`} is treated the same way — ${flowText(
                 result.flow,
               )} is ${OUTCOME_WORD[result.trace.outcome]}. The two statements rest on different lines of evidence and neither one closes the other.`}
             </dd>
@@ -239,9 +387,13 @@ export interface ClaimCardProps {
 
 export function ClaimCard({ trace, counterexample, onRunFlow, onOpenCite }: ClaimCardProps): ReactElement {
   const titleId = useId();
-  const band = bandOfOutcome(trace.outcome);
+  /* The band — and so the headline colour and glyph — comes from whether the outcome was DECIDED,
+     not from the outcome word: a delivery the engine does not rate as definite used to draw the
+     green target beside an INDETERMINATE badge (2026-09-21 critic, B1). */
+  const band = bandOfTrace(trace);
+  const undecidedWord = band === "UNDETERMINED" && bandOfOutcome(trace.outcome) !== "UNDETERMINED" ? undecidedOutcomeWord(trace) : null;
   const badge = claimBadge(trace);
-  const Glyph = OUTCOME_ICON[trace.outcome];
+  const Glyph = undecidedWord !== null ? IconNotObserved : OUTCOME_ICON[trace.outcome];
   const openCite = useCallback((c: Cite) => onOpenCite?.(c), [onOpenCite]);
   const showCounter =
     counterexample != null &&
@@ -256,13 +408,16 @@ export function ClaimCard({ trace, counterexample, onRunFlow, onOpenCite }: Clai
         </span>
         <h3 className="claim__outcome" id={titleId}>
           <Glyph className="claim__outcome-glyph" />
-          <span className="claim__outcome-word">{OUTCOME_WORD[trace.outcome]}</span>
+          <span className="claim__outcome-word">{isInvalidInput(trace) ? "invalid input" : (undecidedWord ?? OUTCOME_WORD[trace.outcome])}</span>
         </h3>
         <span className="claim__flow claim__mono">{flowText(trace.flow)}</span>
         <CopyClaim payload={sharePayload(trace)} what="verdict" />
       </header>
 
-      {band === "UNDETERMINED" ? (
+      {/* Only for a flow that was actually simulated. An out-of-scope or invalid question was never
+          run, and "the simulation ran and declined" under a header saying "not evaluated" was the
+          card contradicting itself (2026-09-22 critic, B4). */}
+      {band === "UNDETERMINED" && trace.outcome !== "out-of-scope" ? (
         /* Loud, not quiet. The tool ran; it declined to answer; that is a result about the
            evidence and it is as important as a denial. */
         <p className="claim__undetermined">
@@ -370,7 +525,9 @@ export function IntentClaimCard({ verdict, onRunFlow, onOpenCite }: IntentClaimC
           <div className="claim__counter">
             <p className="claim__counter-flow">
               <span className="claim__mono">{flowText(first.flow)}</span>
-              <span className="claim__counter-outcome">{OUTCOME_WORD[first.trace.outcome]}</span>
+              <span className="claim__counter-outcome" data-band={bandOfTrace(first.trace)}>
+                {outcomeWordOf(first.trace)}
+              </span>
             </p>
             <p className="claim__counter-why">{first.trace.claim}</p>
             {onRunFlow ? (

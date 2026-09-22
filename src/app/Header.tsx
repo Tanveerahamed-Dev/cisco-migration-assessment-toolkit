@@ -41,6 +41,7 @@ import {
   orNotObserved,
 } from "../ui/primitives";
 import { setHelpOpen } from "./keyboard";
+import { recordReturn, returnFocus, type ReturnRecord } from "./focus-return";
 import { ThemeToggle, useThemeShortcut } from "./ThemeToggle";
 import "./chrome.css";
 
@@ -114,6 +115,10 @@ const SURFACES: readonly SurfaceDef[] = [
 
 /** Locale-free digit grouping: `toLocaleString()` renders differently per machine, and a capture
  *  that differs between machines cannot be byte-compared (acceptance F6). */
+/** Design brief §8.2 journey 3: the filter recompute is debounced 120 ms — the queue's own field
+ *  uses the same figure, so the two query inputs agree on when a filter lands. */
+export const QUERY_DEBOUNCE_MS = 120;
+
 const groupDigits = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 
 const isTypingTarget = (el: EventTarget | null): boolean => {
@@ -277,12 +282,49 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
   const setSurface = useInvestigation((s) => s.setSurface);
 
   const inputRef = useRef<HTMLInputElement>(null);
-  const focusReturn = useRef<HTMLElement | null>(null);
+  const focusReturn = useRef<ReturnRecord | null>(null);
   const [notice, setNotice] = useState("");
   const queryId = useId();
   const hintId = `${queryId}-hint`;
 
   const example = useMemo(() => exampleQuery(), []);
+
+  /* ── the echo is synchronous, the filter is debounced (design brief §8.2 journey 3) ──────────
+     This input used to write the SHARED store on every keystroke, so each character re-rendered
+     every subscriber and re-aimed the fabric's emphasis — a scene animation per keystroke — inside
+     the typing burst. MEASURED 2026-09-21 on the release build (scripted 'core' + 4 x Backspace at
+     150 ms, CPU profile): ~1.0 s of fabric render per 32 keystrokes on the main thread, keydown
+     p95 304 ms, and acceptance review saw 106-240 ms on-path tasks on the SECOND and later
+     characters and on Backspace. The brief says the echo and the recompute "must never be
+     coupled"; the queue's own filter field already honoured that, this one did not.
+     So the field echoes a local draft in the keystroke's own frame, and the store — the filter, the
+     fabric emphasis, the URL — takes the text once typing pauses for QUERY_DEBOUNCE_MS. Submit and
+     Clear flush immediately: an explicit action never waits on a timer. */
+  const [draft, setDraft] = useState(query);
+  const pushed = useRef(query);
+  useEffect(() => {
+    /* An external write (palette, a removed chip, URL hydrate) wins over the draft. */
+    if (query !== pushed.current) {
+      pushed.current = query;
+      setDraft(query);
+    }
+  }, [query]);
+  useEffect(() => {
+    if (draft === pushed.current) return;
+    const t = setTimeout(() => {
+      pushed.current = draft;
+      setQuery(draft);
+    }, QUERY_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [draft, setQuery]);
+  const commitQuery = useCallback(
+    (text: string) => {
+      pushed.current = text;
+      setDraft(text);
+      setQuery(text);
+    },
+    [setQuery],
+  );
 
   /* Bound by the frame, not by the control: at narrow viewports the theme control lives inside a
      popover that only exists while it is open, and a shortcut that disappears with its button is
@@ -290,9 +332,8 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
   useThemeShortcut();
 
   const focusQuery = useCallback(() => {
-    const active = document.activeElement;
-    focusReturn.current = active instanceof HTMLElement ? active : null;
     const el = inputRef.current;
+    focusReturn.current = recordReturn(document.activeElement, el);
     el?.focus();
     /* Selecting the existing text makes the fast path — replace the question — one keystroke,
        while Home/End still leave it editable for the slow path. */
@@ -395,7 +436,8 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
         aria-label="Investigation query"
         onSubmit={(e) => {
           e.preventDefault();
-          onSubmitQuery?.(query);
+          commitQuery(draft);
+          onSubmitQuery?.(draft);
           setSurface("findings");
         }}
       >
@@ -408,12 +450,12 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
           id={queryId}
           type="text"
           className="hdr-query__input"
-          value={query}
+          value={draft}
           autoComplete="off"
           spellCheck={false}
           aria-describedby={hintId}
           placeholder={`Search or filter — try ${example}`}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => setDraft(e.target.value)}
           onFocus={(e) => {
             /* Record where focus came FROM, here rather than in whatever moved it.
                This used to be set by Header's own `/` handler, so Escape only returned focus when
@@ -421,9 +463,7 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
                which focuses this input directly — and Escape had nowhere to go back to. Recording
                on focus covers every entry path there is: the key, the command palette, a click on
                the search icon, a screen reader moving through the header. */
-            const from = e.relatedTarget;
-            focusReturn.current =
-              from instanceof HTMLElement && from !== e.currentTarget ? from : null;
+            focusReturn.current = recordReturn(e.relatedTarget, e.currentTarget);
           }}
           onKeyDown={(e) => {
             if (e.key !== "Escape") return;
@@ -431,16 +471,19 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
                the query: losing a typed question to a stray keystroke is unrecoverable, while
                clearing it has its own button one tab away. */
             e.preventDefault();
+            /* The return target can have unmounted since it was recorded (a popover's own
+               control, when Tab closed the popover on the way here). `returnFocus` then goes to
+               whatever OPENED that surface, and failing that to this search region — never to
+               <body>, which is where the `blur()` this replaced put it (acceptance D3). */
             const back = focusReturn.current;
             focusReturn.current = null;
-            if (back && back.isConnected) back.focus();
-            else e.currentTarget.blur();
+            returnFocus(back, e.currentTarget);
           }}
         />
         <span id={hintId} className="visually-hidden">
           {`Filter with key colon value — severity, host, role, band, category, is and has. Free text searches identifiers and titles. Example: ${example}.`}
         </span>
-        {query === "" ? (
+        {draft === "" ? (
           <Kbd>/</Kbd>
         ) : (
           <IconButton
@@ -448,7 +491,7 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
             icon={<IconClose />}
             size="sm"
             onClick={() => {
-              setQuery("");
+              commitQuery("");
               inputRef.current?.focus();
             }}
           />

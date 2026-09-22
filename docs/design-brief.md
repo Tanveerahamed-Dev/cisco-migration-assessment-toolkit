@@ -578,6 +578,15 @@ quality chip in **every** build, dev and production alike.
 | Front-bezel extruded glyph (0.08 units) | `Device.role` | `access` = three stacked bars · `distribution` = a chevron · `null` = an outlined dash. `role === null` on **17 of 26** devices, and that is the truth of this data. |
 | Surface treatment | `Device.collected` | `true` → solid PBR chassis. `false` → **the same silhouette as a 1.4 px wireframe outline over a 22 %-opacity fill, with a 45° hatch on the top face.** Never green, never grey-as-disabled, never absent. |
 
+**As shipped — where the band is actually legible (recorded 2026-09-21, C5 audit).** The instance
+colour reaches two surfaces. On the chassis BODY it is a wash that the tone curve compresses on the
+lit lid until adjacent bands (Poor/Critical, Good/Excellent) are only a few ΔE apart — the reasoning
+and the measured mix sweep are owned by `BAND_BODY_WASH` in `src/fabric3d/scene.ts`. The band is
+therefore carried by the emissive **status bar** on the faceplate (`LED_BAR_W`/`LED_BAR_H`,
+`src/fabric3d/geometry/chassis.ts`, enlarged so it is several pixels at the overview) and, as the
+colour-independent second channel, by the band letter on the device's DOM label chip. Do not read
+this table as a promise that the body hue alone separates adjacent bands.
+
 `Device.band === null` (3 devices) renders in `--claim-indeterminate` — **not** neutral grey and
 **not** `--band-good`. `Device.opStatus === "unknown"` adds a `--state-unknown` rim, 0.06 units, on
 the chassis edge.
@@ -668,6 +677,14 @@ key.shadow.normalBias    =  0.022;   // wrong: bias alone buys acne removal at t
 Exactly **one** shadow-casting light. `castShadow` and `receiveShadow` are set **deliberately on
 every mesh** — a single mesh missing `receiveShadow` makes the whole scene read as unlit, silently,
 and is a named item on the C5 checklist.
+
+> **As shipped — deviation from the recipe above (recorded 2026-09-21, C5 audit).** The shadow map
+> is **off at every tier**. The measurement that decided it, and the grounding that replaces it (a
+> contact decal plus a surface pad under every node — not SSAO, because the ground planes write no
+> depth), are owned by `src/fabric3d/quality.ts` (`SHADOW_MAP_IN_USE`, `SHADOW_MAP_REASON`) and are
+> published at runtime in `stats().qualityReasons`; read them there rather than from a copy here.
+> The key-light snippet above remains the recipe to restore if that decision is reversed. The
+> `receiveShadow` rule still applies to every mesh so re-enabling the map is a one-flag change.
 
 **Materials — `MeshStandardMaterial` by default; `MeshPhysicalMaterial` only on the named list
 below.** The installed docs state `MeshPhysicalMaterial` has "a higher performance cost per pixel"
@@ -792,13 +809,16 @@ camera move.
 | Hover rim | **80 ms** (`--dur-instant`) | linear | Must feel like a cursor property, not a transition. |
 | Dim / undim on filter change | **240 ms** (`--dur-medium`) | `--ease-out` | Long enough to see *which* nodes left the set. |
 | Trace path draw-on | **240 ms total**, staggered 18 ms per hop | `--ease-out` | The stagger *is* the information — it shows hop order. Total capped at 240 ms regardless of hop count. |
-| Trace packet marker | **1.6 s loop, one marker, stops after 3 loops** | linear | The only looping animation in the product. Justification: it distinguishes a live trace overlay from a static path screenshot. It then leaves the path drawn. |
+| Trace packet marker | **1.6 s loop, one marker, stops after 3 loops** | linear | The only looping animation that runs in the product (the spinner below is declared but not rendered). Justification: it distinguishes a live trace overlay from a static path screenshot. It then leaves the path drawn. |
+| Stage-pending spinner (`stage-pending-spin`, `src/app/App.css`) | **900ms per turn, `infinite`** | linear | The one UNBOUNDED loop the code declares; the legitimate reason for it would be work of unknown duration. **Not rendered today:** no component uses `.stage-pending__spinner` — `StagePending` is a determinate skeleton and `StageWarmup` a determinate progress bar — so it never runs (guarded by `src/core/motion-inventory.test.ts`). Under reduced motion: `animation: none`, a static ring. |
+| Quality-tier cross-fade (`TIER_FADE_MS`, `src/fabric3d/scene.ts`) | **300 ms** opacity, started one frame after the new tier presents | `ease-in-out` | A tier change (manual or the automatic step-down) swaps SMAA, SSAO and outlines in one frame — a measured 3.6 % canvas pop. The old tier's frame is held over the canvas and faded out. Exceeds nothing: 300 ms is the C6 ceiling. Under reduced motion: no fade — the held frame is removed in one step on the new tier's first frame (a swap, not an animation). |
 | Panel / inspector open | **240 ms** height, **140 ms** opacity | `--ease-out` | |
 | Command palette | **140 ms** | `--ease-out` | |
 
 **`prefers-reduced-motion: reduce` — the contract:** `--dur-instant/fast/medium/camera` all collapse
 to `1ms` (already implemented in `tokens.css`); the camera **jumps** to its target pose; the trace
-draws instantly and fully; the packet marker **does not run at all**. The end state is byte-identical
+draws instantly and fully; the packet marker **does not run at all**; the spinner is a static ring;
+the tier cross-fade becomes a one-frame swap. The end state is byte-identical
 to the animated end state. **The reduced-motion path never shows less information, only less
 movement.**
 

@@ -218,3 +218,48 @@ colour and sits on a near-black recess where nothing is compressed. That channel
 and its call site already carried a comment claiming it showed "the band at FULL saturation" — it
 did not, it was passing the body's 72 %-white wash, brightened. Fixing that is what makes the
 encoding real: a Critical chassis and an Excellent chassis are now plainly different pictures.
+
+### 7a. Band colour on the body — hue at fixed luminance (2026-09-22, supersedes the wash)
+
+The C5 critic measured the body channel still failing after §7: Critical and Poor lids nearly
+identical in both themes, and in light theme every lid dark and muddy (the light band tokens are the
+AA-on-white text variants, `#b52626` / `#a14a0a`, multiplied almost raw onto a mid-grey body). The
+wash could not fix it at any value, because a token washed toward white keeps only what its channels
+happen to differ in.
+
+`scene.ts :: BODY_BAND_TINT` now takes only the token's **hue** and re-expresses it at one fixed
+saturation and one fixed linear **luminance** per theme (light `s 0.55, Y 0.22`; dark `s 1, Y 0.32`),
+then multiplies the body albedo. Equal luminance, not equal HSL lightness — at one lightness a green
+carries ~2.5x a red's luminance. The LED keeps the true token. Measured (real GPU, `high`,
+1920x1080, median lid RGB inside `chassisScreenBox`, ring 6-10 px outside it for the ground):
+
+| | Critical lid | Poor lid | CIE76 dE C/P | collected chassis vs ground |
+| --- | --- | --- | --- | --- |
+| light, before | 126,91,92 | 122,96,91 | 6.2 | 3.93-5.22:1 |
+| light, after | 146,89,89 | 138,93,67 | 14.9 | 4.39-5.16:1 |
+| dark, before | 174,143,151 | 172,142,143 | 3.9 | 5.53-6.67:1 |
+| dark, after | 179,109,110 | 173,112,89 | 13.1 | 4.05-4.49:1 |
+
+The label letter remains the greyscale channel; the body is now a second, genuinely hue-carrying one.
+
+## 8. Cables are schematic strokes, not cable geometry — ACCEPTED, deliberately
+
+The C5 critic measured a cable's cross-section as a flat plateau (`[100,158,157,101]`) with no
+thickness change under dolly, and called it the "real cable geometry" anti-pattern. That reading is
+correct and the choice is kept, for a reason that outranks the look: **stroke width is an encoding.**
+The four link-speed steps are 1.5 : 2.1 : 2.7 : 3.3 CSS px (`geometry/cables.ts`, `worldUnits:
+false`), and a world-space width component would make a link's apparent speed depend on how far it
+is from the camera — a near 1 G link would out-weigh a far 10 G one. The cylindrical term that
+exists (`CABLE_TUBE_EDGE`, crown 1.0 to edge 0.68) is below what a 2-3 px stroke can resolve once the
+one-pixel coverage ramp is applied, which is why the profile reads flat. Cables in this product are
+schematic strokes of honest, depth-independent weight; that is a decision, not an omission.
+
+## 9. Uncollected ("ghost") chassis fill — raised to a state indicator (light theme)
+
+Light theme, the three never-collected chassis rendered their fill at 1.82-2.08:1 against the
+ground (tint 0.72 toward `--claim-indeterminate`, opacity 0.40) — the legend's "collection:
+topology only" state below the 3:1 a state indicator needs. The shell is now the indeterminate hue
+deepened 40 % toward the ink at opacity 0.92, and the lid hatch deepens with it (a pale hatch
+measured the fill back down to 2.4-2.8:1). Measured after: AP-floor1 4.14:1, AP-floor3-01 4.08:1,
+wan-edge-rtr1.lab 5.06:1 (`materials.ts :: LIGHT_GHOST_DEEPEN`, `LIGHT_GHOST_OPACITY`). Dark theme was
+already 4.54-5.78:1 and is unchanged.

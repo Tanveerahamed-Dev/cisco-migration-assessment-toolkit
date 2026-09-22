@@ -39,7 +39,10 @@ import {
   type ReactNode,
 } from "react";
 import { aclUndecidability } from "../core/acl-coverage";
+import { bandObserved } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
+import { missingInventoryFields, notApplicableReason } from "../core/claims";
+import { placeholderZero } from "../core/placeholders";
 import { useInvestigation } from "../core/store";
 import type { Cite } from "../core/types";
 import { IconClose, IconCopy } from "../ui/icons";
@@ -56,6 +59,9 @@ import {
   type TabItem,
 } from "../ui/primitives";
 import { JsonView, useCopyToClipboard } from "./JsonView";
+import { lineEvaluability } from "../forwarding/engine";
+import { producerFieldNotEmitted } from "./producer-emission";
+import type { AclLine } from "../core/types";
 import "./Inspector.css";
 
 /* ── the active citation: module state, so any surface can open the Inspector ──
@@ -110,6 +116,50 @@ export interface CiteResolution {
   modelPath: string | null;
   /** Every compiled record carrying this citation — more than one is legitimate and is shown. */
   bearers: string[];
+  /**
+   * The records carrying this citation in a compiled document OTHER than the one `record` came from,
+   * rendered beside it rather than behind a switcher. The forwarding engine reads interface ACL
+   * bindings from `acl-bindings.json`, not from `fabric.json`; a binding claim cited
+   * `interfaces.core1.Vlan30` used to resolve to the fabric interface record — status, duplex,
+   * description, and no ACL field — so the record that CARRIED the claim was unreachable
+   * (2026-09-21 critic, B6).
+   */
+  companions: { path: string; record: unknown }[];
+}
+
+/* ── the sidecar documents ─────────────────────────────────────────────────
+   Every compiled JSON next to the forwarding engine that binds the snapshot's bytes
+   (`meta.sourceSha256`) is a citation bearer too — found by content, not listed by name, so a new
+   sidecar compiler cannot fall outside the Inspector the way acl-bindings.json once did. A sidecar
+   path is written `<file>#<path inside it>`. */
+const SIDECAR_MODULES = import.meta.glob("../forwarding/*.json", { eager: true, import: "default" }) as Record<string, unknown>;
+
+const SIDECARS: ReadonlyMap<string, unknown> = new Map(
+  Object.entries(SIDECAR_MODULES)
+    .filter(([, doc]) => {
+      const meta = (doc as { meta?: { sourceSha256?: unknown } } | null)?.meta;
+      return typeof meta?.sourceSha256 === "string";
+    })
+    .map(([p, doc]) => [p.slice(p.lastIndexOf("/") + 1), doc] as const)
+    .sort(([a], [b]) => a.localeCompare(b)),
+);
+
+/** The compiled document a candidate path lives in: "fabric.json" or a sidecar file name. */
+export function documentOf(path: string): string {
+  const hash = path.indexOf("#");
+  return hash > 0 && SIDECARS.has(path.slice(0, hash)) ? path.slice(0, hash) : "fabric.json";
+}
+
+/** Resolve a candidate path — a fabric path, or `<sidecar>#<path>`. */
+export function resolveCandidate(path: string): unknown {
+  const doc = documentOf(path);
+  if (doc === "fabric.json") return resolveCite(path);
+  let cur: unknown = SIDECARS.get(doc);
+  for (const part of path.slice(doc.length + 1).split(/[.[]/).map((p) => p.replace(/]$/, "")).filter(Boolean)) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown>)[part];
+  }
+  return cur;
 }
 
 /**
@@ -135,9 +185,11 @@ export function citeBearers(): ReadonlyMap<string, string[]> {
       if (list) list.push(path);
       else map.set(cite, [path]);
     }
-    for (const k of Object.keys(rec)) walk(rec[k], path === "" ? k : `${path}.${k}`);
+    for (const k of Object.keys(rec)) walk(rec[k], path === "" || path.endsWith("#") ? `${path}${k}` : `${path}.${k}`);
   };
   walk(fabric as unknown, "");
+  // The sidecars follow the fabric, so a citation's first candidate stays the fabric record.
+  for (const [name, doc] of SIDECARS) walk(doc, `${name}#`);
   bearerIndex = map;
   return map;
 }
@@ -161,6 +213,7 @@ export function resolveCitation(cite: Cite | null, which = 0): CiteResolution {
       record: undefined,
       modelPath: null,
       bearers: [],
+      companions: [],
     };
   const bearers = citationCandidates(cite);
   /* `which` indexes the CANDIDATE list, not the bearer list. Indexing only bearers made the
@@ -168,13 +221,15 @@ export function resolveCitation(cite: Cite | null, which = 0): CiteResolution {
      record and the panel kept showing the first, with nothing to say why. */
   const path = bearers[Math.min(Math.max(0, which), bearers.length - 1)];
   if (path === undefined) {
-    return { kind: "unresolved", record: undefined, modelPath: null, bearers };
+    return { kind: "unresolved", record: undefined, modelPath: null, bearers, companions: [] };
   }
+  const doc = documentOf(path);
   return {
     kind: path === cite && resolveCite(cite) !== undefined ? "model" : "bearer",
-    record: resolveCite(path),
+    record: resolveCandidate(path),
     modelPath: path,
     bearers,
+    companions: bearers.filter((b) => documentOf(b) !== doc).map((b) => ({ path: b, record: resolveCandidate(b) })),
   };
 }
 
@@ -224,8 +279,34 @@ const typeOf = (v: unknown): string =>
   v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 
 /** One field of a resolved record. Nested structures are summarised and read in full in the JSON tab. */
-function FieldValue({ name, value }: { name: string; value: unknown }): ReactElement {
-  if (value === null) return <NotObserved what={name} compact />;
+function FieldValue({
+  name,
+  value,
+  record,
+  path = null,
+}: {
+  name: string;
+  value: unknown;
+  record?: unknown;
+  path?: string | null;
+}): ReactElement {
+  /* A value the compiler filled in for a key the collector never emitted is not an observation,
+     whatever it looks like (`false`, `[]`). Asked FIRST, so neither the empty-array reading below
+     nor a bare boolean can present it as the collector's testimony (./producer-emission.ts). */
+  const notEmitted = producerFieldNotEmitted(path, record, name);
+  if (notEmitted !== null) return <NotObserved what={name} why={notEmitted} />;
+  if (value === null) {
+    /* A structural null (no port constraint on an `ip` line, no next hop on a connected route) is
+       not missing evidence; saying "not observed" there would dilute the marker where it matters. */
+    const na = record === undefined ? null : notApplicableReason(record, name);
+    if (na !== null) return <span className="insp-val insp-val--meta" data-not-applicable="true">{na}</span>;
+    return <NotObserved what={name} compact />;
+  }
+  /* A device field every inventoried device reports as 0 is a likely absence, not a count — the same
+     reading the Device pane gives it, from the same owner (core/placeholders.ts). */
+  const device = record === undefined ? undefined : fabric.devices.find((d) => d === record);
+  const ph = device === undefined ? null : placeholderZero(device, name);
+  if (ph !== null) return <NotObserved what={name} why={`${ph.reason}; the record carries 0`} />;
   if (Array.isArray(value)) {
     if (value.length === 0) {
       /* An EMPTY array is an observation: the collector looked and found none. It must not borrow
@@ -374,11 +455,25 @@ function computeGaps(): Gap[] {
       key: "inventory",
       title: "Devices with no inventory record",
       meaning:
-        "No model, serial or software version was returned, so lifecycle and advisory questions about these devices cannot be answered here at all.",
+        "No inventory record was returned, so lifecycle and advisory questions about these devices cannot be answered here at all.",
       total: nDev,
       items: fabric.devices
         .filter((d) => !d.inventoried)
         .map((d) => d.host)
+        .sort(),
+    },
+    {
+      /* A record that was returned is not a record that is complete: core2's software version is
+         empty in the source snapshot, and the gap list above (which reads only the flag) left it
+         out (critic B7). Same predicate as the coverage disclosure's field row. */
+      key: "inventory-fields",
+      title: "Devices with an incomplete inventory record",
+      meaning:
+        "An inventory record was returned but it is missing a model, serial or software version. A missing software version is exactly what lifecycle and advisory questions depend on.",
+      total: nDev,
+      items: fabric.devices
+        .filter((d) => d.inventoried && missingInventoryFields(d).length > 0)
+        .map((d) => `${d.host} — no ${missingInventoryFields(d).join(", ")}`)
         .sort(),
     },
     {
@@ -388,7 +483,7 @@ function computeGaps(): Gap[] {
         "Scoring produced no band for these devices. A missing band is not a good band: they are rendered as indeterminate, never as the default colour of the ramp.",
       total: nDev,
       items: fabric.devices
-        .filter((d) => d.band === null)
+        .filter((d) => !bandObserved(d))
         .map((d) => d.host)
         .sort(),
     },
@@ -421,7 +516,7 @@ function computeGaps(): Gap[] {
       key: "aclline",
       title: "ACL lines that cannot be decided",
       meaning:
-        "The union of three sets: lines this model refuses to evaluate, lines the collector's parser could not model, and lines the snapshot's own reachability analysis returned indeterminate. They overlap only partly, so no one of them is the denominator — stating the parser's flag alone understated this surface and named a line the model decides. A verdict that steps over any member is an overclaim, so any flow reaching one is reported indeterminate and names the line.",
+        "The union of three sets: lines this model refuses to evaluate, lines the collector's parser could not model, and lines the snapshot's own reachability analysis returned indeterminate. They overlap only partly, so no one of them is the denominator — stating the parser's flag alone understated this surface and named a line the model decides. Membership is about the line across all flows. A flow that could match a member this model cannot read is reported indeterminate and names the line; a member whose fields CAN be read for a particular flow (one the snapshot marks indeterminate only in general) may decide that flow, and the trace says so in its caveats. Even then, unless that list's `ip access-group` binding on the hop was observed, such a verdict is capped at OBSERVED and an intent search counts it as undecided.",
       total: undecidable.total,
       items: undecidable.members.map(
         (m) => `${m.label} — ${m.raw ?? "(line text not observed)"} (${m.reasons.join("; ")})`,
@@ -694,6 +789,7 @@ export function Inspector({
     record !== undefined && typeof record === "object" && record !== null && !Array.isArray(record)
       ? Object.entries(record as Record<string, unknown>)
       : [];
+  const aclVerdict = aclLineVerdict(resolution.modelPath, record);
 
   const tabs: TabItem[] = [
     {
@@ -860,12 +956,52 @@ export function Inspector({
                     <div key={k} className="insp-kv__row">
                       <dt className="insp-kv__key">{k}</dt>
                       <dd className="insp-kv__val">
-                        <FieldValue name={k} value={v} />
+                        <FieldValue name={k} value={v} record={record} path={resolution.modelPath} />
+                        {aclVerdict !== null && k === "unmodeledQualifiers" && !aclVerdict.evaluable && producerFieldNotEmitted(resolution.modelPath, record, k) === null ? (
+                          <p className="insp-kv__model" data-model-evaluable={false}>
+                            The qualifiers the collector itself named — not this model’s list.
+                            This model’s verdict on the line is on the unevaluable row.
+                          </p>
+                        ) : null}
+                        {aclVerdict !== null && k === "unevaluable" ? (
+                          <p className="insp-kv__model" data-model-evaluable={aclVerdict.evaluable}>
+                            {producerFieldNotEmitted(resolution.modelPath, record, k) === null
+                              ? "The collector’s own flag."
+                              : "The collector raised no flag either way."}{" "}
+                            {aclVerdict.evaluable
+                              ? "This model also evaluates the line."
+                              : `This model cannot evaluate this line: ${aclVerdict.reason ?? "no reason recorded"}. ${producerFieldNotEmitted(resolution.modelPath, record, k) === null ? "The collector’s flag is narrower than the model’s check, so the" : "The"} line is treated as undecidable wherever it could match.`}
+                          </p>
+                        ) : null}
                       </dd>
                     </div>
                   ))}
                 </dl>
               )}
+              {resolution.companions.map((c) => (
+                <div key={c.path} className="insp-companion" data-companion={c.path}>
+                  <p className="insp-note">
+                    The same citation is also carried by <code>{c.path}</code> in{" "}
+                    <code>{documentOf(c.path)}</code>, a second record compiled from the same snapshot
+                    bytes. {documentOf(c.path) === "fabric.json" ? "" : "The forwarding engine reads its evidence from this one. "}
+                    It is shown in full here, not behind the switcher above.
+                  </p>
+                  {c.record !== null && typeof c.record === "object" && !Array.isArray(c.record) ? (
+                    <dl className="insp-kv">
+                      {Object.entries(c.record as Record<string, unknown>).map(([k, v]) => (
+                        <div key={k} className="insp-kv__row">
+                          <dt className="insp-kv__key">{k}</dt>
+                          <dd className="insp-kv__val">
+                            <FieldValue name={k} value={v} record={c.record} path={c.path} />
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : (
+                    <p className="insp-note">The record there is a {typeOf(c.record)} rather than a keyed record.</p>
+                  )}
+                </div>
+              ))}
               <div className="insp-actions">
                 <Button
                   size="sm"
@@ -878,7 +1014,7 @@ export function Inspector({
                   Download record as JSON
                 </Button>
                 <span className="insp-actions__note">
-                  Exports exactly the record shown above — {recordJson.length} bytes.
+                  Exports exactly the record at {resolution.modelPath} — {recordJson.length} bytes.
                 </span>
               </div>
             </>
@@ -1069,7 +1205,7 @@ export function Inspector({
             value={fabric as unknown}
             rootLabel="fabric.json"
             label="Compiled evidence document"
-            citedPath={resolution.modelPath}
+            citedPath={resolution.modelPath !== null && documentOf(resolution.modelPath) === "fabric.json" ? resolution.modelPath : null}
             visible={tab === "json"}
           />
         </TabPanel>
@@ -1077,4 +1213,23 @@ export function Inspector({
       <LiveRegion message={status} />
     </section>
   );
+}
+
+/**
+ * This model's evaluability verdict for a compiled ACL line, or null when the record is not one.
+ *
+ * The compiled line carries the COLLECTOR's `unevaluable` flag and `unmodeledQualifiers` list. The
+ * model's check is wider — a `time-range` or `established` line is flagged false by the collector
+ * and is undecidable to the engine — so a record showing `unevaluable: false` and an empty
+ * qualifier list read as "this line is evaluable" while the status bar and every trace listed it as
+ * undecidable. The verdict is recomputed from the engine's own function rather than restated, so
+ * the two can never drift.
+ */
+export function aclLineVerdict(modelPath: string | null, record: unknown): { evaluable: boolean; reason: string | null } | null {
+  if (modelPath === null || !/^acls\.[^.[\]]+\.[^[\]]+\[\d+\]$/.test(modelPath)) return null;
+  if (typeof record !== "object" || record === null || Array.isArray(record)) return null;
+  const r = record as Record<string, unknown>;
+  if (!("unevaluable" in r) || !("raw" in r) || !("action" in r)) return null;
+  const v = lineEvaluability(record as AclLine);
+  return { evaluable: v.evaluable, reason: v.reason };
 }

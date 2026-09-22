@@ -54,6 +54,7 @@ import {
   type Camera,
   type Object3D,
   type Scene,
+  type ShaderMaterial,
   type WebGLRenderer,
 } from "three";
 import { SELECTION_LAYERS, assertLayerRegistry } from "./layers";
@@ -82,7 +83,32 @@ export interface PostChain {
   setBloomObjects(objects: readonly Object3D[]): void;
   setSelectionOutline(objects: readonly Object3D[]): void;
   setBlockedOutline(objects: readonly Object3D[]): void;
+  /**
+   * How many OutlineEffects will run their full-scene depth + mask pass in the NEXT render.
+   *
+   * Not the same as "how many have a selection". postprocessing's OutlineEffect.update() runs when
+   * `forceUpdate || selection.size > 0` and then sets `forceUpdate = selection.size > 0` — so the
+   * frame AFTER a selection is cleared still pays the whole pass once (to clear the mask), and so
+   * does the first frame of a freshly constructed effect (`forceUpdate = true` in its
+   * constructor). Budgeting those frames by selection size alone logged "117 draw calls exceeds
+   * the budget of 88 ... 0 outline effect(s) active" on every deselect. Read BEFORE rendering;
+   * the render resets the flag.
+   */
+  outlinesUpdatingNextRender(): number;
   setSize(width: number, height: number): void;
+  /**
+   * Suspend the ambient-occlusion stage (normal pass, depth downsampling, SSAO) while the camera is
+   * moving, and restore it when it stops. Returns true when this chain HAS such a stage, i.e. when a
+   * frame rendered in motion differs from the still frame and a still frame is therefore owed.
+   *
+   * Why (2026-09-22 critic, E4 blocker): at `high`, 1160x962, focus flights and orbit drags rendered
+   * at a 52-55 fps median with a 33.3 ms p95 — whole vsync frames missed — and SSAO's three passes
+   * (a full-scene normal render, a depth downsample and 16x7 occlusion sampling) are the costliest
+   * stage of the chain. Occlusion is a static-shape cue: in motion it cannot be read, so it is paid
+   * for only on the frames a reader can study. The first still frame renders the full chain, so every
+   * capture, and every frame anyone looks at, is unchanged.
+   */
+  setMotion(inMotion: boolean): boolean;
   /**
    * Re-read the camera's near/far into the passes that cached them. Call once per frame; it is a
    * no-op unless the projection actually moved. See `syncCamera` in the implementation for the
@@ -106,6 +132,49 @@ export interface PostChain {
  */
 const AO_PROXIMITY_WORLD = 3;
 const AO_PROXIMITY_FALLOFF_WORLD = 9;
+
+/**
+ * The SSAO sampling radius as a UNIFORM, not a `#define` baked from the stage height.
+ *
+ * postprocessing's `SSAOMaterial.updateRadius` writes `RADIUS = r * resolution.height` (and its
+ * square) into `defines` with 11 decimals, and `setSize` calls it. A define is part of the program
+ * cache key, so EVERY new stage height is a new SSAO program — compiled and linked inside the
+ * first frame composed at that size. MEASURED (unminified release build, headed, Intel D3D11,
+ * 2026-09-22, CDP sampling profile of the first viewport resize 1920x1080 -> 1280x900): 134 ms of
+ * `getProgramInfoLog` under `SSAOEffect.update -> WebGLProgram.getUniforms -> onFirstUse`, i.e.
+ * the link wait, in a 555 ms long animation frame; later resizes back to a height already seen
+ * reused the cached program and cost none of it. Opening the Inspector changes the stage size the
+ * same way. That first-use link was the Fabric3D FrameRequestCallback E5's sweep put over 200 ms
+ * with nothing on screen, for both "open the Inspector" and "resize 1920 -> 1280".
+ *
+ * The shader uses RADIUS / RADIUS_SQ only in run-time expressions (never in a constant
+ * initialiser or a loop bound), so aliasing them to uniforms is exact: same values, one program
+ * for every size. The fragment source changes once, at construction, before the warm-up compiles
+ * it — so the warm-up links the only SSAO program the session will ever use.
+ */
+function bindSsaoRadiusAsUniform(material: ShaderMaterial): void {
+  const m = material as ShaderMaterial & { r?: number; resolution?: { height: number }; updateRadius?: () => void };
+  if (typeof m.updateRadius !== "function" || typeof m.r !== "number" || m.resolution === undefined) return;
+  if (!m.fragmentShader.includes("RADIUS")) return;
+  const radius = { value: 1 };
+  const radiusSq = { value: 1 };
+  m.uniforms.atlasSsaoRadius = radius;
+  m.uniforms.atlasSsaoRadiusSq = radiusSq;
+  delete m.defines.RADIUS;
+  delete m.defines.RADIUS_SQ;
+  m.fragmentShader =
+    "uniform float atlasSsaoRadius;\nuniform float atlasSsaoRadiusSq;\n" +
+    "#define RADIUS atlasSsaoRadius\n#define RADIUS_SQ atlasSsaoRadiusSq\n" +
+    m.fragmentShader;
+  const host = m as { r: number; resolution: { height: number } };
+  m.updateRadius = () => {
+    const r = host.r * host.resolution.height;
+    radius.value = r;
+    radiusSq.value = r * r;
+  };
+  m.updateRadius();
+  m.needsUpdate = true;
+}
 
 /**
  * The SSAO sampling-rotation noise, generated from a FIXED seed.
@@ -316,6 +385,7 @@ export function createPostChain(opts: PostChainOptions): PostChain {
     const generated = ssao.ssaoMaterial.noiseTexture;
     ssao.ssaoMaterial.noiseTexture = ssaoNoise;
     if (generated !== null && generated !== undefined) generated.dispose();
+    bindSsaoRadiusAsUniform(ssao.ssaoMaterial);
     ssaoPass = new EffectPass(camera, ssao);
     passEffects.set(ssaoPass, ["SSAOEffect"]);
     composer.addPass(ssaoPass);
@@ -478,6 +548,28 @@ export function createPostChain(opts: PostChainOptions): PostChain {
 
     setBlockedOutline(objects: readonly Object3D[]): void {
       blockedOutline.selection.set(objects as Object3D[]);
+    },
+
+    outlinesUpdatingNextRender(): number {
+      if (!profile.outline) return 0;
+      let n = 0;
+      for (const effect of [selectionOutline, blockedOutline]) {
+        // `forceUpdate` is a public field in postprocessing 6.x but absent from its typings.
+        const pending = (effect as unknown as { forceUpdate?: boolean }).forceUpdate === true;
+        if (pending || effect.selection.size > 0) n += 1;
+      }
+      return n;
+    },
+
+    setMotion(inMotion: boolean): boolean {
+      if (ssaoPass === null) return false;
+      const on = !inMotion;
+      if (ssaoPass.enabled !== on) {
+        normalPass.enabled = on;
+        depthDown.enabled = on;
+        ssaoPass.enabled = on;
+      }
+      return true;
     },
 
     setSize(width: number, height: number): void {

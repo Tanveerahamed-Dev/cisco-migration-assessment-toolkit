@@ -27,7 +27,7 @@
 .palette .ui-dialog__title {
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -128,7 +128,7 @@
   color: var(--text-faint);
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
 }
 
@@ -269,18 +269,18 @@
   font-family: var(--font-mono);
 }
 
+/* --text-muted, not --claim-out-of-scope: that token is NON-TEXT (4.09:1 on the light palette,
+   3.48:1 on the dark one) and this is 11px text. Previously only the highlighted row switched to
+   --text-muted, so every other row failed 1.4.3. src/core/contrast.test.ts now fails any `color:`
+   in src/ that names a token tokens.css declares non-text. */
 .palette__cite {
-  color: var(--claim-out-of-scope);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-0);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.palette__row[data-active="true"] .palette__cite {
-  color: var(--text-muted);
 }
 
 /* ══ keycaps ═══════════════════════════════════════════════════════════════ */
@@ -320,21 +320,31 @@
   line-height: var(--lh-2);
 }
 
+/* THE FOOTER STAYS INSIDE THE DIALOG (acceptance D4, 2026-09-22). The scope line was
+   `white-space: nowrap` with its ellipsis but no `min-width: 0`, so as a flex item its minimum was
+   its whole sentence: it never shrank, and it pushed the keycap hints 15 px past the dialog's edge
+   onto the backdrop — where "<Esc> close" measured 1.37-1.78:1 in the light theme, because it was
+   being read against the scrim, not the dialog. The container's own scrollWidth still equalled its
+   clientWidth, so nothing flagged it. Now the scope line is the part that gives: it takes the
+   remaining width and WRAPS (a statement of what is being searched is prose, not an identifier to
+   ellipsise), the hints keep their own width, and when both cannot share a line the row wraps. */
 .palette__foot {
   display: flex;
   flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-4);
+  gap: var(--sp-1) var(--sp-4);
+  min-inline-size: 0;
   padding: var(--sp-2) var(--sp-4);
   color: var(--text-faint);
   font-size: var(--fs-0);
 }
 
 .palette__scope {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+  white-space: normal;
   font-variant-numeric: tabular-nums;
 }
 
@@ -381,11 +391,27 @@
   margin-top: var(--sp-3);
 }
 
+/* The WCAG 2.1.4 mechanism: first thing in the sheet, because a user who needs it is the one
+   whose stray keystrokes are already firing commands. */
+.kb-help__setting {
+  display: grid;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.kb-help__setting-desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+}
+
 .kb-help__group-title {
   color: var(--text-faint);
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
 }
 

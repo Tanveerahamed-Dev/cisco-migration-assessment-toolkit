@@ -92,6 +92,22 @@ export function createInteraction(
     return true;
   };
 
+  /* The pick this pointerup already computed, for the rest of the SAME event dispatch. The stage
+     listens to the same pointerup and asks `pick()` at the same point; nothing can move the camera
+     between two listeners of one event, so a second raycast (and the `getBoundingClientRect` in
+     `toNdc`, which by then may force a layout of whatever the first listener's commit changed) is
+     pure waste. Cleared by a task, never by a microtask: microtasks run BETWEEN listeners. */
+  let lastPick: { x: number; y: number; result: PickResult | null } | null = null;
+  let lastPickTimer: ReturnType<typeof setTimeout> | null = null;
+  const rememberPick = (x: number, y: number, result: PickResult | null): void => {
+    lastPick = { x, y, result };
+    if (lastPickTimer !== null) clearTimeout(lastPickTimer);
+    lastPickTimer = setTimeout(() => {
+      lastPick = null;
+      lastPickTimer = null;
+    }, 0);
+  };
+
   const hitTest = (clientX: number, clientY: number): PickResult | null => {
     if (!toNdc(clientX, clientY)) return null;
     raycaster.setFromCamera(ndc, camera as Camera);
@@ -187,6 +203,7 @@ export function createInteraction(
     // only thing separating "rotate the camera" from "choose this device" is this threshold.
     if (moved > CLICK_SLOP_PX || e.timeStamp - downAt > CLICK_MAX_MS) return;
     const result = hitTest(e.clientX, e.clientY);
+    rememberPick(e.clientX, e.clientY, result);
     cb.onPick(result, e.shiftKey || e.metaKey || e.ctrlKey);
   };
 
@@ -202,6 +219,7 @@ export function createInteraction(
 
   return {
     pick(clientX: number, clientY: number): PickResult | null {
+      if (lastPick !== null && lastPick.x === clientX && lastPick.y === clientY) return lastPick.result;
       return hitTest(clientX, clientY);
     },
 
@@ -222,6 +240,8 @@ export function createInteraction(
     },
 
     dispose(): void {
+      if (lastPickTimer !== null) clearTimeout(lastPickTimer);
+      lastPick = null;
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerleave", onPointerLeave);
       canvas.removeEventListener("pointerdown", onPointerDown);

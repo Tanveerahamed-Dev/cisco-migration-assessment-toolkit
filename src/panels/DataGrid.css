@@ -63,6 +63,14 @@
   position: sticky;
   inset-block-start: 0;
   z-index: 1;
+  /* sticky-layer: pinned. A sticky box whose offset lands on a fractional CSS pixel is promoted to
+     its own compositing layer on some loads and not others, and its glyphs rasterize at a
+     different sub-pixel offset each way (measured: 9 of 32 capture frames differed, every pixel in
+     this header's text). A permanent layer makes the rasterization identical on every load, so
+     acceptance F6 holds on the dev server as well as the preview build. It also makes this box
+     the containing block for `position: fixed` descendants; only 1px visually-hidden text sits
+     inside, which stays clipped. Guarded by src/core/sticky-layer.test.ts. */
+  will-change: transform;
   background: var(--surface-2);
 }
 
@@ -152,12 +160,18 @@
 
 /* ── resizer ─────────────────────────────────────────────────────────────────
    A pointer affordance only; Shift+Arrow on the header cell is the keyboard twin (WCAG 2.5.7), so
-   this is deliberately not a tab stop. 8px wide over a 1px rule keeps the grab area honest. */
+   this is deliberately not focusable. The hit area is 24 CSS px wide, centred on the column rule,
+   so it meets the WCAG 2.5.8 minimum target size itself instead of relying on a spacing exception
+   it cannot satisfy beside the sort button (a11y audit D5: the old 8px handle failed). It covers
+   the last 12px of the sort button, which spans the whole header and so stays well above 24px;
+   the visible rule is still the 1px ::after line. */
 .ag__resizer {
   position: absolute;
+  z-index: 1;
   inset-block: 0;
-  inset-inline-end: calc(var(--sp-1) * -1);
-  inline-size: var(--sp-2);
+  inset-inline-end: calc(var(--sp-3) * -1);
+  inline-size: calc(var(--sp-3) * 2);
+  min-block-size: 24px;
   cursor: col-resize;
   touch-action: none;
 }
@@ -210,6 +224,18 @@
 .ag__row--data {
   cursor: default;
   transition: background-color var(--dur-instant) linear;
+  /* NO `content-visibility` on a row, and none on anything inside one. It was here (acceptance E5,
+     cold load, 2026-09-22: it cut the first frame's Layout from 118 ms to 66 ms) on the claim that
+     every row stayed in the accessibility tree. Measured, that was false: Chromium keeps a skipped
+     row NODE but prunes its subtree, so at load 76 of the grid's 152 rows exposed no gridcell, no
+     rowheader and an empty name (CDP Accessibility.getFullAXTree, 1920x1080: rowheader = 70 for 146
+     data rows). A row that owns no cell breaks the grid for browse mode and table navigation
+     (WCAG 1.3.1); keyboard focus hid it because focusing a cell forces that row to render.
+     The rule: a row that is announced is rendered. The only AT-honest way to skip offscreen rows is
+     real windowing with correct aria-rowcount / aria-rowindex (GridWindowing), which AT understands.
+     The E5 layout saving is given back deliberately — correctness of the exposed grid outranks
+     ~50 ms of first-frame Layout. Guarded by DataGrid.a11y-tree.test.ts (source) and
+     review/a11y-ax-rows.mjs (live AX tree: rowheader count == data row count). */
 }
 
 .ag__row--data:hover {
@@ -223,14 +249,27 @@
   box-shadow: inset calc(var(--sp-1) / 2) 0 0 0 var(--accent);
 }
 
+/* Batch membership is a DIFFERENT SHAPE, not a different hue (D8). It used to be the same 2px
+   leading bar as the active row in another colour (#246190 vs #0b6f68), with identical visible
+   text, so the two states differed by hue alone. Now: active = SOLID 2px bar + fill; batched =
+   DASHED 4px bar. A dashed border is a native shape, so it survives greyscale and the forced-
+   colours pass (which keeps borders and drops box-shadows). With both states, the dashed bar sits
+   just inside the solid one so neither overwrites the other. */
 .ag__row--data[data-batched="yes"] {
-  box-shadow: inset calc(var(--sp-1) / 2) 0 0 0 var(--claim-scoped);
+  position: relative;
 }
 
-.ag__row--data[data-active="yes"][data-batched="yes"] {
-  box-shadow:
-    inset calc(var(--sp-1) / 2) 0 0 0 var(--accent),
-    inset var(--sp-2) 0 0 calc(var(--sp-1) * -1) var(--claim-scoped);
+.ag__row--data[data-batched="yes"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-inline-start: var(--sp-1) dashed var(--claim-scoped);
+  pointer-events: none;
+}
+
+.ag__row--data[data-active="yes"][data-batched="yes"]::before {
+  inset-inline-start: calc(var(--sp-1) / 2);
 }
 
 /* Rows that name whatever is selected on another surface — the findings on the selected device,
@@ -253,10 +292,14 @@
 
 /* ── group headers ──────────────────────────────────────────────────────────── */
 
+/* A group header is a landmark, not a row. On the rows' own --surface-1, at the rows' own 11px
+   metadata size, CRITICAL and HIGH read as two more lines of the list. It takes the one step darker
+   ground, a rule above as well as below, and open caps tracking (--ls-caps), so the eye can jump
+   from band to band down a 146-row queue — all achromatic, so severity keeps the only colour. */
 .ag__row--group {
   grid-template-columns: 1fr;
-  background: var(--surface-1);
-  border-block-end: var(--hairline) solid var(--border);
+  background: var(--surface-2);
+  border-block: var(--hairline) solid var(--border-strong);
   padding-inline: 0;
 }
 
@@ -270,7 +313,7 @@
   color: var(--text);
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   cursor: pointer;
 }
@@ -325,8 +368,7 @@
 /* ── forced colours ─────────────────────────────────────────────────────────── */
 
 @media (forced-colors: active) {
-  .ag__row--data[data-active="yes"],
-  .ag__row--data[data-batched="yes"] {
+  .ag__row--data[data-active="yes"] {
     /* A system-coloured inset shadow is dropped by the forced-colours pass, so the selected row
        would otherwise be indistinguishable. An outline survives. */
     outline: var(--hairline) solid Highlight;
@@ -337,5 +379,10 @@
      to be made of something the pass keeps, so it becomes a border on the pseudo-element. */
   .ag__row--data[data-related="yes"]::after {
     border-inline-end: calc(var(--sp-1) / 2) solid CanvasText;
+  }
+
+  /* The dashed bar is a border, so the pass keeps its shape; give it a system colour. */
+  .ag__row--data[data-batched="yes"]::before {
+    border-inline-start-color: Highlight;
   }
 }

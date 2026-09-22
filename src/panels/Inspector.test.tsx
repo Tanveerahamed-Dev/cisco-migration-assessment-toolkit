@@ -20,12 +20,14 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aclUndecidability } from "../core/acl-coverage";
+import * as claims from "../core/claims";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import {
   Inspector,
   citeBearers,
   citationCandidates,
+  aclLineVerdict,
   resolveCitation,
   setInspectorCite,
   openInspector,
@@ -152,6 +154,11 @@ describe("citation resolution has two honest layers", () => {
       for (const k of Object.keys(rec)) walk(rec[k]);
     };
     walk(fabric as unknown);
+    /* The sidecar documents the forwarding engine reads (every src/forwarding/*.json that binds the
+       snapshot bytes) are citation bearers too — the engine's evidence cites them (critic B6). */
+    for (const doc of Object.values(import.meta.glob("../forwarding/*.json", { eager: true, import: "default" }))) {
+      if (typeof (doc as { meta?: { sourceSha256?: unknown } }).meta?.sourceSha256 === "string") walk(doc);
+    }
     expect(cites.size).toBeGreaterThan(100);
     const missing = [...cites].filter((c) => resolveCitation(c).kind === "unresolved");
     expect(missing, `citations no record in this build can answer:\n${missing.join("\n")}`).toEqual(
@@ -180,6 +187,82 @@ describe("the Data tab shows the record behind a claim", () => {
     expect(waveRow, "the null field must still be listed, not omitted").toBeTruthy();
     expect(waveRow!.querySelector('[data-unobserved="true"]')).toBeTruthy();
     expect(text(waveRow!)).toContain("not observed");
+  });
+
+  it("renders a STRUCTURAL null as not applicable, not as not observed (B1)", () => {
+    /* `deny ip any any` rendered "sport: not observed", and a connected route "nextHop: not
+       observed" — nothing is missing in either; the record's shape says the field cannot apply. */
+    const rowsOf = (cite: string): Element[] => {
+      const c = mount(<Inspector cite={cite} forceOpen />);
+      return [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])];
+    };
+    const pick = (rows: Element[], key: string): Element => {
+      const row = rows.find((r) => text(r.querySelector(".insp-kv__key")) === key);
+      expect(row, key).toBeTruthy();
+      return row!;
+    };
+    const acl = rowsOf("acls.core1.PROTECT_SERVERS[3]");
+    for (const key of ["sport", "dport", "icmpType"]) {
+      const row = pick(acl, key);
+      expect(row.querySelector('[data-unobserved="true"]'), key).toBeNull();
+      expect(row.querySelector('[data-not-applicable="true"]'), key).toBeTruthy();
+    }
+  });
+
+  it("renders a connected route's missing next hop as not applicable (B1)", () => {
+    const rowsOf = (cite: string): Element[] => {
+      const c = mount(<Inspector cite={cite} forceOpen />);
+      return [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])];
+    };
+    const pick = (rows: Element[], key: string): Element => {
+      const row = rows.find((r) => text(r.querySelector(".insp-kv__key")) === key);
+      expect(row, key).toBeTruthy();
+      return row!;
+    };
+    const connected = fabric.routes["core1"]!.findIndex((r) => r.source === "connected" && r.nextHop === null);
+    expect(connected).toBeGreaterThanOrEqual(0);
+    const nh = pick(rowsOf(`routes.core1[${connected}]`), "nextHop");
+    expect(text(nh)).toContain("a connected route has no next hop");
+    expect(nh.querySelector('[data-unobserved="true"]')).toBeNull();
+  });
+
+  it("keeps a null that MAY be missing as not observed — a port operator on the line, an ICMP line", () => {
+    const { notApplicableReason } = claims;
+    expect(notApplicableReason({ action: "permit", raw: "permit tcp any any eq 443", proto: "tcp", unevaluable: false, dport: null }, "dport")).toBeNull();
+    expect(notApplicableReason({ action: "permit", raw: "permit icmp any any", proto: "icmp", unevaluable: false, icmpType: null }, "icmpType")).toBeNull();
+    expect(notApplicableReason({ action: "permit", raw: "permit tcp any any", proto: "tcp", unevaluable: true, dport: null }, "dport")).toBeNull();
+    expect(notApplicableReason({ prefix: "0.0.0.0/0", source: "static", nextHop: null }, "nextHop")).toBeNull();
+    expect(notApplicableReason({ action: "permit", raw: null, proto: "ip", unevaluable: false, sport: null }, "sport")).toBeNull();
+    // A source-port operator (before the destination) keeps a null sport an absence.
+    expect(notApplicableReason({ action: "permit", raw: "permit udp any eq 53 any", proto: "udp", unevaluable: false, sport: null }, "sport")).toBeNull();
+    // A port list this grammar refuses is not read as "no constraint".
+    expect(notApplicableReason({ action: "permit", raw: "permit tcp any any eq 80 443", proto: "tcp", unevaluable: false, sport: null }, "sport")).toBeNull();
+  });
+
+  it("reads a port operator by POSITION: a destination 'eq' says nothing about the source port (2026-09-22 auditor, B1)", () => {
+    const { notApplicableReason } = claims;
+    const line = fabric.acls["core1"]!["PROTECT_SERVERS"]![0]!;
+    expect(line.raw).toBe("permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443");
+    expect(line.sport).toBeNull();
+    expect(notApplicableReason(line, "sport")).toMatch(/no source-port constraint/);
+    expect(notApplicableReason({ action: "permit", raw: "permit tcp any eq 1024 any", proto: "tcp", unevaluable: false, dport: null }, "dport")).toMatch(/no destination-port constraint/);
+    // And in the rendered Inspector the row is not-applicable, not "not observed".
+    const c = mount(<Inspector cite={line.cite} forceOpen />);
+    const row = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])].find((r) => text(r.querySelector(".insp-kv__key")) === "sport");
+    expect(row).toBeTruthy();
+    expect(row!.querySelector('[data-unobserved="true"]')).toBeNull();
+    expect(row!.querySelector('[data-not-applicable="true"]')).toBeTruthy();
+  });
+
+  it("renders a connected route's missing administrative distance as 0 by definition, not as not observed", () => {
+    const { notApplicableReason } = claims;
+    const i = fabric.routes["core1"]!.findIndex((r) => r.source === "connected" && r.adminDistance === null);
+    expect(i, "precondition: a connected route with no AD in the record").toBeGreaterThanOrEqual(0);
+    expect(notApplicableReason(fabric.routes["core1"]![i], "adminDistance")).toMatch(/^0 — a connected route/);
+    expect(notApplicableReason({ prefix: "0.0.0.0/0", source: "static", adminDistance: null }, "adminDistance")).toBeNull();
+    const c = mount(<Inspector cite={`routes.core1[${i}]`} forceOpen />);
+    const row = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])].find((r) => text(r.querySelector(".insp-kv__key")) === "adminDistance");
+    expect(row!.querySelector('[data-unobserved="true"]')).toBeNull();
   });
 
   it("distinguishes an empty array from an unobserved one", () => {
@@ -592,5 +675,24 @@ describe("Inspector — the stylesheet", () => {
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(css).not.toMatch(/font-size:\s*\d/);
     expect(css).not.toMatch(/(transition|animation)[^;]*\b\d+m?s\b/);
+  });
+});
+
+describe("an ACL line record carries this model's evaluability, not only the collector's flag", () => {
+  /* REGRESSION: acls.core1.INET_RETURN[1] (`… time-range BUSINESS_HOURS`) showed `unevaluable: false`
+     and an empty qualifier list, reading as "evaluable", while the status bar and every trace
+     listed it as undecidable. */
+  it("marks a line the collector flagged false as undecidable to this model, with the reason", () => {
+    const r = resolveCitation("acls.core1.INET_RETURN[1]");
+    expect((r.record as { unevaluable: boolean }).unevaluable).toBe(false);
+    const v = aclLineVerdict(r.modelPath, r.record);
+    expect(v).not.toBeNull();
+    expect(v!.evaluable).toBe(false);
+    expect(v!.reason).toMatch(/time-range/);
+  });
+
+  it("returns null for a record that is not an ACL line", () => {
+    const r = resolveCitation("routes.core1[0]");
+    expect(aclLineVerdict(r.modelPath, r.record)).toBeNull();
   });
 });

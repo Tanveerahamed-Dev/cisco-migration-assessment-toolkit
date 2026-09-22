@@ -22,11 +22,17 @@
  *     with it. The numbers are in docs/render-decisions.md §5.
  */
 import { describe, expect, it } from "vitest";
+import { fabric } from "../../core/data";
 import { CONTACT_PLATEAU } from "../materials";
+import { computeLayout } from "../layout";
 import {
   CONTACT_SILHOUETTE_RADIUS,
   CONTACT_SPREAD,
+  MIN_SURFACE_UNDER_NODE,
   contactDecalGrounds,
+  deckFadeAlpha,
+  deckSupport,
+  surfaceUnderNodes,
 } from "./ground";
 
 /**
@@ -74,5 +80,35 @@ describe("the contact decal's plateau and the chassis silhouette", () => {
     // A decal narrower than the chassis cannot show a contact shadow at all.
     expect(CONTACT_SPREAD[0]).toBeGreaterThan(2);
     expect(CONTACT_SPREAD[1]).toBeGreaterThan(2);
+  });
+});
+
+/* ── every NODE stands on a surface (render audit #5) ─────────────────────────────────────────
+   The tier decks fade radially from their tier's centre, so a node at the extreme of a wide or
+   sparse tier stood on pure backdrop: `wan-edge-rtr1.lab` and `AP-floor3-01` rendered floating at
+   both quality tiers, and a darkening contact decal cannot ground anything on a surface that is
+   already the backdrop. The doctrine is per node; this asserts it per node, on the REAL layout. */
+
+describe("the surface under every laid-out node", () => {
+  const layout = computeLayout({ devices: fabric.devices, links: fabric.links, tiers: fabric.tiers });
+
+  it("mirrors the deck's radial fade texture", () => {
+    expect(deckFadeAlpha(0)).toBe(1);
+    expect(deckFadeAlpha(1)).toBe(0);
+    expect(deckFadeAlpha(1.4)).toBe(0);
+    expect(deckFadeAlpha(0.5)).toBeCloseTo(Math.pow(0.5, 2.2), 10);
+  });
+
+  it("finds the nodes the tier deck alone leaves floating — the guard is not inert here", () => {
+    const deckOnly = deckSupport(layout.tierBounds, layout.nodes);
+    expect(deckOnly.get("wan-edge-rtr1.lab")).toBeLessThan(MIN_SURFACE_UNDER_NODE);
+    expect([...deckOnly.values()].some((a) => a >= MIN_SURFACE_UNDER_NODE)).toBe(true);
+  });
+
+  it("puts a surface under every node once pads are laid", () => {
+    const surface = surfaceUnderNodes(layout.tierBounds, layout.nodes);
+    expect(surface.size).toBe(layout.nodes.length);
+    const floating = [...surface].filter(([, a]) => a < MIN_SURFACE_UNDER_NODE).map(([id]) => id);
+    expect(floating).toEqual([]);
   });
 });

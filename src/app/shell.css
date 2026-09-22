@@ -185,11 +185,29 @@ a {
           revealed exactly when there is content past it. */
     linear-gradient(to top, var(--scroll-scrim-ink, rgb(0 0 0 / 22%)) 0, transparent 100%);
   background-position: bottom center, bottom center;
+  /* The SHADOW is an EDGE, not a band (a11y audit D4, 2026-09-22). It was --sp-5 (24px) tall, so
+     the row being cut by the fold sat entirely on top of it: in the light theme "Compound risk"
+     (11px, 5.36:1 by tokens) measured a median 3.54:1 against the real pixels behind it, and the
+     host name fell to 4.62:1 — the shadow darkened the ground under dark text. Contrast is owed to
+     text on the ground it actually sits on, so the cue now lives in the last --sp-1 (4px) of the
+     box, where a glyph is already being clipped by the edge itself; the rest of the cut row keeps
+     its own ground. Still two channels of cue (the edge darkens, the glyphs are visibly cut).
+     `--scroll-scrim-edge` is the one knob, shared with Inspector.css's opt-in copy of this rule.
+     The COVER stays --sp-5: its solid 40% (≈9.6px) must fully hide the edge at the end of list. */
   background-size:
     100% var(--sp-5),
-    100% var(--sp-5);
+    100% var(--scroll-scrim-edge, var(--sp-1));
   background-repeat: no-repeat, no-repeat;
   background-attachment: local, scroll;
+  /* Deliberately NOT layer-pinned. Measured 2026-09-21: a rare capture (about 1 frame in 64-100)
+     differs from its twin by exactly 1 in 8 bits across this scrim's gradient band, plus a few
+     anti-aliased icon edges in the header. Pinning these scrollers with `will-change: transform`
+     was tried and did NOT help (3 of 192 frames still varied, same signature, the band moved with
+     the box), so the pin is not applied. Located 2026-09-21: the alternate is page-wide (every
+     scrim band on the page flips together, with some SVG icon edges) and disappears when Chrome
+     rasterizes page tiles on the CPU, so it is GPU tile-raster state in the capture browser, not
+     this rule. The capture harness now pins CPU tile raster; the measurement is in
+     review/capture.mjs (GPU_ARGS) and docs/acceptance.md (F6). No change to this rule was needed. */
 }
 
 /* The scrim is a cue, not a veil: on a surface whose fill is not --bg, name the fill so the cover
@@ -293,7 +311,9 @@ a {
    surface that jitters while you read it is not usable. */
 .app {
   display: grid;
-  grid-template-rows: var(--header-h) var(--querybar-h) minmax(0, 1fr) var(--statusbar-h);
+  /* The status bar's row is `auto` over a floor (the bar's own min-height): when the coverage
+     group has to wrap (B7), the permanent line grows rather than hiding a denominator. */
+  grid-template-rows: var(--header-h) var(--querybar-h) minmax(0, 1fr) auto;
   height: 100%;
   background: var(--bg);
   isolation: isolate;
@@ -327,6 +347,13 @@ a {
   overflow: hidden;
 }
 
+/* B7: the coverage line is PERMANENTLY visible, at every width. Two things used to defeat that:
+   the whole bar was one horizontal scroll region, so at 390px the ACL and centrality denominators
+   sat off-screen (x369-418 at 390x844); and at 768px the queue's rows, overflowing their track,
+   painted OVER the bar (elementFromPoint at each denominator returned a grid row). So the bar
+   no longer scrolls — only its non-coverage remainder does (`.sb__rest`, chrome.css) — it WRAPS
+   and grows instead of hiding a figure, and it is positioned above the body so no panel content
+   can paint over it. Its opaque surface is what makes that layering honest rather than a z-fight. */
 .app__status {
   border-top: var(--hairline) solid var(--border);
   background: var(--surface-1);
@@ -334,8 +361,11 @@ a {
   font-size: var(--fs-0);
   line-height: var(--lh-0);
   letter-spacing: var(--ls-0);
-  gap: var(--sp-4);
-  overflow-x: auto;
+  gap: 0 var(--sp-4);
+  flex-wrap: wrap;
+  min-height: var(--statusbar-h);
+  position: relative;
+  z-index: 2;
   white-space: nowrap;
 }
 
@@ -404,19 +434,10 @@ a {
      is where an investigation starts, can no longer be driven to a blank strip by a trace opening
      above it. The floor is declared once, on the grid, and the arithmetic here follows it — there
      is deliberately no per-viewport list of exceptions. */
-  /* The queue's floor: its own chrome above the grid — the corpus switch, the query box, the
-     filter controls and the account scope line, MEASURED at 13.75rem / 220px — plus the 19rem
-     min-height .ag__grid declares for itself in DataGrid.css. Keep the second term equal to that
-     one; it is restated rather than inherited because a custom property cannot be read upward from
-     a descendant.
-     `min-content` is deliberately NOT used: .ag__grid is a scroll container, so its min-content
-     height in the block axis is its whole ~7,000px of rows, which inflates the track instead of
-     flooring it.
-     Both terms are measured constants and both can rot if the queue's chrome or its row density
-     changes. review/layout-guard.mjs is what stops that happening silently: it counts the finding
-     rows that are really hit-testable, in a real browser, at four viewports, with and without a
-     trace open, and fails loudly when this drifts. */
-  --rail-a-queue-min: calc(13.75rem + 19rem);
+  /* Fallback track list for the narrow (<48rem) flow layout, where the queue's grid is NOT size
+     contained and `min-content` would therefore be its whole ~7,000px of rows. The fixed-frame
+     layout (>=48rem) replaces this below with a floor DERIVED from the queue itself. */
+  --rail-a-queue-min: calc(15rem + 19rem);
   grid-template-rows:
     minmax(
       0,
@@ -430,11 +451,38 @@ a {
            rung it reserved 207px for a panel that needed 198px and took the difference out of the
            queue, pushing it back under its own floor. Neither panel may starve the other, and the
            one that yields should be the one that scrolls internally. */
-        max(10rem, calc(100% - var(--rail-a-queue-min) - var(--sp-2)))
+        max(10rem, calc(100% - var(--rail-a-queue-min) - var(--sp-5)))
       )
     )
     auto
     minmax(0, 1fr);
+}
+
+/* Fixed frame (>=48rem): the queue's floor is DERIVED, not restated.
+   Measured before this rule (2026-09-22 capability audit, A4): at 1920x1080 with a trace open the
+   findings grid's box ran to y=1091 — 37px under the status bar, whose top is 1054 — and rows were
+   painted across the coverage text. The same overflow held at 1600x1000 (37px), 1280x800 (39px)
+   and 1024x768 (99px). Two restated constants had drifted apart from what they described: the
+   queue's chrome is 240px, not the 220px written down (and at 1440 it was being SQUASHED to 203px
+   to make the arithmetic fit), and the subtraction used the 8px gap token for a 24px splitter.
+   No correction of those numbers stays correct: the chrome wraps with the rail's width.
+   So the queue track's minimum is the queue's own `min-content`. That is safe HERE and only here:
+   `.pq .ag__grid` is `contain: size layout` inside this same media query (PriorityQueue.css), so
+   the grid's min-content block size is exactly its own 19rem floor (DataGrid.css) rather than its
+   ~7,000px of rows. Grid resolves the queue's real floor first; the path panel takes what is left,
+   up to its split, and keeps 10rem (the tab row and the first flow fields) as its own floor.
+   When the rail is too short for BOTH floors (the 1280x800 and single-column rungs) the rail
+   scrolls internally rather than letting the queue paint under the status bar, so every row is
+   reachable and a row a reveal scrolls to is really on screen, not under the chrome. */
+@media (min-width: 48rem) {
+  .rail--a[data-split="true"] {
+    grid-template-rows:
+      minmax(min(10rem, 100%), var(--rail-a-split, 60%))
+      auto
+      minmax(min-content, 1fr);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 /* The POINTER TARGET is 24px tall (SC 2.5.8 Target Size (Minimum), on its own size rather than
@@ -579,15 +627,34 @@ a {
   }
 
   .app {
-    grid-template-rows: var(--header-h) auto auto var(--statusbar-h);
+    grid-template-rows: var(--header-h) auto auto auto;
     height: auto;
     min-height: 100%;
+    /* `hidden` makes .app a scroll container, and a sticky descendant then sticks to a box that
+       never scrolls — i.e. not at all. `clip` keeps the no-escape guarantee on the horizontal axis
+       without creating a scroll container, so the status bar below can pin to the viewport. */
+    overflow: visible;
+    overflow-x: clip;
   }
 
   .app__query {
     flex-wrap: wrap;
     padding-block: var(--sp-2);
     overflow: visible;
+  }
+
+  /* B7: coverage is permanently visible. Once the frame becomes a scrolling document at this
+     width, the status bar — the only surface carrying 23/26, RIBs 2/26, ACLs 1/26 — was a static
+     last row thousands of pixels below the fold (measured y=10040 at 400x800). Sticky keeps it in
+     the grid's last row in document order (so reading order and the landmark are unchanged) while
+     pinning it to the viewport's bottom edge for as long as the page scrolls. */
+  .app__status {
+    /* sticky-layer: exempt. will-change would make this footer the containing block of the
+       `position: fixed` coverage panel (.covpanel) it renders, trapping that panel in a 26px bar. */
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
   .app__body {

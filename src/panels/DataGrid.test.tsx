@@ -171,6 +171,53 @@ describe("grid structure", () => {
     expect(heads[2]?.hasAttribute("aria-sort")).toBe(false);
   });
 
+  /* A11Y critic, D2: with no single-column sort every header said aria-sort="none" while the rows
+     were in a composite ranked order. The order must be determinable from the grid itself. */
+  it("states the current order in the grid's description, alongside the caller's own", () => {
+    const { container } = mount(
+      <>
+        <p id="caller-desc">caller</p>
+        <DataGrid<Row>
+          label="Rows"
+          columns={columns}
+          nodes={dataNodes()}
+          template={TEMPLATE}
+          onSort={() => undefined}
+          describedBy="caller-desc"
+          orderDescription="Order: ranked by severity, then priority."
+        />
+      </>,
+    );
+    const ids = container.querySelector('[role="grid"]')?.getAttribute("aria-describedby")?.split(" ") ?? [];
+    expect(ids[0]).toBe("caller-desc");
+    const text = ids.map((id) => document.getElementById(id)?.textContent);
+    expect(text).toContain("Order: ranked by severity, then priority.");
+  });
+
+  /* A11Y critic, D8: the related-row mark was a trailing-edge line only; the relation must be
+     exposed per row, and ONLY on related rows. */
+  it("exposes a related row's relation per row, in words, and nowhere else", () => {
+    const { container } = mount(
+      <DataGrid<Row>
+        label="Rows"
+        columns={columns}
+        nodes={dataNodes()}
+        template={TEMPLATE}
+        relatedIds={new Set(["r2"])}
+        relatedDescription="names the selected device core1"
+      />,
+    );
+    const related = container.querySelector<HTMLElement>('[data-related="yes"]');
+    expect(related?.getAttribute("aria-description")).toBe("names the selected device core1");
+    expect(related?.querySelector('[role="rowheader"]')?.textContent).toContain("names the selected device core1");
+    const plain = [...container.querySelectorAll<HTMLElement>(".ag__row--data")].filter((r) => r !== related);
+    expect(plain).toHaveLength(rows.length - 1);
+    for (const r of plain) {
+      expect(r.hasAttribute("aria-description")).toBe(false);
+      expect(r.textContent).not.toContain("selected device");
+    }
+  });
+
   /* ── D2: nothing focusable may be hidden from assistive technology ──────────
      The sort button used to carry a permanent `aria-hidden="true"` while F2 raised its tabindex
      to 0, so focus landed somewhere with no name, no role and no state (axe `aria-hidden-focus`).
@@ -321,6 +368,9 @@ describe("APG keyboard contract", () => {
     const stub = (el: Element, h: number): void => {
       el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 200, height: h, top: 0, left: 0, right: 200, bottom: h, toJSON: () => ({}) }) as DOMRect;
     };
+    /* The page is the VISIBLE band (the grid's box below its header, inside every clip and the
+       viewport), read from layout rects rather than clientHeight — so the port gets a box too. */
+    stub(grid, portPx);
     stub(container.querySelector(".ag__head")!, headPx);
     for (const r of container.querySelectorAll(".ag__row--data")) stub(r, rowPx);
   };
@@ -402,10 +452,22 @@ describe("APG keyboard contract", () => {
   });
 
   it("Escape leaves the grid when the host does not handle it", () => {
-    const { container } = setup();
+    const { container, first } = setup();
+    /* The grid sits in a host surface, as it does in production (PriorityQueue's labelled
+       section). This fixture used to mount the grid straight under <body> with nothing else
+       focusable, so the ONLY way the assertion below could pass was focus dropping to <body> —
+       the acceptance D3 defect was what made it green. Leaving now lands on the host's region
+       landmark (src/app/focus-return.ts), and the added assertion pins that it is not <body>. */
+    const host = document.createElement("section");
+    host.setAttribute("aria-label", "Host surface");
+    document.body.appendChild(host);
+    host.appendChild(container);
+    focus(first); // re-parenting a focused node blurs it
     expect(container.contains(document.activeElement)).toBe(true);
     key(document.activeElement!, "Escape");
     expect(container.contains(document.activeElement)).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(host);
   });
 
   it("Escape keeps focus in the grid when the host handles it", () => {
@@ -507,14 +569,17 @@ describe("group rows", () => {
     { kind: "group", id: "g2", label: "Not observed", count: 0, observed: false, collapsed: true },
   ];
 
-  it("is one spanning cell carrying aria-expanded on its row", () => {
+  it("is one spanning cell carrying aria-expanded on the CELL, never on the plain-grid row", () => {
     const { container } = mount(<DataGrid<Row> label="Rows" columns={columns} nodes={grouped} template={TEMPLATE} />);
     const groupRow = container.querySelector<HTMLElement>('[role="row"][aria-rowindex="2"]');
-    expect(groupRow?.getAttribute("aria-expanded")).toBe("true");
+    /* An expandable ROW is treegrid semantics (A11Y critic, D2); no row in a role=grid carries it. */
+    expect(container.querySelectorAll('[role="grid"] [role="row"][aria-expanded]').length).toBe(0);
     expect(groupRow?.querySelectorAll('[role="gridcell"]').length).toBe(1);
-    expect(groupRow?.querySelector('[role="gridcell"]')?.getAttribute("aria-colspan")).toBe(String(columns.length));
+    const cell = groupRow?.querySelector('[role="gridcell"]');
+    expect(cell?.getAttribute("aria-expanded")).toBe("true");
+    expect(cell?.getAttribute("aria-colspan")).toBe(String(columns.length));
     expect(
-      container.querySelector<HTMLElement>('[role="row"][aria-rowindex="5"]')?.getAttribute("aria-expanded"),
+      container.querySelector<HTMLElement>('[role="row"][aria-rowindex="5"] [role="gridcell"]')?.getAttribute("aria-expanded"),
     ).toBe("false");
   });
 
@@ -651,5 +716,57 @@ describe("the same contract over the real snapshot", () => {
     focus(at(container, 2, 1));
     key(document.activeElement!, "PageDown");
     expect(position(container)).toEqual([7, 1]);
+  });
+});
+
+/* ══ an external selection carries the tab stop (D3) ═══════════════════════
+   MEASURED by an independent critic: picking F099 from the command palette while focus sat on the
+   F001 cell revealed F099, but the dialog then restored focus to the F001 cell — 4,007 px above
+   the scroll port, no visible focus — and the next ArrowDown scrolled the queue back to the top. */
+
+describe("an external selection moves the roving cell with the reveal", () => {
+  const ui = (activeId: string | null): ReactNode => (
+    <>
+      <button type="button" id="outside">
+        outside
+      </button>
+      <DataGrid<Row> label="Rows" columns={columns} nodes={dataNodes(manyRows)} template={TEMPLATE} activeId={activeId} />
+    </>
+  );
+
+  it("puts the single tab stop on the selected row, keeping the reader's column", () => {
+    const { container, render } = mount(ui(null));
+    focus(at(container, 3, 2));
+    focus(container.querySelector<HTMLElement>("#outside")!);
+    render(ui("m30"));
+    expect(container.querySelectorAll('[tabindex="0"]').length).toBe(1);
+    expect(position(container)).toEqual([31, 2]);
+  });
+
+  it("redirects focus restored to the stale invoker cell onto the selected row", () => {
+    const { container, render } = mount(ui(null));
+    const invoker = at(container, 3, 1);
+    focus(invoker);
+    focus(container.querySelector<HTMLElement>("#outside")!); // the palette takes focus
+    render(ui("m30")); // the palette commits a selection
+    focus(invoker); // the dialog restores focus to whatever opened it
+    const active = document.activeElement as HTMLElement;
+    expect(active.closest('[role="row"]')?.getAttribute("aria-rowindex")).toBe("31");
+    key(active, "ArrowDown");
+    expect(position(container)).toEqual([32, 1]);
+  });
+
+  it("does not override a cell the reader clicks after the selection", () => {
+    const { container, render } = mount(ui(null));
+    focus(at(container, 3, 1));
+    focus(container.querySelector<HTMLElement>("#outside")!);
+    render(ui("m30"));
+    const target = at(container, 5, 1);
+    act(() => {
+      target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      target.focus();
+    });
+    expect(document.activeElement).toBe(target);
+    expect(position(container)).toEqual([5, 1]);
   });
 });

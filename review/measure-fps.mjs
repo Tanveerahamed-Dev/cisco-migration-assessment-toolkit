@@ -28,6 +28,14 @@
  *      measured at, so no one can read a half-area figure as a full-screen one. `ATLAS_FULLBLEED=1`
  *      hides the rails through the app's own single-column ladder so the fabric gets the width.
  *
+ *   3b. THE CONDITION USERS PRODUCE IS AN ORBIT, NOT A FLIGHT (review finding, E4, 2026-09-22).
+ *      focusDevice flights passed at a 55.6-56.7 fps median while an 8 s continuous orbit drag —
+ *      the commonest thing a reader does to a 3-D fabric — rendered at 53.9-54.5 fps on the same
+ *      build and machine. So the harness now ALSO drives a continuous pointer-drag orbit through the
+ *      canvas, split into its own replicate windows, and E4 passes only when BOTH conditions hold the
+ *      bar. It also records whether the scene SAID so when a condition fell below the bar
+ *      (`stats().frameRateBelowBar` or a lowered tier): E4 requires degradation to be explicit.
+ *
  *   4. ONE RUN IS NOT A MEASUREMENT. The gate is replicated across the run's own sample windows and
  *      records how busy the host was while it measured; see REPLICATION beside the verdict. A run
  *      that holds the bar on a contended machine is a PASS but is NOT acceptance evidence, and the
@@ -47,6 +55,19 @@ import { cpus } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { checkBuildFreshness } from "./build-freshness.mjs";
+import {
+  FULL_RATE_MAX_RAF_MS,
+  NO_OCCLUSION_ARGS,
+  createLoadMeter,
+  describePower,
+  ensurePresenting,
+  gatedBusy,
+  hostPower,
+  idleBaseline,
+  presentationState,
+  rafCadence,
+} from "./host-env.mjs";
 
 /**
  * Host busyness across the run, from the OS scheduler's own cumulative per-core times.
@@ -83,6 +104,18 @@ const hostBusyFraction = (start) => {
   return Number((1 - dIdle / dTotal).toFixed(3));
 };
 const hostCpuAtStart = cpuTicks();
+
+/* HOST POWER, PRESENTATION AND NET CONTENTION (perf audit, 2026-09-22) — see ./host-env.mjs.
+   Measured on the reference machine: on battery with Energy Saver ON the browser presented at 30 Hz
+   or stopped presenting altogether. Three runs of one unchanged build gave FAIL, NOT MEASURED (a
+   "1016.8 ms STALL" that was the window not presenting) and PASS, none of them recording power, and
+   this report was stamped "unthrottled". Power is now read at the start and end; the window must be
+   presenting at full rate before and after the measured conditions; and the busy figure the gate
+   reads excludes this harness's own browser. */
+const hostPowerAtStart = hostPower();
+const hostIdleBaseline = await idleBaseline(3000);
+const hostLoadMeter = createLoadMeter();
+hostLoadMeter.start();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = process.env.ATLAS_URL || "http://localhost:4181";
@@ -138,7 +171,7 @@ const INSTRUMENT = `
   })();
 `;
 
-const browser = await chromium.launch(HEADED ? { headless: false, args: ["--window-size=1940,1180"] } : {});
+const browser = await chromium.launch(HEADED ? { headless: false, args: ["--window-size=1940,1180", ...NO_OCCLUSION_ARGS] } : {});
 const ctx = await browser.newContext({
   viewport: { width: 1920, height: 1080 },
   deviceScaleFactor: 1,
@@ -159,6 +192,9 @@ if (FULLBLEED) {
   await page.setViewportSize({ width: 1020, height: 1080 });
   await page.waitForTimeout(1200);
 }
+
+/* Before anything is measured: is the window presenting, and at what rate? */
+const presentationBefore = HEADED ? await ensurePresenting(ctx, page) : { presenting: true, fullRate: true, rafMedianMs: null, skipped: "headless" };
 
 const environment = await page.evaluate(() => {
   const s = window.__atlasScene;
@@ -209,6 +245,41 @@ for (let i = 0; i < 10; i++) {
 const cameraEnd = await page.evaluate(() => performance.now());
 await page.waitForTimeout(800);
 
+/* Condition C — a continuous orbit drag through the canvas, the render condition a user produces
+   by hand. Each ~1 s of drag is its own replicate window, exactly like the focus steps above. The
+   scene's own telemetry is read at the end of the drag, while the window it judged is the drag. */
+const ORBIT_WINDOWS = 8;
+const ORBIT_WINDOW_MS = 1000;
+const orbitSteps = [];
+let orbitStats = null;
+const canvasBox = await page.locator("canvas").first().boundingBox();
+if (canvasBox) {
+  const cx = canvasBox.x + canvasBox.width / 2;
+  const cy = canvasBox.y + canvasBox.height / 2;
+  const rx = Math.min(250, canvasBox.width * 0.3);
+  const ry = Math.min(120, canvasBox.height * 0.2);
+  await page.mouse.move(cx + rx, cy);
+  await page.mouse.down();
+  let k = 0;
+  for (let i = 0; i < ORBIT_WINDOWS; i++) {
+    const lo = await page.evaluate(() => performance.now());
+    const until = Date.now() + ORBIT_WINDOW_MS;
+    while (Date.now() < until) {
+      const a = k * 0.05;
+      await page.mouse.move(cx + rx * Math.cos(a), cy + ry * Math.sin(a));
+      await page.waitForTimeout(16);
+      k++;
+    }
+    const hi = await page.evaluate(() => performance.now());
+    orbitSteps.push({ index: i + 1, start: lo, end: hi });
+  }
+  orbitStats = await page.evaluate(() => window.__atlasScene?.stats?.() ?? null);
+  await page.mouse.up();
+  await page.waitForTimeout(800);
+}
+
+/* ...and after: a window that stopped presenting mid-run turns every stall into an environment fault. */
+const presentationAfter = HEADED ? presentationState(await rafCadence(page, 5000).catch(() => null)) : presentationBefore;
 const frames = await page.evaluate(() => window.__f);
 const converged = await page.evaluate(() => window.__c);
 const after = await page.evaluate(() => window.__atlasScene?.stats?.() ?? null);
@@ -223,6 +294,7 @@ const bundle = await page.evaluate(() =>
     .map((r) => ({ url: r.name.split("/").pop(), bytes: r.encodedBodySize }))
     .sort((a, b) => a.url.localeCompare(b.url)),
 );
+hostLoadMeter.sample();
 await browser.close();
 
 /* Contiguous intervals in which the scene reported itself NOT converged: the intervals it drew in. */
@@ -301,7 +373,42 @@ const usable = replicates.filter((w) => w.usable);
 const medianFps = pct(usable.map((w) => w.meanFps ?? 0), 50);
 const worstWindowFps = usable.length ? Math.min(...usable.map((w) => w.meanFps ?? 0)) : null;
 
-const hostBusy = hostBusyFraction(hostCpuAtStart);
+/* The orbit condition, replicated and gated the same way. */
+const orbitReplicates = orbitSteps
+  .map((s) => ({
+    ...summarise(framesIn(s.start, s.end), `orbit window ${s.index}`, s.start, s.end),
+    renderingFraction: renderingFraction(s.start, s.end),
+  }))
+  .map((w) => ({ ...w, usable: w.frames >= MIN_WINDOW_FRAMES && w.renderingFraction >= MIN_RENDERING_FRACTION }));
+const orbitUsable = orbitReplicates.filter((w) => w.usable);
+const orbitMedianFps = pct(orbitUsable.map((w) => w.meanFps ?? 0), 50);
+const orbitWorstWindowFps = orbitUsable.length ? Math.min(...orbitUsable.map((w) => w.meanFps ?? 0)) : null;
+const orbitVerdict =
+  orbitUsable.length < MIN_REPLICATES
+    ? "NOT MEASURED"
+    : (orbitMedianFps ?? 0) >= FPS_BAR && (orbitWorstWindowFps ?? 0) >= WINDOW_FLOOR_FPS
+      ? "PASS"
+      : "FAIL";
+/* E4's second clause: when the orbit fell below the bar, did the product SAY so? */
+const orbitDegradationReported =
+  orbitStats === null ? null : orbitStats.frameRateBelowBar === true || orbitStats.quality !== "high";
+
+const hostLoad = hostLoadMeter.finish();
+const hostBusyGross = hostBusyFraction(hostCpuAtStart);
+/* The figure the gate reads: busy core-time NOT spent by this harness (gross where unreadable). */
+const hostBusy = gatedBusy(hostLoad) ?? hostBusyGross;
+const hostPowerAtEnd = hostPower();
+const hostPowerThrottled = Boolean(hostPowerAtStart.throttled || hostPowerAtEnd.throttled);
+/* E4 is a 55 fps bar. A window that is not presenting has no frame rate, and one presenting below
+   50 Hz cannot reach the bar whatever the renderer does: both make E4 undecidable on this run, and
+   the verdict says so instead of printing a FAIL (or a "STALL") that is about the display. */
+const presentationFault = !presentationBefore.presenting
+  ? `the window was not presenting before measurement (rAF median ${presentationBefore.rafMedianMs ?? "none in 4 s"} ms after restore)`
+  : !presentationAfter.presenting
+    ? `the window stopped presenting during the run (end-of-run rAF median ${presentationAfter.rafMedianMs ?? "none in 5 s"} ms)`
+    : !presentationBefore.fullRate || !presentationAfter.fullRate
+      ? `the display presented below 50 Hz (rAF median ${presentationBefore.rafMedianMs} ms before, ${presentationAfter.rafMedianMs} ms after; bar <= ${FULL_RATE_MAX_RAF_MS} ms) — display-limited, so no tier can reach ${FPS_BAR} fps here`
+      : null;
 
 /* THE GATE. The NOT MEASURED triggers are DIFFERENT FINDINGS and each one now says which it was:
      - the scene never left convergence -> there was nothing to measure;
@@ -312,7 +419,7 @@ const hostBusy = hostBusyFraction(hostCpuAtStart);
    rendering-fraction sentence for the rest, which is how a run reporting ELEVEN frames and a
    4066 ms stall printed "rendering only 100% of the time (minimum 60%)" — a self-contradiction
    that sent the reader after a convergence problem that did not exist. */
-const verdict =
+const focusVerdict =
   spans.length === 0
     ? "NOT MEASURED"
     : sample.frames < 30
@@ -324,8 +431,8 @@ const verdict =
           : (medianFps ?? 0) >= FPS_BAR && (worstWindowFps ?? 0) >= WINDOW_FLOOR_FPS
             ? "PASS"
             : "FAIL";
-const why =
-  verdict === "NOT MEASURED"
+const focusWhy =
+  focusVerdict === "NOT MEASURED"
     ? spans.length === 0
       ? "the scene never reported itself non-converged: nothing was rendering, so there is no frame rate to report"
       : sample.frames < 30
@@ -333,20 +440,43 @@ const why =
         : rendering < MIN_RENDERING_FRACTION
           ? `the sample window was rendering only ${Math.round(rendering * 100)}% of the time (minimum ${Math.round(MIN_RENDERING_FRACTION * 100)}%); an idle rAF loop is not a frame rate`
           : `only ${usable.length} of ${replicates.length} sample windows were usable (minimum ${MIN_REPLICATES}); one window is not a measurement`
-    : verdict === "PASS"
+    : focusVerdict === "PASS"
       ? `median ${medianFps} fps across ${usable.length} windows, worst window ${worstWindowFps} fps (floor ${WINDOW_FLOOR_FPS}), host busy ${Math.round((hostBusy ?? 0) * 100)}% of the run`
       : (medianFps ?? 0) < FPS_BAR
         ? `median ${medianFps} fps across ${usable.length} windows is below the ${FPS_BAR} fps bar${hostBusy !== null && hostBusy > MAX_HOST_BUSY_FRACTION ? ` — and the host was ${Math.round(hostBusy * 100)}% busy during the run, so this figure is about the machine as much as the build` : ""}`
         : `the median held (${medianFps} fps) but window ${usable.findIndex((w) => w.meanFps === worstWindowFps) + 1} fell to ${worstWindowFps} fps, below the stated ${WINDOW_FLOOR_FPS} fps floor`;
 
+/* BOTH conditions decide E4. Either one unmeasured is NOT MEASURED; either one below the bar is a FAIL. */
+const orbitWhy =
+  orbitVerdict === "NOT MEASURED"
+    ? `only ${orbitUsable.length} of ${orbitReplicates.length} orbit windows were usable (minimum ${MIN_REPLICATES})`
+    : orbitVerdict === "PASS"
+      ? `orbit median ${orbitMedianFps} fps, worst window ${orbitWorstWindowFps} fps`
+      : `orbit median ${orbitMedianFps} fps (worst window ${orbitWorstWindowFps} fps) is below the ${FPS_BAR} fps bar or the ${WINDOW_FLOOR_FPS} fps floor; ` +
+        `the scene ${orbitDegradationReported === true ? "DID report it (below-bar flag or lowered tier)" : orbitDegradationReported === false ? "did NOT report it — degradation reported as health" : "could not be read"}`;
+const verdict =
+  presentationFault !== null || focusVerdict === "NOT MEASURED" || orbitVerdict === "NOT MEASURED"
+    ? "NOT MEASURED"
+    : focusVerdict === "PASS" && orbitVerdict === "PASS"
+      ? "PASS"
+      : "FAIL";
+const why =
+  (presentationFault !== null ? `PRESENTATION — ${presentationFault}; harness environment, not the app. ` : "") +
+  `focus flights: ${focusVerdict} — ${focusWhy}. Orbit drag: ${orbitVerdict} — ${orbitWhy}` +
+  (hostPowerThrottled ? `. HOST POWER — on battery or Energy Saver (${describePower(hostPowerAtStart)} at start, ${describePower(hostPowerAtEnd)} at end)` : "");
+
 /* Acceptance evidence is a STRONGER claim than a passing run: it says the number describes the
    build. It is refused on a contended host, and refused when host load could not be measured at
    all — an unmeasured machine is not a quiet one. */
-const acceptanceEvidence = verdict === "PASS" && hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION;
+/* ...and refused on a stale or foreign build, which is a measurement of a different program
+   (review finding, E2 — see build-freshness.mjs). */
+const freshness = await checkBuildFreshness(APP);
+const acceptanceEvidence =
+  verdict === "PASS" && hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION && !hostPowerThrottled && presentationFault === null && freshness.fresh;
 
 const report = {
   criterion: "E4 — the fabric holds >= 55 fps on the reference machine, degradation explicit.",
-  measurementClass: "LABORATORY — scripted actor, single machine, unthrottled. Not a field figure.",
+  measurementClass: "LABORATORY — scripted actor, single machine, no CPU/GPU emulation; host power and presentation cadence recorded in hostPower / presentation. Not a field figure.",
   verdict,
   why,
   /** TRUE only when this figure may be quoted as acceptance evidence. See the REPLICATION note. */
@@ -360,11 +490,30 @@ const report = {
     windowFloorFps: WINDOW_FLOOR_FPS,
     perWindow: replicates,
   },
+  orbit: {
+    condition: `continuous pointer-drag orbit through the canvas, ${ORBIT_WINDOWS} x ${ORBIT_WINDOW_MS} ms windows`,
+    verdict: orbitVerdict,
+    usableWindows: orbitUsable.length,
+    medianFps: orbitMedianFps,
+    worstWindowFps: orbitWorstWindowFps,
+    degradationReported: orbitDegradationReported,
+    sceneAtEndOfDrag: orbitStats
+      ? { tier: orbitStats.quality, frameRateBelowBar: orbitStats.frameRateBelowBar ?? null, reasons: orbitStats.qualityReasons }
+      : null,
+    perWindow: orbitReplicates,
+  },
+  buildFreshness: freshness,
+  hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, throttled: hostPowerThrottled },
+  presentation: { before: presentationBefore, after: presentationAfter, fault: presentationFault, fullRateMaxRafMs: FULL_RATE_MAX_RAF_MS },
   hostQuiescence: {
     /* The other half of "a green result cannot be told from a lucky one": without this the report
        recorded the renderer and the canvas size but nothing about what else the machine was doing. */
     measured: hostBusy !== null,
     busyFractionOfRun: hostBusy,
+    basis: hostLoad.excess !== null ? "excess over the harness's own process tree" : "gross (harness tree unreadable on this platform)",
+    grossBusyFraction: hostLoad.gross ?? hostBusyGross,
+    harnessFraction: hostLoad.harness,
+    idleBaselineBeforeLaunch: hostIdleBaseline,
     maxForAcceptance: MAX_HOST_BUSY_FRACTION,
     cores: cpus().length,
     note:
@@ -440,8 +589,14 @@ console.log(
     `(floor ${WINDOW_FLOOR_FPS}); per-window fps [${replicates.map((w) => (w.usable ? w.meanFps : "-")).join(", ")}]`,
 );
 console.log(
-  `  host: ${hostBusy === null ? "load NOT MEASURED" : Math.round(hostBusy * 100) + "% busy across the run"} ` +
-    `over ${cpus().length} cores -> acceptanceEvidence=${acceptanceEvidence}`,
+  `  orbit: ${orbitVerdict} ${orbitUsable.length}/${orbitReplicates.length} usable, median ${orbitMedianFps}fps, worst window ${orbitWorstWindowFps}fps; ` +
+    `per-window fps [${orbitReplicates.map((w) => (w.usable ? w.meanFps : "-")).join(", ")}]; scene said: tier ${orbitStats?.quality ?? "?"}, belowBar ${orbitStats?.frameRateBelowBar ?? "?"}`,
+);
+console.log(
+  `  host: ${hostBusy === null ? "load NOT MEASURED" : Math.round(hostBusy * 100) + "% busy across the run excluding this harness"} ` +
+    `(gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}); ` +
+    `power ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " THROTTLED" : ""}; presentation ${presentationBefore.rafMedianMs ?? "-"}/${presentationAfter.rafMedianMs ?? "-"} ms rAF; ` +
+    `over ${cpus().length} cores; build ${freshness.fresh ? "fresh" : "NOT FRESH (" + freshness.why + ")"} -> acceptanceEvidence=${acceptanceEvidence}`,
 );
 console.log(
   `  mean=${sample.meanFps}fps p50=${sample.frameMs.p50}ms p95=${sample.frameMs.p95}ms p99=${sample.frameMs.p99}ms ` +

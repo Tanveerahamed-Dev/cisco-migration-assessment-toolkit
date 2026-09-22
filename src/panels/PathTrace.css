@@ -147,21 +147,10 @@
   }
 }
 
-/* The citation is the most repeated control in the product and its own box is 16px tall. Inside
-   this surface it is grown to the 24px target floor with padding rather than by enlarging the
-   glyph (WCAG 2.5.8), so the hit area clears the floor while the visual weight is unchanged. */
-.pathtrace .ui-cite {
-  min-block-size: var(--target-min);
-  padding-block: var(--sp-1);
-  max-inline-size: 100%;
-}
-
-/* A citation path is evidence: at a narrow width it WRAPS rather than truncating. An ellipsised
-   `acls.core1.PROTECT_SERV…` is not a citation anyone can check. */
-.pathtrace .ui-cite__path {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
+/* The citation's target floor, its width and its wrap-never-truncate rule are owned by the
+   primitive (src/ui/primitives.css, `.ui-cite` / `.ui-cite__path`) for every surface. They used to
+   be restated here for `.pathtrace` only, which is how every other surface kept the ellipsis
+   (acceptance C2, 2026-09-22). */
 
 /* ══ presets ═══════════════════════════════════════════════════════════════ */
 
@@ -183,11 +172,17 @@
 
 .pt-preset__btn {
   display: grid;
+  /* An implicit `auto` track has a min-content floor, so ONE unbreakable run inside a preset set the
+     whole column wider than the rail (measured 707px in a 305px column, clipped by the panel's
+     overflow-x:hidden and leaving the panel scrolled 42px left after a scroll-into-view). A
+     zero-floored track makes every child wrap inside the column instead. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 2px;
   width: 100%;
   text-align: left;
   padding: var(--sp-2);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
   border-radius: var(--radius-md);
   background: transparent;
   cursor: pointer;
@@ -200,9 +195,19 @@
 
 .pt-preset__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--sp-2);
+  gap: 0 var(--sp-2);
+  min-width: 0;
+}
+
+.pt-preset__head > *,
+.pt-preset__flow,
+.pt-preset__why,
+.pt-preset__prov {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .pt-preset__title {
@@ -216,7 +221,9 @@
   font-weight: var(--fw-medium);
   letter-spacing: var(--ls-0);
   text-transform: lowercase;
-  white-space: nowrap;
+  /* Was nowrap, written for a one-word outcome. The outcome now carries its own qualification
+     ("delivered by routing — not decided: …"), and a nowrap sentence is what widened the preset. */
+  white-space: normal;
   color: var(--claim-observed);
 }
 
@@ -228,7 +235,10 @@
   color: var(--sev-critical);
 }
 .pt-preset__outcome[data-outcome="indeterminate"],
-.pt-preset__outcome[data-outcome="out-of-scope"] {
+.pt-preset__outcome[data-outcome="out-of-scope"],
+/* The band wins over the outcome word: an undecided delivery or refusal is drawn as undecided,
+   exactly as the card it opens draws it (claims.ts `bandOfTrace`). */
+.pt-preset__outcome[data-band="UNDETERMINED"] {
   color: var(--claim-indeterminate);
 }
 
@@ -420,7 +430,7 @@
 .hop__key {
   font-size: var(--fs-0);
   line-height: var(--lh-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
   overflow-wrap: anywhere;
@@ -546,7 +556,7 @@
 .hop__alts th {
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
   padding: var(--sp-1) var(--sp-2) var(--sp-1) 0;
@@ -559,6 +569,57 @@
   border-bottom: var(--hairline) solid var(--border);
   color: var(--text);
   vertical-align: top;
+}
+
+/* A NARROW RAIL STACKS the beaten routes instead of scrolling them sideways. MEASURED (audit A2,
+   1920x1080, 340 px rail): with a 26rem table the OUT column was clipped to "resolvec" and
+   "route el[" — the citations for the routes that lost could not be read, and nothing said the
+   region scrolled. Each route becomes a small labelled block; every cell wraps. */
+@container pathtrace (max-width: 30rem) {
+  .hop__alts {
+    min-width: 0;
+  }
+  .hop__alts,
+  .hop__alts tbody,
+  .hop__alts tr,
+  .hop__alts td {
+    display: block;
+  }
+  .hop__alts thead {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .hop__alts tr {
+    padding: var(--sp-1) 0;
+    border-bottom: var(--hairline) solid var(--border);
+  }
+  /* Flex, not a two-column grid: a cell can hold several nodes (the interface, "resolved", its
+     citation), and a grid would push the second one under the label. */
+  .hop__alts td {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--sp-1);
+    /* Hanging indent: a value that wraps (an interface, then its citation) continues under the
+       value, not under the label. */
+    padding: 1px 0 1px calc(5.5rem + var(--sp-1));
+    border-bottom: 0;
+    overflow-wrap: anywhere;
+  }
+  .hop__alts td::before {
+    content: attr(data-col);
+    flex: 0 0 5.5rem;
+    margin-inline-start: calc(-5.5rem - var(--sp-1));
+    font-size: var(--fs-0);
+    font-weight: var(--fw-medium);
+    letter-spacing: var(--ls-caps);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
 }
 
 .hop__evlist {
@@ -580,7 +641,7 @@
 .hop__ev-kind {
   flex: none;
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
   min-width: 4.5rem;
@@ -637,7 +698,7 @@
 .claim__badge {
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   padding: 0 var(--sp-2);
   min-height: 1.125rem;
@@ -730,7 +791,7 @@
 .claim__section-title {
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -767,7 +828,7 @@
 .claim__k,
 .claim__count {
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
   white-space: nowrap;
@@ -815,9 +876,17 @@
 .claim__counter-outcome {
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--state-up);
+}
+/* The offered flow's colour follows its own band (claims.ts `bandOfTrace`), never the outcome word:
+   a green "delivered" over an undecided delivery is the overclaim this card exists to refuse. */
+.claim__counter-outcome[data-band="REFUTED"] {
+  color: var(--sev-critical);
+}
+.claim__counter-outcome[data-band="UNDETERMINED"] {
+  color: var(--claim-indeterminate);
 }
 
 .claim__counter-why,
@@ -840,7 +909,7 @@
 .claim__pair dt {
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -917,7 +986,7 @@
 
 .pt-intent__facts dt {
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -951,7 +1020,7 @@
 
 .pt-addr__prov {
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -1034,4 +1103,12 @@
     background: Highlight;
     opacity: 1;
   }
+}
+
+/* What the fabric draws for this trace, stated beside the hop list it corresponds to. */
+.pt-result__fabric {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
 }

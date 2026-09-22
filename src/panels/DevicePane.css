@@ -121,7 +121,7 @@
   margin: 0;
   font-size: var(--fs-1);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -137,7 +137,7 @@
   border-block-end: var(--hairline) solid var(--border);
   font-size: var(--fs-1);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -161,7 +161,6 @@
 }
 
 .dp-wrap {
-  overflow-wrap: anywhere;
 }
 
 .dp-chips {
@@ -211,7 +210,6 @@
   font-size: var(--fs-1);
   font-variant-numeric: tabular-nums;
   flex-wrap: wrap;
-  overflow-wrap: anywhere;
 }
 
 .dp-kv__row--wide .dp-kv__v {
@@ -298,7 +296,6 @@
 
 .dp-deduct__label {
   font-size: var(--fs-1);
-  overflow-wrap: anywhere;
 }
 
 .dp-deduct__bar {
@@ -336,16 +333,17 @@
 
 /* ══ the two-column comparison ═════════════════════════════════════════════ */
 
+/* The two measures sit side by side only when EACH gets a full key/value table's width.
+   A6 audit fix, 2026-09-21: this used to switch to two columns on a VIEWPORT query (min-width 60rem),
+   but the comparison lives in Rail B, whose width does not follow the viewport — at 1920×1080 the
+   rail is 420 px, so every viewport over 960 px split it into two 190 px columns with 34 px value
+   cells ("partiti / on", "acce / ss1,"). The column count is now intrinsic to the space the grid
+   actually has: two columns need 2 × 24rem, otherwise the measures stack and each value gets the
+   rail's full width. No viewport or container assumption is involved. */
 .dp-cmp {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
   gap: var(--sp-4);
-}
-
-@media (min-width: 60rem) {
-  .dp-cmp {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 .dp-cmp__col {
@@ -359,7 +357,7 @@
   margin: 0;
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -399,7 +397,7 @@
   margin: 0 0 var(--sp-1);
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -488,7 +486,6 @@
 .dp-list__main {
   font-size: var(--fs-2);
   line-height: var(--lh-2);
-  overflow-wrap: anywhere;
 }
 
 .dp-linkbtn {
@@ -517,7 +514,7 @@
 .dp-verdict {
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--claim-indeterminate);
 }
@@ -533,7 +530,6 @@
   font-family: var(--font-mono);
   font-size: var(--fs-0);
   color: var(--text-muted);
-  overflow-wrap: anywhere;
 }
 
 .dp-sevcounts {
@@ -612,6 +608,20 @@
   border-inline-start-width: 3px;
 }
 
+/* A collected table the snapshot shows to be incomplete: the same undecided rule as an absence. */
+.dp-scope--partial {
+  border-color: var(--claim-indeterminate);
+  border-inline-start-width: 3px;
+}
+
+.dp-rib-partial {
+  margin: var(--sp-1) 0 0;
+  padding-inline-start: var(--sp-4);
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 78ch;
+}
+
 /* ══ ACL lines ═════════════════════════════════════════════════════════════ */
 
 .dp-acl {
@@ -674,7 +684,7 @@
   flex-direction: column;
   gap: var(--sp-1);
   padding: var(--sp-2);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
   border-radius: var(--radius-sm);
 }
 
@@ -773,7 +783,6 @@
   color: var(--text);
   font-variant-numeric: tabular-nums;
   background: var(--surface-1);
-  overflow-wrap: anywhere;
 }
 
 .rg__cell[data-align="end"] {
@@ -782,6 +791,8 @@
 }
 
 .rg__cell[data-sticky="true"] {
+  /* sticky-layer: exempt. One of these per ROW, so a pinned layer each is a layer per row; it
+     sticks on the inline axis only and was not among the differing F6 capture pixels. */
   position: sticky;
   inset-inline-start: 0;
   z-index: 1;
@@ -802,6 +813,8 @@
   position: sticky;
   inset-block-start: 0;
   z-index: 2;
+  /* sticky-layer: pinned; see .ag__head in src/panels/DataGrid.css for the measurement. */
+  will-change: transform;
 }
 
 .rg__cell--head {
@@ -810,7 +823,7 @@
   color: var(--text-muted);
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   border-block-end: var(--hairline) solid var(--border-strong);
 }
@@ -835,4 +848,39 @@
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
   }
+}
+
+/* A port field the interface record and the physical-health row both carry and do not agree on.
+   Same indeterminate violet as .dp-disagree: the two sources differ, which is not itself a fault. */
+.dp-split {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sp-1);
+  color: var(--text);
+}
+
+.dp-split__mark {
+  font-weight: var(--fw-semibold);
+  color: var(--claim-indeterminate);
+}
+
+.dp-split__src {
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+/* A favourable band on a device where some scoring domain was never assessed (DevicePane.tsx
+   `unassessedScoringDomains`): drawn in the neutral ink with a dashed outline, so "Excellent" does
+   not read as a measured all-clear when part of it is the absence of evidence. */
+.ui-band.dp-band--partial[data-band] {
+  --band-fill: var(--text-muted);
+  border-style: dashed;
+}
+
+.dp-score-gap {
+  display: block;
+  margin-block-start: var(--sp-1);
+  font-size: var(--fs-0);
+  color: var(--text-muted);
 }

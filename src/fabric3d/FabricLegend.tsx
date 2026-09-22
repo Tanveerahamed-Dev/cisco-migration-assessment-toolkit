@@ -9,8 +9,18 @@
  * Every count on this panel is computed from the data at render time. None of them is written down
  * anywhere in this file, because a cached denominator is the first thing to rot.
  */
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 
+import { bandToken, isFavourableBand, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
 import type { Device, Link } from "../core/types";
 
 const STORAGE_KEY = "atlas-scope.fabric-legend.open";
@@ -18,21 +28,18 @@ const STORAGE_KEY = "atlas-scope.fabric-legend.open";
 /** Kinds in the order the fabric reads top-down; anything else is appended, never dropped. */
 const KIND_ORDER = ["router", "device", "ap"] as const;
 
+/* The engine's generic kind "device" is assigned to EVERY collected host whatever it is
+   (cisco_toolkit/analyze.py: `"kind": "device" if collected`), so it does not say "switch". It used
+   to be labelled "Switch" here — an inference the snapshot never states, contradicted by the Device
+   pane's own "Kind device" (independent audit B1). The label says what the field says. */
 const KIND_LABEL: Record<string, string> = {
   router: "Router",
-  device: "Switch",
+  device: "Collected device (kind not stated)",
   ap: "Access point",
 };
 
 const BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"] as const;
 
-const BAND_TOKEN: Record<string, string> = {
-  Excellent: "--band-excellent",
-  Good: "--band-good",
-  Fair: "--band-fair",
-  Poor: "--band-poor",
-  Critical: "--band-critical",
-};
 
 const tokenStyle = (token: string): CSSProperties =>
   ({ "--swatch-fill": `var(${token})`, "--swatch-stroke": `var(${token})` }) as CSSProperties;
@@ -174,7 +181,26 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
     }
   }, [open]);
 
-  const toggle = useCallback(() => setOpen((v) => !v), []);
+  /* The open and closed states render DIFFERENT buttons ("Legend" vs "✕ Hide the legend"), so the
+     control that held focus is unmounted by its own activation and focus fell to <body> in both
+     directions — invisible, and nowhere near the control (WCAG 2.4.3 / 2.4.7). Focus therefore
+     follows the toggle: into the close button when the legend opens, back to the Legend button
+     when it closes. Only when the activating button actually HELD focus; a toggle driven from the
+     command palette leaves focus wherever the palette returns it. */
+  const showRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const focusAfterToggle = useRef(false);
+
+  const toggle = useCallback((e: MouseEvent<HTMLButtonElement>) => {
+    focusAfterToggle.current = document.activeElement === e.currentTarget;
+    setOpen((v) => !v);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!focusAfterToggle.current) return;
+    focusAfterToggle.current = false;
+    (open ? closeRef.current : showRef.current)?.focus();
+  }, [open]);
 
   const kinds = new Map<string, number>();
   for (const d of devices) kinds.set(d.kind, (kinds.get(d.kind) ?? 0) + 1);
@@ -183,8 +209,14 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
     ...[...kinds.keys()].filter((k) => !KIND_ORDER.includes(k as (typeof KIND_ORDER)[number])).sort(),
   ];
 
-  const bandCount = (b: string) => devices.filter((d) => d.band === b).length;
-  const bandUnobserved = devices.filter((d) => d.band === null).length;
+  /* Every device is counted in exactly ONE band row, by the key the band owner assigns it
+     (core/band-qualification.ts presentBand().legendKey): a favourable band on a host with
+     unassessed scoring domains is counted in its own "partial" row, not as a plain Excellent or
+     Good — the chassis it describes is drawn neutral, so the plain row would miscount it (B1). */
+  const legendKeys = devices.map((d) => presentBand(d).legendKey);
+  const keyCount = (k: string) => legendKeys.filter((x) => x === k).length;
+  const bandCount = (b: string) => keyCount(b);
+  const bandUnobserved = keyCount("none");
   const roleAccess = devices.filter((d) => d.role === "access").length;
   const roleDist = devices.filter((d) => d.role === "distribution").length;
   const roleOther = devices.filter(
@@ -204,6 +236,7 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
     return (
       <button
         type="button"
+        ref={showRef}
         className="fabric3d__btn fabric3d-legend__show"
         /* No aria-controls while collapsed: the panel is not in the DOM, and pointing at an id
            that does not resolve is worse than not pointing at all. */
@@ -218,13 +251,14 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
   }
 
   return (
-    <section className="fabric3d-legend" id={id} aria-labelledby={`${id}-title`} data-testid="fabric3d-legend">
+    <section className="fabric3d-legend" id={id} aria-labelledby={`${id}-title`} data-testid="fabric3d-legend" data-stage-overlay="">
       <div className="fabric3d-legend__head">
         <h2 className="fabric3d-legend__title" id={`${id}-title`}>
           Legend
         </h2>
         <button
           type="button"
+          ref={closeRef}
           className="fabric3d-legend__close"
           aria-expanded
           aria-controls={id}
@@ -264,9 +298,18 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
           {BANDS.map((b) => (
             <Row
               key={b}
-              swatch={bandSwatch(b.slice(0, 1), tokenStyle(BAND_TOKEN[b] ?? "--text-faint"))}
+              swatch={bandSwatch(b.slice(0, 1), tokenStyle(bandToken(b)))}
               name={b}
               count={bandCount(b)}
+            />
+          ))}
+          {BANDS.filter(isFavourableBand).map((b) => (
+            <Row
+              key={`${b}${PARTIAL_MARK}`}
+              swatch={bandSwatch(`${b.slice(0, 1)}${PARTIAL_MARK}`, tokenStyle(QUALIFIED_BAND_TOKEN), "fabric3d-legend__chassis--partial")}
+              name={`${b}, partial`}
+              meaning="Some scoring domains never assessed; drawn neutral."
+              count={keyCount(`${b}${PARTIAL_MARK}`)}
             />
           ))}
           <Row
@@ -279,7 +322,8 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
         <p className="fabric3d-legend__note fabric3d-legend__note--tight">
           The five band colours are within 1.14:1 of each other in greyscale, so the band is also
           printed as a letter on the device's own label — E, G, F, P, C, or ? when no band was
-          computed. Either channel alone is enough to read it.
+          computed. A {PARTIAL_MARK} after the letter marks a favourable band that is partly the absence of
+          evidence. Either channel alone is enough to read it.
         </p>
       </div>
 
@@ -357,7 +401,15 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
             count={devices.length - stateUnknown - stateDown}
           />
           <Row
-            swatch={<rect x="5" y="4" width="22" height="8" rx="2" className="fabric3d-legend__rim" style={tokenStyle("--state-down")} />}
+            swatch={
+              /* Two concentric rims: the scene draws a Down device with a DOUBLE ring
+                 (scene.ts ringShapeFor), so the key must carry that shape too — colour alone
+                 would leave Down indistinguishable from Up in greyscale (WCAG 1.4.1). */
+              <g data-ring="double">
+                <rect x="4" y="3" width="24" height="10" rx="2.5" className="fabric3d-legend__rim" style={tokenStyle("--state-down")} />
+                <rect x="7" y="5.5" width="18" height="5" rx="1.5" className="fabric3d-legend__rim" style={tokenStyle("--state-down")} />
+              </g>
+            }
             name="Down"
             count={stateDown}
           />
@@ -414,6 +466,11 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
             name="⊘ stranded"
             meaning="Unreachable if the current selection fails."
           />
+          <Row
+            swatch={markSwatch("≠", tokenStyle("--claim-indeterminate"), true)}
+            name="≠ impact disputed"
+            meaning="The snapshot says this host's failure strands others; this graph reproduces no partition. Not the same as nothing breaking."
+          />
         </ul>
         <p className="fabric3d-legend__note fabric3d-legend__note--tight">
           A trace mark and a cut-point mark are separate claims and a host can carry both at once:
@@ -439,15 +496,17 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
           <Row
             swatch={
               <>
-                {line(undefined, "fabric3d-legend__line fabric3d-legend__line--thick", tokenStyle("--sev-high"), 6)}
-                {line(undefined, "fabric3d-legend__line fabric3d-legend__line--thick", tokenStyle("--sev-high"), 11)}
+                {/* Rails set WIDER apart than a port channel’s strands, as cables.ts draws them
+                    (screen-space gaps BRIDGE_RAIL_GAP_PX 3 vs STRAND_RAIL_GAP_PX 2) — not colour alone. */}
+                {line(undefined, "fabric3d-legend__line fabric3d-legend__line--thick", tokenStyle("--link-bridge"), 3.5)}
+                {line(undefined, "fabric3d-legend__line fabric3d-legend__line--thick", tokenStyle("--link-bridge"), 12.5)}
               </>
             }
             name="Bridge — cutting it partitions the fabric"
             count={bridges}
           />
           <Row
-            swatch={line("2 2", "fabric3d-legend__line", tokenStyle("--claim-indeterminate"))}
+            swatch={line("7 1.8", "fabric3d-legend__line", tokenStyle("--claim-indeterminate"))}
             name="Centrality not computed"
             meaning="Unmeasured, not redundant. The blast radius of this cable is unknown."
             count={unmeasured}
@@ -466,9 +525,26 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
             swatch={line(undefined, "fabric3d-legend__line fabric3d-legend__line--trace", tokenStyle("--accent"))}
             name="On the traced path"
           />
+          {/* NOT colour-only (a11y audit D8). The swatch draws what the canvas draws (flow.ts): the
+              terminal segment at 6 px against the path’s 4 px, ending in the octagonal stop
+              plate. Before this the swatch was the path’s own 4 px line in red — teal vs red
+              was the only difference the legend showed. */}
           <Row
-            swatch={line(undefined, "fabric3d-legend__line fabric3d-legend__line--trace", tokenStyle("--sev-critical"))}
-            name="Blocking hop"
+            swatch={
+              <>
+                <path
+                  d="M2 8 H21"
+                  className="fabric3d-legend__line fabric3d-legend__line--blocked"
+                  style={tokenStyle("--sev-critical")}
+                />
+                <polygon
+                  points="24.3,3 27.7,3 30,5.3 30,10.7 27.7,13 24.3,13 22,10.7 22,5.3"
+                  className="fabric3d-legend__stop"
+                  style={tokenStyle("--sev-critical")}
+                />
+              </>
+            }
+            name="Blocking hop — thicker segment ending in a stop plate"
             meaning="The device, ACL or absent route that stopped the flow."
           />
         </ul>

@@ -3,8 +3,8 @@
  *
  * It answers one question: can this flow get from A to B, and if not, exactly what stopped it?
  * The answer is always paired with the scope it holds over, because this snapshot is thin where it
- * matters: RIBs were collected for 2 of 26 hosts, ACLs for 1, and NO `ip access-group` binding was
- * collected anywhere. Every one of those gaps is a reason a result is narrower than it looks, and
+ * matters: RIBs were collected for 2 of 26 hosts and ACLs for 1, and the interface ACL bindings
+ * (`ip access-group`) are only partly observed — see ./bindings.ts. Every one of those gaps is a reason a result is narrower than it looks, and
  * each is emitted as a caveat rather than silently absorbed.
  *
  * The invariant that shapes the whole file: a missing input never produces a positive result.
@@ -13,6 +13,17 @@
  * the one that fires. Absence is absence.
  */
 import { aclsOf, fabric, hasRib, linksByHost, routesOf } from "../core/data";
+import { aclLineName } from "./acl-line";
+import { ribIncompleteness, ribIncompletenessSentence } from "./rib-completeness";
+import {
+  bindingCoverageSentences,
+  bindingEvidence,
+  connectedInterfaceFor,
+  hopHasObservedBinding,
+  pathBindings,
+  physicalIngressStates,
+  type PathBindings,
+} from "./bindings";
 import type {
   AclFinding,
   AclLine,
@@ -409,6 +420,31 @@ function consumePortOp(toks: readonly string[], i: number): Consume {
   return { ok: true, next: i, sawPortOp: false };
 }
 
+/**
+ * Which port operators the configuration TEXT carries, read by position with the same grammar the
+ * evaluability check uses: `<action> <proto> <src> [src-port-op] <dst> [dst-port-op] …`. Null when
+ * the text cannot be read that far (an unresolvable group, an unreadable address), so a caller can
+ * only ever narrow "not observed" to "no constraint" on a line whose text was actually read.
+ *
+ * Exists because a reader once asked "is there an `eq` ANYWHERE on the line" to decide whether a
+ * null SOURCE port was a parse gap, and so marked `sport` "not observed" on
+ * `permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443`, whose `eq` constrains the
+ * DESTINATION port (2026-09-22 auditor, B1).
+ */
+export function portOperatorsInText(raw: string, host: string | null = null): { sport: boolean; dport: boolean } | null {
+  const toks = raw.trim().split(/\s+/);
+  if (toks.length < 3) return null;
+  const src = consumeAddress(toks, 2, host);
+  if (!src.ok) return null;
+  const sport = consumePortOp(toks, src.next);
+  if (!sport.ok) return null;
+  const dst = consumeAddress(toks, sport.next, host);
+  if (!dst.ok) return null;
+  const dport = consumePortOp(toks, dst.next);
+  if (!dport.ok) return null;
+  return { sport: Boolean(sport.sawPortOp), dport: Boolean(dport.sawPortOp) };
+}
+
 /** Does the parsed field say the same thing the configuration text says? */
 function fieldAgrees(field: AclMatchField | null, text: string | undefined): boolean {
   if (text === undefined) return true;
@@ -628,9 +664,32 @@ function isAnyAddress(f: AclMatchField | null): boolean {
   return wild === 0xffffffff;
 }
 
+/**
+ * Does this address field resolve to a readable address space in this snapshot? The SAME resolution
+ * `groupTri` and `lineEvaluability` use: an object-group reference resolves when the group was
+ * collected with at least one member and every member parses. It used to test `ip === null` alone,
+ * so a group that resolved (core1 MGMT_HOSTS → 10.0.99.10/32, 10.0.40.0/24) was still described as
+ * "could not be resolved in this snapshot" while `lineEvaluability` called the line evaluable
+ * (2026-09-22 critic, B5).
+ */
+function resolvedGroupOf(f: AclMatchField | null, host: string | null): { name: string; members: number } | null {
+  const name = fieldGroup(f);
+  if (name === null) return null;
+  const g = resolveObjectGroup(host, name);
+  if (g === null || g.members.length === 0) return null;
+  const parses = g.members.every((m) => m.ip !== null && parseIpv4(m.ip) !== null && (m.wild === null || parseIpv4(m.wild) !== null));
+  return parses ? { name, members: g.members.length } : null;
+}
+
+function fieldResolves(f: AclMatchField | null, host: string | null): boolean {
+  if (f === null) return true;
+  if (fieldGroup(f) !== null) return resolvedGroupOf(f, host) !== null;
+  return f.ip !== null;
+}
+
 function hasUnresolvedAddressing(line: AclLine): boolean {
-  const unresolved = (f: AclMatchField | null): boolean => f !== null && f.ip === null;
-  return unresolved(line.src) || unresolved(line.dst);
+  const host = hostOfAclLine(line);
+  return !fieldResolves(line.src, host) || !fieldResolves(line.dst, host);
 }
 
 function isCatchAllAddressing(line: AclLine): boolean {
@@ -655,13 +714,33 @@ export interface AclEval {
   evidence: HopEvidence[];
   caveats: string[];
   /** Structured facts about the deciding line, so prose is composed rather than re-parsed. */
-  decision: { aclName: string; lineIndex: number | null; raw: string | null } | null;
+  decision: {
+    aclName: string;
+    lineIndex: number | null;
+    /** How many lines the deciding list holds, so prose can say "line 4 of 4". */
+    lineCount: number;
+    raw: string | null;
+    /** The observed interface binding that applies the deciding list here, or null when none was observed. */
+    binding: AclBindingFact | null;
+  } | null;
+  /**
+   * How the lists were chosen: `observed` — every binding on this hop's interfaces was observed and
+   * exactly the bound lists were applied; `specificity` — at least one binding was unknown (or none
+   * was consulted) and the address-specificity rule chose. Absent on results built outside a hop.
+   */
+  bindingMode?: "observed" | "specificity";
 }
 
-function aclEvidence(host: string, name: string, line: AclLine, note: string): HopEvidence {
+export interface AclBindingFact {
+  intf: string;
+  dir: "in" | "out";
+  cite: Cite;
+}
+
+function aclEvidence(host: string, name: string, line: AclLine, total: number, note: string): HopEvidence {
   return {
     kind: "acl",
-    label: `${host} ACL ${name} line ${line.index} ${note}`,
+    label: `${host} ACL ${name} ${aclLineName(line.index, total)} ${note}`,
     raw: line.raw,
     cite: line.cite,
   };
@@ -670,12 +749,13 @@ function aclEvidence(host: string, name: string, line: AclLine, note: string): H
 /**
  * Which ACLs apply here?
  *
- * No `ip access-group` binding exists anywhere in this snapshot, so the honest answer is "unknown".
- * Rather than pretend every defined ACL filters every flow (which would deny nearly everything on
- * the strength of an unbound MGMT_IN), or that none do (which would hide the real filters), this
- * selects the ACL whose own match space names this flow most specifically, and every trace carries
- * a caveat saying the binding was never observed. The rule is deterministic and stated out loud;
- * it is not evidence that the ACL is applied on the path.
+ * The FALLBACK, used only at a hop where a binding the flow depends on was not observed (see
+ * ./bindings.ts — where the bindings of the ingress and egress interface are observed, exactly the
+ * bound lists apply and this rule does not run). Rather than pretend every defined ACL filters every
+ * flow (which would deny nearly everything on the strength of MGMT_IN), or that none do (which would
+ * hide the real filters), this selects the ACL whose own match space names this flow most
+ * specifically, and the hop says which binding was unknown and why. The rule is deterministic and
+ * stated out loud; it is not evidence that the ACL is applied on the path.
  */
 function selectAcls(named: Record<string, AclLine[]>, srcIp: Ipv4, dstIp: Ipv4): string[] {
   let best = 0;
@@ -718,6 +798,7 @@ function undecidableInUnappliedAcls(
   flow: Flow,
   srcIp: Ipv4,
   dstIp: Ipv4,
+  gap: string,
 ): HopEvidence[] {
   const out: HopEvidence[] = [];
   for (const name of Object.keys(named).sort()) {
@@ -729,9 +810,9 @@ function undecidableInUnappliedAcls(
       out.push({
         kind: "absence",
         label:
-          `${host} ACL ${name} line ${line.index} could match this flow and cannot be evaluated ` +
+          `${host} ACL ${name} ${aclLineName(line.index, (named[name] ?? []).length)} could match this flow and cannot be evaluated ` +
           `(${ev.reason ?? "no reason recorded"}); the list was not applied by the specificity rule, ` +
-          `and with no collected access-group binding that is not evidence it does not filter this flow`,
+          `and because ${gap}, that is not evidence it does not filter this flow`,
         raw: line.raw,
         cite: line.cite,
       });
@@ -744,9 +825,17 @@ function undecidableInUnappliedAcls(
  * Every ACL on this host that was NOT applied, and why. This is the other half of the selection
  * rule: with no collected binding, an ACL we did not apply is an ACL whose effect is UNKNOWN, not
  * one that is known to let the flow through. MGMT_IN is the live example — its only selective line
- * references an object-group whose members were never collected, so it can never score.
+ * references object-group MGMT_HOSTS, which resolves, but the specificity score reads literal
+ * addresses only, so the list can never score and the caveat says exactly that.
  */
-function notAppliedCaveat(host: string, named: Record<string, AclLine[]>, applied: readonly string[], srcIp: Ipv4, dstIp: Ipv4): string | null {
+function notAppliedCaveat(
+  host: string,
+  named: Record<string, AclLine[]>,
+  applied: readonly string[],
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  gap: string,
+): string | null {
   const rest = Object.keys(named)
     .sort()
     .filter((n) => !applied.includes(n));
@@ -760,7 +849,7 @@ function notAppliedCaveat(host: string, named: Record<string, AclLine[]>, applie
   const outscored: string[] = [];
   for (const name of rest) {
     const lines = named[name] ?? [];
-    const unresolved = lines.find((l) => !lineEvaluability(l).evaluable && (l.src?.ip === null || l.dst?.ip === null));
+    const unresolved = lines.find((l) => !lineEvaluability(l).evaluable && hasUnresolvedAddressing(l));
     if (unresolved !== undefined) {
       unscoreable.push(`${name} (${unresolved.cite}: ${lineEvaluability(unresolved).reason ?? "cannot be evaluated"})`);
       continue;
@@ -796,10 +885,21 @@ function notAppliedCaveat(host: string, named: Record<string, AclLine[]>, applie
        smaller place. */
     const everyMatchIsCatchAll = matching.every((l) => isCatchAllAddressing(l));
     const unresolvedMatch = matching.find((l) => hasUnresolvedAddressing(l));
+    /* A line that reaches this flow through an object-group that DID resolve. The specificity score
+       reads literal addresses only (`lineSpecificity`), so such a list is outscored by construction —
+       that is what the reader must be told, not that its addresses were unresolvable. */
+    const groupMatch = matching
+      .filter((l) => lineEvaluability(l).evaluable)
+      .map((l) => ({ l, g: resolvedGroupOf(l.src, hostOfAclLine(l)) ?? resolvedGroupOf(l.dst, hostOfAclLine(l)) }))
+      .find((x) => x.g !== null);
     if (!topEval.evaluable) {
       outscored.push(`${name} (matches this flow at ${top.cite}, which cannot be evaluated: ${topEval.reason ?? "no reason recorded"})`);
     } else if (everyMatchIsCatchAll) {
       outscored.push(`${name} (matches this flow only through catch-all lines)`);
+    } else if (groupMatch !== undefined && groupMatch.g !== null) {
+      outscored.push(
+        `${name} (matches this flow at ${groupMatch.l.cite} through object-group ${groupMatch.g.name}, which resolved in this snapshot to ${groupMatch.g.members} member${groupMatch.g.members === 1 ? "" : "s"} covering this flow's address; the specificity rule scores literal addresses only, so a group reference does not make the list selectable)`,
+      );
     } else if (unresolvedMatch !== undefined) {
       outscored.push(`${name} (matches this flow at ${unresolvedMatch.cite}, whose address space could not be resolved in this snapshot)`);
     } else {
@@ -819,37 +919,46 @@ function notAppliedCaveat(host: string, named: Record<string, AclLine[]>, applie
     );
   }
   parts.push(
-    `With no collected access-group binding, that is not evidence ${rest.length === 1 ? "it does" : "they do"} not filter this flow.`,
+    `Because ${gap}, that is not evidence ${rest.length === 1 ? "it does" : "they do"} not filter this flow.`,
   );
   return parts.join(" ");
 }
 
-/**
- * `named` is a parameter so the ACL half of the engine can be driven with a REAL ACL set that is
- * not core1's — the only host in this snapshot that has one. Producer output for a construct this
- * fabric happens not to contain (`eq citrix`, `eq 443 8443`) is still real producer output, and
- * this is the seam that lets it reach the same code path a trace uses.
- */
-export function evaluateAcls(host: string, flow: Flow, srcIp: Ipv4, dstIp: Ipv4, named: Record<string, AclLine[]> = aclsOf(host)): AclEval {
-  const names = selectAcls(named, srcIp, dstIp);
-  /* Undecidability is a property of the DECIDING HOST, not of the list the heuristic happened to
-     pick. Computed for both branches below and appended to `evidence` LAST, so it lowers the
-     badge without ever becoming the thing a verdict says it was decided by. */
-  const unappliedUndecidable = undecidableInUnappliedAcls(host, named, names, flow, srcIp, dstIp);
-  if (names.length === 0) {
-    const only = notAppliedCaveat(host, named, [], srcIp, dstIp);
-    return {
-      verdict: "not-applicable",
-      decidedBy: null,
-      evidence: unappliedUndecidable,
-      caveats: only === null ? [] : [only],
-      decision: null,
-    };
-  }
+/** The interfaces a packet enters and leaves a hop by, when the trace could resolve them. */
+export interface HopInterfaces {
+  ingress: string | null;
+  egress: string | null;
+  /**
+   * The address the packet is framed toward when it leaves: the destination on a connected route,
+   * the next hop otherwise. A port ACL on the egress VLAN matters only if THIS address is attached
+   * behind that port. Defaults to the destination.
+   */
+  egressTarget?: Ipv4 | null;
+}
+
+/** What evaluating a set of lists in order produced — shared by both selection modes. */
+interface ListRun {
+  evidence: HopEvidence[];
+  caveats: string[];
+  denial: HopEvidence | null;
+  indeterminate: HopEvidence | null;
+  denialDecision: AclEval["decision"];
+  indeterminateDecision: AclEval["decision"];
+}
+
+type BindingOf = (name: string) => AclBindingFact | null;
+
+function runLists(
+  host: string,
+  flow: Flow,
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  named: Record<string, AclLine[]>,
+  names: readonly string[],
+  bindingOf: BindingOf,
+): ListRun {
   const evidence: HopEvidence[] = [];
   const caveats: string[] = [];
-  const unapplied = notAppliedCaveat(host, named, names, srcIp, dstIp);
-  if (unapplied !== null) caveats.push(unapplied);
   let denial: HopEvidence | null = null;
   let indeterminate: HopEvidence | null = null;
   let denialDecision: AclEval["decision"] = null;
@@ -885,17 +994,17 @@ export function evaluateAcls(host: string, flow: Flow, srcIp: Ipv4, dstIp: Ipv4,
       // tri === "yes" and the line is evaluable.
       if (poisonedBy === null) {
         const action = (line.action ?? "").toLowerCase();
-        const ev2 = aclEvidence(host, name, line, action === "deny" ? "denies this flow" : "permits this flow");
+        const ev2 = aclEvidence(host, name, line, lines.length, action === "deny" ? "denies this flow" : "permits this flow");
         evidence.push(ev2);
         if (action === "deny" && denial === null) {
           denial = ev2;
-          denialDecision = { aclName: name, lineIndex: line.index, raw: line.raw };
+          denialDecision = { aclName: name, lineIndex: line.index, lineCount: lines.length, raw: line.raw, binding: bindingOf(name) };
         }
         decided = true;
         const snapshotVerdict = ACL_FINDING_BY_CITE.get(line.cite);
         if (snapshotVerdict !== undefined || setAside.length > 0) {
           caveats.push(
-            `${host} ACL ${name} line ${line.index} (${line.cite}) decides this flow` +
+            `${host} ACL ${name} ${aclLineName(line.index, lines.length)} (${line.cite}) decides this flow` +
               (snapshotVerdict === undefined
                 ? ""
                 : `, and the snapshot's own acl_line_reachability marks that line ${String(snapshotVerdict.verdict).toUpperCase()} in general (${snapshotVerdict.detail ?? "no detail recorded"})`) +
@@ -905,21 +1014,21 @@ export function evaluateAcls(host: string, flow: Flow, srcIp: Ipv4, dstIp: Ipv4,
           );
         }
       } else {
-        evidence.push(aclEvidence(host, name, line, "would match, but an earlier unevaluable line may fire first"));
+        evidence.push(aclEvidence(host, name, line, lines.length, "would match, but an earlier unevaluable line may fire first"));
         decided = true;
       }
       break;
     }
 
     if (poisonedBy !== null) {
-      const ev2 = aclEvidence(host, name, poisonedBy.line, `cannot be evaluated — ${poisonedBy.why}`);
+      const ev2 = aclEvidence(host, name, poisonedBy.line, lines.length, `cannot be evaluated — ${poisonedBy.why}`);
       evidence.push(ev2);
       if (indeterminate === null) {
         indeterminate = ev2;
-        indeterminateDecision = { aclName: name, lineIndex: poisonedBy.line.index, raw: poisonedBy.line.raw };
+        indeterminateDecision = { aclName: name, lineIndex: poisonedBy.line.index, lineCount: lines.length, raw: poisonedBy.line.raw, binding: bindingOf(name) };
       }
       caveats.push(
-        `${host} ACL ${name} line ${poisonedBy.line.index} (${poisonedBy.line.cite}) "${poisonedBy.line.raw ?? "text not collected"}" could match this flow but ${poisonedBy.why}; no verdict below it can be proven.`,
+        `${host} ACL ${name} ${aclLineName(poisonedBy.line.index, lines.length)} (${poisonedBy.line.cite}) "${poisonedBy.line.raw ?? "text not collected"}" could match this flow but ${poisonedBy.why}; no verdict below it can be proven.`,
       );
       continue;
     }
@@ -935,30 +1044,211 @@ export function evaluateAcls(host: string, flow: Flow, srcIp: Ipv4, dstIp: Ipv4,
       evidence.push(ev2);
       if (denial === null) {
         denial = ev2;
-        denialDecision = { aclName: name, lineIndex: null, raw: null };
+        denialDecision = { aclName: name, lineIndex: null, lineCount: lines.length, raw: null, binding: bindingOf(name) };
       }
     }
   }
 
-  /* Appended after every applied-ACL item so `evidence[0]` still names the line that DECIDED the
-     flow. These items change the badge, not the verdict. */
+
+  return { evidence, caveats, denial, indeterminate, denialDecision, indeterminateDecision };
+}
+
+/**
+ * Why this hop fell back to the specificity rule, in one clause. Every sentence that used to say
+ * "no access-group binding was collected" now says WHICH binding was not observed and why — the
+ * old sentence was false for this snapshot, which binds two lists on core1.
+ */
+function bindingGapClause(pb: PathBindings | null): string {
+  if (pb === null) return "no interface binding was consulted for this evaluation";
+  const parts = pb.unknown.map((u) => `${u.intf ?? "an unresolved interface"} ${u.dir} (${u.reason})`);
+  return `the ACL binding at ${parts.join("; ")} was not observed`;
+}
+
+/**
+ * `named` is a parameter so the ACL half of the engine can be driven with a REAL ACL set that is
+ * not core1's — the only host in this snapshot that has one. Producer output for a construct this
+ * fabric happens not to contain (`eq citrix`, `eq 443 8443`) is still real producer output, and
+ * this is the seam that lets it reach the same code path a trace uses.
+ *
+ * `path` is the ingress and egress interface of this hop. When given, the OBSERVED bindings of those
+ * interfaces decide which lists apply (see ./bindings.ts); the address-specificity rule is used only
+ * when one of those bindings is unknown, and the hop then says which one and why. Without `path`
+ * (the unit-test seam) no binding is consulted and the specificity rule runs as before.
+ */
+export function evaluateAcls(
+  host: string,
+  flow: Flow,
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  named: Record<string, AclLine[]> = aclsOf(host),
+  path?: HopInterfaces,
+): AclEval {
+  const pb = path === undefined || Object.keys(named).length === 0 ? null : pathBindings(host, path.ingress, path.egress, srcIp, path.egressTarget === undefined ? dstIp : path.egressTarget);
+  if (pb !== null && pb.unknown.length === 0) return evaluateObservedBindings(host, flow, srcIp, dstIp, named, pb);
+  /* A denial by a list that IS observed bound on this path stands even when another binding here is
+     unknown: an unknown filter can only drop more, never admit what a bound list drops. Only a
+     result that would let the flow through depends on the unknown binding, so only that case falls
+     back to the specificity rule. */
+  if (pb !== null && pb.bound.length > 0) {
+    const observed = evaluateObservedBindings(host, flow, srcIp, dstIp, named, pb);
+    if (observed.verdict === "deny") return observed;
+  }
+  return evaluateBySpecificity(host, flow, srcIp, dstIp, named, pb);
+}
+
+/** Every binding on the path was observed: apply exactly the bound lists, nothing else. */
+function evaluateObservedBindings(
+  host: string,
+  flow: Flow,
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  named: Record<string, AclLine[]>,
+  pb: PathBindings,
+): AclEval {
+  const caveats = [...pb.notes];
+  const where = pb.states.map((st) => `${st.intf ?? "?"} ${st.dir}`).join(", ");
+  const boundNames = [...new Set(pb.bound.map((b) => b.acl))];
+  const unbound = Object.keys(named)
+    .sort()
+    .filter((n) => !boundNames.includes(n));
+  const incomplete = pb.unknown.length > 0;
+  if (incomplete) {
+    caveats.push(
+      `At ${host}, ${pb.unknown.map((u) => `the ${u.dir === "in" ? "inbound" : "outbound"} binding on ${u.intf ?? "an unresolved interface"} (${u.reason})`).join("; ")} was not observed; a filter there can only drop more traffic, so it cannot undo the denial below.`,
+    );
+  } else if (unbound.length > 0) {
+    caveats.push(
+      `${host} also defines ${unbound.join(", ")}, bound to none of the interfaces this flow crosses at ${host} (${where}; observed running configuration), so ${unbound.length === 1 ? "it does" : "they do"} not filter this flow here.`,
+    );
+  }
+  if (pb.bound.length === 0) {
+    return { verdict: "not-applicable", decidedBy: null, evidence: pb.evidence, caveats, decision: null, bindingMode: "observed" };
+  }
+  const missing = pb.bound.filter((b) => named[b.acl] === undefined);
+  const present = boundNames.filter((n) => named[n] !== undefined);
+  const bindingOf: BindingOf = (name) => {
+    const b = pb.bound.find((x) => x.acl === name);
+    return b === undefined ? null : { intf: b.intf, dir: b.dir, cite: b.cite };
+  };
+  const run = runLists(host, flow, srcIp, dstIp, named, present, bindingOf);
+  const missingEv: HopEvidence[] = missing.map((b) => ({
+    kind: "absence",
+    label: `${host} ${b.intf} applies ACL ${b.acl} ${b.dir === "in" ? "inbound" : "outbound"}, but the lines of ${b.acl} were not collected, so what it does to this flow is unknown`,
+    raw: null,
+    cite: b.cite,
+  }));
+  const bindingEv = pb.states.filter((st) => st.kind !== "unknown").map(bindingEvidence);
+  const evidence = [...run.evidence, ...missingEv, ...(incomplete ? bindingEv : pb.evidence)];
+  caveats.push(...run.caveats);
+  if (run.denial !== null) {
+    return { verdict: "deny", decidedBy: run.denial, evidence, caveats, decision: run.denialDecision, bindingMode: "observed" };
+  }
+  if (run.indeterminate !== null) {
+    return { verdict: "indeterminate", decidedBy: run.indeterminate, evidence, caveats, decision: run.indeterminateDecision, bindingMode: "observed" };
+  }
+  const firstMissing = missingEv[0];
+  if (firstMissing !== undefined) {
+    return { verdict: "indeterminate", decidedBy: firstMissing, evidence, caveats, decision: null, bindingMode: "observed" };
+  }
+  const decidedByPermit = run.evidence.find((e) => e.kind === "acl") ?? null;
+  return { verdict: "permit", decidedBy: decidedByPermit, evidence, caveats, decision: null, bindingMode: "observed" };
+}
+
+/**
+ * The fallback: at least one binding this hop depends on was not observed (or none was consulted),
+ * so the list to apply is chosen by the address-specificity rule — plus every list that IS
+ * observed bound on this hop's interfaces.
+ */
+function evaluateBySpecificity(
+  host: string,
+  flow: Flow,
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  named: Record<string, AclLine[]>,
+  pb: PathBindings | null,
+): AclEval {
+  const gap = bindingGapClause(pb);
+  const boundHere = (pb?.bound ?? []).map((b) => b.acl).filter((n) => named[n] !== undefined);
+  const names = [...new Set([...boundHere, ...selectAcls(named, srcIp, dstIp)])];
+  const bindingOf: BindingOf = (name) => {
+    const b = pb?.bound.find((x) => x.acl === name);
+    return b === undefined ? null : { intf: b.intf, dir: b.dir, cite: b.cite };
+  };
+  const bindingEv = pb?.evidence ?? [];
+  const notes = pb?.notes ?? [];
+  /* Undecidability is a property of the DECIDING HOST, not of the list the heuristic happened to
+     pick. Computed for both branches below and appended to `evidence` LAST, so it lowers the
+     badge without ever becoming the thing a verdict says it was decided by. */
+  const unappliedUndecidable = undecidableInUnappliedAcls(host, named, names, flow, srcIp, dstIp, gap);
+  if (names.length === 0) {
+    const only = notAppliedCaveat(host, named, [], srcIp, dstIp, gap);
+    const first = unappliedUndecidable[0];
+    /* Same rule as the tail of this function: a line on this host that could match and cannot be
+       evaluated means no ACL verdict here is decidable, so "not-applicable" (which lets the trace
+       go on to claim a clean delivery) would be a permit by omission. */
+    if (first !== undefined) {
+      const n = unappliedUndecidable.length;
+      return {
+        verdict: "indeterminate",
+        decidedBy: first,
+        evidence: [...unappliedUndecidable, ...bindingEv],
+        caveats: [
+          ...notes,
+          ...(only === null ? [] : [only]),
+          `${host} holds ${n} ${n === 1 ? "line" : "lines"} in access lists the specificity rule did not apply which could ` +
+            `match this flow and cannot be evaluated (${unappliedUndecidable.map((e) => e.cite).join(", ")}). ` +
+            `Because ${gap}, the ACL result at ${host} is indeterminate, not a permit.`,
+        ],
+        decision: null,
+        bindingMode: "specificity",
+      };
+    }
+    return {
+      verdict: "not-applicable",
+      decidedBy: null,
+      evidence: [...unappliedUndecidable, ...bindingEv],
+      caveats: [...notes, ...(only === null ? [] : [only])],
+      decision: null,
+      bindingMode: "specificity",
+    };
+  }
+  const caveats: string[] = [...notes];
+  const unapplied = notAppliedCaveat(host, named, names, srcIp, dstIp, gap);
+  if (unapplied !== null) caveats.push(unapplied);
+  const run = runLists(host, flow, srcIp, dstIp, named, names, bindingOf);
+  const evidence = [...run.evidence];
+  caveats.push(...run.caveats);
+  const { denial, indeterminate, denialDecision, indeterminateDecision } = run;
+
+  /* Appended after every applied-ACL item so the applied line that matched is still listed first.
+     These items used to "change the badge, not the verdict" — and that split was the defect: the
+     trace said `delivered`, the hop rendered a green RESOLVED "delivered", the intent search counted
+     it as a DECIDED contradiction and the counterexample search offered it as a proven success,
+     while the caveat directly beneath said "never a definite permit". A permit that steps over an
+     undecidable line that could match is not a permit, so the VERDICT now follows the caveat: no
+     denial ⇒ indeterminate, decided by the first such line. A denial still stands — a list that
+     denies the flow is not made less denying by a second list we cannot read. */
   if (unappliedUndecidable.length > 0) {
     evidence.push(...unappliedUndecidable);
     const n = unappliedUndecidable.length;
     caveats.push(
       `${host} holds ${n} ${n === 1 ? "line" : "lines"} in access lists the specificity rule did not apply which could ` +
         `match this flow and cannot be evaluated (${unappliedUndecidable.map((e) => e.cite).join(", ")}). ` +
-        `No access-group binding was collected, so a verdict here steps over ${n === 1 ? "it" : "them"}: ` +
+        `Because ${gap}, a verdict here steps over ${n === 1 ? "it" : "them"}: ` +
         `it is at best indeterminate, never a definite permit.`,
     );
   }
 
-  if (denial !== null) return { verdict: "deny", decidedBy: denial, evidence, caveats, decision: denialDecision };
+  if (denial !== null) return { verdict: "deny", decidedBy: denial, evidence: [...evidence, ...bindingEv], caveats, decision: denialDecision, bindingMode: "specificity" };
   if (indeterminate !== null) {
-    return { verdict: "indeterminate", decidedBy: indeterminate, evidence, caveats, decision: indeterminateDecision };
+    return { verdict: "indeterminate", decidedBy: indeterminate, evidence: [...evidence, ...bindingEv], caveats, decision: indeterminateDecision, bindingMode: "specificity" };
+  }
+  const firstUnapplied = unappliedUndecidable[0];
+  if (firstUnapplied !== undefined) {
+    return { verdict: "indeterminate", decidedBy: firstUnapplied, evidence: [...evidence, ...bindingEv], caveats, decision: null, bindingMode: "specificity" };
   }
   const decidedByPermit = evidence.find((e) => e.kind === "acl") ?? null;
-  return { verdict: "permit", decidedBy: decidedByPermit, evidence, caveats, decision: null };
+  return { verdict: "permit", decidedBy: decidedByPermit, evidence: [...evidence, ...bindingEv], caveats, decision: null, bindingMode: "specificity" };
 }
 
 /* ── ingress resolution ─────────────────────────────────────────────────────── */
@@ -1021,6 +1311,57 @@ function narrowestObservedSubnet(ip: Ipv4): ObservedSubnet | null {
   return best;
 }
 
+/**
+ * When set, the ingress chooser puts this host first among the FHRP/SVI candidates instead of the
+ * observed Active member. Set ONLY by `traceVia` below, for the duration of one `traceFlow` call, so
+ * the alternate ingress a trace's own caveat names ("traffic may enter via core2") is traced too.
+ */
+let ingressOverride: string | null = null;
+
+/** The ingress candidate ordering, shared by resolution and the alternate-ingress check. */
+function orderIngress<T extends { host: string; fhrpRole: string | null }>(xs: readonly T[]): T[] {
+  const sorted = [...xs].sort(
+    (a, b) =>
+      Number(isActive(b.fhrpRole)) - Number(isActive(a.fhrpRole)) ||
+      Number(hasRib(b.host)) - Number(hasRib(a.host)) ||
+      a.host.localeCompare(b.host),
+  );
+  const pin = ingressOverride;
+  if (pin === null || !sorted.some((s) => s.host === pin)) return sorted;
+  return [...sorted.filter((s) => s.host === pin), ...sorted.filter((s) => s.host !== pin)];
+}
+
+/** One host the source's traffic could enter the routed fabric by, with the record that says so. */
+export interface IngressCandidate {
+  host: string;
+  /** How the candidate's role is spelled for prose, e.g. "HSRP Standby" or "no FHRP role observed". */
+  role: string;
+  cite: Cite;
+}
+
+/**
+ * Every host an FHRP group or a shared SVI subnet offers as this source's first routed hop, in the
+ * order `resolveIngress` ranks them (the chosen one first). The SAME ordering function drives both,
+ * so the alternates named here are exactly the ones the trace's caveat says it did not take. Empty
+ * when the source resolves by a connected route or an endpoint record alone.
+ */
+export function ingressCandidates(ip: Ipv4): IngressCandidate[] {
+  const role = (fhrp: string | null, r: string | null): string => (r === null ? "no FHRP role observed" : `${fhrp ?? "FHRP"} ${r}`);
+  const out: IngressCandidate[] = [];
+  const push = (c: IngressCandidate): void => {
+    if (!out.some((o) => o.host === c.host)) out.push(c);
+  };
+  const owners = ADDRESS_OWNERS.get(ip);
+  if (owners !== undefined && owners.length > 0) {
+    for (const o of orderIngress(owners)) push({ host: o.host, role: role(o.fhrp, o.fhrpRole), cite: o.cite });
+    return out;
+  }
+  for (const s of orderIngress(SVI_SUBNETS.filter((x) => prefixContains(x.prefix, ip)))) {
+    push({ host: s.host, role: role(s.record.fhrp, s.fhrpRole), cite: s.record.cite });
+  }
+  return out;
+}
+
 function resolveIngress(ip: Ipv4): Ingress | { none: string } {
   const attach = attachmentEvidence(ip);
 
@@ -1033,12 +1374,7 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
   //    for a host in the same subnet, with nothing said about the other candidate.
   const owners = ADDRESS_OWNERS.get(ip);
   if (owners !== undefined && owners.length > 0) {
-    const sorted = [...owners].sort(
-      (a, b) =>
-        Number(isActive(b.fhrpRole)) - Number(isActive(a.fhrpRole)) ||
-        Number(hasRib(b.host)) - Number(hasRib(a.host)) ||
-        a.host.localeCompare(b.host),
-    );
+    const sorted = orderIngress(owners);
     const chosen = sorted[0]!;
     const others = distinctHosts(sorted).filter((h) => h !== chosen.host);
     const caveats = [...attach.caveats];
@@ -1061,12 +1397,7 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
   // 2. An SVI subnet contains it: the first L3 hop is that subnet's gateway.
   const inSubnet = SVI_SUBNETS.filter((s) => prefixContains(s.prefix, ip));
   if (inSubnet.length > 0) {
-    const sorted = [...inSubnet].sort(
-      (a, b) =>
-        Number(isActive(b.fhrpRole)) - Number(isActive(a.fhrpRole)) ||
-        Number(hasRib(b.host)) - Number(hasRib(a.host)) ||
-        a.host.localeCompare(b.host),
-    );
+    const sorted = orderIngress(inSubnet);
     const chosen = sorted[0]!;
     const caveats = [...attach.caveats];
     if (sorted.length > 1) {
@@ -1270,7 +1601,7 @@ function denialPhrase(acl: AclEval): string {
   const d = acl.decision;
   if (d === null) return "an access-list decision whose line was not recorded";
   if (d.lineIndex === null) return `ACL ${d.aclName}'s implicit deny (no line in the list matches this flow)`;
-  return `ACL ${d.aclName} line ${d.lineIndex}`;
+  return `ACL ${d.aclName} ${aclLineName(d.lineIndex, d.lineCount)}`;
 }
 
 const SCOPE_PHRASE = `Under the collected RIBs of ${ROUTABLE.join(" and ")} only (${ROUTABLE.length} of ${HOST_COUNT} hosts in this topology)`;
@@ -1278,7 +1609,7 @@ const SCOPE_PHRASE = `Under the collected RIBs of ${ROUTABLE.join(" and ")} only
 function baseCaveats(): string[] {
   return [
     `Forwarding is modelled only from the RIBs collected for ${ROUTABLE.join(", ")}; ${UNROUTABLE_COUNT} of ${HOST_COUNT} hosts in this topology have no collected routing table, so nothing can be proven about forwarding on them.`,
-    `No \`ip access-group\` binding was collected anywhere in this snapshot (${fabric.meta.source}), so which interface and direction an ACL is applied to is unknown; an ACL applied elsewhere on the path could filter this flow without appearing in this trace.`,
+    ...bindingCoverageSentences(),
     "Stateful inspection, NAT, policy-based routing and any firewall in the path are not modelled: this walks stateless ACL text and the collected RIB only.",
     "Only the forward direction was simulated; the return path may be filtered or routed differently.",
     "ECMP is not modelled — one path is followed per hop and equal-cost alternates are listed, not explored.",
@@ -1305,6 +1636,231 @@ function finish(flow: Flow, outcome: TraceOutcome, hops: Hop[], claim: string, c
   };
 }
 
+/**
+ * The policy-gap kinds that leave a refusal (denied / dropped) undecided. One owner: the engine's
+ * claim sentence and `claims.ts :: isDecidedOutcome` (band, badge, intent tally) both read it, so the
+ * sentence cannot call decided what the band calls undecided. An uncollected ACL or an unobserved
+ * ingress port can only refuse EARLIER, so neither can turn a refusal into a pass.
+ */
+export const REFUSAL_UNDECIDING_KINDS: ReadonlySet<PolicyGap["kind"]> = new Set<PolicyGap["kind"]>([
+  "acl-unbound-denial",
+  "ingress-alternate",
+  "rib-partial",
+]);
+
+/* ── why a trace consulted no device ─────────────────────────────────────────── */
+
+/**
+ * Why a trace ended before any device was consulted (zero hops), as the engine decided it.
+ *
+ * A surface that has only `hops.length === 0` to go on cannot tell these apart, and one did not: the
+ * intent search labelled every hop-less trace "the source address is outside every subnet this
+ * collection observed" — including 20 flows inside 10.0.10.0/24, an observed subnet, that the engine
+ * had declined as intra-subnet L2 (2026-09-22 critic, B1). The reason is recorded HERE, at each
+ * zero-hop return, so the classification is the engine's own decision rather than a reader's
+ * reconstruction from the claim prose. `refusalOf` is null for every trace that consulted a device.
+ */
+export type RefusalKind = "invalid-address" | "not-a-host-address" | "intra-subnet" | "router-originated" | "outside-observed-subnets";
+
+export interface Refusal {
+  kind: RefusalKind;
+  /** Groups refusals that share one piece of evidence (the kind, plus the subnet where there is one). */
+  key: string;
+  /** One clause, suitable after "N flows: ". Names the evidence, never guesses past it. */
+  reason: string;
+  cite: Cite;
+}
+
+const REFUSALS = new WeakMap<Trace, Refusal>();
+
+export function refusalOf(trace: Trace): Refusal | null {
+  return REFUSALS.get(trace) ?? null;
+}
+
+function refuse(refusal: Refusal, trace: Trace): Trace {
+  REFUSALS.set(trace, refusal);
+  return trace;
+}
+
+/**
+ * A hop whose outcome was reached through a route chosen from a table the snapshot itself shows to
+ * be incomplete (./rib-completeness.ts). "No route" was the only route decision this used to ask
+ * about; a CHOSEN route from a partial table is the same absence in disguise: core1's table lacks
+ * any OSPF route although its OSPF adjacency with 10.0.99.2 is FULL, so the static 10.0.0.0/16
+ * summary won, egress resolved to Vlan30, and PROTECT_SERVERS "decided" a denial on an interface
+ * the packet may never leave by (2026-09-22 critic, B1 blocker).
+ *
+ * A connected or local route (or a local SVI) containing the destination is not UNDECIDED by this
+ * rule, but it is no longer SILENT either. It used to be exempt outright on the premise that "nothing
+ * a missing protocol installs outranks a directly connected subnet" — false under longest-prefix
+ * match: an OSPF, BGP or static route more specific than the connected /24 would win. core1's table
+ * is shown incomplete, yet a delivery on its connected 10.0.30.0/24 carried no word about the partial
+ * table (2026-09-22 auditor, B2). It was then only DISCLOSED, keeping the decided band — which still
+ * rendered the uncollected BGP/EIGRP routes, and the OSPF routes of a FULL adjacency the table holds
+ * none of, as "no more-specific route exists": absence as a decided result (2026-09-22 auditor, B1).
+ * Every non-/32 connected basis on a table the snapshot shows incomplete is now UN-DECIDED exactly
+ * like a static one (a /32 is the one case the premise holds for: nothing is longer, and connected
+ * wins an equal-length tie on administrative distance 0). The rule reads the route's source and
+ * prefix length and the host's own completeness record, never a list of hosts.
+ */
+const PARTIAL_ROUTE_BASIS = new WeakMap<Hop, { route: RouteEntry; sentence: string }>();
+
+function notePartialRouteBasis(hop: Hop, host: string, win: RouteEntry, dstIp: Ipv4, caveats: string[]): void {
+  const directlyAttached =
+    win.source === "connected" ||
+    win.source === "local" ||
+    SVI_SUBNETS.some((s) => s.host === host && prefixContains(s.prefix, dstIp));
+  const sentence = ribIncompletenessSentence(host);
+  if (sentence === null) return;
+  if (directlyAttached) {
+    /* A /32 is the one connected basis nothing can outrank: no prefix is longer, and connected wins
+       an equal-length tie on administrative distance 0. Every other connected basis is un-decided
+       exactly like a static one — see the comment above. */
+    if (parsePrefix(win.prefix)?.bits === 32) return;
+    PARTIAL_ROUTE_BASIS.set(hop, { route: win, sentence });
+    caveats.push(
+      `${host} reached this destination on its ${win.source ?? "unlabelled"} ${win.prefix} (${win.cite}), a route chosen from a table the snapshot shows to be incomplete: ${sentence}. Under longest-prefix match a more specific route the table does not hold would outrank this subnet, so the outcome at ${host} is not decided.`,
+    );
+    return;
+  }
+  PARTIAL_ROUTE_BASIS.set(hop, { route: win, sentence });
+  caveats.push(
+    `The route ${host} followed (${win.source ?? "unlabelled"} ${win.prefix}, ${win.cite}) was chosen from a table the snapshot shows to be incomplete: ${sentence}. A route the table does not hold may carry this flow by another interface, so the outcome at ${host} is not decided.`,
+  );
+}
+
+/* ── traffic addressed to a device itself ──────────────────────────────────────
+   What IS and is NOT modelled for a destination a collected device owns (acceptance B8):
+    - modelled: forwarding up to the owning device, every transit filter on the way, and the
+      owning device's OBSERVED inbound interface ACL on the interface the packet arrives by — an
+      inbound access-group filters every packet received on the interface, including packets
+      addressed to the router, so a denial by it is a real refusal;
+    - NOT modelled: an OUTBOUND ACL on the interface that owns the address (the packet is received,
+      not switched out of that interface, so the list does not see it), and everything that decides
+      whether the device ACCEPTS traffic addressed to itself — control-plane policing,
+      management-plane and service access lists (a VTY access-class, an SNMP or HTTP server list).
+   So such a flow is never "delivered" and never refused by an outbound list: it is a decided denial
+   only when an observed inbound list denies it, and indeterminate otherwise. */
+
+const CONTROL_PLANE_UNMODELLED =
+  "how a device treats traffic addressed to itself — control-plane policing, management-plane and service access lists such as a VTY access-class — is not modelled";
+
+interface Received {
+  hop: Omit<Hop, "index">;
+  outcome: TraceOutcome;
+  claim: string;
+  caveats: string[];
+}
+
+function ownerEvidence(owner: OwnedAddress): HopEvidence {
+  return { kind: owner.kind, label: `${owner.label} is an address of ${owner.host} itself`, raw: null, cite: owner.cite };
+}
+
+function receivedAtOwner(
+  host: string,
+  flow: Flow,
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  owner: OwnedAddress,
+  ingressIntf: string | null,
+  carried: HopEvidence[],
+): Received {
+  const named = aclsOf(host);
+  const where = ingressIntf ?? "an interface this collection could not resolve";
+  /* Inbound side only: the egress is not an interface here, so every outbound state is dropped
+     before anything is evaluated — no outbound list can reach the decision, not even as the
+     address-specificity fallback (which would pick PROTECT_SERVERS for a 10.0.30.x address). */
+  const all = Object.keys(named).length === 0 ? null : pathBindings(host, ingressIntf, null, srcIp, null);
+  const states = all === null ? [] : all.states.filter((s) => s.dir === "in");
+  const pb: PathBindings | null =
+    all === null
+      ? null
+      : {
+          states,
+          bound: all.bound.filter((b) => b.dir === "in"),
+          unknown: all.unknown.filter((u) => u.dir === "in"),
+          evidence: states.map(bindingEvidence),
+          notes: all.notes,
+        };
+  const inbound = pb !== null && pb.bound.length > 0 ? evaluateObservedBindings(host, flow, srcIp, dstIp, named, pb) : null;
+  const ownerEv = ownerEvidence(owner);
+  const received = `${flow.dstIp} is ${owner.label} (${owner.cite}), an address of ${host} itself, so the packet is received by ${host} rather than forwarded out of that interface`;
+
+  if (inbound !== null && inbound.verdict === "deny" && inbound.decidedBy !== null) {
+    const bound = inbound.decision?.binding ?? null;
+    return {
+      hop: {
+        host,
+        outIntf: null,
+        nextHop: null,
+        nextHost: null,
+        verdict: "denied",
+        decidedBy: inbound.decidedBy,
+        evidence: [...carried, ...inbound.evidence, ownerEv],
+        alternatives: [],
+      },
+      outcome: "denied",
+      claim: `${SCOPE_PHRASE}, ${flowPhrase(flow)} is denied at ${host} by ${denialPhrase(inbound)} (${inbound.decidedBy.cite}${inbound.decidedBy.raw === null ? "" : `: "${inbound.decidedBy.raw}"`}); the list is applied inbound on ${host} ${bound?.intf ?? where}${bound === null ? "" : ` (${bound.cite})`}, which filters every packet received there, including packets addressed to ${host} itself. ${received}; stateful return traffic is not modelled.`,
+      caveats: [...inbound.caveats],
+    };
+  }
+
+  const inboundState =
+    pb === null
+      ? `no ACLs were collected for ${host}, so its inbound filtering on ${where} is unobserved, not absent`
+      : pb.unknown.length > 0
+        ? `the inbound binding on ${where} was not observed (${pb.unknown.map((u) => u.reason).join("; ")})`
+        : inbound === null
+          ? `no inbound list is bound on ${where} in the observed running configuration`
+          : inbound.verdict === "permit"
+            ? `the inbound list on ${where} lets it through${inbound.decidedBy === null ? "" : ` (${inbound.decidedBy.cite})`}`
+            : `the inbound list on ${where} cannot be evaluated for this flow${inbound.decidedBy === null ? "" : ` (${inbound.decidedBy.cite})`}`;
+  return {
+    hop: {
+      host,
+      outIntf: null,
+      nextHop: null,
+      nextHost: null,
+      verdict: "unmodeled",
+      decidedBy: {
+        kind: "absence",
+        label: `${flow.dstIp} is addressed to ${host} itself (${owner.label}): the packet is received by ${host}, not forwarded out of an interface, so no outbound interface ACL decides it, and ${CONTROL_PLANE_UNMODELLED}`,
+        raw: null,
+        cite: owner.cite,
+      },
+      evidence: [...carried, ...(inbound?.evidence ?? pb?.evidence ?? []), ownerEv],
+      alternatives: [],
+    },
+    outcome: "indeterminate",
+    claim: `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${received}. An outbound interface ACL does not filter traffic addressed to the router, so none was applied; ${inboundState}; and ${CONTROL_PLANE_UNMODELLED}, so no forwarding or filtering outcome is claimed.`,
+    caveats: [
+      ...(inbound?.caveats ?? pb?.notes ?? []),
+      `Traffic addressed to ${host} itself is outside this model beyond its inbound interface ACL: ${CONTROL_PLANE_UNMODELLED}. Re-run toward a host behind ${host} to ask about transit traffic.`,
+    ],
+  };
+}
+
+/**
+ * When the destination is owned by a collected device OTHER than the one delivering onto its subnet:
+ * the reason a pass there is not a delivery, and the ownership record. Null when no device owns it.
+ */
+function receivedElsewhereEvidence(dstIp: Ipv4): { decidedBy: HopEvidence; owner: HopEvidence; caveat: string } | null {
+  const owners = ADDRESS_OWNERS.get(dstIp);
+  if (owners === undefined || owners.length === 0) return null;
+  const who = distinctHosts(owners).join(", ");
+  const first = owners[0]!;
+  return {
+    decidedBy: {
+      kind: "absence",
+      label: `${formatIpv4(dstIp)} is ${first.label}, an address of ${who} itself, so the packet is received by ${who}; its inbound interface ACLs and its control-plane policy decide whether it is accepted, and neither is modelled for traffic arriving there`,
+      raw: null,
+      cite: first.cite,
+    },
+    owner: ownerEvidence(first),
+    caveat: `Traffic addressed to ${who} itself is outside this model once it leaves the delivering interface: ${CONTROL_PLANE_UNMODELLED}.`,
+  };
+}
+
 export function traceFlow(flow: Flow): Trace {
   /* determinism: start of the elapsed-time measurement above; feeds `elapsedMs` and nothing else.
      No branch in this function reads it, so no trace outcome can depend on it. */
@@ -1314,7 +1870,12 @@ export function traceFlow(flow: Flow): Trace {
 
   if (srcIp === null || dstIp === null) {
     const bad = srcIp === null ? flow.srcIp : flow.dstIp;
-    return finish(
+    return refuse({
+      kind: "invalid-address",
+      key: "invalid-address",
+      reason: "the flow names an address that is not a valid IPv4 address, so nothing was simulated",
+      cite: fabric.coverage.cite,
+    }, finish(
       flow,
       "out-of-scope",
       [],
@@ -1327,7 +1888,7 @@ export function traceFlow(flow: Flow): Trace {
       ["The flow was rejected before any evidence was consulted; this says nothing about the network."],
       [],
       startedAt,
-    );
+    ));
   }
 
   // A packet cannot originate from the network or directed-broadcast address of a subnet, so a
@@ -1335,7 +1896,12 @@ export function traceFlow(flow: Flow): Trace {
   const srcSubnet = narrowestObservedSubnet(srcIp);
   const srcRole = srcSubnet === null ? "host" : addressRoleIn(srcSubnet.prefix, srcIp);
   if (srcSubnet !== null && srcRole !== "host") {
-    return finish(
+    return refuse({
+      kind: "not-a-host-address",
+      key: `not-a-host-address|${formatPrefix(srcSubnet.prefix)}`,
+      reason: `the source is the network or directed-broadcast address of ${formatPrefix(srcSubnet.prefix)} (${srcSubnet.label}), not a host address, so nothing was simulated`,
+      cite: srcSubnet.cite,
+    }, finish(
       flow,
       "out-of-scope",
       [],
@@ -1346,12 +1912,82 @@ export function traceFlow(flow: Flow): Trace {
       ],
       [],
       startedAt,
-    );
+    ));
+  }
+
+  /* Both endpoints in ONE observed subnet: the flow never crosses a routed boundary. Between two
+     hosts in a VLAN the traffic is bridged at L2 and never reaches the SVI's routed ACLs; toward a
+     device's own address on that subnet it is addressed to the device, not routed through it. This
+     model walks the RIB and routed-interface ACLs only, so it has nothing to say about either — it
+     used to route 10.0.30.10 → 10.0.30.20 "Vlan30 in, Vlan30 out" through core1 and report a DECIDED
+     denial by PROTECT_SERVERS, a model gap presented as an observed policy decision. The test is
+     structural (the narrowest observed subnet of the source contains the destination), not a list
+     of VLANs. Found by the 2026-09-21 critic (B1). */
+  if (srcSubnet !== null && prefixContains(srcSubnet.prefix, dstIp)) {
+    const where = `${formatPrefix(srcSubnet.prefix)} (${srcSubnet.label}, ${srcSubnet.cite})`;
+    return refuse({
+      kind: "intra-subnet",
+      key: `intra-subnet|${formatPrefix(srcSubnet.prefix)}`,
+      reason: `source and destination both lie in ${formatPrefix(srcSubnet.prefix)} (${srcSubnet.label}), a subnet this collection observed, so the flow stays inside one subnet — intra-subnet L2 forwarding, VLAN ACLs and port ACLs are outside this model, so no outcome was claimed`,
+      cite: srcSubnet.cite,
+    }, finish(
+      flow,
+      "indeterminate",
+      [],
+      `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${flow.srcIp} and ${flow.dstIp} both lie in ${where}, so the flow stays inside one subnet — it is bridged at L2, or addressed to a device on that subnet, and never crosses the routed interface where interface ACLs are evaluated. L2 forwarding, VLAN ACLs and port ACLs are not simulated, so no forwarding or filtering outcome is claimed.`,
+      [
+        `Traffic within ${formatPrefix(srcSubnet.prefix)} is outside this model: it walks collected RIBs and routed-interface ACLs, and a flow that never leaves its subnet meets neither. Its fate turns on L2 forwarding, VACLs and port ACLs, none of which is simulated.`,
+        ...baseCaveats(),
+      ],
+      [],
+      startedAt,
+    ));
+  }
+
+  /* The source IS an address a collected device owns — an SVI address, an FHRP virtual address or a
+     RIB `local` /32. Such a packet is originated by that device's own control plane: it does not
+     arrive inbound on the SVI that carries the address, so that interface's inbound access-group
+     does not filter it (IOS applies interface ACLs to transit traffic; output ACLs do not filter
+     locally-originated packets by default), and it has no gateway port and no alternate FHRP
+     ingress. The model only walks packets that ENTER a router, so tracing one anyway applied core1
+     Vlan20's inbound VOICE_FILTER to core1's own 10.0.20.2 and reported a DECIDED, SCOPED denial —
+     every decided verdict this fabric produced came from that shape (2026-09-22 auditor, B2). The
+     test reads the address-ownership index every other rule reads, never a list of addresses, and it
+     runs before an ingress is chosen, so no ingress, port or alternate claim is made about a flow
+     that has none. */
+  const srcOwners = ADDRESS_OWNERS.get(srcIp);
+  if (srcOwners !== undefined && srcOwners.length > 0) {
+    const ownerHosts = distinctHosts(srcOwners);
+    const owner = srcOwners[0]!;
+    const who = ownerHosts.join(", ");
+    const device = ownerHosts.length === 1 ? "that device" : "one of those devices";
+    return refuse({
+      kind: "router-originated",
+      key: `router-originated|${who}`,
+      reason: `the source is ${owner.label}, an address of ${who} itself, so the flow would be originated by ${device} — inbound interface ACLs do not apply to locally-originated traffic and its own filtering is not modelled, so no outcome was claimed`,
+      cite: owner.cite,
+    }, finish(
+      flow,
+      "indeterminate",
+      [],
+      `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${flow.srcIp} is ${owner.label} (${owner.cite}), an address of ${who} itself, so this traffic would be originated by ${device} rather than arrive at it. Locally-originated traffic is not filtered by the inbound access-group of the interface that owns its address, and how a device filters and routes its own traffic is not modelled, so no forwarding or filtering outcome is claimed.`,
+      [
+        `Traffic sourced by ${who} itself is outside this model: it walks packets that enter a router and applies that router's interface ACLs, and a self-originated packet enters none. Re-run with a host address in the same subnet to ask about transit traffic.`,
+        ...baseCaveats(),
+      ],
+      [],
+      startedAt,
+    ));
   }
 
   const ingress = resolveIngress(srcIp);
   if ("none" in ingress) {
-    return finish(
+    return refuse({
+      kind: "outside-observed-subnets",
+      key: "outside-observed-subnets",
+      reason: "the flow was refused before any device was consulted — the source address is outside every subnet this collection observed",
+      cite: fabric.coverage.cite,
+    }, finish(
       flow,
       "out-of-scope",
       [],
@@ -1362,7 +1998,7 @@ export function traceFlow(flow: Flow): Trace {
       ],
       [],
       startedAt,
-    );
+    ));
   }
 
   const caveats: string[] = [...ingress.caveats];
@@ -1374,6 +2010,10 @@ export function traceFlow(flow: Flow): Trace {
   let outcome: TraceOutcome = "indeterminate";
   let aclIndeterminateSeen = false;
   let claim = "";
+  /* The address the packet was last forwarded toward — the source on the first hop, the previous
+     hop's next-hop address after that. The connected interface of THIS host that contains it is
+     the interface the packet arrives on. */
+  let arrivalIp: Ipv4 | null = srcIp;
 
   for (let index = 0; index < TTL_LIMIT; index += 1) {
     if (visited.has(host)) {
@@ -1424,19 +2064,52 @@ export function traceFlow(flow: Flow): Trace {
       break;
     }
 
-    const acl = evaluateAcls(host, flow, srcIp, dstIp);
+    /* The DESTINATION is an address this host owns — the mirror of the router-originated refusal
+       above. A packet addressed to the router's own interface is received by the router (punted to
+       its control plane), not switched out of the interface that owns the address, so an OUTBOUND
+       interface ACL on that interface does not decide it. It used to: 10.0.10.50 → 10.0.30.1
+       (core1's own Vlan30 address) was "denied" on tcp/3389 and "delivered" on tcp/22 by
+       PROTECT_SERVERS, a list bound outbound on Vlan30, and that pair was the one counterexample the
+       product offered on real data (2026-09-22 acceptance report, B8). The test reads the same
+       address-ownership index the source rule reads — every collected SVI, FHRP virtual and RIB
+       `local` /32 address — never a list of addresses. See `receivedAtOwner`. */
+    const receivedAs = (ADDRESS_OWNERS.get(dstIp) ?? []).find((o) => o.host === host);
+    if (receivedAs !== undefined) {
+      const r = receivedAtOwner(host, flow, srcIp, dstIp, receivedAs, arrivalIp === null ? null : connectedInterfaceFor(host, arrivalIp), carriedEvidence);
+      hops.push({ ...r.hop, index });
+      outcome = r.outcome;
+      claim = r.claim;
+      caveats.push(...r.caveats);
+      break;
+    }
+
+    /* The route is chosen FIRST because it names the egress interface, and the egress interface is
+       half of the question "which ACLs apply here" — the other half being the interface the packet
+       arrived on. Both are resolved from collected evidence, never assumed. */
+    const route = chooseRoute(host, dstIp);
+    if (route?.caveat) caveats.push(route.caveat);
+    const egress = route === null ? null : resolveEgress(host, route.winner, dstIp);
+    const ingressIntf = arrivalIp === null ? null : connectedInterfaceFor(host, arrivalIp);
+
+    const acl = evaluateAcls(host, flow, srcIp, dstIp, aclsOf(host), {
+      ingress: ingressIntf,
+      egress: egress?.intf ?? null,
+      egressTarget:
+        route === null || route.winner.source === "connected" || route.winner.source === "local" || route.winner.nextHop === null
+          ? dstIp
+          : parseIpv4(route.winner.nextHop),
+    });
     if (acl.verdict === "indeterminate") aclIndeterminateSeen = true;
     caveats.push(...acl.caveats);
     if (Object.keys(aclsOf(host)).length === 0) {
       caveats.push(`No ACLs were collected for ${host}; filtering there is unobserved, not absent.`);
     } else if (acl.verdict === "not-applicable") {
       caveats.push(
-        `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host} but none names this flow's addresses specifically, so none was applied. With no collected access-group binding, that is an absence of evidence, not evidence of an unfiltered path.`,
+        acl.bindingMode === "observed"
+          ? `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host}, and none is bound to the interfaces this flow enters (${ingressIntf ?? "unresolved"}) or leaves (${egress?.intf ?? "unresolved"}) by in the observed running configuration, so none was applied here.`
+          : `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host} but none names this flow's addresses specifically, so none was applied. Because a binding this hop depends on was not observed, that is an absence of evidence, not evidence of an unfiltered path.`,
       );
     }
-
-    const route = chooseRoute(host, dstIp);
-    if (route?.caveat) caveats.push(route.caveat);
 
     const evidence = [...carriedEvidence, ...acl.evidence];
     carriedEvidence = [];
@@ -1448,16 +2121,25 @@ export function traceFlow(flow: Flow): Trace {
       hops.push({
         index,
         host,
-        outIntf: route?.winner.outIntf ?? null,
+        outIntf: egress?.intf ?? null,
         nextHop: route?.winner.nextHop ?? null,
         nextHost: null,
         verdict: "denied",
         decidedBy: ev,
-        evidence: route ? [...evidence, routeEvidence(host, route.winner)] : evidence,
+        evidence: route ? [...evidence, routeEvidence(host, route.winner), ...(egress?.evidence ?? [])] : evidence,
         alternatives: route?.alternatives ?? [],
       });
       outcome = "denied";
-      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is denied at ${host} by ${denialPhrase(acl)} (${ev.cite}${ev.raw === null ? "" : `: "${ev.raw}"`}); the ACL's interface binding was not collected, and stateful return traffic is not modelled.`;
+      const bound = acl.decision?.binding ?? null;
+      /* An inbound binding refuses the packet before the FIB lookup, so the route is not what
+         decided it. Any other denial (outbound binding, or a list chosen by address specificity)
+         was reached through the egress the route named. */
+      if (route !== null && (bound === null || bound.dir !== "in")) notePartialRouteBasis(hops[hops.length - 1]!, host, route.winner, dstIp, caveats);
+      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is denied at ${host} by ${denialPhrase(acl)} (${ev.cite}${ev.raw === null ? "" : `: "${ev.raw}"`}); ${
+        bound === null
+          ? "that list was chosen by the address-specificity rule because a binding on this hop was not observed"
+          : `the list is applied ${bound.dir === "in" ? "inbound" : "outbound"} on ${host} ${bound.intf} (${bound.cite})`
+      }, and stateful return traffic is not modelled.`;
       break;
     }
 
@@ -1483,6 +2165,12 @@ export function traceFlow(flow: Flow): Trace {
       caveats.push(
         `The drop at ${host} rests on the RIB as collected (routes.${host}); a route learned after collection, or a VRF not collected, would change it.`,
       );
+      /* The table's completeness is itself evidenced — or contradicted — by the snapshot. When the
+         routing protocols that populate it were not collected, or the control plane reports prefixes
+         it does not hold, the drop is what a partial table says, and is named so (./rib-completeness.ts;
+         `pathPolicyGaps` turns the same fact into an undecided input). */
+      const partial = ribIncompletenessSentence(host);
+      if (partial !== null) caveats.push(`${partial}, so this drop is not a decided absence of a route.`);
       break;
     }
 
@@ -1512,29 +2200,49 @@ export function traceFlow(flow: Flow): Trace {
               raw: null,
               cite: fabric.coverage.cite,
             };
+      /* The destination is an address ANOTHER collected device owns (this host does not — that case
+         was taken above). This host really does switch the packet out of its connected interface, so
+         its outbound ACL there is a real filter and a denial by it (the branch above) stands. But
+         what arrives is addressed to that device itself, which receives it: its inbound ACLs and
+         control-plane policy decide it, and neither is modelled here, so a pass is not a delivery. */
+      const ownedElsewhere = nonHostEv === null && !undecided ? receivedElsewhereEvidence(dstIp) : null;
       hops.push({
         index,
         host,
-        outIntf: win.outIntf,
+        outIntf: egress?.intf ?? win.outIntf,
         nextHop: null,
         nextHost: null,
         // A hop that reads "delivered" inside an undecidable trace is a green tick over an unknown.
         // "unmodeled" is the honest verdict for this hop: the RIB got the packet here, the filter
         // could not be evaluated, so the outcome AT this hop was not modelled.
-        verdict: undecided || nonHostEv !== null ? "unmodeled" : "delivered",
-        decidedBy: undecided ? acl.decidedBy : (nonHostEv ?? routeEv),
-        evidence: [...evidence, routeEv, ...sviEv, ...(nonHostEv === null ? [] : [nonHostEv])],
+        verdict: undecided || nonHostEv !== null || ownedElsewhere !== null ? "unmodeled" : "delivered",
+        decidedBy: nonHostEv ?? ownedElsewhere?.decidedBy ?? (undecided ? acl.decidedBy : routeEv),
+        evidence: [...evidence, routeEv, ...sviEv, ...(nonHostEv === null ? [] : [nonHostEv]), ...(ownedElsewhere === null ? [] : [ownedElsewhere.owner])],
         alternatives: route.alternatives,
       });
-      if (acl.verdict === "indeterminate" && acl.decidedBy !== null) {
+      /* A delivery is a route decision too: the connected prefix it landed on was chosen from this
+         host's table, and a partial table can hide a longer prefix that outranks it. */
+      notePartialRouteBasis(hops[hops.length - 1]!, host, win, dstIp, caveats);
+      /* The non-host case is named first: it is the more fundamental answer (there is no host to
+         deliver to). When the ACL result is ALSO undecided, that is appended rather than hidden. */
+      if (nonHostEv !== null) {
         outcome = "indeterminate";
-        claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} reaches ${host}'s connected ${win.prefix} (${win.cite}), but the result cannot be decided: ${acl.decidedBy.label} (${acl.decidedBy.cite}).`;
-      } else if (nonHostEv !== null) {
-        outcome = "indeterminate";
-        claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is routed to ${host}'s ${win.source ?? "unlabelled"} ${win.prefix} (${win.cite}), but ${flow.dstIp} is that subnet's ${dstRole === "network" ? "network" : "directed-broadcast"} address rather than a host address, so what ${host} does with it cannot be decided from this collection.`;
+        claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is routed to ${host}'s ${win.source ?? "unlabelled"} ${win.prefix} (${win.cite}), but ${flow.dstIp} is that subnet's ${dstRole === "network" ? "network" : "directed-broadcast"} address rather than a host address, so what ${host} does with it cannot be decided from this collection.${
+          undecided && acl.decidedBy !== null ? ` The ACL result there is also undecided: ${acl.decidedBy.label} (${acl.decidedBy.cite}).` : ""
+        }`;
         caveats.push(
           `${flow.dstIp} addresses the subnet ${formatPrefix(deliveryPrefix!)} itself. Whether ${host} forwards, floods or discards it turns on \`ip directed-broadcast\` and platform defaults, neither of which was collected (${fabric.coverage.cite}).`,
         );
+      } else if (undecided && acl.decidedBy !== null) {
+        /* The forwarding fact and the filtering fact are stated separately: the RIB really does put
+           the destination on a connected prefix here; what cannot be decided is whether a filter on
+           this host lets it through. */
+        outcome = "indeterminate";
+        claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} reaches ${host}'s connected ${win.prefix} (${win.cite}), but the result cannot be decided: ${acl.decidedBy.label} (${acl.decidedBy.cite}).`;
+      } else if (ownedElsewhere !== null) {
+        outcome = "indeterminate";
+        claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${host} switches it out of its ${win.source ?? "unlabelled"} ${win.prefix} via ${win.outIntf ?? "an unnamed interface"} (${win.cite}), and ${host}'s own filtering there was evaluated, but ${ownedElsewhere.decidedBy.label}.`;
+        caveats.push(ownedElsewhere.caveat);
       } else {
         outcome = "delivered";
         claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is delivered at ${host} on ${win.source ?? "an unlabelled"} route ${win.prefix} via ${win.outIntf ?? "an unnamed interface"} (${win.cite}); delivery means the destination prefix is directly connected there, not that a host replied.`;
@@ -1547,14 +2255,16 @@ export function traceFlow(flow: Flow): Trace {
     hops.push({
       index,
       host,
-      outIntf: win.outIntf,
+      outIntf: egress?.intf ?? null,
       nextHop: win.nextHop,
       nextHost: next.host,
       verdict: acl.verdict === "indeterminate" ? "unmodeled" : "forwarded",
       decidedBy: acl.verdict === "indeterminate" ? acl.decidedBy : routeEv,
-      evidence: next.evidence === null ? [...evidence, routeEv] : [...evidence, routeEv, next.evidence],
+      evidence: [...evidence, routeEv, ...(egress?.evidence ?? []), ...(next.evidence === null ? [] : [next.evidence])],
       alternatives: route.alternatives,
     });
+    notePartialRouteBasis(hops[hops.length - 1]!, host, win, dstIp, caveats);
+    arrivalIp = win.nextHop === null ? null : parseIpv4(win.nextHop);
 
     if (next.host === null) {
       outcome = "indeterminate";
@@ -1572,6 +2282,8 @@ export function traceFlow(flow: Flow): Trace {
       claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} exceeded the ${TTL_LIMIT}-hop simulation cap without reaching its destination; on real hardware this is a TTL drop.`;
       const last = hops[hops.length - 1]!;
       hops[hops.length - 1] = { ...last, verdict: "ttl-exceeded" };
+      const basis = PARTIAL_ROUTE_BASIS.get(last);
+      if (basis !== undefined) PARTIAL_ROUTE_BASIS.set(hops[hops.length - 1]!, basis);
       caveats.push(`The trace was cut at the ${TTL_LIMIT}-hop cap; the path was longer than this fabric's diameter, which usually means a routing loop.`);
     }
   }
@@ -1582,7 +2294,93 @@ export function traceFlow(flow: Flow): Trace {
   // moment the wording changes.
   if (aclIndeterminateSeen && outcome === "delivered") outcome = "indeterminate";
 
-  return finish(flow, outcome, hops, claim, [...caveats, ...baseCaveats()], unmodelledHosts, startedAt);
+  const trace = finish(flow, outcome, hops, claim, [...caveats, ...baseCaveats()], unmodelledHosts, startedAt);
+  /* A delivery the engine itself does not rate as definite (a host passed with no collected ACLs,
+     an evidence item recorded as an absence) is a ROUTING result, not a decided pass. The sentence
+     used to read exactly like a fully-scoped delivery — "is delivered at core2 on connected route …"
+     — so the one line a reader quotes carried none of the gap. The gap is now named in the claim
+     itself, from the same inputs `isDefiniteDelivery` reads, never from a list of hosts. Found by
+     the 2026-09-21 critic (B1). */
+  if (trace.outcome === "delivered" && !isDefiniteDelivery(trace)) {
+    return { ...trace, claim: `${trace.claim} ${undecidedDeliverySentence(trace)}` };
+  }
+  /* The same rule for a refusal. A drop at a host whose collected table the snapshot shows to be
+     incomplete, a denial by a list whose binding was not observed, or either reached by an ingress an
+     alternate FHRP member does not reproduce, is not a decided refusal — and the sentence said it was:
+     "is dropped at core2: no prefix in its collected RIB matches …", announced to a screen reader as
+     a definite drop while the card's headline read "not decided" (2026-09-22 critic, B2). The gap is
+     named in the claim itself, from the gap kinds that undecide a refusal
+     (`REFUSAL_UNDECIDING_KINDS`, which `claims.ts :: isDecidedOutcome` also reads). */
+  if (trace.outcome === "denied" || trace.outcome === "dropped") {
+    const undeciding = unobservedPolicyInputs(trace).filter((g) => REFUSAL_UNDECIDING_KINDS.has(g.kind));
+    if (undeciding.length > 0) return { ...trace, claim: `${trace.claim} ${undecidedRefusalSentence(trace.outcome, undeciding)}` };
+  }
+  return trace;
+}
+
+
+/** Why a denial or drop is not a decided refusal, stated from the trace's own undeciding gaps. */
+function undecidedRefusalSentence(outcome: "denied" | "dropped", gaps: readonly PolicyGap[]): string {
+  const reasons: string[] = [];
+  for (const g of gaps) if (!reasons.includes(g.label)) reasons.push(g.label);
+  return `That ${outcome === "denied" ? "denial" : "drop"} is not decided: ${reasons.join("; ")}.`;
+}
+
+/** Why a "delivered" trace is not a decided pass, stated from the trace's own undecided inputs. */
+export function undecidedDeliverySentence(t: Trace): string {
+  const reasons: string[] = [];
+  const add = (r: string): void => {
+    if (!reasons.includes(r)) reasons.push(r);
+  };
+  for (const g of unobservedPolicyInputs(t)) add(g.label);
+  for (const h of t.hops) {
+    if (h.verdict === "unmodeled") add(`${h.host} is not modelled`);
+    for (const e of h.evidence) if (e.kind === "absence") add(e.label);
+  }
+  return `That is a routing result, not a decided pass — filtering on this path was not decided: ${reasons.join("; ")}.`;
+}
+
+/**
+ * The interface a packet leaves `host` by for this route.
+ *
+ * A static or default route that names only a next-hop address ("0.0.0.0/0 via 10.0.10.254") used
+ * to be shown as "egress interface: not observed", as if evidence were missing. It is not: a router
+ * resolves that next hop recursively through its own RIB, and the RIB we hold says 10.0.10.254 lies
+ * in the connected 10.0.10.0/24 on Vlan10. That one recursive lookup is done here and BOTH records
+ * are cited. It stops after one level, and only accepts a connected/local route that names an
+ * interface — anything deeper is left unresolved rather than guessed.
+ */
+export function resolveEgress(
+  host: string,
+  win: RouteEntry,
+  dstIp: Ipv4,
+  routes: readonly RouteEntry[] = routesOf(host),
+): { intf: string; evidence: HopEvidence[] } | null {
+  if (win.outIntf !== null) return { intf: win.outIntf, evidence: [] };
+  // A destination on a local SVI with no connected route in the RIB still leaves by that SVI.
+  const svi = SVI_SUBNETS.find((s) => s.host === host && prefixContains(s.prefix, dstIp));
+  if (svi !== undefined && (win.source === "connected" || win.source === "local") && svi.record.vlan !== null) {
+    return {
+      intf: `Vlan${svi.record.vlan}`,
+      evidence: [{ kind: "svi", label: `${host} Vlan${svi.record.vlan} ${formatPrefix(svi.prefix)} contains ${formatIpv4(dstIp)}`, raw: svi.record.sviIp, cite: svi.record.cite }],
+    };
+  }
+  if (win.nextHop === null) return null;
+  const nh = parseIpv4(win.nextHop);
+  if (nh === null) return null;
+  const via = chooseRoute(host, nh, routes)?.winner ?? null;
+  if (via === null || via === win || via.outIntf === null || (via.source !== "connected" && via.source !== "local")) return null;
+  return {
+    intf: via.outIntf,
+    evidence: [
+      {
+        kind: "route",
+        label: `${host} resolves next hop ${win.nextHop} recursively: it lies in ${via.source} ${via.prefix} out ${via.outIntf}`,
+        raw: null,
+        cite: via.cite,
+      },
+    ],
+  };
 }
 
 function routeEvidence(host: string, r: RouteEntry): HopEvidence {
@@ -1592,6 +2390,263 @@ function routeEvidence(host: string, r: RouteEntry): HopEvidence {
     raw: null,
     cite: r.cite,
   };
+}
+
+/**
+ * A delivery that nothing on its path left undecided. `traceFlow` already refuses to return
+ * "delivered" over an indeterminate ACL; this is the same rule stated over the trace itself, for
+ * every consumer that turns a delivery into a stronger claim (a counterexample offered as a proven
+ * success, a flow counted as a decided contradiction of an intent). It reads the same inputs
+ * `scopeTuple()` counts as indeterminate — an unmodelled hop or an evidence item recorded as an
+ * absence — so a delivery that would render with an INDETERMINATE badge can never be promoted.
+ */
+export function isDefiniteDelivery(t: Trace): boolean {
+  if (t.outcome !== "delivered" || t.hops.length === 0) return false;
+  // A filter question nobody collected the evidence to ask is an undecided input too.
+  if (unobservedPolicyInputs(t).length > 0) return false;
+  return t.hops.every((h) => h.verdict !== "unmodeled" && h.evidence.every((e) => e.kind !== "absence"));
+}
+
+/**
+ * A delivery with nothing left undecided ON THE MODELLED PATH — the same rule as
+ * `isDefiniteDelivery` minus the ingress gaps (alternate FHRP ingress, unobserved physical ingress
+ * port), which belong to the SOURCE rather than to the flow. Used only where a flow is compared
+ * with another from the same source (the counterexample, the suggested-flow outcome label), so both
+ * sides carry the identical ingress assumption; every such use restates that assumption. It never
+ * decides a badge or a band — those read `isDefiniteDelivery`.
+ */
+export function isDefiniteOnModelledPath(t: Trace): boolean {
+  if (t.outcome !== "delivered" || t.hops.length === 0) return false;
+  if (pathPolicyGaps(t).length > 0) return false;
+  return t.hops.every((h) => h.verdict !== "unmodeled" && h.evidence.every((e) => e.kind !== "absence"));
+}
+
+/* ── unobserved policy inputs ───────────────────────────────────────────────── */
+
+/**
+ * The filtering questions a trace left OPEN for want of evidence.
+ *
+ * Two shapes, both derived from the trace and the compiled coverage — never from a list of names:
+ *
+ *  - `acl-uncollected`: any host the trace traversed — passed, delivered at, or stopped at — that
+ *    has no collected ACL. The trace used to treat that as a clean pass — SCOPED, "0 evidence items
+ *    were indeterminate" — while its own caveat said "filtering there is unobserved, not absent".
+ *    An unasked question is not a decided one.
+ *  - `acl-unbound-denial`: a denial decided by a list whose `ip access-group` binding on this hop
+ *    was NOT observed (so the specificity heuristic chose it). Whether that list is applied on this
+ *    flow's path at all is then unknown: the configuration line is observed; that it filters this
+ *    flow is not. A denial by a list whose binding the hop's evidence carries is exempt — that one
+ *    is applied by evidence (see ./bindings.ts `hopHasObservedBinding`).
+ *
+ * Two more shapes sit BEFORE the modelled segment, which starts at the chosen gateway's SVI. Both
+ * used to be invisible to every count, so a trace resting on them still earned SCOPED ("every
+ * evidence item was decided") while its own caveat said the ingress was "not a guarantee" — absence
+ * counted as decided. Found by the 2026-09-21 critic (B1):
+ *
+ *  - `ingress-alternate`: the source's first routed hop was chosen from an FHRP group / shared SVI
+ *    subnet by a point-in-time role, and an alternate member is NOT modelled equivalently — traced
+ *    from that member the flow ends differently, or rests on inputs of its own that were never
+ *    observed (no collected ACLs, an unmodelled hop). The alternate is TRACED (`traceVia`), not
+ *    judged by a list of names; an alternate that reproduces the same, fully decided outcome is not
+ *    a gap.
+ *  - `ingress-port-unobserved`: a physical port on the gateway that the source's frames could
+ *    arrive by (./bindings.ts `physicalIngressStates`) has a binding state other than an observed
+ *    "none" — running configuration not observed, or an access-group this model does not apply.
+ *
+ * Any of them caps the badge below SCOPED (`claimBadge`) and stops a delivery being definite (so it
+ * is never offered as a counterexample or suggested as a delivery). An unbound denial and an
+ * alternate ingress also make a denial an undecided — not a decided — contradiction of an intent.
+ */
+export interface PolicyGap {
+  host: string;
+  kind: "acl-uncollected" | "acl-unbound-denial" | "ingress-alternate" | "ingress-port-unobserved" | "rib-partial";
+  label: string;
+  cite: Cite;
+}
+
+/*
+ * A fifth shape is about ROUTING, not filtering, and rides the same channel so every consumer that
+ * already refuses to promote an unobserved input (badge, band, intent tally, T1) refuses this one too:
+ *
+ *  - `rib-partial`: a hop that ended the trace for want of a route (`no-route`) at a host whose
+ *    collected routing table the snapshot itself shows to be incomplete — a route-populating
+ *    protocol not collected there, or control-plane prefixes the table does not hold
+ *    (./rib-completeness.ts). "No route" is then what a partial table says, not a decided absence.
+ *    Found by the 2026-09-21 critic (B1 blocker): 60 no-route drops at core2 decided an intent while
+ *    the snapshot recorded core2's OSPF/BGP/EIGRP as not_collected and a 240-prefix EVPN peer.
+ */
+
+/** How an alternate-ingress trace's own gap is summarised. Exhaustive over the kinds. */
+function altGapPhrase(g: PolicyGap): string {
+  switch (g.kind) {
+    case "acl-uncollected":
+      return `${g.host} has no collected ACLs`;
+    case "acl-unbound-denial":
+      return `the denying list at ${g.host} has no observed binding`;
+    case "ingress-alternate":
+      return `the ingress at ${g.host} is itself not modelled equivalently`;
+    case "ingress-port-unobserved":
+      return `the ingress port filtering at ${g.host} is unobserved`;
+    case "rib-partial":
+      return `the routing decision at ${g.host} rests on a table the snapshot shows to be incomplete`;
+  }
+  const exhaustive: never = g.kind;
+  return exhaustive;
+}
+
+/** Hop verdicts at which the packet PASSED the host, so the host's filter was a live question. */
+const PASSING: ReadonlySet<Hop["verdict"]> = new Set(["forwarded", "delivered", "ttl-exceeded"]);
+
+/** Set while an alternate-ingress trace is being judged, so judging it cannot recurse into ITS alternates. */
+let judgingAlternate = false;
+const ALTERNATE_TRACES = new Map<string, Trace>();
+const GAPS = new WeakMap<Trace, PolicyGap[]>();
+
+/** The same flow, traced with `host` taken as its ingress. Memoised: the trace is deterministic. */
+function traceVia(flow: Flow, host: string): Trace {
+  const key = `${host}|${flow.srcIp}|${flow.dstIp}|${flow.protocol}|${flow.dstPort ?? ""}|${flow.srcPort ?? ""}`;
+  const hit = ALTERNATE_TRACES.get(key);
+  if (hit !== undefined) return hit;
+  const prevPin = ingressOverride;
+  const prevJudging = judgingAlternate;
+  ingressOverride = host;
+  judgingAlternate = true;
+  try {
+    const t = traceFlow(flow);
+    ALTERNATE_TRACES.set(key, t);
+    return t;
+  } finally {
+    ingressOverride = prevPin;
+    judgingAlternate = prevJudging;
+  }
+}
+
+/** Gaps before the modelled segment: an alternate ingress, and the gateway's physical ingress port. */
+function ingressPolicyGaps(t: Trace): PolicyGap[] {
+  const first = t.hops[0];
+  const src = parseIpv4(t.flow.srcIp);
+  if (first === undefined || src === null || judgingAlternate) return [];
+  const out: PolicyGap[] = [];
+
+  const cands = ingressCandidates(src);
+  const chosen = cands.find((c) => c.host === first.host);
+  if (chosen !== undefined) {
+    for (const alt of cands) {
+      if (alt.host === first.host) continue;
+      const at = traceVia(t.flow, alt.host);
+      if (at.hops[0]?.host !== alt.host) continue; // the override could not place it; nothing was traced from there
+      const altGaps = pathPolicyGaps(at);
+      const altUndecided = at.hops.some((h) => h.verdict === "unmodeled" || h.evidence.some((e) => e.kind === "absence"));
+      if (at.outcome === t.outcome && altGaps.length === 0 && !altUndecided) continue; // modelled equivalently
+      const why: string[] = [];
+      if (at.outcome !== t.outcome) why.push(`traced from ${alt.host} this flow is ${at.outcome}, not ${t.outcome}`);
+      for (const g of altGaps) why.push(altGapPhrase(g));
+      if (altUndecided) why.push(`the trace from ${alt.host} rests on evidence recorded as absent`);
+      out.push({
+        host: alt.host,
+        kind: "ingress-alternate",
+        label: `${first.host} was taken as ingress on a point-in-time role (${chosen.role}); the flow may instead enter via ${alt.host} (${alt.role}), which is not modelled equivalently: ${why.join("; ")}`,
+        cite: alt.cite,
+      });
+    }
+  }
+
+  /* The physical port the source's frames reach the gateway by. Only asked where the gateway's ACLs
+     were collected — elsewhere the whole host is already an `acl-uncollected` gap — and only when
+     the flow enters by an SVI (a source owned by the device itself arrives by no port). */
+  if (fabric.coverage.aclHosts.includes(first.host) && !ADDRESS_OWNERS.has(src)) {
+    const svi = connectedInterfaceFor(first.host, src);
+    const vlan = svi === null ? null : (/^Vlan(\d+)$/i.exec(svi)?.[1] ?? null);
+    if (vlan !== null) {
+      const open = physicalIngressStates(first.host, vlan, src);
+      if (open.length > 0) {
+        const shown = open.slice(0, 4).map((s) => `${s.intf ?? "(unresolved)"}${s.kind === "bound" ? ` binds ${s.acl} ${s.dir}, not evaluated by this model` : ""}`);
+        out.push({
+          host: first.host,
+          kind: "ingress-port-unobserved",
+          label: `${formatIpv4(src)}'s frames could reach ${first.host} Vlan${vlan} by ${open.length} physical ${open.length === 1 ? "port" : "ports"} whose inbound filtering was not observed (${shown.join(", ")}${open.length > 4 ? ` and ${open.length - 4} more` : ""}) — the attachment path is not simulated, so which port it is, and what it filters, is unobserved`,
+          cite: open[0]!.cite ?? `interfaces.${first.host}`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+export function unobservedPolicyInputs(t: Trace): PolicyGap[] {
+  if (judgingAlternate) return pathPolicyGaps(t);
+  const hit = GAPS.get(t);
+  if (hit !== undefined) return hit;
+  const all = [...pathPolicyGaps(t), ...ingressPolicyGaps(t)];
+  GAPS.set(t, all);
+  return all;
+}
+
+/** The gaps ON the modelled segment — hosts traversed, and denials by unbound lists. */
+function pathPolicyGaps(t: Trace): PolicyGap[] {
+  const out: PolicyGap[] = [];
+  const aclHosts = new Set(fabric.coverage.aclHosts);
+  const ribHosts = new Set(fabric.coverage.routableHosts);
+  const seen = new Set<string>();
+  for (const h of t.hops) {
+    /* EVERY traversed host without collected ACLs is an unobserved filtering question, whatever the
+       hop's verdict. This used to be scoped to the PASSING verdicts, so a hop that ENDED the trace
+       (unmodeled, no-route) produced no gap, and T1 printed "no filtering question on this path was
+       left unobserved" beside the same trace's caveat "No ACLs were collected for <host>; filtering
+       there is unobserved". An ingress filter is evaluated before the routing decision, so the
+       question is just as live at a hop that drops. Found by the 2026-09-21 critic (B1). */
+    if (!aclHosts.has(h.host) && !seen.has(h.host)) {
+      seen.add(h.host);
+      const holds = ribHosts.has(h.host)
+        ? "holds a collected routing table but no collected ACLs"
+        : "has neither a collected routing table nor collected ACLs";
+      const effect = PASSING.has(h.verdict)
+        ? "so whether it filters this flow was never evaluated"
+        : `so whether it would filter this flow ahead of its ${h.verdict} outcome there was never evaluated`;
+      out.push({
+        host: h.host,
+        kind: "acl-uncollected",
+        label: `${h.host} ${holds}, ${effect} — unobserved, not absent`,
+        cite: fabric.coverage.cite,
+      });
+    }
+    const basis = PARTIAL_ROUTE_BASIS.get(h);
+    if (basis !== undefined) {
+      out.push({
+        host: h.host,
+        kind: "rib-partial",
+        label: `${basis.sentence}, so the ${basis.route.source ?? "unlabelled"} route ${basis.route.prefix} that ${h.host} followed (${basis.route.cite}) may not be the route it actually uses for this flow`,
+        cite: ribIncompleteness(h.host)[0]?.cite ?? basis.route.cite,
+      });
+    }
+    if (h.verdict === "no-route") {
+      const partial = ribIncompleteness(h.host);
+      if (partial.length > 0) {
+        out.push({
+          host: h.host,
+          kind: "rib-partial",
+          label: `${ribIncompletenessSentence(h.host) ?? `${h.host}'s collected routing table is incomplete`}, so "no route" at ${h.host} is what a partial table says, not a decided absence of a route`,
+          cite: partial[0]!.cite,
+        });
+      }
+    }
+    const d = h.decidedBy;
+    const deniedBy = d === null ? null : (/^acls\.[^.]+\.([^[]+)/.exec(d.cite)?.[1] ?? null);
+    if (
+      h.verdict === "denied" &&
+      d !== null &&
+      (d.kind === "acl" || d.cite.startsWith(`acls.${h.host}.`)) &&
+      !(deniedBy !== null && hopHasObservedBinding(h, deniedBy))
+    ) {
+      out.push({
+        host: h.host,
+        kind: "acl-unbound-denial",
+        label: `the denying list at ${h.host} was chosen by the address-specificity rule because a binding on this hop was not observed, so that it is applied on this flow's path is not observed`,
+        cite: d.cite,
+      });
+    }
+  }
+  return out;
 }
 
 /* ── the blocking hop ───────────────────────────────────────────────────────── */
@@ -1686,37 +2741,53 @@ export function counterexample(flow: Flow, trace: Trace): CounterexampleResult {
   for (const c of candidates.slice(0, CANDIDATE_CAP)) {
     if (c.flow.dstIp === flow.dstIp && c.flow.dstPort === flow.dstPort && c.flow.protocol === flow.protocol) continue;
     const t = traceFlow(c.flow);
-    if (t.outcome !== "delivered") continue;
+    if (!isDefiniteOnModelledPath(t)) continue;
     // The rationale cites the trace that was actually run — never `c.why`, which describes only the
     // line that suggested this candidate. See deliveringAclEvidence().
     const decided = deliveringAclEvidence(t);
     const stated = `${protoLabel(c.flow)} from ${c.flow.srcIp} to ${c.flow.dstIp} is delivered`;
+    /* The candidate shares the source, so it shares the source's ingress assumption. That is said in
+       the rationale itself rather than dropped: the variation is decided on the modelled path, and
+       the doubt before that path is carried with it, not laundered away. */
+    const ingress = ingressPolicyGaps(t);
+    const shared =
+      ingress.length === 0
+        ? ""
+        : ` It rests on the same ingress assumption as the flow above, so it is decided on the modelled path only: ${ingress.map((g) => g.label).join("; ")}.`;
     return {
       found: true,
       flow: c.flow,
       trace: t,
       rationale:
-        decided === null
+        (decided === null
           ? `${stated}. No ACL line was consulted on its path, so nothing here claims which rule permitted it.`
-          : `${stated}: ${decided.label} (${decided.cite}).`,
+          : `${stated}: ${decided.label} (${decided.cite}).`) + shared,
     };
   }
   return {
     found: false,
-    reason: `None of the ${Math.min(candidates.length, CANDIDATE_CAP)} nearby variations derived from the evidence at ${host} traced as delivered, so no counterexample is offered. That is not proof that none exists — only the collected ACLs and RIBs were searched.`,
+    reason: `None of the ${Math.min(candidates.length, CANDIDATE_CAP)} nearby variations derived from the evidence at ${host} traced as a delivery with nothing on its path left undecided, so no counterexample is offered. That is not proof that none exists — only the collected ACLs and RIBs were searched.`,
   };
 }
 
 /* ── suggested flows ────────────────────────────────────────────────────────── */
 
 /**
- * Interesting flows, derived from this snapshot at module load and then TRACED, so the outcome each
- * one advertises is the outcome the engine actually produced. A candidate whose trace does not match
- * its intent is dropped rather than relabelled: the list is evidence about the engine, not a brochure.
+ * Interesting flows, derived from this snapshot and then TRACED, so the outcome each one advertises
+ * is the outcome the engine actually produced. A candidate whose trace does not match its intent is
+ * dropped rather than relabelled: the list is evidence about the engine, not a brochure.
+ *
+ * Built on FIRST USE, not at module load (acceptance E5, cold load). Tracing every candidate is the
+ * single largest piece of work in the entry chunk's evaluation — measured 101 ms of a 154 ms
+ * evaluation on the release build, unminified profile — and module evaluation is one task that no
+ * keystroke can interrupt. Nothing on the default screen needs the list: the path panel and the
+ * command palette ask for it when they are opened. The result is the same pure function of the
+ * snapshot either way; only WHEN it is paid for moved.
  */
-const SUGGESTED: readonly SuggestedFlow[] = buildSuggestions();
+let SUGGESTED: readonly SuggestedFlow[] | null = null;
 
 export function suggestedFlows(): SuggestedFlow[] {
+  SUGGESTED ??= buildSuggestions();
   return SUGGESTED.map((s) => ({ ...s, flow: { ...s.flow } }));
 }
 
@@ -1733,17 +2804,30 @@ function buildSuggestions(): SuggestedFlow[] {
     if (out.some((o) => o.id === id)) return false;
     const t = traceFlow(flow);
     if (t.outcome !== want) return false;
+    // Same-source comparison: the ingress assumption is the source's and the flow's own card states it.
+    if (want === "delivered" && !isDefiniteOnModelledPath(t)) return false;
     out.push({ id, title, flow, rationale, expectedOutcome: t.outcome, srcProvenance });
     return true;
   };
 
   /** The endpoint record that observed this address, so an "observed" claim carries its evidence. */
   const observedAt = (ip: Ipv4): SourceProvenance => {
-    const rec = ENDPOINTS_BY_IP.get(ip)?.[0];
+    /* Same ordering as `attachmentEvidence`, so this note and the trace name the same first record.
+       Naming only the first record once said "observed as an endpoint on access1 Gi0/2" for an
+       address the same trace reports on 17 hosts with an ambiguous attachment (critic B2). */
+    const recs = [...(ENDPOINTS_BY_IP.get(ip) ?? [])].sort(
+      (a, b) => a.host.localeCompare(b.host) || (a.port ?? "").localeCompare(b.port ?? ""),
+    );
+    const rec = recs[0];
+    const hosts = new Set(recs.map((r) => r.host)).size;
+    const where = rec === undefined ? "a collected host" : `${rec.host} ${rec.port ?? "(no port recorded)"}`;
     return {
       kind: "observed",
       cite: rec?.cite ?? fabric.coverage.cite,
-      note: `${formatIpv4(ip)} was observed as an endpoint on ${rec?.host ?? "a collected host"} ${rec?.port ?? "(no port recorded)"}.`,
+      note:
+        hosts > 1
+          ? `${formatIpv4(ip)} was observed as an endpoint, but on ${hosts} hosts (first ${where}); its attachment point is ambiguous in the collected evidence.`
+          : `${formatIpv4(ip)} was observed as an endpoint on ${where}.`,
     };
   };
 
@@ -1755,6 +2839,12 @@ function buildSuggestions(): SuggestedFlow[] {
 
   // A source address the collection actually observed, preferring one inside an ACL's source space.
   const observedSources = [...ENDPOINTS_BY_IP.keys()].sort((a, b) => a - b);
+
+  /* The first flow a permit line describes, whether or not it traces as delivered. The two cases
+     below borrow its destination; they used to borrow it only from a "permitted" suggestion that
+     had traced as delivered, so the moment the engine stopped calling an undecidable permit
+     "delivered" they silently disappeared too. Their own outcomes are traced independently. */
+  let permitCandidate: Flow | null = null;
 
   for (const [host, named] of Object.entries(fabric.acls).sort(([a], [b]) => a.localeCompare(b))) {
     for (const [name, lines] of Object.entries(named).sort(([a], [b]) => a.localeCompare(b))) {
@@ -1779,6 +2869,7 @@ function buildSuggestions(): SuggestedFlow[] {
         if (port === null) continue;
 
         const permitted: Flow = { srcIp: formatIpv4(src), dstIp: formatIpv4(dst), protocol: proto, dstPort: port, srcPort: null };
+        permitCandidate ??= permitted;
         take(
           "permitted",
           `${proto.toUpperCase()}/${port} into ${formatPrefix(dstPrefix)}`,
@@ -1788,7 +2879,7 @@ function buildSuggestions(): SuggestedFlow[] {
              line, derived from no count, and contradicted two cards below by the denied demo's own
              counterexample and by the intent verifier reporting 24 contradicting flows on the same
              screen. A uniqueness claim has to be a measurement or it has to be absent. */
-          `${host} ACL ${name} line ${line.index} permits exactly this (${line.cite}).`,
+          `${host} ACL ${name} ${aclLineName(line.index, lines.length)} permits exactly this (${line.cite}).`,
           "delivered",
           observedAt(src),
         );
@@ -1834,13 +2925,13 @@ function buildSuggestions(): SuggestedFlow[] {
   for (const s of SVI_SUBNETS) {
     if (hasRib(s.host)) continue;
     const src = hostAddressIn(s.prefix, 50);
-    const delivered = out.find((o) => o.id === "permitted");
-    if (src === null || delivered === undefined) continue;
+    const delivered = out.find((o) => o.id === "permitted")?.flow ?? permitCandidate;
+    if (src === null || delivered === null) continue;
     if (
       take(
         "unmodelled",
         `From ${s.host} Vlan${s.record.vlan ?? "?"} — no RIB collected`,
-        { ...delivered.flow, srcIp: formatIpv4(src) },
+        { ...delivered, srcIp: formatIpv4(src) },
         `${s.host} gateways ${formatPrefix(s.prefix)} (${s.record.cite}) but no routing table was collected for it, so the honest answer is "unmodelled" — never "delivered".`,
         "indeterminate",
         derivedFrom(src, s.prefix, s.record.cite, `which ${s.host} gateways on Vlan${s.record.vlan ?? "?"}`),
@@ -1850,7 +2941,8 @@ function buildSuggestions(): SuggestedFlow[] {
     }
   }
 
-  // A source on a RIB host with no default route, aimed off-fabric: a provable drop.
+  // A source on a RIB host with no default route, aimed off-fabric: a drop — decided only when the
+  // host's table is not shown incomplete by the snapshot (./rib-completeness.ts).
   const offFabric = ["198.51.100.7", "203.0.113.9", "192.0.2.5"].find((ip) => {
     const v = parseIpv4(ip);
     return v !== null && "none" in resolveIngress(v);
@@ -1865,7 +2957,9 @@ function buildSuggestions(): SuggestedFlow[] {
           "no-route",
           `${s.host} Vlan${s.record.vlan ?? "?"} to the internet`,
           { srcIp: formatIpv4(src), dstIp: offFabric, protocol: "tcp", dstPort: 443, srcPort: null },
-          `${s.host} is the observed active gateway for ${formatPrefix(s.prefix)} (${s.record.cite}) and its collected RIB holds no default route, so this address is provably unreachable from there.`,
+          `${s.host} is the observed active gateway for ${formatPrefix(s.prefix)} (${s.record.cite}) and its collected RIB holds no default route, so this address is unreachable from there under ${s.host}'s RIB as collected — a route learned after collection, or a VRF not collected, would change that.${
+            ribIncompletenessSentence(s.host) === null ? "" : ` ${ribIncompletenessSentence(s.host)}, so the drop is not decided.`
+          }`,
           "dropped",
           derivedFrom(src, s.prefix, s.record.cite, `for which ${s.host} is the observed active gateway`),
         )
@@ -1874,7 +2968,7 @@ function buildSuggestions(): SuggestedFlow[] {
       }
     }
     // The mirror case: a source that is in no observed subnet at all.
-    const insideDst = out.find((o) => o.id === "permitted")?.flow.dstIp;
+    const insideDst = (out.find((o) => o.id === "permitted")?.flow ?? permitCandidate)?.dstIp;
     if (insideDst !== undefined) {
       take(
         "out-of-scope",

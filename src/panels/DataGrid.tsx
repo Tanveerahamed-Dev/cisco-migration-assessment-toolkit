@@ -22,6 +22,7 @@
  * caller cannot be relied on to remember that at every call site.
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -36,6 +37,7 @@ import {
 } from "react";
 import { IconChevronDown, IconChevronRight, IconSortAsc, IconSortDesc, IconSortNone } from "../ui/icons";
 import { LiveRegion, NotObserved } from "../ui/primitives";
+import { returnFocus } from "../app/focus-return";
 import "./DataGrid.css";
 
 /* ── column model ───────────────────────────────────────────────────────────── */
@@ -74,11 +76,24 @@ export interface GridColumn<T> {
   maxPx?: number;
   /** The row's identity column, rendered role="rowheader". At most one per grid. */
   rowHeader?: boolean;
-  /** The cell holds its own focusable control, so Enter / F2 step INTO it instead of activating. */
+  /** The cell holds its own focusable control, so Enter / F2 step INTO it instead of activating.
+   *  A cell whose ONLY control is a button is operated directly: Enter presses it, no widget mode. */
   interactive?: boolean;
+  /** The cell holds exactly ONE control and nothing else of its own (a lone icon button). APG:
+   *  "when a cell contains a single widget, focus the widget" — so the roving tabindex lands on the
+   *  control itself, and the cell carries neither a tabindex nor a duplicate of the control's
+   *  name. The renderer receives the tabindex to put on the control (`render`'s second argument).
+   *  Measured before (A11Y critic, D2): End on a row focused the gridcell DIV, whose inner button
+   *  sat at tabindex=-1 with the same aria-label — two elements, one name, focus on the wrong one. */
+  soleControl?: boolean;
+  /** Accessible name for a cell that has no text of its own (a lone icon button). Without it the
+   *  focused cell announces nothing until the reader steps into its widget (A11Y critic, D2). */
+  cellLabel?: (item: T) => string;
   /** What a null renderer result means, for the NotObserved sentence. */
   unobservedWhat?: string;
-  render: (item: T) => ReactNode;
+  /** `cell.tabIndex` is the roving tabindex for a `soleControl` column's control (0 when this cell
+   *  is the grid's tab stop, else -1). Other columns can ignore it. */
+  render: (item: T, cell: { tabIndex: 0 | -1 }) => ReactNode;
 }
 
 export type GridNode<T> =
@@ -93,7 +108,17 @@ export type GridNode<T> =
       /** Extra content on the group header row, e.g. a severity breakdown. */
       detail?: ReactNode;
     }
-  | { kind: "row"; id: string; item: T };
+  | {
+      kind: "row";
+      id: string;
+      item: T;
+      /**
+       * The row's React identity when `id` is not unique in `nodes`: grouping by a multi-valued key
+       * (a finding on several hosts) puts the same item under several groups, and keying each copy
+       * by `id` alone collides. Absent means `id` is already unique.
+       */
+      key?: string;
+    };
 
 export interface GridSort {
   columnId: string;
@@ -130,6 +155,13 @@ export interface DataGridProps<T> {
    */
   revealId?: string | null;
   /**
+   * Identity of the whole shared selection (finding, device, link, hop). A change re-runs the
+   * reveal even when `revealId` itself is unchanged: A4 counts selecting a device, a link or a hop
+   * as a selection change, and re-aiming the queue on one means the selected row is in view.
+   * Compared by value; omit it and only a `revealId` change re-aims.
+   */
+  revealKey?: string;
+  /**
    * Rows related to a selection this corpus cannot hold as a row of its own — the findings that
    * name the selected device or the endpoints of the selected cable.
    *
@@ -138,6 +170,16 @@ export interface DataGridProps<T> {
    * that the corpus had narrowed under them.
    */
   relatedIds?: ReadonlySet<string>;
+  /**
+   * What a row in `relatedIds` IS related to, in words — e.g. "names the selected device core1".
+   *
+   * The trailing-edge mark is visual only; without this the relation reached assistive technology
+   * solely as a count sentence, and a reader on a row had to infer it from the host text inside the
+   * row (A11Y critic, D8). Exposed per related row as `aria-description`, and folded into the row
+   * header's accessible text so screen readers that ignore `aria-description` still hear it when
+   * they announce the row header on a row change.
+   */
+  relatedDescription?: string;
   /** Rows in the multi-select batch. Separate from `activeId` — focus, selection and the batch
    *  are three different states and conflating them is how bulk operations become accidental. */
   batchIds?: ReadonlySet<string>;
@@ -164,7 +206,26 @@ export interface DataGridProps<T> {
   /** Rendered in place of the body when there are no rows. Must explain WHY it is empty. */
   empty?: ReactNode;
   describedBy?: string;
-  /** True while the row set is being recomputed, so partial rows are not announced one by one. */
+  /**
+   * How the rows are ordered, in words, whatever put them in that order.
+   *
+   * `aria-sort` can only state an order that IS a single column. A caller whose default order is a
+   * composite ranking (severity, then priority, then rank) leaves every header at
+   * `aria-sort="none"`, which tells a screen-reader user nothing about the order in front of them
+   * (A11Y critic, D2). The grid renders this sentence as its own visually-hidden description and
+   * appends it to `aria-describedby`, so the order is always determinable from the grid itself.
+   */
+  orderDescription?: string;
+  /**
+   * True while the row set the grid is showing is KNOWN TO BE OUT OF DATE — the query has moved on
+   * and the filter has not caught up yet. Rendered as `aria-busy` on the grid.
+   *
+   * E5 AUDIT FIX, 2026-09-21. This prop existed and nothing outside the tests ever passed it true,
+   * so `aria-busy` was dead code: the query recompute that the E5 sweep measures at 233-396 ms was
+   * silent to assistive technology as well as invisible. A guard exercised only where it is inert
+   * is not a guard. `PriorityQueue` now passes it for its debounce window — the one interval in
+   * which the rows on screen answer a question the user has already changed.
+   */
   busy?: boolean;
   className?: string;
   /** Row height class hook, e.g. "compact" | "comfortable". Styling only. */
@@ -201,9 +262,13 @@ const pageRows = (scroller: HTMLElement | null, head: HTMLElement | null): numbe
   if (!scroller) return PAGE_ROWS_FALLBACK;
   const row = scroller.querySelector<HTMLElement>('[role="row"].ag__row--data');
   const rowH = row?.getBoundingClientRect().height ?? 0;
-  /* The sticky header sits inside the scroll port and covers the top of it, so the rows a reader
-     can actually see start below it — the same correction the reveal effect makes. */
-  const portH = scroller.clientHeight - (head?.getBoundingClientRect().height ?? 0);
+  /* A "page" is what the reader can SEE, not the grid's own box. MEASURED (critic, 2026-09-22): at
+     577x630 and 400x800 the grid is not its own scroll port — it lays out at its full 5,008 px and
+     an ancestor (or the window) scrolls it — so clientHeight counted every row and one PageDown
+     jumped from row 3 to row 152, off-screen. The band is the same predicate the reveal uses: the
+     grid's box below the sticky header, intersected with every clip and the viewport. */
+  const band = visibleBand(scroller, head);
+  const portH = band.bottom - band.top;
   if (rowH < 1 || portH < 1) return PAGE_ROWS_FALLBACK;
   return Math.max(1, Math.floor(portH / rowH) - 1);
 };
@@ -212,9 +277,12 @@ const RESIZE_STEP_PX = 8;
 
 const clamp = (n: number, lo: number, hi: number): number => (n < lo ? lo : n > hi ? hi : n);
 
+/** What counts as a cell's control — the same set `enterCellMode` steps into. */
+const SOLE_CONTROL_SELECTOR = "button,a[href],input,select,textarea";
+
 /** A renderer that produced nothing is an absence, not an empty cell. */
-const cellContent = <T,>(col: GridColumn<T>, item: T): ReactNode => {
-  const out = col.render(item);
+const cellContent = <T,>(col: GridColumn<T>, item: T, tabIndex: 0 | -1 = -1): ReactNode => {
+  const out = col.render(item, { tabIndex });
   if (out === null || out === undefined || out === false || out === "") {
     return <NotObserved compact {...(col.unobservedWhat ? { what: col.unobservedWhat } : {})} />;
   }
@@ -282,6 +350,131 @@ function hasSortControl<T>(col: GridColumn<T> | undefined, onSort: unknown): boo
 
 /* ── component ──────────────────────────────────────────────────────────────── */
 
+/**
+ * Scroll `scroller` the least distance that puts `el` fully inside the part of the scroll port
+ * the sticky header does not cover. NEAREST semantics, arithmetic rather than `scrollIntoView`
+ * (which also scrolls every ancestor and ignores the header). An element inside the header itself
+ * is always visible, so it never scrolls.
+ */
+export function revealBelowHeader(
+  scroller: HTMLElement,
+  head: HTMLElement | null,
+  el: HTMLElement,
+  align: "nearest" | "centre" = "nearest",
+): void {
+  const off = offsetFromView(scroller, head, el);
+  if (off === 0) return;
+  if (align === "nearest") {
+    scroller.scrollTop += off;
+    revealThroughAncestors(scroller, head, el);
+    return;
+  }
+  /* "centre" — for a SELECTION reveal (not keyboard focus, which stays nearest so an arrow key moves
+     the list by one row). Measured (A1, 2026-09-21 critic): a nearest reveal left the selected F099
+     row flush on the grid's bottom edge (row 1021-1054, grid 787-1054), where any resize of the
+     panel above pushed it back out. A row that must be scrolled to is brought to the middle of the
+     visible part of the port instead; a row already fully visible still does not move (off === 0). */
+  const { top, bottom } = visibleBand(scroller, head && !head.contains(el) ? head : null);
+  const row = (el.closest<HTMLElement>('[role="row"]') ?? el).getBoundingClientRect();
+  const delta = row.top + row.height / 2 - (top + bottom) / 2;
+  scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
+  revealThroughAncestors(scroller, head, el);
+}
+
+/**
+ * The remainder of a reveal the grid could not absorb itself. When the grid is its own scroll port
+ * (every desktop layout) the adjustment above already made the row visible and this is a no-op.
+ * When it is NOT — narrow layouts where the grid lays out at full height inside a scrolling rail or
+ * the page (measured 577x630, 400x800) — `scroller.scrollTop +=` moves nothing, and the focused
+ * row stayed thousands of px off-screen. The leftover distance is handed to the nearest scrolling
+ * ancestors, innermost first, then the document: the least movement that puts the row in view.
+ */
+function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): void {
+  let rest = offsetFromView(scroller, head, el);
+  if (rest === 0) return;
+  const view = scroller.ownerDocument.defaultView;
+  if (!view) return;
+  for (let a = scroller.parentElement; a !== null && rest !== 0; a = a.parentElement) {
+    const oy = view.getComputedStyle(a).overflowY;
+    if ((oy !== "auto" && oy !== "scroll") || a.scrollHeight <= a.clientHeight) continue;
+    const before = a.scrollTop;
+    a.scrollTop = before + rest;
+    rest -= a.scrollTop - before;
+  }
+  if (rest !== 0) view.scrollBy(0, rest);
+}
+
+/**
+ * The vertical band of `scroller` a reader can actually SEE: its own box, below the sticky header,
+ * intersected with every clipping ancestor and the viewport.
+ *
+ * Why not the scroller's box alone: that box is where the grid is laid out, not what is on screen.
+ * Measured (2026-09-22 capability audit, A4): with the Path panel open at 1920x1080 the grid's box
+ * ran to y=1091 while the frame clipped at 1080 and the status bar covered 1054-1080, so a row
+ * "revealed" at 1060 passed this predicate while sitting under the chrome. The layout no longer
+ * overflows (shell.css), but when a rail is too short for both floors it scrolls and clips the grid
+ * instead — and the predicate must answer for THAT box, whatever clips it, not for one layout.
+ */
+function visibleBand(scroller: HTMLElement, head: HTMLElement | null): { top: number; bottom: number } {
+  const box = scroller.getBoundingClientRect();
+  let top = head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top;
+  let bottom = box.bottom;
+  const view = scroller.ownerDocument.defaultView;
+  if (view) {
+    const doc = scroller.ownerDocument;
+    const rootOy = view.getComputedStyle(doc.documentElement).overflowY;
+    for (let a = scroller.parentElement; a !== null; a = a.parentElement) {
+      /* The root element's clip IS the viewport (handled below), and a <body> whose overflow the
+         root does not claim propagates it to the viewport too — its box scrolls WITH the page, so
+         treating it as a clip read a band 1,500 px above the screen once the page had scrolled
+         (measured 577x630, 2026-09-22: PageUp then scrolled the page DOWN, away from the row). */
+      if (a === doc.documentElement) continue;
+      if (a === doc.body && (rootOy === "visible" || rootOy === "")) continue;
+      const oy = view.getComputedStyle(a).overflowY;
+      if (oy === "visible" || oy === "") continue;
+      const r = a.getBoundingClientRect();
+      /* jsdom lays nothing out: every rect is 0x0. A zero-height ancestor there is not a clip. */
+      if (r.height <= 0) continue;
+      top = Math.max(top, r.top);
+      bottom = Math.min(bottom, r.bottom);
+    }
+    if (view.innerHeight > 0) {
+      top = Math.max(top, 0);
+      bottom = Math.min(bottom, view.innerHeight);
+    }
+  }
+  /* Nothing visible at all (a rail scrolled away from the grid): fall back to the layout box, so a
+     reveal still moves the row to where the grid WILL show it rather than thrashing. */
+  return bottom > top ? { top, bottom } : { top: head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top, bottom: box.bottom };
+}
+
+/**
+ * How far `el`'s row sits outside the part of the scroll port the reader can see (below the sticky
+ * header, inside every clip): 0 when it is fully visible, negative when it is above, positive when
+ * it is below. The single visibility predicate shared by the reveal and by the hold that keeps a
+ * revealed row in view.
+ */
+function offsetFromView(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): number {
+  if (head?.contains(el)) {
+    /* The header is sticky inside the grid's OWN scroll port, so there it is always visible. When
+       the grid is not its own port (narrow layouts — the page scrolls it) the header scrolls away
+       with the rows: measured 577x630, PageUp onto the header row left it 126 px above the screen.
+       So the header answers to the same clip test, against a band it does not itself cover. */
+    const band = visibleBand(scroller, null);
+    const r = el.getBoundingClientRect();
+    if (r.top >= band.top && r.bottom <= band.bottom) return 0;
+    return r.top < band.top ? r.top - band.top : r.bottom - band.bottom;
+  }
+  const { top, bottom } = visibleBand(scroller, head);
+  const target = el.closest<HTMLElement>('[role="row"]') ?? el;
+  const row = target.getBoundingClientRect();
+  if (row.top >= top && row.bottom <= bottom) return 0;
+  return row.top < top ? row.top - top : row.bottom - bottom;
+}
+
+/** `aimedAt` before the first render has looked at the reveal target. */
+const UNAIMED: unique symbol = Symbol("unaimed");
+
 export function DataGrid<T>({
   label,
   columns,
@@ -289,7 +482,9 @@ export function DataGrid<T>({
   template,
   activeId = null,
   revealId,
+  revealKey,
   relatedIds,
+  relatedDescription,
   batchIds,
   sort = null,
   onSort,
@@ -306,6 +501,7 @@ export function DataGrid<T>({
   window: windowing,
   empty,
   describedBy,
+  orderDescription,
   busy = false,
   className,
   density = "comfortable",
@@ -342,12 +538,85 @@ export function DataGrid<T>({
     [rows, colCount],
   );
 
+  /**
+   * Can the roving cell stand on (r, c)?
+   *
+   * A11Y AUDIT FIX, 2026-09-21 (D2). A `headerHidden` column's header cell is clipped to 1x1 at
+   * the viewport origin — it exists so the grid's column model stays whole for assistive
+   * technology, not so it can be visited. It used to be an ordinary stop in the arrow-key model:
+   * ArrowRight along the header row put focus on an invisible box at (0,0), and because the grid
+   * roves its tabindex that box then became the grid's remembered Tab stop (WCAG 2.4.7 / 2.4.11).
+   *
+   * This is the ONE predicate every movement path consults — arrows, Home/End, Ctrl+Home/End,
+   * Page keys, Shift ranges, the clamp after a filter change and focus that arrives from outside —
+   * so a clipped cell is unreachable by construction rather than by each key remembering to skip
+   * it. It is stated over the flag that clips the cell, not over any column's name.
+   */
+  const navigable = useCallback(
+    (r: number, c: number): boolean => !(rows[r]?.kind === "header" && columns[c]?.headerHidden === true),
+    [rows, columns],
+  );
+
+  /** The nearest cell the roving cell may stand on in row `r`, searching `dir` first. */
+  const landOn = useCallback(
+    (r: number, c: number, dir: 1 | -1): number => {
+      const n = cellsIn(r);
+      const start = clamp(c, 0, Math.max(0, n - 1));
+      for (let i = start; i >= 0 && i < n; i += dir) if (navigable(r, i)) return i;
+      for (let i = start - dir; i >= 0 && i < n; i -= dir) if (navigable(r, i)) return i;
+      return start;
+    },
+    [cellsIn, navigable],
+  );
+
   const firstDataRow = useMemo(() => {
     const i = rows.findIndex((r) => r.kind === "data");
     return i === -1 ? 0 : i;
   }, [rows]);
 
   const [focusCell, setFocusCell] = useState<{ row: number; col: number }>({ row: firstDataRow, col: 0 });
+  /** Mirror of `focusCell` for effects and handlers that must read the CURRENT roving cell
+   *  without re-subscribing to it. */
+  const focusCellRef = useRef(focusCell);
+  focusCellRef.current = focusCell;
+  /**
+   * Set when a selection from OUTSIDE the grid (the command palette, the Inspector, a URL, the
+   * path surface) moved the roving cell onto the newly revealed row, and focus has not yet
+   * followed it. While set, focus that re-enters the grid from outside — above all a dialog
+   * restoring focus to the cell that opened it — is redirected to the roving cell, and a reveal
+   * that mounts the row hands it focus. Cleared by any pointer or key input in the grid, so it
+   * never overrides something the user did in the grid themselves.
+   */
+  const aimFocus = useRef(false);
+  /** Set while a re-entry redirect is paging the window to the roving row (see onFocus). */
+  const aimEntry = useRef(false);
+
+  /* The roving cell follows the reveal target (D3). Revealing a row while the keyboard's position
+     stays on the row that WAS selected leaves two defects at once: focus restored to that old cell
+     (a dialog returning focus to its invoker) sits thousands of pixels outside the scroll port with
+     no visible indicator, and the next arrow key scrolls the grid back to it, throwing the reveal
+     away. MEASURED (critic, 1920x1080): palette pick of F099 from the F001 cell left focus at
+     y=-4007 and the next ArrowDown landed on row 4 at scrollTop 80.
+
+     Adjusted DURING render (React's derived-state pattern) rather than in the reveal effect, so
+     the row that gains the tab stop renders once, together with its selection change, instead of
+     twice (DataGrid.memo.test.tsx). A selection made IN the grid already has the roving cell on
+     that row, so this is a no-op there. Focus itself is moved by the effects below — now if the
+     grid owns focus, or when focus next re-enters it from outside (`aimFocus`). */
+  const aimTarget = revealId === undefined ? activeId : revealId;
+  // Starts unaimed, so a selection restored from the URL also carries the tab stop to its row.
+  const [aimedAt, setAimedAt] = useState<string | null | undefined | typeof UNAIMED>(UNAIMED);
+  if (aimedAt !== aimTarget) {
+    setAimedAt(aimTarget);
+    const at = aimTarget == null ? -1 : rows.findIndex((r) => r.kind === "data" && r.node.id === aimTarget);
+    if (at !== -1 && at !== focusCell.row) {
+      userMoved.current = true;
+      anchorRow.current = null;
+      // At mount there is no stale focus to redirect, only a tab stop to place.
+      if (aimedAt !== UNAIMED) aimFocus.current = true;
+      setFocusCell({ row: at, col: landOn(at, focusCell.col, 1) });
+    }
+  }
   const [cellMode, setCellMode] = useState(false);
   const [selectedCol, setSelectedCol] = useState<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -360,20 +629,51 @@ export function DataGrid<T>({
     setFocusCell((prev) => {
       const wanted = userMoved.current ? prev : { row: firstDataRow, col: 0 };
       const row = clamp(wanted.row, 0, Math.max(0, rows.length - 1));
-      const col = clamp(wanted.col, 0, Math.max(0, cellsIn(row) - 1));
+      const col = landOn(row, wanted.col, 1);
       return row === prev.row && col === prev.col ? prev : { row, col };
     });
-  }, [rows, cellsIn, firstDataRow]);
+  }, [rows, landOn, firstDataRow]);
 
   const cellKey = (r: number, c: number): string => `${r}:${c}`;
+
+  /* EVERY focus the grid moves goes through here. A bare `el.focus()` lets the browser scroll the
+     cell to the scroll port's top edge — which is UNDER the sticky column header. Measured: an
+     ArrowUp onto a group row left 21 of its 28 px behind the header, and a hit-test at the focused
+     cell's centre landed on the header's sort button (D3). So focus never scrolls on its own; the
+     same header-aware nearest-reveal the selection reveal uses brings the cell's row into view. */
+  const focusInView = useCallback((el: HTMLElement): void => {
+    el.focus({ preventScroll: true });
+    const scroller = gridRef.current;
+    if (scroller) revealBelowHeader(scroller, headRef.current, el);
+  }, []);
 
   /* Focus follows the roving cell only when the grid ALREADY owns focus. Moving focus because a
      filter changed would yank the caret out of the query bar mid-keystroke. */
   useLayoutEffect(() => {
     if (!hasFocus.current) return;
     const el = cellRefs.current.get(cellKey(focusCell.row, focusCell.col));
-    if (el && document.activeElement !== el) el.focus();
-  }, [focusCell]);
+    if (!el) return;
+    aimFocus.current = false;
+    if (document.activeElement !== el) focusInView(el);
+  }, [focusCell, focusInView]);
+
+  /* Completes a pending aim once the window has mounted the roving row (see `aimFocus`). Runs
+     after every commit because the commit that mounts the row is a windowing re-render, which no
+     dependency of this component names; the body is one Map lookup when nothing is pending. */
+  useLayoutEffect(() => {
+    if (!aimFocus.current) return;
+    /* Paging can unmount the stale cell focus was restored to, which drops focus to <body> and
+       clears `hasFocus`; a re-entry this grid is completing still owns that focus. */
+    const active = document.activeElement;
+    const entering = aimEntry.current && (active === null || active === document.body || gridRef.current?.contains(active) === true);
+    if (!hasFocus.current && !entering) return;
+    const { row, col } = focusCellRef.current;
+    const el = cellRefs.current.get(cellKey(row, col));
+    if (!el) return;
+    aimFocus.current = false;
+    aimEntry.current = false;
+    if (document.activeElement !== el) focusInView(el);
+  });
 
   /* ── reveal: a selection that arrives from another surface has to become visible ──
    *
@@ -398,6 +698,33 @@ export function DataGrid<T>({
   const revealTarget = revealId === undefined ? activeId : revealId;
   const revealedRef = useRef<string | null>(null);
   const pagedRef = useRef<string | null>(null);
+  /**
+   * The data row the reader just activated IN this grid (click, Enter, Space). That row is under
+   * the pointer or the focused cell, so it is already where the reader is looking, and the
+   * selection it produces needs no reveal. Without this, the click's own commit measured the whole
+   * document (getBoundingClientRect after every surface's DOM writes) to learn nothing: a forced
+   * layout of ~20-40 ms inside `DIV#root.onclick` on every finding selection (acceptance E3,
+   * journey 1, CPU profile on the release build). Consumed by the next reveal, whatever it is.
+   */
+  const activatedRef = useRef<string | null>(null);
+  const revealKeyRef = useRef(revealKey);
+  /**
+   * HOLD. True while the revealed row is inside the scroll port and the reader has not scrolled it
+   * out. A reveal is not a one-shot: MEASURED (1920x1080, `?s=path&f=F099`), tracing a flow
+   * selected core1, which added the "N of 146 shown findings name core1" line above the grid; the
+   * port's top moved 795 -> 829 px with scrollTop unchanged, and the active F099 row that had sat
+   * flush on the bottom edge ended 34 px below it — marked, not revealed. Anything that resizes the
+   * port (a sibling panel growing, the header wrapping, a window resize) or reflows the rows above
+   * the target moves the row without a scroll event, so while this is set those changes re-run the
+   * same nearest-reveal. A reader who scrolls the row away clears it: holding is never a fight
+   * with the reader's own scrolling.
+   */
+  const heldRef = useRef(false);
+  const revealTargetRef = useRef(revealTarget);
+  revealTargetRef.current = revealTarget;
+  /** True once the reader has touched the grid (wheel, touch, pointer, key) since the last reveal;
+   *  only then may a scroll release the hold. See the hold effect below. */
+  const readerInputRef = useRef(false);
 
   useLayoutEffect(() => {
     const scroller = gridRef.current;
@@ -405,9 +732,25 @@ export function DataGrid<T>({
     if (revealTarget === null || revealTarget === undefined) {
       revealedRef.current = null;
       pagedRef.current = null;
+      heldRef.current = false;
       return;
     }
+    /* A new selection elsewhere (a device, a link, a hop) re-aims even when the row to reveal is
+       the same one: the reader may have scrolled it away since, and A4 counts that selection as a
+       change every surface answers. */
+    if (revealKeyRef.current !== revealKey) {
+      revealKeyRef.current = revealKey;
+      revealedRef.current = null;
+      pagedRef.current = null;
+    }
     if (revealedRef.current === revealTarget) return;
+    const activated = activatedRef.current;
+    activatedRef.current = null;
+    if (activated === revealTarget && rowRefs.current.has(revealTarget)) {
+      revealedRef.current = revealTarget;
+      pagedRef.current = null;
+      return;
+    }
 
     const el = rowRefs.current.get(revealTarget);
     if (!el) {
@@ -423,25 +766,91 @@ export function DataGrid<T>({
 
     revealedRef.current = revealTarget;
     pagedRef.current = null;
-    const box = scroller.getBoundingClientRect();
-    const top = box.top + (headRef.current?.offsetHeight ?? 0);
-    const bottom = box.bottom;
-    const row = el.getBoundingClientRect();
-    if (row.top >= top && row.bottom <= bottom) return;
-    scroller.scrollTop += row.top < top ? row.top - top : row.bottom - bottom;
-  }, [revealTarget, nodes, windowing]);
+    revealBelowHeader(scroller, headRef.current, el, "centre");
+    heldRef.current = true;
+    // A fresh reveal starts a fresh hold: input that preceded it is not a scroll away from it.
+    readerInputRef.current = false;
+    /* A row that had to be paged in has only just mounted, so the focus-follows-roving effect
+       below found no cell to focus when the roving cell moved. Hand it focus now. */
+    if (aimFocus.current && hasFocus.current) {
+      const { row, col } = focusCellRef.current;
+      const cell = cellRefs.current.get(cellKey(row, col));
+      if (cell) {
+        aimFocus.current = false;
+        if (document.activeElement !== cell) focusInView(cell);
+      }
+    }
+  }, [revealTarget, revealKey, nodes, windowing, rows, landOn, focusInView]);
+
+  /* The hold itself (see `heldRef`). One re-reveal routine, three triggers: the port or its sticky
+     header changing size (ResizeObserver), the rows changing (a commit that reflows what is above
+     the target), and the reader's own scrolling, which decides whether the hold still applies. */
+  const holdReveal = useCallback((): void => {
+    const scroller = gridRef.current;
+    const id = revealTargetRef.current;
+    if (!scroller || !heldRef.current || id === null || id === undefined || revealedRef.current !== id) return;
+    const el = rowRefs.current.get(id);
+    if (el) revealBelowHeader(scroller, headRef.current, el, "centre");
+  }, []);
+
+  useLayoutEffect(holdReveal, [nodes, relatedIds, holdReveal]);
+
+  useEffect(() => {
+    const scroller = gridRef.current;
+    if (!scroller) return;
+    /* Only the READER's scrolling may release the hold. A scroll event is also fired by the browser
+       itself — scrollTop clamped when the port or the content shrinks, scroll anchoring when rows
+       above reflow — and treating that as "the reader scrolled it away" dropped the hold at exactly
+       the moment it was needed: MEASURED by the critic (A4) after a second path trace, the active
+       F099 row sat 272 px below the port, marked, not revealed. So a scroll with no reader input
+       on the grid re-runs the reveal instead of abandoning it.
+       No clock: reader input raises a flag (`readerInputRef`) that a new reveal and the pointer
+       leaving the grid lower again, so the classification is a function of the event sequence. */
+    const onUserInput = (): void => {
+      readerInputRef.current = true;
+    };
+    const onLeave = (): void => {
+      readerInputRef.current = false;
+    };
+    const onScroll = (): void => {
+      const id = revealTargetRef.current;
+      const el = id === null || id === undefined || revealedRef.current !== id ? undefined : rowRefs.current.get(id);
+      if (heldRef.current && !readerInputRef.current) {
+        holdReveal();
+        return;
+      }
+      /* 1 px of slack: a reveal lands on fractional device pixels, and a row the reveal itself just
+         placed must not read as scrolled away. */
+      heldRef.current = el !== undefined && Math.abs(offsetFromView(scroller, headRef.current, el)) <= 1;
+    };
+    const inputs = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
+    for (const t of inputs) scroller.addEventListener(t, onUserInput, { passive: true });
+    scroller.addEventListener("pointerleave", onLeave, { passive: true });
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    const RO = typeof ResizeObserver === "undefined" ? null : ResizeObserver;
+    const ro = RO ? new RO(holdReveal) : null;
+    ro?.observe(scroller);
+    if (headRef.current) ro?.observe(headRef.current);
+    return () => {
+      for (const t of inputs) scroller.removeEventListener(t, onUserInput);
+      scroller.removeEventListener("pointerleave", onLeave);
+      scroller.removeEventListener("scroll", onScroll);
+      ro?.disconnect();
+    };
+  }, [holdReveal]);
 
   const move = useCallback(
     (row: number, col: number, keepDesired = false): void => {
       const r = clamp(row, 0, Math.max(0, rows.length - 1));
-      const c = clamp(col, 0, Math.max(0, cellsIn(r) - 1));
+      // Travelling left searches left for a standable cell; every other move searches right.
+      const c = landOn(r, col, r === focusCell.row && col < focusCell.col ? -1 : 1);
       if (!keepDesired) desiredCol.current = c;
       userMoved.current = true;
       // An unshifted move re-anchors: the next Shift+Arrow range starts where the user is now.
       anchorRow.current = null;
       setFocusCell({ row: r, col: c });
     },
-    [rows.length, cellsIn],
+    [rows.length, landOn, focusCell.row, focusCell.col],
   );
 
   /**
@@ -452,7 +861,7 @@ export function DataGrid<T>({
   const extendTo = useCallback(
     (row: number, col: number): void => {
       const r = clamp(row, 0, Math.max(0, rows.length - 1));
-      const c = clamp(col, 0, Math.max(0, cellsIn(r) - 1));
+      const c = landOn(r, col, 1);
       userMoved.current = true;
       setFocusCell({ row: r, col: c });
       if (!onSelectRange) return;
@@ -471,17 +880,15 @@ export function DataGrid<T>({
       onSelectRange(items, ids);
       setAnnouncement(ids.length === 1 ? "1 row selected" : `${ids.length} rows selected`);
     },
-    [rows, cellsIn, onSelectRange, focusCell.row],
+    [rows, landOn, onSelectRange, focusCell.row],
   );
 
   const leaveGrid = useCallback((): void => {
-    const target = exitFocusRef?.current ?? null;
-    if (target) {
-      target.focus();
-      return;
-    }
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && gridRef.current?.contains(active)) active.blur();
+    /* Leaving goes SOMEWHERE: the declared exit target if it is still mounted, else the region
+       landmark around the grid (the queue's labelled section), else focus stays on the cell.
+       This used to `blur()` the cell, which parked focus on <body> on every Escape in the only
+       production host, since it declares no exit target (acceptance D3). One owner decides. */
+    returnFocus(exitFocusRef?.current ?? null, gridRef.current);
   }, [exitFocusRef]);
 
   const enterCellMode = useCallback((r: number, c: number): boolean => {
@@ -499,9 +906,9 @@ export function DataGrid<T>({
     if (inner.closest('[aria-hidden="true"]') !== null) return false;
     setCellMode(true);
     inner.tabIndex = 0;
-    inner.focus();
+    focusInView(inner);
     return true;
-  }, []);
+  }, [focusInView]);
 
   const exitCellMode = useCallback((r: number, c: number): void => {
     setCellMode(false);
@@ -509,8 +916,8 @@ export function DataGrid<T>({
     el?.querySelectorAll<HTMLElement>("[tabindex='0']").forEach((n) => {
       n.tabIndex = -1;
     });
-    el?.focus();
-  }, []);
+    if (el) focusInView(el);
+  }, [focusInView]);
 
   const resizeBy = useCallback(
     (col: GridColumn<T>, delta: number | "reset"): void => {
@@ -545,6 +952,7 @@ export function DataGrid<T>({
         if (col && hasSortControl(col, onSort)) onSort?.(col.id);
         return;
       }
+      activatedRef.current = row.node.id;
       onActivate?.(row.node.item, row.node.id);
     },
     [rows, columns, focusCell.col, onActivate, onSort, onToggleGroup],
@@ -595,8 +1003,9 @@ export function DataGrid<T>({
         return;
       case "End":
         e.preventDefault();
-        if (e.ctrlKey || e.metaKey) move(rows.length - 1, cellsIn(rows.length - 1) - 1);
-        else move(row, cellsIn(row) - 1);
+        // Ending on a clipped cell would search right and find nothing; land searching leftward.
+        if (e.ctrlKey || e.metaKey) move(rows.length - 1, landOn(rows.length - 1, cellsIn(rows.length - 1) - 1, -1));
+        else move(row, landOn(row, cellsIn(row) - 1, -1));
         return;
       case "PageDown": {
         e.preventDefault();
@@ -614,7 +1023,25 @@ export function DataGrid<T>({
       }
       case "Enter":
         e.preventDefault();
-        if (colDef?.interactive && current.kind === "data" && enterCellMode(row, col)) return;
+        if (colDef?.interactive && current.kind === "data") {
+          /* A lone button needs no arrow keys of its own, so there is nothing to protect by
+             holding it behind widget mode: the APG data grid operates it from the cell. MEASURED
+             (A11Y critic, D2): the drill cell took Enter to reach the button, and Enter again to
+             press it. Anything richer (several controls, a text field) still steps in. */
+          const cellEl = cellRefs.current.get(cellKey(row, col));
+          /* A sole-control cell registers the control itself as its roving element. */
+          const controls = !cellEl
+            ? []
+            : cellEl.matches(SOLE_CONTROL_SELECTOR)
+              ? [cellEl]
+              : [...cellEl.querySelectorAll<HTMLElement>("button,a[href],input,select,textarea,[tabindex]")];
+          const only = controls.length === 1 ? controls[0] : undefined;
+          if (only instanceof HTMLButtonElement && !only.disabled && only.closest('[aria-hidden="true"]') === null) {
+            only.click();
+            return;
+          }
+          if (enterCellMode(row, col)) return;
+        }
         activateRow(row);
         return;
       case "F2":
@@ -680,6 +1107,34 @@ export function DataGrid<T>({
   };
 
   const isFocused = (r: number, c: number): boolean => focusCell.row === r && focusCell.col === c;
+
+  /* The data rows are memoised (see DataRow), so what they call must not change identity from one
+     grid render to the next. The latest closures ride in a ref, refreshed after every commit and
+     therefore before any event a row can dispatch; the handler object itself lives for the grid's
+     lifetime. */
+  const latestRow = useRef({ move, onActivate });
+  useLayoutEffect(() => {
+    latestRow.current = { move, onActivate };
+  });
+  const rowHandlers = useMemo<RowHandlers<T>>(
+    () => ({
+      rowRef: (id, el) => {
+        if (el) rowRefs.current.set(id, el);
+        else rowRefs.current.delete(id);
+      },
+      cellRef: (r, c) => (el) => {
+        if (el) cellRefs.current.set(`${r}:${c}`, el);
+        else cellRefs.current.delete(`${r}:${c}`);
+      },
+      move: (r, c) => latestRow.current.move(r, c),
+      moveKeepingColumn: (r) => latestRow.current.move(r, desiredCol.current, true),
+      activate: (item, id) => {
+        activatedRef.current = id;
+        latestRow.current.onActivate?.(item, id);
+      },
+    }),
+    [],
+  );
 
   /* Track sizes travel as custom properties so the header row and every data row resolve the same
      template from one place — a second copy of the column widths is a second thing to get wrong. */
@@ -751,7 +1206,10 @@ export function DataGrid<T>({
         ) : (
           <span className="ag__headtext">{col.header}</span>
         )}
-        {col.resizable && onResizeColumn ? (
+        {/* A clipped header cannot hold a pointer target either: its resizer measured 8x1 px, was
+            still exposed as role=separator, and was reachable by neither pointer nor key
+            (A11Y critic 2026-09-21, D5). Same predicate family as `hasSortControl`. */}
+        {col.resizable && col.headerHidden !== true && onResizeColumn ? (
           <ColumnResizer
             column={col}
             widthPx={columnWidths?.[col.id]}
@@ -764,6 +1222,8 @@ export function DataGrid<T>({
   });
 
   const visible = nodes.slice(win.start, win.end);
+  const orderId = `${gridId}-order`;
+  const describedByAll = [describedBy, orderDescription ? orderId : undefined].filter(Boolean).join(" ");
 
   return (
     <div className={["ag", className].filter(Boolean).join(" ")} data-density={density}>
@@ -775,13 +1235,46 @@ export function DataGrid<T>({
         aria-colcount={colCount}
         aria-busy={busy || undefined}
         {...(onToggleBatch ? { "aria-multiselectable": true } : {})}
-        {...(describedBy ? { "aria-describedby": describedBy } : {})}
+        {...(describedByAll ? { "aria-describedby": describedByAll } : {})}
         id={gridId}
         className="ag__grid scroll-y"
         style={style}
-        onKeyDown={onKeyDown}
+        onKeyDown={(e) => {
+          aimFocus.current = false;
+          aimEntry.current = false;
+          onKeyDown(e);
+        }}
+        onPointerDown={() => {
+          aimFocus.current = false;
+          aimEntry.current = false;
+        }}
         onFocus={(e) => {
           hasFocus.current = true;
+          /* Focus coming back from OUTSIDE the grid after an external selection moved the roving
+             cell — a dialog restoring focus to the cell that opened it is the common case — lands
+             on the roving cell, which is on the revealed row and therefore in view. Adopting the
+             stale target instead would put focus far outside the scroll port (D3). */
+          if (aimFocus.current && !e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            const { row, col } = focusCellRef.current;
+            const roving = cellRefs.current.get(cellKey(row, col));
+            if (roving === e.target || (roving !== undefined && roving.contains(e.target as Node))) {
+              aimFocus.current = false;
+            } else if (roving !== undefined) {
+              aimFocus.current = false;
+              focusInView(roving);
+              return;
+            } else if (windowing) {
+              /* The roving row is outside the window — the restore's own scroll-into-view just
+                 carried the port back to the stale cell. Page to the roving row; the effect
+                 below focuses it the moment the window mounts it. Never adopt the stale cell. */
+              const scroller = gridRef.current;
+              aimEntry.current = true;
+              if (scroller) scroller.scrollTop = Math.max(0, (row - 1) * windowing.rowHeightPx);
+              return;
+            } else {
+              aimFocus.current = false;
+            }
+          }
           /* Focus can arrive at a cell that is not the roving one — a screen reader moving by
              cell, an assistive script, or any programmatic focus(). If the roving tabindex did
              not follow, the next arrow key would jump the user back to wherever the grid still
@@ -796,7 +1289,10 @@ export function DataGrid<T>({
           const c = Number(cell.getAttribute("aria-colindex") ?? Number.NaN) - 1;
           if (!Number.isInteger(r) || !Number.isInteger(c)) return;
           if (r === focusCell.row && c === focusCell.col) return;
-          move(r, c);
+          /* Focus arriving on a clipped header from outside the arrow model (a script, an AT
+             "move to cell") is redirected to the nearest standable cell rather than adopted as the
+             roving stop — adopting it is exactly how the invisible cell became the Tab stop. */
+          move(r, landOn(r, c, 1));
         }}
         onBlur={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) hasFocus.current = false;
@@ -818,12 +1314,16 @@ export function DataGrid<T>({
                   key={`g:${node.id}`}
                   role="row"
                   aria-rowindex={r + 1}
-                  aria-expanded={!node.collapsed}
                   className="ag__row ag__row--group"
                 >
+                  {/* aria-expanded lives on the CELL, not the row (A11Y critic, D2): an expandable
+                      ROW is treegrid semantics, and on a plain grid's row the state is not reliably
+                      announced. ARIA 1.2 supports aria-expanded on gridcell, and the cell is what
+                      takes focus, so the state is read at the focus location. */}
                   <div
                     ref={setCellRef(r, 0)}
                     role="gridcell"
+                    aria-expanded={!node.collapsed}
                     aria-colindex={1}
                     aria-colspan={colCount}
                     tabIndex={isFocused(r, 0) ? 0 : -1}
@@ -847,84 +1347,21 @@ export function DataGrid<T>({
                 </div>
               );
             }
-            const selected = batchIds?.has(node.id) ?? false;
             return (
-              <div
-                key={node.id}
-                role="row"
-                ref={(el) => {
-                  if (el) rowRefs.current.set(node.id, el);
-                  else rowRefs.current.delete(node.id);
-                }}
-                aria-rowindex={r + 1}
-                {...(onToggleBatch ? { "aria-selected": selected } : {})}
-                /* A11Y AUDIT FIX, 2026-09-21 (D2). `aria-selected` on these rows is spoken for by
-                   the BATCH (`x` / Shift+Space), so the row the app itself calls "the selection"
-                   had no programmatic state at all: the active row read
-                   {data-active:'yes', aria-selected:'false'} and a screen reader was told nothing
-                   was selected. The live region announced "Selected finding F002." once and then
-                   the fact was gone — an announcement is not a determinable state.
-
-                   `aria-current` is exactly the "current item within a set" semantic, and it is a
-                   different attribute from `aria-selected`, so the two states coexist instead of
-                   competing: a row can be the current one, batched, both, or neither, and each is
-                   readable on its own. */
-                {...(activeId === node.id ? { "aria-current": true } : {})}
-                className="ag__row ag__row--data"
-                data-active={activeId === node.id ? "yes" : undefined}
-                data-related={relatedIds?.has(node.id) ? "yes" : undefined}
-                data-batched={selected ? "yes" : undefined}
-                /* The ROW owns activation, not the cell.
-                 *
-                 * It used to be the cell, and that left the row's centre strip dead to the mouse:
-                 * `.ag__row` is a grid with `column-gap: var(--sp-2)` and `padding-inline`, so the
-                 * gaps between cells and the two end margins are inside the row's hover highlight
-                 * but outside every cell. Measured 2026-09-21 on the release build: clicking each
-                 * of the six cells of a data row set `?f=F004` and re-aimed the evidence pane;
-                 * clicking the same row's geometric centre left the URL unchanged and
-                 * `aria-selected` at "false" — the row lit up under the pointer and then did
-                 * nothing. A reader dragging down a dense list hits those gaps constantly.
-                 *
-                 * Hanging the handler here makes the hit area the same shape as the hover
-                 * affordance, which is the honest arrangement: what looks clickable is clickable.
-                 * Cells that own a control stop the click below this. */
-                onClick={(e) => {
-                  const inCell =
-                    e.target instanceof Element &&
-                    e.target.closest('[role="gridcell"],[role="rowheader"]') !== null;
-                  // A gap click moved no cell: put the roving focus on the row the reader aimed
-                  // at, keeping the column they were already navigating in.
-                  if (!inCell) move(r, desiredCol.current, true);
-                  onActivate?.(node.item, node.id);
-                }}
-              >
-                {columns.map((col, c) => {
-                  const place = layout === "stacked" ? col.place : undefined;
-                  return (
-                    <div
-                      key={col.id}
-                      ref={setCellRef(r, c)}
-                      role={col.rowHeader ? "rowheader" : "gridcell"}
-                      aria-colindex={c + 1}
-                      {...(selectedCol === c ? { "aria-selected": true } : {})}
-                      tabIndex={isFocused(r, c) ? 0 : -1}
-                      className="ag__cell"
-                      data-col={col.id}
-                      data-align={col.align ?? "start"}
-                      style={place ? { gridArea: place } : undefined}
-                      onClick={(e) => {
-                        move(r, c);
-                        // A cell holding its own control must not double-fire: the control's own
-                        // click handler already ran and stopped here. Stop the click before the
-                        // row sees it, since the row is what activates now.
-                        if (col.interactive) e.stopPropagation();
-                      }}
-                    >
-                      {cellContent(col, node.item)}
-                    </div>
-                  );
-                })}
-              </div>
+              <DataRow<T>
+                key={node.key ?? node.id}
+                node={node}
+                r={r}
+                columns={columns}
+                layout={layout}
+                batchable={onToggleBatch !== undefined}
+                active={activeId === node.id}
+                related={relatedIds?.has(node.id) ? (relatedDescription ?? "") : null}
+                selected={batchIds?.has(node.id) ?? false}
+                selectedCol={selectedCol}
+                focusedCol={focusCell.row === r ? focusCell.col : -1}
+                handlers={rowHandlers}
+              />
             );
           })}
           {win.padBottom > 0 ? <div role="presentation" style={{ height: `${win.padBottom}px` }} /> : null}
@@ -933,10 +1370,191 @@ export function DataGrid<T>({
       {/* The empty state sits OUTSIDE the grid. A fabricated row would put a count in
           aria-rowcount that no data backs, which is the same lie as a blank cell. */}
       {nodes.length === 0 && empty ? <div className="ag__empty">{empty}</div> : null}
+      {orderDescription ? (
+        <p className="visually-hidden" id={orderId}>
+          {orderDescription}
+        </p>
+      ) : null}
       <LiveRegion message={announcement} />
     </div>
   );
 }
+
+/* ── data row ───────────────────────────────────────────────────────────────── */
+
+/**
+ * The stable callbacks every data row calls. One object for the grid's lifetime, reading the
+ * grid's CURRENT closures through a ref, so passing it never breaks a row's memoisation.
+ */
+interface RowHandlers<T> {
+  rowRef: (id: string, el: HTMLElement | null) => void;
+  cellRef: (r: number, c: number) => (el: HTMLElement | null) => void;
+  move: (r: number, c: number) => void;
+  moveKeepingColumn: (r: number) => void;
+  activate: (item: T, id: string) => void;
+}
+
+interface DataRowProps<T> {
+  node: Extract<GridNode<T>, { kind: "row" }>;
+  r: number;
+  columns: readonly GridColumn<T>[];
+  layout: "line" | "stacked";
+  batchable: boolean;
+  active: boolean;
+  /** null = not related; a string (possibly empty) = related, with the relation in words. A string
+   *  rather than a boolean + a second prop so the row's memo still compares primitives only. */
+  related: string | null;
+  selected: boolean;
+  selectedCol: number | null;
+  /** The roving cell's column when it stands in THIS row, else -1. */
+  focusedCol: number;
+  handlers: RowHandlers<T>;
+}
+
+/**
+ * One data row, memoised on props that are all primitives or grid-lifetime references.
+ *
+ * RESPONSIVENESS FIX, 2026-09-21 (acceptance E2/E3, journey 1). Selecting a finding used to
+ * re-render EVERY row and every cell of the grid: the rows were inline JSX in the grid's own render,
+ * so a change to `activeId` re-ran all 146 rows' column renderers (severity badges, cite icons,
+ * not-observed sentences). CPU profile on the dev build, 12 clicks: DataGrid 1656 ms inclusive of
+ * which the row map was 1619 ms, against 20 ms for the evidence pane the click actually re-aims.
+ * That commit is synchronous inside the click (a store write is an urgent update, design-brief
+ * §8.3 rule 1), so it landed on the interaction path as the long `DIV#root.onclick` task.
+ *
+ * A selection change now re-renders the two rows whose `active` flag flipped (and, for a click,
+ * the rows the roving cell left and entered), not the table.
+ */
+function DataRowImpl<T>({
+  node,
+  r,
+  columns,
+  layout,
+  batchable,
+  active,
+  related,
+  selected,
+  selectedCol,
+  focusedCol,
+  handlers,
+}: DataRowProps<T>): ReactNode {
+  const relatedNote = related !== null && related !== "" ? related : null;
+  return (
+    <div
+      role="row"
+      ref={(el) => handlers.rowRef(node.id, el)}
+      aria-rowindex={r + 1}
+      {...(batchable ? { "aria-selected": selected } : {})}
+      /* A11Y AUDIT FIX, 2026-09-21 (D2). `aria-selected` on these rows is spoken for by
+         the BATCH (`x` / Shift+Space), so the row the app itself calls "the selection"
+         had no programmatic state at all: the active row read
+         {data-active:'yes', aria-selected:'false'} and a screen reader was told nothing
+         was selected. The live region announced "Selected finding F002." once and then
+         the fact was gone — an announcement is not a determinable state.
+
+         `aria-current` is exactly the "current item within a set" semantic, and it is a
+         different attribute from `aria-selected`, so the two states coexist instead of
+         competing: a row can be the current one, batched, both, or neither, and each is
+         readable on its own. */
+      {...(active ? { "aria-current": true } : {})}
+      /* A11Y CRITIC FIX (D8): the related mark is a trailing-edge line, which assistive technology
+         cannot see. The relation is stated on the row itself as well as in the grid's count
+         sentence, so a reader landing on a row learns it there. */
+      {...(relatedNote ? { "aria-description": relatedNote } : {})}
+      className="ag__row ag__row--data"
+      data-active={active ? "yes" : undefined}
+      data-related={related !== null ? "yes" : undefined}
+      data-batched={selected ? "yes" : undefined}
+      /* The ROW owns activation, not the cell.
+       *
+       * It used to be the cell, and that left the row's centre strip dead to the mouse:
+       * `.ag__row` is a grid with `column-gap: var(--sp-2)` and `padding-inline`, so the
+       * gaps between cells and the two end margins are inside the row's hover highlight
+       * but outside every cell. Measured 2026-09-21 on the release build: clicking each
+       * of the six cells of a data row set `?f=F004` and re-aimed the evidence pane;
+       * clicking the same row's geometric centre left the URL unchanged and
+       * `aria-selected` at "false" — the row lit up under the pointer and then did
+       * nothing. A reader dragging down a dense list hits those gaps constantly.
+       *
+       * Hanging the handler here makes the hit area the same shape as the hover
+       * affordance, which is the honest arrangement: what looks clickable is clickable.
+       * Cells that own a control stop the click below this. */
+      onClick={(e) => {
+        const inCell =
+          e.target instanceof Element &&
+          e.target.closest('[role="gridcell"],[role="rowheader"]') !== null;
+        // A gap click moved no cell: put the roving focus on the row the reader aimed
+        // at, keeping the column they were already navigating in.
+        if (!inCell) handlers.moveKeepingColumn(r);
+        handlers.activate(node.item, node.id);
+      }}
+    >
+      {columns.map((col, c) => {
+        const place = layout === "stacked" ? col.place : undefined;
+        /* The row header is what screen readers repeat on a row change, so the relation rides in
+           its accessible text too: `aria-description` on a row is not announced by every reader. */
+        const noteHere = col.rowHeader === true && relatedNote !== null;
+        const label = col.cellLabel
+          ? noteHere
+            ? `${col.cellLabel(node.item)}, ${relatedNote}`
+            : col.cellLabel(node.item)
+          : null;
+        /* A sole-control cell hands its focus stop and its name to the control (see
+           `GridColumn.soleControl`): the registered roving element is the control, so every
+           focus the grid moves — arrows, Home/End, re-entry — lands on the widget itself. */
+        const sole = col.soleControl === true && !noteHere;
+        const cellRef = handlers.cellRef(r, c);
+        return (
+          <div
+            key={col.id}
+            ref={
+              sole
+                ? (el) => cellRef(el?.querySelector<HTMLElement>(SOLE_CONTROL_SELECTOR) ?? el)
+                : cellRef
+            }
+            role={col.rowHeader ? "rowheader" : "gridcell"}
+            aria-colindex={c + 1}
+            {...(label !== null && !sole ? { "aria-label": label } : {})}
+            {...(selectedCol === c ? { "aria-selected": true } : {})}
+            {...(sole ? {} : { tabIndex: focusedCol === c ? 0 : -1 })}
+            className="ag__cell"
+            data-col={col.id}
+            data-align={col.align ?? "start"}
+            style={place ? { gridArea: place } : undefined}
+            onClick={(e) => {
+              handlers.move(r, c);
+              // A cell holding its own control must not double-fire: the control's own
+              // click handler already ran and stopped here. Stop the click before the
+              // row sees it, since the row is what activates now.
+              if (col.interactive) e.stopPropagation();
+            }}
+          >
+            {cellContent(col, node.item, focusedCol === c ? 0 : -1)}
+            {noteHere && label === null ? <span className="visually-hidden">{`, ${relatedNote}`}</span> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* `node` is compared by what it carries, not by identity: a caller that rebuilds its node list on
+   a filter or group change hands every surviving row a fresh wrapper around the same item, and an
+   identity test would re-render all of them for nothing. Every other prop is compared shallowly. */
+function sameRowProps<T>(a: DataRowProps<T>, b: DataRowProps<T>): boolean {
+  for (const k of Object.keys(b) as (keyof DataRowProps<T>)[]) {
+    if (k === "node") {
+      if (a.node.id !== b.node.id || a.node.item !== b.node.item) return false;
+    } else if (!Object.is(a[k], b[k])) {
+      return false;
+    }
+  }
+  return Object.keys(a).length === Object.keys(b).length;
+}
+
+const DataRow = memo(DataRowImpl, sameRowProps) as <T>(
+  props: DataRowProps<T> & { key?: string },
+) => ReactNode;
 
 /* ── column resizer ─────────────────────────────────────────────────────────── */
 
@@ -944,6 +1562,17 @@ export function DataGrid<T>({
  * WCAG 2.5.7: the drag has a pointer-free twin. The handle is not a tab stop — the header cell
  * owns Shift+Arrow / Shift+Home for the same operation, so resizing costs no extra Tab presses in
  * a grid where the whole point is that there is exactly one.
+ *
+ * It is also NOT focusable at all (no `tabIndex`). ARIA 1.2 makes a focusable separator a widget
+ * that must carry aria-valuenow/min/max; this one is a static, labelled structure whose keyboard
+ * operation lives on the header cell, so a focusable-but-valueless separator inside an APG grid
+ * was an incorrect aria surface (a11y audit D2, 2026-09-21).
+ *
+ * WCAG 2.5.8: the pointer hit area is 24 CSS px wide (DataGrid.css), centred on the column rule.
+ *
+ * WCAG 2.5.7 (dragging): the header-cell keys are a KEYBOARD twin, not a single-pointer one, and
+ * they are invisible (A11Y critic, D1). The caller must also offer non-drag controls; the
+ * priority queue's Display dialog carries Narrower / Wider / Auto per resizable column.
  */
 function ColumnResizer<T>({
   column,
@@ -979,7 +1608,6 @@ function ColumnResizer<T>({
       aria-orientation="vertical"
       aria-label={`Resize ${column.headerLabel ?? column.header}`}
       className="ag__resizer"
-      tabIndex={-1}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

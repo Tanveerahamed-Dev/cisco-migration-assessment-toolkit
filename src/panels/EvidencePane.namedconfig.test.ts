@@ -62,6 +62,77 @@ describe("the named-configuration path, and how much of the punchlist actually r
     expect(named).toBeLessThan(fabric.findings.length);
   });
 
+  it("records how many two-click paths land on literal configuration TEXT rather than parsed fields", () => {
+    /* THE SECOND SPLIT INSIDE A1, measured rather than sampled.
+       The first split — 6 of 146 findings name their own configuration — was already stated. It is
+       not the one a reader feels. The record the two-click path actually OPENS is `targets[0]` in
+       the pane, and only the ACL branch carries literal configuration lines: an interface record is
+       preserved as parsed fields and the pane says so in its own words ("Its surrounding
+       configuration block was not kept, so there is no literal text to show for it"). So a reader
+       told "two clicks to the configuration evidence" gets a field table for most findings —
+       including every one of the six that literally NAME configuration.
+       This measures it over the whole corpus so the A1 evidence row states a census, not a sample,
+       and so the sentence there fails with the data rather than rotting silently. */
+    let literal = 0;
+    let parsed = 0;
+    let namedLiteral = 0;
+    let named = 0;
+    const noTarget: string[] = [];
+    for (const f of fabric.findings) {
+      const hits = configEvidenceFor(f);
+      const targets = hits.length > 0 ? hits : nearestConfigFor(f);
+      const first = targets[0];
+      /* A finding with nothing to land on is a THIRD category, not a rounding error. It used to be
+         silently skipped here, so the census below read "24 + 122 = 146, every finding reaches
+         configuration" — true only while F142 was being pointed at something. F142 ("No QoS
+         configured anywhere") names no device and quotes no line: its evidence is a fleet-wide
+         absence, and there is honestly no single record to open. Counting it explicitly means the
+         sentence this census backs cannot overstate reach again. */
+      if (first === undefined) {
+        noTarget.push(f.id);
+        continue;
+      }
+      if (hits.length > 0) {
+        named += 1;
+        if (first.kind === "acl") namedLiteral += 1;
+      }
+      if (first.kind === "acl") literal += 1;
+      else parsed += 1;
+    }
+
+    expect(fabric.findings.length).toBe(146);
+    /* 24 -> 22 and 121 -> 123 on 2026-09-21 (A1): F102 and F109 ("Port err-disabled", "core1: L1
+       fault on an L3 gateway switch") used to open core1's first ACL because it happened to be
+       listed first; they now open core1 Gi1/0/9, the err-disabled port core1's own deductions name.
+       Fewer "literal" landings is the correct direction: the ACL was never the evidence.
+       22 -> 2 and 123 -> 143 on 2026-09-22 (A1): the remaining 20 were core1 findings (F004 hardware,
+       F100 single gateway, …) opening core1 · VOICE_FILTER only because it is core1's first list.
+       Access lists are now ranked by their name's words like everything else; the two that stay
+       literal are F106 and F107, which open MGMT_IN because they say "management". */
+    expect(literal, "findings whose two-click record carries literal configuration lines").toBe(2);
+    expect(parsed, "findings whose two-click record is parsed fields with no literal block").toBe(143);
+    expect(noTarget, "findings with no configuration target at all — each must be a fleet-wide conclusion").toEqual(["F142"]);
+    expect(literal + parsed + noTarget.length, "every finding is accounted for in exactly one category").toBe(146);
+    expect(named).toBe(6);
+    expect(namedLiteral, "of the six findings that NAME configuration, how many reach literal text").toBe(0);
+
+    /* RE-MEASURED 2026-09-22 after the compiler began carrying the producer's `source_command`
+       (see EvidencePane.source.test.tsx for the search behind it). The numbers above did NOT move,
+       and that is the correct result rather than an oversight: the one per-finding evidence pointer
+       the producer publishes names a show-COMMAND, on 33 rows, and the snapshot keeps no raw
+       command output — so it adds provenance to 33 findings and a route to literal configuration
+       to none. No producer field links a finding to an interface, ACL line or config block. Two of
+       the 33 (F106, F107) do land on literal text, but through the word-ranked MGMT_IN match that
+       existed before this field — not through the citation. */
+    const cited = fabric.findings.filter((f) => (f.sourceCommand ?? null) !== null);
+    expect(cited.length, "findings whose producer row cites its source command").toBe(33);
+    const citedLiteral = cited.filter((f) => {
+      const hits = configEvidenceFor(f);
+      return (hits.length > 0 ? hits : nearestConfigFor(f))[0]?.kind === "acl";
+    });
+    expect(citedLiteral.map((f) => f.id), "cited findings whose two-click record is literal text").toEqual(["F106", "F107"]);
+  });
+
   it("resolves an ACL the finding names, against the real collected list", () => {
     expect(aclHost, "this snapshot must hold at least one collected ACL").toBeDefined();
     expect(aclName).toBeDefined();
@@ -130,5 +201,70 @@ describe("the named-configuration path, and how much of the punchlist actually r
   it("does not resolve a prefix the collected table does not carry", () => {
     const f = findingNaming([ribHost!], "Suboptimal path for 203.0.113.0/24");
     expect(configEvidenceFor(f).some((h) => h.kind === "route")).toBe(false);
+  });
+});
+
+describe("the nearest record is nearest by a stated measure, not by list order (A1)", () => {
+  it("F099 ('L1 risk err-disabled on 6 switches') opens an err-disabled port, not the first port", () => {
+    const f = fabric.findings.find((x) => x.id === "F099");
+    expect(f, "precondition: F099 exists in the compiled data").toBeDefined();
+    expect(configEvidenceFor(f!)).toEqual([]);
+    const first = nearestConfigFor(f!)[0];
+    expect(first?.kind).toBe("interface");
+    if (first?.kind !== "interface") return;
+    expect(first.record.status).toBe("err-disabled");
+    // and it is one the host's own deductions tie to that state
+    const dev = fabric.devices.find((d) => d.host === first.host);
+    expect(dev?.deductions.some((d) => d.startsWith("err-disabled @ " + first.record.port))).toBe(true);
+    expect(first.how).toMatch(/deductions name it/);
+  });
+
+  it("every matched landing is a record whose collected STATUS or the host's deductions the finding states", () => {
+    let matched = 0;
+    for (const f of fabric.findings) {
+      if (configEvidenceFor(f).length > 0) continue;
+      const first = nearestConfigFor(f)[0];
+      if (first === undefined || first.kind !== "interface" || first.matched !== true) continue;
+      matched++;
+      expect(first.how, f.id).toMatch(/deductions name it|collected status/);
+    }
+    expect(matched, "precondition: at least one finding lands on a matched interface record").toBeGreaterThan(0);
+  });
+
+  it("an access list is never 'nearest' by list order: F004, F100 and F106 no longer all open core1's first list", () => {
+    const firstAcl = Object.keys(fabric.acls["core1"] ?? {})[0];
+    expect(firstAcl, "precondition: core1 holds collected access lists").toBeDefined();
+    const land = (id: string) => {
+      const f = fabric.findings.find((x) => x.id === id);
+      expect(f, `precondition: ${id} exists`).toBeDefined();
+      return nearestConfigFor(f!)[0];
+    };
+    // F106 ("VTY transport (telnet) … cleartext management") says "management"; MGMT_IN is that list.
+    const f106 = land("F106");
+    expect(f106?.label).toBe("core1 · MGMT_IN");
+    expect(f106?.kind === "acl" && f106.matched).toBe(true);
+    expect(f106?.how).toMatch(/“MGMT”, read as “management”/);
+    // F004 (failing hardware) and F100 (single gateway) match nothing we hold: the landing must say so.
+    for (const id of ["F004", "F100"]) {
+      const first = land(id);
+      expect(first?.label, id).not.toBe(`core1 · ${firstAcl}`);
+      expect(first?.how, id).toMatch(/not ranked/);
+    }
+  });
+
+  it("every unmatched nearest record says it is not ranked, and no matched one follows it", () => {
+    for (const f of fabric.findings) {
+      if (configEvidenceFor(f).length > 0) continue;
+      let seenUnmatched = false;
+      for (const t of nearestConfigFor(f)) {
+        const matched = t.kind !== "route" && t.matched === true;
+        if (!matched) {
+          seenUnmatched = true;
+          expect(t.how, f.id).toMatch(/not ranked/);
+        } else {
+          expect(seenUnmatched, `${f.id}: a matched record after an unranked one`).toBe(false);
+        }
+      }
+    }
   });
 });

@@ -44,7 +44,9 @@ import {
 import { deviceById, fabric, linksByHost } from "../core/data";
 import { useInvestigation } from "../core/store";
 import type { Cite, Flow, Trace, TraceOutcome } from "../core/types";
-import { counterexample, suggestedFlows, traceFlow, type SuggestedFlow } from "../forwarding/engine";
+import { bandOfTrace, isDecidedOutcome, outcomeUndecidingGaps, undecidedOutcomeWord } from "../core/claims";
+import { blockingHop, counterexample, refusalOf, suggestedFlows, traceFlow, unobservedPolicyInputs, type SuggestedFlow } from "../forwarding/engine";
+import { ribIncompletenessSentence } from "../forwarding/rib-completeness";
 import {
   formatIpv4,
   formatPrefix,
@@ -66,8 +68,9 @@ import {
   TabPanel,
   Tabs,
 } from "../ui/primitives";
-import { ClaimCard, IntentClaimCard } from "./ClaimCard";
+import { ClaimCard, IntentClaimCard, outcomeWordOf } from "./ClaimCard";
 import { HopList } from "./HopList";
+import { deferPastPaint } from "./deferPastPaint";
 import "./PathTrace.css";
 
 /* ══ the flow form ═════════════════════════════════════════════════════════ */
@@ -247,11 +250,15 @@ function addressesIn(sub: SubnetEvidence, max: number, includeRouters: boolean):
   for (const { ip, e } of observed) {
     if (out.length >= max || seen.has(ip)) continue;
     seen.add(ip);
+    // Naming only the first record overstates a single attachment when the address is reported on
+    // several hosts (critic B2, same shape as the engine's suggested-flow provenance).
+    const hosts = new Set(observed.filter((o) => o.ip === ip).map((o) => o.e.host ?? "")).size;
+    const where = `${e.host ?? "an unnamed host"} ${e.port ?? "(no port recorded)"}`;
     out.push({
       ip: formatIpv4(ip),
       provenance: "observed",
       cite: e.cite,
-      note: `observed as an endpoint on ${e.host ?? "an unnamed host"} ${e.port ?? "(no port recorded)"}`,
+      note: hosts > 1 ? `observed as an endpoint on ${hosts} hosts (first ${where}); attachment ambiguous` : `observed as an endpoint on ${where}`,
     });
   }
 
@@ -513,9 +520,15 @@ export interface IntentSearch {
   satisfying: number;
   undecided: number;
   outcomeCounts: Record<TraceOutcome, number>;
+  /** The subset of `outcomeCounts` whose outcome was DECIDED (`isDecidedOutcome`). The tally line
+   *  reads both, so a raw "24 denied" cannot sit under "0 decided". */
+  decidedOutcomeCounts: Record<TraceOutcome, number>;
   decidedReasons: Map<string, ReasonRow>;
   undecidedReasons: Map<string, ReasonRow>;
   hostsTouched: Set<string>;
+  /** The host each traced flow ENTERED at. Ingress is chosen from point-in-time FHRP/SVI evidence,
+   *  so every counterfactual this search states is conditional on it. */
+  ingressHosts: Set<string>;
   unmodelledHostsSeen: Set<string>;
   /** Terminal hop verdicts among the flows consistent with the intent — the collateral question. */
   satisfyingVerdicts: Map<string, number>;
@@ -529,9 +542,23 @@ export interface IntentSearch {
  * `indeterminate` and `out-of-scope` are neither — they are undecided, and an undecided flow never
  * counts towards the intent holding. Folding them into "consistent" is how a search over partial
  * evidence reports a clean sweep it did not perform.
+ *
+ * A "delivered" outcome is only DECIDED when nothing on its path was left undecided
+ * (`isDefiniteDelivery`). The search once reported 24 decided contradictions of a none-reach
+ * intent, every one a delivery whose own caveat said "at best indeterminate, never a definite
+ * permit" — a refutation built on evidence the engine had already said it could not decide. The
+ * engine no longer emits such a delivery; this guard holds the rule here too, over the trace rather
+ * than its outcome word, so the tally cannot regress if a new source of undecided evidence appears.
  */
-function contradicts(kind: IntentKind, outcome: TraceOutcome): boolean | null {
-  if (outcome === "indeterminate" || outcome === "out-of-scope") return null;
+function contradicts(kind: IntentKind, trace: Trace): boolean | null {
+  const outcome = trace.outcome;
+  /* The same rule for a denial. Where the `ip access-group` binding was not observed, a denial by a list the
+     specificity heuristic selected says what that list WOULD do — not that it is applied on this
+     path. It once reported 12 "decided" contradictions of a reach-gateway intent, every one resting
+     on a line the scope block beneath listed as undecidable. It is undecided either way round.
+     Both rules are owned by `claims.ts :: isDecidedOutcome`, which the verdict and hop bands also
+     ask — so the tally and the colour on the card cannot disagree about what was decided. */
+  if (!isDecidedOutcome(trace)) return null;
   return kind === "none-reach" ? outcome === "delivered" : outcome !== "delivered";
 }
 
@@ -543,9 +570,11 @@ export function startIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP)
     satisfying: 0,
     undecided: 0,
     outcomeCounts: { delivered: 0, dropped: 0, denied: 0, indeterminate: 0, "out-of-scope": 0 },
+    decidedOutcomeCounts: { delivered: 0, dropped: 0, denied: 0, indeterminate: 0, "out-of-scope": 0 },
     decidedReasons: new Map(),
     undecidedReasons: new Map(),
     hostsTouched: new Set(),
+    ingressHosts: new Set(),
     unmodelledHostsSeen: new Set(),
     satisfyingVerdicts: new Map(),
     caveats: new Map(),
@@ -556,15 +585,37 @@ export function startIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP)
 function record(into: Map<string, ReasonRow>, trace: Trace): void {
   const last = trace.hops[trace.hops.length - 1] ?? null;
   const ev = last?.decidedBy ?? null;
-  const key = ev === null ? "no-hop" : ev.cite;
+  /* A hop-less trace is grouped and explained by the engine's OWN record of why it consulted no
+     device (`refusalOf`), never by `hops.length === 0` alone: that once labelled 20 intra-subnet
+     flows inside the observed 10.0.10.0/24 "outside every subnet this collection observed"
+     (2026-09-22 critic, B1). */
+  const refusal = last === null ? refusalOf(trace) : null;
+  const key = ev !== null ? ev.cite : refusal !== null ? `refusal|${refusal.key}` : "no-hop";
   const reason =
-    ev === null
-      ? "the flow was refused before any device was consulted — the source address is outside every subnet this collection observed"
-      : `${last?.host ?? "an unnamed host"}: ${ev.label}`;
-  const cite = ev?.cite ?? fabric.coverage.cite;
+    ev !== null
+      ? `${last?.host ?? "an unnamed host"}: ${ev.label}`
+      : refusal !== null
+        ? refusal.reason
+        : last === null
+          ? "no device was consulted for this flow, and the engine recorded no reason why"
+          : `${last.host}: the hop that ended this trace recorded no deciding evidence`;
+  /* A row under "could not be decided" that reads "… denies this flow" needs its reason said: the
+     line decides what the list would do; whether the list is applied here was not observed. */
+  /* The same for every other undecided input the engine names — an uncollected ACL, an FHRP ingress
+     the alternate member does not reproduce, an unobserved ingress port — so an undecided row never
+     reads as a bare "core1 permits" with nothing to say why it was not counted as decided. */
+  /* The gap named is one that ACTUALLY undecided the outcome (claims.ts `outcomeUndecidingGaps`), not
+     merely the first on the trace: for a no-route drop at core2 that first gap was "no ACLs
+     collected", which cannot undecide a drop — the reason that does, the incomplete routing table,
+     went unsaid. */
+  const unbound = isDecidedOutcome(trace)
+    ? undefined
+    : (outcomeUndecidingGaps(trace)[0] ?? unobservedPolicyInputs(trace)[0]);
+  const fullReason = unbound === undefined ? reason : `${reason} — but ${unbound.label}`;
+  const cite = ev?.cite ?? refusal?.cite ?? fabric.coverage.cite;
   const row = into.get(key);
   if (row) row.count += 1;
-  else into.set(key, { reason, count: 1, cite });
+  else into.set(key, { reason: fullReason, count: 1, cite });
 }
 
 /** Trace up to `budget` flows. Mutates in place: the caller owns the yield between chunks. */
@@ -575,13 +626,16 @@ export function stepIntentSearch(s: IntentSearch, budget: number): void {
     if (flow === undefined) continue;
     const trace = traceFlow(flow);
     s.outcomeCounts[trace.outcome] += 1;
+    if (isDecidedOutcome(trace)) s.decidedOutcomeCounts[trace.outcome] += 1;
     for (const h of trace.hops) s.hostsTouched.add(h.host);
+    const entry = trace.hops[0];
+    if (entry !== undefined) s.ingressHosts.add(entry.host);
     for (const h of trace.unmodelledHosts) s.unmodelledHostsSeen.add(h);
     /* Every bound the constituent traces produced is kept. Discarding them was how the strongest
        claim in the product came to carry fewer caveats than the weakest one. */
     for (const cv of trace.caveats) s.caveats.set(cv, (s.caveats.get(cv) ?? 0) + 1);
 
-    const verdict = contradicts(s.plan.intent.kind, trace.outcome);
+    const verdict = contradicts(s.plan.intent.kind, trace);
     if (verdict === null) {
       s.undecided += 1;
       record(s.undecidedReasons, trace);
@@ -598,6 +652,16 @@ export function stepIntentSearch(s: IntentSearch, budget: number): void {
 }
 
 const byCountDesc = (a: ReasonRow, b: ReasonRow): number => b.count - a.count || a.reason.localeCompare(b.reason);
+
+/** The tally word for an outcome the engine returned but did not decide — the lead of
+ *  `claims.ts :: undecidedOutcomeWord`, which the single-trace headline uses. */
+const UNDECIDED_TALLY_WORD: Readonly<Record<TraceOutcome, string>> = {
+  delivered: "delivered by routing — not decided",
+  denied: "denied by list text — not decided",
+  dropped: "dropped for want of a collected route — not decided",
+  indeterminate: "indeterminate — not decided",
+  "out-of-scope": "outside the collected evidence — not decided",
+};
 
 export function finishIntentSearch(s: IntentSearch): IntentVerdict {
   const c = fabric.coverage;
@@ -617,7 +681,17 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
         ? "indeterminate"
         : "no-counterexample-found";
 
-  const under = `under the collected RIBs of ${c.routableHosts.join(" and ")} only (${c.hostsWithRoutes} of ${total} hosts)`;
+  /* A collected RIB is not a complete one. Every traversed table the snapshot itself shows to be
+     incomplete (./rib-completeness.ts) is named in the bound, with why — "under the collected RIBs
+     of core1 and core2" alone read as if those two tables were whole, while 60 drops rested on
+     core2's four connected routes (2026-09-21 critic, B1 blocker). */
+  const partialRibs = c.routableHosts
+    .filter((h) => s.hostsTouched.has(h))
+    .map((h) => ribIncompletenessSentence(h))
+    .filter((x): x is string => x !== null);
+  const under =
+    `under the collected RIBs of ${c.routableHosts.join(" and ")} only (${c.hostsWithRoutes} of ${total} hosts)` +
+    (partialRibs.length === 0 ? "" : ` — and ${partialRibs.join("; ")}`);
   const spaceText = `${searched} flows derivable from ${intent.sources.length} source address(es) and ${intent.destinations.length} destination address(es) across ${intent.services.length} service(s)`;
 
   const first = s.counterexamples[0];
@@ -659,11 +733,22 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
       : `The intent asserts that everything observed in ${intent.sourceSpace.prefix} reaches ${intent.destinations[0]?.ip ?? "its gateway"}. Inside the searched space, ${s.satisfying} flow(s) reach it, ${s.counterexamples.length} do not, and ${s.undecided} could not be decided.`;
 
   const collateral: string[] = [];
-  const counts = Object.entries(s.outcomeCounts)
-    .filter(([, n]) => n > 0)
-    .map(([k, n]) => `${n} ${k}`)
+  /* Each outcome is split into what was decided and what the engine returned but did not decide,
+     in the same words the single-trace headline uses. "6 delivered, 24 denied, 30 indeterminate"
+     once sat under "0 decided · 60 could not be decided" (2026-09-22 critic, B1). */
+  const counts = (Object.keys(s.outcomeCounts) as TraceOutcome[])
+    .flatMap((k) => {
+      const n = s.outcomeCounts[k];
+      const d = s.decidedOutcomeCounts[k];
+      const parts: string[] = [];
+      if (d > 0) parts.push(`${d} ${k} (decided)`);
+      if (n - d > 0) parts.push(`${n - d} ${UNDECIDED_TALLY_WORD[k]}`);
+      return parts;
+    })
     .join(", ");
-  collateral.push(`Outcomes inside the searched space: ${counts || "none — no flow was traced"}.`);
+  collateral.push(
+    `Outcomes inside the searched space, as the modelled path returned them — ${decided} of ${searched} decided: ${counts || "none — no flow was traced"}.`,
+  );
   collateral.push(
     s.hostsTouched.size === 0
       ? "No host was traversed: every flow was refused before a device was consulted."
@@ -675,14 +760,25 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
      difference decides what a change would break: adding a route would silently end the first. */
   const noRoute = s.satisfyingVerdicts.get("no-route") ?? 0;
   const denied = s.satisfyingVerdicts.get("denied") ?? 0;
+  /* No counterfactual is stated. "A route added later would end this result without any change to
+     an ACL" was once printed here, and it was false on the shipped data: under the alternate FHRP
+     ingress the caveats name (core1, which holds the connected route) the same 60 flows are all
+     DENIED by an ACL — adding a route would not end the result (critic B2, 2026-09-21). What a
+     change would do depends on paths this search never traced, so it only says what it observed,
+     at the ingress it assumed. */
+  const ingress = [...s.ingressHosts].sort();
+  const atIngress =
+    ingress.length === 0
+      ? ""
+      : ` with ${ingress.join(" and ")} as ingress — chosen from point-in-time FHRP/SVI evidence; another member of the group may be the ingress, and its forwarding and filtering were not searched here`;
   if (intent.kind === "none-reach" && s.satisfying > 0) {
     if (noRoute === s.satisfying) {
       collateral.push(
-        `Every flow consistent with this intent stops for want of a route, not because a filter denied it. That is an absence of forwarding, not a policy decision: a route added later would end this result without any change to an ACL.`,
+        `Every flow consistent with this intent stops for want of a route${atIngress}. No filter decided any of them, so this result is an absence of forwarding, not an observed policy decision; whether a filter would stop these flows on a path that does have a route was not evaluated.`,
       );
     } else if (denied > 0 && noRoute > 0) {
       collateral.push(
-        `${denied} flow(s) are stopped by a filter and ${noRoute} for want of a route. The two rest on different evidence, and only the first would survive a routing change.`,
+        `${denied} flow(s) are stopped by a filter and ${noRoute} for want of a route${atIngress}. The two rest on different evidence; how either would change under a routing change was not evaluated.`,
       );
     }
   }
@@ -749,7 +845,7 @@ export function runIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP): 
 
 /* ══ the surface ═══════════════════════════════════════════════════════════ */
 
-const flowKey = (f: Flow): string => `${f.protocol}|${f.srcIp}|${f.dstIp}|${f.dstPort ?? ""}`;
+export const flowKey = (f: Flow): string => `${f.protocol}|${f.srcIp}|${f.dstIp}|${f.dstPort ?? ""}`;
 
 const PROTOCOL_OPTIONS = [
   { value: "tcp", label: "TCP" },
@@ -770,18 +866,30 @@ function Presets({ onPick, title }: { onPick: (f: Flow) => void; title: string }
   /* Derived from the snapshot and TRACED by the engine at module load, so each one advertises the
      outcome it actually produced. A form with no starting point is a dead end for anyone who does
      not already know which addresses this collection can answer for. */
-  const flows: SuggestedFlow[] = useMemo(() => suggestedFlows(), []);
+  /* Each preset's word and colour come from the SAME rule as the card it opens (claims.ts
+     `bandOfTrace` / `undecidedOutcomeWord`), never from the outcome word alone: the list once drew a
+     green "delivered" and a red "denied" for two flows whose own cards read "the simulation ran and
+     declined to decide this flow" (2026-09-21 critic, B1). The trace is the engine's (memoised
+     per module, sub-millisecond), so the preset and the card cannot disagree. */
+  const flows = useMemo(
+    () =>
+      suggestedFlows().map((s: SuggestedFlow) => {
+        const t = traceFlow(s.flow);
+        return { s, band: bandOfTrace(t), word: undecidedOutcomeWord(t) ?? PRESET_OUTCOME_WORD[s.expectedOutcome] };
+      }),
+    [],
+  );
   return (
     <div className="pt-presets">
       <h3 className="pt-presets__title">{title}</h3>
       <ul className="pt-presets__list">
-        {flows.map((s) => (
+        {flows.map(({ s, band, word }) => (
           <li key={s.id} className="pt-preset">
             <button type="button" className="pt-preset__btn" onClick={() => onPick(s.flow)}>
               <span className="pt-preset__head">
                 <span className="pt-preset__title">{s.title}</span>
-                <span className="pt-preset__outcome" data-outcome={s.expectedOutcome}>
-                  {PRESET_OUTCOME_WORD[s.expectedOutcome]}
+                <span className="pt-preset__outcome" data-outcome={s.expectedOutcome} data-band={band}>
+                  {word}
                 </span>
               </span>
               <span className="pt-preset__flow">
@@ -829,6 +937,10 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
   const dstRef = useRef<HTMLInputElement>(null);
   const portRef = useRef<HTMLInputElement>(null);
   const formId = useId();
+  /** The locally-committed trace until the store catches up — see the re-aim split below. */
+  const [pending, setPending] = useState<{ flow: Flow; trace: Trace; hop?: number } | null>(null);
+  /** Bumped by every explicit run, so re-running the SAME flow still lands on its answer. */
+  const [runSeq, setRunSeq] = useState(0);
 
   /* The store owns the flow, so a flow that arrives from anywhere — this form, a preset, a
      counterexample, a shared URL — is traced the same way. That is what makes a link reproducible:
@@ -836,8 +948,37 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
   useEffect(() => {
     if (flow === null) return;
     if (trace !== null && flowKey(trace.flow) === flowKey(flow)) return;
-    setTrace(traceFlow(flow));
-  }, [flow, trace, setTrace]);
+    /* A flow with no matching trace only exists after a URL restore (first load or Back): every
+       interactive writer sets flow and trace in one batch. On a restore the LINK names the hop,
+       and `setTrace` parks on hop 0 by contract — so the named hop is re-applied after it, or a
+       shared "hop 2 of this flow" would silently open on hop 1 (acceptance A4, URL restore). The
+       device the link names is kept by App's hop re-aim, which knows a restore from a selection. */
+    /* SPLIT like `run` below — acceptance E5, 2026-09-22. The two store writes here used to run
+       synchronously. On a cold restore (`?s=path&flow=…`) they are the urgent re-aim commit of
+       every surface, issued from a passive effect of the very first mount — the same scheduler
+       task as the mount, BEFORE the first paint. Measured by review/audit-e5-sweep.mjs ("path
+       trace: seed a flow by navigation"): over 200 ms in 3 of 3 repetitions, worst 711 ms in
+       react's MessagePort.onmessage, and judged UNCOMMUNICATED: the boot line had been removed and
+       the stage's "Drawing the 3-D fabric" status, mounted in that same commit, never painted.
+
+       Now a restore takes the path an explicit run takes: the trace (sub-millisecond) is shown
+       from LOCAL state, so this panel answers in the next frame, and the store writes that re-aim
+       the queue, the device pane, the evidence rail and the fabric go to a task of their own AFTER
+       that frame is painted — by which time the stage's status is on screen. The named hop is read
+       NOW, before anything can move it. `pending` already carries a flow `run` is handling, and the
+       returned cancel drops a write superseded before it landed (the flow changed again). */
+    if (pending !== null && flowKey(pending.flow) === flowKey(flow)) return;
+    const named = useInvestigation.getState().hopIndex;
+    const restored = traceFlow(flow);
+    const hop = named !== null && named > 0 && named < restored.hops.length ? named : null;
+    setPending(hop === null ? { flow, trace: restored } : { flow, trace: restored, hop });
+    return deferPastPaint(() => {
+      setTrace(restored);
+      if (hop !== null) selectHop(hop);
+    });
+    /* `pending` is read, not tracked: this effect's own setPending must not cancel its own write. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow, trace, setTrace, selectHop]);
 
   /* Everything below reads `shown`, not `trace`. See `run`. */
 
@@ -883,18 +1024,20 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
    *
    * NOT a spinner and not a delay: the panel's own content is complete in the first frame. What
    * arrives a frame later is the OTHER surfaces re-aiming, which is what cost the 200 ms. */
-  const [pending, setPending] = useState<{ flow: Flow; trace: Trace } | null>(null);
+  /* `pending` and `runSeq` are declared with the other local state, above: the flow-restore
+     effect reads `pending` too. */
 
   /** What THIS panel draws: the locally-committed trace until the store catches up. */
   const shown = pending?.trace ?? trace;
   /** `setTrace` parks on the first hop; the acknowledgement frame must agree with it. */
-  const shownHopIndex = pending === null ? hopIndex : pending.trace.hops.length > 0 ? 0 : null;
+  const shownHopIndex = pending === null ? hopIndex : (pending.hop ?? (pending.trace.hops.length > 0 ? 0 : null));
 
   const run = useCallback(
     (next: Flow) => {
       setMode("trace");
       const traced = traceFlow(next);
       setPending({ flow: next, trace: traced });
+      setRunSeq((n) => n + 1);
       const commitRest = (): void => {
         /* One batch. See above: two writes here are one commit, not two. */
         setFlow(next);
@@ -925,7 +1068,9 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
      rather than a task later when the other surfaces land. */
   useEffect(() => {
     if (shown === null) return;
-    setAnnounce(`Result: ${shown.outcome}. ${shown.claim}`);
+    /* The headline word the card draws, never the raw outcome: "Result: dropped" was announced
+       under a card headed "dropped for want of a collected route — not decided". */
+    setAnnounce(`Result: ${outcomeWordOf(shown)}. ${shown.claim}`);
   }, [shown]);
 
   const onSubmit = useCallback(
@@ -1018,10 +1163,135 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
 
   const counter = useMemo(() => (shown === null ? null : counterexample(shown.flow, shown)), [shown]);
 
+  /* ══ land the reader ON the answer — acceptance A3 ═══════════════════════════════════════
+   *
+   * MEASURED (critic, 1920x1080): after "Trace this flow" the panel's scroller stayed at
+   * scrollTop 0 with the form filling it. The verdict sat 68 px below the fold and the deciding
+   * ACL line `deny ip any any` about 3,000 px below it — every fact the trace was run to produce
+   * was in the DOM and none of it was on screen.
+   *
+   * So each NEW result scrolls its own scroller to the evidence that answers the question: the
+   * blocking hop when one exists (it carries the device, the verdict, the ACL name, the line index
+   * and the literal text on one card — HopList renders the decider ON the hop), otherwise the
+   * claim card's verdict. Keyed on the flow, so selecting a hop, or re-rendering, never yanks
+   * the reader back. Only the panel's own scroller moves: never the page, never the camera. */
+  const resultRef = useRef<HTMLDivElement>(null);
+  /** The runSeq the focus-landing effect last handled: tells an explicit run from a re-render. */
+  const landedSeqRef = useRef(0);
+  const shownKey = shown === null ? null : flowKey(shown.flow);
+  const blockingIndex = useMemo(() => (shown === null ? null : (blockingHop(shown)?.hop.index ?? null)), [shown]);
+  useEffect(() => {
+    if (shownKey === null) return;
+    const root = resultRef.current;
+    if (root === null) return;
+    const target =
+      (blockingIndex === null
+        ? null
+        : root.querySelector<HTMLElement>(`.hop__head[data-hop-index="${blockingIndex}"]`)?.closest<HTMLElement>(".hop")) ??
+      root.firstElementChild;
+    if (!(target instanceof HTMLElement)) return;
+    const explicitRun = runSeq !== landedSeqRef.current;
+    landedSeqRef.current = runSeq;
+    /* WHEN the landing reads layout — acceptance E5, 2026-09-22. Everything below reads geometry
+       (getComputedStyle, getBoundingClientRect), which forces a synchronous style and layout of
+       whatever is dirty. For an EXPLICIT run that is this panel alone, and the landing belongs in
+       the interaction's own frame. For a result that ARRIVED — a cold link restore above all — the
+       whole freshly-mounted page is dirty: a CPU profile of `?s=path&flow=…` put 153 ms of self
+       time in this effect, inside the pre-paint task the sweep measures. So an arrived result lands
+       after the next paint, when the layout the reads need has already been computed by the
+       browser's own rendering step; the cancel drops it if the result changed again first. */
+    const landOnAnswer = (): void => {
+      if (!root.isConnected || !target.isConnected) return;
+      /* The element the scroll aligned to the top of the port — and therefore the one focus must go
+         to when it moves (D3, WCAG 2.4.7 / 2.4.11). MEASURED (critic, 2026-09-22, 1440×900): the
+         scroll below chose the ACL deciding line because head and line did not fit together, and
+         focus then went to the hop HEAD — fully above the port, so the ring was invisible. Scroll
+         target and focus target are now the same element by construction, not two choices. */
+      let aligned: HTMLElement | null = null;
+      let scroller: HTMLElement | null = root.parentElement;
+      while (scroller !== null) {
+        const oy = getComputedStyle(scroller).overflowY;
+        if ((oy === "auto" || oy === "scroll") && scroller.scrollHeight > scroller.clientHeight) break;
+        scroller = scroller.parentElement;
+      }
+      if (scroller !== null) {
+        /* The hop's HEAD is not the answer; the line that decided it is. MEASURED (critic, A3):
+           landing the head at the top put the ACL fact carrying the literal line at y=595 against a
+           scroll port ending at y=510 — the reason for the verdict was one more scroll away. So the
+           landing is solved for the decided fact: the head stays at the top when head and deciding
+           line fit together, and when they do not, the deciding line wins and is put at the top. */
+        const box = scroller.getBoundingClientRect();
+        const PAD = 8;
+        const headDelta = target.getBoundingClientRect().top - box.top - PAD;
+        const decided = target === root.firstElementChild ? null : target.querySelector<HTMLElement>("[data-decided]");
+        let delta = headDelta;
+        if (decided !== null) {
+          const at = decided.getBoundingClientRect();
+          if (at.bottom + PAD - headDelta > box.bottom) {
+            delta = at.top - box.top - PAD;
+            aligned = decided;
+          }
+        }
+        scroller.scrollTop += delta;
+      }
+
+      /* Focus goes with the answer (D3, WCAG 2.4.7 / 2.4.3). MEASURED (critic): Enter in the
+         Destination port field scrolled this panel 3,208 px to the blocking hop while focus stayed
+         on the port input, now 2,841 px above the scroll port — no visible focus anywhere, and the
+         next Tab ("Trace this flow") scrolled the panel straight back up, away from the hop the
+         reader asked about. The rule is stated over the class, not over that one field: whenever
+         the scroll leaves this panel's focused control outside its scroller's visible box, focus
+         moves to the thing the scroll went to — the blocking hop's own header button (a real
+         control, already in the hop list's arrow model), otherwise the verdict heading. A focused
+         control the scroll left in view (a preset below the result, a hop) is not disturbed. */
+      /* The second half of the class: an explicit run whose trigger UNMOUNTED under the reader.
+         MEASURED (critic): Enter on a suggested-flow card replaced the card list with the result
+         and focus fell to <body>. The counterexample button and "Verify an intent" (whose panel
+         hides on the switch to trace mode) have the same shape. Whatever control started the run,
+         if focus is gone when the answer arrives, it lands where the Trace button's does. Scoped
+         to an EXPLICIT run from this panel (runSeq moved), so a trace arriving from the fabric or
+         the URL while focus is elsewhere never pulls the reader into the panel. */
+      const focused = document.activeElement;
+      const focusLost =
+        explicitRun && (!(focused instanceof HTMLElement) || focused === document.body || !focused.isConnected);
+      if (!focusLost) {
+        if (scroller === null || !(focused instanceof HTMLElement) || !scroller.contains(focused)) return;
+        const box = scroller.getBoundingClientRect();
+        const at = focused.getBoundingClientRect();
+        if (at.bottom > box.top && at.top < box.bottom) return;
+      }
+      const land =
+        aligned ??
+        target.querySelector<HTMLElement>(".hop__head") ??
+        root.querySelector<HTMLElement>(".claim__outcome") ??
+        target;
+      if (!land.matches("button,a[href],input,select,textarea,[tabindex]")) land.tabIndex = -1;
+      land.focus({ preventScroll: true });
+    };
+    if (explicitRun) {
+      landOnAnswer();
+      return;
+    }
+    return deferPastPaint(landOnAnswer);
+  }, [shownKey, blockingIndex, runSeq]);
+
   const errorSummary = [errors.srcIp, errors.dstIp, errors.dstPort].filter(Boolean);
 
   return (
-    <section id={id} className="pathtrace" aria-label="Path investigation">
+    <section
+      id={id}
+      className="pathtrace"
+      aria-label="Path investigation"
+      /* The panels clip horizontally (overflow-x: hidden), which still leaves them PROGRAMMATICALLY
+         scrollable: a scroll-into-view or a focus landing on a wide descendant shifted the whole
+         panel 42px left, with no wheel or bar to bring it back. The panel is a vertical reader, so
+         any horizontal offset is a defect; undo it wherever it comes from. Scroll does not bubble,
+         so this listens in the capture phase. */
+      onScrollCapture={(e) => {
+        const el = e.target;
+        if (el instanceof HTMLElement && el.classList.contains("pt-panel") && el.scrollLeft !== 0) el.scrollLeft = 0;
+      }}
+    >
       <Tabs
         id={`${formId}-mode`}
         label="Path investigation mode"
@@ -1119,7 +1389,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
         {shown === null ? (
           <Presets onPick={run} title="Questions this snapshot can answer" />
         ) : (
-          <div className="pt-result">
+          <div className="pt-result" ref={resultRef}>
             <ClaimCard
               trace={shown}
               counterexample={counter}
@@ -1127,6 +1397,18 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
               {...(onOpenCite ? { onOpenCite } : {})}
             />
             <h3 className="pt-result__title">{`Hops (${shown.hops.length})`}</h3>
+            {/* What the fabric can and cannot show for THIS trace, said where the reader reads it.
+                A one-hop trace has no second device to draw a cable to, and the snapshot observes
+                neither the port the source attaches to nor a host owning the next hop, so the
+                fabric carries a verdict mark on one node and no path geometry. Drawing a stub
+                from an inferred attachment would be inventing topology (2026-09-22 critic, A5). */}
+            {shown.hops.length <= 1 ? (
+              <p className="pt-result__fabric" data-fabric-drawn="marker-only">
+                {shown.hops.length === 0
+                  ? "On the fabric: nothing is drawn — no device was consulted for this flow."
+                  : `On the fabric: ${shown.hops[0]?.host ?? "the host"} carries the verdict mark; no path is drawn. This trace consulted one device: ${shown.hops[0]?.nextHost ? `its next hop belongs to ${shown.hops[0].nextHost}, which the trace did not follow` : "no collected host owns its next hop"}, and the snapshot does not observe the port the source attaches to, so there is no second observed device to draw a cable to.`}
+              </p>
+            ) : null}
             <HopList
               trace={shown}
               activeIndex={shownHopIndex}

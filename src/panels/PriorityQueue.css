@@ -289,29 +289,34 @@
    Inline and always visible, not behind a settings dialog: grouping and ordering are part of
    reading the list, not a preference you set once. */
 
+/* The row WRAPS. Its selects are sized from their chosen label and may not shrink below it
+   (primitives.css, `.ui-select`), so when GROUP, ORDER and Display cannot share one line the ORDER
+   field takes its own line instead of cutting "Ranked: severity, then priority, then rank" to
+   "Ranked: severity, th" (acceptance C2, 2026-09-22: cut at 1440, and to "…then pr" at 1920). */
 .pq-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--sp-2);
   padding: 0 var(--sp-2) var(--sp-2);
 }
 
+/* 4px between a field label and its control: at 0 the caps label sat on the select's top edge and
+   read as part of it. The block's outer rhythm is 8px (query, controls, summary, grid), set by
+   each block's own bottom padding so nothing doubles up. */
 .pq-controls .ui-field {
   flex: 1 1 auto;
-  min-inline-size: 0;
-  gap: 0;
+  gap: var(--sp-1);
 }
 
 .pq-controls .ui-label {
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
 }
 
 .pq-controls .pq-select {
-  min-inline-size: 0;
-  inline-size: 100%;
   font-size: var(--fs-1);
 }
 
@@ -344,7 +349,7 @@
   padding: 0;
   color: var(--text-faint);
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
 }
 
@@ -366,7 +371,18 @@
 
 /* ── accounting ─────────────────────────────────────────────────────────────── */
 
+/* ONE summary line: the shown count on the left, the coverage clause pushed to the right edge,
+   both on the same 24px baseline band (the band is the info button's target height). They used
+   to be two stacked left-aligned lines of different heights (17px, then 24px) with a 4px gap —
+   counts that floated rather than lined up. Notes, problems and the per-clause breakdown are
+   explanations, not counts, so they take a full line of their own beneath. The line wraps rather
+   than clips at a narrower rail, and then the clause keeps the right edge. */
 .pq-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-1);
   padding: 0 var(--sp-2) var(--sp-2);
   font-size: var(--fs-0);
   line-height: var(--lh-0);
@@ -374,11 +390,43 @@
   color: var(--text-muted);
 }
 
+/* Explanations follow the summary line whatever their DOM order: a host-marking note or a problem
+   sits between the count and the coverage clause in the markup, and without the reorder it split
+   the two counts onto separate lines again the moment a device was selected. */
+.pq-account > * {
+  flex: 1 0 100%;
+  order: 2;
+}
+
+.pq-account > .pq-account__line {
+  order: 0;
+}
+
+.pq-account > .pq-account__scope {
+  order: 1;
+}
+
+.pq-account > .pq-account__line,
+.pq-account > .pq-account__scope {
+  flex: 0 1 auto;
+  min-block-size: var(--target-min);
+  margin: 0;
+}
+
+/* No gap before the info button: its 24px target already pads the 12px glyph off the words. */
+.pq-account > .pq-account__scope {
+  margin-inline-start: auto;
+  gap: 0;
+}
+
+/* The line's own box is 24px tall so it shares the clause's band; baseline alignment is what puts
+   the 13px count and its 11px words on one line of type, and a 4px gap is one word-space. */
 .pq-account__line {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2);
+  align-items: baseline;
+  align-content: center;
+  column-gap: var(--sp-1);
   margin: 0;
 }
 
@@ -489,7 +537,9 @@
 .pq .ag[data-density="comfortable"] .ag__row--data {
   min-block-size: var(--row-grid);
   max-block-size: var(--row-grid-max);
-  padding-block: var(--sp-1);
+  /* 3px, not --sp-1: the three-line title below (C3) needs 3 x 15.6px + 2px of descender room, and
+     46.8 + 2 + 6 = 54.8px keeps the row inside the 56px ceiling. */
+  padding-block: 3px;
   row-gap: var(--sp-1);
 }
 
@@ -512,7 +562,13 @@
    layout above sets. It used to be `:not([data-col=sev]):not([data-col=id]):not(...)` — a list of
    the columns that are NOT demoted, maintained by hand in a second file, which is how the clipped
    cells came to still carry a 1px sort button the stylesheet knew was invisible and the component
-   did not. */
+   did not.
+
+   NB 2026-09-21: the queue's own layout no longer demotes any column — the Display-added columns
+   are folded INTO the title cell (`.pq-fold` below) instead of being kept in the grid's column
+   model under a clipped header, which left a column the keyboard could not keep (D2) and an 8x1
+   resize separator (D5). This rule stays only so DataGrid's generic `headerHidden` flag is still
+   honoured if a future layout sets it. */
 .pq .ag__cell--head[data-headhidden="yes"] {
   /* `fixed`, not `absolute` — see .visually-hidden in src/ui/primitives.css. */
   position: fixed;
@@ -545,9 +601,56 @@
   text-align: end;
 }
 
-/* The id track at 1.75rem clipped "F001" against its own rule. */
+/* The id track at 1.75rem clipped "F001" against its own rule; 2.25rem holds the 26px glyph, its
+   4px gutter and the hairline, and no more — every pixel here is a pixel the title does not get.
+
+   The category track is on line 1 now, so it is paid for out of the title. It is one width for
+   every row (each row is its own grid; a content-sized track would put every row's tag at a
+   different x), and that width follows the rail: 100cqi less the ~15rem of fixed tracks, the host
+   prefix and a floor of title, clamped between 3.75rem ("Cross-layer", "IPv6 Routing", "Health",
+   "Security" — 101 of 146 rows — fit whole; longer names ellipsise with the full value still in
+   the cell's accessible name) and the brief's 88px. At the 300px reference rail the title keeps
+   ~113px; drag the rail wider and the tag grows to 88px before the title takes the rest. A column
+   resize still overrides it, because DataGrid writes --ag-w-category inline on the grid.
+
+   The rail width arrives as `--pq-inline`, written by a ResizeObserver in PriorityQueue.tsx, NOT as
+   `100cqi` off a `container-type: inline-size` box. RESPONSIVENESS FIX, 2026-09-21 (acceptance
+   E3/E5): as a size container, every layout of the document re-resolved the container-relative
+   track of all 146 row grids, so dirtying ONE box anywhere near the rail (a hovered form button, a
+   focused row) re-laid out the whole queue. Measured, interleaved A/B on the release build, median
+   of 50 forced layouts: dirtying a path-trace button 20.9 ms -> 6.7 ms, dirtying one queue row
+   45.6 ms -> 25.3 ms, with the container gone and the same clamp fed a plain length. Those layouts
+   were the forced-layout time inside every selection commit and every `pushState`. The value is
+   the same number cqi resolved to (the content box's inline size), so the tracks do not move. */
 .pq {
-  --ag-w-id: 2.75rem;
+  --ag-w-id: 2.25rem;
+  --ag-w-category: clamp(3.75rem, var(--pq-inline, 18.75rem) - 15rem, 5.5rem);
+}
+
+/* The queue's scroll box is a RELAYOUT BOUNDARY. `size layout` containment lets the browser lay out
+   a dirtied row, a focused cell or a re-marked related row inside this box without re-laying out
+   the document around it, and lets a change anywhere else on the page skip the 146 rows inside it.
+   Measured, interleaved A/B on the release build (median of 50 forced layouts, one queue row
+   dirtied): 20.4 ms -> 2.9 ms. That layout was the `forcedStyleAndLayoutDuration` inside every
+   keyboard move in this grid (acceptance E5, "40 x ArrowDown") and inside every selection commit
+   that re-marks the queue (E3, journeys 1, 2 and 4).
+   Pixel-neutral, and checked rather than assumed: the queue's box and scroll geometry are identical
+   at 1920/1440/1280/1024 widths on three routes, and its screenshots differ by at most 1/255 in a
+   handful of pixels — the same noise a no-op stylesheet produces. `paint` is deliberately NOT
+   included: it changed the rows' text anti-aliasing (max 230/255 per channel across the title
+   column). The containing block this creates for the rows' `position: fixed` visually-hidden spans
+   is the scroll box itself, which is exactly the escape-proofing `.visually-hidden` was written for.
+
+   SIZE containment is only safe where this box never sizes from its rows — `flex: 1 1 auto` under
+   a definite-height rail — and that is true only while the shell is a fixed frame. Below the
+   shell's own single-column breakpoint (shell.css, `max-width: 47.9375rem`) the page becomes a
+   scrolling document and the queue grows with its content; size containment there collapsed it
+   to 12px (measured at 390x844 on four surfaces; box geometry checked identical with and without
+   containment at 40 viewport/route combinations from 800x600 to 1920x1080). Hence the query. */
+@media (min-width: 48rem) {
+  .pq .ag__grid {
+    contain: size layout;
+  }
 }
 
 /* A right-aligned column wants a right-aligned header, or the header names a column whose values
@@ -567,7 +670,7 @@
   overflow: hidden;
   color: var(--text);
   font-size: var(--fs-2);
-  line-height: var(--lh-2);
+  line-height: var(--lh-row-title);
   letter-spacing: var(--ls-2);
   white-space: nowrap;
 }
@@ -601,26 +704,110 @@
   text-overflow: ellipsis;
 }
 
+/* The folded second line (comfortable density only): the columns the reader added through Display,
+   each prefixed with its own field name, because in this density they have no column header. */
+.pq-fold {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.pq-fold__line2 {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-inline-size: 0;
+  overflow: hidden;
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+}
+
+.pq-fold__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  white-space: nowrap;
+}
+
+.pq-fold__key {
+  color: var(--text-muted);
+}
+
+.pq-fold__item .pq-meta {
+  margin-inline-start: 0;
+  text-align: start;
+}
+
+/* ── C3: the comfortable row keeps its TITLE, not its rule-ID prefix (acceptance C3, 2026-09-22) ──
+   On one line, a 300px rail left the title ~122px after severity, id, category and the evidence
+   control (24 + 36 + 60 + 24 px of tracks, 16 of gaps, 16 of padding — measured), so 102 of the 107
+   rows on screen were cut to their prefix: "CR-03: Ro…", "CR-01: End-o…", "VLAN …", with the category
+   cut to "Compoun…" beside them. The median host+title needs 336px of line.
+   The comfortable row is ALREADY a multi-line row with a 56px ceiling (--row-grid-max), and the
+   lines under the title were spent on nothing. So the title — host prefix included — now WRAPS,
+   at the tighter --lh-5 leading, and clamps at three lines: 3 x 15.6px + 8px of padding sits inside
+   the same 56px ceiling. Measured on the 146-finding corpus at 1440: mean row height 52.6px against
+   53.7px before (the list is no less dense), and the longest title on screen keeps all but its
+   last word. Two lines at the old 20px leading was tried first and kept less (47% of the longest
+   title hidden). The category tag wraps at its spaces instead of ellipsising ("Compound / risk");
+   its track floor is the longest single category word ("Operational", 58px of 60).
+   Compact density keeps the brief's single 32px line: windowing there needs a uniform row height,
+   and the reader chose that trade explicitly. */
+.pq .ag[data-density="comfortable"] .pq-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  line-height: var(--lh-5);
+  /* At a 1.2 leading the clamp box ends at the last line's descenders, and `overflow: hidden` cut
+     them ("deqraded" for "degraded", seen in the first build of this rule). Two pixels of room
+     below the third line, paid for out of the row's own block padding (below), keep the row
+     inside its 56px ceiling. */
+  padding-block-end: 2px;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.pq .ag[data-density="comfortable"] .pq-title__host {
+  display: inline-block;
+  margin-inline-end: var(--sp-1);
+  vertical-align: baseline;
+}
+
+.pq .ag[data-density="comfortable"] .pq-title__text {
+  overflow: visible;
+}
+
+.pq .ag[data-density="comfortable"] .ag__row--data .pq-meta {
+  white-space: normal;
+  overflow-wrap: normal;
+  text-overflow: clip;
+}
+
 .pq .ag__row--data[data-active="yes"] .pq-title {
   font-weight: var(--fw-medium);
 }
 
-/* Line-2 metadata is no longer under a column header (the header is one row and labels line 1),
-   so each value has to say what it is by its own shape. A chip does that; bare muted text in an
-   unlabelled position does not. */
+/* Metadata is a right-aligned muted TAG: no border, no fill. The category used to be an outlined
+   chip on a second line of every one of 146 rows — the second-loudest shape in the rail after the
+   severity glyph, and the reason each row cost two lines. It now sits in its own labelled track at
+   the end of the title line (see the placement in PriorityQueue.tsx), so it needs no shape to say
+   what it is. Columns the reader opts into through Display still wrap under the title. */
 .pq-meta {
-  display: inline-block;
+  display: block;
   max-inline-size: 100%;
-  padding-inline: var(--sp-1);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-sm);
+  margin-inline-start: auto;
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--text-faint);
   font-size: var(--fs-0);
+  line-height: var(--lh-0);
   letter-spacing: var(--ls-0);
+  text-align: end;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: baseline;
 }
 
 .pq-num {
@@ -716,4 +903,17 @@
   font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--ls-0);
+}
+
+/* Column-width row: name, current width, then the three buttons. The label wraps before the
+   buttons do, so the 24px targets never shrink in the 20rem panel. */
+.pq-display__width {
+  flex-wrap: wrap;
+  cursor: default;
+}
+.pq-display__width > span:first-child {
+  flex: 1 1 5rem;
+}
+.pq-display__width .pq-display__domain {
+  margin-inline-start: 0;
 }

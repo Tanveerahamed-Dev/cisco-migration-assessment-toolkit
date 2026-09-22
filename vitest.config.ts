@@ -27,7 +27,7 @@
  * rules all have to survive that. The `test` block below is the only thing that overrides.
  */
 import { cpus } from "node:os";
-import { defineConfig, mergeConfig } from "vitest/config";
+import { configDefaults, defineConfig, mergeConfig } from "vitest/config";
 
 /* Extension included deliberately: Vite's native config loader warns about a bare specifier here
    and will reject it once that loader becomes the default. */
@@ -44,6 +44,14 @@ export default mergeConfig(
       environment: "jsdom",
       globals: true,
       include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+      /* Scratch is not suite. Review and audit agents write probe tests under `src/` — measured
+         2026-09-21: `src/__audit_tmp/probe.test.ts` and later `src/__probe/probe.test.ts`, each
+         picked up by `vitest run` and each writing to an env-named path. The class is the leading
+         underscore on ANY path segment (the same convention `.gitignore :: review/_*` keys on),
+         not a list of the two names seen so far; no authored module under `src/` uses one, and
+         `source-hygiene.test.ts` asserts that stays true so this exclusion can never hide a real
+         test. Vitest's own defaults are kept: an `exclude` given here REPLACES them. */
+      exclude: [...configDefaults.exclude, "src/**/_*/**", "src/**/_*"],
       testTimeout: 30_000,
       hookTimeout: 30_000,
       maxWorkers: WORKERS,

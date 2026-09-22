@@ -25,6 +25,11 @@ const sha256 = createHash("sha256").update(raw).digest("hex");
 
 /** Absence is absence. "", "-", "N/A" and the engine's explicit [NOT OBSERVED] marker all mean unobserved. */
 const NOT_OBSERVED = /^\s*\[NOT OBSERVED\]/i;
+/* TYPES. The snapshot is untrusted JSON, so every value read from it enters as `unknown` and each
+   helper below is the one place that narrows it. The parameters are JSDoc-annotated so this file
+   is clean under `noImplicitAny` (tsconfig.scripts.json); JSDoc changes no emitted byte of
+   src/data/fabric.json, and that is checked by hashing it before and after. */
+/** @param {unknown} v */
 const val = (v) => {
   if (v === undefined || v === null) return null;
   if (typeof v === "string") {
@@ -35,7 +40,10 @@ const val = (v) => {
   if (typeof v === "number" && !Number.isFinite(v)) return null;
   return v;
 };
-/** Keep the engine's own unobserved prose when it carries a REASON worth showing. */
+/**
+ * Keep the engine's own unobserved prose when it carries a REASON worth showing.
+ * @param {unknown} v
+ */
 const reason = (v) => (typeof v === "string" && NOT_OBSERVED.test(v.trim()) ? v.trim() : null);
 /**
  * A number is a number the snapshot ACTUALLY carried, or nothing.
@@ -51,6 +59,7 @@ const reason = (v) => (typeof v === "string" && NOT_OBSERVED.test(v.trim()) ? v.
  * zero is precisely the defect class this project exists to refuse.
  *
  * So: no character stripping, ever. A string is accepted only if the WHOLE of it parses.
+ * @param {unknown} v
  */
 const num = (v) => {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
@@ -60,6 +69,7 @@ const num = (v) => {
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
 };
+/** @param {unknown} v @returns {any[]} */
 const arr = (v) => (Array.isArray(v) ? v : []);
 /**
  * String arrays, with a loud refusal instead of `[object Object]`.
@@ -71,6 +81,9 @@ const arr = (v) => (Array.isArray(v) ? v : []);
  * fabric's port-channels, and the honest "members not observed" branch was unreachable because
  * the array was never empty. This helper makes that shape a BUILD FAILURE rather than a shipped
  * string — the structural fix, so the next `.map(String)` over an object cannot repeat it.
+ * @param {unknown} v
+ * @param {string} where  the snapshot path, named in the build failure
+ * @returns {string[]}
  */
 const strs = (v, where) =>
   arr(v)
@@ -84,6 +97,12 @@ const strs = (v, where) =>
       );
     })
     .filter((s) => s !== "");
+/**
+ * A JSON object, or an empty one. Its members stay `any` on purpose: they are snapshot values,
+ * and each is narrowed by `val`/`num`/`strs`/`arr` at the point it is read.
+ * @param {unknown} v
+ * @returns {Record<string, any>}
+ */
 const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 
 /* devices ------------------------------------------------------------------ */
@@ -142,6 +161,7 @@ const devices = hosts.map((host) => {
 });
 
 /* links -------------------------------------------------------------------- */
+/** @param {unknown} a @param {unknown} ap @param {unknown} b @param {unknown} bp */
 const centralityKey = (a, ap, b, bp) => [`${a}|${ap}`, `${b}|${bp}`].sort().join("::");
 const centrality = new Map();
 for (const c of arr(snap.link_centrality)) {
@@ -185,6 +205,41 @@ const links = arr(snap.cable_map?.cables).map((c, i) => {
 });
 
 /* findings (punchlist) ------------------------------------------------------ */
+/**
+ * Every key the producer may put on a punchlist row, and the compiled field that carries it.
+ *
+ * A row key NOT in this map is a BUILD FAILURE, not a silent drop. That is the structural answer to
+ * the defect class this compiler has already shipped twice (object groups, ACL evaluability): the
+ * producer adds a field, the compiler never learns of it, and the UI reports a model gap as though
+ * the evidence did not exist. `source_command` was the third instance — the show-command the engine
+ * cites as a finding's evidence (engine: `compute_migration_punchlist`, `_PUNCH_SOURCE_COMMAND`),
+ * on 33 of 146 rows, dropped until 2026-09-22.
+ *
+ * The engine can also emit `severity_basis` and `evidence_confidence`; it appends both to `detail`
+ * as well. They are deliberately NOT listed: this snapshot carries neither, and the day one appears
+ * the build should stop and make someone decide how to show it.
+ */
+const PUNCHLIST_FIELDS = {
+  severity: "severity",
+  rank: "rank",
+  priority: "priority",
+  category: "category",
+  devices: "devices",
+  wave: "wave",
+  title: "title",
+  detail: "detail",
+  remediation: "remediation",
+  source_command: "sourceCommand",
+};
+arr(snap.punchlist).forEach((p, i) => {
+  const unknownKeys = Object.keys(obj(p)).filter((k) => !Object.hasOwn(PUNCHLIST_FIELDS, k));
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `compile-snapshot: punchlist[${i}] carries producer field(s) this compiler does not compile: ` +
+        `${unknownKeys.join(", ")}. Compile them (and add them to PUNCHLIST_FIELDS) rather than dropping them.`,
+    );
+  }
+});
 const findings = arr(snap.punchlist).map((p, i) => ({
   id: `F${String(i + 1).padStart(3, "0")}`,
   severity: val(p.severity) ?? "Info",
@@ -196,6 +251,10 @@ const findings = arr(snap.punchlist).map((p, i) => ({
   title: val(p.title) ?? "(untitled finding)",
   detail: val(p.detail),
   remediation: val(p.remediation),
+  /* The show-command the engine cites as this finding's evidence, or null when its category is a
+     composite with no single backing command. A COMMAND NAME, not a record: the snapshot keeps no
+     raw command output, so this is provenance, never a route to literal configuration text. */
+  sourceCommand: val(p.source_command),
   cite: `punchlist[${i}]`,
 }));
 
@@ -211,6 +270,7 @@ const crossLayer = arr(snap.cross_layer).map((c, i) => ({
 }));
 
 /* forwarding substrate: routes, ACLs, SVIs ---------------------------------- */
+/** @type {Record<string, object[]>} */
 const routes = {};
 for (const [host, rs] of Object.entries(obj(snap.routes))) {
   routes[host] = arr(rs)
@@ -230,9 +290,11 @@ for (const [host, rs] of Object.entries(obj(snap.routes))) {
  * not collected" while the source file carried them — a model gap reported as a collection gap,
  * which is the one kind of error this project cannot tolerate.
  */
+/** @param {any} f  one `src`/`dst` match field from the snapshot, or nothing */
 const matchField = (f) =>
   f ? { ip: val(f.ip), wild: val(f.wild), group: val(f.group) } : null;
 
+/** @type {Record<string, Record<string, Array<{ unevaluable: boolean }>>>} */
 const acls = {};
 for (const [host, named] of Object.entries(obj(snap.acls))) {
   acls[host] = {};
@@ -268,6 +330,7 @@ for (const [host, named] of Object.entries(obj(snap.acls))) {
 }
 
 /** Object groups referenced by ACL match fields. Present in the snapshot; previously discarded. */
+/** @type {Record<string, Record<string, object>>} */
 const objectGroups = {};
 for (const [host, groups] of Object.entries(obj(snap.object_groups))) {
   objectGroups[host] = {};
@@ -313,6 +376,7 @@ const l3 = arr(snap.l3_forwarding).map((r, i) => ({
 }));
 
 /* per-port and per-protocol evidence ---------------------------------------- */
+/** @type {Record<string, object[]>} */
 const interfaces = {};
 for (const [host, ports] of Object.entries(obj(snap.interfaces))) {
   interfaces[host] = Object.entries(obj(ports)).map(([port, p]) => ({

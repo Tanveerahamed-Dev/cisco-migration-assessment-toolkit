@@ -499,7 +499,13 @@ describe("grouping and ordering", () => {
     expect(groups[groups.length - 1]!.observed).toBe(false);
     expect(groups[groups.length - 1]!.items).toHaveLength(UNCOLLECTED_DEVICES);
     const observed = groups.filter((g) => g.observed).map((g) => g.key);
-    expect(observed).toEqual(["Excellent", "Good", "Poor", "Critical"]);
+    /* UPDATED 2026-09-22 (acceptance B1, second failure): the old expectation ["Excellent", "Good",
+       "Poor", "Critical"] filed core2/dist1/dist2/podacc1/podacc2 under the PLAIN favourable bands,
+       although every one of them is qualified (a scoring domain never assessed could not deduct) —
+       that expectation pinned the defect. Band order is kept: each favourable band's qualified key
+       sits directly after it, and this snapshot has no unqualified favourable band. */
+    expect(observed).toEqual(["Excellent-partial", "Good-partial", "Poor", "Critical"]);
+    expect(groups.find((g) => g.key === "Excellent-partial")?.label).toBe("Excellent (partial)");
   });
 
   it("sorts deterministically regardless of input order", () => {
@@ -966,5 +972,47 @@ describe("a record is never swallowed by another that shares its id", () => {
       const cur = a[i]!;
       if (prev.score === cur.score) expect(tupleBefore(prev, cur)).toBe(true);
     }
+  });
+});
+
+describe("free text on devices is tri-state: an unobserved field never decides a miss", () => {
+  /* Critic B1, 2026-09-21: "-ios" admitted AP-floor1, AP-floor3-01 and wan-edge-rtr1.lab — devices
+     the collector never reached, every text field null — as definitely "not IOS", and fed them to
+     the fabric emphasis set with undeterminedTotal 0. Checked over the whole class of negated and
+     required terms, not the one term the critic typed. */
+  const unobservable = new Set(
+    fabric.devices
+      .filter((d) => !d.collected || [d.role, d.model, d.serial, d.swVersion, d.platform].some((v) => v === null))
+      .map((d) => d.id),
+  );
+
+  it("the fleet actually has such devices, so this test is not vacuous", () => {
+    expect(fabric.devices.filter((d) => !d.collected).length).toBeGreaterThan(0);
+  });
+
+  for (const q of ["-ios", "-nxos", "-FOC", "-access", "ios", "nxos", "catalyst", "-zzzz-no-such-text"]) {
+    it(`"${q}" admits no device whose relevant fields were never observed, unless its observed text hits`, () => {
+      const r = applyToDevices(fabric.devices, parseQuery(q));
+      const term = q.replace(/^-/, "").toLowerCase();
+      for (const d of r.items) {
+        if (!unobservable.has(d.id)) continue;
+        // Only a positive term may admit such a row, and only on a literal (or widened) hit.
+        expect(q.startsWith("-"), `${q} admitted ${d.host}`).toBe(false);
+      }
+      expect(r.items.length + r.excludedTotal + r.undeterminedTotal).toBe(r.total);
+      const t = r.textOutcome!;
+      expect(t.matched + t.excluded + t.undetermined).toBe(r.total);
+      if (q.startsWith("-") && term !== "") {
+        // Every uncollected device that the term does not visibly hit is counted undecided.
+        expect(r.undeterminedTotal).toBeGreaterThanOrEqual(fabric.devices.filter((d) => !d.collected && !d.host.toLowerCase().includes(term) && !d.id.toLowerCase().includes(term)).length);
+      }
+    });
+  }
+
+  it('"-ios" specifically: the three topology-only devices are undecided, not admitted', () => {
+    const r = applyToDevices(fabric.devices, parseQuery("-ios"));
+    const admitted = r.items.filter((d) => !d.collected).map((d) => d.host);
+    expect(admitted).toEqual([]);
+    expect(r.undeterminedTotal).toBeGreaterThanOrEqual(3);
   });
 });

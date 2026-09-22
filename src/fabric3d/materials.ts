@@ -24,11 +24,13 @@ import {
   NoColorSpace,
   RGBAFormat,
   RepeatWrapping,
+  SRGBColorSpace,
   ClampToEdgeWrapping,
   UnsignedByteType,
   type Material,
   type Texture,
 } from "three";
+import { agxInverse } from "./env";
 
 /* ── token bridge ──────────────────────────────────────────────────────────── */
 
@@ -67,6 +69,7 @@ const TOKEN_FALLBACK_DARK: Readonly<Record<string, string>> = Object.freeze({
   "--claim-scoped": "#6fb3ef",
   "--claim-indeterminate": "#a99bdc",
   "--claim-out-of-scope": "#61728f",
+  "--link-bridge": "#e879dc",
 });
 
 const TOKEN_FALLBACK_LIGHT: Readonly<Record<string, string>> = Object.freeze({
@@ -96,6 +99,7 @@ const TOKEN_FALLBACK_LIGHT: Readonly<Record<string, string>> = Object.freeze({
   "--claim-scoped": "#275f8c",
   "--claim-indeterminate": "#6b5c99",
   "--claim-out-of-scope": "#7f8899",
+  "--link-bridge": "#9c1f8f",
 });
 
 export type ThemeName = "dark" | "light";
@@ -253,16 +257,89 @@ export interface ProceduralMaps {
   contactFade: DataTexture;
   /** Faint rectilinear grid plus a roughness break-up for the ground plane. */
   groundOrm: DataTexture;
+  /**
+   * The port grille, one tile per port, sRGB albedo multiplied into the bezel colour on UV
+   * channel 1 (geometry/chassis.ts). White where the tile is bar metal, dark in the opening, a
+   * mid-tone contact block inside it. It replaced a grid of sub-pixel bar GEOMETRY that aliased into
+   * glyph-like shapes; the texture's mip chain is what makes the bank minify to a tone instead.
+   */
+  grille: DataTexture;
   dispose(): void;
 }
 
+/** Share of a deck/pad's alpha left when it is seen fully edge-on (see the deck's grazing fade). */
+export const DECK_GRAZE_FLOOR = 0.12;
 const ORM_SIZE = 256;
 const NORMAL_SIZE = 256;
-const HATCH_SIZE = 64;
+/** Height amplitude of the lid's low-frequency panel term — see `heightAt`.
+ *  Halved from 20 (C5 critic, 2026-09-22: lids read as stained). The critic named the AO patina,
+ *  and that was removed, but MEASURED it was not the cause: flat-lid patch std 3.97 -> 4.05 with the
+ *  AO change alone (aoMap only scales indirect light). The blotches were this term's value-noise
+ *  cells lit by the key. At 10 the same patch measures std 2.1 / range 150-165 (was 3.97 / 143-171)
+ *  at both tiers, and the lid still carries a soft light-to-dark drift rather than flat paint. */
+const PANEL_UNDULATION = 10;
+/** Weight of the X-streaked grain in the chassis height field — see `heightAt`. */
+const BODY_STREAK = 0.2;
+const HATCH_SIZE = 128;
+/** Half-width of the hatch stripe's edge ramp, in diagonal texel units (see the hatch generator). */
+const HATCH_RAMP = 2;
+function smooth01(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
 const FADE_SIZE = 128;
 /** Where the contact decal stops being fully opaque, in normalised decal radius. See contactFade. */
 export const CONTACT_PLATEAU = 0.46;
 const GROUND_SIZE = 512;
+/** Texels per port tile. Enough that a port 60 px wide on screen still magnifies cleanly. */
+export const GRILLE_SIZE = 64;
+/** Bar metal as a fraction of the tile, per axis, half on each edge. */
+const GRILLE_BAR_X = 0.26;
+const GRILLE_BAR_Y = 0.24;
+/**
+ * Anisotropy floor for the grille. The bank is seen at grazing angles on every lower-tier chassis,
+ * and anisotropic filtering is nearly free on any GPU that has it; the tier's own value applies
+ * above this floor.
+ */
+export const GRILLE_MIN_ANISOTROPY = 8;
+
+/** The grille tile, in sRGB bytes. Pure, so a test can check the metal corner is exactly white. */
+export function grilleTile(): Uint8Array {
+  const n = GRILLE_SIZE;
+  const out = new Uint8Array(n * n * 4);
+  const bx = (GRILLE_BAR_X / 2) * n;
+  const by = (GRILLE_BAR_Y / 2) * n;
+  for (let y = 0; y < n; y += 1) {
+    for (let x = 0; x < n; x += 1) {
+      const cx = x + 0.5;
+      const cy = y + 0.5;
+      // Distance into the opening from its nearest edge, in texels (negative = on the bar).
+      const ix = Math.min(cx - bx, n - bx - cx);
+      const iy = Math.min(cy - by, n - by - cy);
+      let v: number;
+      if (ix <= 0 || iy <= 0) {
+        // Bar metal: multiplies the bezel colour by exactly 1. The bar's lower lip over each
+        // opening is shaded (texture v runs bottom-up; the key light is above) — the one baked cue
+        // that keeps a flat plate reading as a recess rather than a print.
+        v = iy > -2 && ix > 0 && cy < n / 2 ? 200 : 255;
+      } else {
+        v = 34; // the opening
+        // The shadow the upper bar throws into the opening.
+        if (cy > n - by - 5) v = 22;
+        // The contact block, 60 % x 44 % of the tile, centred, with a lit top edge.
+        const kx = Math.abs(cx - n / 2) <= n * 0.3;
+        const ky = Math.abs(cy - n / 2) <= n * 0.22;
+        if (kx && ky) v = Math.abs(cy - (n / 2 + n * 0.22)) < 1.5 ? 120 : 82;
+      }
+      const i = (y * n + x) * 4;
+      out[i] = v;
+      out[i + 1] = v;
+      out[i + 2] = v;
+      out[i + 3] = 255;
+    }
+  }
+  return out;
+}
 
 /**
  * Roughness is written as a MULTIPLIER in [0.78, 1.0] rather than an absolute value, because
@@ -270,18 +347,50 @@ const GROUND_SIZE = 512;
  * slightly means the product lands inside the authoring band while the surface still varies —
  * which is the whole point. A flat roughness is what makes a render look like plastic.
  */
-export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
+/** The CPU-side bytes of every procedural map. Pure functions of constants, so computed once. */
+interface ProceduralPixels {
+  chassisOrm: Uint8Array;
+  bezelOrm: Uint8Array;
+  normal: Uint8Array;
+  hatch: Uint8Array;
+  fade: Uint8Array;
+  contact: Uint8Array;
+  ground: Uint8Array;
+}
+
+/**
+ * The map bytes, generated one texel ROW per step.
+ *
+ * RESPONSIVENESS FIX, 2026-09-21 (acceptance E5). These loops used to run inside
+ * `buildProceduralMaps`, which `createScene` calls synchronously from the stage's mount effect.
+ * CPU profile of a cold navigation to the path surface on the dev build: createScene 1081 ms, of
+ * which buildProceduralMaps was 811 ms (fbm noise over 256² + 256² + 256² x 4 taps + 512² texels).
+ * That was the single blocking task the E5 sweep attributed to `MessagePort.onmessage` (531 ms
+ * median on the release build) and the bulk of the cold-load frame no keystroke could get through.
+ *
+ * As a generator the same arithmetic, in the same order, produces the same bytes; it can simply be
+ * stopped between rows. `prepareProceduralMaps` runs it against a deadline and yields to the event
+ * loop between slices; `buildProceduralMaps` runs whatever is left synchronously, so a caller that
+ * never prepared (a test, the capture harness) still gets identical maps.
+ */
+function* generateProceduralPixels(): Generator<void, ProceduralPixels, void> {
   const chassisOrm = new Uint8Array(ORM_SIZE * ORM_SIZE * 4);
   for (let y = 0; y < ORM_SIZE; y += 1) {
     for (let x = 0; x < ORM_SIZE; x += 1) {
       const u = (x / ORM_SIZE) * 8;
       const v = (y / ORM_SIZE) * 8;
       const grain = fbm(u * 3, v * 3, 24, 4, 17);
-      const patina = fbm(u, v, 8, 3, 91);
-      // Panel-line darkening: a faint AO gutter every eighth of the texture, where a real chassis
+      /* PATINA IS ROUGHNESS ONLY (C5 critic, 2026-09-22). It used to drive the AO channel too
+         (`ao = 0.82 + 0.18 * patina * seam`), at base period 8 — a low-frequency fbm that painted
+         every lid with blotches reading as stains (flat lid patch L std 6.3, range 116-172 at both
+         tiers). AO is occlusion, and a flat lid occludes nothing, so the channel now carries only the
+         seam gutter. The break-up stays in roughness, at 4x the frequency, where it modulates the
+         highlight instead of the albedo. */
+      const patina = fbm(u * 4, v * 4, 32, 3, 91);
+      // Panel-line darkening: a faint AO gutter every sixth of the texture, where a real chassis
       // has a seam between its top cover and its side panels.
       const seam = Math.min(1, Math.abs(((y / ORM_SIZE) * 6) % 1 - 0.5) * 7);
-      const ao = 0.82 + 0.18 * patina * seam;
+      const ao = 0.86 + 0.14 * seam;
       const rough = 0.78 + 0.22 * (0.65 * grain + 0.35 * patina);
       const i = (y * ORM_SIZE + x) * 4;
       chassisOrm[i] = Math.round(Math.min(1, ao) * 255);
@@ -289,6 +398,7 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       chassisOrm[i + 2] = 255;
       chassisOrm[i + 3] = 255;
     }
+    yield;
   }
 
   const bezelOrm = new Uint8Array(ORM_SIZE * ORM_SIZE * 4);
@@ -306,13 +416,29 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       bezelOrm[i + 2] = 255;
       bezelOrm[i + 3] = 255;
     }
+    yield;
   }
 
   const normal = new Uint8Array(NORMAL_SIZE * NORMAL_SIZE * 4);
   const heightAt = (x: number, y: number): number => {
     const u = (x / NORMAL_SIZE) * 48;
     const v = (y / NORMAL_SIZE) * 48;
-    return 0.6 * fbm(u, v * 0.2, 48, 3, 733) + 0.4 * fbm(u * 0.5, v * 0.5, 24, 4, 127);
+    /* The PANEL term: a broad, low-frequency undulation, 2 cells per tile (~5 across a lid). The
+       two fine terms are grain — at 5 texels a cell they average to one normal at any distance the
+       camera can reach, and the lid measured as flat paint (C5 critic: core1 at maximum dolly, DPR
+       2, lid luma std 0.91; reproduced 2026-09-22 at std 0.90). A sheet-steel lid is never optically
+       flat: its powder coat and pressing put long, soft tilts in it, which the key light turns
+       into a gentle light-to-dark drift across the face. That drift is what reads as a lit
+       surface rather than a fill colour. Amplitude is set in slope, not height: ~3 degrees of tilt
+       after the body's normalScale (halved 2026-09-22, see PANEL_UNDULATION) without making it
+       read as dented. Exercised by the lid probe; not a colour change, so bands and tokens are
+       untouched. */
+    const panel = PANEL_UNDULATION * fbm(u / 24, v / 24, 2, 1, 919);
+    /* The STREAK term (fbm stretched 5:1 along X) is cut from 0.6 to 0.2: MEASURED (independent
+       audit C5, 2026-09-22, deep/z_onebox.png, z_grazing.png) at close range it read as a streaky,
+       wood-grain-like noise across every chassis face. The panel drift above is what makes the lid
+       read as lit; the streaks only made it read as timber. */
+    return BODY_STREAK * fbm(u, v * 0.2, 48, 3, 733) + 0.4 * fbm(u * 0.5, v * 0.5, 24, 4, 127) + panel;
   };
   const BUMP = 1.35;
   for (let y = 0; y < NORMAL_SIZE; y += 1) {
@@ -327,15 +453,29 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       normal[i + 2] = Math.round((1 / len) * 0.5 * 255 + 127.5);
       normal[i + 3] = 255;
     }
+    yield;
   }
 
   const hatch = new Uint8Array(HATCH_SIZE * HATCH_SIZE * 4);
   for (let y = 0; y < HATCH_SIZE; y += 1) {
     for (let x = 0; x < HATCH_SIZE; x += 1) {
       // 45 degrees exactly, so it never aligns with a chassis edge and never reads as geometry.
-      const d = ((x + y) % 16) / 16;
-      const edge = Math.min(Math.abs(d - 0.32), Math.abs(d - 0.0));
-      const a = Math.round(Math.max(0, Math.min(1, d < 0.32 ? 1 - Math.min(1, edge * 14) : 0)) * 255);
+      /* ANTI-ALIASED IN THE TEXTURE. The stripe edge used to fall off over ~1 texel (a 64² map, a
+         16-texel period, `edge * 14`), so the coverage was effectively binary per texel and, when
+         the camera dollies in far enough to MAGNIFY the map, linear filtering between those binary
+         texels drew each 45-degree edge as a staircase — MEASURED (C5 critic, AP-floor1 dollied
+         in, both tiers). Now 128² with the same four stripes per tile (period 32 texels) and a
+         smoothstep ramp ~2.8 texels wide across each edge, so magnified edges interpolate a real
+         gradient; minified, the mip chain averages it as before. `u` is measured along the
+         diagonal, so HATCH_RAMP of 2 is 2 / sqrt 2 texels either side of the edge. */
+      const period = HATCH_SIZE / 4;
+      const duty = period * 0.32;
+      const u = (x + y + 1) % period;
+      let cover = 0;
+      for (const w of [u - period, u, u + period]) {
+        cover = Math.max(cover, smooth01(-HATCH_RAMP, HATCH_RAMP, w) * (1 - smooth01(duty - HATCH_RAMP, duty + HATCH_RAMP, w)));
+      }
+      const a = Math.round(cover * 255);
       const i = (y * HATCH_SIZE + x) * 4;
       // The coverage goes in EVERY channel, green included. three's alphamap_fragment samples
       // `.g`, not `.a` — a mask written only into alpha compiles, binds, renders, and does
@@ -345,6 +485,7 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       hatch[i + 2] = a;
       hatch[i + 3] = a;
     }
+    yield;
   }
 
   const fade = new Uint8Array(FADE_SIZE * FADE_SIZE * 4);
@@ -363,6 +504,7 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       fade[i + 2] = a;
       fade[i + 3] = a;
     }
+    yield;
   }
 
   /* The contact-shadow falloff. See ProceduralMaps.contactFade for why this is not `fade`.
@@ -388,6 +530,7 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       contact[i + 2] = a;
       contact[i + 3] = a;
     }
+    yield;
   }
 
   const ground = new Uint8Array(GROUND_SIZE * GROUND_SIZE * 4);
@@ -407,8 +550,77 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
       ground[i + 2] = 255;
       ground[i + 3] = 255;
     }
+    yield;
   }
 
+  return { chassisOrm, bezelOrm, normal, hatch, fade, contact, ground };
+}
+
+let pixelCache: ProceduralPixels | null = null;
+let pixelJob: Generator<void, ProceduralPixels, void> | null = null;
+let preparing: Promise<void> | null = null;
+
+/**
+ * Advance the shared job by at most `rows` texel rows, or to completion. True when done.
+ *
+ * Sliced by WORK, not by a clock: the same rows in the same order whatever the slice size, so the
+ * bytes are identical to an unsliced run, and there is no clock read here for the determinism gate
+ * to have to take on trust.
+ */
+function stepPixels(rows: number): boolean {
+  if (pixelCache) return true;
+  pixelJob ??= generateProceduralPixels();
+  for (let i = 0; ; i += 1) {
+    const r = pixelJob.next();
+    if (r.done === true) {
+      pixelCache = r.value;
+      pixelJob = null;
+      return true;
+    }
+    if (i + 1 >= rows) return false;
+  }
+}
+
+/** True once the procedural map bytes exist, so a scene can be built without generating them. */
+export function proceduralMapsReady(): boolean {
+  return pixelCache !== null;
+}
+
+/**
+ * Rows per slice. A row is 64-512 texels of fbm noise. CPU profile on the DEV build: the heaviest
+ * rows (the 256-wide normal map, four height taps per texel) cost about 1.3 ms each, so 8 rows keeps
+ * a slice well under the 50 ms task ceiling (design-brief §8.3 rule 1) — a keystroke that lands during
+ * the cold load waits at most one slice.
+ */
+const PREPARE_SLICE_ROWS = 8;
+
+/**
+ * Generate the procedural map bytes off the critical path: PREPARE_SLICE_ROWS rows at a time,
+ * yielding to the event loop between slices. Idempotent; every caller shares one job.
+ *
+ * Yield: `scheduler.yield()` where it exists, which resumes AHEAD of other queued tasks. The
+ * fallback, a Promise-wrapped `setTimeout(..., 0)`, re-queues at the BACK of the task queue and
+ * can be preempted by unrelated tasks — slower to finish, never less responsive. The two are not
+ * equivalent and this note is where that is said (design-brief §8.3 rule 1).
+ */
+export function prepareProceduralMaps(): Promise<void> {
+  if (pixelCache) return Promise.resolve();
+  preparing ??= (async () => {
+    const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+    const yieldNow = (): Promise<void> =>
+      typeof sched?.yield === "function"
+        ? sched.yield()
+        : new Promise<void>((resolve) => {
+            setTimeout(resolve, 0);
+          });
+    while (!stepPixels(PREPARE_SLICE_ROWS)) await yieldNow();
+  })();
+  return preparing;
+}
+
+export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
+  stepPixels(Number.POSITIVE_INFINITY);
+  const { chassisOrm, bezelOrm, normal, hatch, fade, contact, ground } = pixelCache as ProceduralPixels;
   const maps: ProceduralMaps = {
     chassisOrm: makeTexture(ORM_SIZE, chassisOrm, true, anisotropy),
     bezelOrm: makeTexture(ORM_SIZE, bezelOrm, true, anisotropy),
@@ -419,6 +631,15 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
     // Channel 1: the ground and deck geometries carry a tiled second UV set so their surface
     // detail can repeat while UV0 stays 0..1 for the radial alpha fade. One texture, two jobs.
     groundOrm: withChannel(makeTexture(GROUND_SIZE, ground, true, anisotropy), 1),
+    grille: (() => {
+      const t = withChannel(
+        makeTexture(GRILLE_SIZE, grilleTile(), true, Math.max(GRILLE_MIN_ANISOTROPY, anisotropy)),
+        1,
+      );
+      // Unlike every other map here this one IS colour (an albedo multiplier), so it is sRGB.
+      t.colorSpace = SRGBColorSpace;
+      return t;
+    })(),
     dispose(): void {
       for (const t of [
         maps.chassisOrm,
@@ -428,6 +649,7 @@ export function buildProceduralMaps(anisotropy: number): ProceduralMaps {
         maps.radialFade,
         maps.contactFade,
         maps.groundOrm,
+        maps.grille,
       ]) {
         t.dispose();
       }
@@ -464,6 +686,8 @@ varying float vRecede;
 
 const EMPHASIS_FRAG_DECL = `
 varying float vRecede;
+uniform vec3 uRecedeTarget;
+uniform float uRecedeMix;
 `;
 
 /*
@@ -485,16 +709,30 @@ const EMPHASIS_FRAG_APPLY = `
 `;
 
 /**
- * The dim is applied to the FINAL radiance, not to the albedo.
+ * The dim is applied to the FINAL radiance, not to the albedo, and it recedes TOWARD THE STAGE.
  *
  * Dimming `diffuseColor` alone leaves a receded dielectric with its full specular and full
  * image-based reflection, so a chassis that is supposed to be context keeps a bright highlight and
- * goes on competing for attention. Scaling `gl_FragColor` just before the colour-space conversion
- * catches diffuse, specular, environment and emissive in one place. 0.8 leaves 20 % presence at
- * full recession — dim, and unmistakably still there.
+ * goes on competing for attention. Blending `gl_FragColor` just before the colour-space conversion
+ * catches diffuse, specular, environment and emissive in one place.
+ *
+ * It used to MULTIPLY toward black (`*= 1 - r * 0.8`). On the dark stage that is a recession; on
+ * the light stage it is the opposite — a darker chassis on a near-white ground gains contrast and
+ * pulls MORE attention — and in measurement it barely registered (render audit: selecting core1
+ * moved a neighbouring chassis 3 % in luma, a non-neighbour 9-13 % in light). The target is now the
+ * stage as the post chain will display it: `uRecedeTarget` is the AgX pre-image of `--stage-bg`
+ * (env.ts `agxInverse`, set per theme by `retintMaterials`), so recession converges on the
+ * backdrop in both themes. `RECEDE_MIX` < 1 keeps it from ever arriving: the alternate path you can
+ * no longer see is the one you needed.
  */
+/** Per theme: the light target is an HDR pre-image several times brighter than any lit chassis, so
+ *  the same linear blend reads far stronger there. Tuned by measurement, see `retintMaterials`. */
+export const RECEDE_MIX = { dark: 0.85, light: 0.15 } as const;
+/** Shared by every emphasis-patched program; `retintMaterials` writes it per theme. */
+const recedeTarget = { value: new Color(0, 0, 0) };
+const recedeMix = { value: RECEDE_MIX.dark as number };
 const EMPHASIS_FRAG_DIM = `
-gl_FragColor.rgb *= 1.0 - clamp(vRecede, 0.0, 1.0) * 0.8;
+gl_FragColor.rgb = mix(gl_FragColor.rgb, uRecedeTarget, clamp(vRecede, 0.0, 1.0) * uRecedeMix);
 `;
 
 /**
@@ -537,6 +775,8 @@ export function withEmphasis<M extends MeshStandardMaterial>(
 ): M {
   const emissiveFromColor = opts.emissiveFromInstanceColor === true;
   material.onBeforeCompile = (shader) => {
+    shader.uniforms.uRecedeTarget = recedeTarget;
+    shader.uniforms.uRecedeMix = recedeMix;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>${EMPHASIS_VERT_DECL}`)
       .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vRecede = aRecede;");
@@ -553,6 +793,48 @@ export function withEmphasis<M extends MeshStandardMaterial>(
   // Distinguishes the two shader variants in three's program cache. Without this, a material that
   // routes instance colour into emissive could be handed the program compiled for one that does not.
   material.customProgramCacheKey = () => `atlas-emphasis:${emissiveFromColor ? "emissive" : "plain"}`;
+  return material;
+}
+
+/**
+ * Screen pixels per grille tile below which the tile's pattern is faded to its mean tone, and the
+ * width of that fade. See `withGrilleNyquistFade`.
+ */
+export const GRILLE_FADE_PX: readonly [number, number] = [2.5, 5];
+
+/**
+ * Fade the grille map (ports and lid vents, one tile per opening) to its own MEAN tone as a tile
+ * approaches the pixel grid.
+ *
+ * A mip chain alone does not do this. Trilinear filtering picks the level whose texel is about one
+ * pixel, and at that level a 64-texel tile is still a 2-texel light/dark pattern — i.e. a period of
+ * about two pixels, exactly the Nyquist limit — so a vent bank of 16 slots at the overview still
+ * beat against the pixel grid as faint diagonal bars that turned with a 3 px orbit (MEASURED
+ * 2026-09-22 after the vents moved from geometry onto this map: the bars' contrast fell ~4x but
+ * their direction still changed frame to frame at both tiers). So the pattern is blended out by
+ * its screen-space size, from the UV derivatives: full detail above GRILLE_FADE_PX[1] pixels per
+ * tile, the smallest mip (the tile's average) at GRILLE_FADE_PX[0] and below. The constant-UV metal
+ * parts have zero derivatives, so they are never touched.
+ */
+export function withGrilleNyquistFade<M extends MeshStandardMaterial>(material: M): M {
+  const inner = material.onBeforeCompile;
+  const innerKey = material.customProgramCacheKey.bind(material);
+  const [lo, hi] = GRILLE_FADE_PX;
+  material.onBeforeCompile = (shader, renderer) => {
+    inner.call(material, shader, renderer);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <map_fragment>",
+      `#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  float _tileW = max( length( dFdx( vMapUv ) ), length( dFdy( vMapUv ) ) );
+  float _pxPerTile = _tileW > 1e-6 ? 1.0 / _tileW : 1e6;
+  float _grilleFade = 1.0 - smoothstep( ${lo.toFixed(2)}, ${hi.toFixed(2)}, _pxPerTile );
+  sampledDiffuseColor = mix( sampledDiffuseColor, textureLod( map, vMapUv, 12.0 ), _grilleFade );
+  diffuseColor *= sampledDiffuseColor;
+#endif`,
+    );
+  };
+  material.customProgramCacheKey = () => `${innerKey()}|grille-nyquist`;
   return material;
 }
 
@@ -629,9 +911,9 @@ export interface MaterialLibrary {
   /** 45-degree hatch applied to the top face of an uncollected chassis. */
   hatch: MeshBasicMaterial;
   /** Tier deck: a real slab, so a chassis has something to sit on and cast onto. */
-  deck: MeshStandardMaterial;
+  deck: MeshPhysicalMaterial;
   /** The floor under the lowest tier. */
-  ground: MeshStandardMaterial;
+  ground: MeshPhysicalMaterial;
   /** Contact-shadow decal — grounds a chassis even when the shadow map is off. */
   contact: MeshBasicMaterial;
   /** Selection halo disc on the tier plane beneath the selected chassis. */
@@ -668,6 +950,42 @@ export interface MaterialLibraryOptions {
   emissiveIntensity?: number;
 }
 
+/**
+ * The chassis SILHOUETTE EDGE: a thin grazing-angle term that pulls the body's outgoing light toward
+ * the theme's ink, so a chassis separates from the stage by an edge and not only by the top/front
+ * luminance ratio.
+ *
+ * MEASURED (independent audit C5, 2026-09-22): chassis read as matte painted boxes with no rim or
+ * edge highlight; the only form separation was top/front 126.8/93.3 = 1.36 at a grazing angle. The
+ * term is Schlick-shaped (pow 5 of 1 - N·V), so it lives only on the bevel and the faces seen
+ * edge-on, and it is a mix toward a colour rather than an addition of light — a lighten on the dark
+ * stage (ink is pale) and a darken on the light one (ink is dark), i.e. the same contrast direction
+ * as every other body step in `retintMaterials`. It is NOT emissive, so bloom never reads it as
+ * "this element is emitting". The mix is capped at `SILHOUETTE_EDGE_MIX`, so a face is never
+ * repainted; the band colour stays the band colour.
+ */
+export const SILHOUETTE_EDGE_MIX = 0.32;
+const bodyEdge = { value: new Color(0.5, 0.5, 0.5) };
+function withSilhouetteEdge(material: MeshStandardMaterial, colour: { value: Color }): void {
+  const prev = material.onBeforeCompile;
+  const prevKey = material.customProgramCacheKey.bind(material);
+  material.onBeforeCompile = (shader, renderer) => {
+    prev.call(material, shader, renderer);
+    shader.uniforms.uSilhouetteEdge = colour;
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform vec3 uSilhouetteEdge;")
+      .replace(
+        "#include <opaque_fragment>",
+        "{\n" +
+          "  vec3 _vdir = isOrthographic ? vec3( 0.0, 0.0, 1.0 ) : normalize( vViewPosition );\n" +
+          "  float _g = 1.0 - clamp( dot( normalize( normal ), _vdir ), 0.0, 1.0 );\n" +
+          `  outgoingLight = mix( outgoingLight, uSilhouetteEdge, ${SILHOUETTE_EDGE_MIX.toFixed(3)} * _g * _g * _g * _g * _g );\n` +
+          "}\n#include <opaque_fragment>",
+      );
+  };
+  material.customProgramCacheKey = () => `${prevKey()}:silhouette-edge`;
+}
+
 export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
   const { tokens, maps } = opts;
   const emissiveIntensity = opts.emissiveIntensity ?? 4.6;
@@ -698,6 +1016,7 @@ export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
     }),
   );
   body.normalScale.set(0.42, 0.42);
+  withSilhouetteEdge(body, bodyEdge);
 
   const bezel = new MeshPhysicalMaterial({
     name: "chassis-bezel",
@@ -705,6 +1024,9 @@ export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
     metalness: 1,
     roughness: 0.33,
     roughnessMap: maps.bezelOrm,
+    // The port grille, on UV channel 1. Every non-grille bezel part samples its white metal texel
+    // at a constant UV (chassis.ts GRILLE_METAL_UV), so this multiplies the frame by exactly 1.
+    map: maps.grille,
     normalMap: maps.chassisNormal,
     anisotropy: 0.6,
     anisotropyRotation: 0,
@@ -713,6 +1035,7 @@ export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
   });
   bezel.normalScale.set(0.22, 0.22);
   withEmphasis(bezel);
+  withGrilleNyquistFade(bezel);
 
   const dark = withEmphasis(
     new MeshStandardMaterial({
@@ -801,7 +1124,7 @@ export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
    * which stays on. The decks only ever needed to be hidden BY solid things, never to hide things
    * themselves. Verified by A/B at runtime — toggling mipmaps on the fade texture, the other
    * candidate, changed nothing at all. */
-  const deck = new MeshStandardMaterial({
+  const deck = new MeshPhysicalMaterial({
     name: "tier-deck",
     color: mixTokens(stage, tokens.color("--text"), 0.045, new Color()),
     metalness: 0,
@@ -815,8 +1138,25 @@ export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
     opacity: 0.85,
     envMapIntensity: 0.75,
   });
+  /* GRAZING FADE (C5 critic, 2026-09-22). Near the polar clamp (78 degrees) a faded deck or node
+     pad is foreshortened ~5:1, and its radial fade plus the Fresnel rise of its environment term
+     turned each pad — 8 chassis half-widths across — into a horizontal light smear reaching well
+     past the chassis footprint. The surface's job is grounding, and seen edge-on it has almost no
+     projected area to ground anything with, so it steps back as the view grazes: full presence at
+     the working views (|n.v| >= 0.55, i.e. polar <= ~57 degrees), about an eighth at the clamp.
+     MEASURED: at a third the smear was still there (std unchanged); with the surfaces removed
+     entirely it vanished, which is what identified the deck/pad as its source.
+     A property of the SURFACE, so decks and pads — which share this material — get it together. */
+  deck.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <opaque_fragment>",
+      `diffuseColor.a *= mix( ${DECK_GRAZE_FLOOR.toFixed(3)}, 1.0, smoothstep( 0.22, 0.55, abs( dot( normalize( normal ), normalize( vViewPosition ) ) ) ) );
+#include <opaque_fragment>`,
+    );
+  };
+  deck.customProgramCacheKey = () => "atlas-deck-graze";
 
-  const ground = new MeshStandardMaterial({
+  const ground = new MeshPhysicalMaterial({
     name: "ground",
     color: mixTokens(stage, new Color(0, 0, 0), 0.18, new Color()),
     metalness: 0,
@@ -909,6 +1249,58 @@ export function buildMaterials(opts: MaterialLibraryOptions): MaterialLibrary {
  * Re-tint an existing library from a new palette. Used on theme change: rebuilding every material
  * would recompile every shader and drop a visible number of frames, and the geometry has not moved.
  */
+/*
+ * How far the light-theme chassis BODY steps from the stage toward the ink.
+ *
+ * Was 0.8, which killed the band channel in light theme: the body's band tint arrives as a
+ * MULTIPLY on the albedo, and at 0.8 the albedo was ~0.18 linear, so the diffuse term that carries
+ * the tint was small next to the untinted environment specular on the lid. Measured (real GPU,
+ * light, DPR 2, review audit `_ra_theme`): core1 (Critical) top face 167,163,167 and core2 (Good)
+ * 148,152,152 — both neutral grey, while FabricLegend still promised "chassis colour — health
+ * band". The body now sits at mid-grey, where the diffuse term dominates and the band hue survives,
+ * and the chassis still separates from the near-white stage by a wide luminance margin. The
+ * measured before/after lives with the render-audit notes in scene.ts (`BODY_BAND_TINT`).
+ */
+export const LIGHT_BODY_STEP = 0.55;
+
+/*
+ * Dark-theme deck/pad lift and opacity. Was 0.06 at 0.85: lit by the key and the environment, that
+ * deck rendered 3-10x the stage's luminance directly under each chassis (render audit: podacc2 69
+ * vs stage 14, access11 47 vs 12), so hardware sat on a pale glow — a spotlight, not a surface —
+ * and the contact decal was darkening a halo rather than grounding anything.
+ */
+export const DARK_DECK_STEP = 0.01;
+export const DARK_DECK_OPACITY = 0.6;
+export const DARK_GROUND_ENV = 0.15;
+/*
+ * The dark-theme glow's real source. Ablation (dark, real GPU): darkening the deck and floor
+ * ALBEDO to the stage colour and cutting their environment reflection changed nothing visible;
+ * hiding the floor removed the broad pool and hiding the decks/pads removed the halos. What is left
+ * when albedo is near zero is the KEY light's GGX lobe: at this camera's grazing angle Fresnel lifts
+ * a rough dielectric's direct specular far above its diffuse term, painting a pale sheen under
+ * every node. The ground planes are therefore MeshPhysicalMaterial so their specular can be scaled.
+ */
+export const DARK_GROUND_SPECULAR = 0.15;
+/*
+ * Light-theme contact decal. Was 0.42: measured under a focused chassis (light, real GPU) the decal
+ * darkened its surround by only ~11 of 255 levels (226 against a 237 pad), so nothing read as
+ * resting ON the surface. 0.6 is where the base darkening is visible without reading as a hole.
+ */
+export const LIGHT_CONTACT_OPACITY = 0.6;
+/*
+ * Light-theme uncollected-chassis ("ghost") shell. Was tint 0.72 at opacity 0.4: measured (real GPU,
+ * light, high, 1920x1080) the fill of the three never-collected chassis rendered 1.82-2.08:1 against
+ * the ground 8 px outside them — the legend's "collection: topology only" state, drawn under the
+ * 3:1 bar a state indicator needs (acceptance D4). The outline and the "?" label carried it; the
+ * fill did not. The shell stays translucent (cables behind it still read through it) but is now
+ * dense and hue-saturated enough to be an indicator on its own. Re-measure with the fill probe
+ * whenever this moves: it is a contrast claim, not a taste.
+ */
+export const LIGHT_GHOST_DEEPEN = 0.4;
+export const LIGHT_GHOST_OPACITY = 0.92;
+/** Light-theme floor opacity; see `retintMaterials`. */
+export const LIGHT_FLOOR_OPACITY = 0.2;
+
 export function retintMaterials(lib: MaterialLibrary, tokens: TokenPalette): void {
   const stage = tokens.color("--stage-bg");
   const light = tokens.theme === "light";
@@ -920,21 +1312,51 @@ export function retintMaterials(lib: MaterialLibrary, tokens: TokenPalette): voi
    * its backdrop. The light theme is not the dark theme inverted (acceptance C4), and this is one
    * of the places where treating it as one produces a visibly worse result.
    */
-  mixTokens(stage, tokens.color("--text"), light ? 0.8 : 0.3, lib.body.color);
+  mixTokens(stage, tokens.color("--text"), light ? LIGHT_BODY_STEP : 0.3, lib.body.color);
+  /* The silhouette edge's target: most of the way to the ink, in the linear buffer the body is lit
+     in. See withSilhouetteEdge. */
+  mixTokens(stage, tokens.color("--text"), light ? 0.95 : 0.85, bodyEdge.value);
   mixTokens(stage, tokens.color("--text"), light ? 0.86 : 0.4, lib.bezel.color);
   mixTokens(stage, tokens.color("--text"), light ? 0.7 : 0.5, lib.rail.color);
-  mixTokens(stage, tokens.color("--claim-indeterminate"), light ? 0.72 : 0.45, lib.ghost.color);
+  if (light) {
+    // The indeterminate hue, deepened toward the ink so the lit, translucent shell still lands
+    // under the ground by 3:1. See LIGHT_GHOST_DEEPEN.
+    mixTokens(tokens.color("--claim-indeterminate"), tokens.color("--text"), LIGHT_GHOST_DEEPEN, lib.ghost.color);
+  } else {
+    mixTokens(stage, tokens.color("--claim-indeterminate"), 0.45, lib.ghost.color);
+  }
   // A ghost on a near-white stage at 22 % is invisible, and an invisible "we never reached this
   // device" is the absence-as-health failure in its purest form. The light theme therefore both
   // pushes the tint further toward the indeterminate hue and raises the opacity.
-  lib.ghost.opacity = light ? 0.4 : 0.22;
-  lib.hatch.color.copy(tokens.color("--claim-indeterminate"));
+  lib.ghost.opacity = light ? LIGHT_GHOST_OPACITY : 0.22;
+  // On light the shell is itself the indeterminate hue now, so the hatch deepens further toward
+  // the ink: the same pattern, still legible on the shell, and it adds to the fill's contrast
+  // rather than lifting it (a pale hatch measured the fill back down to 2.4-2.8:1).
+  if (light) mixTokens(tokens.color("--claim-indeterminate"), tokens.color("--text"), 0.65, lib.hatch.color);
+  else lib.hatch.color.copy(tokens.color("--claim-indeterminate"));
   // The deck steps AWAY from the stage in whichever direction the theme leaves room: a step toward
   // the ink is a lift on a near-black stage and a darkening on a near-white one. A fixed step would
   // be invisible in one theme and, on light, would push a dielectric past the albedo ceiling.
-  const deckStep = tokens.theme === "dark" ? 0.06 : 0.2;
+  const deckStep = tokens.theme === "dark" ? DARK_DECK_STEP : 0.2;
   mixTokens(stage, tokens.color("--text"), deckStep, lib.deck.color);
-  mixTokens(stage, new Color(0, 0, 0), tokens.theme === "dark" ? 0.18 : 0.3, lib.ground.color);
+  lib.deck.opacity = light ? 0.85 : DARK_DECK_OPACITY;
+  /* The floor. On dark it is darkened toward black as before. On light it is NOT darkened and is
+     faded right back: lit at any albedo a dielectric can have, a floor on the light stage renders
+     BELOW the page's near-white backdrop, and its radial alpha fade then paints a dark disc under
+     the empty middle of the fabric — a shadow with nothing casting it (render audit, light, both
+     tiers identical: luma 238 at the frame edge falling to 191 under the fabric's centre). */
+  // 0.12 on light, not 0: the stage itself (0.944 sRGB) is over the dielectric albedo ceiling (0.9).
+  mixTokens(stage, new Color(0, 0, 0), light ? 0.12 : 0.18, lib.ground.color);
+  lib.ground.opacity = light ? LIGHT_FLOOR_OPACITY : 1;
+  /* Environment specular on the two ground planes. On dark it was the glow: a dielectric's
+     environment reflection is ADDITIVE and independent of albedo, and at this camera's grazing
+     angle Fresnel lifts it well past the diffuse term, so darkening the deck albedo alone changed
+     almost nothing (ablation, dark, real GPU: hiding floor, decks and pads one at a time left a
+     pale haze under every node until the reflection itself was cut). */
+  lib.deck.envMapIntensity = light ? 0.75 : DARK_GROUND_ENV;
+  lib.ground.envMapIntensity = light ? 0.6 : DARK_GROUND_ENV;
+  lib.deck.specularIntensity = light ? 1 : DARK_GROUND_SPECULAR;
+  lib.ground.specularIntensity = light ? 1 : DARK_GROUND_SPECULAR;
   lib.halo.color.copy(tokens.color("--accent"));
   lib.hoverShell.color.copy(tokens.color("--text"));
   // Light theme: a black contact decal on a near-white ground is too heavy; a dark grey at lower
@@ -950,7 +1372,7 @@ export function retintMaterials(lib: MaterialLibrary, tokens: TokenPalette): voi
      0.52 is a ~20 % trough on a deck that is already near black; 0.85 starts reading as a painted
      black pool rather than as contact. 0.70 is the value where the chassis stops floating and the
      deck is still a deck. */
-  lib.contact.opacity = light ? 0.42 : 0.7;
+  lib.contact.opacity = light ? LIGHT_CONTACT_OPACITY : 0.7;
   /*
    * The state ring changes MECHANISM between themes, not just value.
    *
@@ -967,6 +1389,9 @@ export function retintMaterials(lib: MaterialLibrary, tokens: TokenPalette): voi
     LinearSRGBColorSpace,
   );
   lib.stateRim.emissiveIntensity = light ? 0.16 : 0.55;
+  const [tr, tg, tb] = agxInverse([stage.r, stage.g, stage.b]);
+  recedeTarget.value.setRGB(tr, tg, tb, LinearSRGBColorSpace);
+  recedeMix.value = RECEDE_MIX[light ? "light" : "dark"];
   for (const m of lib.all()) m.needsUpdate = true;
 }
 

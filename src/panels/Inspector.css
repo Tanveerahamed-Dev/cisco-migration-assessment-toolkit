@@ -74,7 +74,7 @@
   color: var(--text-faint);
   font-family: var(--font-ui);
   font-size: var(--fs-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   margin-inline-end: var(--sp-1);
 }
@@ -156,7 +156,7 @@
   background-position: bottom center, bottom center;
   background-size:
     100% var(--sp-5),
-    100% var(--sp-5);
+    100% var(--scroll-scrim-edge, var(--sp-1));
   background-repeat: no-repeat, no-repeat;
   background-attachment: local, scroll;
 }
@@ -244,7 +244,6 @@
   font-weight: var(--fw-medium);
   letter-spacing: var(--ls-0);
   font-family: var(--font-mono);
-  overflow-wrap: anywhere;
 }
 
 .insp-kv__val {
@@ -256,7 +255,6 @@
   gap: var(--sp-1);
   color: var(--text);
   font-size: var(--fs-2);
-  overflow-wrap: anywhere;
 }
 
 .insp-kv__val--mono,
@@ -266,6 +264,9 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* UNBREAKABLE-TOKEN CONTAINER (see "wrapping" in src/ui/primitives.css). A sha256 is 64 hex digits
+   with no `_ . / -` boundary, so it has no legal break point and is longer than the column; the
+   last-resort `anywhere` is the only alternative to painting it past the pane. */
 .insp-sha {
   font-family: var(--font-mono);
   font-size: var(--fs-1);
@@ -351,7 +352,6 @@
   font-size: var(--fs-1);
   font-variant-numeric: tabular-nums;
   color: var(--text);
-  overflow-wrap: anywhere;
 }
 
 /* ── reconciliation table ──────────────────────────────────────────────────── */
@@ -610,4 +610,19 @@
   .inspector__broken {
     border-inline-start-color: CanvasText;
   }
+}
+
+/* This model's evaluability verdict beside the collector's flag on an ACL line record. */
+.insp-kv__model {
+  flex-basis: 100%;
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-0);
+  line-height: var(--lh-2);
+  color: var(--text-muted);
+}
+
+.insp-kv__model[data-model-evaluable="false"] {
+  padding-inline-start: var(--sp-2);
+  border-inline-start: 3px solid var(--claim-indeterminate);
+  color: var(--text);
 }

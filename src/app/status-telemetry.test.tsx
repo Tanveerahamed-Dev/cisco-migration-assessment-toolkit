@@ -88,6 +88,7 @@ function reading(over: Partial<SceneStatsEx> = {}): SceneStatsEx {
     programsLinked: 43,
     programsTotal: 43,
     warmupTimedOut: false,
+    frameRateBelowBar: false,
     /* Non-zero: this fixture is a SETTLED reading, and `framesTimed: 0` would mean `fps` and
        `frameMs` above are placeholders rather than measurements (scene.ts). */
     framesTimed: 1800,

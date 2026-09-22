@@ -38,6 +38,34 @@
   border: 0;
 }
 
+/* ══ wrapping: prose and identifiers ═══════════════════════════════════════
+   ONE OWNER for where text may break (acceptance C2, 2026-09-22). There are two kinds of inline
+   text in this product and they break by different rules:
+
+   PROSE breaks at spaces. `overflow-wrap: anywhere` on a prose-bearing block is how a sentence
+   carrying an identifier printed "(num_power_supplie / s)": `anywhere` licenses a break between ANY
+   two characters, and it is INHERITED, so a block set it once for its longest token and every
+   identifier inside the sentence inherited a licence to split between two letters. No prose block
+   sets it any more.
+
+   IDENTIFIERS (code, cite and config tokens: `num_power_supplies`, `acls.core1.PROTECT_SERVERS[3]`,
+   `10.0.10.50`) break only at a `_ . / -` boundary, or not at all. `overflow-wrap: normal` IS that
+   rule in CSS: the UAX #14 break opportunities inside such a token are after `-` and `/`; `_` and
+   `.` between letters give none, so the token moves to the next line whole. Declared here on the
+   elements that carry identifiers (the <code>/<kbd>/<samp> elements, and every `*mono*` class, the
+   monospace face being this design system's mark for a machine token), so an identifier cannot
+   inherit `anywhere` from whatever block it sits in.
+
+   The one exception is an UNBREAKABLE-TOKEN CONTAINER: a box that holds a single token longer than
+   its column with no boundary a reader could accept (a sha256), where the only alternative to a
+   last-resort break is painting past the pane. Such a container may set `overflow-wrap: anywhere`,
+   and every one that does says so in a comment next to it. `review/capture.mjs text` reports any
+   break with a letter or digit on both sides as `mid-identifier` (or `mid-word`). */
+:where(code, kbd, samp, [class*="mono"]) {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 /* ══ not observed ══════════════════════════════════════════════════════════
    THE most important treatment in the system. Four channels carry it: the --unobserved ink, a
    DASHED edge (no other chip in this app is dashed), a 45-degree HATCH fill, and the literal
@@ -59,6 +87,16 @@
   font-weight: var(--fw-medium);
   white-space: nowrap;
   vertical-align: baseline;
+  /* THE PARTS WRAP AS WHOLE PIECES, never squeeze (acceptance C2, 2026-09-22). With a reason and a
+     citation beside the words, this box is three flex items in one row, and inside a narrow value
+     column (the path trace's DECIDED BY, a device fact) each one shrank to its minimum: the reason
+     broke mid-word ("collecte / d for") and the citation wrapped into a two-character column
+     ("co / ll / ec / ti / on"). The box now wraps its parts onto new lines and gives each part a
+     floor (below), so a part that cannot keep a readable measure beside the others moves under
+     them instead. One rule here, for every surface that says "not observed". */
+  flex-wrap: wrap;
+  row-gap: 0;
+  max-inline-size: 100%;
 }
 
 .ui-notobs__glyph {
@@ -67,6 +105,8 @@
 }
 
 .ui-notobs__why {
+  flex: 1 1 16ch;
+  min-inline-size: min(16ch, 100%);
   color: var(--text-muted);
   font-weight: var(--fw-regular);
   white-space: normal;
@@ -138,11 +178,30 @@
   background: var(--surface-2);
 }
 
+/* Primary, IN A PANEL: an ink outline, not a fill. The brief spends the accent on "the primary
+   action in a dialog", and nowhere else a button can appear. A filled accent block in a working
+   panel — the Evidence empty state's "Open the highest-priority finding", a trace form's submit —
+   was the most saturated shape on the screen, louder than the Critical badges it points at. The
+   primary is still the heaviest button in its group (full-ink edge and semibold word against the
+   secondary's grey edge), without spending chroma that belongs to severity. */
 .ui-btn[data-variant="primary"] {
+  border-color: var(--text);
+  background: var(--bg);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+.ui-btn[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+/* In a dialog the primary action is the accent fill, exactly as the brief allows: a modal holds
+   the whole of the reader's attention, so the one thing to press there may be the loudest. */
+:is(.ui-dialog, [role="dialog"]) .ui-btn[data-variant="primary"] {
+  border-color: transparent;
   background: var(--accent);
   color: var(--accent-text);
 }
-.ui-btn[data-variant="primary"]:hover:not(:disabled) {
+:is(.ui-dialog, [role="dialog"]) .ui-btn[data-variant="primary"]:hover:not(:disabled) {
   background: color-mix(in oklab, var(--accent) 88%, var(--text));
 }
 
@@ -177,8 +236,15 @@
    `min-height` keeps a chip with no interactive part 24px tall; it is not what makes the button
    inside one 24px tall, and reading it as though it were is how the remove control shipped at
    24.0 x 22.0 px. */
+/* A chip is a TOKEN: in a row of them it does not shrink (acceptance C2, 2026-09-22 — at 390px
+   the scope bar squeezed "device dist1" and "severity Critical" into six-character columns of two
+   lines each). It keeps its own width up to the width of its row, and only a token longer than the
+   whole row wraps. A row of chips that no longer fits is the row's to scroll, not the chips' to
+   crush. */
 .ui-chip {
   display: inline-flex;
+  flex-shrink: 0;
+  max-inline-size: 100%;
   align-items: stretch;
   min-height: var(--target-min);
   border: 1px solid var(--border);
@@ -233,14 +299,14 @@ button.ui-chip__body:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* A 24x24 target around a 10px glyph: the hit area is grown with padding, never by shrinking
+  /* A 24x24 target around an 11px glyph (the floor for anything interactive): the hit area is grown with padding, never by shrinking
      the target (WCAG 2.5.8). The block axis is set with `.ui-chip__body` above. */
   min-width: var(--target-min);
   border: 0;
   border-left: 1px solid var(--border);
   background: none;
   color: var(--text-muted);
-  font-size: 0.625rem;
+  font-size: var(--fs-0);
   cursor: pointer;
 }
 .ui-chip__remove:hover {
@@ -384,18 +450,20 @@ button.ui-chip__body:hover {
 
 /* ══ form controls ════════════════════════════════════════════════════════ */
 
+/* No `min-width: 0` here: a field's minimum is its control's. A text input is compressible (its
+   min-content is 0 at `width: 100%`), so this changes nothing for one; a select's minimum is its
+   chosen label (see `.ui-select`), and a field that could shrink below it only moved the cut. */
 .ui-field {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  min-width: 0;
 }
 
 .ui-label {
   color: var(--text-muted);
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
 }
 
@@ -454,15 +522,26 @@ button.ui-chip__body:hover {
   border-color: var(--sev-critical);
 }
 
+/* A SELECT NEVER PAINTS A CUT LABEL (acceptance C2, 2026-09-22). The chosen option is painted by
+   the control, not laid out as text, and a `width: 100%; min-width: 0` select inside a shrinking
+   flex row cut the priority queue's ORDER to "Ranked: severity, th". The control is now sized from
+   its CHOSEN option (`field-sizing: content`; where unsupported, from its widest option, which is
+   never smaller) and fills any extra room by flexing, not by a percentage width, so its minimum is
+   its label. The row that holds it must therefore let it wrap to its own line rather than squeeze
+   it — see `.pq-controls`. */
 .ui-select {
   position: relative;
   display: flex;
-  min-width: 0;
+  max-inline-size: 100%;
 }
 
 .ui-select__el {
   appearance: none;
   padding-right: var(--sp-5);
+  field-sizing: content;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: auto;
 }
 
 .ui-select__chev {
@@ -533,16 +612,24 @@ button.ui-chip__body:hover {
 
 /* ══ tabs ═════════════════════════════════════════════════════════════════ */
 
+/* A tab strip that does not fit WRAPS onto a second row; it never hides a tab.
+ *
+ * It used to scroll with its scrollbar suppressed (`scrollbar-width: none`), which made an
+ * overflowing strip look complete: measured 2026-09-22 (acceptance C2) the device pane's strip had
+ * scrollWidth 427 against clientWidth 379 at 1440 px, and its Raw tab sat at x1440-1488, past the
+ * pane edge, with nothing on screen saying there was more. Every tab strip in the product renders
+ * this primitive, so the rule is fixed here, once, rather than on the one strip that was caught.
+ * `overflow-x: auto` stays only as the backstop for a single tab wider than the whole strip, and
+ * its scrollbar is left VISIBLE so that case still has an affordance. `review/capture.mjs` fails a
+ * frame on any tablist that overflows with no visible affordance. */
 .ui-tabs {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 0;
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
-  scrollbar-width: none;
-}
-.ui-tabs::-webkit-scrollbar {
-  height: 0;
+  scrollbar-width: thin;
 }
 
 .ui-tab {
@@ -689,7 +776,7 @@ button.ui-chip__body:hover {
   z-index: var(--z-popover);
   min-width: 14rem;
   max-width: min(28rem, 92vw);
-  max-height: 70vh;
+  max-height: min(70vh, var(--pop-maxh, 70vh));
   overflow: auto;
   margin-top: var(--sp-1);
   padding: var(--sp-2);
@@ -946,7 +1033,13 @@ button.ui-chip__body:hover {
   line-height: 1;
   letter-spacing: var(--ls-0);
   cursor: pointer;
-  max-width: 28ch;
+  /* A citation takes the width its container has and never less than a readable measure: the
+     floor is what stops a flex parent squeezing it into a two-character column (C2). It used to be
+     capped at 28ch with an ellipsis, which is how "open devices.core1 in the inspector" became
+     "open devices.core1 in t…". */
+  max-inline-size: 100%;
+  min-inline-size: min(14ch, 100%);
+  text-align: start;
 }
 
 .ui-cite:hover {
@@ -961,10 +1054,24 @@ button.ui-chip__body:hover {
   flex: none;
 }
 
+/* A CITATION PATH IS EVIDENCE: it WRAPS rather than truncating, on every surface. An ellipsised
+   `acls.core1.PROTECT_SERV…` is not a citation anyone can check. This rule used to live only in
+   PathTrace.css (scoped to `.pathtrace`), so every other surface — the device pane's source line,
+   the claim card, the coverage table — kept the ellipsis (acceptance C2, 2026-09-22: the rule
+   applied on one surface only). It is owned here now, by the primitive every surface renders.
+   `anywhere` because a dotted path has no spaces to break at; the floor on `.ui-cite` above keeps
+   that from ever becoming a column of two characters.
+   UNBREAKABLE-TOKEN CONTAINER (see "wrapping" at the top of this file): a citation path is one
+   token that can be longer than its column, and CSS gives it no break opportunity at `.` or `_`,
+   so `anywhere` is the last resort that keeps it inside the pane. It is only half of the rule:
+   the preferred breaks at `.`/`_` need a <wbr> after each separator, emitted by `Cite` in
+   primitives.tsx — until then a path longer than its column can still split between letters, and
+   the text check says so (`mid-identifier`). */
 .ui-cite__path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-inline-size: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: var(--lh-0);
 }
 
 /* Forced colours: the hatch and the token fills are replaced by the system palette, so the SHAPE

@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
-import { counterexample, traceFlow } from "../forwarding/engine";
+import { counterexample, isDefiniteDelivery, traceFlow } from "../forwarding/engine";
 import { ClaimCard, IntentClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import {
@@ -99,6 +99,7 @@ const flow = (srcIp: string, dstIp: string, protocol: Flow["protocol"], dstPort:
 const DENIED = flow("10.0.10.50", "10.0.30.10", "tcp", 3389);
 const INDETERMINATE = flow("10.0.10.50", "10.0.30.10", "icmp", null);
 const UNMODELLED = flow("10.0.40.50", "10.0.30.10", "tcp", 443);
+const DROPPED_OFF_FABRIC = flow("10.0.20.50", "198.51.100.7", "tcp", 443);
 
 const text = (el: Element | null): string => (el?.textContent ?? "").replace(/\s+/g, " ");
 
@@ -124,7 +125,9 @@ describe("HopList — a denied flow", () => {
     const body = text(container);
     expect(body).toContain("core1");
     expect(body).toContain("PROTECT_SERVERS");
-    expect(body).toContain("line 3");
+    // 1-based with the list length; the 0-based index survives only in the citation (A3).
+    expect(body).toContain("PROTECT_SERVERS line 4 of 4");
+    expect(body).toContain("acls.core1.PROTECT_SERVERS[3]");
     // The literal line, verbatim — not a paraphrase of it.
     expect(container.querySelector(".hop__raw")?.textContent).toBe("deny ip any any");
   });
@@ -184,6 +187,101 @@ describe("HopList — a hop on a host with no RIB", () => {
   });
 });
 
+/* ══ A2: a MODEL gap is never reported as a COLLECTION gap ═════════════════ */
+
+describe("HopList — an undecided hop on a host whose RIB WAS collected", () => {
+  /* The critic's real flow. core1 has a collected RIB; the route (0.0.0.0/0 via 10.0.10.254) was
+     decided, and the hop is undecided only because INET_RETURN line 0 ("established") cannot be
+     evaluated. It used to read "not modelled — nothing was collected here to decide an egress
+     from", with no EGRESS row, beside the very route that was decided. */
+  const INTERNET = flow("10.0.10.50", "8.8.8.8", "tcp", 443);
+  const trace = traceFlow(INTERNET);
+
+  it("rests on the data it claims to", () => {
+    const hop = trace.hops[0]!;
+    expect(hop.host).toBe("core1");
+    expect(hop.verdict).toBe("unmodeled");
+    expect(hop.nextHop).toBe("10.0.10.254");
+    expect(hop.decidedBy?.cite).toBe("acls.core1.INET_RETURN[0]");
+  });
+
+  it("renders EGRESS and NEXT from the matched route and names the unevaluable ACL line", () => {
+    const { container } = mount(<HopList trace={trace} activeIndex={0} onSelect={() => {}} />);
+    const facts = [...container.querySelectorAll(".hop__fact")].map((f) => text(f));
+    const body = text(container);
+    expect(body).not.toContain("nothing was collected");
+    expect(facts.some((f) => /^Egress/.test(f))).toBe(true);
+    expect(facts.find((f) => /^Next/.test(f)) ?? "").toContain("10.0.10.254");
+    expect(body).toContain("ACL INET_RETURN line 1 of 3 on core1 cannot be evaluated for this flow");
+    // A2: the static default names only a next hop; the egress is resolved through the RIB and cited.
+    expect(facts.find((f) => /^Egress/.test(f)) ?? "").toMatch(
+      /Vlan10.*resolved: next hop 10\.0\.10\.254 lies in connected 10\.0\.10\.0\/24.*routes\.core1\[2\]/,
+    );
+    expect(container.querySelector(".verdict__word")?.textContent).toBe("undecided");
+    // Still UNDETERMINED: the new wording is not a softer verdict.
+    expect(container.querySelector(".hop")?.getAttribute("data-band")).toBe("UNDETERMINED");
+  });
+
+  it("does the same for the connected-route case, with no next hop invented", () => {
+    const icmp = traceFlow(INDETERMINATE);
+    const { container } = mount(<HopList trace={icmp} activeIndex={0} onSelect={() => {}} />);
+    const facts = [...container.querySelectorAll(".hop__fact")].map((f) => text(f));
+    expect(text(container)).not.toContain("nothing was collected");
+    expect(facts.find((f) => /^Egress/.test(f)) ?? "").toContain("Vlan30");
+    expect(facts.find((f) => /^Next/.test(f)) ?? "").toContain("directly connected");
+  });
+
+  it("keeps the collection-gap wording for a host with NO RIB, and claims no routes were beaten there", () => {
+    const { container } = mount(<HopList trace={traceFlow(UNMODELLED)} activeIndex={0} onSelect={() => {}} />);
+    const noRib = [...container.querySelectorAll(".hop")].find((h) => h.getAttribute("data-verdict") === "unmodeled")!;
+    expect(text(noRib)).toContain("no routing table was collected");
+    expect(text(noRib)).not.toContain("nothing was beaten");
+    expect(noRib.querySelector(".hop__why-none")).toBeNull();
+  });
+});
+
+/* ══ A3: the reader lands ON the answer ═════════════════════════════════════ */
+
+describe("PathTrace — a new result is scrolled into view", () => {
+  it("scrolls its own scroller to the blocking hop after a trace runs", async () => {
+    /* jsdom has no layout, so the geometry is stubbed: the scroller is the panel, and every
+       element reports a top of 3000 px except the scroller itself. What is asserted is that the
+       panel MOVED its own scroller to the blocking hop card — not the page. */
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+    const hopTop = 3000;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const top = this.classList.contains("pt-panel") ? 100 : this.classList.contains("hop") ? hopTop : 500;
+      return { top, bottom: top + 10, left: 0, right: 10, width: 10, height: 10, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+    };
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 5000 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 400 });
+    const style = document.createElement("style");
+    style.textContent = ".pt-panel { overflow-y: auto; }";
+    document.head.appendChild(style);
+    try {
+      const { container } = mount(<PathTrace />);
+      const panel = container.querySelector<HTMLElement>(".pt-panel")!;
+      expect(panel.scrollTop).toBe(0);
+      act(() => useInvestigation.getState().setFlow(DENIED));
+      const hop = container.querySelector('.hop[data-verdict="denied"]');
+      expect(hop).not.toBeNull();
+      /* A result that ARRIVED (here: a store write, as a restored link makes) lands after the next
+         paint, not in the pre-paint task that mounted it — acceptance E5, see PathTrace.tsx. The
+         panel's own answer is already drawn; the scroll follows one frame later. */
+      expect(panel.scrollTop).toBe(0);
+      await settleCommit();
+      expect(panel.scrollTop).toBe(hopTop - 100 - 8);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect;
+      if (sh) Object.defineProperty(HTMLElement.prototype, "scrollHeight", sh);
+      if (ch) Object.defineProperty(HTMLElement.prototype, "clientHeight", ch);
+      style.remove();
+    }
+  });
+});
+
 /* ══ hop selection drives the shared investigation state ══════════════════ */
 
 describe("HopList — selection", () => {
@@ -238,35 +336,24 @@ describe("ClaimCard", () => {
     expect(text(container)).toContain("not a fault in the run");
   });
 
-  it("offers the counterexample for a denied flow and can run it", () => {
-    const trace = traceFlow(DENIED);
+  it("offers no counterexample against a router-originated flow, and none for the core2 drop", () => {
+    /* REVERSED 2026-09-22 (auditor, B2). This test ran the affordance on tcp 10.0.20.2 -> 10.0.10.50:22,
+       a "decided" denial that existed only because the engine applied core1 Vlan20's INBOUND list to
+       a packet core1 itself originates. That flow is now refused, so nothing is offered against it.
+       The affordance itself ("Trace this flow instead", "Not established", the reason carried when
+       nothing is found) is exercised on a decided host-sourced denial in decided-surfaces.counterfactual.test.tsx. */
+    const trace = traceFlow(flow("10.0.20.2", "10.0.10.50", "tcp", 22));
+    expect(trace.hops).toEqual([]);
     const ce = counterexample(trace.flow, trace);
-    expect(ce.found).toBe(true);
-    const ran: Flow[] = [];
-    const { container } = mount(
-      <ClaimCard trace={trace} counterexample={ce} onRunFlow={(f) => ran.push(f)} />,
-    );
-    const btn = [...container.querySelectorAll("button")].find((b) =>
-      (b.textContent ?? "").includes("Trace this flow instead"),
-    );
-    expect(btn).toBeDefined();
-    click(btn!);
-    expect(ran.length).toBe(1);
-    expect(ran[0]?.dstPort).not.toBe(trace.flow.dstPort);
-    // The two-part contract: what was shown, and what was NOT shown by it.
-    expect(text(container)).toContain("Not established");
-  });
-
-  it("keeps the counterexample affordance when there is nothing to offer, carrying the reason", () => {
-    const trace = traceFlow(DENIED);
-    const { container } = mount(
-      <ClaimCard
-        trace={trace}
-        counterexample={{ found: false, reason: "None of the 3 nearby variations traced as delivered." }}
-      />,
-    );
-    expect(text(container)).toContain("None of the 3 nearby variations");
-    expect(text(container)).toContain("Counterexample");
+    expect(ce.found).toBe(false);
+    const { container } = mount(<ClaimCard trace={trace} counterexample={ce} onRunFlow={() => {}} />);
+    expect([...container.querySelectorAll("button")].some((b) => (b.textContent ?? "").includes("Trace this flow instead"))).toBe(false);
+    expect(container.querySelector(".claim")?.getAttribute("data-band")).toBe("UNDETERMINED");
+    // And the core2 drop is never answered with a core2 delivery: core2 has no collected ACL.
+    const off = traceFlow(DROPPED_OFF_FABRIC);
+    const offCe = counterexample(off.flow, off);
+    expect(offCe.found).toBe(false);
+    if (!offCe.found) expect(offCe.reason).toMatch(/nearby variations derived from the evidence at core2/);
   });
 });
 
@@ -309,9 +396,14 @@ describe("PathTrace — running a flow", () => {
     expect(active?.getAttribute("aria-invalid")).toBe("true");
   });
 
-  it("traces the flow the store carries, so a shared link reproduces the result", () => {
+  it("traces the flow the store carries, so a shared link reproduces the result", async () => {
     const { container } = mount(<PathTrace />);
     act(() => useInvestigation.getState().setFlow(DENIED));
+    /* The panel answers from local state at once; the store write that re-aims the other surfaces
+       lands after the next paint (acceptance E5 — a cold restore used to do it before the first). */
+    expect(text(container)).toContain("PROTECT_SERVERS");
+    expect(useInvestigation.getState().trace).toBeNull();
+    await settleCommit();
     const state = useInvestigation.getState();
     expect(state.trace?.outcome).toBe("denied");
     expect(text(container)).toContain("PROTECT_SERVERS");
@@ -463,15 +555,41 @@ describe("intentCatalog", () => {
 });
 
 describe("runIntentSearch", () => {
+  it("states no routing counterfactual it never evaluated, and names the ingress it assumed", () => {
+    /* Critic B2, 2026-09-21: "a route added later would end this result without any change to an
+       ACL" was false — under the alternate FHRP ingress (core1) the same flows are all DENIED. */
+    const verdicts = catalog.map((i) => runIntentSearch(i));
+    /* UPDATED 2026-09-21 (critic B1 blocker). The only shipped intent whose consistent flows all
+       "stopped for want of a route" was VLAN 20 → 10.0.30.0/24, and every one of those 60 drops sat on
+       core2's collected table — which the snapshot itself shows to be incomplete (OSPF/BGP/EIGRP
+       not_collected, a 240-prefix EVPN peer). Those drops are now UNDECIDED, so no shipped verdict
+       reaches the "for want of a route" collateral and the rule below is asserted wherever it fires.
+       What must hold instead on the real data: the drops are counted undecided, for that reason. */
+    const vlan20 = verdicts.find((v) => v.intent.id === "no-reach-10_0_20_0_24-10_0_30_0_24")!;
+    expect(vlan20.outcome).not.toBe("no-counterexample-found");
+    expect(vlan20.undecided).toBe(vlan20.searched);
+    expect(vlan20.undecidedReasons.some((r) => /collected routing table is itself incomplete/.test(r.reason))).toBe(true);
+    for (const v of verdicts) {
+      for (const c of v.collateral) {
+        expect(c).not.toMatch(/would end this result|would survive a routing change/);
+        if (/for want of a route/.test(c)) expect(c).toMatch(/as ingress — chosen from point-in-time FHRP\/SVI evidence/);
+      }
+    }
+  });
+
   it("THE regression: a result with no counterexample always carries the unmodelled-hosts sentence", () => {
     const withoutRib = fabric.devices.length - fabric.coverage.hostsWithRoutes;
     expect(withoutRib).toBeGreaterThan(0);
 
-    const clean = catalog.map((i) => runIntentSearch(i)).filter((v) => v.outcome === "no-counterexample-found");
-    // The path must be exercised by the real data, or this test proves nothing.
-    expect(clean.length).toBeGreaterThan(0);
+    /* UPDATED 2026-09-21 (critic B1 blocker): the one "clean" verdict the shipped data produced was a
+       false proof over core2's incomplete routing table, and is now undecided — so no shipped intent
+       returns no-counterexample-found. The sentence is mandatory for EVERY outcome (see
+       finishIntentSearch), so it is asserted on every verdict: a stronger test than the clean subset,
+       and one the real data exercises. */
+    const all = catalog.map((i) => runIntentSearch(i));
+    expect(all.length).toBeGreaterThan(0);
 
-    for (const v of clean) {
+    for (const v of all) {
       expect(v.unmodelledSentence).not.toBeNull();
       expect(v.unmodelledSentence).toContain(String(withoutRib));
       expect(v.unmodelledSentence).toContain("could violate this intent");
@@ -482,13 +600,12 @@ describe("runIntentSearch", () => {
   });
 
   it("renders that sentence, not just computes it", () => {
-    const verdict = catalog
-      .map((i) => runIntentSearch(i))
-      .find((v) => v.outcome === "no-counterexample-found");
-    expect(verdict).toBeDefined();
-    const { container } = mount(<IntentClaimCard verdict={verdict!} />);
+    // Any verdict: the sentence is unconditional (see the test above for why no shipped one is clean).
+    const verdict = runIntentSearch(catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24")!);
+    const { container } = mount(<IntentClaimCard verdict={verdict} />);
     const body = text(container);
-    expect(body).toContain("No counterexample was found");
+    expect(body).not.toContain("No counterexample was found");
+    expect(body).toContain("could not be decided");
     expect(body).toContain("could violate this intent");
     // The sentence is not tucked inside a collapsed region.
     const el = [...container.querySelectorAll("p")].find((p) =>
@@ -497,11 +614,74 @@ describe("runIntentSearch", () => {
     expect(el?.closest("[hidden]")).toBeNull();
   });
 
+  /* Since 2026-09-21 no SHIPPED intent has a decided counterexample: every contradiction the catalog
+     used to report rested on a denial by a list whose `ip access-group` binding was never collected
+     (see contradicts()). So the affordance is exercised on a real catalog intent with its polarity
+     flipped: "no flow from VLAN 20 reaches 10.0.30.0/24" holds because core2 has no route, and
+     "every flow does" is contradicted by exactly those drops — decided, cited, real engine output. */
+  const flipped = (): Intent => {
+    const base = catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24")!;
+    return { ...base, id: `${base.id}-flipped`, kind: "all-reach", claim: "Every flow from VLAN 20 reaches 10.0.30.0/24." };
+  };
+
+  /* REAL intents that reach the two verdicts the shipped catalogue no longer reaches (critic F2,
+     2026-09-22: the counterexample loop below ran 0 times, and the "no-counterexample-found" guard
+     ran only where it was inert). Their source is core1's own Vlan30 SVI address, read from the
+     snapshot's l3_forwarding record — not a fabricated trace. From there the engine returns DECIDED
+     deliveries to VLAN 20 (the connected-route path has no undecided input), so:
+       - "no flow from the SVI reaches VLAN 20" is refuted by decided counterexamples;
+       - "every flow from the SVI reaches VLAN 20" holds with nothing undecided;
+       - "every flow from the SVI reaches VLAN 10" has decided passes AND undecided flows — the case
+         the undecided-is-not-consistent rule actually bites on. */
+  const sviIntents = (): { refuted: Intent; held: Intent; mixed: Intent } => {
+    const l3 = fabric.l3.find((r) => r.host === "core1" && r.sviIp?.split(" ")[0] === "10.0.30.1");
+    if (l3 === undefined) throw new Error("the snapshot no longer records core1's Vlan30 SVI at 10.0.30.1");
+    const svi = { ip: "10.0.30.1", provenance: "observed" as const, cite: l3.cite, note: "core1's own Vlan30 SVI address" };
+    const v20 = catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24")!;
+    const v10 = catalog.find((i) => i.id === "no-reach-10_0_10_0_24-10_0_30_0_24")!;
+    const from = (base: Intent, kind: Intent["kind"], id: string, claim: string): Intent => ({
+      ...base,
+      id,
+      kind,
+      claim,
+      sources: [svi],
+      destinations: base.sources,
+      sourceSpace: base.destSpace,
+      destSpace: base.sourceSpace,
+    });
+    return {
+      refuted: from(v20, "none-reach", "svi-none-reach-vlan20", "No flow from core1's Vlan30 SVI reaches 10.0.20.0/24."),
+      held: from(v20, "all-reach", "svi-all-reach-vlan20", "Every flow from core1's Vlan30 SVI reaches 10.0.20.0/24."),
+      mixed: from(v10, "all-reach", "svi-all-reach-vlan10", "Every flow from core1's Vlan30 SVI reaches 10.0.10.0/24."),
+    };
+  };
+
+  it("counts no heuristic-list denial as a decided contradiction", () => {
+    /* REGRESSION: reach-gateway-10_0_10_0_24 reported COUNTEREXAMPLE FOUND with 12 decided
+       contradictions, all resting on acls.core1.INET_RETURN[2] — a list chosen by the specificity
+       rule, with no collected binding, whose line the scope block listed as undecidable. */
+    const v = runIntentSearch(catalog.find((i) => i.id === "reach-gateway-10_0_10_0_24")!);
+    expect(v.outcome).not.toBe("counterexample-found");
+    expect(v.decidedReasons.filter((r) => r.cite.startsWith("acls."))).toEqual([]);
+    expect(v.undecided).toBeGreaterThan(0);
+  });
+
   it("finds a counterexample where one exists and makes it runnable", () => {
-    const verdicts = catalog.map((i) => runIntentSearch(i));
-    const found = verdicts.find((v) => v.outcome === "counterexample-found");
-    expect(found).toBeDefined();
-    const first = found!.counterexamples[0]!;
+    /* UPDATED 2026-09-21 (critic B1 blocker). The flipped intent's "decided" contradictions were the
+       core2 no-route drops, which rest on a routing table the snapshot shows to be incomplete; they
+       are now undecided, and no shipped or flipped intent has a DECIDED counterexample. The engine
+       side of that is pinned in "never offers a counterexample the engine itself says it cannot
+       decide" below. This test is about the AFFORDANCE, so when the data offers no decided
+       counterexample it is exercised on a real verdict carrying a real engine trace — stated, not
+       hidden. */
+    const verdicts = [...catalog, flipped()].map((i) => runIntentSearch(i));
+    const base = verdicts.find((v) => v.outcome === "counterexample-found") ?? verdicts[0]!;
+    const real = traceFlow({ srcIp: "10.0.20.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null });
+    const found =
+      base.outcome === "counterexample-found"
+        ? base
+        : { ...base, outcome: "counterexample-found" as const, counterexamples: [{ flow: real.flow, trace: real }] };
+    const first = found.counterexamples[0]!;
     expect(traceFlow(first.flow).outcome).toBe(first.trace.outcome);
 
     const ran: Flow[] = [];
@@ -513,13 +693,72 @@ describe("runIntentSearch", () => {
     expect(ran[0]).toEqual(first.flow);
   });
 
+  it("never offers a counterexample the engine itself says it cannot decide", () => {
+    /* REGRESSION. "No flow from VLAN 10 reaches 10.0.30.0/24" used to report counterexample-found
+       with 24 counterexamples, all 24 of them deliveries whose own caveat read "at best
+       indeterminate, never a definite permit" — a refutation built on undecided evidence.
+       UPDATED 2026-09-22 (auditor, B1 + B2): on this snapshot NO intent has a counterexample — the
+       SVI intents that supplied decided ones were sourced by core1's own address. The loop still
+       checks whatever is offered; the non-vacuous run with decided counterexamples is in decided-surfaces.counterfactual.test.tsx. */
+    for (const i of [...catalog, flipped(), sviIntents().refuted]) {
+      const v = runIntentSearch(i);
+      for (const c of v.counterexamples) {
+        expect(c.trace.caveats.some((x) => /never a definite permit/.test(x)), JSON.stringify(c.flow)).toBe(false);
+        if (c.trace.outcome === "delivered") expect(isDefiniteDelivery(c.trace)).toBe(true);
+      }
+    }
+    const vlan10 = runIntentSearch(catalog[0]!);
+    expect(vlan10.counterexamples.filter((c) => c.trace.outcome === "delivered")).toEqual([]);
+    // Every undecided row says why — none is a bare "core1 permits/denies".
+    for (const r of vlan10.undecidedReasons) expect(r.reason, r.cite).toMatch(/— but |not decided|refused|not modelled|itself/);
+  });
+
+  it("an intent sourced by a router's own address is never decided (the auditor's crafted intent)", () => {
+    /* 2026-09-22 auditor (B2): none-reach from 10.0.20.2 (core1's Vlan20 address) to 10.0.10.50 over
+       udp/53 + tcp/443 returned "no-counterexample-found" with "2 of 2 decided: 2 denied (decided)" —
+       both denials were core1 Vlan20's INBOUND list applied to traffic core1 itself originates. */
+    const l3 = fabric.l3.find((r) => r.host === "core1" && r.sviIp?.split(" ")[0] === "10.0.20.2");
+    if (l3 === undefined) throw new Error("the snapshot no longer records core1's Vlan20 SVI at 10.0.20.2");
+    const base = catalog.find((i) => i.kind === "none-reach")!;
+    const crafted: Intent = {
+      ...base,
+      id: "auditor-crafted-none-reach",
+      claim: "No flow from 10.0.20.2 reaches 10.0.10.50.",
+      sources: [{ ip: "10.0.20.2", provenance: "observed", cite: l3.cite, note: "core1's own Vlan20 address" }],
+      destinations: [{ ip: "10.0.10.50", provenance: "derived", cite: l3.cite, note: "a host in VLAN 10" }],
+      services: [
+        { protocol: "udp", dstPort: 53, label: "udp/53", cite: l3.cite },
+        { protocol: "tcp", dstPort: 443, label: "tcp/443", cite: l3.cite },
+      ],
+    };
+    const v = runIntentSearch(crafted);
+    expect(v.searched).toBe(2);
+    expect(v.outcome).not.toBe("no-counterexample-found");
+    expect(v.counterexamples).toEqual([]);
+    expect(v.undecided).toBe(v.searched);
+    for (const i of Object.values(sviIntents())) {
+      const r = runIntentSearch(i);
+      expect(r.outcome, i.id).toBe("indeterminate");
+      expect(r.undecided, i.id).toBe(r.searched);
+    }
+  });
+
   it("never counts an undecided flow as consistent with the intent", () => {
-    for (const i of catalog) {
+    /* Each guard that CAN run on this snapshot is counted and required to have run. The clean
+       ("no-counterexample-found") and passes-beside-undecided branches ran only on the SVI intents,
+       which were router-originated (auditor, B2, 2026-09-22); they run on a host source in decided-surfaces.counterfactual.test.tsx. */
+    const ran = { undecidedNoCounter: 0 };
+    for (const i of [...catalog, ...Object.values(sviIntents())]) {
       const v = runIntentSearch(i);
       expect(v.satisfying + v.counterexamples.length + v.undecided).toBe(v.searched);
-      if (v.undecided > 0 && v.counterexamples.length === 0) expect(v.outcome).toBe("indeterminate");
-      if (v.outcome === "no-counterexample-found") expect(v.undecided).toBe(0);
+      if (v.undecided > 0 && v.counterexamples.length === 0) {
+        ran.undecidedNoCounter += 1;
+        expect(v.outcome, i.id).toBe("indeterminate");
+      }
+      if (v.outcome === "no-counterexample-found") expect(v.undecided, i.id).toBe(0);
+      if (v.satisfying > 0 && v.undecided > 0) expect(v.outcome, i.id).not.toBe("no-counterexample-found");
     }
+    expect(ran.undecidedNoCounter).toBeGreaterThan(0);
   });
 
   it("reports an indeterminate space with a count and a reason for every undecided flow", () => {
@@ -926,7 +1165,7 @@ describe("PathTrace — the chunk loop under a multi-chunk search", () => {
 /* ══ a hop selection re-aims the other surfaces (acceptance A4) ═════════════ */
 
 describe("PathTrace — selecting a hop re-aims the investigation", () => {
-  it("selects the hop's own host, so the device pane and evidence rail follow it", () => {
+  it("selects the hop's own host, so the device pane and evidence rail follow it", async () => {
     /* The store's `selectHop` writes `hopIndex` and nothing else. A4 names the hop as one of the
        four selections that must re-aim the others, and it did not: with device access13 selected
        and the denied trace open, clicking "Hop 1 of 1: core1 denied" left the device pane showing
@@ -935,6 +1174,7 @@ describe("PathTrace — selecting a hop re-aims the investigation", () => {
        is what the device pane, the evidence rail and the fabric all read. */
     const { container } = mount(<PathTrace />);
     act(() => useInvestigation.getState().setFlow(DENIED));
+    await settleCommit(); // the restored trace reaches the store after the next paint (E5)
 
     // Point every other surface somewhere else first, so "it followed the hop" is a real change
     // and not the state it already happened to hold.

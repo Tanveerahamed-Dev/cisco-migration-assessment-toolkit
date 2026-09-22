@@ -222,7 +222,10 @@ describe("the two published numbers this file owns", () => {
        render loop still compared against the flat ceiling. Comments stripped so the prose above
        cannot satisfy it. */
     const scene = code("scene.ts");
-    expect(scene).toContain("frameDrawCallBudget = drawCallBudgetFor(activeOutlines())");
+    // Budgeted on the outline passes that RUN this frame (a deselect, or a rebuilt chain, runs one
+    // with an empty selection), never on fewer than the live selections.
+    expect(scene).toContain("frameDrawCallBudget = drawCallBudgetFor(Math.max(activeOutlines(), outlinesThisFrame))");
+    expect(scene).toContain("const outlinesThisFrame = post.outlinesUpdatingNextRender();");
     expect(scene).toContain("renderer.info.render.calls > frameDrawCallBudget");
     expect(scene).not.toMatch(/renderer\.info\.render\.calls\s*>\s*DRAW_CALL_BUDGET\b/);
   });

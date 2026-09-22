@@ -260,6 +260,15 @@ const FRAME_TIMING_OWNERS = new Map<string, readonly string[]>([
   ["fps", ["fabric3d/scene.ts", "fabric3d/contract.ts", "fabric3d/telemetry.ts"]],
   ["frameMs", ["fabric3d/scene.ts", "fabric3d/contract.ts", "fabric3d/telemetry.ts"]],
   ["worstFrameMs", ["fabric3d/scene.ts", "fabric3d/contract.ts", "fabric3d/telemetry.ts"]],
+  /* NOT a number, but the same class (critic F6, 2026-09-22): a value DERIVED from rAF frame times.
+     `frameRateBelowBar` is the E4 bar's boolean (stepdown.ts createFrameRateBar, fed per frame in
+     scene.ts) and StatusBar drew it on the permanent chrome as "below frame-rate bar" while this map
+     named only the numbers. `quality` is the tier the step-down rule picks from the same clock, and
+     `qualityReasons` the sentence that carries the measurement. Words derived from a clock are a
+     clock heading for the DOM exactly as digits are. */
+  ["frameRateBelowBar", ["fabric3d/stepdown.ts", "fabric3d/scene.ts", "fabric3d/telemetry.ts"]],
+  ["quality", ["fabric3d/scene.ts", "fabric3d/quality.ts", "fabric3d/stepdown.ts", "fabric3d/contract.ts", "fabric3d/telemetry.ts"]],
+  ["qualityReasons", ["fabric3d/scene.ts", "fabric3d/quality.ts", "fabric3d/stepdown.ts", "fabric3d/contract.ts", "fabric3d/telemetry.ts"]],
 ]);
 
 export interface FrameTimingRead {
@@ -487,6 +496,15 @@ describe("the detector is live — proven by running IT, not a copy of it", () =
     expect(frameTiming("app/StatusBar.tsx", statusLine).map((h) => [h.read, h.justified])).toEqual([
       ["stats.fps", false],
     ]);
+
+    /* The clock-derived WORDS are the same class (critic F6, 2026-09-22): the E4 bar's flag and the
+       step-down tier on the status line, flagged at StatusBar and exempt only at their owners. */
+    const barLine = 'return stats.frameRateBelowBar === true ? "below frame-rate bar" : null;';
+    expect(frameTiming("app/StatusBar.tsx", barLine).map((h) => [h.read, h.justified])).toEqual([
+      ["stats.frameRateBelowBar", false],
+    ]);
+    expect(frameTiming("fabric3d/stepdown.ts", barLine)).toEqual([]);
+    expect(frameTiming("app/StatusBar.tsx", "const t = `tier ${stats.quality}`;").map((h) => h.read)).toEqual(["stats.quality"]);
 
     // Destructuring is the same read wearing different clothes.
     expect(frameTiming("app/X.tsx", "const { fps, frameMs } = stats;").map((h) => h.read)).toEqual([

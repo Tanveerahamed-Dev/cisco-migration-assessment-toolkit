@@ -40,9 +40,13 @@ import {
   routesOf,
   severityRank,
 } from "../core/data";
+import { presentBand, unassessedScoringDomains } from "../core/band-qualification";
 import { aclUndecidability } from "../core/acl-coverage";
-import { T9_disagreement } from "../core/claims";
+import { ribIncompleteness } from "../forwarding/rib-completeness";
+import { placeholderZero } from "../core/placeholders";
+import { notApplicableReason, T9_disagreement } from "../core/claims";
 import { failureImpact, linkFailureImpact } from "../analysis/blast";
+import { cableCountPhrase, disputeSentence, disputesOf, hostCableAccount } from "../analysis/port-claims";
 import { useInvestigation, type EvidenceTab } from "../core/store";
 import type {
   AclLine,
@@ -65,6 +69,36 @@ import { SEVERITY_ORDER } from "../core/types";
  */
 type PhysExtra = { lateCollisions?: number | null; riskUnobserved?: string | null };
 const physExtra = (p: PhysicalHealth | null | undefined): PhysExtra => (p ?? {}) as PhysExtra;
+
+/** True when the row carries at least one MEASUREMENT a risk grade could rest on: an observed port
+ *  status, or any observed error/drop counter. */
+export function physHasMeasurement(p: PhysicalHealth): boolean {
+  const status = typeof p.status === "string" && p.status.trim() !== "" && p.status.trim().toLowerCase() !== "unknown";
+  const counters = [p.inputErrors, p.crcErrors, p.outputErrors, p.outputDrops, physExtra(p).lateCollisions ?? null];
+  return status || counters.some((n) => typeof n === "number" && Number.isFinite(n));
+}
+
+/**
+ * Why a physical-health row's risk and severity are NOT a result, or null when they are.
+ *
+ * Two routes to "not assessed", one predicate. The producer's own "[NOT OBSERVED] … L1 error rate
+ * NOT assessed" marker, where it wrote one; and — whatever the producer's risk string says — a row
+ * with no observed status and no observed counter. The guard used to key only on the marker, so 19
+ * rows on core1/core2 with every measurement empty rendered the producer's default "ok" and an
+ * "Info" grade as a healthy port (2026-09-22 critic, B1 blocker): a verdict over zero observations.
+ * Keyed on the measurement fields themselves, not on a list of ports or on the marker's presence.
+ */
+export function physUnassessedReason(p: PhysicalHealth | null | undefined): string | null {
+  if (p == null) return null;
+  const marker = physExtra(p).riskUnobserved;
+  if (!p.risk && typeof marker === "string" && marker.trim() !== "") return marker;
+  if (physHasMeasurement(p)) return null;
+  const stamped = [p.risk ? `risk "${p.risk}"` : null, p.severity ? `severity "${p.severity}"` : null].filter(Boolean).join(" and ");
+  return (
+    "no port status and no error or drop counter was observed for this port, so its L1 error rate was not assessed" +
+    (stamped === "" ? "." : ` — the producer stamped ${stamped} over no measurements, which is not a result.`)
+  );
+}
 import {
   Band,
   Chip,
@@ -79,8 +113,8 @@ import {
   TabPanel,
   orNotObserved,
   type TabItem,
-  type Tone,
 } from "../ui/primitives";
+import { IconNotObserved } from "../ui/icons";
 import "./DevicePane.css";
 
 /* ══ the citation channel ══════════════════════════════════════════════════
@@ -120,13 +154,33 @@ const SEVERITY_SET = new Set<string>(SEVERITY_ORDER);
 export const asSeverity = (s: string | null | undefined): Severity | null =>
   typeof s === "string" && SEVERITY_SET.has(s) ? (s as Severity) : null;
 
-const BAND_TONE: Readonly<Record<string, Tone>> = {
-  Excellent: "up",
-  Good: "up",
-  Fair: "high",
-  Poor: "high",
-  Critical: "critical",
-};
+/**
+ * The severity of a row whose producer ALSO says the row was not assessed.
+ *
+ * The collector grades every physical_health row — including the 73 whose risk reads "[NOT
+ * OBSERVED] - no 'show interfaces' counters … L1 error rate NOT assessed" — as "Info", the same
+ * chip a port assessed as clean earns. Rendered through, that grade sat beside "risk flag: not
+ * observed" and read as a mild result (2026-09-21 critic, B1). A grade is only shown for a row that
+ * was assessed; a row carrying the producer's own unassessed marker renders "not graded", with the
+ * producer's reason, whatever grade it was stamped with. Keyed on the unobserved-risk field the
+ * compiler emits, not on a list of ports or the literal grade. Applied to physical rows, where the
+ * marker says the row's ONE assessment (the L1 error rate) was not made; an L3 row's marker names
+ * only object tracking, so its grade is left as stamped.
+ */
+function GradedSeverity({ severity, unassessed }: { severity: string | null | undefined; unassessed: string | null | undefined }): ReactElement {
+  if (typeof unassessed === "string" && unassessed.trim() !== "") {
+    return (
+      <span className="ui-notobs ui-notobs--compact" data-unobserved="true" data-ungraded="" title={unassessed}>
+        <IconNotObserved className="ui-notobs__glyph" />
+        <span className="visually-hidden">severity: </span>
+        <span className="ui-notobs__text">not graded</span>
+        <span className="visually-hidden">{` — not assessed. Reason: ${unassessed}${severity ? ` The producer stamped "${severity}", which is not a result for a row it did not assess.` : ""}`}</span>
+      </span>
+    );
+  }
+  const sev = asSeverity(severity);
+  return sev ? <SeverityBadge severity={sev} compact /> : <NotObserved what="severity" compact />;
+}
 
 /** `interfacesOf`/`physicalByHost` flatten "no records" and "host never collected" into an empty
  *  array. The difference decides whether an empty table means zero or means unknown, so the
@@ -135,6 +189,10 @@ const hasInterfaceRecords = (host: string): boolean =>
   Object.prototype.hasOwnProperty.call(fabric.interfaces, host);
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+
+/* The band-qualification rule and `unassessedScoringDomains` live in ONE owner every band surface
+   reads (core/band-qualification.ts); re-exported here for the callers that import it from the pane. */
+export { unassessedScoringDomains };
 
 /* ══ key/value rows ════════════════════════════════════════════════════════ */
 
@@ -395,24 +453,69 @@ function UncollectedBanner({ device, onOpenCite }: { device: Device; onOpenCite:
  * Computed from `fabric.devices`, never hardcoded (SSOT Law 1): the note disappears by itself the
  * day the collector starts reporting real counts.
  */
-const fleetConstant = (pick: (d: Device) => number | null): number | null => {
-  const vals = new Set(fabric.devices.filter((d) => d.inventoried).map(pick));
-  const only = [...vals];
-  return vals.size === 1 && typeof only[0] === "number" ? only[0] : null;
-};
-const PSU_CONSTANT = fleetConstant((d) => d.powerSupplies);
-const MODULES_CONSTANT = fleetConstant((d) => d.modules);
-const INVENTORIED = fabric.devices.filter((d) => d.inventoried).length;
+/* STRUCTURAL, not a named list (2026-09-22 critic, B1). The detector used to run over power
+   supplies and modules only, so data_quality — 1 on all 23 inventoried devices — printed as a
+   clean top score beside fields the same pane calls not observed. It now runs over EVERY numeric
+   field the producer carries; `order` is excluded because it is this app's own layout index, not a
+   producer measurement. A field joins the map only when every inventoried device reports the same
+   number, so the map empties itself the day the collector reports real per-device values. */
+const NOT_PRODUCER_FIELDS: ReadonlySet<string> = new Set(["order"]);
+const INVENTORIED_DEVICES = fabric.devices.filter((d) => d.inventoried);
+const INVENTORIED = INVENTORIED_DEVICES.length;
+export const FLEET_CONSTANTS: ReadonlyMap<string, number> = (() => {
+  const out = new Map<string, number>();
+  if (INVENTORIED < 2) return out;
+  const keys = new Set<string>();
+  for (const d of INVENTORIED_DEVICES) for (const k of Object.keys(d)) keys.add(k);
+  for (const k of keys) {
+    if (NOT_PRODUCER_FIELDS.has(k)) continue;
+    const vals = INVENTORIED_DEVICES.map((d) => (d as unknown as Record<string, unknown>)[k]);
+    if (!vals.every((v) => typeof v === "number" && Number.isFinite(v))) continue;
+    if (new Set(vals).size === 1) out.set(k, vals[0] as number);
+  }
+  return out;
+})();
+const fleetConstant = (deviceField: keyof Device): number | null => FLEET_CONSTANTS.get(deviceField) ?? null;
+const PSU_CONSTANT = fleetConstant("powerSupplies");
+const MODULES_CONSTANT = fleetConstant("modules");
 
-function FleetConstant({ n, constant, field, what }: { n: number; constant: number | null; field: string; what: string }): ReactElement {
+function FleetConstant({ n, constant, field, what, device, deviceField }: { n: number; constant: number | null; field: string; what: string; device?: Device; deviceField?: string }): ReactElement {
+  /* A zero every inventoried device reports is a likely ABSENCE, and is rendered through the
+     not-observed path — the same owner (core/placeholders.ts) the Inspector's field table reads. It
+     used to print the digit 0 first and qualify it after, which still displays a measurement. */
+  const ph = device !== undefined && deviceField !== undefined ? placeholderZero(device, deviceField) : null;
+  if (ph !== null) return <NotObserved what={what} why={`${ph.reason} (${field})`} />;
   if (constant === null || n !== constant) return <>{String(n)}</>;
   return (
     <>
       {String(n)}{" "}
       <span className="dp-quiet">
         — the snapshot reports {String(constant)} {what} for all {INVENTORIED} inventoried devices
-        {constant === 0 ? ", so this field is very likely uncollected rather than counted" : ", so it is a fleet-wide constant rather than a per-device measurement"} (
+        {constant === 0 ? ", so this field is very likely uncollected rather than counted" : ", so it does not distinguish one device from another here"} (
         <span className="dp-mono">{field}</span>)
+      </span>
+    </>
+  );
+}
+
+/**
+ * The producer's `data_quality` with its scale and meaning (engine: analyze.py compute_data_quality):
+ * the FRACTION, 0 to 1, of the essential show-command set whose output file was present and
+ * non-empty. It measures capture presence, not what was parsed from it, so a 1 here sits beside
+ * software version or uptime shown as not observed without contradicting them — and must never be
+ * read as "this device's record is complete" (2026-09-22 critic, B1).
+ */
+function DataQuality({ n }: { n: number }): ReactElement {
+  return (
+    <>
+      {String(n)}{" "}
+      <span className="dp-quiet">
+        on a 0–1 scale (<span className="dp-mono">data_quality</span>): the share of the producer&rsquo;s essential
+        show commands whose output was captured. It measures capture presence, not parse yield, so it does not
+        vouch for any field shown as not observed on this device
+        {fleetConstant("dataQuality") === n
+          ? `. All ${INVENTORIED} inventoried devices report ${n}, so it does not distinguish one device from another here.`
+          : "."}
       </span>
     </>
   );
@@ -446,14 +549,14 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
     { k: "Uptime", v: orNotObserved(device.uptime, (s) => s, { what: "uptime", compact: true }) },
     {
       k: "Power supplies",
-      v: orNotObserved(device.powerSupplies, (n) => <FleetConstant n={n} constant={PSU_CONSTANT} field="num_power_supplies" what="power supplies" />, {
+      v: orNotObserved(device.powerSupplies, (n) => <FleetConstant n={n} constant={PSU_CONSTANT} field="num_power_supplies" what="power supplies" device={device} deviceField="powerSupplies" />, {
         what: "power supplies",
         compact: true,
       }),
     },
     {
       k: "Modules",
-      v: orNotObserved(device.modules, (n) => <FleetConstant n={n} constant={MODULES_CONSTANT} field="num_modules" what="modules" />, {
+      v: orNotObserved(device.modules, (n) => <FleetConstant n={n} constant={MODULES_CONSTANT} field="num_modules" what="modules" device={device} deviceField="modules" />, {
         what: "modules",
         compact: true,
       }),
@@ -473,7 +576,9 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
           <NotObserved what="badges" why="the device was never reached" compact />
         ),
     },
-    { k: "Cables", v: `${plural(links.length, "link")} in the cable map` },
+    /* Routed through the same one-port-one-cable detector the link pane uses: AP-floor1 appears on
+       17 cable records whose shared port Gi0 lets at most one of them be real. */
+    { k: "Cables", v: cableCountPhrase(hostCableAccount(device.host, links)) },
   ];
   return (
     <Section title="Identity" note={<>Source record <span className="dp-mono">{device.cite}</span></>}>
@@ -520,7 +625,15 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
   const maxPts = priced.reduce((a, d) => Math.max(a, d.points ?? 0), 0);
   const unpriced = parsed.length - priced.length;
 
-  const tone: Tone = device.band ? (BAND_TONE[device.band] ?? "neutral") : "neutral";
+  /* A score is a sum of deductions, and a domain that was never assessed on this device could not
+     deduct. So a high band on a device whose protocols, routing table or ACLs were never collected
+     partly measures the ABSENCE of evidence: podacc1 read "90 Excellent" in the healthy tone beside
+     "Its routing and switching protocols were not assessed here" (2026-09-22 auditor, B1). The
+     unassessed domains are named next to the band, read from the same per-host coverage owners the
+     sections below use, and a favourable band is drawn in the neutral tone while any of them is
+     unassessed — an unfavourable band is left as is, because its deductions were observed. */
+  const presentation = presentBand(device);
+  const { unassessed, qualified, tone } = presentation;
 
   return (
     <Section title="Health">
@@ -534,12 +647,26 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
             v: (
               <>
                 <Meter label="Health score" value={device.score} max={100} tone={tone} />
-                <Band band={device.band} cite={device.cite} onOpenCite={onOpenCite} />
+                <Band band={presentation} cite={device.cite} onOpenCite={onOpenCite} {...(qualified ? { className: "dp-band--partial" } : {})} />
+                {unassessed.length > 0 ? (
+                  <span className="dp-score-gap" data-score-unassessed={unassessed.length}>
+                    {`score does not reflect: ${unassessed.join(", ")} — never assessed on ${device.host}, so nothing there could deduct`}
+                  </span>
+                ) : null}
               </>
             ),
           },
-          { k: "Criticality", v: orNotObserved(device.criticality, (n) => String(n), { what: "criticality", compact: true }) },
-          { k: "Data quality", v: orNotObserved(device.dataQuality, (n) => String(n), { what: "data quality", compact: true }) },
+          {
+            k: "Criticality",
+            v: orNotObserved(device.criticality, (n) => <FleetConstant n={n} constant={fleetConstant("criticality")} field="criticality" what="criticality" />, {
+              what: "criticality",
+              compact: true,
+            }),
+          },
+          {
+            k: "Data quality",
+            v: orNotObserved(device.dataQuality, (n) => <DataQuality n={n} />, { what: "data quality", compact: true }),
+          },
         ]}
         onOpenCite={onOpenCite}
       />
@@ -620,6 +747,41 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
   const theirs = device.impact;
   const eps = ours.strandedEndpoints;
 
+  /* The snapshot's FHRP / backup counts, checked against this device's OWN L3 records. core2's
+     failure_impact read "FHRP covered 0 / Backed up 0" while its Routing tab showed it HSRP Standby
+     on VLAN 10 and Active on VLAN 20 — a zero the pane's own evidence contradicts, drawn as a
+     measurement (2026-09-21 critic, B1). The source value is still shown verbatim; the
+     contradiction is stated beside it, the way the score arithmetic is. */
+  const impactChecks = useMemo(() => {
+    const l3 = l3ByHost.get(device.host) ?? [];
+    const withFhrp = l3.filter((r) => r.fhrp !== null);
+    const fhrpVlans = [...new Set(withFhrp.map((r) => (r.vlan === null ? "(unnumbered)" : String(r.vlan))))];
+    /* A backup gateway is another host holding the same virtual address — read from the L3 records
+       themselves, never from a role word. */
+    const peered = l3.filter((r) => r.vip !== null && fabric.l3.some((o) => o.host !== device.host && o.vip === r.vip));
+    const peeredVlans = [...new Set(peered.map((r) => (r.vlan === null ? "(unnumbered)" : String(r.vlan))))];
+    const out: { field: string; theirs: number; ours: number; detail: string; cites: Cite[] }[] = [];
+    if (theirs !== null && theirs.fhrp !== null && fhrpVlans.length > theirs.fhrp) {
+      out.push({
+        field: "failure_impact.fhrp",
+        theirs: theirs.fhrp,
+        ours: fhrpVlans.length,
+        detail: `this device's own L3 records carry an FHRP group on VLAN ${fhrpVlans.join(", ")} (${withFhrp.map((r) => `${r.fhrp}${r.fhrpRole === null ? "" : ` ${r.fhrpRole}`}`).join(", ")})`,
+        cites: withFhrp.map((r) => r.cite),
+      });
+    }
+    if (theirs !== null && theirs.backup !== null && peeredVlans.length > theirs.backup) {
+      out.push({
+        field: "failure_impact.backup",
+        theirs: theirs.backup,
+        ours: peeredVlans.length,
+        detail: `another collected host holds the same virtual gateway address on VLAN ${peeredVlans.join(", ")}`,
+        cites: peered.map((r) => r.cite),
+      });
+    }
+    return out;
+  }, [device.host, theirs]);
+
   const ourStranded = ours.certainty === "not-determinable" ? null : ours.newlyStranded.length;
   const ourSummary =
     ourStranded === null
@@ -636,11 +798,24 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
           theirs.vlans === null ? "not observed" : plural(theirs.vlans, "VLAN")
         }`;
 
-  const disagrees =
-    ours.engine.qualitative === "engine-impact-only" ||
-    ours.engine.qualitative === "ours-impact-only" ||
-    ours.engine.qualitative === "engine-silent" ||
-    ours.engine.qualitative === "ours-not-determined";
+  /* "Disagree" is reserved for a qualitative conflict between two OBSERVED answers (one says
+     partition, the other says none). An absent side is not an answer: it used to be counted here,
+     so for a topology-only device — no failure_impact record AND a radius that is not determinable —
+     the card read "The two measures disagree" over two columns that both said "not observed"
+     (critic B1, 2026-09-21). A missing measure is stated as missing, on whichever side it is. */
+  const q = ours.engine.qualitative;
+  const oursAbsent = ours.certainty === "not-determinable" || q === "ours-not-determined";
+  const theirsAbsent = q === "engine-silent";
+  const disagrees = q === "engine-impact-only" || q === "ours-impact-only";
+  const compareHead = disagrees
+    ? "The two measures disagree"
+    : oursAbsent && theirsAbsent
+      ? "Neither measure exists for this device"
+      : theirsAbsent
+        ? "Only our measure exists — the snapshot carries none to compare"
+        : oursAbsent
+          ? "Only the snapshot's measure exists — ours could not be computed"
+          : "How the two measures compare";
 
   return (
     <Section
@@ -679,6 +854,19 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               onOpenCite={onOpenCite}
             />
           )}
+          {impactChecks.map((c) => (
+            <div key={c.field} className="dp-disagree dp-disagree--live" data-impact-check={c.field}>
+              <p className="dp-disagree__head">{`${c.field} is contradicted by this device's own records`}</p>
+              <p className="dp-disagree__body">
+                {`The snapshot's ${c.field} says ${c.theirs}; ${c.detail} — at least ${c.ours}. Both are shown; neither is suppressed, so the count above is not read as a measurement of zero.`}
+              </p>
+              <p className="dp-disagree__body">
+                {c.cites.map((cite) => (
+                  <CiteButton key={cite} cite={cite} onOpen={onOpenCite} />
+                ))}
+              </p>
+            </div>
+          ))}
         </div>
 
         <div className="dp-cmp__col">
@@ -719,7 +907,16 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
                   compact: true,
                 }),
               },
-              { k: "Severed cables", v: String(ours.severedLinks.length) },
+              {
+                k: "Severed cables",
+                /* The same port-dispute ceiling as the Cables row: 17 severed RECORDS on a port
+                   that terminates one cable is not 17 severed cables. */
+                v: (() => {
+                  const ids = new Set(ours.severedLinks.map((s) => s.linkId));
+                  const acct = hostCableAccount(device.host, fabric.links.filter((l) => ids.has(l.id)));
+                  return acct.disputedLinkIds.length === 0 ? String(acct.records) : cableCountPhrase(acct);
+                })(),
+              },
             ]}
             onOpenCite={onOpenCite}
           />
@@ -730,7 +927,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
 
       <div className={cx("dp-disagree", disagrees && "dp-disagree--live")}>
         <p className="dp-disagree__head">
-          {disagrees ? "The two measures disagree" : "How the two measures compare"}
+          {compareHead}
         </p>
         <p className="dp-disagree__body">{ours.engine.note}</p>
         {disagrees ? (
@@ -851,8 +1048,92 @@ export function joinPorts(host: string): PortRow[] {
   return [...byPort.values()].sort((a, b) => a.port.localeCompare(b.port, "en", { numeric: true }));
 }
 
+/**
+ * The reason a configuration-derived field is empty. "Not in the collected configuration" is an
+ * observed NEGATIVE, and only true where that configuration was collected: for a port whose running
+ * configuration was never collected (`runConfigObserved: false`) the same sentence turned a missing
+ * record into a claim about it, on 19 core1/core2 ports (2026-09-22 critic, B1).
+ */
+function configAbsenceReason(intf: InterfaceRecord, observedNegative: string, field: string): string {
+  return intf.runConfigObserved === true
+    ? observedNegative
+    : `the running configuration for this port was not collected, so its ${field} is unknown — not absent`;
+}
+
+/**
+ * A configuration-derived field, rendered by what was actually observed.
+ *
+ * Three states, not two. A value renders as itself. An empty value over a COLLECTED running
+ * configuration is an observed NEGATIVE ("none — not in a channel group"), so it renders as an
+ * observed value: marking it "not observed" put presence in the absence marker's clothes and diluted
+ * the one mark this product depends on (critic B1, access13 Gi0/1). Only an empty value over a
+ * configuration that was never collected is "not observed", with the reason.
+ */
+function configField(
+  intf: InterfaceRecord,
+  value: string | null | undefined,
+  render: (v: string) => ReactNode,
+  o: { what: string; field: string; observedNegative: string },
+): ReactNode {
+  if (typeof value === "string" && value.trim() !== "") return render(value);
+  if (intf.runConfigObserved === true) {
+    return (
+      <span className="dp-quiet" data-observed-negative="true" title={`${o.observedNegative} (collected configuration)`}>
+        {`none — ${o.observedNegative}`}
+      </span>
+    );
+  }
+  return <NotObserved what={o.what} why={configAbsenceReason(intf, o.observedNegative, o.field)} compact />;
+}
+
 const num = (n: number | null | undefined, what: string): ReactNode =>
   orNotObserved(n, (v) => v.toLocaleString("en-GB"), { what, compact: true });
+
+type PortField = "status" | "speed" | "duplex";
+
+/**
+ * A field BOTH port records carry, read from both.
+ *
+ * These columns used to render `intf?.x ?? phys?.x`: whenever the interface record existed its value
+ * won and the physical-health row was never looked at. On 73 ports the two disagree on duplex
+ * (interface "Full", physical-health "unknown") — on hosts that carry an open duplex-mismatch
+ * finding — and the table printed a clean "Full". The coalesce was the defect, so it is replaced
+ * for every field the two records share rather than for the one column that was caught: agreement
+ * (or one side only) renders one value; disagreement renders both, each labelled with its source.
+ */
+/* Same value in two spellings is agreement, not a disagreement: the interface record writes speed
+   as "1000" and the physical-health row as "1000Mb/s". Only the unit suffix is normalised. */
+const sameValue = (a: string, b: string): boolean => {
+  const norm = (v: string): string => v.trim().toLowerCase().replace(/\s*(mb\/s|mbps)$/, "");
+  return norm(a) === norm(b);
+};
+
+function portFieldText(r: PortRow, field: PortField): string {
+  const a = r.intf?.[field] ?? null;
+  const b = r.phys?.[field] ?? null;
+  if (a !== null && b !== null && !sameValue(a, b)) {
+    return `records disagree: interface ${a}, physical-health ${b}`;
+  }
+  return String(a ?? b ?? "not observed");
+}
+
+function portField(r: PortRow, field: PortField): ReactNode {
+  const a = r.intf?.[field] ?? null;
+  const b = r.phys?.[field] ?? null;
+  if (a !== null && b !== null && !sameValue(a, b)) {
+    return (
+      <span className="dp-split" title={portFieldText(r, field)} data-disagree="true">
+        <span className="dp-split__mark" aria-hidden="true">≠</span>
+        <span className="dp-split__v">{a}</span>
+        <span className="dp-split__src">intf</span>
+        <span className="dp-split__v">{b}</span>
+        <span className="dp-split__src">phys</span>
+        <span className="visually-hidden">{` — ${portFieldText(r, field)}`}</span>
+      </span>
+    );
+  }
+  return orNotObserved(a ?? b, (v) => v, { what: field, compact: true });
+}
 
 function PortsPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: Cite) => void }): ReactElement {
   const rows = useMemo(() => joinPorts(device.host), [device.host]);
@@ -903,21 +1184,23 @@ function PortsPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: Ci
       id: "status",
       header: "Status",
       width: "6.5rem",
-      text: (r) => r.intf?.status ?? r.phys?.status ?? "not observed",
-      render: (r) => orNotObserved(r.intf?.status ?? r.phys?.status, (s) => s, { what: "status", compact: true }),
+      text: (r) => portFieldText(r, "status"),
+      render: (r) => portField(r, "status"),
     },
     {
       id: "speed",
       header: "Speed",
       width: "5.5rem",
       align: "end",
-      render: (r) => orNotObserved(r.intf?.speed ?? r.phys?.speed, (s) => s, { what: "speed", compact: true }),
+      text: (r) => portFieldText(r, "speed"),
+      render: (r) => portField(r, "speed"),
     },
     {
       id: "duplex",
       header: "Duplex",
       width: "5rem",
-      render: (r) => orNotObserved(r.intf?.duplex ?? r.phys?.duplex, (s) => s, { what: "duplex", compact: true }),
+      text: (r) => portFieldText(r, "duplex"),
+      render: (r) => portField(r, "duplex"),
     },
     {
       id: "media",
@@ -942,20 +1225,23 @@ function PortsPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: Ci
       id: "risk",
       header: "Risk",
       width: "8rem",
-      text: (r) => r.phys?.risk ?? physExtra(r.phys).riskUnobserved ?? "not observed",
+      text: (r) => (physUnassessedReason(r.phys) !== null ? "not assessed" : (r.phys?.risk ?? "not observed")),
       /* The engine's own "[NOT OBSERVED] - no 'show interfaces' counters for this port; L1 error
          rate NOT assessed" reaches the reader as the REASON, instead of being nulled to a bare
-         "not observed" that says nothing about why. */
-      render: (r) => orNotObserved(r.phys?.risk, (s) => s, { what: "risk flag", why: physExtra(r.phys).riskUnobserved ?? null, compact: true }),
+         "not observed" that says nothing about why. A risk string over a row with no measurement at
+         all is withheld the same way (`physUnassessedReason`). */
+      render: (r) => {
+        const unassessed = physUnassessedReason(r.phys);
+        return unassessed !== null
+          ? <NotObserved what="risk flag" why={unassessed} compact />
+          : orNotObserved(r.phys?.risk, (s) => s, { what: "risk flag", compact: true });
+      },
     },
     {
       id: "sev",
       header: "Sev",
-      width: "4.5rem",
-      render: (r) => {
-        const sev = asSeverity(r.phys?.severity);
-        return sev ? <SeverityBadge severity={sev} compact /> : <NotObserved what="severity" compact />;
-      },
+      width: "6rem", // wide enough for "not graded" (an unassessed row) without clipping
+      render: (r) => <GradedSeverity severity={r.phys?.severity} unassessed={physUnassessedReason(r.phys)} />,
     },
     {
       id: "pc",
@@ -964,24 +1250,25 @@ function PortsPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: Ci
       render: (r) =>
         r.intf === null
           ? <NotObserved what="port-channel membership" why="no interface record for this port" compact />
-          : orNotObserved(r.intf.portChannel, (s) => <span className="dp-mono">{s}</span>, {
+          : configField(r.intf, r.intf.portChannel, (s) => <span className="dp-mono">{s}</span>, {
               what: "port-channel membership",
-              why: "this port is not in a channel group in the collected configuration",
-              compact: true,
+              field: "channel-group membership",
+              observedNegative: "not in a channel group",
             }),
     },
     {
       id: "desc",
       header: "Description",
       width: "minmax(11rem, 1fr)",
-      text: (r) => r.intf?.description ?? "not observed",
+      text: (r) =>
+        r.intf?.description ?? (r.intf?.runConfigObserved === true ? "none — no description configured" : "not observed"),
       render: (r) =>
         r.intf === null
           ? <NotObserved what="description" why="no interface record for this port" compact />
-          : orNotObserved(r.intf.description, (s) => s, {
+          : configField(r.intf, r.intf.description, (s) => s, {
               what: "description",
-              why: "the interface carries no description in the collected configuration",
-              compact: true,
+              field: "description",
+              observedNegative: "no description configured",
             }),
     },
     {
@@ -1062,15 +1349,30 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
   const routes = routesOf(device.host);
   const rib = hasRib(device.host);
   const cov = fabric.coverage;
+  /* A collected table cannot testify to its own completeness: four connected routes look the same
+     whether they are everything or a sliver. The snapshot does testify (./rib-completeness.ts), and
+     this tab used to say "on those entries and on nothing else" over core2's four routes while the
+     snapshot recorded OSPF/BGP/EIGRP not collected and a 240-prefix EVPN peer (2026-09-22 critic, B7). */
+  const partial = rib ? ribIncompleteness(device.host) : [];
 
   return (
     <div className="dp-panel">
-      <p className={cx("dp-scope", !rib && "dp-scope--absent")}>
+      <p className={cx("dp-scope", !rib && "dp-scope--absent", partial.length > 0 && "dp-scope--partial")}>
         {rib ? (
-          <>
-            A routing table was collected for {device.host}: {plural(routes.length, "entry", "entries")}.
-            Forwarding claims about this host rest on those entries and on nothing else.
-          </>
+          partial.length > 0 ? (
+            <>
+              A routing table was collected for {device.host}: {plural(routes.length, "entry", "entries")}. The
+              snapshot shows that table to be <strong>incomplete</strong>, so these entries are not all of{" "}
+              {device.host}'s routing: forwarding claims about this host that rest on them are not decided
+              where a route the table does not hold could change the answer.
+            </>
+          ) : (
+            <>
+              A routing table was collected for {device.host}: {plural(routes.length, "entry", "entries")}.
+              Forwarding claims about this host rest on those entries. Nothing in the snapshot shows the table
+              to be incomplete; that is not proof that it is complete.
+            </>
+          )
         ) : (
           <>
             No routing table was collected for {device.host}. {cov.hostsWithRoutes} of{" "}
@@ -1080,6 +1382,15 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
           </>
         )}
       </p>
+      {partial.length > 0 ? (
+        <ul className="dp-rib-partial" aria-label={`Why ${device.host}'s routing table is incomplete`}>
+          {partial.map((r) => (
+            <li key={`${r.label}|${r.cite}`}>
+              {r.label} <CiteButton cite={r.cite} onOpen={onOpenCite} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       <Section title="L3 interfaces and first-hop redundancy">
         {l3.length === 0 ? (
@@ -1098,11 +1409,10 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
                 <span className="dp-mono dp-l3__vlan">
                   VLAN {orNotObserved(r.vlan, (v) => String(v), { what: "VLAN id", compact: true })}
                 </span>
-                {asSeverity(r.severity) ? (
-                  <SeverityBadge severity={asSeverity(r.severity) as Severity} compact />
-                ) : (
-                  <NotObserved what="severity" compact />
-                )}
+                {/* Not routed through GradedSeverity: an L3 row's unobserved marker says only that
+                    object TRACKING was not assessed ("no 'show track' evidence"), not that the row
+                    was — so its grade may still rest on assessed fields. */}
+                <GradedSeverity severity={r.severity} unassessed={null} />
                 <CiteButton cite={r.cite} onOpen={onOpenCite} />
               </div>
               <Kv
@@ -1159,7 +1469,10 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
               { id: "prefix", header: "Prefix", width: "10rem", rowHeader: true, text: (r) => r.prefix, render: (r) => <span className="dp-mono">{r.prefix}</span> },
               { id: "src", header: "Source", width: "6.5rem", render: (r) => orNotObserved(r.source, (s) => s, { what: "route source", compact: true }) },
               { id: "ad", header: "AD", width: "4rem", align: "end", render: (r) => num(r.adminDistance, "administrative distance") },
-              { id: "nh", header: "Next hop", width: "9rem", render: (r) => orNotObserved(r.nextHop, (s) => <span className="dp-mono">{s}</span>, { what: "next hop", compact: true }) },
+              { id: "nh", header: "Next hop", width: "9rem", render: (r) => {
+                  const na = r.nextHop === null ? notApplicableReason(r, "nextHop") : null;
+                  return na !== null ? <span className="dp-quiet" data-not-applicable="true">{na}</span> : orNotObserved(r.nextHop, (s) => <span className="dp-mono">{s}</span>, { what: "next hop", compact: true });
+                } },
               { id: "out", header: "Out", width: "8rem", render: (r) => orNotObserved(r.outIntf, (s) => <span className="dp-mono">{s}</span>, { what: "egress interface", compact: true }) },
               { id: "cite", header: "Evidence", width: "minmax(10rem, 1fr)", render: (r) => <CiteButton cite={r.cite} onOpen={onOpenCite} /> },
             ]}
@@ -1258,9 +1571,16 @@ export function AclLines({
   highlightIndex?: number | null;
   onOpenCite: (c: Cite) => void;
 }): ReactElement {
+  /* Every line ANY source cannot decide is flagged inline — the engine's own evaluability, the
+     producer's flag, and the snapshot's reachability analysis — from the one owner of that union
+     (`aclUndecidability`). Only the producer's flag used to be drawn here, so the lines this model
+     refuses (an `established`, a time-range, an icmp qualifier) read as evaluable in the list and
+     were named undecidable only in a separate section further down (2026-09-21 critic, B5). */
+  const undecidable = useMemo(() => new Map(aclUndecidability().members.map((m) => [m.cite, m] as const)), []);
   return (
     <ol className="dp-acl">
       {lines.map((l) => {
+        const member = undecidable.get(l.cite);
         const blockers = [
           l.established ? "established (stateful)" : null,
           l.icmpType === null ? null : `icmp-type ${l.icmpType}`,
@@ -1270,8 +1590,9 @@ export function AclLines({
         return (
           <li
             key={l.cite}
-            className={cx("dp-acl__line", l.unevaluable && "dp-acl__line--unevaluable")}
+            className={cx("dp-acl__line", (l.unevaluable || member !== undefined) && "dp-acl__line--unevaluable")}
             data-match={highlightIndex === l.index ? "true" : undefined}
+            data-undecidable={member === undefined ? undefined : member.sources.join(" ")}
           >
             <span className="dp-acl__idx">{l.index}</span>
             <span className="dp-acl__text">
@@ -1284,6 +1605,14 @@ export function AclLines({
                 <span className="dp-acl__flag">
                   the producer could not model this line
                   {blockers.length > 0 ? `: ${blockers.join(", ")}` : ""}
+                </span>
+              ) : null}
+              {member !== undefined && member.sources.some((s) => s !== "producer") ? (
+                <span className="dp-acl__flag">
+                  {`cannot be decided in general — ${member.sources
+                    .map((s, i) => (s === "producer" ? null : member.reasons[i]))
+                    .filter((x): x is string => typeof x === "string" && x !== "")
+                    .join("; ")}`}
                 </span>
               ) : null}
             </span>
@@ -1319,21 +1648,41 @@ function FindingsPanel({ hosts, onOpenCite }: { hosts: readonly string[]; onOpen
   /* "C 0 H 0 M 0 L 0 I 0" is a positive statement about a search, and it may only be made where a
      search was possible. On a host the collection never visited it is a clean all-zero readout on
      a device nobody looked at — the false-health class this pane exists to refuse. */
-  const searchable = hosts.some((h) => deviceById.get(h)?.collected !== false);
+  /* The scope is SPLIT, never merged: a cable with one uncollected end used to pass a
+     `hosts.some(collected)` guard and print an assessed-looking tally "across 2 hosts" whose second
+     half was silence (critic B1, 20 cables). The tally is stated over the collected hosts by name,
+     and each never-collected host is named separately as contributing no search. A host this
+     snapshot has no device record for is not evidence of collection either. */
+  const collectedHosts = hosts.filter((h) => deviceById.get(h)?.collected === true);
+  const uncollectedHosts = hosts.filter((h) => deviceById.get(h)?.collected !== true);
+  const searchable = collectedHosts.length > 0;
+  const partial = searchable && uncollectedHosts.length > 0;
+  const uncollectedSentence =
+    uncollectedHosts.length === 0
+      ? ""
+      : ` ${uncollectedHosts.join(", ")} ${uncollectedHosts.length === 1 ? "was" : "were"} never collected; ${uncollectedHosts.length === 1 ? "it contributes" : "they contribute"} no search, so ${uncollectedHosts.length === 1 ? "its" : "their"} share of this tally is not observed.`;
 
   return (
     <div className="dp-panel">
       {/* Every severity renders, including the ones at zero: "Info 0" is a positive statement
           about this host's findings, and hiding it turns that statement into silence. */}
       {searchable ? (
-        <ul className="dp-sevcounts">
-          {counts.map(({ s, n }) => (
-            <li key={s} className="dp-sevcounts__item">
-              <SeverityBadge severity={s} compact />
-              <span className="dp-sevcounts__n">{n}</span>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="dp-sevcounts" aria-label={`Severity tally over ${collectedHosts.join(", ")}`}>
+            {counts.map(({ s, n }) => (
+              <li key={s} className="dp-sevcounts__item">
+                <SeverityBadge severity={s} compact />
+                <span className="dp-sevcounts__n">{n}</span>
+              </li>
+            ))}
+          </ul>
+          {partial ? (
+            <NotObserved
+              what={`finding counts for ${uncollectedHosts.join(", ")}`}
+              why={`the tally above searched ${collectedHosts.join(", ")} only.${uncollectedSentence}`}
+            />
+          ) : null}
+        </>
       ) : (
         <NotObserved
           what="finding counts"
@@ -1345,7 +1694,9 @@ function FindingsPanel({ hosts, onOpenCite }: { hosts: readonly string[]; onOpen
         title="Findings that name this selection"
         note={
           searchable
-            ? `${plural(findings.length, "finding")} across ${plural(hosts.length, "host")}.`
+            ? hosts.length === 1
+              ? `${plural(findings.length, "finding")} across ${plural(hosts.length, "host")}.`
+              : `${plural(findings.length, "finding")} across ${plural(collectedHosts.length, "collected host")} (${collectedHosts.join(", ")}).${uncollectedSentence}`
             : `${plural(hosts.length, "host")}, none of them collected: this is the size of the search, not a finding count.`
         }
       >
@@ -1439,6 +1790,9 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
   const ours = useMemo(() => linkFailureImpact(link.id), [link.id]);
   const selectDevice = useInvestigation((s) => s.selectDevice);
   const eps = ours.strandedEndpoints;
+  /* A port this cable names that the cable map also places on another cable. Shown beside the
+     cable's own evidence, not only as a blast-radius caveat: the adjacency itself is contradicted. */
+  const disputes = disputesOf(link.id);
 
   return (
     <div className="dp-panel">
@@ -1477,6 +1831,19 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
               }),
               wide: true,
             },
+            {
+              k: "Port conflict",
+              v:
+                disputes.length === 0
+                  ? "none — no port this cable names is on another cable in the map"
+                  : (
+                      <span className="dp-wrap" data-disputed="true">
+                        <strong>disputed</strong>
+                        {disputes.map((d) => ` ${disputeSentence(link.id, d)}`).join("")}
+                      </span>
+                    ),
+              wide: true,
+            },
           ]}
           onOpenCite={onOpenCite}
         />
@@ -1513,7 +1880,12 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
               k: "Cutting it partitions",
               v: orNotObserved(ours.isBridge, (b) => (b ? "yes" : "no"), {
                 what: "bridge status",
-                why: "this cable is not carrying traffic in the projection, so we decline to call it a non-bridge",
+                /* A carrying cable with no verdict was withheld for its own reason (a disputed port);
+                   "not carrying" would be false there. */
+                why:
+                  ours.presence === "carrying"
+                    ? (eps.note ?? "no verdict was computed for this cable")
+                    : "this cable is not carrying traffic in the projection, so we decline to call it a non-bridge",
                 compact: true,
               }),
             },
@@ -1553,7 +1925,12 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
               ? "Our answer and the snapshot's agree"
               : ours.engine.agreement === "disagree"
                 ? "The two measures disagree"
-                : "The snapshot published no centrality for this cable"}
+                : /* "engine-silent" also covers OUR side being undetermined; name the absent side(s). */
+                  ours.engine.isBridge === null && ours.isBridge === null
+                  ? "Neither measure exists for this cable"
+                  : ours.engine.isBridge === null
+                    ? "The snapshot published no centrality for this cable"
+                    : "Only the snapshot's measure exists — ours could not be computed"}
           </p>
           {ours.engine.agreement === "disagree" ? (
             <p className="dp-disagree__t9">
@@ -1648,7 +2025,6 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
     if (subject === "device" && device) {
       const collected = device.collected;
       const ports = joinPorts(device.host);
-      const l3 = l3ByHost.get(device.host) ?? [];
       const acls = fabric.acls[device.host];
       const aclLines = acls ? Object.values(acls).reduce((a, ls) => a + ls.length, 0) : null;
       return [
@@ -1671,7 +2047,15 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
         {
           item: {
             id: "routing",
-            label: hasRib(device.host) ? "Routing" : <TabWhy label="Routing" why="no RIB collected" />,
+            label: !hasRib(device.host) ? (
+              <TabWhy label="Routing" why="no RIB collected" />
+            ) : ribIncompleteness(device.host).length > 0 ? (
+              /* The count beside it is the table's size; the table is shown incomplete, and a bare
+                 "4" reads as the whole of core2's routing (2026-09-22 critic, B7). */
+              <TabWhy label="Routing" why="incomplete" />
+            ) : (
+              "Routing"
+            ),
             /* A badge is a COUNT of things observed, so it may only be shown where something was
                looked for. `collected` is too coarse: access1 is collected, holds no RIB and no
                l3_forwarding row, and rendered a bare "0" next to a sibling ACL badge that
@@ -1682,7 +2066,10 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
                second "not observed" chip saying the same thing in the same 3 cm of tab strip is
                what pushed the whole strip into horizontal overflow. One statement of an absence
                is honesty; two is noise that costs the reader a tab they can no longer see. */
-            count: collected && hasRib(device.host) ? l3.length : undefined,
+            /* The count beside "Routing" is the size of the ROUTING TABLE — the RIB entries the tab
+               lists. It used to be the number of L3 SVIs (core1 read "3" over an 8-entry RIB), a
+               different quantity under the one label a reader takes as the table size. */
+            count: collected && hasRib(device.host) ? routesOf(device.host).length : undefined,
           },
           render: () => <RoutingPanel device={device} onOpenCite={openCite} />,
         },
@@ -1848,9 +2235,9 @@ function LinkEnds({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) => v
               <Kv
                 rows={[
                   { k: "Port", v: <span className="dp-mono">{row.port}</span> },
-                  { k: "Status", v: orNotObserved(row.intf?.status ?? row.phys?.status, (s) => s, { what: "status", compact: true }) },
-                  { k: "Speed", v: orNotObserved(row.intf?.speed ?? row.phys?.speed, (s) => s, { what: "speed", compact: true }) },
-                  { k: "Duplex", v: orNotObserved(row.intf?.duplex ?? row.phys?.duplex, (s) => s, { what: "duplex", compact: true }) },
+                  { k: "Status", v: portField(row, "status") },
+                  { k: "Speed", v: portField(row, "speed") },
+                  { k: "Duplex", v: portField(row, "duplex") },
                   { k: "Media", v: orNotObserved(row.phys?.media ?? row.intf?.linkType, (s) => s, { what: "media", compact: true }) },
                   { k: "CRC errors", v: num(row.phys?.crcErrors, "CRC errors") },
                   { k: "Input errors", v: num(row.phys?.inputErrors, "input errors") },

@@ -46,8 +46,33 @@
   cursor: pointer;
 }
 
-/* outline (not box-shadow) so the ring survives forced-colors / Windows High Contrast. */
+/* outline (not box-shadow) so the ring survives forced-colors / Windows High Contrast.
+ *
+ * The ring is drawn by an OVERLAY, never by the WebGL canvas itself (E4, 2026-09-22). An outline
+ * on the canvas is a display item of the canvas element, so every presented WebGL frame
+ * re-recorded it — and, the ring overlapping the composited canvas, it forced the stage's host
+ * layer AND the page's root layer (the whole document, rails included) to repaint and re-raster on
+ * every rendered frame. MEASURED via the DevTools LayerTree paint counters over one orbit drag
+ * (release build, 1920x1080): #document and .fabric3d__canvas-host each repainted 250-330 times —
+ * once per frame — with the canvas ring on, and 5-6 times with this overlay; with every outline
+ * suppressed, the same 5. review/measure-fps.mjs focuses the canvas before it measures, so every
+ * E4 window was paying for it. The pseudo-element is painted once per focus change, and the
+ * canvas's frames touch nothing but its own layer. Same colour, width and inset as before. */
 .fabric3d__canvas:focus-visible {
+  /* The app-wide :focus-visible ring (shell.css) would put it back on the canvas; the overlay
+     below draws it instead. */
+  outline: none;
+  box-shadow: none;
+}
+
+.fabric3d__canvas-host::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.fabric3d__canvas-host:has(> .fabric3d__canvas:focus-visible)::after {
   outline: 2px solid var(--focus);
   outline-offset: calc(-1 * var(--sp-1));
 }
@@ -78,7 +103,14 @@
   letter-spacing: 0.01em;
   white-space: nowrap;
   color: var(--text);
-  background: color-mix(in srgb, var(--stage-bg, var(--surface-2)) 72%, transparent);
+  /* OPAQUE (D4 audit, 2026-09-21). This was the stage colour at 72% alpha over the WebGL scene, so
+     every label's contrast depended on whatever chassis or cable happened to be drawn behind it —
+     measured: the dark Critical band letter fell to 4.34:1 (5th percentile) and the light
+     "stranded" mark to 3.71:1. On a solid --stage-bg chip each mark's contrast is its token's own,
+     fixed ratio against the ground, independent of the scene. Covering the geometry is no longer
+     the cost it was: the anchor sits above each chassis's projected silhouette
+     (scene.ts projectLabelAnchor), so a plate does not lie across the hardware it names. */
+  background: var(--stage-bg, var(--surface-2));
   transition: opacity var(--dur-instant) linear;
   will-change: transform;
 }
@@ -89,9 +121,44 @@
   visibility: hidden;
 }
 
+/* A label the stage edge pushed off its anchor draws a leader from its bottom edge down to the
+   device it names (FabricLabels.tsx). Without it a displaced name reads as naming whatever
+   device it now happens to sit over. */
+.fabric3d-label[data-leader="yes"]::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-start: var(--leader-x, 50%);
+  inline-size: 1px;
+  block-size: var(--leader-len, var(--sp-2));
+  background: var(--text-muted);
+  pointer-events: none;
+}
+
+/* A label flipped below its device (it would have crossed the stage's top edge) leads UP. */
+.fabric3d-label[data-leader="up"]::after {
+  content: "";
+  position: absolute;
+  inset-block-end: 100%;
+  inset-inline-start: var(--leader-x, 50%);
+  inline-size: 1px;
+  block-size: var(--leader-len, var(--sp-2));
+  background: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Hover is the WEAK state, but it must be visible in a capture: a surface-1 plate on a stage-bg
+   plate changed ~300 canvas px and nothing a reader could name (2026-09-21 critic, A5). A DASHED
+   accent outline says "pointing at", distinct from selection's solid one, and the name underlines. */
 .fabric3d-label[data-state="hover"] {
   background: var(--surface-1);
   box-shadow: var(--shadow-1);
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+}
+.fabric3d-label[data-state="hover"] .fabric3d-label__name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .fabric3d-label[data-state="selected"] {
@@ -120,22 +187,14 @@
   font-weight: var(--fw-semibold);
   line-height: 1.2;
   text-align: center;
-  color: var(--band-fair);
+  /* The ink is the band owner's token (core/band-qualification.ts presentBand().colorToken), set
+     inline per label, so the label, the chassis and the legend cannot map a band to two colours. */
+  color: var(--band-ink, var(--band-fair));
 }
-.fabric3d-label__band[data-band="Excellent"] {
-  color: var(--band-excellent);
-}
-.fabric3d-label__band[data-band="Good"] {
-  color: var(--band-good);
-}
-.fabric3d-label__band[data-band="Fair"] {
-  color: var(--band-fair);
-}
-.fabric3d-label__band[data-band="Poor"] {
-  color: var(--band-poor);
-}
-.fabric3d-label__band[data-band="Critical"] {
-  color: var(--band-critical);
+/* A favourable band on a host with unassessed scoring domains: neutral ink (from the owner) and a
+   dashed box, the same treatment as the Device pane's partial band pill. */
+.fabric3d-label__band[data-band-partial] {
+  border-style: dashed;
 }
 /* Not a band. Never tinted like one, and never absent. */
 .fabric3d-label__band[data-band="none"] {
@@ -151,7 +210,8 @@
    DELIVERED hop by nothing — measured, a delivered trace over the already-selected terminating
    host produced a canvas byte-identical to no trace at all. */
 .fabric3d-label__alarm,
-.fabric3d-label__stranded {
+.fabric3d-label__stranded,
+.fabric3d-label__finding {
   display: none;
   align-items: center;
   gap: 2px;
@@ -161,12 +221,22 @@
   font-weight: var(--fw-semibold);
   line-height: 1.2;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--ls-caps);
 }
 
 .fabric3d-label[data-alarm="blocked"] .fabric3d-label__alarm--blocked {
   display: inline-flex;
   color: var(--state-down);
+}
+
+/* The alarm and cut-point words sit inside a label that is ALREADY framed by the matching outline
+   (solid for a fact, dashed for "could not decide" / a hypothesis — see below). A chip border of
+   its own drew a second box a few px inside the first: the "BLOCKED" pill read as two stacked
+   borders (C5 audit, appz-gpu-core1). The outline carries the frame and its dash style; the chip
+   keeps its glyph, word and colour. The stranded and finding chips keep their borders — their
+   labels are not outlined by them. */
+.fabric3d-label__alarm {
+  border-color: transparent;
 }
 
 /* UNDECIDED is a third thing, not a weak failure and not a missing success (claims.ts). It gets
@@ -203,6 +273,46 @@
   color: var(--claim-indeterminate, var(--state-unknown));
   border-style: dashed;
 }
+
+/* A6: the snapshot's failure_impact says this failure strands hosts and our graph does not
+   reproduce it. Without a mark the fabric showed nothing — the same picture as a host whose
+   failure breaks nothing — while the Inspector said THE TWO MEASURES DISAGREE. Indeterminate token
+   and a dashed rule: this is a conflict between two measures, not a finding of either. */
+.fabric3d-label__disputed {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding-inline: 3px;
+  border: var(--hairline) dashed currentColor;
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+}
+.fabric3d-label[data-disputed="yes"] .fabric3d-label__disputed {
+  display: inline-flex;
+  color: var(--claim-indeterminate, var(--state-unknown));
+}
+
+/* A4: the hosts a SELECTED FINDING names. A third kind of subject — not the device selection
+   (accent outline) and not an analysis hypothesis (indeterminate, dashed) — so it takes the
+   finding's own severity colour, a diamond and the finding's id: "this is where F030 lives",
+   legible in greyscale by the id alone. Opaque, like every marked label, so it reads over the
+   receded field. */
+.fabric3d-label[data-finding="yes"] .fabric3d-label__finding {
+  display: inline-flex;
+  color: var(--text);
+}
+.fabric3d-label[data-finding="yes"] {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 2px solid var(--sev-info);
+}
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="critical"]) { outline-color: var(--sev-critical); }
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="high"]) { outline-color: var(--sev-high); }
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="medium"]) { outline-color: var(--sev-medium); }
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="low"]) { outline-color: var(--sev-low); }
 
 /* The failing host's label is the one label that must be read before any other, so it is opaque
    rather than translucent and carries the alarm outline. It is also lifted clear of its anchor by
@@ -384,7 +494,7 @@
   margin: 0;
   font-size: var(--fs-1);
   font-weight: var(--fw-semibold);
-  letter-spacing: 0.01em;
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -428,7 +538,7 @@
   margin-block-end: var(--sp-1);
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
 }
@@ -512,6 +622,12 @@
   stroke-dasharray: 3 2;
 }
 
+/* A favourable band that is partly the absence of evidence (core/band-qualification.ts): the
+   neutral ink the chassis is drawn in, with a dashed outline like the label chip's. */
+.fabric3d-legend__chassis--partial {
+  stroke-dasharray: 3 2;
+}
+
 /* The band letter inside a swatch. Drawn on top of the chassis fill, so it needs a ground it is
    legible against in either theme: the swatch fill is the band token, which is light, so the
    letter is the stage's own dark ink rather than a second tinted colour. */
@@ -551,6 +667,17 @@
 
 .fabric3d-legend__line--trace {
   stroke-width: 4;
+}
+
+/* The blocked terminal segment: 6 px, the width flow.ts gives it, plus its stop plate. */
+.fabric3d-legend__line--blocked {
+  stroke-width: 6;
+  stroke-linecap: butt;
+}
+
+.fabric3d-legend__stop {
+  fill: var(--swatch-stroke, var(--sev-critical));
+  stroke: none;
 }
 
 .fabric3d-legend__rim {
@@ -613,7 +740,7 @@
   margin: 0;
   font-size: var(--fs-1);
   font-weight: var(--fw-semibold);
-  letter-spacing: 0.01em;
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -631,6 +758,7 @@
 
 .fabric3d__treeitem {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-1);
   min-block-size: var(--sp-6);
@@ -680,8 +808,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The meta may be a sentence (a qualified band names its unassessed domains; a link row can state
+   its drawn state AND its cut analysis), and a non-shrinking meta on one line squeezed the HOSTNAME
+   to its first letter ("c Good, partial …" for core2, measured in the running app). The row wraps
+   instead: the meta drops to its own right-aligned line and may wrap within it, and the name keeps
+   its width. */
 .fabric3d__tree-meta {
-  flex: none;
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  text-align: end;
   margin-inline-start: auto;
   font-size: var(--fs-0);
   color: var(--text-muted);
@@ -698,6 +834,12 @@
   font-size: var(--fs-0);
   line-height: 1.4;
   color: var(--text-muted);
+}
+
+/* The gesture note and the counts read as one footer, not two ruled-off blocks. */
+.fabric3d__tree-foot + .fabric3d__tree-foot {
+  border-block-start: 0;
+  padding-block-start: 0;
 }
 
 /* ── screen-reader-only text ──────────────────────────────────────────────── */
@@ -756,4 +898,42 @@
 .fabric3d__quality-breach {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* A4 — a device named by the selected finding that projects OUTSIDE the canvas gets a pointer
+   pinned to the stage edge (FabricLabels.tsx placePointers). The arrow turns towards the device;
+   a click frames it. Outlined in the finding's severity, like the finding mark on a visible label. */
+.fabric3d-pointer {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: none;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 1px var(--sp-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  line-height: 1.35;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 2px solid var(--sev-info);
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 2;
+}
+.fabric3d-pointer[data-visible="true"] { display: inline-flex; }
+.fabric3d-pointer[data-sev="critical"] { outline-color: var(--sev-critical); }
+.fabric3d-pointer[data-sev="high"] { outline-color: var(--sev-high); }
+.fabric3d-pointer[data-sev="medium"] { outline-color: var(--sev-medium); }
+.fabric3d-pointer[data-sev="low"] { outline-color: var(--sev-low); }
+.fabric3d-pointer__arrow {
+  display: inline-block;
+  transform: rotate(var(--pointer-deg, 0deg));
+}
+.fabric3d-pointer__note {
+  font-weight: var(--fw-medium);
+  color: var(--text-muted, var(--text));
 }

@@ -31,7 +31,14 @@ import { valueDomain } from "../core/query";
 import { SEVERITY_ORDER, type Flow, type Severity, type SurfaceId } from "../core/types";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
 import { parseIpv4 } from "../forwarding/ip";
-import { isHelpOpen, registerShortcuts, setHelpOpen, type Shortcut } from "./keyboard";
+import {
+  characterKeyShortcutsEnabled,
+  isHelpOpen,
+  registerShortcuts,
+  setCharacterKeyShortcuts,
+  setHelpOpen,
+  type Shortcut,
+} from "./keyboard";
 import { useEffect, useSyncExternalStore } from "react";
 
 /* ══ capabilities: verbs that need a surface to be mounted ═════════════════ */
@@ -672,6 +679,22 @@ const staticCommands = memo((): Command[] => [
     },
   },
 
+  {
+    id: "view.characterKeys",
+    title: "Turn single-character shortcuts on or off",
+    keywords: ["keyboard", "shortcuts", "speech", "accessibility", "disable", "wcag", "character"],
+    group: "View",
+    detail: "Keys such as D, T, [ and the G sequences. Modifier shortcuts and Escape are unaffected.",
+    run: () => {
+      const next = !characterKeyShortcutsEnabled();
+      setCharacterKeyShortcuts(next);
+      announce(
+        next
+          ? "Single-character shortcuts are on."
+          : "Single-character shortcuts are off. Every action is still in this command palette.",
+      );
+    },
+  },
   {
     id: "investigation.copyLink",
     title: "Copy the investigation link",

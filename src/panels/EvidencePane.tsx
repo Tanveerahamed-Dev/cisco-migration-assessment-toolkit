@@ -92,6 +92,8 @@ export type ConfigEvidence =
       cite: Cite;
       /** How this record was reached from the finding, shown to the reader. */
       how: string;
+      /** Set by `nearestConfigFor` when the list was ranked first by matching the finding's words. */
+      matched?: true;
     }
   | {
       kind: "interface";
@@ -100,6 +102,8 @@ export type ConfigEvidence =
       record: InterfaceRecord;
       cite: Cite;
       how: string;
+      /** Set by `nearestConfigFor` when the record was ranked first by matching the finding's words. */
+      matched?: true;
     }
   | {
       kind: "route";
@@ -125,6 +129,10 @@ const HOST_ALTERNATION = fabric.devices
 
 const HOST_PORT_RE = new RegExp(`\\b(${HOST_ALTERNATION})\\s+(${PORT_TOKEN})`, "g");
 const ACL_LINE_RE = /\bline\s+(\d+)\b/i;
+/** Findings listed under the at-rest preview, after the top one. The queue holds all of them. */
+const PREVIEW_NEXT = 6;
+/** How many step-4 records show before the reader asks for the rest (access lists are never cut). */
+const TARGET_CAP = 8;
 const CIDR_RE = /\b(\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2})\b/g;
 
 const findingText = (f: Finding): string => [f.title, f.detail ?? "", f.remediation ?? ""].join(" — ");
@@ -201,39 +209,178 @@ export function configEvidenceFor(finding: Finding): ConfigEvidence[] {
   return out;
 }
 
-/** The records we hold for the finding's hosts when the finding names no line of its own. */
+/**
+ * Words compared without punctuation or case: the punchlist spells a state "err disabled" in one
+ * field and "err-disabled" in the next, and the interface record spells it a third way. Matching is
+ * on whole words, padded with spaces, so "up" does not match inside "uplink".
+ */
+const normalise = (s: string): string => ` ${s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+
+/** A record attribute worth matching on: long enough to mean something, and not a bare number. */
+const matchable = (s: string | null): s is string => s !== null && /[a-z]/i.test(s) && s.replace(/[^a-z0-9]/gi, "").length >= 4;
+
+/** `err-disabled @ Gi0/11 (-8)` → { tag: "err-disabled", port: "Gi0/11" }. */
+const DEDUCTION_RE = /^\s*(.+?)\s+@\s+(\S+)/;
+
+/**
+ * Words an access-list NAME is spelled with that say what kind of list it is rather than what it is
+ * about: `PROTECT_SERVERS` is about servers, and "protect" would match any finding that says so.
+ */
+const ACL_ROLE_WORDS: ReadonlySet<string> = new Set(["filter", "protect", "return", "permit", "deny", "access", "list", "inbound", "outbound"]);
+
+/** Operator spellings inside list names, expanded so a name can be compared with prose. */
+const NAME_ABBREVIATIONS: Readonly<Record<string, string>> = { mgmt: "management", inet: "internet", svr: "server", srv: "server" };
+
+/** `MGMT_IN` → [{ raw: "MGMT", word: "management" }]; role words and words under four letters dropped. */
+function aclNameWords(aclName: string): { raw: string; word: string }[] {
+  return aclName
+    .split(/[^A-Za-z0-9]+/)
+    .filter((raw) => raw.length > 0)
+    .map((raw) => ({ raw, word: NAME_ABBREVIATIONS[raw.toLowerCase()] ?? raw.toLowerCase() }))
+    .filter(({ word }) => word.length >= 4 && /[a-z]/.test(word) && !ACL_ROLE_WORDS.has(word));
+}
+
+/**
+ * The normalised finding text uses `word` as a whole word, exactly. No singular/plural folding:
+ * measured, "server" ~ "servers" tied F107 and F134 (an HTTP server ON the device) to
+ * PROTECT_SERVERS (a list guarding the server VLAN) — the same word about a different thing.
+ */
+const statesWord = (text: string, word: string): boolean => text.includes(` ${word} `);
+
+/**
+ * The records we hold for the finding's hosts when the finding names no line of its own, MOST
+ * RELEVANT FIRST.
+ *
+ * This used to return every host's records in collection order, and the header button opens
+ * `[0]`. F099 ("L1 risk 'err-disabled' on 6 switch(es)") therefore landed on access13 Gi0/1 —
+ * a `connected` uplink — while the same host's err-disabled Gi0/11 and Gi0/12 sat further down the
+ * list, and access13's own deductions named them ("err-disabled @ Gi0/11"). "Nearest" was
+ * "first", which is a guess wearing the word nearest.
+ *
+ * The same defect then survived one level down: access lists were pushed ahead of every interface
+ * with no score at all, so every finding whose first host is core1 — a hardware failure (F004), a
+ * single gateway (F100), VTY telnet (F106) — opened core1 · VOICE_FILTER, core1's first list.
+ *
+ * Relevance is measured against the finding's own words, never assumed:
+ *   - a port the host's own deductions name under a tag the finding states (strongest: the engine
+ *     itself tied that state to that port);
+ *   - an interface whose collected status the finding states;
+ *   - an access list whose NAME uses a word the finding uses, after the abbreviation expansion
+ *     above and ignoring words that only say it is a list ("filter", "protect"). The expansion is
+ *     shown in `how`, never applied silently.
+ * Matched records come first, each saying WHY in `how`. Records nothing matched follow in
+ * COLLECTION ORDER — interfaces, then access lists, capped as before — and say they are NOT
+ * ranked, because they are not: list order must never be presented as "nearest". A record is
+ * never promoted to "this finding's source" by matching.
+ */
 export function nearestConfigFor(finding: Finding): ConfigEvidence[] {
-  const out: ConfigEvidence[] = [];
+  const text = normalise(findingText(finding));
+  const matched: { ev: ConfigEvidence; score: number; order: number }[] = [];
+  const contextIfaces: ConfigEvidence[] = [];
+  const contextAcls: ConfigEvidence[] = [];
+  let order = 0;
+
   for (const host of finding.devices) {
     const named = fabric.acls[host];
     if (named) {
       for (const [aclName, lines] of Object.entries(named)) {
         const first = lines[0];
         if (!first) continue;
-        out.push({
+        const cite = first.cite.replace(/\[\d+]$/, "");
+        const hits = aclNameWords(aclName).filter(({ word }) => statesWord(text, word));
+        if (hits.length > 0) {
+          const why = hits
+            .map(({ raw, word }) => (raw.toLowerCase() === word ? `“${word}”` : `“${raw}”, read as “${word}”`))
+            .join("; ");
+          matched.push({
+            ev: {
+              kind: "acl",
+              host,
+              label: `${host} · ${aclName}`,
+              lines,
+              focusIndex: null,
+              cite,
+              how: `not named by this finding, but its list name uses a word the finding uses: ${why}`,
+              matched: true,
+            },
+            score: hits.length,
+            order: order++,
+          });
+          continue;
+        }
+        contextAcls.push({
           kind: "acl",
           host,
           label: `${host} · ${aclName}`,
           lines,
           focusIndex: null,
-          cite: first.cite.replace(/\[\d+]$/, ""),
-          how: `not named by this finding — it is an access list collected on ${host}`,
+          cite,
+          how: `not named by this finding and not ranked — an access list collected on ${host}, in collection order`,
         });
       }
     }
-    for (const i of interfacesOf(host).slice(0, 6)) {
-      out.push({
+
+    // The host's own deductions that tie a state the finding states to a specific port.
+    const deducedPorts = new Map<string, string>();
+    for (const d of deviceById.get(host)?.deductions ?? []) {
+      const m = DEDUCTION_RE.exec(d);
+      const tag = m?.[1];
+      const port = m?.[2];
+      if (tag === undefined || port === undefined || !matchable(tag)) continue;
+      if (text.includes(normalise(tag))) deducedPorts.set(port, d.trim());
+    }
+
+    let unmatched = 0;
+    for (const i of interfacesOf(host)) {
+      const reasons: string[] = [];
+      let score = 0;
+      const deduction = deducedPorts.get(i.port);
+      if (deduction !== undefined) {
+        score += 2;
+        reasons.push(`${host}'s own deductions name it (“${deduction}”)`);
+      }
+      /* Status only, never description: a description is free text an operator typed, and matching
+         it measured badly — F104 ("local user(s) … password") "matched" core1 Vlan10 because that
+         SVI is described "USERS". A status is a collected STATE, which is what a finding is about. */
+      if (matchable(i.status) && text.includes(normalise(i.status))) {
+        score += 1;
+        reasons.push(`its collected status “${i.status}” is the state this finding describes`);
+      }
+      if (score > 0) {
+        matched.push({
+          ev: {
+            kind: "interface",
+            host,
+            label: `${host} ${i.port}${i.status === null ? "" : ` (${i.status})`}`,
+            record: i,
+            cite: i.cite,
+            how: `not named literally by this finding, but it matches it: ${reasons.join("; ")}`,
+            matched: true,
+          },
+          score,
+          order: order++,
+        });
+        continue;
+      }
+      if (unmatched >= 6) continue;
+      unmatched += 1;
+      contextIfaces.push({
         kind: "interface",
         host,
         label: `${host} ${i.port}`,
         record: i,
         cite: i.cite,
-        how: `not named by this finding — it is an interface record collected on ${host}`,
+        how: `not named by this finding and not ranked — an interface record collected on ${host}, in collection order`,
       });
     }
   }
-  return out;
+
+  const ranked = matched.sort((a, b) => b.score - a.score || a.order - b.order).map((m) => m.ev);
+  return [...ranked, ...contextIfaces, ...contextAcls];
 }
+
+/** True when a nearest record was ranked first because it matches the finding's own words. */
+export const isMatchedNearest = (t: ConfigEvidence): boolean => t.kind !== "route" && t.matched === true;
 
 /* ══ the configuration excerpt ═════════════════════════════════════════════ */
 
@@ -478,7 +625,11 @@ function ParsedRecord({
           <span className="ev-cfg__literal-v">
             {orNotObserved(i.description, (s) => <code>{s}</code>, {
               what: "interface description",
-              why: "this interface carries no description in the collected configuration",
+              /* An observed negative only where the running configuration WAS collected; otherwise
+                 the record is missing, not empty (2026-09-22 critic, B1 — same class as DevicePane). */
+              why: i.runConfigObserved
+                ? "this interface carries no description in the collected configuration"
+                : "the running configuration for this port was not collected, so its description is unknown — not absent",
               compact: true,
             })}
           </span>
@@ -563,7 +714,20 @@ const FAMILY_LABEL: Readonly<Record<RecordFamily, string>> = {
   impact: "failure-impact record",
 };
 
+/**
+ * How many records of this family the collection produced for this host — or null when it produced
+ * NONE. A zero here is never a measurement: no family in this snapshot is a complete per-host
+ * census (the Device pane says of the same host "the collection produced no l3_forwarding row …
+ * whether it carries an SVI at all was not established here"), so "0 L3 interface records" stated
+ * as a count contradicted it. The class is fixed here, once, for every family — not by listing the
+ * families that happened to be caught — and the caller renders null through NotObserved.
+ */
 function familyCount(family: RecordFamily, host: string): number | null {
+  const n = rawFamilyCount(family, host);
+  return n === null || n === 0 ? null : n;
+}
+
+function rawFamilyCount(family: RecordFamily, host: string): number | null {
   switch (family) {
     case "physical": return (physicalByHost.get(host) ?? []).length;
     case "interfaces": return interfacesOf(host).length;
@@ -611,14 +775,54 @@ export interface EvidencePaneProps {
   className?: string;
 }
 
+/**
+ * The finding's OWN evidence pointer, exactly as the producer published it — and what it is not.
+ *
+ * A1 (2026-09-22): the source snapshot was searched for any per-finding pointer to an interface,
+ * an ACL line or a configuration block that the compiler might be dropping. There is none; the
+ * one producer field the compiler did drop is `source_command` (33 of 146 rows), the show-command
+ * the engine cites for the finding's category. It is shown here, in the header, because it is the
+ * only evidence link the ENGINE made for most findings — every other record in this pane is one we
+ * reached by matching words or listing a host's records. It names a command, and the snapshot keeps
+ * no raw command output, so it is stated as provenance and never offered as a record to open.
+ * One owner: every finding renders exactly one of the two branches below.
+ */
+function FindingSource({ finding }: { finding: Finding }): ReactElement {
+  const cmd = finding.sourceCommand ?? null;
+  return (
+    <p className="ev__jump ev__source" data-finding-source={cmd === null ? "uncited" : "cited"}>
+      <span className="ev__jump-note">
+        {cmd === null ? (
+          "Source: the engine cites no source command for this finding, so it names no evidence of its own beyond the devices listed."
+        ) : (
+          <>
+            Source: the engine cites <span className="ev-mono">{cmd}</span> for this finding (it assigns the
+            command by category). The command&rsquo;s output is not held in this snapshot, so this says
+            where the evidence came from; it is not a record to open.
+          </>
+        )}
+      </span>
+    </p>
+  );
+}
+
 export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePaneProps): ReactElement {
   const findingId = useInvestigation((s) => s.findingId);
   const selectFinding = useInvestigation((s) => s.selectFinding);
   const selectDevice = useInvestigation((s) => s.selectDevice);
+  const deviceId = useInvestigation((s) => s.deviceId);
   const setEvidenceTab = useInvestigation((s) => s.setEvidenceTab);
   const openCite = useOpenCite(onOpenCite);
 
-  const [openTarget, setOpenTarget] = useState<ConfigEvidence | null>(null);
+  /* The open excerpt belongs to the finding it was opened FOR. It used to be plain state, so a record
+     opened under F004 stayed open under F099 — present in F099's list, but opened by nobody for
+     F099. Keying it to the finding id closes it on every selection change without an effect. */
+  const [opened, setOpened] = useState<{ findingId: string; target: ConfigEvidence } | null>(null);
+  const openTarget = opened !== null && opened.findingId === findingId ? opened.target : null;
+  const setOpenTarget = useCallback(
+    (t: ConfigEvidence | null) => setOpened(t === null || findingId === null ? null : { findingId, target: t }),
+    [findingId],
+  );
   /* The element that opened the excerpt, captured at click time rather than bound to the first
      button: focus must return to the control the reader actually used, not to the one that
      happens to be first. */
@@ -626,9 +830,42 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
 
   const finding = findingId === null ? null : (findingById.get(findingId) ?? null);
 
+  /* SELECTING FROM INSIDE THIS PANE RE-RENDERS THE CONTROL AWAY. Every in-pane selection route —
+     the rest-state primary button, the "Next by rank" list, the sibling list — sits in markup that
+     the new selection replaces, so the focused button was removed and focus fell to <body> (measured
+     2026-09-22: Enter on "F002 …" left document.activeElement === BODY). All three go through
+     `selectHere`, which arms a one-shot hand-off; once the new chain has rendered, focus lands on its
+     heading — the thing the reader asked for — unless focus has meanwhile gone somewhere live. */
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const focusTitlePending = useRef(false);
+  const selectHere = useCallback(
+    (id: string) => {
+      focusTitlePending.current = true;
+      selectFinding(id);
+    },
+    [selectFinding],
+  );
+  useEffect(() => {
+    if (!focusTitlePending.current) return;
+    focusTitlePending.current = false;
+    const active = document.activeElement;
+    const lost = active === null || active === document.body || !active.isConnected;
+    if (lost) titleRef.current?.focus();
+  }, [findingId]);
+
   const named = useMemo(() => (finding ? configEvidenceFor(finding) : []), [finding]);
   const nearest = useMemo(() => (finding && named.length === 0 ? nearestConfigFor(finding) : []), [finding, named.length]);
   const targets = named.length > 0 ? named : nearest;
+  /* The step-4 list is capped so a many-host finding does not bury the chain, but the cap is
+     STATED and reversible, and it never cuts an access list: an ACL is the only record kind that
+     carries literal configuration text, so it is the last thing a cap may hide. The cut used to be
+     a silent `slice(0, 8)` under a sentence counting all of them — "The 10 records below" over 8
+     buttons, with MGMT_IN and INET_RETURN the two dropped (2026-09-22 critic, A1). */
+  const [allTargetsFor, setAllTargetsFor] = useState<string | null>(null);
+  const showAllTargets = finding !== null && allTargetsFor === finding.id;
+  const shownTargets = showAllTargets
+    ? targets
+    : targets.filter((t, i) => i < TARGET_CAP || t.kind === "acl");
 
   const show = useCallback(
     (t: ConfigEvidence, trigger: HTMLButtonElement) => {
@@ -636,13 +873,13 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
       if (onShowConfig) onShowConfig(t);
       else setOpenTarget(t);
     },
-    [onShowConfig],
+    [onShowConfig, setOpenTarget],
   );
 
   const closeConfig = useCallback(() => {
     setOpenTarget(null);
     triggerRef.current?.focus();
-  }, []);
+  }, [setOpenTarget]);
 
   /* The chain's own step-4 control sits at the bottom of a long pane: measured at 1920×1080 with
      the pane at scrollTop 0 it was 23 px below the fold, at 1600×900 it was 203 px below, and at
@@ -654,7 +891,14 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
   const first = targets[0] ?? null;
 
   if (finding === null) {
-    const top = [...fabric.findings].sort(bySeverityThenRank)[0];
+    /* THE REST STATE IS A PREVIEW, NOT A BLANK. The blind panel measured this rail at ~26 % of
+       the width at rest showing one sentence and one button. It now shows what the button would
+       open — the top finding's own summary — and the next few in rank order, each one click from
+       its chain. It is labelled as a preview: nothing is SELECTED until the reader asks, so no
+       other surface re-aims because this rail has content. */
+    const ranked = [...fabric.findings].sort(bySeverityThenRank);
+    const top = ranked[0];
+    const next = ranked.slice(1, 1 + PREVIEW_NEXT);
     return (
       <section className={cx("ev", className)} aria-label="Evidence chain">
         <header className="ev__head">
@@ -665,17 +909,49 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
             title="No finding is selected"
             reason={
               findingId === null
-                ? "Select a finding in the priority queue and the chain from it to the configuration text behind it appears here."
+                ? "Select a finding in the priority queue and its chain to the configuration text appears here. The highest-ranked one is previewed below."
                 : `The investigation names finding ${findingId}, but no such record exists in this snapshot. The link may predate the snapshot in the header.`
             }
             action={
               top ? (
-                <Button variant="primary" onClick={() => selectFinding(top.id)}>
+                <Button variant="primary" onClick={() => selectHere(top.id)}>
                   Open the highest-priority finding ({top.id})
                 </Button>
               ) : undefined
             }
           />
+          {top ? (
+            <section className="ev-preview" aria-label={`Preview of ${top.id}, not selected`}>
+              <p className="ev-preview__kicker">Highest priority · preview, not selected</p>
+              <div className="ev__idline">
+                <SeverityBadge severity={top.severity} />
+                <span className="ev-mono ev__id">{top.id}</span>
+                <CiteButton cite={top.cite} onOpen={openCite} />
+              </div>
+              <p className="ev-preview__title">{top.title}</p>
+              <p className="ev-preview__hosts ev-mono ev-wrap">
+                {top.devices.length > 0 ? top.devices.join(", ") : "names no host"}
+                {top.category ? <span className="ev-preview__cat"> · {top.category}</span> : null}
+              </p>
+              {top.detail ? <p className="ev-prose ev-preview__detail">{top.detail}</p> : null}
+            </section>
+          ) : null}
+          {next.length > 0 ? (
+            <section aria-label="Next by rank">
+              <h3 className="ev-sub">Next by rank</h3>
+              <ul className="ev-siblings">
+                {next.map((f) => (
+                  <li key={f.id} className="ev-siblings__item">
+                    <SeverityBadge severity={f.severity} compact />
+                    <button type="button" className="ev-devbtn ev-siblings__btn" onClick={() => selectHere(f.id)}>
+                      <span className="ev-mono">{f.id}</span>
+                      <span className="ev-siblings__title">{f.title}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </div>
       </section>
     );
@@ -692,7 +968,9 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
           <span className="ev-mono ev__id">{finding.id}</span>
           <CiteButton cite={finding.cite} onOpen={openCite} />
         </div>
-        <h2 className="ev__title">{finding.title}</h2>
+        <h2 className="ev__title" ref={titleRef} tabIndex={-1}>
+          {finding.title}
+        </h2>
         <Kv
           rows={[
             { k: "Category", v: orNotObserved(finding.category, (s) => s, { what: "category", compact: true }) },
@@ -703,24 +981,58 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
           onOpenCite={openCite}
           className="ev__facts"
         />
+        <FindingSource finding={finding} />
         {first === null ? null : (
-          <div className="ev__jump">
+          <div className="ev__jump" data-evidence-route={named.length > 0 ? "named" : isMatchedNearest(first) ? "ranked" : "context"}>
+            {/* A record reached only by collection order is CONTEXT, not the configuration evidence
+                behind the finding: 133 of 139 fallback landings were such records, and the primary
+                button presented each ("Show the first record collected on core1: description
+                to-core2-a" for a hardware-support finding) as the evidence route (2026-09-22
+                critic, A1). The primary action is reserved for a record the finding names or one
+                ranked by its own words; an unranked record is offered as a secondary browse. */}
             <Button
-              variant="primary"
+              variant={named.length > 0 || isMatchedNearest(first) ? "primary" : "ghost"}
               size="sm"
               onClick={(e) => show(first, e.currentTarget)}
             >
               {named.length > 0
                 ? `Show the configuration this finding names: ${first.label}`
-                : `Show the nearest configuration we hold: ${first.label}`}
+                : isMatchedNearest(first)
+                  ? `Show the record that matches this finding: ${first.label}`
+                  : `Browse ${first.host}'s collected records (context, not this finding's evidence)`}
             </Button>
             {named.length > 0 ? null : (
               <span className="ev__jump-note">
-                Not this finding&rsquo;s own source — it names no configuration line.
+                {isMatchedNearest(first)
+                  ? first.kind === "acl"
+                    ? "Matched by its list name, not quoted by the finding — the finding names no configuration line."
+                    : "Matched by its state, not quoted by the finding — the finding names no configuration line."
+                  : "No configuration evidence route: the finding names no configuration line and nothing we hold matches its words. The records there are in collection order and are context, not relevance."}
               </span>
             )}
           </div>
         )}
+        {/* Selecting a finding re-aims the highlight, the queue and this chain — NOT the device
+            subject (design-brief §5.1: the camera and the device surfaces stay where the reader
+            put them). A reader on core2 who picks a core1 finding therefore still sees core2 in the
+            Device pane; that is stated here, with the one-key route to move it (2026-09-22
+            critic, A4), rather than left for the reader to mistake for a failed re-aim. */}
+        {finding.devices[0] !== undefined && deviceId !== null && !finding.devices.includes(deviceId) ? (
+          <p className="ev__jump ev__devnote" data-finding-device-note="">
+            <span className="ev__jump-note">
+              {`The Device pane still shows ${deviceId}: selecting a finding moves the highlight and the queue, not the device.`}
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-keyshortcuts="d"
+              onClick={() => selectDevice(finding.devices[0] ?? null)}
+            >
+              {`Select ${finding.devices[0]}`}
+              <kbd className="ev__kbd" aria-hidden="true">D</kbd>
+            </Button>
+          </p>
+        ) : null}
       </header>
 
       <div className="ev__body scroll-scrim">
@@ -783,14 +1095,17 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
               <CiteButton cite={finding.cite} onOpen={openCite} />
             </ChainStep>
 
-            <ChainStep n={2} title={`The ${plural(finding.devices.length, "device")} it names`}>
+            <ChainStep n={2} title={finding.devices.length === 0 ? "The fleet it speaks for" : `The ${plural(finding.devices.length, "device")} it names`}>
               {finding.devices.length === 0 ? (
-                <NotObserved
-                  what="devices"
-                  why="this finding names no device, so it cannot be traced to one"
-                  cite={finding.cite}
-                  onOpenCite={openCite}
-                />
+                <>
+                  <NotObserved
+                    what="devices"
+                    why="this finding names no device, so it cannot be traced to one"
+                    cite={finding.cite}
+                    onOpenCite={openCite}
+                  />
+                  <FleetDenominator finding={finding} />
+                </>
               ) : (
                 <ul className="ev-devices">
                   {finding.devices.map((host) => {
@@ -801,8 +1116,15 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                           type="button"
                           className="ev-devbtn"
                           onClick={() => {
+                            /* A device selection moves the SUBJECT, never the reader's tab —
+                               the same rule as a fabric, palette or hop pick, all of which call
+                               `selectDevice` alone. This chip used to force Summary, so a reader
+                               on Ports, Routing or ACL lost that choice only when the device came
+                               from here (acceptance A4). Every Device-pane tab renders for every
+                               device — an absent one explains itself — so there is no record
+                               this tab cannot show and nothing to fall back from. Step 3 below is
+                               different by design: it is a route INTO a named evidence family. */
                             selectDevice(host);
-                            setEvidenceTab("summary");
                           }}
                         >
                           <span className="ev-mono">{host}</span>
@@ -854,7 +1176,11 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                             {n === null ? (
                               <NotObserved
                                 what={FAMILY_LABEL[family]}
-                                why={`no ${FAMILY_LABEL[family]}s were collected for ${host}`}
+                                why={
+                                  deviceById.get(host)?.collected === false
+                                    ? `${host} was never collected (topology only), so it has no ${FAMILY_LABEL[family]}s to count`
+                                    : `the collection produced no ${FAMILY_LABEL[family]} for ${host}; whether it has none was not established here`
+                                }
                                 compact
                               />
                             ) : (
@@ -881,19 +1207,45 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                   land on.
                   {nearest.length === 0
                     ? null
-                    : ` The ${plural(nearest.length, "record")} below are the nearest configuration evidence we hold for the hosts it names — shown as context, not as this finding's source.`}
+                    : nearest.some(isMatchedNearest)
+                      ? ` The ${plural(nearest.length, "record")} below are configuration evidence we hold for the hosts it names — those matching the finding's words first, then the rest in collection order — shown as context, not as this finding's source.`
+                      : ` The ${plural(nearest.length, "record")} below are configuration evidence we hold for the hosts it names, in collection order: none of them matches the finding's words, so none is ranked as nearest. Shown as context, not as this finding's source.`}
                 </p>
               )}
               {targets.length === 0 ? (
                 <NotObserved
                   what="configuration evidence"
-                  why={`no access list, interface record or route entry was collected for ${finding.devices.join(", ") || "the hosts this finding names"}`}
+                  why={
+                    /* Two different absences, and they must not share a sentence.
+                       A finding that NAMES hosts we hold nothing for is a genuine collection gap,
+                       and saying so is true. A finding that names NO host is a conclusion drawn
+                       across the whole fleet — F142, "No QoS configured anywhere", rests on a
+                       complete sweep of every assessable device, all of which WERE collected.
+                       Describing that as "not collected for the hosts this finding names" was
+                       false twice over (there are no such hosts, and the data exists), and it is
+                       the model-gap-as-collection-gap defect already fixed once in the compiler:
+                       it sends an engineer to gather evidence the snapshot already holds, and it
+                       quietly weakens a finding that is actually well-founded. */
+                    finding.devices.length === 0
+                      ? "this finding is a conclusion drawn across the whole fleet rather than about one device, so there is no single record behind it to open — the evidence is that no assessable device carried the configuration it describes"
+                      : `no access list, interface record or route entry was collected for ${finding.devices.join(", ")}`
+                  }
                   cite={finding.cite}
                   onOpenCite={openCite}
                 />
               ) : (
-                <div className="ev-cfgactions">
-                  {targets.slice(0, 8).map((t, i) => (
+                <div className="ev-cfgactions" data-targets-shown={shownTargets.length} data-targets-total={targets.length}>
+                  {shownTargets.length < targets.length ? (
+                    <p className="ev-step__text ev-cfgactions__cap">
+                      Showing {shownTargets.length} of {plural(targets.length, "record")} — every access
+                      list is shown; {plural(targets.length - shownTargets.length, targets.every((t) => t.kind !== "route") ? "interface record" : "interface or route record")} further down
+                      the collection order {targets.length - shownTargets.length === 1 ? "is" : "are"} folded.{" "}
+                      <Button variant="ghost" size="sm" onClick={() => setAllTargetsFor(finding.id)}>
+                        Show all {targets.length}
+                      </Button>
+                    </p>
+                  ) : null}
+                  {shownTargets.map((t, i) => (
                     <Button
                       key={`${t.kind}-${t.cite}`}
                       variant={i === 0 && named.length > 0 ? "primary" : "secondary"}
@@ -914,11 +1266,18 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
               ) : null}
             </ChainStep>
 
-            <ChainStep n={5} title="The raw snapshot record">
+            {/* This step used to be titled "The raw snapshot record" and to say the Inspector walks
+                the cite into the source snapshot and shows "the record itself". The source
+                snapshot is not bundled with this build, and the Inspector says so: it shows the
+                COMPILED record that carries the citation. A projection presented as the source
+                bytes is the exact overclaim B6 forbids, so the words now match the Inspector's. */}
+            <ChainStep n={5} title="The compiled record behind the citation">
               <p className="ev-step__text">
-                The Inspector resolves <span className="ev-mono">{finding.cite}</span> by walking
-                that path into the source snapshot, so what it shows is the record itself rather
-                than this pane&rsquo;s reading of it.
+                <span className="ev-mono">{finding.cite}</span> is a path into the source snapshot,
+                which is not bundled with this build. The Inspector shows the compiled record that
+                carries this citation — this build&rsquo;s projection of the source record, not its
+                bytes — and its Provenance tab names the source file and sha256 needed to read the
+                original.
               </p>
               <CiteButton cite={finding.cite} onOpen={openCite} />
               <SnapshotBinding />
@@ -926,12 +1285,16 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
           </ol>
         </Section>
 
-        <Section
-          title="Other findings on these hosts"
-          note="What else is wrong with the same boxes — the comparison a single finding cannot give you."
-        >
-          <SiblingFindings finding={finding} onSelect={selectFinding} onOpenCite={openCite} />
-        </Section>
+        {/* A finding that names no host has no "these hosts". Rendering the block anyway said "This
+            is the only punchlist entry listing them" about an empty list — a sentence about nothing. */}
+        {finding.devices.length === 0 ? null : (
+          <Section
+            title="Other findings on these hosts"
+            note="What else is wrong with the same boxes — the comparison a single finding cannot give you."
+          >
+            <SiblingFindings finding={finding} onSelect={selectHere} onOpenCite={openCite} />
+          </Section>
+        )}
 
         {/* The full ACL is rendered here as well as inside the excerpt, so a reader who reached
             this finding from an ACL host can read the policy without opening anything. */}
@@ -944,6 +1307,53 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
 
       <LiveRegion message={`Evidence for ${finding.id}: ${finding.title}`} />
     </section>
+  );
+}
+
+/**
+ * The denominator a fleet-wide finding states for itself, reconciled against the coverage.
+ *
+ * F142 says "None of the 18 assessable device(s)…" while 23 devices were collected and 26 exist. A
+ * fleet-wide ABSENCE claim is only as wide as its denominator, and an unexplained 18 silently
+ * narrows "anywhere" to a set nobody named. Read from the finding's own text (the producer owns the
+ * number) and set beside the compiled coverage (which owns the others); neither is suppressed.
+ */
+export function statedDenominator(finding: Finding): number | null {
+  const m = /\b(\d+)\s+assessable\s+device/i.exec(`${finding.title} ${finding.detail ?? ""}`);
+  return m === null ? null : Number(m[1]);
+}
+
+function FleetDenominator({ finding }: { finding: Finding }): ReactElement {
+  const stated = statedDenominator(finding);
+  const total = fabric.devices.length;
+  const collected = fabric.devices.filter((d) => d.collected).length;
+  if (stated === null) {
+    return (
+      <p className="ev-step__text ev-step__text--absent">
+        It states no denominator of its own, so how many of the {collected} collected of {total} devices it
+        swept is not observed.
+      </p>
+    );
+  }
+  const outside = collected - stated;
+  return (
+    <ul className="ev-denominator" aria-label="The finding's denominator against this snapshot's coverage">
+      <li>
+        <span className="ev-mono">{stated}</span> assessable devices — the denominator the finding states
+      </li>
+      <li>
+        <span className="ev-mono">{collected}</span> of <span className="ev-mono">{total}</span> devices collected
+        in this snapshot
+      </li>
+      {outside !== 0 ? (
+        <li data-disagreement="true">
+          {`DISAGREEMENT: the finding's denominator (${stated}) differs from the collected count (${collected}). `}
+          {outside > 0
+            ? `${outside} collected device(s) fall outside it, and the finding does not name which or why, so its "anywhere" covers ${stated} of ${total} devices, not the fleet. For the other ${total - stated}, the configuration it describes is not observed rather than absent.`
+            : "It counts more devices than were collected; which records it counted is not observed."}
+        </li>
+      ) : null}
+    </ul>
   );
 }
 

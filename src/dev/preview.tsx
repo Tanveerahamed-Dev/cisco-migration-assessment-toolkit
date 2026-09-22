@@ -21,7 +21,7 @@
  * patching source and settled in docs/render-decisions.md.
  */
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { computeLayout } from "../fabric3d/layout";
 import { createScene } from "../fabric3d/scene";
 import { exposeSceneForCapture } from "../fabric3d/devHandle";
@@ -29,6 +29,10 @@ import { FabricLabels, createHoverChannel } from "../fabric3d/FabricLabels";
 import type { FabricScene, SceneStats } from "../fabric3d/contract";
 import { fabric } from "../core/data";
 import "../core/tokens.css";
+// The app's base stylesheet: it is what puts `--font-ui` on <body>. Without it every label here
+// inherited the UA default (Times New Roman) while the app renders Inter, so any label judgement
+// made on this surface was made on the wrong font. panels-preview.tsx imports it for the same reason.
+import "../app/shell.css";
 // The label layer is DOM and its positioning lives entirely in this stylesheet. Mounting the
 // component without it leaves 160 correctly-built elements stacked in the document flow at the top
 // left, which looks exactly like "labels are broken" and is really "no stylesheet".
@@ -167,5 +171,15 @@ function Preview() {
   );
 }
 
-const el = document.getElementById("root");
-if (el) createRoot(el).render(<StrictMode><Preview /></StrictMode>);
+/* One root per container, however many times this module is evaluated. A re-evaluation (a Vite HMR
+   update of this module or of anything it imports that is not a boundary) used to call createRoot
+   on the same #root again, and React logged "calling ReactDOMClient.createRoot() on a container that
+   has already been passed to createRoot()" — twice per load in the C5 audit's console capture, on
+   the very surface used to catch shader-compile errors, where a real error must not hide in noise.
+   The root is kept on the element and re-rendered instead. */
+type RootHost = HTMLElement & { __atlasPreviewRoot?: Root };
+const el = document.getElementById("root") as RootHost | null;
+if (el) {
+  el.__atlasPreviewRoot ??= createRoot(el);
+  el.__atlasPreviewRoot.render(<StrictMode><Preview /></StrictMode>);
+}

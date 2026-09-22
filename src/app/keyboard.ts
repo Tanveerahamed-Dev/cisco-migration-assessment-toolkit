@@ -196,6 +196,60 @@ const safeInTextEntry = (keys: string): boolean =>
     (c) => c.mod || c.ctrl || c.meta || c.alt || !isPrintable(c.key) || c.key === "escape",
   );
 
+/**
+ * WCAG 2.1.4 Character Key Shortcuts: a binding is a CHARACTER-KEY binding when any step of it is
+ * a printable character pressed without Ctrl, Alt, Cmd or the platform modifier (Shift does not
+ * count — `?` and `Shift+V` are still typed characters). A sequence such as `g f` qualifies on its
+ * first step. Derived from the spec, never listed: a binding added next month is covered too.
+ */
+export const isCharacterKeyBinding = (keys: string): boolean =>
+  parseSpec(keys).some((c) => !c.mod && !c.ctrl && !c.meta && !c.alt && isPrintable(c.key));
+
+/* ══ the character-key setting (WCAG 2.1.4) ════════════════════════════════
+   The mechanism that lets a user turn every single-character binding off. Speech-input users and
+   anyone who brushes the keyboard otherwise fire commands with stray characters. Off, every such
+   binding stops matching — enforced in `eligible`, so it covers the whole class rather than a list
+   — and each verb stays reachable from the command palette (Ctrl/Cmd+K) and its on-screen control.
+   A per-viewer preference: it lives in localStorage, never in the investigation URL. */
+
+const CHARACTER_KEYS_STORAGE = "atlas-scope.characterKeyShortcuts";
+
+function readCharacterKeys(): boolean {
+  try {
+    return typeof window === "undefined" || window.localStorage.getItem(CHARACTER_KEYS_STORAGE) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+let characterKeysOn = readCharacterKeys();
+const characterKeyListeners = new Set<() => void>();
+
+export function setCharacterKeyShortcuts(on: boolean): void {
+  if (characterKeysOn === on) return;
+  characterKeysOn = on;
+  try {
+    window.localStorage.setItem(CHARACTER_KEYS_STORAGE, on ? "on" : "off");
+  } catch {
+    /* Site data blocked: the choice still holds for this session. */
+  }
+  if (!on) setPending([]);
+  for (const l of characterKeyListeners) l();
+}
+
+export const characterKeyShortcutsEnabled = (): boolean => characterKeysOn;
+
+export function useCharacterKeyShortcuts(): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      characterKeyListeners.add(cb);
+      return () => characterKeyListeners.delete(cb);
+    },
+    () => characterKeysOn,
+    () => true,
+  );
+}
+
 /* ══ display ═══════════════════════════════════════════════════════════════ */
 
 export interface ShortcutToken {
@@ -473,8 +527,16 @@ export function setHelpOpen(v: boolean, focusReturn?: HTMLElement | null): void 
     // Focus goes back to the exact invoking element (WCAG 2.4.3, acceptance D3). The Dialog
     // primitive also restores, but it restores to whatever had focus when it mounted; a caller
     // that opened the sheet from a menu item that has since unmounted needs this explicit target.
-    helpReturn?.focus?.();
+    // Focused once now and once after React has unmounted the sheet: while the modal is still
+    // mounted the page behind it is `inert` and refuses focus, so the first call can be a no-op.
+    const target = helpReturn;
     helpReturn = null;
+    target?.focus?.();
+    if (target && typeof setTimeout === "function") {
+      setTimeout(() => {
+        if (target.isConnected && document.activeElement !== target) target.focus?.();
+      }, 0);
+    }
   }
 }
 
@@ -501,6 +563,7 @@ interface Candidate {
 function eligible(s: Shortcut, scope: ShortcutScope, inText: boolean): boolean {
   const allowed = s.allowInInput === true && safeInTextEntry(s.keys);
   if (inText && !allowed) return false;
+  if (!characterKeysOn && isCharacterKeyBinding(s.keys)) return false;
   // Behind a modal, only the modal's own bindings and the explicitly-global ones (Escape, the
   // palette) may act. A `g f` that navigated the app behind an open dialog would leave the user
   // reading a surface they can no longer see.

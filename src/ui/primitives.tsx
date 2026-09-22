@@ -34,7 +34,8 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import type { Band as BandName, Cite as CitePath, OpStatus, Severity } from "../core/types";
+import type { BandPresentation } from "../core/band-qualification";
+import type { Cite as CitePath, OpStatus, Severity } from "../core/types";
 import {
   IconCheck,
   IconChevronDown,
@@ -405,18 +406,25 @@ export function StateDot({
  * A health band. `null` is the common case in this data and it is NOT a passing grade: three
  * devices carry no band at all, and they render as not-observed rather than as Good.
  */
+/**
+ * A health band pill. It takes the band owner's PRESENTATION (core/band-qualification.ts
+ * `presentBand`), never a raw band: a favourable band on a device whose score partly measures
+ * missing evidence prints "Excellent (partial)" in the neutral ink with a dashed outline and names
+ * the gaps in its tooltip. The word "partial" carries the qualification, so it survives greyscale
+ * and forced colours; the neutral ink and dashed edge only reinforce it (B1).
+ */
 export function Band({
   band,
   cite,
   onOpenCite,
   className,
 }: {
-  band: BandName | null | undefined;
+  band: BandPresentation | null | undefined;
   cite?: CitePath;
   onOpenCite?: (cite: CitePath) => void;
   className?: string;
 }): ReactNode {
-  if (!band) {
+  if (!band || band.legendKey === "none") {
     return (
       <NotObserved
         what="health band"
@@ -428,8 +436,18 @@ export function Band({
     );
   }
   return (
-    <span className={cx("ui-band", className)} data-band={band}>
-      {band}
+    <span
+      className={cx("ui-band", band.qualified && "ui-band--partial", className)}
+      data-band={band.legendKey}
+      {...(band.qualified
+        ? {
+            "data-band-partial": "",
+            title: band.sentence,
+            style: { "--band-fill": `var(${band.colorToken})`, borderStyle: "dashed" } as CSSProperties,
+          }
+        : {})}
+    >
+      {band.label}
     </span>
   );
 }
@@ -858,6 +876,7 @@ type TriggerLike = {
   "aria-describedby"?: string;
   "aria-expanded"?: boolean;
   "aria-haspopup"?: "dialog";
+  "aria-controls"?: string;
   onMouseEnter?: MouseEventHandler<HTMLElement>;
   onMouseLeave?: MouseEventHandler<HTMLElement>;
   onFocus?: FocusEventHandler<HTMLElement>;
@@ -1029,33 +1048,98 @@ export function Popover({
   useEffect(() => {
     if (!open) return;
     setRect(rectOf(anchorRef.current?.firstElementChild as HTMLElement | null));
+    const owns = (t: EventTarget | null): boolean =>
+      t instanceof Node && (panelRef.current?.contains(t) === true || anchorRef.current?.contains(t) === true);
+    /* CAPTURE phase. In the bubble phase any component under focus that handles Escape itself and
+       stops propagation (a grid, the query input) swallowed it, and the popover stayed open over
+       the content (A11Y critic 2026-09-21, D3). Focus returns to the trigger only when it was
+       still inside the popover or on the trigger — never pulled back from somewhere else. */
     const onKey = (e: KeyboardEvent): void => {
+      /* The panel is portalled to the end of <body>, so its DOM position is not its reading
+         position. MEASURED (A11Y critic, D3): Tab past the last checkbox of "More display options"
+         went to <body> and then to "Skip to the fabric" at the top of the page, dialog still open.
+         Tab order is restored to where the panel sits VISUALLY — straight after its trigger:
+         Tab off the last control closes the panel and continues with the next tab stop after the
+         trigger; Shift+Tab off the first control goes back to the trigger. */
+      if (e.key === "Tab" && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        const panel = panelRef.current;
+        const triggerNode = anchorRef.current?.firstElementChild as HTMLElement | null;
+        if (panel === null || triggerNode === null || !panel.contains(document.activeElement)) return;
+        const inside = focusablesIn(panel).filter((el) => el.tabIndex >= 0);
+        const first = inside[0];
+        const last = inside[inside.length - 1];
+        if (e.shiftKey) {
+          if (first !== undefined && document.activeElement !== first) return;
+          e.preventDefault();
+          triggerNode.focus();
+          return;
+        }
+        if (last !== undefined && document.activeElement !== last) return;
+        const order = focusablesIn(document.body).filter(
+          (el) => el.tabIndex >= 0 && !panel.contains(el) && el.getClientRects().length > 0,
+        );
+        const next = order.find(
+          (el) => el !== triggerNode && (triggerNode.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 && !triggerNode.contains(el),
+        );
+        e.preventDefault();
+        setOpen(false);
+        (next ?? triggerNode).focus();
+        return;
+      }
       if (e.key !== "Escape") return;
       e.stopPropagation();
+      const hadFocus = owns(document.activeElement);
       setOpen(false);
-      (anchorRef.current?.firstElementChild as HTMLElement | null)?.focus();
+      if (hadFocus) (anchorRef.current?.firstElementChild as HTMLElement | null)?.focus();
     };
     const onDown = (e: MouseEvent): void => {
-      const t = e.target as Node;
-      if (panelRef.current?.contains(t) || anchorRef.current?.contains(t)) return;
+      if (owns(e.target)) return;
       setOpen(false);
     };
-    document.addEventListener("keydown", onKey);
+    /* A non-modal popover closes when focus leaves it (trigger + panel), as a disclosure does:
+       left open behind the user's Tab it sat over the content with nothing on screen tied to it. */
+    const onFocusIn = (e: FocusEvent): void => {
+      if (owns(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKey, true);
     document.addEventListener("mousedown", onDown);
+    document.addEventListener("focusin", onFocusIn);
     return () => {
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("focusin", onFocusIn);
     };
   }, [open, setOpen]);
 
+  /* Focus moves INTO the panel as it opens — onto its first control, or, when it holds only text
+     (an explanation toggle), onto the panel itself, so the dialog's name and its content are
+     announced. MEASURED before (A11Y critic, D3): "Why the two tables are counted separately"
+     opened a role=dialog while focus stayed on the trigger with no aria-controls, so a screen
+     reader heard "expanded" and nothing of what had opened. Escape / Tab still return exactly as
+     for a panel with controls (the key handler treats the panel as inside). */
   useEffect(() => {
-    if (open) focusablesIn(panelRef.current)[0]?.focus();
+    if (!open) return;
+    const panel = panelRef.current;
+    (focusablesIn(panel)[0] ?? panel)?.focus({ preventScroll: true });
   }, [open]);
+
+  /* An end-aligned panel is pulled left of its trigger by its own width, which the anchor rect
+     cannot know; a trigger near the left edge put the panel's first characters off-screen
+     (measured: left -6.7 px on "More display options"). Nudge it back inside an 8 px gutter. */
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!open || panel === null) return;
+    panel.style.marginLeft = "";
+    const left = panel.getBoundingClientRect().left;
+    if (left < 8) panel.style.marginLeft = `${Math.ceil(8 - left)}px`;
+  }, [open, rect]);
 
   const p = trigger.props;
   const triggerEl = cloneElement(trigger, {
     "aria-expanded": open,
     "aria-haspopup": "dialog",
+    ...(open ? { "aria-controls": id } : {}),
     onClick: (e) => {
       p.onClick?.(e);
       setOpen(!open);
@@ -1073,12 +1157,18 @@ export function Popover({
             aria-label={label}
             aria-modal="false"
             id={id}
+            tabIndex={-1}
             className="ui-popover"
             data-align={align}
             style={
               {
                 "--pop-top": `${rect.bottom}px`,
                 "--pop-left": `${align === "start" ? rect.left : rect.left + rect.width}px`,
+                /* Never past the bottom of the viewport: a panel opened low on the page kept its
+                   70vh cap and hung off-screen, its last controls unreachable by pointer. */
+                ...(typeof window === "undefined"
+                  ? {}
+                  : { "--pop-maxh": `${Math.max(160, Math.round(window.innerHeight - rect.bottom - 16))}px` }),
               } as CSSProperties
             }
           >
@@ -1104,11 +1194,48 @@ export interface DialogProps {
   className?: string;
 }
 
+const LIVE_REGION = "[aria-live], [role=\"status\"], [role=\"alert\"], [role=\"log\"]";
+
+/**
+ * Make everything outside `keep` inert, EXCEPT live regions. Returns the undo. `aria-modal` alone
+ * is not honoured by every screen reader: a virtual cursor could walk out of the dialog into the
+ * page behind it (acceptance D3). Whole subtrees are made inert where they hold no live region;
+ * a subtree that does hold one is descended into so the announcement channel (`#sr-status`)
+ * keeps speaking while a dialog is open — the palette reports what a command did through it.
+ * Only elements this call made inert are released, so a pre-existing `inert` survives.
+ */
+export function inertOutside(keep: readonly Element[]): () => void {
+  if (typeof document === "undefined") return () => {};
+  const made: HTMLElement[] = [];
+  const visit = (el: Element): void => {
+    if (keep.some((k) => k === el || el.contains(k) || k.contains(el))) {
+      // An ancestor of the dialog: descend so its other branches are still covered.
+      if (keep.some((k) => el !== k && el.contains(k))) for (const c of Array.from(el.children)) visit(c);
+      return;
+    }
+    if (el.matches(LIVE_REGION)) return;
+    if (el.querySelector(LIVE_REGION) !== null) {
+      for (const c of Array.from(el.children)) visit(c);
+      return;
+    }
+    // The ATTRIBUTE, not the `inert` property: the property reflects it in browsers, but an
+    // environment without the property (jsdom) would take an expando and prove nothing.
+    if (el instanceof HTMLElement && !el.hasAttribute("inert") && el.tagName !== "SCRIPT") {
+      el.setAttribute("inert", "");
+      made.push(el);
+    }
+  };
+  for (const c of Array.from(document.body.children)) visit(c);
+  return () => {
+    for (const el of made) el.removeAttribute("inert");
+  };
+}
+
 /**
  * A modal dialog: focus is trapped while it is open, Escape closes it, and focus returns to
- * whatever invoked it (WCAG 2.4.3 / 2.1.2, acceptance D3). The trap is implemented on Tab rather
- * than by making the rest of the document inert, because `inert` would also stop a screen reader
- * from reading the investigation context the dialog is about.
+ * whatever invoked it (WCAG 2.4.3 / 2.1.2, acceptance D3). The page behind is made `inert`
+ * (see `inertOutside`) so assistive technology that ignores `aria-modal` cannot wander into it;
+ * live regions are exempt so announcements still reach the user.
  */
 export function Dialog({
   open,
@@ -1124,13 +1251,61 @@ export function Dialog({
   const id = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const returnTo = useRef<HTMLElement | null>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     returnTo.current = document.activeElement as HTMLElement | null;
     const target = initialFocus?.current ?? focusablesIn(panelRef.current)[0] ?? panelRef.current;
     target?.focus();
+    /* INERT AFTER THE FIRST PAINT (perf audit E3, J5 "open the palette", 2026-09-22; design brief
+       §7 row 5 — "opening is a visibility toggle" — and "no task on the main thread exceeds 50 ms").
+       `inert` on the page behind invalidates the style of the whole application (~4,200 elements),
+       and applied here, inside the keydown that opened the dialog, that restyle was forced by the
+       next layout read in the same task. MEASURED (release build, headed, prototype-wrapped timers):
+       the palette's scrollIntoView took 30-116 ms right after inert was set, and the Ctrl+K keydown
+       ran a 54-130 ms animation frame on 20 of 20 opens, 82 ms of it forced style and layout.
+       Reordering (inert, then focus) only moved the same restyle into focus() — measured, no gain.
+       So the page is made inert on the first task AFTER the dialog has been presented: the restyle
+       still happens, once, but off the interaction's path to its next paint.
+       What that one frame leaves open, and why it is safe: focus is already inside the dialog (set
+       above, synchronously), `aria-modal` is on the panel from its first render, Tab is trapped by
+       the keydown handler below, and the scrim takes every pointer. A close before the inert lands
+       cancels it, so nothing is ever left inert. Without requestAnimationFrame (no rendering) there
+       is no paint to wait for and the page is made inert at once; and because rAF does not run in a
+       window that is not presenting (measured: a minimised or occluded window), a 100 ms fallback
+       timer bounds the gap whether or not a frame is ever drawn. */
+    const panel = panelRef.current;
+    let release: (() => void) | null = null;
+    const applyInert = (): void => {
+      if (release === null) release = inertOutside(panel ? [panel, ...(scrimRef.current ? [scrimRef.current] : [])] : []);
+    };
+    let raf: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    if (typeof requestAnimationFrame === "function") {
+      fallback = setTimeout(() => {
+        fallback = null;
+        applyInert();
+      }, 100);
+      /* rAF runs before the frame's style and paint; the timeout after it runs once that frame is done. */
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        timer = setTimeout(() => {
+          timer = null;
+          applyInert();
+        }, 0);
+      });
+    } else {
+      applyInert();
+    }
     return () => {
+      if (raf !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
+      if (timer !== null) clearTimeout(timer);
+      if (fallback !== null) clearTimeout(fallback);
+      /* Release BEFORE restoring focus: an inert element refuses focus. */
+      release?.();
+      release = null;
       /* Restore on close AND on unmount: a dialog whose parent is removed while it is open would
          otherwise leave focus on <body>, which silently resets keyboard navigation to the top. */
       returnTo.current?.focus();
@@ -1172,7 +1347,7 @@ export function Dialog({
 
   return (
     <Portal>
-      <div className="ui-dialog__scrim" onMouseDown={onClose} />
+      <div ref={scrimRef} className="ui-dialog__scrim" onMouseDown={onClose} />
       <div
         ref={panelRef}
         role="dialog"

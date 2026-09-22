@@ -13,7 +13,9 @@
  *                the standard adjacent-layer crossing count.
  *   3. EMBED   — the 1-D order is laid into an X/Z grid COLUMN-major, so X stays monotonic in the
  *                order. That is what makes step 2 pay: the crossings the sweeps removed are the
- *                crossings the viewer would have seen from the default camera.
+ *                crossings the viewer would have seen from the default camera. Each deeper layer
+ *                is stepped toward the camera in Z, so under the steep default view the tiers
+ *                read as separate horizontal bands, top to bottom.
  *
  * Coverage honesty applies to geometry too. A device with no observed tier is still placed — never
  * dropped — but in a synthetic bucket that `observedTier: null` marks as not-observed, so no
@@ -52,8 +54,13 @@ export const JITTER_AMPLITUDE = 1.2;
  */
 export const MIN_NODE_SEPARATION = NODE_PITCH_Z - 2 * JITTER_AMPLITUDE;
 
-/** Vertical distance between layers: ≥2× the deepest node pitch, leaving room for a tier band. */
-export const TIER_Y_PITCH = 64;
+/**
+ * Vertical distance between layers: ≥2× the deepest node pitch, leaving room for a tier band.
+ * 80, not 64: with a tier wrapped into a block, an uplink to a FRONT row runs down its column over
+ * the rows behind it, and at 64 core1→access2 passed 10.5 from access4 (72: still 11.5). At 80
+ * every shipped cable is straight and clear, which layout.test.ts asserts rather than assumes.
+ */
+export const TIER_Y_PITCH = 80;
 
 /** Clear X between the outer columns of two tier groups sharing a layer — one full node pitch. */
 export const GROUP_GAP_X = NODE_PITCH_X;
@@ -61,16 +68,23 @@ export const GROUP_GAP_X = NODE_PITCH_X;
 /** Alternate columns shift in Z so a column behind is never perfectly eclipsed by the one in front. */
 export const COLUMN_STAGGER_Z = NODE_PITCH_Z / 4;
 
-/** A tier of ≤5 reads best as one row; depth only earns its occlusion cost once a row gets long. */
-export const SINGLE_ROW_MAX = 5;
+/** A tier of ≤3 reads as one row; a longer one wraps into a block (see TARGET_TIER_ASPECT). */
+export const SINGLE_ROW_MAX = 3;
 
 /**
- * Target footprint aspect (X span : Z span) for a wide tier. 3:1 keeps a tier wider than it is deep,
- * which matters because the camera looks down the +Z axis: a squarer block would stack rows behind
- * each other and hide the back of every tier, while a single row would run off the sides of the
- * frame and force the camera back until the chassis are unreadable.
+ * Target footprint aspect (X span : Z span) for a wide tier: near-square.
+ *
+ * This was 3:1, and the blind panel called the result damning: six chassis per row at the stage's
+ * full width left each hostname ~60 px for an ~80 px label, so at 1440×900 11 of 26 labels were
+ * dropped and four more sat on other devices' chassis (access14 over access16, access3 over
+ * access17, …). The label is the unit that has to fit, not the chassis. A square block gives each
+ * column the width of a label; the steep camera (VIEW_DIRECTION) keeps its back rows visible, and
+ * the per-layer Z step (step 7) keeps a deep block from hanging over the tier beneath it.
  */
-export const TARGET_TIER_ASPECT = 3;
+export const TARGET_TIER_ASPECT = 1;
+
+/** Clear Z between the front row of one layer and the back row of the next (see step 7). */
+export const LAYER_Z_GAP = NODE_GAP_Z;
 
 /** A cable passing within this of another chassis centre is obstructed and gets a route hint. */
 export const ROUTE_CLEARANCE = 12;
@@ -98,9 +112,17 @@ export const ROUTE_CURVE_SAMPLES = 48;
  */
 export const ROUTE_DETOUR_STEPS = 6;
 
-/** Camera offset direction from target to eye: front, above, slightly right — a 3/4 view that shows
-    tier depth without foreshortening the wide tiers into an unreadable sliver. */
-export const VIEW_DIRECTION: Vec3 = [0.15, 0.55, 1];
+/**
+ * Camera offset direction from target to eye: straight in front and steeply above (polar ≈ 32°,
+ * inside camera.ts's [28°, 78°] clamp), with NO azimuth.
+ *
+ * It was [0.15, 0.55, 1] — a 3/4 isometric view. The blind panel's finding was that the
+ * isometric slabs "read as a demo, carry no extra information, and widen the nodes so more labels
+ * collide". Looking down steeply, a chassis reads as a flat tile of its role colour; with no
+ * azimuth, every row of a tier is a horizontal band on screen, so the tiers read as core / middle
+ * / edge bands top to bottom; and a row's labels sit on one baseline instead of a diagonal.
+ */
+export const VIEW_DIRECTION: Vec3 = [0, 1.6, 1];
 
 export const DEFAULT_SEED = 0x5ca1ab1e;
 export const DEFAULT_SWEEPS = 12;
@@ -910,10 +932,28 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
   const layerY: number[] = [];
   const groupGeometry = new Map<string, { centerX: number; columns: number }>();
 
+  /* Each layer also steps TOWARD the camera by its own half-depth plus the previous layer's, so a
+     deep tier (the access block wraps into several rows) never hangs down over the layer beneath
+     it on screen. The blind panel measured the alternative: with every layer centred on z = 0, the
+     back rows of one tier and the front rows of the next shared screen space, and labels landed on
+     other devices' chassis. Y stays one plane per tier; only the plane's Z centre moves. */
+  const halfDepthOf = (layer: Layer): number => {
+    let rows = 1;
+    for (const g of layer.groups) {
+      for (const c of balancedColumns(g.ids.length, columnsFor(g.ids.length))) rows = Math.max(rows, c);
+    }
+    return ((rows - 1) / 2) * NODE_PITCH_Z + COLUMN_STAGGER_Z + CHASSIS_EXTENT.depth / 2;
+  };
+  let layerZ = 0;
+  let prevHalfDepth = 0;
+
   for (let depth = 0; depth <= maxDepth; depth += 1) {
     const layer = must(layers[depth], `layer ${depth}`);
     const y = (maxDepth - depth) * tierYPitch;
     layerY.push(y);
+    const halfDepth = halfDepthOf(layer);
+    if (depth > 0) layerZ += prevHalfDepth + halfDepth + LAYER_Z_GAP;
+    prevHalfDepth = halfDepth;
 
     const metrics = layer.groups.map((g) => {
       const columns = columnsFor(g.ids.length);
@@ -974,6 +1014,7 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
             // Y is never jittered: one tier, one plane, is an invariant the renderer draws bands from.
             y,
             z:
+              layerZ +
               (slot - (count - 1) / 2) * NODE_PITCH_Z +
               (col % 2 === 1 ? COLUMN_STAGGER_Z : -COLUMN_STAGGER_Z) +
               jz,

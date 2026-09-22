@@ -94,6 +94,29 @@ describe("the build scripts are inside a type-checking gate", () => {
     expect(existsSync(planted)).toBe(false);
   });
 
+  it("is fully strict: noImplicitAny is ON, and the scripts are clean under it", () => {
+    /* HISTORY. Until 2026-09-22 this project ran `strict` minus `noImplicitAny`, and this test
+       pinned the measured residual (18 diagnostics, 12 TS7006 + 6 TS7053, every one in
+       `tools/compile-snapshot.mjs`) with a note that annotating it to zero was the signal to flip
+       the flag. It has been annotated (JSDoc, output byte-identical) and the flag is on.
+       Two assertions, because either alone could lie: the CONFIG must say so (so `tsc -p` and the
+       gate above check it), and a program built with the flag FORCED on must also be clean (so a
+       future `"noImplicitAny": false` cannot hide a regression behind a green config read). */
+    const raw = ts.readConfigFile(CONFIG, (p) => readFileSync(p, "utf8"));
+    const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, PKG, undefined, CONFIG);
+    expect(parsed.options.strict).toBe(true);
+    expect(parsed.options.noUncheckedIndexedAccess).toBe(true);
+    expect(parsed.options.noImplicitAny, "tsconfig.scripts.json must not relax noImplicitAny").not.toBe(false);
+
+    const strictProgram = ts.createProgram(parsed.fileNames, { ...parsed.options, noImplicitAny: true });
+    const extra = strictProgram.getSemanticDiagnostics().map((d) => {
+      const file = d.file === undefined ? "" : relative(PKG, d.file.fileName).split("\\").join("/");
+      const line = d.file === undefined || d.start === undefined ? 0 : d.file.getLineAndCharacterOfPosition(d.start).line + 1;
+      return `${file}:${line} TS${d.code} ${ts.flattenDiagnosticMessageText(d.messageText, " ")}`;
+    });
+    expect(extra, "implicit-any (or other) diagnostics under noImplicitAny").toEqual([]);
+  });
+
   it("names what it does not cover, rather than implying it does", () => {
     // `e2e` is declared in tsconfig.json's include and in an npm script, and does not exist.
     // Asserted so the next person reads it here instead of rediscovering it.

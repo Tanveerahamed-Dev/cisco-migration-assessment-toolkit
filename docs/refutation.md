@@ -32,10 +32,11 @@ by the refuter, not verifiable from history**. A reader can confirm the test exi
 named defect, and that the code now satisfies it. A reader cannot independently confirm that it was
 red first. That is a real gap in F3's evidence and it is not closed by this document.
 
-It is closed going forward: a repository was initialised for `atlas-scope` on 2026-09-21 with a
-baseline commit, so every refutation from this point has a before and an after. Retroactively it
-cannot be closed at all, and asserting otherwise would be exactly the kind of unearned confidence
-the refuters exist to catch.
+It is closed going forward: a repository was initialised for `atlas-scope` on 2026-09-21, baseline
+commit `857b520`, so every refutation from this point has a before and an after. That commit is a
+snapshot taken while several repair agents were working in the tree — its value is being a
+*before*, not being tidy. Retroactively the gap cannot be closed at all, and asserting otherwise
+would be exactly the kind of unearned confidence the refuters exist to catch.
 
 **Second limit.** "Survived a refuter" is not "is correct". A refuter is a bounded adversary with a
 finite budget who attacks the claims it can see. Each section below therefore records what was

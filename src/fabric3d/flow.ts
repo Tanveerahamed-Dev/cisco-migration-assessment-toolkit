@@ -10,8 +10,9 @@
  *   draw-on      240 ms total, eased, regardless of hop count. The progression along the path IS
  *                the hop order, which is why it is animated at all.
  *   packet       ONE marker, 1.6 s per loop, stops after 3 loops and leaves the path drawn. The
- *                only looping animation in the product; it exists to distinguish a live trace
- *                overlay from a static screenshot of a path.
+ *                only looping animation in the product (design brief 4.8; the dead, unrendered
+ *                `stage-pending-spin` spinner that App.css used to declare is removed); it exists
+ *                to distinguish a live trace overlay from a static screenshot of a path.
  *   arrowheads   not animated. Direction is permanent information and does not need movement.
  *   stop glyph   not animated. An alarm that pulses is decoration; an alarm that is simply THERE,
  *                octagonal, and red is read faster.
@@ -21,7 +22,7 @@
 import {
   BufferGeometry,
   ConeGeometry,
-  CylinderGeometry,
+  ExtrudeGeometry,
   Group,
   InstancedMesh,
   Matrix4,
@@ -29,13 +30,14 @@ import {
   MeshStandardMaterial,
   Object3D,
   Quaternion,
-  TorusGeometry,
+  Path,
+  Shape,
   Vector3,
   type PerspectiveCamera,
 } from "three";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
-import { bandOfOutcome } from "../core/claims";
+import { bandOfTrace } from "../core/claims";
 import type { Trace } from "../core/types";
 import { createCableMaterial } from "./geometry/cables";
 import type { TokenPalette } from "./materials";
@@ -54,8 +56,55 @@ export interface TraceSegmentSource {
    * than as a straight line, because inventing a wire to join two hops is inventing topology.
    */
   polylineBetween(from: string, to: string): Float32Array | null;
-  /** Anchor for the stop glyph and any per-host marker. */
-  anchorOf(host: string): { x: number; y: number; z: number; top: number } | null;
+  /**
+   * Anchor for the stop glyph and any per-host marker: the chassis body's centre, its lid height,
+   * and (when the host knows it) the body's half-extents. The glyph is placed CLEAR of that body —
+   * see `placeTerminalGlyph` — so a source that omits `half` gets a body assumed as tall as its lid.
+   */
+  anchorOf(host: string): TerminalAnchor | null;
+}
+
+export interface TerminalAnchor {
+  x: number;
+  y: number;
+  z: number;
+  top: number;
+  half?: readonly [number, number, number];
+}
+
+/** Outer screen-facing radius of each terminal glyph, bevel included. */
+export const STOP_GLYPH_RADIUS = 5.4;
+export const UNDECIDED_GLYPH_RADIUS = 4.6 + 1.05;
+/** World units of air between a terminal glyph and the chassis it marks, on screen and in space. */
+export const GLYPH_CLEARANCE = 2.5;
+
+/**
+ * Where a billboarded terminal glyph sits for a given camera: the chassis centre plus the camera's
+ * UP vector times (the chassis' bounding radius + the glyph's radius + a clearance).
+ *
+ * WHY CAMERA-UP AND NOT A FIXED HEIGHT (C5 critic, trace-gpu-t20b-h0.png / up-octagon.png). The
+ * glyphs used to hang at `top + 11` world units. From the investigation view's elevated camera the
+ * lid of the chassis extends TOWARDS the viewer, so its projection rose up across the lower third
+ * of the glyph: the octagon read as sunk into core2, with the selection outline's rim line cutting
+ * across it, and the ring penetrated dist1 the same way. No fixed height is right for every pitch.
+ * Offsetting along camera-up — which is perpendicular to the view direction — puts the glyph's
+ * centre (R + r + gap) away from the chassis centre ACROSS the line of sight, so the glyph and the
+ * chassis' bounding sphere are disjoint in space AND in projection, at every orbit angle.
+ */
+export function placeTerminalGlyph(
+  anchor: TerminalAnchor,
+  cameraQuaternion: Quaternion,
+  glyphRadius: number,
+  out: Vector3,
+): Vector3 {
+  const half = anchor.half ?? [0, Math.max(0, anchor.top - anchor.y), 0];
+  const chassisRadius = Math.hypot(half[0], half[1], half[2]);
+  out.set(0, 1, 0).applyQuaternion(cameraQuaternion).normalize();
+  out.multiplyScalar(chassisRadius + glyphRadius + GLYPH_CLEARANCE);
+  out.x += anchor.x;
+  out.y += anchor.y;
+  out.z += anchor.z;
+  return out;
 }
 
 export interface FlowOverlay {
@@ -72,6 +121,13 @@ export interface FlowOverlay {
   pathSphere(): { center: [number, number, number]; radius: number } | null;
   /** Hops that could not be drawn because no cable joins them. Surfaced, never silently skipped. */
   undrawnHops(): string[];
+  /**
+   * The billboarded terminal glyph (stop octagon or undecided ring) when one is drawn: the host it
+   * marks, its world centre and its screen-facing radius. The label layer needs it: a DOM label
+   * has no depth, and one hung at the chassis silhouette was drawn straight across the glyph that
+   * floats above that chassis (C5 critic: the 'dist1 ? UNDECIDED' chip over the torus).
+   */
+  terminalMarker(): { host: string; center: [number, number, number]; radius: number } | null;
   dispose(): void;
 }
 
@@ -83,17 +139,43 @@ const _q = new Quaternion();
 const _scale = new Vector3(1, 1, 1);
 const _m = new Matrix4();
 const UP = new Vector3(0, 1, 0);
+const _qIdentity = new Quaternion();
 
-/** The blocked-hop alarm: an octagonal prism, billboarded. Shape first, colour second. */
+/**
+ * The blocked-hop alarm: a bevelled octagonal plate, billboarded. Shape first, colour second.
+ *
+ * Sized so the octagon SHAPE survives at overview distance and through the bloom. At 2.4 units it
+ * was six pixels across and read as a red dot — colour with no second channel, which is the one
+ * thing the alarm treatment must never be.
+ *
+ * BEVELLED, not a plain prism (C5 critic, up-octagon.png: "a flat, unlit, pastel salmon disc",
+ * std 4/255 over 10k pixels). A face-on cylinder cap has ONE normal, so the key light and the
+ * environment shade it as one flat colour, and the emission then washed that to pastel. The bevel
+ * gives the rim chamfered faces that catch the key and the environment differently, so the plate
+ * reads as an object lit by the same rig as the hardware it annotates.
+ */
 function stopGlyphGeometry(): BufferGeometry {
-  // An 8-sided cylinder read face-on is an octagon; using a prism rather than a flat polygon means
-  // the glyph still reads when the camera is not exactly perpendicular to it.
-  // Sized so the octagon SHAPE survives at overview distance and through the bloom. At 2.4 units
-  // it was six pixels across and read as a red dot — colour with no second channel, which is the
-  // one thing the alarm treatment must never be.
-  const g = new CylinderGeometry(5.4, 5.4, 1.2, 8, 1);
-  g.applyMatrix4(new Matrix4().makeRotationX(Math.PI / 2));
-  g.applyMatrix4(new Matrix4().makeRotationZ(Math.PI / 8));
+  const bevel = 0.45;
+  const r = STOP_GLYPH_RADIUS - bevel;
+  const shape = new Shape();
+  for (let k = 0; k < 8; k += 1) {
+    // Vertices at 22.5 deg + k * 45 deg: a flat edge on top, like a stop sign.
+    const a = Math.PI / 8 + (k * Math.PI) / 4;
+    if (k === 0) shape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else shape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  shape.closePath();
+  const depth = 0.5;
+  const g = new ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 3,
+    curveSegments: 1,
+  });
+  // Centre the plate on its own origin so billboarding rotates it about its middle.
+  g.translate(0, 0, -depth / 2);
   return g;
 }
 
@@ -104,16 +186,67 @@ function stopGlyphGeometry(): BufferGeometry {
  * the red octagonal alarm to everything on the wrong side of that line. An indeterminate trace
  * therefore ended in the same stop sign, in the same critical red, as a flow a filter genuinely
  * dropped: the canvas asserted a definite failure the engine had explicitly refused to assert.
- * `claims.ts :: bandOfOutcome` owns that mapping and it has three values, not two.
+ * `claims.ts :: bandOfTrace` owns that mapping and it has three values, not two. It is the TRACE band,
+ * not the outcome word's: a drop over a routing table the snapshot shows to be incomplete is the word
+ * "dropped" and the band UNDETERMINED, and the canvas drew it as the red stop octagon while the label
+ * over the same glyph said "? UNDECIDED" (C5 critic, trace-gpu-t20b-h0.png).
  *
  * The shape is the first channel and it is deliberately the opposite of a stop sign: a filled
  * octagon is an instruction, an open ring is a hole in the evidence. Colour is the second channel
  * (`--claim-indeterminate`), never the only one.
  */
+/** Stroke of the undecided ring's band, world units, bevel included. */
+export const UNDECIDED_RING_STROKE = 1.3;
 function undecidedGlyphGeometry(): BufferGeometry {
   // Radius matched to the octagon's so the two marks occupy the same visual weight at the same
   // distance — an undecided result is not a quieter result than a denial.
-  return new TorusGeometry(4.6, 1.05, 8, 20);
+  /* A FLAT BEVELLED ANNULUS, the octagon's own construction, not a TorusGeometry (C5 critic,
+     2026-09-22: "a plain shaded torus floating above the node with no tether ... reads as a stock
+     three.js primitive dropped into the scene"). The two terminal marks are now one family — the
+     same bevelled plate, billboarded, lit by the same rig — differing in the one channel that
+     matters: a filled octagon is an instruction, an open ring is a hole in the evidence. The band is
+     a flat stroke, like the label chip's outline it sits above, instead of a round tube. */
+  const bevel = 0.3;
+  const outer = UNDECIDED_GLYPH_RADIUS - bevel;
+  const inner = UNDECIDED_GLYPH_RADIUS - UNDECIDED_RING_STROKE + bevel;
+  const shape = new Shape();
+  shape.absarc(0, 0, outer, 0, Math.PI * 2, false);
+  const hole = new Path();
+  hole.absarc(0, 0, inner, 0, Math.PI * 2, true);
+  shape.holes.push(hole);
+  const depth = 0.4;
+  const g = new ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 3,
+    curveSegments: 48,
+  });
+  g.translate(0, 0, -depth / 2);
+  return g;
+}
+
+/**
+ * The tether: a hairline from the marked chassis' lid to the underside of its terminal glyph, so
+ * the glyph reads as ATTACHED to that host rather than floating in the air near it. The glyph hangs
+ * along camera-up (placeTerminalGlyph), so the tether follows the camera with it.
+ */
+export function tetherEnds(
+  anchor: TerminalAnchor,
+  glyphCentre: Vector3,
+  glyphRadius: number,
+  cameraQuaternion: Quaternion,
+  out: Float32Array,
+): Float32Array {
+  const ux = new Vector3(0, 1, 0).applyQuaternion(cameraQuaternion).normalize();
+  out[0] = anchor.x;
+  out[1] = anchor.top;
+  out[2] = anchor.z;
+  out[3] = glyphCentre.x - ux.x * glyphRadius;
+  out[4] = glyphCentre.y - ux.y * glyphRadius;
+  out[5] = glyphCentre.z - ux.z * glyphRadius;
+  return out;
 }
 
 export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
@@ -182,8 +315,12 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
   const stopMaterial = new MeshStandardMaterial({
     name: "trace-stop",
     metalness: 0,
-    roughness: 0.5,
-    emissiveIntensity: 1.9,
+    /* LIT, with an emission FLOOR — the treatment the undecided ring already got. At 1.9 the
+       emission swamped every lighting term and tone mapping flattened the critical red to one
+       pastel salmon (C5 critic). The albedo carries the red, the key and environment shade the
+       bevel, and the emission keeps it legible on the dark stage and past the bloom threshold. */
+    roughness: 0.38,
+    emissiveIntensity: 0.55,
   });
   const stop = new Mesh(stopGeometry, stopMaterial);
   stop.name = "trace-stop";
@@ -195,14 +332,36 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
   const undecidedMaterial = new MeshStandardMaterial({
     name: "trace-undecided",
     metalness: 0,
-    roughness: 0.5,
-    emissiveIntensity: 1.9,
+    /* LIT, not glowing. At emissive 1.9 over a 0.3x albedo the emission swamped every lighting
+       term and the torus rendered as one flat lavender (C5 critic, z-torus-low.png). The hue is
+       carried by the albedo now and the emission is a floor that keeps it legible on the dark
+       stage; the key light and environment shade the tube, so it reads as an object. */
+    roughness: 0.35,
+    emissiveIntensity: 0.3,
   });
   const undecided = new Mesh(undecidedGeometry, undecidedMaterial);
   undecided.name = "trace-undecided";
   undecided.frustumCulled = false;
   undecided.visible = false;
   group.add(undecided);
+
+  const tetherMaterial = createCableMaterial("solid", 1.5, 1, { vertexColors: false });
+  tetherMaterial.depthTest = true;
+  const tetherPositions = new Float32Array(6);
+  const tetherGeometry = new LineGeometry();
+  tetherGeometry.setPositions(tetherPositions);
+  const tether = new Line2(tetherGeometry, tetherMaterial);
+  tether.name = "trace-tether";
+  tether.frustumCulled = false;
+  tether.renderOrder = 4;
+  tether.visible = false;
+  group.add(tether);
+  let tetherTint = "";
+  // Declared before `applyTint` runs below, which overwrites both on every retint.
+  const tetherColours = {
+    stop: tokens.color("--sev-critical").clone(),
+    undecided: tokens.color("--claim-indeterminate").clone(),
+  };
 
   let points: Float32Array = new Float32Array(0);
   let cumulative: Float32Array = new Float32Array(0);
@@ -214,6 +373,9 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
   let packetRunning = false;
   let undrawn: string[] = [];
   let sphere: { center: [number, number, number]; radius: number } | null = null;
+  let terminalHost: string | null = null;
+  /** The chassis the terminal glyph marks; the glyph's position follows the camera from it. */
+  let terminalAnchor: TerminalAnchor | null = null;
 
   const applyTint = (t: TokenPalette): void => {
     const accent = t.color("--accent");
@@ -224,13 +386,16 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
     arrowMaterial.emissive.copy(accent);
     packetMaterial.color.copy(accent).multiplyScalar(0.3);
     packetMaterial.emissive.copy(accent).multiplyScalar(1.15);
-    stopMaterial.color.copy(critical).multiplyScalar(0.3);
+    stopMaterial.color.copy(critical).multiplyScalar(0.7);
     stopMaterial.emissive.copy(critical);
     /* Never the critical token: "the model could not decide" is not a fault of the network, and
        painting it in the alarm colour is how an undecided result gets read as a denied one. */
     const undecidedTint = t.color("--claim-indeterminate");
-    undecidedMaterial.color.copy(undecidedTint).multiplyScalar(0.3);
+    undecidedMaterial.color.copy(undecidedTint).multiplyScalar(0.42);
     undecidedMaterial.emissive.copy(undecidedTint);
+    tetherColours.stop = critical.clone();
+    tetherColours.undecided = undecidedTint.clone();
+    tetherTint = "";
   };
   applyTint(tokens);
 
@@ -272,6 +437,38 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
     arrows.instanceMatrix.needsUpdate = true;
   };
 
+  const _tetherNext = new Float32Array(6);
+  /** Aim the tether at whichever terminal glyph is drawn. Returns true when anything changed. */
+  function syncTether(q: Quaternion): boolean {
+    const glyph = stop.visible ? stop : undecided.visible ? undecided : null;
+    if (glyph === null || terminalAnchor === null) {
+      if (!tether.visible) return false;
+      tether.visible = false;
+      return true;
+    }
+    let changed = false;
+    const r = glyph === stop ? STOP_GLYPH_RADIUS : UNDECIDED_GLYPH_RADIUS;
+    tetherEnds(terminalAnchor, glyph.position, r, q, _tetherNext);
+    let moved = !tether.visible;
+    for (let i = 0; i < 6 && !moved; i += 1) if (_tetherNext[i] !== tetherPositions[i]) moved = true;
+    if (moved) {
+      tetherPositions.set(_tetherNext);
+      tetherGeometry.setPositions(tetherPositions);
+      changed = true;
+    }
+    const tint = glyph === stop ? "stop" : "undecided";
+    if (tint !== tetherTint) {
+      tetherMaterial.color.copy(tetherColours[tint]);
+      tetherTint = tint;
+      changed = true;
+    }
+    if (!tether.visible) {
+      tether.visible = true;
+      changed = true;
+    }
+    return changed;
+  }
+
   const overlay: FlowOverlay = {
     group,
 
@@ -282,12 +479,15 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
     setTrace(trace: Trace | null, activeHop: number | null, source: TraceSegmentSource): void {
       undrawn = [];
       sphere = null;
+      terminalHost = null;
+      terminalAnchor = null;
       if (trace === null || trace.hops.length === 0) {
         group.visible = false;
         path.visible = false;
         blocked.visible = false;
         stop.visible = false;
         undecided.visible = false;
+        tether.visible = false;
         packet.visible = false;
         packetRunning = false;
         revealing = false;
@@ -370,7 +570,7 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
 
       /* THE TERMINAL TREATMENT, IN THREE STATES.
          The terminal hop is where the answer is, and which mark it gets is decided by
-         `claims.ts :: bandOfOutcome`, not by a local test:
+         `claims.ts :: bandOfTrace` (the band every render surface uses), not by a local test:
            REFUTED      the 6 px terminal segment plus the octagonal alarm — a fact about the packet.
            UNDETERMINED the open ring, in the indeterminate token, and NO alarm segment: the
                         simulation declined to decide, so there is nothing to alarm about yet.
@@ -378,18 +578,22 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
          This used to be `outcome !== "delivered"`, which handed the red stop sign to every
          indeterminate and out-of-scope result as well. */
       const last = trace.hops[trace.hops.length - 1];
-      const band = bandOfOutcome(trace.outcome);
+      const band = bandOfTrace(trace);
       const refuted = band === "REFUTED";
       const anchor = last === undefined ? null : source.anchorOf(last.host);
+      terminalHost = last === undefined ? null : last.host;
+      terminalAnchor = anchor;
+      /* Provisional placement for an unrotated camera; `update` re-places the glyph for the real
+         camera before any frame is drawn (see placeTerminalGlyph). */
       if (band === "UNDETERMINED" && anchor !== null) {
-        undecided.position.set(anchor.x, anchor.top + 11, anchor.z);
+        placeTerminalGlyph(anchor, _qIdentity, UNDECIDED_GLYPH_RADIUS, undecided.position);
         undecided.visible = true;
       } else {
         undecided.visible = false;
       }
       if (refuted && last !== undefined) {
         if (anchor !== null) {
-          stop.position.set(anchor.x, anchor.top + 11, anchor.z);
+          placeTerminalGlyph(anchor, _qIdentity, STOP_GLYPH_RADIUS, stop.position);
           stop.visible = true;
         } else {
           stop.visible = false;
@@ -441,6 +645,8 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
       packetRunning = !reducedMotion && totalLength > 0;
       packetStart = 0;
       packet.visible = packetRunning;
+      // Provisional, like the glyphs above; `update` re-aims it for the real camera.
+      syncTether(_qIdentity);
     },
 
     setResolution(width: number, height: number): void {
@@ -512,9 +718,26 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
           glyph.quaternion.copy(camera.quaternion);
           dirty = true;
         }
+        if (terminalAnchor !== null) {
+          const r = glyph === stop ? STOP_GLYPH_RADIUS : UNDECIDED_GLYPH_RADIUS;
+          placeTerminalGlyph(terminalAnchor, camera.quaternion, r, _v);
+          if (!glyph.position.equals(_v)) {
+            glyph.position.copy(_v);
+            dirty = true;
+          }
+        }
       }
+      if (syncTether(camera.quaternion)) dirty = true;
 
       return dirty;
+    },
+
+    terminalMarker(): { host: string; center: [number, number, number]; radius: number } | null {
+      if (terminalHost === null) return null;
+      const glyph = stop.visible ? stop : undecided.visible ? undecided : null;
+      if (glyph === null) return null;
+      const radius = glyph === stop ? STOP_GLYPH_RADIUS : UNDECIDED_GLYPH_RADIUS;
+      return { host: terminalHost, center: [glyph.position.x, glyph.position.y, glyph.position.z], radius };
     },
 
     pathSphere(): { center: [number, number, number]; radius: number } | null {
@@ -539,6 +762,8 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
       stopMaterial.dispose();
       undecidedGeometry.dispose();
       undecidedMaterial.dispose();
+      tetherGeometry.dispose();
+      tetherMaterial.dispose();
       group.clear();
     },
   };

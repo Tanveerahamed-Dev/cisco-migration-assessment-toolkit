@@ -37,6 +37,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -62,7 +63,21 @@ import "./App.css";
 
 /* The three.js + postprocessing chunk. Named so the build output is readable and so a failure to
    split it is visible in the chunk list rather than only in the entry size. */
-const Fabric3D = lazy(() => import("../fabric3d/Fabric3D"));
+/* The chunk's module evaluation (three.js + postprocessing, ~0.8 MB) is one uninterruptible task,
+   and the scene's creation follows it. Started as soon as the stage first rendered, it landed at
+   about 1.2 s into the cold load, where a keystroke then waited 184-216 ms (review/audit-e5-coldload.mjs,
+   2026-09-22 critic, E5). So the import is requested only once the browser reports an idle period —
+   an idle callback does not run while input is pending — bounded so the fabric is never withheld
+   for long. The Suspense fallback (StagePending) says the fabric is loading throughout the wait. */
+const FABRIC_IDLE_TIMEOUT_MS = 1200;
+function whenInputIdle(): Promise<void> {
+  return new Promise((resolve) => {
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
+    if (typeof w.requestIdleCallback === "function") w.requestIdleCallback(() => resolve(), { timeout: FABRIC_IDLE_TIMEOUT_MS });
+    else setTimeout(resolve, 0);
+  });
+}
+const Fabric3D = lazy(() => whenInputIdle().then(() => import("../fabric3d/Fabric3D")));
 
 /* ── viewport ladder (design brief 2.5), read live ─────────────────────────── */
 
@@ -358,6 +373,35 @@ export function RailB({ hidden = false, onOpenCite, view, onView }: RailBProps):
     else if (subjectChanged && (deviceId !== null || linkId !== null)) setView("device");
   }, [findingId, deviceId, linkId, setView]);
 
+  /* ── focus survives the pane switch ──
+   *
+   * A11Y AUDIT FIX, 2026-09-21 (D3). The device chips in a finding's evidence chain select a
+   * device, the selection flips this rail to the Device pane, and the Finding pane — which held
+   * the focused chip — becomes `hidden`. Chrome's focus fixup then dropped focus to <body>:
+   * measured `activeElement: body` after Enter on "core1 assessed" in step 2 of flow A1, with
+   * nothing announced. The ACL "Show the configuration" button already hands focus to what it
+   * opened; this path did not.
+   *
+   * Handled HERE, at the one place a pane is hidden, rather than in each control that happens to
+   * cause a switch — the chips in steps 2 and 3, a URL restore, the `v` command, and anything
+   * added later all hide a pane the same way. The test is structural: after the commit that
+   * changed the view, is focus still inside a pane that is now hidden? If so it is about to be
+   * lost, and it goes to the heading of the pane the reader was sent to. Focus anywhere else —
+   * the radio that made the switch, the query bar, the fabric — is left exactly where it is.
+   */
+  const panesRef = useRef<Record<EvidenceView, HTMLDivElement | null>>({ finding: null, device: null });
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return;
+    const stranded = VIEWS.some((v) => v.id !== view && panesRef.current[v.id]?.contains(active) === true);
+    if (!stranded) return;
+    const pane = panesRef.current[view];
+    const heading = pane?.querySelector<HTMLElement>("h2, h3");
+    if (!heading) return;
+    if (!heading.hasAttribute("tabindex")) heading.tabIndex = -1;
+    heading.focus({ preventScroll: false });
+  }, [view]);
+
   return (
     <aside
       id="rail-evidence"
@@ -392,12 +436,24 @@ export function RailB({ hidden = false, onOpenCite, view, onView }: RailBProps):
         ))}
       </div>
 
-      <div className="railb__pane scroll-y" hidden={view !== "finding"}>
+      <div
+        className="railb__pane scroll-y"
+        hidden={view !== "finding"}
+        ref={(el) => {
+          panesRef.current.finding = el;
+        }}
+      >
         <ErrorBoundary surface="The finding evidence chain">
           <EvidencePane onOpenCite={onOpenCite} />
         </ErrorBoundary>
       </div>
-      <div className="railb__pane scroll-y" hidden={view !== "device"}>
+      <div
+        className="railb__pane scroll-y"
+        hidden={view !== "device"}
+        ref={(el) => {
+          panesRef.current.device = el;
+        }}
+      >
         <ErrorBoundary surface="The device evidence pane">
           <DevicePane onOpenCite={onOpenCite} />
         </ErrorBoundary>
@@ -427,7 +483,7 @@ export function RailB({ hidden = false, onOpenCite, view, onView }: RailBProps):
  *
  * THAT SENTENCE IS NOW WITHDRAWN, on this file's own instruction ("a reassurance that measures as
  * false is worse than no reassurance"). "In most runs" was the tell. Measured across seven cold
- * loads on the release build (`review/_audit_e5_coldload.mjs`), the WORST keystroke in each run
+ * loads on the release build (`review/audit-e5-coldload.mjs`), the WORST keystroke in each run
  * was 88, 184, 240, 520, 424, 976 and 1024 ms, against a worst animation frame of 520-957 ms
  * (blocking 458-852). A reader who starts typing during the cold load can wait a full second. So
  * the sentence now says only what is true — the panels are already populated from the same
@@ -469,7 +525,7 @@ function StagePending(): ReactElement {
  * THE DEFECT. `StagePending` above is a Suspense fallback: it covers the renderer CHUNK being
  * fetched and vanishes the instant `Fabric3D` mounts. The scene's warm-up runs AFTER that, and it
  * is the expensive half. Measured over four cold loads on the release build
- * (`review/_audit_e5_coldload.mjs`): worst animation frame 520.5 / 623.2 / 956.9 / 676.4 ms, and
+ * (`review/audit-e5-coldload.mjs`): worst animation frame 520.5 / 623.2 / 956.9 / 676.4 ms, and
  * in 4 of 4 runs `.stage-pending` was ABSENT during that frame. A DOM sweep at five points across
  * the load found `aria-busy` 0, `role="progressbar"` 0, `<progress>` 0, spinner 0 — the stage was
  * a blank white panel with nothing on screen saying work was happening. Section 8.4 of the design
@@ -491,13 +547,20 @@ function StagePending(): ReactElement {
  * rather than stream. That is stated here rather than hidden, because a reader comparing this
  * count against a DevTools trace would otherwise think one of them was wrong.
  */
-function StageWarmup({ stats }: { stats: SceneStatsEx }): ReactElement {
-  const total = stats.programsTotal;
-  const done = stats.programsLinked;
+function StageWarmup({ stats }: { stats: SceneStatsEx | null }): ReactElement {
+  const total = stats?.programsTotal ?? 0;
+  const done = stats?.programsLinked ?? 0;
   const known = total > 0;
-  const detail = known
-    ? `${done} of ${total} shader programs linked`
-    : "counting the shader programs it needs";
+  /* `stats === null` is the window between the renderer chunk mounting and the scene's first
+     TIMED frame — the scene deliberately publishes nothing until a frame duration exists (the E4
+     fix), and that window contains the most expensive frame of the whole load. Worded as what is
+     known: the renderer is starting, and nothing has been counted yet. */
+  const detail =
+    stats === null
+      ? "starting the renderer"
+      : known
+        ? `${done} of ${total} shader programs linked`
+        : "counting the shader programs it needs";
   return (
     <div
       className="stage-warmup"
@@ -538,14 +601,6 @@ export function Stage({ fabricVisible }: StageProps): ReactElement {
   const mounted = useRef(false);
   if (fabricVisible) mounted.current = true;
 
-  /* The scene's own reading, not a timer. `warmupStage` is non-null for exactly as long as the
-     warm-up runs — including the rebuild after an adaptive tier change, which is real work and
-     deserves the same affordance. A null reading is NOT treated as warming: the renderer may have
-     failed to start at all (Fabric3D draws its own explanation for that), and an overlay that
-     never goes away would be a worse lie than the one this fixes. */
-  const sceneStats = useSceneStats();
-  const warming = sceneStats !== null && sceneStats.warmupStage !== null;
-
   return (
     <main
       id="stage"
@@ -561,7 +616,7 @@ export function Stage({ fabricVisible }: StageProps): ReactElement {
         ) : (
           <StagePending />
         )}
-        {warming && sceneStats !== null ? <StageWarmup stats={sceneStats} /> : null}
+        <StageWarmupGate mounted={mounted.current} />
       </ErrorBoundary>
 
       <ErrorBoundary surface="The inspector">
@@ -569,6 +624,37 @@ export function Stage({ fabricVisible }: StageProps): ReactElement {
       </ErrorBoundary>
     </main>
   );
+}
+
+/**
+ * The one subscriber to the scene's readings inside the stage.
+ *
+ * RESPONSIVENESS FIX, 2026-09-21 (acceptance E2/E3). `Stage` itself used to call
+ * `useSceneStats()`, so every telemetry notification re-rendered the whole stage subtree — the
+ * Inspector included — on the telemetry timer: measured as a 35-55 ms `telemetry.ts` setTimeout
+ * task recurring through every journey, landing on interactions at random. A component of its own
+ * confines the notification to the one element that draws it, the same reason `App` keeps its
+ * status-bar subscriber separate.
+ */
+function StageWarmupGate({ mounted }: { mounted: boolean }): ReactElement | null {
+  /* The scene's own reading, not a timer. `warmupStage` is non-null for exactly as long as the
+     warm-up runs — including the rebuild after an adaptive tier change or a theme change, which is
+     real work and deserves the same affordance. */
+  const sceneStats = useSceneStats();
+  /* E5 AUDIT FIX, 2026-09-21 (second pass). This was `sceneStats !== null && warmupStage !== null`,
+     and it collided with the E4 fix in scene.ts: the scene now publishes NOTHING until it has timed
+     a frame, so between the Suspense fallback unmounting and that first timed frame the stage
+     carried no affordance at all — and that window holds the worst frame of the load. Measured on
+     a fresh release build (`review/audit-e5-coldload.mjs`, 3 runs): in 2 of 3 the worst frame
+     (745.8 / 860.6 ms) fell there with `workingAffordancePresent: false`.
+
+     So `null` while the fabric is MOUNTED now counts as warming: the stage has asked for a
+     renderer and not yet heard from it. The failure case the old comment guarded against is still
+     guarded, structurally rather than by guesswork — when the renderer cannot start, Fabric3D draws
+     `.fabric3d__fallback`, and App.css hides `.stage-warmup` from the stage that contains one, so a
+     failed renderer is never described as a starting one. */
+  const warming = mounted && (sceneStats === null || sceneStats.warmupStage !== null);
+  return warming ? <StageWarmup stats={sceneStats} /> : null;
 }
 
 /* ── the single-column pane control ────────────────────────────────────────── */

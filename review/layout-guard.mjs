@@ -20,6 +20,14 @@
  *   silently re-sorted the grid. "Rows exist in the DOM" is not the test; "a row returns ITSELF
  *   from elementFromPoint at its own centre" is, because that is what a click actually does.
  *
+ * INVARIANT 3 — every citation in the evidence rail can be clicked.
+ *   A citation a pointer user cannot open is an evidence chain that is only half reachable. The
+ *   2026-09-21 critic (B6) found one blocked citation on EVERY device Summary tab: the Failure-impact
+ *   comparison split the 420px rail into two columns and a neighbouring column's key label covered
+ *   the other column's citation. Every visible `button.ui-cite` in #rail-evidence is scrolled into
+ *   view and must return ITSELF from elementFromPoint at its centre — the whole class of citations,
+ *   not the one that was reported.
+ *
  * Run against a dev server or a production preview:
  *   node review/layout-guard.mjs                      # defaults to http://localhost:4180
  *   ATLAS_URL=http://localhost:4181 node review/layout-guard.mjs
@@ -63,7 +71,39 @@ const probe = () => {
     hittable,
     intercepted,
     tracePanelPresent: document.querySelector("#rail-path") !== null,
+    /* INVARIANT 2b: the queue never paints under the status bar. Hit-testing alone cannot see
+       this: a row under the bar simply is not counted, so 6 rows passed while the grid box ran
+       37px past the bar at 1920x1080 with a trace open (2026-09-22 audit, A4). The PAINTED box is
+       the grid clipped by every clipping ancestor, which must end at or above the bar. */
+    queuePaintBottom: (() => {
+      const g = document.querySelector("#rail-queue .ag__grid");
+      if (!g) return null;
+      let bottom = g.getBoundingClientRect().bottom;
+      for (let a = g.parentElement; a; a = a.parentElement) {
+        if (getComputedStyle(a).overflowY !== "visible") bottom = Math.min(bottom, a.getBoundingClientRect().bottom);
+      }
+      return Math.round(bottom);
+    })(),
+    statusTop: Math.round(document.querySelector(".app__status")?.getBoundingClientRect().top ?? Infinity),
   };
+};
+
+/** Device Summary tabs the critic swept, plus one of each kind, so the check spans layouts. */
+const CITE_DEVICES = ["core1", "core2", "access13", "wan-edge-rtr1.lab"];
+
+const citeProbe = () => {
+  const blocked = [];
+  let checked = 0;
+  for (const b of document.querySelectorAll("#rail-evidence button.ui-cite")) {
+    b.scrollIntoView({ block: "center", inline: "nearest" });
+    const r = b.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    checked += 1;
+    const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+    if (el === null || !(el === b || b.contains(el)))
+      blocked.push(`${(b.getAttribute("aria-label") ?? b.textContent ?? "").slice(0, 60)} covered by ${el === null ? "nothing" : `${el.tagName}.${String(el.className).slice(0, 30)}`}`);
+  }
+  return { checked, blocked };
 };
 
 const failures = [];
@@ -96,6 +136,12 @@ for (const [w, h] of VIEWPORTS) {
           `(need >= ${MIN_HITTABLE_ROWS}). Clicks land on ${r.intercepted.join(", ") || "nothing"} instead.`,
       );
     }
+    if (r.queuePaintBottom !== null && r.queuePaintBottom > r.statusTop) {
+      failures.push(
+        `${at}: the findings grid paints to y=${r.queuePaintBottom}, ${r.queuePaintBottom - r.statusTop}px under the status bar (top ${r.statusTop}). ` +
+          `Rows there are drawn across the coverage text and a reveal cannot trust the grid box.`,
+      );
+    }
     if (label === "with trace" && !r.tracePanelPresent) {
       failures.push(`${at}: the flow did not open the path panel, so this state proves nothing.`);
     }
@@ -103,6 +149,16 @@ for (const [w, h] of VIEWPORTS) {
       `${at}: doc ${r.docScrollH}/${r.clientH}, ${r.hittable}/${r.rowsInDom} rows hit-testable` +
         (label === "with trace" ? `, path panel ${r.tracePanelPresent ? "present" : "ABSENT"}` : ""),
     );
+  }
+  for (const d of CITE_DEVICES) {
+    await page.goto(`${APP}/?v=1&snap=${SNAP}&s=evidence&d=${encodeURIComponent(d)}`, { waitUntil: "load" });
+    await page.waitForSelector("#rail-evidence button.ui-cite", { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+    const c = await page.evaluate(citeProbe);
+    const at = `${w}x${h} / ${d} summary`;
+    if (c.checked === 0) failures.push(`${at}: no citation rendered in the evidence rail, so it could not be checked.`);
+    for (const b of c.blocked) failures.push(`${at}: citation not clickable — ${b}.`);
+    console.log(`${at}: ${c.checked - c.blocked.length}/${c.checked} citations hit-testable`);
   }
   await ctx.close();
 }
@@ -112,4 +168,4 @@ if (failures.length > 0) {
   console.error(`\nlayout-guard: ${failures.length} violation(s)\n` + failures.map((f) => `  - ${f}`).join("\n"));
   process.exit(1);
 }
-console.log("\nlayout-guard: both invariants hold at every viewport.");
+console.log("\nlayout-guard: all three invariants hold at every viewport.");

@@ -15,14 +15,14 @@
  */
 import { act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aclUndecidability } from "../core/acl-coverage";
 import { forbiddenWordsIn } from "../core/claims";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { CoverageBar, agrees, coverageRows } from "./CoverageBar";
 import { registerCommandTarget, useAppCommands } from "./commands";
-import { Header, exampleQuery } from "./Header";
+import { Header, QUERY_DEBOUNCE_MS, exampleQuery } from "./Header";
 import { ShortcutHelp } from "./ShortcutHelp";
 import { StatusBar } from "./StatusBar";
 import { setThemePreference } from "./ThemeToggle";
@@ -218,11 +218,37 @@ describe("the query bar is reachable and escapable from the keyboard", () => {
     origin.remove();
   });
 
-  it("writes what is typed into the shared investigation state", () => {
+  it("echoes every keystroke at once and writes the shared state once typing pauses", () => {
+    vi.useFakeTimers();
+    try {
+      const c = mount(<Header />);
+      const input = c.querySelector<HTMLInputElement>(".hdr-query__input");
+      type(input!, "sev");
+      type(input!, "severity:Critical");
+      /* Design brief §8.2 journey 3: the echo and the filter are never coupled. The field shows the
+         text in the keystroke's own commit; the store — and every surface that filters on it — does
+         not move until the burst pauses. */
+      expect(input!.value).toBe("severity:Critical");
+      expect(useInvestigation.getState().query).toBe("");
+      act(() => {
+        vi.advanceTimersByTime(QUERY_DEBOUNCE_MS);
+      });
+      expect(useInvestigation.getState().query).toBe("severity:Critical");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an external write replaces the draft, and Clear writes through immediately", () => {
     const c = mount(<Header />);
     const input = c.querySelector<HTMLInputElement>(".hdr-query__input");
-    type(input!, "severity:Critical");
-    expect(useInvestigation.getState().query).toBe("severity:Critical");
+    act(() => useInvestigation.getState().setQuery("host:core1"));
+    expect(input!.value).toBe("host:core1");
+    const clear = c.querySelector<HTMLButtonElement>('button[aria-label="Clear the query"]');
+    expect(clear).not.toBeNull();
+    click(clear!);
+    expect(input!.value).toBe("");
+    expect(useInvestigation.getState().query).toBe("");
   });
 
   it("opens the keyboard reference on ? and lists only bindings that exist", () => {
@@ -420,11 +446,44 @@ describe("the status bar states the denominators permanently (acceptance B7)", (
       />,
     );
     const scene = c.querySelector(".sb__scene")?.textContent ?? "";
-    expect(scene).toContain("58 fps");
     expect(scene).toContain("tier low");
     expect(scene).toContain("reduced");
     // Progressive refinement is not finished, and a screenshot taken now is not the final frame.
     expect(scene).toContain("refining");
+
+    /* AMENDED 2026-09-21. This test used to assert "58 fps" in the PERMANENT line. A repair
+       agent measured that two consecutive capture runs differed in 23 of 32 frames, every
+       differing pixel inside the box holding those digits ("fabric 43 fps" vs "fabric 56 fps"),
+       which made acceptance F6 (byte-identical captures) impossible by construction. The frame
+       rate moved one click away into the disclosure, and the permanent line now carries only
+       values that are a function of the DATA. So the assertion is inverted rather than deleted:
+       what matters is that no frame-timing digit is painted into the chrome. */
+    expect(scene, "a frame-timing number in the permanent line breaks byte-identical captures").not.toMatch(
+      /\d+\s*fps/,
+    );
+  });
+
+  it("still shows the frame rate — one click away, in the disclosure", () => {
+    // Moving it out of the permanent line must not remove it: nothing is hidden, it is behind a
+    // control that says so. BEHAVIOURAL, not a grep of StatusBar.tsx (the earlier form of this test
+    // matched the source text and passed even if the disclosure never opened or never got stats):
+    // mount the bar with a reading, click the renderer control, read what the disclosure RENDERS.
+    // The live publish channel feeding this prop is exercised in status-telemetry.test.tsx.
+    const c = mount(
+      <StatusBar
+        stats={{ fps: 47.6, frameMs: 21.0, drawCalls: 31, triangles: 55935, programs: 9, quality: "high", converged: true }}
+      />,
+    );
+    expect(document.querySelector(".covpanel"), "the disclosure is closed before the click").toBeNull();
+    const control = c.querySelector<HTMLButtonElement>("button.sb__scene");
+    expect(control, "the renderer readout must be a control").not.toBeNull();
+    click(control!);
+    expect(control!.getAttribute("aria-expanded")).toBe("true");
+    const diag = document.querySelector(".covpanel__renderer")?.textContent ?? "";
+    expect(diag, "the opened disclosure must render the measured frame rate").toContain("48 fps");
+    expect(diag).toContain("21.0 ms");
+    // ...and still not on the permanent line.
+    expect(c.querySelector(".sb__scene")?.textContent ?? "").not.toMatch(/\d+\s*fps/);
   });
 
   it("opens the coverage disclosure at the row the reader asked about, and returns focus", () => {
@@ -460,9 +519,11 @@ describe("coverage is reported in three states, never two", () => {
         r.observed + r.absent + r.notApplicable,
         `${r.id}: ${r.observed} + ${r.absent} + ${r.notApplicable} != ${r.total}`,
       ).toBe(r.total);
-      expect(r.observed).toBeGreaterThanOrEqual(0);
-      expect(r.absent).toBeGreaterThanOrEqual(0);
-      expect(r.notApplicable).toBeGreaterThanOrEqual(0);
+      // Non-negative AND integral: a negative or fractional part could still satisfy the sum
+      // above (e.g. 27 + -1 + 0 = 26), so each part is pinned as a count, not only as a summand.
+      for (const part of [r.observed, r.absent, r.notApplicable]) {
+        expect(Number.isInteger(part) && part >= 0 && part <= r.total, `${r.id}: part ${part} is not a count in 0..${r.total}`).toBe(true);
+      }
     }
   });
 

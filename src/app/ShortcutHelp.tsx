@@ -22,22 +22,26 @@
  */
 import { useMemo, useState, type ReactNode } from "react";
 
-import { Button, Dialog, Input, Kbd } from "../ui/primitives";
+import { Button, Dialog, Input, Kbd, Toggle } from "../ui/primitives";
 import {
   SCOPE_LABEL,
   SCOPE_ORDER,
   formatShortcut,
+  isCharacterKeyBinding,
   isMacPlatform,
+  setCharacterKeyShortcuts,
   setHelpOpen,
   shortcutConflicts,
   shortcutText,
   useGlobalKeyboard,
+  useCharacterKeyShortcuts,
   useHelpOpen,
   usePendingKeys,
   useShortcuts,
   type Shortcut,
   type ShortcutScope,
 } from "./keyboard";
+import { CANVAS_KEYS } from "../fabric3d/canvasKeys";
 import "./CommandPalette.css";
 
 interface Section {
@@ -91,6 +95,7 @@ export function ShortcutHelp(): ReactNode {
   const open = useHelpOpen();
   const registry = useShortcuts();
   const [filter, setFilter] = useState("");
+  const characterKeys = useCharacterKeyShortcuts();
 
   const sections = useMemo<Section[]>(() => {
     const term = filter.trim().toLowerCase();
@@ -114,6 +119,15 @@ export function ShortcutHelp(): ReactNode {
   }, [registry, filter]);
 
   const conflicts = useMemo(() => shortcutConflicts(registry), [registry]);
+  /* The fabric canvas answers its own keys while it has focus (Fabric3D.tsx), so they are not
+     registry bindings; they are listed from the SAME table its handler resolves them from
+     (fabric3d/canvasKeys.ts), so this list cannot drift from what the canvas does. */
+  const canvasKeys = useMemo(() => {
+    const term = filter.trim().toLowerCase();
+    return CANVAS_KEYS.filter(
+      (k) => term === "" || k.label.toLowerCase().includes(term) || k.keys.includes(term) || shortcutText(k.keys).toLowerCase().includes(term),
+    );
+  }, [filter]);
   const total = registry.length;
   const shown = sections.reduce((n, s) => n + s.groups.reduce((m, g) => m + g.items.length, 0), 0);
 
@@ -138,6 +152,23 @@ export function ShortcutHelp(): ReactNode {
           </div>
         }
       >
+        <div className="kb-help__setting">
+          <Toggle
+            label="Single-character shortcuts"
+            checked={characterKeys}
+            onChange={setCharacterKeyShortcuts}
+            describedBy="kb-help-charkeys-desc"
+          />
+          <p className="kb-help__setting-desc" id="kb-help-charkeys-desc">
+            {characterKeys
+              ? "On: keys such as D, T, [ and the G sequences act without a modifier. Turn this off if you use speech input or type by accident — every action stays in the command palette (" +
+                shortcutText("mod+k") +
+                ") and on its on-screen control."
+              : "Off: no single-character key does anything. Every action is still in the command palette (" +
+                shortcutText("mod+k") +
+                ") and on its on-screen control; keys with Ctrl, Alt or Cmd and Escape still work."}
+          </p>
+        </div>
         <Input
           label="Filter shortcuts"
           value={filter}
@@ -160,7 +191,9 @@ export function ShortcutHelp(): ReactNode {
                 {SCOPE_LABEL[sec.scope]}
                 <span className="kb-help__scope-note">
                   {sec.scope === "global"
-                    ? "works wherever focus is, except inside a text field"
+                    ? characterKeys
+                      ? "works wherever focus is, except inside a text field; single-character keys can be turned off above"
+                      : "single-character keys are off; the rest work wherever focus is"
                     : "works while focus is in that surface"}
                 </span>
               </h3>
@@ -169,7 +202,10 @@ export function ShortcutHelp(): ReactNode {
                   <h4 className="kb-help__group-title">{g.group}</h4>
                   <ul className="kb-help__list">
                     {g.items.map((s) => {
-                      const reason = s.unavailable?.() ?? null;
+                      const reason =
+                        !characterKeys && isCharacterKeyBinding(s.keys)
+                          ? "Off — single-character shortcuts are turned off."
+                          : (s.unavailable?.() ?? null);
                       return (
                         <li className="kb-help__row" key={s.id}>
                           <span className="kb-help__label">
@@ -188,6 +224,26 @@ export function ShortcutHelp(): ReactNode {
               ))}
             </section>
           ))
+        )}
+
+        {canvasKeys.length === 0 ? null : (
+          <section className="kb-help__scope" data-testid="kb-help-canvas">
+            <h3 className="kb-help__scope-title">
+              3-D fabric canvas
+              <span className="kb-help__scope-note">works while the fabric canvas has focus (Tab to it)</span>
+            </h3>
+            <ul className="kb-help__list">
+              {canvasKeys.map((k) => (
+                <li className="kb-help__row" key={k.action}>
+                  <span className="kb-help__label">
+                    {k.label}
+                    <span className="visually-hidden">{`: ${shortcutText(k.keys)}`}</span>
+                  </span>
+                  <KeyCaps keys={k.keys} />
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
 
         {conflicts.length === 0 ? null : (

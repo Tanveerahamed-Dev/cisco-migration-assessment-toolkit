@@ -9,14 +9,15 @@
  * So this is the audit, and it lives in the test suite rather than in `tools/` on purpose: a gate
  * that has to be remembered is a gate that rots. It does three things:
  *
- *   1. Parses the real token values out of tokens.css for BOTH themes.
+ *   1. Parses the real token values out of tokens.css for every palette block: light, explicit
+ *      dark, and the OS-preference dark block (which it also pins equal to the explicit one).
  *   2. Computes WCAG 2.x relative-luminance contrast for every pairing the UI actually uses and
  *      asserts the floors — 4.5:1 for text (1.4.3), 3:1 for non-text UI and state (1.4.11).
  *   3. Re-derives every ratio QUOTED in a comment and fails if the quoted number is wrong, so the
  *      comments cannot drift away from the values they describe.
  */
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -93,10 +94,41 @@ function tokensIn(selector: RegExp): Record<string, string> {
   return out;
 }
 
-const light = tokensIn(/^:root\s*\{/m);
-const darkExplicit = tokensIn(/^\[data-theme="dark"\]\s*\{/m);
+/* The THREE blocks that set a palette. The dark palette is emitted twice (tokens.css, "dark theme"):
+   once for an explicit `[data-theme="dark"]`, once for a reader whose OS asks for dark and who has
+   not chosen — `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) }`. The audit
+   used to parse only the first two, so the palette most dark-mode readers actually get was never
+   measured (independent critic, 2026-09-22). It is now its own audited theme, AND pinned
+   declaration-for-declaration to the explicit block below. */
+const LIGHT_SEL = /^:root\s*\{/m;
+const DARK_SEL = /^\[data-theme="dark"\]\s*\{/m;
+const DARK_OS_SEL = /^[ \t]+:root:not\(\[data-theme="light"\]\)\s*\{/m;
+const light = tokensIn(LIGHT_SEL);
+const darkExplicit = tokensIn(DARK_SEL);
+const darkOsExplicit = tokensIn(DARK_OS_SEL);
 // Dark inherits everything light defines and overrides only what differs.
 const dark = { ...light, ...darkExplicit };
+const darkOs = { ...light, ...darkOsExplicit };
+
+/** Every custom-property declaration in a block, whatever its value — not only the hex ones. */
+function declarationsIn(selector: RegExp): Map<string, string> {
+  const m = selector.exec(css);
+  const out = new Map<string, string>();
+  if (!m) return out;
+  let i = css.indexOf("{", m.index);
+  const start = i;
+  let depth = 0;
+  for (; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  const body = css.slice(start + 1, i).replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const d of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) out.set(d[1]!, d[2]!.replace(/\s+/g, " ").trim());
+  return out;
+}
 
 /* ── the pairings the UI actually uses ─────────────────────────────────────── */
 
@@ -131,32 +163,77 @@ const SEMANTIC = [
 const THEMES: [string, Record<string, string>][] = [
   ["light", light],
   ["dark", dark],
+  ["dark (OS preference)", darkOs],
 ];
 
+/** The block each theme's own tokens (and quoted ratios) are written in. */
+const THEME_SELECTOR: Record<string, RegExp> = {
+  light: LIGHT_SEL,
+  dark: DARK_SEL,
+  "dark (OS preference)": DARK_OS_SEL,
+};
+
+/**
+ * Measure `fg` on `bg` for every pair, and account for every pair. A pair whose token is missing
+ * or is not a hex value used to be skipped with a bare `continue`, so a renamed token or a value
+ * rewritten as `rgb()` / `color-mix()` dropped out of the audit silently and the audit still
+ * passed. An unmeasurable pair is now a failure of its own, and the number of pairs actually
+ * measured is returned so each caller can pin it to the size of its matrix.
+ */
+function measure(
+  t: Record<string, string>,
+  fgs: readonly string[],
+  bgs: readonly string[],
+  floor: number,
+): { failures: string[]; measured: number } {
+  const failures: string[] = [];
+  let measured = 0;
+  for (const fgTok of fgs) {
+    for (const bgTok of bgs) {
+      const fg = t[fgTok];
+      const bg = t[bgTok];
+      const r = fg !== undefined && bg !== undefined ? contrast(fg, bg) : null;
+      if (r === null) {
+        failures.push(`${fgTok} on ${bgTok} could not be measured (${fg ?? "missing"} on ${bg ?? "missing"})`);
+        continue;
+      }
+      measured += 1;
+      if (r < floor) failures.push(`${fgTok} on ${bgTok} = ${round2(r)}:1`);
+    }
+  }
+  return { failures, measured };
+}
+
 describe("tokens.css parses", () => {
-  it("finds both themes, so an audit cannot pass by having nothing to audit", () => {
+  it("finds every theme block, so an audit cannot pass by having nothing to audit", () => {
     expect(Object.keys(light).length).toBeGreaterThan(20);
     expect(Object.keys(darkExplicit).length).toBeGreaterThan(10);
+    expect(Object.keys(darkOsExplicit).length).toBeGreaterThan(10);
     expect(light["--text"]).toBeDefined();
     expect(dark["--text"]).toBeDefined();
     expect(light["--text"]).not.toBe(dark["--text"]);
+  });
+
+  it("the OS-preference dark block declares exactly what the explicit dark block declares", () => {
+    /* tokens.css: "Keep the two blocks in sync — a divergence here is invisible until someone
+       toggles the theme." This is that check, over EVERY declaration (shadows and scrims too, not
+       only the hex tokens the contrast audit reads). */
+    const os = declarationsIn(DARK_OS_SEL);
+    const explicit = declarationsIn(DARK_SEL);
+    expect(os.size).toBeGreaterThan(10);
+    const diff: string[] = [];
+    for (const k of new Set([...os.keys(), ...explicit.keys()])) {
+      if (os.get(k) !== explicit.get(k)) diff.push(`${k}: OS block ${os.get(k) ?? "absent"} / explicit ${explicit.get(k) ?? "absent"}`);
+    }
+    expect(diff, `the two dark blocks diverge:\n${diff.join("\n")}`).toEqual([]);
   });
 });
 
 describe("WCAG 1.4.3 — text contrast is at least 4.5:1", () => {
   for (const [themeName, t] of THEMES) {
     it(`${themeName}: every ink token clears 4.5:1 on every surface it can sit on`, () => {
-      const failures: string[] = [];
-      for (const ink of INK_TEXT) {
-        for (const surf of SURFACES) {
-          const fg = t[ink];
-          const bg = t[surf];
-          if (!fg || !bg) continue;
-          const r = contrast(fg, bg);
-          if (r === null) continue;
-          if (r < 4.5) failures.push(`${ink} on ${surf} = ${round2(r)}:1`);
-        }
-      }
+      const { failures, measured } = measure(t, INK_TEXT, SURFACES, 4.5);
+      expect(measured, "every ink x surface pair was measured").toBe(INK_TEXT.length * SURFACES.length);
       expect(failures, `${themeName} text pairings below 4.5:1:\n${failures.join("\n")}`).toEqual([]);
     });
   }
@@ -165,31 +242,16 @@ describe("WCAG 1.4.3 — text contrast is at least 4.5:1", () => {
 describe("WCAG 1.4.11 — non-text UI and state indicators are at least 3:1", () => {
   for (const [themeName, t] of THEMES) {
     it(`${themeName}: control boundaries and focus clear 3:1`, () => {
-      const failures: string[] = [];
-      for (const tok of NON_TEXT) {
-        for (const surf of SURFACES) {
-          const fg = t[tok];
-          const bg = t[surf];
-          if (!fg || !bg) continue;
-          const r = contrast(fg, bg);
-          if (r !== null && r < 3) failures.push(`${tok} on ${surf} = ${round2(r)}:1`);
-        }
-      }
+      const { failures, measured } = measure(t, NON_TEXT, SURFACES, 3);
+      expect(measured, "every non-text x surface pair was measured").toBe(NON_TEXT.length * SURFACES.length);
       expect(failures, `${themeName} non-text pairings below 3:1:\n${failures.join("\n")}`).toEqual([]);
     });
 
     it(`${themeName}: every semantic colour clears 4.5:1 on the surfaces it labels`, () => {
       // Semantic tokens always carry a word, so the text floor applies, not the 3:1 floor.
-      const failures: string[] = [];
-      for (const tok of SEMANTIC) {
-        for (const surf of ["--surface-1", "--surface-2", "--surface-3"]) {
-          const fg = t[tok];
-          const bg = t[surf];
-          if (!fg || !bg) continue;
-          const r = contrast(fg, bg);
-          if (r !== null && r < 4.5) failures.push(`${tok} on ${surf} = ${round2(r)}:1`);
-        }
-      }
+      const LABEL_SURFACES = ["--surface-1", "--surface-2", "--surface-3"];
+      const { failures, measured } = measure(t, SEMANTIC, LABEL_SURFACES, 4.5);
+      expect(measured, "every semantic x surface pair was measured").toBe(SEMANTIC.length * LABEL_SURFACES.length);
       expect(failures, `${themeName} semantic pairings below 4.5:1:\n${failures.join("\n")}`).toEqual([]);
     });
   }
@@ -226,8 +288,9 @@ describe("the ratios quoted in comments are the real ones", () => {
     let checked = 0;
 
     for (const [themeName, t] of THEMES) {
-      const sel = themeName === "light" ? /^:root\s*\{/m : /^\[data-theme="dark"\]\s*\{/m;
-      const m = sel.exec(css);
+      const sel = THEME_SELECTOR[themeName];
+      const m = sel?.exec(css);
+      expect(m, `${themeName}: its token block was not found`).toBeTruthy();
       if (!m) continue;
       const block = css.slice(m.index);
       const end = block.indexOf("\n}");
@@ -268,5 +331,60 @@ describe("the ratios quoted in comments are the real ones", () => {
     // Without this, a parser that found no quoted ratios would make the audit vacuously green.
     expect(checked, "no quoted ratios were found to verify — the parser is broken").toBeGreaterThan(10);
     expect(mismatches, `comments disagree with computed contrast:\n${mismatches.join("\n")}`).toEqual([]);
+  });
+});
+
+/* ── non-text tokens are never used as text ink ─────────────────────────────── */
+
+describe("WCAG 1.4.3 — a token tokens.css declares non-text is never a text colour", () => {
+  /*
+   * The class, not a list: every token whose own definition comment says "non-text" is collected
+   * from tokens.css, so a new non-text token is guarded the moment it is written down. The palette
+   * citation shipped at 4.09:1 because `.palette__cite` used `--claim-out-of-scope` as `color:`
+   * while the token comment said "NON-TEXT only"; only the highlighted row switched ink.
+   */
+  const nonText = new Set<string>(NON_TEXT);
+  for (const line of css.split("\n")) {
+    const m = /^\s*(--[\w-]+)\s*:[^;]*;\s*\/\*(.*)$/.exec(line);
+    if (m?.[1] && /non-text/i.test(m[2] ?? "")) nonText.add(m[1]);
+  }
+
+  const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  function cssFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name);
+      if (ent.isDirectory()) out.push(...cssFiles(p));
+      else if (ent.name.endsWith(".css") && p !== TOKENS) out.push(p);
+    }
+    return out;
+  }
+
+  it("finds the non-text tokens, so the guard cannot pass vacuously", () => {
+    expect([...nonText]).toContain("--claim-out-of-scope");
+    expect(nonText.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it("no `color:` declaration in src/**/*.css names a non-text token", () => {
+    const offenders: string[] = [];
+    const files = cssFiles(SRC);
+    expect(files.length).toBeGreaterThan(5);
+    for (const file of files) {
+      const text = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+      // Rule bodies. A rule whose generated content carries an EMPTY alternative (`/ ""`) is pure
+      // decoration with no text node (WCAG 1.4.3 exempts it) — `.sb__dot::before` is the case.
+      for (const rule of text.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+        const body = rule[2] ?? "";
+        if (/content\s*:[^;]*\/\s*""/.test(body)) continue;
+        for (const decl of body.matchAll(/(?:^|[;\s])color\s*:\s*([^;]+)/g)) {
+          for (const tok of nonText) {
+            if (new RegExp(String.raw`var\(\s*${tok}\s*[,)]`).test(decl[1] ?? "")) {
+              offenders.push(`${file.slice(SRC.length + 1)} ${(rule[1] ?? "").trim()} → ${tok}`);
+            }
+          }
+        }
+      }
+    }
+    expect(offenders, `non-text tokens used as text ink:\n${offenders.join("\n")}`).toEqual([]);
   });
 });

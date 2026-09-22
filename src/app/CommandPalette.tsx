@@ -36,6 +36,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { flushSync } from "react-dom";
+import { presentBand } from "../core/band-qualification";
 import { deviceById, fabric, findingById } from "../core/data";
 import { applyToFindings, parseQuery, rankedSearch, type SearchHit } from "../core/query";
 import { useInvestigation } from "../core/store";
@@ -159,7 +161,7 @@ function ShortcutKeys({ keys }: { keys: string }): ReactNode {
   );
 }
 
-function commandRow(c: Command, close: () => void): Row {
+function commandRow(c: Command, close: Close): Row {
   const a = commandAvailability(c);
   return {
     key: `command:${c.id}`,
@@ -190,7 +192,7 @@ function DeviceDetail({ hostId }: { hostId: string }): ReactNode {
         role {d.role === null ? <NotObserved what="role" compact /> : d.role}
       </span>
       <span className="palette__kv">
-        band <Band band={d.band} />
+        band <Band band={presentBand(d)} />
       </span>
       {d.collected ? null : (
         <span className="palette__kv palette__kv--absent">
@@ -209,7 +211,61 @@ const crossLayerByCite = (() => {
   };
 })();
 
-function hitRow(hit: SearchHit, close: () => void): Row {
+/** Where focus goes when the palette closes and there was NO invoking element to return to. `tick`
+ *  counts the attempts, so a landing can wait for its preferred target before settling for less. */
+type Landing = (tick: number) => HTMLElement | null;
+type Close = (landing?: Landing) => void;
+
+/* A palette opened from a fresh load has no invoker: focus sat on <body>. Returning it there
+   (measured, A11Y critic D3: Ctrl+K, F099, Enter left focus on BODY at 100-4000 ms, so the next Tab
+   restarted at the skip link) throws away the place the user just asked to go. */
+
+const LANDING_TICKS = 20;
+const LANDING_TICK_MS = 50;
+
+const visible = (el: HTMLElement | null | undefined): el is HTMLElement =>
+  el !== null && el !== undefined && el.isConnected && el.getClientRects().length > 0;
+
+/** The main stage — programmatically focusable, and always present. */
+const stageLanding: Landing = () => document.getElementById("stage");
+
+/** After a finding selection: the queue's newly current row (its roving cell — the grid moves it
+ *  on an external selection); if no visible row shows the finding after half the wait (filtered
+ *  out, or the queue is not on screen), the evidence title that shows it; then the stage. */
+const activeFindingLanding: Landing = (tick) => {
+  for (const row of document.querySelectorAll<HTMLElement>('[role="grid"] [role="row"][aria-current="true"]')) {
+    const roving = row.querySelector<HTMLElement>('[tabindex="0"]');
+    if (visible(roving)) return roving;
+  }
+  if (tick < LANDING_TICKS / 2) return null;
+  const title = [...document.querySelectorAll<HTMLElement>('section[aria-label="Evidence chain"] h2')].find(visible);
+  if (title) {
+    if (!title.hasAttribute("tabindex")) title.tabIndex = -1;
+    return title;
+  }
+  return tick >= LANDING_TICKS - 1 ? stageLanding(tick) : null;
+};
+
+/** Waits for the selection to commit and reveal (a paged-in row mounts a render or two later), and
+ *  lands focus only while nothing else has taken it. Bounded (~1 s). Timers, not animation frames:
+ *  frames are throttled to zero in a hidden or occluded document. */
+function landFocus(find: Landing): void {
+  let tick = 0;
+  const step = (): void => {
+    const a = document.activeElement;
+    if (a !== null && a !== document.body) return;
+    const el = find(tick);
+    if (el && el.isConnected) {
+      el.focus({ preventScroll: true });
+      if (document.activeElement === el) return;
+    }
+    tick += 1;
+    if (tick < LANDING_TICKS) setTimeout(step, LANDING_TICK_MS);
+  };
+  setTimeout(step, 0);
+}
+
+function hitRow(hit: SearchHit, close: Close): Row {
   const base = {
     key: `hit:${hit.kind}:${hit.id}:${hit.cite}`,
     cite: hit.cite,
@@ -259,7 +315,7 @@ function hitRow(hit: SearchHit, close: () => void): Row {
       text: `${severity ?? "severity not observed"}, ${hit.id}, ${hit.label}`,
       detail: hit.detail ?? <NotObserved what="detail" compact />,
       run: () => {
-        close();
+        close(hit.kind === "finding" ? activeFindingLanding : undefined);
         const store = useInvestigation.getState();
         if (hit.kind === "finding") {
           store.selectFinding(hit.id);
@@ -387,24 +443,51 @@ export function CommandPalette(): ReactNode {
   /* The echo is synchronous; the list is derived from the deferred value, so a keystroke never
      waits on the search. React may commit the input ahead of the list — that is the point. */
   const term = useDeferredValue(input);
+  /** An Enter pressed while `term` lagged `input`: the input text it was pressed on. */
+  const pendingEnterRef = useRef<string | null>(null);
 
-  const close = useCallback(() => {
-    setPaletteOpen(false);
+  const close = useCallback<Close>((landing) => {
+    /* Synchronous unmount: while the dialog is mounted the page behind it is `inert` (acceptance
+       D3) and refuses focus, so the focus return below — and a command run straight after, such as
+       "Go to the queue" — would otherwise land on an element that cannot take it. */
+    flushSync(() => setPaletteOpen(false));
     /* The store carries the exact invoking element (design brief 7.4 rule 4). Dialog restores too,
        but it restores to whatever was active when it mounted; this is the explicit target. */
-    focusReturn?.focus?.();
+    const back = focusReturn;
+    if (back && back !== document.body && back.isConnected) back.focus?.();
+    else landFocus(landing ?? stageLanding);
   }, [setPaletteOpen, focusReturn]);
 
   useEffect(() => {
     if (!open) return;
     /* Read-once: a seed that survived its opening would re-apply on the next, unrelated open. */
     const seed = consumePaletteSeed();
+    pendingEnterRef.current = null;
     setInput(seed ?? "");
     setActive(0);
   }, [open]);
 
+  /* ...and pays for the command list once the page is IDLE, so the first open does not either. The
+     idle callback runs only when no input is pending; the timeout is a floor, not a schedule. */
+  useEffect(() => {
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof w.requestIdleCallback === "function") {
+      const id = w.requestIdleCallback(() => void allCommands(), { timeout: 15000 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const t = setTimeout(() => void allCommands(), 5000);
+    return () => clearTimeout(t);
+  }, []);
+
   const groups = useMemo<RowGroup[]>(() => {
     void targetEpoch; // availability is recomputed when the set of mounted owners changes
+    /* A closed palette lists nothing, so it computes nothing (acceptance E5, cold load). The
+       palette is mounted at boot for its keyboard model, and building every command then — every
+       suggested flow TRACED — ran inside the first render, where a keystroke cannot interrupt it. */
+    if (!open) return [];
     const q = term.trim();
     const commands = allCommands();
 
@@ -531,8 +614,6 @@ export function CommandPalette(): ReactNode {
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || a.c.title.localeCompare(b.c.title))
       .map((x) => commandRow(x.c, close));
-    if (matchedCommands.length > 0)
-      out.push({ key: "commands", label: "Commands", rows: matchedCommands });
 
     const result = rankedSearch(searchTerm, { limit: SEARCH_LIMIT });
     const byKind = new Map<SearchHit["kind"], SearchHit[]>();
@@ -541,11 +622,19 @@ export function CommandPalette(): ReactNode {
       if (list) list.push(h);
       else byKind.set(h.kind, [h]);
     }
+    /* A record the query NAMES exactly (its identity field equals the text) is what the user asked
+       for, so its group goes ahead of the commands. Measured before this rule: typing "core2"
+       pre-selected "Trace core2 Vlan20 …", and Enter replaced the user's flow, moved the camera
+       and collapsed the hop sections instead of selecting the device (acceptance A4). The rule is
+       by match class, not a list of kinds or commands, so it holds for every record kind and for
+       any command whose title happens to mention the name. */
+    const named: RowGroup[] = [];
+    const rest: RowGroup[] = [];
     for (const kind of KIND_ORDER) {
       const hits = byKind.get(kind);
       if (!hits || hits.length === 0) continue;
       const shown = hits.slice(0, HITS_PER_KIND);
-      out.push({
+      (shown.some((h) => h.matchType === "exact-id") ? named : rest).push({
         key: `hits-${kind}`,
         label: KIND_GROUP[kind],
         /* The denominator is the number this search RETURNED for the kind, not a claim about how
@@ -561,6 +650,10 @@ export function CommandPalette(): ReactNode {
         rows: shown.map((h) => hitRow(h, close)),
       });
     }
+    out.push(...named);
+    if (matchedCommands.length > 0)
+      out.push({ key: "commands", label: "Commands", rows: matchedCommands });
+    out.push(...rest);
 
     if (result.truncated)
       out.push({
@@ -585,7 +678,7 @@ export function CommandPalette(): ReactNode {
       });
 
     return out;
-  }, [term, close, targetEpoch]);
+  }, [open, term, close, targetEpoch]);
 
   const rows = useMemo(() => groups.flatMap((g) => g.rows), [groups]);
 
@@ -644,6 +737,16 @@ export function CommandPalette(): ReactNode {
           setActive(Math.max(0, rows.length - 1));
           return;
         case "Enter": {
+          /* The list is derived from the DEFERRED term. Enter pressed straight after typing (a fast
+             typist, or a paste then Enter) used to run the stale list's top row — measured:
+             "F099" + Enter at once ran "severity:Critical" (A1). When the list has not caught up
+             with what is in the box, the Enter is held and runs against the current input's list
+             as soon as it commits (the effect below). */
+          if (term !== input) {
+            e.preventDefault();
+            pendingEnterRef.current = input;
+            return;
+          }
           const row = rows[active];
           if (!row) return;
           e.preventDefault();
@@ -654,8 +757,18 @@ export function CommandPalette(): ReactNode {
           return;
       }
     },
-    [move, rows, active, input],
+    [move, rows, active, input, term],
   );
+
+  /* The held Enter (see "Enter" above): runs once the deferred term equals the text that was in
+     the box when Enter was pressed. Any further edit cancels it (onChange), so it never runs a row
+     for a query the user has since changed. */
+  useEffect(() => {
+    const held = pendingEnterRef.current;
+    if (held === null || held !== term || term !== input) return;
+    pendingEnterRef.current = null;
+    rows[active]?.run();
+  }, [term, input, rows, active]);
 
   const count = rows.length;
   const trimmed = term.trim();
@@ -680,7 +793,7 @@ export function CommandPalette(): ReactNode {
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={() => close()}
       title="Command palette"
       width="lg"
       className="palette"
@@ -721,6 +834,7 @@ export function CommandPalette(): ReactNode {
           placeholder={`Search a command, a device, a finding ${EM_DASH} or an address pair to trace`}
           value={input}
           onChange={(e) => {
+            pendingEnterRef.current = null;
             setInput(e.target.value);
             setActive(0);
           }}

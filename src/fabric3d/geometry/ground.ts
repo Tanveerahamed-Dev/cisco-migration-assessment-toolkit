@@ -40,6 +40,8 @@ import { unitDecal } from "./chassis";
 export const DECK_DROP = CHASSIS_EXTENT.height / 2;
 
 /** Stacking order above the deck. Separate planes, never coplanar. */
+/** A node pad (see `NODE_PAD_SPREAD`) sits between the deck and the contact decal. */
+export const Y_PAD = 0.02;
 export const Y_CONTACT = 0.05;
 export const Y_HALO = 0.11;
 export const Y_STATE_RING = 0.17;
@@ -79,6 +81,10 @@ export interface GroundSet {
   group: Group;
   floor: Mesh;
   decks: InstancedMesh;
+  /** One faded surface patch under each node the tier deck does not support. See `deckSupport`. */
+  pads: InstancedMesh;
+  /** Ids of the nodes that needed a pad, in instance order. */
+  padded: readonly string[];
   contacts: InstancedMesh;
   /** Deck top Y for each tier index, so callers can place per-tier overlays without recomputing. */
   deckY: Map<number, number>;
@@ -143,7 +149,9 @@ export function buildGround(input: GroundInput): GroundSet {
   );
   // The floor does NOT receive shadows. It sits 15 units below the lowest deck and three tiers
   // below the busiest one, so every shadow reaching it is a projection from something the viewer
-  // cannot see casting it. Its grounding comes from SSAO and the contact decals instead.
+  // cannot see casting it. Its grounding is the contact decals. NOT SSAO: the floor, decks and pads
+  // write no depth (materials.ts), so the SSAO pass has no ground surface to occlude — measured, the
+  // luma under a chassis base is identical at high (SSAO on) and low (off) to within 1/255.
   floor.receiveShadow = false;
   floor.castShadow = false;
   group.add(floor);
@@ -174,6 +182,31 @@ export function buildGround(input: GroundInput): GroundSet {
   decks.count = tierBounds.length;
   decks.instanceMatrix.needsUpdate = true;
   group.add(decks);
+
+  /* Node pads. The deck grounds its tier; this grounds each NODE the deck has faded away from.
+     Same material as the deck, so a pad reads as more of the same surface rather than as a new
+     kind of object, and it takes the cast shadow on the tiers that have one. Only nodes below
+     MIN_SURFACE_UNDER_NODE get one: a pad under a node already on the deck would only brighten it.
+     See `deckSupport` for the measurement that made this necessary. */
+  const support = deckSupport(tierBounds, nodes, padding);
+  const padded = nodes.filter((n) => (support.get(n.id) ?? 0) < MIN_SURFACE_UNDER_NODE);
+  const padGeometry = fadedPlane(2);
+  const pads = new InstancedMesh(padGeometry, materials.deck, Math.max(1, padded.length));
+  pads.name = "node-pads";
+  pads.receiveShadow = shadows;
+  pads.castShadow = false;
+  pads.frustumCulled = false;
+  for (let i = 0; i < padded.length; i += 1) {
+    const n = padded[i];
+    if (n === undefined) continue;
+    const half = input.footprintOf(n.id);
+    _pos.set(n.x, n.y - DECK_DROP + Y_PAD, n.z);
+    _scale.set(half[0] * NODE_PAD_SPREAD, 1, half[2] * NODE_PAD_SPREAD);
+    pads.setMatrixAt(i, m4.identity().compose(_pos, ZERO_ROT, _scale));
+  }
+  pads.count = padded.length;
+  pads.instanceMatrix.needsUpdate = true;
+  group.add(pads);
 
   /* Contact decals. Scaled from each device's own footprint, so an access point does not get a
      switch-sized smudge under it. Elliptical by construction: the decal is a unit quad and the
@@ -208,11 +241,15 @@ export function buildGround(input: GroundInput): GroundSet {
     group,
     floor,
     decks,
+    pads,
+    padded: padded.map((n) => n.id),
     contacts,
     deckY,
     dispose(): void {
       floor.geometry.dispose();
       deckGeometry.dispose();
+      padGeometry.dispose();
+      pads.dispose();
       contactGeometry.dispose();
       decks.dispose();
       contacts.dispose();
@@ -223,6 +260,76 @@ export function buildGround(input: GroundInput): GroundSet {
 }
 
 /**
+ * The deck's alpha at normalised radius r, mirroring the `radialFade` generator in materials.ts
+ * ((1 − r)^2.2, zero at and beyond the edge midpoint). Duplicated rather than imported because the
+ * generator writes a texture and exposes no function; the test that pins this pins the pair.
+ */
+export function deckFadeAlpha(r: number): number {
+  return r >= 1 ? 0 : Math.pow(1 - Math.max(0, r), 2.2);
+}
+
+/** Below this deck alpha under its centre, a chassis has nothing under it to be grounded ON. */
+export const MIN_SURFACE_UNDER_NODE = 0.3;
+
+/**
+ * A node pad's size as a multiple of the chassis half-extent. At 8 the silhouette falls at
+ * normalised radius 0.25, where the fade still carries (0.75)^2.2 = 0.53 — a surface a contact
+ * decal can darken — and the pad's own edge is four chassis widths out, soft enough to read as the
+ * deck continuing rather than as a coaster.
+ */
+export const NODE_PAD_SPREAD = 8;
+
+/**
+ * The surface under each node once pads are laid: the deck's own alpha, or a pad's alpha at its
+ * centre (1) where the deck fell short. Exported so a test asserts the doctrine per NODE rather
+ * than per tier, which is the granularity it failed at.
+ */
+export function surfaceUnderNodes(
+  tiers: readonly FabricTierBounds[],
+  nodes: readonly { id: string; x: number; y: number; z: number }[],
+): Map<string, number> {
+  const support = deckSupport(tiers, nodes);
+  const out = new Map<string, number>();
+  for (const [id, a] of support) out.set(id, a < MIN_SURFACE_UNDER_NODE ? 1 : a);
+  return out;
+}
+
+/**
+ * THE SURFACE UNDER EVERY NODE, as a number.
+ *
+ * The header's doctrine — objects that do not sit on anything read as floating — was honoured for
+ * the tier as a whole and not for each node on it. A deck is sized to its tier's extent and then
+ * fades radially, so a node at the extreme of a wide or sparse tier sits where the deck has already
+ * faded to almost nothing. MEASURED (render audit #5): `wan-edge-rtr1.lab` and `AP-floor3-01`
+ * rendered as boxes on pure backdrop at both tiers, with their state rings floating beside them —
+ * and the contact decal, being a DARKENING, cannot ground anything on a surface that is already the
+ * backdrop's colour.
+ *
+ * Returns, per node, the strongest deck alpha under its centre across every deck on its plane.
+ */
+export function deckSupport(
+  tiers: readonly FabricTierBounds[],
+  nodes: readonly { id: string; x: number; y: number; z: number }[],
+  padding: readonly number[] = deckPadding(tiers),
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const n of nodes) {
+    let best = 0;
+    for (let i = 0; i < tiers.length; i += 1) {
+      const t = tiers[i];
+      if (t === undefined || Math.abs(t.y - n.y) > 0.5) continue;
+      const pad = padding[i] ?? 14;
+      const w = t.maxX - t.minX + pad * 2;
+      const d = t.maxZ - t.minZ + pad * 2;
+      const r = Math.hypot((n.x - (t.minX + t.maxX) / 2) / w, (n.z - (t.minZ + t.maxZ) / 2) / d) * 2;
+      best = Math.max(best, deckFadeAlpha(r));
+    }
+    out.set(n.id, best);
+  }
+  return out;
+}
+
+/**
  * Per-tier padding, reduced wherever two tiers share a Y plane and would otherwise meet.
  *
  * This snapshot lays access (tier 1) and distribution (tier 3) on the same plane, and likewise the
@@ -230,7 +337,7 @@ export function buildGround(input: GroundInput): GroundSet {
  * pairs overlap, and two coplanar transparent decks overlapping is exactly the z-fight the brief
  * forbids — fixed at authoring time here rather than fought with polygonOffset later.
  */
-function deckPadding(tiers: readonly FabricTierBounds[]): number[] {
+export function deckPadding(tiers: readonly FabricTierBounds[]): number[] {
   // A generous floor matters most for a SMALL tier: the deck fades radially, so a two-node tier
   // padded like a seventeen-node one concentrates its brightest pixels into a tight blob that
   // reads as a spotlight rather than as a surface. Measured in the browser; 14 was too tight.

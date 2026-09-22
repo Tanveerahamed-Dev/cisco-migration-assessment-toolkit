@@ -33,9 +33,20 @@
  * TOTAL order ending in an identity field, so nothing rests on Array.sort stability and results do
  * not shift between JS engines or between calls.
  */
+import {
+  BAND_KEY_ORDER,
+  bandDegraded,
+  bandHealthy,
+  bandKey,
+  bandKeyDetail,
+  bandKeyLabel,
+  bandMatches,
+  bandRank,
+  presentBand,
+} from "./band-qualification";
 import { fabric, findingsByHost, hasRib, linksByHost, severityRank } from "./data";
 import type { Band, Cite, CrossLayerFinding, Device, Finding, Severity } from "./types";
-import { BAND_ORDER, SEVERITY_ORDER } from "./types";
+import { SEVERITY_ORDER } from "./types";
 
 /* ── tri-state logic ────────────────────────────────────────────────────────── */
 
@@ -157,8 +168,14 @@ const severityDomain = memo(() =>
 );
 const categoryDomain = memo(() => rankedDomain(tally(fabric.findings, (f) => f.category), "findings"));
 const waveDomain = memo(() => rankedDomain(tally(fabric.findings, (f) => f.wave), "findings"));
+/* Band values are the band owner's KEYS (core/band-qualification.ts), so a favourable band that
+   partly measures missing evidence is offered as "Excellent-partial", never counted as plain
+   "Excellent" (B1). */
 const bandDomain = memo(() =>
-  orderedDomain(tally(fabric.devices, (d) => d.band), BAND_ORDER, "devices"),
+  orderedDomain(tally(fabric.devices, bandKey), BAND_KEY_ORDER, "devices").map((v) => ({
+    ...v,
+    detail: bandKeyDetail(v.value),
+  })),
 );
 const roleDomain = memo(() => rankedDomain(tally(fabric.devices, (d) => d.role), "devices"));
 const kindDomain = memo(() => rankedDomain(tally(fabric.devices, (d) => d.kind), "devices"));
@@ -186,7 +203,7 @@ const hostDomain = memo((): DomainValue[] =>
       count: null,
       source: "devices",
       detail: d.collected
-        ? nonEmpty([d.role, d.band === null ? null : `band ${d.band}`]).join(" · ") || "collected"
+        ? nonEmpty([d.role, bandKey(d) === null ? null : `band ${presentBand(d).short}`]).join(" · ") || "collected"
         : "not collected — findings unknown",
     }))
     .sort((a, b) => cmpStr(a.value, b.value)),
@@ -211,12 +228,12 @@ const IS_PREDICATES: Record<string, PredicateDef> = {
   uninventoried: { help: "no model/serial/software record", fn: (d) => (d.inventoried ? "no" : "yes") },
   bridge: { help: "touches a link whose loss partitions the fabric", fn: bridgeTri },
   degraded: {
-    help: "scored into the Poor or Critical band",
-    fn: (d) => (d.band === null ? "unknown" : d.band === "Poor" || d.band === "Critical" ? "yes" : "no"),
+    help: "scored into the Poor or Critical band (undecided where a favourable band is partial)",
+    fn: bandDegraded,
   },
   healthy: {
-    help: "scored into the Excellent or Good band",
-    fn: (d) => (d.band === null ? "unknown" : d.band === "Excellent" || d.band === "Good" ? "yes" : "no"),
+    help: "scored into the Excellent or Good band, with every scoring domain assessed",
+    fn: bandHealthy,
   },
   routable: { help: "a RIB was collected, so forwarding can be modelled", fn: (d) => (hasRib(d.host) ? "yes" : "no") },
   impacted: {
@@ -485,9 +502,9 @@ const KEY_DEFS: readonly KeyDef[] = [
     aliases: [],
     help: "health band of the device",
     domain: bandDomain,
-    finding: viaDevicesFinding((d, m) => triOf(d.band, m)),
-    device: deviceAttr((d) => d.band),
-    crossLayer: viaDevicesCross((d, m) => triOf(d.band, m)),
+    finding: viaDevicesFinding((d, m) => bandMatches(d, (c) => m.test(c))),
+    device: { how: "direct", fn: (d, m) => bandMatches(d, (c) => m.test(c)) },
+    crossLayer: viaDevicesCross((d, m) => bandMatches(d, (c) => m.test(c))),
     scopesDevices: true,
     valueCheck: null,
   },
@@ -985,7 +1002,12 @@ export interface TextOutcome {
   /** Required terms that matched nothing literally and were widened to an approximate match. */
   fuzzyTerms: string[];
   matched: number;
+  /** Rows some term decided AGAINST. */
   excluded: number;
+  /** Rows no term decided against, but at least one term could not decide: the text it would have
+   *  had to find (or rule out) sits in a field that was never observed. `matched + excluded +
+   *  undetermined === total`. */
+  undetermined: number;
 }
 
 export interface FilterResult<T> {
@@ -1015,6 +1037,15 @@ interface EntitySpec<T> {
   evidenceDerived: boolean;
   bind: (def: KeyDef) => Bound<T> | null;
   haystack: (item: T) => string;
+  /**
+   * True when some field the haystack draws on was never observed for this row, so a term the
+   * haystack does NOT contain may still be true of the row. A miss is then `unknown`, not `no` —
+   * and a NEGATED miss is `unknown`, not `yes`. Without this, `-ios` admitted the three
+   * topology-only devices (every field null, so the empty haystack "contains no ios") as definitely
+   * not IOS, straight into the fabric emphasis set (critic B1, 2026-09-21). Absent means the rows
+   * carry no unobservable text fields.
+   */
+  textUndecidable?: (item: T) => boolean;
 }
 
 /** The devices a clause selects, by their own attributes, with their collection status. */
@@ -1159,17 +1190,32 @@ function applyClauses<T>(items: readonly T[], parsed: ParsedQuery, spec: EntityS
      a bounded fuzzy match rather than emptying the view, and the widening is reported. */
   const haystacks = items.map((it) => spec.haystack(it));
   const fuzzyTerms: string[] = [];
-  const termMasks = parsed.textTerms.map((t) => {
+  const undecidable = items.map((it) => spec.textUndecidable?.(it) === true);
+  /* A hit is decided either way. A MISS is decided only when every field the haystack draws on was
+     observed; otherwise the term may be in the field nobody collected, so the miss is `unknown` —
+     for a required term AND for an excluded one (rule 1: unknown is admitted by neither). */
+  const toTri = (hits: boolean[], negated: boolean): Tri[] =>
+    hits.map((hit, i) => (hit ? (negated ? "no" : "yes") : undecidable[i] ? "unknown" : negated ? "yes" : "no"));
+  const termMasks: Tri[][] = parsed.textTerms.map((t) => {
     const strict = haystacks.map((h) => h.includes(t.text));
     /* An excluded term is never widened. The widening exists so a typo does not EMPTY the view; on
        an exclusion the identical widening would silently DELETE rows the user never asked to lose,
        and the deletion would be invisible in the result. */
-    if (t.negated) return strict.map((hit) => !hit);
-    if (strict.some(Boolean) || t.text.length < MIN_FUZZY_LEN) return strict;
+    if (t.negated) return toTri(strict, true);
+    if (strict.some(Boolean) || t.text.length < MIN_FUZZY_LEN) return toTri(strict, false);
     fuzzyTerms.push(t.text);
-    return haystacks.map((h) => fuzzyWithin(h, t.text));
+    return toTri(haystacks.map((h) => fuzzyWithin(h, t.text)), false);
   });
-  const textMask = items.map((_, i) => termMasks.every((mask) => mask[i] === true));
+  /** Every term must be `yes`; any `no` decides against; otherwise an `unknown` leaves it undecided. */
+  const textTri: Tri[] = items.map((_, i) => {
+    let sawUnknown = false;
+    for (const mask of termMasks) {
+      if (mask[i] === "no") return "no";
+      if (mask[i] === "unknown") sawUnknown = true;
+    }
+    return sawUnknown ? "unknown" : "yes";
+  });
+  const textMask = textTri.map((t) => t === "yes");
 
   const passesAll = (i: number, skipClause: number | null): boolean => {
     for (let c = 0; c < evaluated.length; c++) {
@@ -1190,7 +1236,7 @@ function applyClauses<T>(items: readonly T[], parsed: ParsedQuery, spec: EntityS
     /* A row held out only by an undecidable clause was NOT decided against. Folding it into
        `excludedTotal` (as `total - kept.length` does) republishes an unknown as a decided negative
        at exactly the level the UI reads most — and contradicts the per-clause numbers beside it. */
-    const decidedAgainst = textMask[i] !== true || evaluated.some((e) => e.tri[i] === "no");
+    const decidedAgainst = textTri[i] === "no" || evaluated.some((e) => e.tri[i] === "no");
     if (decidedAgainst) excludedTotal++;
     else undeterminedTotal++;
   }
@@ -1222,6 +1268,7 @@ function applyClauses<T>(items: readonly T[], parsed: ParsedQuery, spec: EntityS
   });
 
   const textMatched = textMask.filter(Boolean).length;
+  const textExcluded = textTri.filter((t) => t === "no").length;
 
   return {
     items: kept,
@@ -1235,7 +1282,8 @@ function applyClauses<T>(items: readonly T[], parsed: ParsedQuery, spec: EntityS
             excludedTerms: parsed.textTerms.filter((t) => t.negated).map((t) => t.text),
             fuzzyTerms,
             matched: textMatched,
-            excluded: total - textMatched,
+            excluded: textExcluded,
+            undetermined: total - textMatched - textExcluded,
           },
     excludedTotal,
     undeterminedTotal,
@@ -1260,6 +1308,10 @@ const DEVICE_SPEC: EntitySpec<Device> = {
   evidenceDerived: false,
   bind: (def) => def.device,
   haystack: deviceHaystack,
+  // A device the collector never reached, or one whose inventory fields came back null, may carry
+  // exactly the text a term asks about in the field nobody observed.
+  textUndecidable: (d) =>
+    !d.collected || d.role === null || d.model === null || d.serial === null || d.swVersion === null || d.platform === null,
 };
 const CROSS_SPEC: EntitySpec<CrossLayerFinding> = {
   label: "cross-layer records",
@@ -1752,13 +1804,17 @@ export function groupBy(findings: readonly Finding[], key: FindingGroupKey): Gro
     case "host":
       return buildGroups(findings, (f) => (f.devices.length === 0 ? null : [...f.devices]), null);
     case "band":
-      return buildGroups(findings, (f) => deviceDerived(f.devices, (d) => d.band), BAND_ORDER);
+      return bandLabelled(buildGroups(findings, (f) => deviceDerived(f.devices, bandKey), BAND_KEY_ORDER));
     case "role":
       return buildGroups(findings, (f) => deviceDerived(f.devices, (d) => d.role), null);
     case "none":
       return [{ key: "all", label: "All findings", observed: true, items: [...findings] }];
   }
 }
+
+/** Band groups are keyed by the band owner's keys; their labels say "Excellent (partial)" in words. */
+const bandLabelled = <T>(groups: Group<T>[]): Group<T>[] =>
+  groups.map((g) => (g.observed ? { ...g, label: bandKeyLabel(g.key) } : g));
 
 /** Distinct observed values of a device attribute across a finding's devices; null when nothing
  *  about those devices was observed, so the row lands in the Not-observed bucket rather than a
@@ -1776,7 +1832,7 @@ const deviceDerived = (hosts: readonly string[], pick: (d: Device) => string | n
 export function groupDevicesBy(devices: readonly Device[], key: DeviceGroupKey): Group<Device>[] {
   switch (key) {
     case "band":
-      return buildGroups(devices, (d) => (d.band === null ? null : [d.band]), BAND_ORDER);
+      return bandLabelled(buildGroups(devices, (d) => { const k = bandKey(d); return k === null ? null : [k]; }, BAND_KEY_ORDER));
     case "role":
       return buildGroups(devices, (d) => (d.role === null ? null : [d.role]), null);
     case "tier":
@@ -1875,7 +1931,8 @@ const deviceCell = (d: Device, field: DeviceSortField): Cell => {
     case "score":
       return d.score;
     case "band":
-      return d.band === null ? null : BAND_ORDER.indexOf(d.band);
+      // The owner's rank keeps the qualification: a partial band never ties with the plain one.
+      return bandRank(d);
     case "tier":
       return d.tier;
     case "criticality":

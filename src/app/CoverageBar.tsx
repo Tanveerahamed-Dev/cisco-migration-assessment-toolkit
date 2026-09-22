@@ -24,7 +24,10 @@
  */
 import { useMemo, type ReactElement } from "react";
 import { aclUndecidability, undecidableAclSentence } from "../core/acl-coverage";
+import { bandObserved } from "../core/band-qualification";
 import { fabric, hasRib } from "../core/data";
+import { missingInventoryFields } from "../core/claims";
+import { ribCountQualifier, ribHostsShownIncomplete } from "../forwarding/rib-completeness";
 import type { Cite, Device } from "../core/types";
 import { Cite as CiteLink } from "../ui/primitives";
 import "./chrome.css";
@@ -124,13 +127,26 @@ export function coverageRows(): CoverageRow[] {
       statedField: "coverage.devicesOnTopologyOnly",
       cite: c.cite,
     },
+    /* The flag says a record was RETURNED; it does not say the record is complete. This row used to
+       read "a model, serial and software record exists" over `d.inventoried`, and counted core2 —
+       whose software version is empty in the source snapshot — as observed (critic B7). The words
+       now say what the flag means, and the record's CONTENT is counted in its own row below, over
+       every field the lifecycle and advisory questions depend on. */
     deviceRow(
       "inventory",
       "Inventory record",
-      "a model, serial and software record exists",
+      "an inventory record was returned (its fields are counted in the next row)",
       (d) => d.inventoried,
       c.devicesInventoried,
       "coverage.devicesInventoried",
+    ),
+    deviceRow(
+      "inventory-fields",
+      "Model, serial and software version",
+      "all three were returned — lifecycle and advisory questions depend on them",
+      (d) => missingInventoryFields(d).length === 0,
+      null,
+      null,
     ),
     deviceRow(
       "interfaces",
@@ -143,7 +159,9 @@ export function coverageRows(): CoverageRow[] {
     deviceRow(
       "rib",
       "Routing table (RIB)",
-      "a routing table was collected, so forwarding can be modelled on this host",
+      ribHostsShownIncomplete().length === 0
+        ? "a routing table was collected, so forwarding can be modelled on this host"
+        : `a routing table was collected, so forwarding can be modelled on this host — the snapshot shows ${ribHostsShownIncomplete().join(" and ")}'s ${ribHostsShownIncomplete().length === 1 ? "table" : "tables"} to be incomplete ${ribCountQualifier()}`,
       (d) => hasRib(d.host),
       c.hostsWithRoutes,
       "coverage.hostsWithRoutes",
@@ -160,7 +178,7 @@ export function coverageRows(): CoverageRow[] {
       "band",
       "Health score and band",
       "the engine scored this device and placed it in a band",
-      (d) => d.band !== null,
+      bandObserved,
       null,
       null,
     ),

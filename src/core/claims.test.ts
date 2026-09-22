@@ -16,6 +16,8 @@ import {
   absence,
   bandOfHop,
   bandOfOutcome,
+  bandOfTrace,
+  hopsSupportOutcome,
   claimBadge,
   forbiddenWordsIn,
   isAbsence,
@@ -28,7 +30,9 @@ import { suggestedFlows, traceFlow } from "../forwarding/engine";
 import type { Flow, Trace } from "./types";
 
 const DENIED: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 3389, srcPort: null };
-const DELIVERED: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null };
+// UPDATED: 10.0.10.50 -> 10.0.30.10:443 no longer traces delivered (it steps over an undecidable line in
+// INET_RETURN), so the delivered case is a flow core2 delivers with nothing on its path undecided.
+const DELIVERED: Flow = { srcIp: "10.0.20.10", dstIp: "10.0.10.10", protocol: "tcp", dstPort: 443, srcPort: null };
 const NO_RIB: Flow = { srcIp: "10.0.40.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null };
 const OFF_MODEL: Flow = { srcIp: "198.51.100.7", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null };
 
@@ -56,14 +60,14 @@ describe("badge strength is bounded by what the evidence supports", () => {
 
   it("SCOPED is the ceiling: no badge in this product asserts proof", () => {
     const badges = suggestedFlows().map((s) => claimBadge(traceFlow(s.flow)));
-    for (const b of badges) expect(["SCOPED", "OBSERVED", "INDETERMINATE", "OUT OF SCOPE"]).toContain(b);
+    for (const b of badges) expect(["SCOPED", "PARTIAL", "INDETERMINATE", "OUT OF SCOPE", "INVALID INPUT"]).toContain(b);
   });
 });
 
 describe("the verdict header states its own denominators", () => {
   it("names the real RIB coverage, read from the data and not hardcoded", () => {
     const line = T1_verdict(traceFlow(DENIED));
-    expect(line).toContain(`${fabric.coverage.hostsWithRoutes} of ${fabric.devices.length} hosts with a collected RIB`);
+    expect(line).toContain(`${fabric.coverage.hostsWithRoutes} of ${fabric.devices.length} hosts in this topology have one`);
     // Guard against a future edit that inlines today's numbers as literals.
     expect(fabric.coverage.hostsWithRoutes).toBeLessThan(fabric.devices.length);
   });
@@ -73,12 +77,33 @@ describe("the verdict header states its own denominators", () => {
     const s = scopeTuple(t);
     expect(s.unmodelledOnPath).toBeGreaterThan(0);
     expect(T1_verdict(t)).toContain("could not be modelled");
+    /* 2026-09-22 auditor (B2): the one hop was a host with NO RIB, so the sentence must not read as
+       if it were on one, and a filtering question left open must not be said to have been "answered". */
+    const onRib = t.hops.filter((h) => fabric.coverage.routableHosts.includes(h.host)).length;
+    expect(T1_verdict(t)).toContain(`${onRib} of them on a host with a collected RIB`);
+    expect(T1_verdict(t)).not.toContain("answered without");
+    if (s.policyGaps.some((g) => g.kind !== "rib-partial")) expect(T1_verdict(t)).toContain("left open for want of collected evidence");
+  });
+
+  it("prints no counts for an out-of-scope result: no path was evaluated", () => {
+    /* REGRESSION: "traversed 0 hops …; 0 hosts on this path could not be modelled; 0 evidence items
+       were indeterminate" for a search that never ran rendered an absence as a clean count. */
+    const t = traceFlow({ srcIp: "198.51.100.7", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null });
+    expect(t.outcome).toBe("out-of-scope");
+    const line = T1_verdict(t);
+    expect(line).toContain("no path was evaluated");
+    expect(line).not.toMatch(/\b0 (hops?|hosts? on this path|evidence items?)\b/);
+    expect(line).toContain(`${fabric.coverage.hostsWithRoutes} of ${fabric.devices.length}`);
   });
 
   it("uses singular and plural correctly, because '1 hops' reads as a bug in the data", () => {
     const one = T1_verdict(traceFlow(DELIVERED));
-    expect(one).toContain("traversed 1 hop across");
+    expect(one).toContain("traversed 1 hop, ");
     expect(one).not.toContain("1 hops");
+    /* The hop count and the fleet denominator are separate clauses (2026-09-22 auditor, B2): how many
+       traversed hops were on a RIB host is stated on its own, never fused with "N of M hosts". */
+    expect(one).not.toMatch(/hops? across \d+ of \d+ hosts/);
+    expect(one).toMatch(/\b1 of them on a host with a collected RIB/);
   });
 });
 
@@ -98,6 +123,8 @@ describe("the blocking-hop answer names the literal configuration line", () => {
 
   it("returns null rather than inventing a sentence when the hop was decided by a route", () => {
     const t = traceFlow(DELIVERED);
+    expect(t.outcome).toBe("delivered");
+    expect(t.hops[0]!.decidedBy?.kind).toBe("route");
     expect(T2_blockingHop(t.hops[0]!)).toBeNull();
   });
 });
@@ -279,7 +306,7 @@ describe("REFUTED: the strongest badge cannot be earned by an empty traversal", 
         expect(["out-of-scope", "indeterminate"], `${JSON.stringify(t.flow)}`).toContain(t.outcome);
       }
       // ...and the badge is one of the four, never undefined.
-      expect(["SCOPED", "OBSERVED", "INDETERMINATE", "OUT OF SCOPE"]).toContain(claimBadge(t));
+      expect(["SCOPED", "PARTIAL", "INDETERMINATE", "OUT OF SCOPE", "INVALID INPUT"]).toContain(claimBadge(t));
     }
     expect(all.length).toBeGreaterThan(2);
     // The empty case is not theoretical on this snapshot. If that stops being true, say so here.
@@ -298,5 +325,103 @@ describe("REFUTED: an unrecognised verdict bands as UNDETERMINED, never as nothi
   it("bandOfHop", () => {
     const hop = { ...traceFlow(DELIVERED).hops[0]!, verdict: "recirculated" as never };
     expect(bandOfHop(hop)).toBe("UNDETERMINED");
+  });
+});
+
+/* ── C2 (docs/refutation.md; acceptance F3) ────────────────────────────────────
+ * `claimBadge` used to read only the trace-level OUTCOME and the host-modelling coverage: a trace
+ * saying "delivered" whose only hop said "loop" earned SCOPED, while `bandOfHop` on that same hop
+ * said REFUTED. The badge now asks the hops, through `bandOfHop`, whether they support the outcome.
+ *
+ * Hand-built traces, for the reason the C1 block above states: the function is exported and applied
+ * to whatever Trace a caller holds. The source is 10.0.30.1 — an address core1 owns, with no FHRP
+ * alternate and no physical ingress port — so no ingress gap is computed and the ONLY thing that
+ * differs between the control and the case is the hop verdict. The control proves the fixture really
+ * reaches the SCOPED branch; without it, "not SCOPED" could pass for an unrelated reason.
+ */
+describe("REFUTED (C2): no outcome earns a stronger badge than its hops support", () => {
+  const flow: Flow = { srcIp: "10.0.30.1", dstIp: "10.0.10.10", protocol: "tcp", dstPort: 443, srcPort: null };
+  const hop = (verdict: Trace["hops"][number]["verdict"], index = 0): Trace["hops"][number] => ({
+    index,
+    host: "core1",
+    outIntf: "Vlan10",
+    nextHop: null,
+    nextHost: null,
+    verdict,
+    decidedBy: null,
+    evidence: [],
+    alternatives: [],
+  });
+  const trace = (outcome: Trace["outcome"], hops: Trace["hops"]): Trace => ({
+    flow,
+    outcome,
+    hops,
+    claim: "",
+    caveats: [],
+    unmodelledHosts: [],
+    elapsedMs: 0,
+  });
+
+  it("control: a delivered trace whose terminal hop is 'delivered' reaches SCOPED on this fixture", () => {
+    expect(claimBadge(trace("delivered", [hop("delivered")]))).toBe("SCOPED");
+    expect(bandOfTrace(trace("delivered", [hop("delivered")]))).toBe("RESOLVED");
+  });
+
+  it("a delivered trace whose only hop is a loop is not SCOPED and not RESOLVED", () => {
+    const t = trace("delivered", [hop("loop")]);
+    expect(bandOfHop(t.hops[0]!)).toBe("REFUTED");
+    expect(claimBadge(t)).toBe("INDETERMINATE");
+    expect(bandOfTrace(t)).toBe("UNDETERMINED");
+  });
+
+  it("every hop verdict that does not support 'delivered' at the end of the path withholds SCOPED", () => {
+    const unsupporting = (["no-route", "denied", "loop", "ttl-exceeded", "unmodeled"] as const).filter((v) => bandOfHop(hop(v)) !== "RESOLVED");
+    expect(unsupporting.length, "precondition: there are verdicts to check").toBe(5);
+    for (const v of unsupporting) expect(claimBadge(trace("delivered", [hop(v)])), v).toBe("INDETERMINATE");
+  });
+
+  it("a refused hop BEFORE the end of the path undercuts a delivered outcome too", () => {
+    expect(claimBadge(trace("delivered", [hop("denied", 0), hop("delivered", 1)]))).toBe("INDETERMINATE");
+  });
+
+  it("a denial is still a confidently answered question when its hops say denied", () => {
+    // The tempting repair ("every hop must be RESOLVED") would turn this into INDETERMINATE.
+    expect(claimBadge(trace("denied", [hop("forwarded", 0), hop("denied", 1)]))).toBe("SCOPED");
+    expect(claimBadge(trace("denied", [hop("delivered")]))).toBe("INDETERMINATE");
+    expect(claimBadge(trace("dropped", [hop("forwarded")]))).toBe("INDETERMINATE");
+  });
+
+  /* ── the empty-hop guard (`claimBadge`, `if (trace.hops.length === 0) return "INDETERMINATE"`) ──
+   * UNPINNED until 2026-09-22 (acceptance report, F2): deleting that line left every claims test
+   * green. The reason is measured, not guessed: for a DECIDED outcome word (delivered / denied /
+   * dropped) the same zero-hop trace is also refused by `hopsSupportOutcome`, whose
+   * `last === undefined` check returns false, so the guard is shadowed there and no delivered
+   * fixture can tell it apart. It is the ONLY thing between an empty traversal and SCOPED when
+   * the outcome word is one this module does not recognise — the C3 case, a runtime value from
+   * compiled JSON, which `bandOfOutcome` bands UNDETERMINED and `hopsSupportOutcome` therefore
+   * waves through ("claims nothing, so nothing for the hops to contradict"). This fixture (the
+   * no-ingress-gap source above, so no policy gap can produce PARTIAL instead) is that case. */
+  it("a delivered trace with ZERO hops is INDETERMINATE on the no-gap fixture, where only emptiness can withhold SCOPED", () => {
+    const t = trace("delivered", []);
+    expect(t.hops).toHaveLength(0);
+    // Precondition: the same fixture with one delivered hop DOES reach SCOPED (control above), so the
+    // withheld badge here is caused by the missing hop and nothing else.
+    expect(claimBadge(trace("delivered", [hop("delivered")]))).toBe("SCOPED");
+    expect(claimBadge(t)).toBe("INDETERMINATE");
+    expect(hopsSupportOutcome(t), "the second, shadowing owner of the same rule").toBe(false);
+  });
+
+  it("a ZERO-hop trace whose outcome word is unrecognised is INDETERMINATE — the empty-hop guard's own case", () => {
+    const t = trace("recirculated" as never, []);
+    expect(bandOfOutcome(t.outcome), "precondition: an unrecognised word bands UNDETERMINED (C3)").toBe("UNDETERMINED");
+    expect(hopsSupportOutcome(t), "precondition: hopsSupportOutcome does not refuse it, so it cannot shadow the guard").toBe(true);
+    expect(claimBadge(t)).toBe("INDETERMINATE");
+  });
+
+  it("every real trace the product offers already satisfies the invariant, so the rule moves none of them", () => {
+    const all = [traceFlow(DENIED), traceFlow(DELIVERED), traceFlow(NO_RIB), ...suggestedFlows().map((s) => traceFlow(s.flow))];
+    const walked = all.filter((t) => t.hops.length > 0 && (t.outcome === "delivered" || t.outcome === "denied" || t.outcome === "dropped"));
+    expect(walked.length, "precondition: real traces with a decided-looking outcome exist").toBeGreaterThan(0);
+    for (const t of walked) expect(hopsSupportOutcome(t), JSON.stringify(t.flow)).toBe(true);
   });
 });

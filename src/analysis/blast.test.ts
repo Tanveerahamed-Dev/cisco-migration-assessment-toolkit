@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import type { Link } from "../core/types";
+import { findPortDisputes } from "./port-claims";
 import {
   articulationPoints,
   bridges,
@@ -395,15 +396,84 @@ describe("Hopcroft–Tarjan against brute force", () => {
   });
 });
 
+/** Every object reachable from the compiled snapshot — the engine's INPUT, owned by core/data.ts. */
+function reachableObjects(root: unknown, out = new Set<unknown>()): Set<unknown> {
+  if (root === null || typeof root !== "object" || out.has(root)) return out;
+  out.add(root);
+  for (const c of Array.isArray(root) ? root : Object.values(root)) reachableObjects(c, out);
+  return out;
+}
+
+/**
+ * Snapshot records a result carries BY REFERENCE are not poisoned. Measured 2026-09-22:
+ * `failureImpact(h).engine.record` IS the compiled `failure_impact` record from `fabric`, not a copy,
+ * and `fabric` is not frozen — so writing through a result mutates the snapshot for every later
+ * caller in the process (reported for the owner of blast.ts / core/data.ts; not fixed here). Poisoning
+ * it would also corrupt the shared snapshot for the rest of this file. This check is about what the
+ * ANALYSIS computes and memoises; input records are out of its scope, and are named as such.
+ */
+const SNAPSHOT_OBJECTS = reachableObjects(fabric);
+
+/**
+ * Write a sentinel into every array, Set, Map and plain object reachable from `v`. A frozen
+ * container refuses the write, which is itself the protection being tested, so a refusal is skipped.
+ */
+function deepPoison(v: unknown, seen = new Set<unknown>()): void {
+  if (v === null || typeof v !== "object" || seen.has(v) || SNAPSHOT_OBJECTS.has(v)) return;
+  seen.add(v);
+  const children = v instanceof Map ? [...v.values()] : v instanceof Set ? [...v] : Array.isArray(v) ? [...v] : Object.values(v);
+  for (const c of children) deepPoison(c, seen);
+  try {
+    if (Array.isArray(v)) v.push("__poison__");
+    else if (v instanceof Set) v.add("__poison__");
+    else if (v instanceof Map) v.set("__poison__", "__poison__");
+    else (v as Record<string, unknown>)["__poison__"] = true;
+  } catch {
+    /* frozen: the result cannot be written through, which is what this check wants */
+  }
+}
+
+/**
+ * Run twice, with the FIRST result deliberately corrupted in between. The old form,
+ * `expect(f()).toEqual(f())`, compared a pure function's output with itself and could not fail: two
+ * calls sharing one memoised object are equal to each other however that object has been damaged.
+ * The failure a repeated run can actually exhibit here is exactly that — `buildAdjacency` and the
+ * alternate-graph projections are memoised and handed to every surface — so the second run is
+ * compared against a CLONE taken before the corruption. Returns the clone for a non-empty check.
+ */
+function repeatable<T>(label: string, run: () => T): T {
+  const first = run();
+  const before = structuredClone(first);
+  deepPoison(first);
+  expect(run(), `${label}: the second run reflects damage done to the first run's result`).toEqual(before);
+  return before;
+}
+
 describe("determinism", () => {
   it("returns deeply equal results on repeated runs", () => {
-    expect(articulationPoints()).toEqual(articulationPoints());
-    expect(bridges()).toEqual(bridges());
-    expect(failureImpact("core1")).toEqual(failureImpact("core1"));
-    expect(linkFailureImpact("L18")).toEqual(linkFailureImpact("L18"));
-    expect(pathsBetween("podacc1", "podacc2", 5)).toEqual(pathsBetween("podacc1", "podacc2", 5));
-    expect(kCore()).toEqual(kCore());
-    expect(reachableSet("core1")).toEqual(reachableSet("core1"));
+    /* Each result is also required to be non-empty — a determinism check over empty results passes
+       for any implementation (acceptance report 2026-09-22, F2: this test compared outputs with
+       themselves). */
+    expect(repeatable("articulationPoints", () => articulationPoints()).points.length).toBeGreaterThan(0);
+    expect(repeatable("bridges", () => bridges()).bridges.length).toBeGreaterThan(0);
+    const fi = repeatable("failureImpact(core1)", () => failureImpact("core1"));
+    expect(JSON.stringify(fi).length, "precondition: failureImpact(core1) carries a result").toBeGreaterThan(50);
+    const lfi = repeatable("linkFailureImpact(L18)", () => linkFailureImpact("L18"));
+    expect(JSON.stringify(lfi).length, "precondition: linkFailureImpact(L18) carries a result").toBeGreaterThan(50);
+    expect(repeatable("pathsBetween", () => pathsBetween("podacc1", "podacc2", 5)).paths.length).toBeGreaterThan(0);
+    const kc = repeatable("kCore", () => kCore());
+    expect(JSON.stringify(kc).length, "precondition: kCore carries a result").toBeGreaterThan(50);
+    const rs = repeatable("reachableSet(core1)", () => reachableSet("core1"));
+    expect(JSON.stringify(rs).length, "precondition: reachableSet(core1) carries a result").toBeGreaterThan(50);
+  });
+
+  it("the repeat check can fail: it catches a memo that hands every caller the same object", () => {
+    /* Guard the guard. A deliberately aliasing memo — the defect class `repeatable` targets — must
+       fail it, while the old self-comparison form passes the same function. */
+    let memo: { items: string[] } | null = null;
+    const aliasing = (): { items: string[] } => (memo ??= { items: ["a", "b"] });
+    expect(aliasing()).toEqual(aliasing()); // the old form: cannot tell
+    expect(() => repeatable("aliasing memo", aliasing)).toThrow(/reflects damage/);
   });
 
   it("is independent of the graph instance it was handed", () => {
@@ -494,7 +564,17 @@ describe("regression: a blast radius is measured inside the failed element's own
        all four members — and published as a fabricated "disagree" against the engine's is_bridge. */
     const g = buildAdjacencyFrom(withDown("L26", "L32"), fabric.devices);
     const cut = new Set(bridges(g).bridges.map((b) => b.linkId));
-    const wrong = g.edges.filter((e) => linkFailureImpact(e.linkId, g).isBridge !== cut.has(e.linkId));
+    /* A cable on a disputed port (./port-claims.ts) has its verdict WITHHELD (isBridge null,
+       not-determinable) rather than wrong; it is checked as withheld, and the rest against lowlink. */
+    const disputed = new Set(findPortDisputes(g.source.links).flatMap((d) => d.claims.map((c) => c.linkId)));
+    const withheld = g.edges.filter((e) => disputed.has(e.linkId));
+    expect(withheld.length).toBeGreaterThan(0);
+    for (const e of withheld) {
+      const r = linkFailureImpact(e.linkId, g);
+      expect(r.isBridge, e.linkId).toBeNull();
+      expect(r.certainty, e.linkId).toBe("not-determinable");
+    }
+    const wrong = g.edges.filter((e) => !disputed.has(e.linkId) && linkFailureImpact(e.linkId, g).isBridge !== cut.has(e.linkId));
     expect(wrong.map((e) => e.linkId)).toEqual([]);
     for (const id of ["L39", "L40", "L41", "L42", "L43"]) {
       const r = linkFailureImpact(id, g);
@@ -511,6 +591,8 @@ describe("regression: a blast radius is measured inside the failed element's own
     const ids = fabric.links.map((l) => l.id);
     const mismatches: string[] = [];
     let pairs = 0;
+    let withheldLinks = 0;
+    let comparedLinks = 0;
     for (let i = 0; i < ids.length; i += 1) {
       for (let j = i + 1; j < ids.length; j += 1) {
         const label = `${ids[i]}+${ids[j]}`;
@@ -521,14 +603,26 @@ describe("regression: a blast radius is measured inside the failed element's own
           const want = oracleHost(g, host);
           if (got.join(",") !== want.join(",")) mismatches.push(`${label} host ${host}: ${got} vs ${want}`);
         }
+        const disputed = new Set(findPortDisputes(g.source.links).flatMap((d) => d.claims.map((c) => c.linkId)));
         for (const e of g.edges) {
-          const got = linkFailureImpact(e.linkId, g).newlyStranded;
+          const r = linkFailureImpact(e.linkId, g);
+          /* A cable on a disputed port has no radius to compare: it is withheld as not-determinable
+             (./port-claims.ts). Counted, so the skip cannot silently swallow the sweep. */
+          if (disputed.has(e.linkId)) {
+            withheldLinks += 1;
+            if (r.certainty !== "not-determinable" || r.newlyStranded.length > 0) mismatches.push(`${label} link ${e.linkId}: disputed but not withheld`);
+            continue;
+          }
+          const got = r.newlyStranded;
           const want = oracleLink(g, e.linkId);
           if (got.join(",") !== want.join(",")) mismatches.push(`${label} link ${e.linkId}: ${got} vs ${want}`);
+          comparedLinks += 1;
         }
       }
     }
     expect(pairs).toBe(946);
+    expect(withheldLinks).toBeGreaterThan(0);
+    expect(comparedLinks).toBeGreaterThan(withheldLinks);
     expect(mismatches.slice(0, 5)).toEqual([]);
     expect(mismatches).toHaveLength(0);
   }, 600_000);

@@ -87,6 +87,14 @@ export interface Finding {
   title: string;
   detail: string | null;
   remediation: string | null;
+  /**
+   * The show-command the engine cites as this finding's evidence (`punchlist[i].source_command`,
+   * cited by `cite`), or null when the producer named none — a composite category with no single
+   * backing command. A command NAME, not a record: the snapshot keeps no raw command output, so
+   * this is provenance and never a route to literal configuration text. Optional so fixtures built
+   * before the field existed stay valid; the compiler always emits it.
+   */
+  sourceCommand?: string | null;
   cite: Cite;
 }
 

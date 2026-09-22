@@ -145,7 +145,76 @@ describe("a clipped header cell offers no sort control on any channel", () => {
     act(() => {
       clipped.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
-    expect(onSort, "Enter on a clipped header sorted a column no pointer user could sort").not.toHaveBeenCalled();
+    expect(
+      onSort,
+      "Enter on a clipped header sorted a column no pointer user could sort",
+    ).not.toHaveBeenCalledWith("category");
+  });
+});
+
+/* D2, 2026-09-21. A clipped header cell measured [0,0,1,1] with position:fixed and
+   clip-path:inset(50%), yet ArrowRight x3 along the header row focused it, and because the grid
+   roves its tabindex it then became the grid's remembered Tab stop — Shift+Tab, Tab landed on an
+   invisible cell. jsdom has no layout, so this pins the STRUCTURAL property the rect follows from:
+   no key the grid handles, from any standable cell, ever leaves the roving stop on a cell the grid
+   itself marked clipped. (The rect half is checked in the browser, see review notes.) */
+describe("a clipped header cell is never a stop in the arrow-key model", () => {
+  const KEYS: { key: string; ctrlKey?: boolean }[] = [
+    { key: "ArrowRight" },
+    { key: "ArrowLeft" },
+    { key: "ArrowUp" },
+    { key: "ArrowDown" },
+    { key: "Home" },
+    { key: "End" },
+    { key: "Home", ctrlKey: true },
+    { key: "End", ctrlKey: true },
+    { key: "PageUp" },
+    { key: "PageDown" },
+  ];
+
+  const roving = (c: HTMLElement): HTMLElement[] => [...c.querySelectorAll<HTMLElement>('[role="grid"] [tabindex="0"]')];
+  const press = (k: { key: string; ctrlKey?: boolean }): void => {
+    const el = document.activeElement as HTMLElement;
+    act(() => {
+      el.dispatchEvent(new KeyboardEvent("keydown", { ...k, bubbles: true, cancelable: true }));
+    });
+  };
+
+  it("ArrowRight along the header row steps OVER the clipped cell, and ArrowLeft back over it", () => {
+    /* Put the clipped column in the middle, the shape of the queue's header row. */
+    const cols: GridColumn<Row>[] = [columns[0]!, columns[2]!, columns[1]!];
+    const c = mount(<DataGrid<Row> label="rows" columns={cols} nodes={nodes} template="4rem 6rem 1fr" onSort={vi.fn()} />);
+    act(() => head(c, "id").focus());
+    press({ key: "ArrowRight" });
+    expect((document.activeElement as HTMLElement).dataset.col).toBe("name");
+    press({ key: "ArrowLeft" });
+    expect((document.activeElement as HTMLElement).dataset.col).toBe("id");
+  });
+
+  it("every key, from every standable cell, leaves focus and the Tab stop on a visible cell", () => {
+    const c = grid(vi.fn());
+    const starts = [...c.querySelectorAll<HTMLElement>('[role="columnheader"],[role="gridcell"],[role="rowheader"]')].filter(
+      (el) => el.dataset.headhidden !== "yes",
+    );
+    for (const start of starts) {
+      for (const k of KEYS) {
+        act(() => start.focus());
+        press(k);
+        const active = document.activeElement as HTMLElement;
+        const label = `${k.ctrlKey ? "Ctrl+" : ""}${k.key} from ${start.getAttribute("role")} ${start.dataset.col ?? start.textContent}`;
+        expect(active.dataset.headhidden, `${label} focused the clipped header cell`).not.toBe("yes");
+        for (const stop of roving(c)) {
+          expect(stop.dataset.headhidden, `${label} made the clipped cell the grid's Tab stop`).not.toBe("yes");
+        }
+      }
+    }
+  });
+
+  it("focus arriving on the clipped cell from outside is redirected, not adopted as the Tab stop", () => {
+    const c = grid(vi.fn());
+    act(() => head(c, "category").focus());
+    expect((document.activeElement as HTMLElement).dataset.headhidden).not.toBe("yes");
+    for (const stop of roving(c)) expect(stop.dataset.headhidden).not.toBe("yes");
   });
 });
 

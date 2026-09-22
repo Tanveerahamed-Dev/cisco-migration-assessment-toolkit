@@ -39,6 +39,19 @@ _audit_*
 _repair_*
 _probe_*
 .probe/
+#
+# The prefix list above was STILL a named subset. Measured after it landed: the baseline commit
+# 857b520 swept in `review/_fix_*.mjs` (4) and `review/_fixshots/` (16 PNGs), and a later agent
+# wrote `review/_verify_cluster_claims.mjs` — two prefixes no list had named. In `review/` the
+# convention every agent actually follows is the leading underscore, and no authored harness
+# (capture.mjs, blind-pair.mjs, measure-*.mjs, layout-guard.mjs, REFERENCES.md, ...) uses one,
+# so the class is the underscore itself. NB: ignoring does not untrack; the 20 files already in
+# 857b520 need `git rm -r --cached review/_fix_*.mjs review/_fixshots` in a deliberate commit.
+review/_*
+# 2026-09-22: 175 accumulated review/_* entries and the root-level d4/d7 dumps were MOVED (not
+# deleted — several are cited as measurement provenance in source comments) into ONE directory,
+# `review/_scratch/` (root dumps under `review/_scratch/root/`). New scratch goes there; do not add
+# another ignore pattern for a new prefix.
 
 # Playwright's own output directory, and the criterion-indexed dumps audit runs leave at the root
 # (`d4_contrast.json`, `d7_reduce.png`, `d7_report.json` — named for the acceptance criterion the

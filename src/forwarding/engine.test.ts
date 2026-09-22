@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { fabric, hasRib, linksByHost, routesOf } from "../core/data";
-import { claimBadge, scopeTuple, T1_verdict } from "../core/claims";
+import { bandOfHop, bandOfTrace, claimBadge, scopeTuple, T1_verdict } from "../core/claims";
 import type { AclLine, Flow } from "../core/types";
 import { addressRoleIn, formatIpv4, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains } from "./ip";
 import {
@@ -17,14 +17,21 @@ import {
   chooseRoute,
   counterexample,
   evaluateAcls,
+  isDefiniteDelivery,
+  isDefiniteOnModelledPath,
   lineEvaluability,
   matchTri,
+  resolveEgress,
   resolveNextHost,
   resolveObjectGroup,
+  refusalOf,
   suggestedFlows,
   TTL_LIMIT,
   traceFlow,
+  unobservedPolicyInputs,
 } from "./engine";
+
+const udp = (srcIp: string, dstIp: string, dstPort: number): Flow => ({ srcIp, dstIp, protocol: "udp", dstPort, srcPort: null });
 
 const tcp = (srcIp: string, dstIp: string, dstPort: number): Flow => ({
   srcIp,
@@ -132,19 +139,99 @@ describe("the data this suite is written against", () => {
   });
 });
 
-describe("delivered", () => {
-  // 10.0.10.50 is a real endpoint address; 10.0.30.0/24 is the destination space PROTECT_SERVERS
-  // names, and 443 is the port its first line permits.
-  const trace = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443));
+describe("a permit that steps over an undecidable line is not a delivery", () => {
+  /* REWRITTEN 2026-09-21 (A3). This block used to pin tcp 10.0.10.50 -> 10.0.30.10:443 as
+     INDETERMINATE, decided by INET_RETURN[0] — a list the specificity rule did not apply "with no
+     binding collected". That premise was false: the snapshot binds PROTECT_SERVERS outbound on
+     core1 Vlan30 and nothing on Vlan10, and INET_RETURN is bound on neither, so INET_RETURN[0]
+     cannot touch that flow. The headline flow is now pinned below as the observed-binding case.
 
-  it("is delivered on core1's connected route, citing the exact winning route", () => {
-    expect(trace.outcome).toBe("delivered");
+     The PROPERTY this block exists for still holds wherever a binding is unknown, and is pinned on
+     a flow where one really is: 10.0.30.50 -> 10.0.10.77:443 leaves core1 by Vlan10, whose access
+     port Gi1/0/5 carries an outbound access-group the collector did not name
+     (candidate_projection_incomplete), and 10.0.10.77's attachment port was never observed. */
+  const trace = traceFlow(tcp("10.0.30.50", "10.0.10.77", 443));
+
+  it("reaches core1's connected route, but the verdict follows the caveat: indeterminate", () => {
+    expect(trace.outcome).toBe("indeterminate");
     const last = trace.hops[trace.hops.length - 1]!;
     expect(last.host).toBe("core1");
-    expect(last.verdict).toBe("delivered");
-    expect(last.decidedBy?.kind).toBe("route");
-    expect(last.decidedBy?.cite).toBe("routes.core1[6]"); // 10.0.30.0/24 connected via Vlan30
-    expect(last.outIntf).toBe("Vlan30");
+    expect(last.verdict).toBe("unmodeled");
+    expect(bandOfHop(last)).toBe("UNDETERMINED");
+    expect(last.decidedBy?.cite).toBe("acls.core1.INET_RETURN[0]");
+    expect(last.outIntf).toBe("Vlan10");
+    // The unknown binding that forced the fallback is itself cited, as an absence.
+    expect(last.evidence.some((e) => e.kind === "absence" && e.cite === "interfaces.core1.Gi1/0/5")).toBe(true);
+    expect(trace.caveats.join(" ")).toMatch(/Gi1\/0\/5 out \(the collector recorded an outbound access-group candidate/);
+    // The forwarding fact survives as a separate, cited statement.
+    expect(last.evidence.some((e) => e.kind === "route" && e.cite === "routes.core1[2]")).toBe(true);
+    expect(trace.claim).toContain("connected 10.0.10.0/24 (routes.core1[2])");
+    expect(trace.claim).not.toMatch(/is delivered/);
+    expect(isDefiniteDelivery(trace)).toBe(false);
+  });
+
+  it("the headline flow, whose bindings WERE observed, is decided by the bound list alone", () => {
+    const t = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443));
+    expect(t.outcome).toBe("delivered");
+    const hop = t.hops[0]!;
+    expect(hop.verdict).toBe("delivered");
+    const cites = hop.evidence.map((e) => e.cite);
+    expect(cites).toContain("acls.core1.PROTECT_SERVERS[0]");
+    expect(cites).not.toContain("acls.core1.INET_RETURN[0]");
+    // The binding that applies PROTECT_SERVERS here is evidence, cited to its interface record.
+    const binding = hop.evidence.find((e) => e.cite === "interfaces.core1.Vlan30");
+    expect(binding?.raw).toBe("acl_out: PROTECT_SERVERS");
+    /* Decided by the bound list ON THE MODELLED PATH — but not definite, and not SCOPED: core1 is the
+       ingress only by a point-in-time HSRP role (traced from core2 it drops), and the core1 uplinks
+       the source could arrive by were never observed (critic B1, 2026-09-21). */
+    /* UPDATED 2026-09-22 (auditor, B1): the delivery rests on core1's connected 10.0.30.0/24, chosen
+       from a table the snapshot shows to be incomplete, so even the modelled path is not decided here.
+       The decided branch is exercised in engine.counterfactual.test.ts with complete tables. */
+    expect(isDefiniteOnModelledPath(t)).toBe(false);
+    expect(unobservedPolicyInputs(t).map((g) => g.kind)).toContain("rib-partial");
+    expect(isDefiniteDelivery(t)).toBe(false);
+    expect(claimBadge(t)).toBe("PARTIAL");
+  });
+
+  it("no trace anywhere is 'delivered' while carrying the never-a-definite-permit caveat", () => {
+    /* Both guards below used to be conditional on a sweep that never reached them (36 flows from
+       sources whose bindings are all observed): the test ran green with zero assertions (critic F2,
+       2026-09-22). The sweep now includes the sources that DO reach each branch — 10.0.10.77 and
+       10.0.10.1 (specificity-mode ACL choice on core1, which yields the caveat) and 10.0.30.1 (core1's
+       own SVI, no ingress gap) — and every branch is counted and required to have run. */
+    const srcs = ["10.0.10.50", "10.0.10.77", "10.0.10.1", "10.0.20.50", "10.0.30.1", "10.0.40.50"];
+    const dsts = ["10.0.10.10", "10.0.20.10", "10.0.30.10", "10.0.30.1"];
+    const flows = srcs.flatMap((s) =>
+      dsts.flatMap((d) => [...[22, 443, 3389, 8080].map((p) => tcp(s, d, p)), udp(s, d, 53)]),
+    );
+    let caveated = 0;
+    let definite = 0;
+    let heldBackByAbsence = 0;
+    for (const f of flows) {
+      const t = traceFlow(f);
+      const label = JSON.stringify(f);
+      if (t.caveats.some((c) => /never a definite permit/.test(c))) {
+        caveated += 1;
+        expect(t.outcome, label).not.toBe("delivered");
+      }
+      /* A delivery with no unobserved policy input is definite exactly when no hop on its path is
+         unmodelled and no evidence item records an absence (an unnamed access-group, an unobserved
+         attachment port). The old guard omitted the second half and would have been false had it
+         ever run: udp 10.0.30.1 -> 10.0.10.10:53 has no gap yet is held back by Gi1/0/5's absence. */
+      if (t.outcome === "delivered" && unobservedPolicyInputs(t).length === 0) {
+        const undecidedOnPath = t.hops.some((h) => h.verdict === "unmodeled" || h.evidence.some((e) => e.kind === "absence"));
+        expect(isDefiniteDelivery(t), label).toBe(!undecidedOnPath);
+        if (undecidedOnPath) heldBackByAbsence += 1;
+        else definite += 1;
+      }
+    }
+    expect(caveated).toBeGreaterThan(0);
+    /* UPDATED 2026-09-22 (auditor, B1 + B2): the definite deliveries this sweep used to reach were
+       all sourced by core1's own SVI (now refused as router-originated) or rested on core1's
+       incomplete table. On this snapshot none is definite and none is held back only by an absence;
+       both branches run in engine.counterfactual.test.ts. */
+    expect(definite).toBe(0);
+    expect(heldBackByAbsence).toBe(0);
   });
 
   it("shows the routes it beat, so 'why not that one' is answerable", () => {
@@ -153,15 +240,154 @@ describe("delivered", () => {
   });
 
   it("records the permitting ACL line as evidence even though it did not block", () => {
-    const acl = trace.hops[0]!.evidence.find((e) => e.cite === "acls.core1.PROTECT_SERVERS[0]");
+    const t = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443));
+    const acl = t.hops[0]!.evidence.find((e) => e.cite === "acls.core1.PROTECT_SERVERS[0]");
     expect(acl?.raw).toBe("permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443");
   });
 
-  it("still qualifies the claim: delivery is proven only over what was collected", () => {
+  it("still qualifies the claim over what was collected", () => {
     expect(trace.caveats.length).toBeGreaterThan(0);
     expect(trace.caveats.join(" ")).toMatch(/access-group|binding/i);
-    expect(trace.claim).toMatch(/delivered/);
+    expect(trace.claim).toMatch(/cannot be decided/);
     expect(trace.claim).toMatch(/core1/);
+  });
+});
+
+describe("delivered", () => {
+  /* REVERSED 2026-09-21. This block used to read "core2 holds a RIB and no collected ACL, so a flow
+     it delivers carries no undecided input" — encoding the defect as intent. A host with no
+     collected ACL is a filtering question nobody asked, not one answered "permit": the trace's own
+     caveat says "filtering there is unobserved, not absent". So the core2 delivery is a real
+     routing fact, but it is NOT definite, it cannot earn SCOPED, and it is never a counterexample. */
+  const trace = traceFlow(tcp("10.0.20.10", "10.0.10.10", 443));
+
+  it("is delivered on core2's connected route, but core2's missing ACLs keep it from being definite", () => {
+    expect(trace.outcome).toBe("delivered");
+    const last = trace.hops[trace.hops.length - 1]!;
+    expect(last.host).toBe("core2");
+    expect(last.verdict).toBe("delivered");
+    expect(last.decidedBy?.kind).toBe("route");
+    expect(trace.claim).toMatch(/is delivered/);
+    const gaps = unobservedPolicyInputs(trace);
+    expect(gaps.map((g) => [g.host, g.kind])).toContainEqual(["core2", "acl-uncollected"]);
+    // Ingress-side gaps may add to it; none may be an ACL gap on a host OFF this path.
+    expect(gaps.filter((g) => g.kind === "acl-uncollected").map((g) => g.host)).toEqual(["core2"]);
+    expect(isDefiniteDelivery(trace)).toBe(false);
+    expect(claimBadge(trace)).toBe("PARTIAL");
+    expect(T1_verdict(trace)).toMatch(/no ACLs collected for core2/);
+  });
+
+  it("records the ACL gap at a hop that STOPS the trace too — unmodeled (dist1) and no-route (core2)", () => {
+    /* The gap was once recorded only for passing verdicts, so these two traces printed "no
+       filtering question on this path was left unobserved" beside their own caveat "No ACLs were
+       collected for <host>". Critic B1, 2026-09-21. */
+    const unmodeled = traceFlow(tcp("10.0.40.50", "10.0.30.10", 443));
+    expect(unmodeled.hops.some((h) => h.host === "dist1" && h.verdict === "unmodeled")).toBe(true);
+    expect(unobservedPolicyInputs(unmodeled).map((g) => [g.host, g.kind])).toContainEqual(["dist1", "acl-uncollected"]);
+    expect(T1_verdict(unmodeled)).toMatch(/no ACLs collected for dist1/);
+
+    const noRoute = traceFlow(tcp("10.0.20.50", "198.51.100.7", 443));
+    expect(noRoute.hops.some((h) => h.host === "core2" && h.verdict === "no-route")).toBe(true);
+    expect(unobservedPolicyInputs(noRoute).map((g) => [g.host, g.kind])).toContainEqual(["core2", "acl-uncollected"]);
+    expect(T1_verdict(noRoute)).toMatch(/no ACLs collected for core2/);
+    expect(claimBadge(noRoute)).not.toBe("SCOPED");
+  });
+
+  it("the T1 scope sentence never contradicts the trace's own ACL caveats — over every suggested flow", () => {
+    // The class, not the two named cases: any trace whose caveats say a host's ACLs were not
+    // collected must not claim that no filtering question was left unobserved.
+    for (const s of suggestedFlows()) {
+      const t = traceFlow(s.flow);
+      const uncollected = t.caveats.filter((c) => /No ACLs were collected for/.test(c));
+      if (uncollected.length > 0) expect(T1_verdict(t), s.id).not.toMatch(/no filtering question on this path was left unobserved/);
+    }
+  });
+
+  it("a delivery at a host whose ACLs WERE collected and decide nothing against it stays definite", () => {
+    // 10.0.10.50 -> 10.0.20.10 tcp/22: delivered at core1 out Vlan20. Vlan10 in and Vlan20 out were
+    // observed with no access-group (VOICE_FILTER is bound INBOUND on Vlan20), so no list applies.
+    const t = traceFlow(tcp("10.0.10.50", "10.0.20.10", 22));
+    expect(t.outcome).toBe("delivered");
+    expect(t.caveats.join(" ")).toMatch(/none is bound to the interfaces this flow enters \(Vlan10\) or leaves \(Vlan20\)/);
+    /* UPDATED 2026-09-22 (auditor, B1): the connected Vlan20 route was chosen from core1's table,
+       which the snapshot shows incomplete, so the modelled path is not decided on this snapshot
+       either; the ingress is still assumed. The definite-on-path case runs in engine.counterfactual.test.ts. */
+    expect(isDefiniteOnModelledPath(t)).toBe(false);
+    expect(unobservedPolicyInputs(t).map((g) => g.kind).sort()).toEqual(["ingress-alternate", "ingress-port-unobserved", "rib-partial"]);
+    expect(isDefiniteDelivery(t)).toBe(false);
+    expect(claimBadge(t)).toBe("PARTIAL");
+  });
+
+  it("a router's own address is refused as router-originated, never a SCOPED or decided result", () => {
+    /* 2026-09-22 auditor (B2): 10.0.30.1 is core1's own Vlan30 address. This test used to assert it
+       was SCOPED — that was the defect: a packet core1 originates never arrives inbound on Vlan30, so
+       neither that interface's inbound list nor a "gateway port" applies to it. The SCOPED ceiling is
+       now exercised on a host address with complete tables in engine.counterfactual.test.ts. */
+    const t = traceFlow(tcp("10.0.30.1", "10.0.20.10", 22));
+    expect(refusalOf(t)?.kind).toBe("router-originated");
+    expect(t.hops).toEqual([]);
+    expect(t.outcome).toBe("indeterminate");
+    expect(claimBadge(t)).not.toBe("SCOPED");
+    expect(bandOfTrace(t)).toBe("UNDETERMINED");
+    expect(t.claim).toMatch(/an address of core1 itself/);
+  });
+
+  it("no source in any device's own address set is ever decided — SVI, FHRP virtual, or RIB local /32 (sweep)", () => {
+    /* The class, not the reported address: every address a collected device owns, read from the
+       compiled evidence, against a destination grid. */
+    const owned = new Set<string>();
+    for (const r of fabric.l3) {
+      const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+      if (a !== null) owned.add(formatIpv4(a.ip));
+      if (r.vip !== null) owned.add(r.vip);
+    }
+    for (const rs of Object.values(fabric.routes))
+      for (const r of rs) if (r.source === "local" && r.prefix.endsWith("/32")) owned.add(r.prefix.slice(0, -3));
+    expect(owned.size).toBeGreaterThan(3);
+    let n = 0;
+    for (const src of owned)
+      for (const dst of ["10.0.10.50", "10.0.20.50", "10.0.30.10", "10.0.40.50", "8.8.8.8"])
+        for (const f of [tcp(src, dst, 443), tcp(src, dst, 22), udp(src, dst, 53)]) {
+          const t = traceFlow(f);
+          const label = JSON.stringify(f);
+          expect(claimBadge(t), label).not.toBe("SCOPED");
+          expect(["RESOLVED", "REFUTED"], label).not.toContain(bandOfTrace(t));
+          expect(t.hops, `${label} was walked from a device's own address`).toEqual([]);
+          n += 1;
+        }
+    expect(n).toBeGreaterThan(0);
+  });
+
+  it("over a sweep, no SCOPED trace rests on an ingress the trace's own caveat calls not a guarantee", () => {
+    /* The class, not the reported flow: every trace whose caveat says the flow "may enter via" / "may
+       instead enter via" another host must carry an ingress gap unless that alternate reproduced it,
+       and no trace that carries one may be SCOPED. */
+    const srcs = ["10.0.10.50", "10.0.10.77", "10.0.20.50", "10.0.30.50", "10.0.40.50", "10.0.10.1", "10.0.20.1", "10.0.30.1"];
+    const dsts = ["10.0.10.10", "10.0.20.10", "10.0.30.10", "8.8.8.8", "10.0.40.10"];
+    let checked = 0;
+    for (const s of srcs)
+      for (const d of dsts)
+        for (const p of [22, 443, 3389]) {
+          const t = traceFlow(tcp(s, d, p));
+          const gaps = unobservedPolicyInputs(t);
+          if (gaps.some((g) => g.kind === "ingress-alternate" || g.kind === "ingress-port-unobserved")) {
+            checked += 1;
+            expect(claimBadge(t), JSON.stringify(t.flow)).not.toBe("SCOPED");
+            expect(isDefiniteDelivery(t), JSON.stringify(t.flow)).toBe(false);
+          }
+          if (claimBadge(t) === "SCOPED") expect(t.caveats.some((c) => /may (instead )?enter via/.test(c)), JSON.stringify(t.flow)).toBe(false);
+        }
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  it("a delivery into Vlan10 is NOT definite: an access port there has an unnamed outbound ACL", () => {
+    /* This used to be the "stays definite" case. It was definite only because the engine ignored
+       the bindings: Gi1/0/5 (Vlan10) has an outbound access-group the collector did not name, and
+       10.0.10.10's attachment port was never observed, so that port could be where it lives. */
+    const t = traceFlow(udp("10.0.30.50", "10.0.10.10", 53));
+    expect(isDefiniteDelivery(t)).toBe(false);
+    expect(claimBadge(t)).not.toBe("SCOPED");
+    expect(t.hops.flatMap((h) => h.evidence).some((e) => e.kind === "absence" && e.cite === "interfaces.core1.Gi1/0/5")).toBe(true);
   });
 });
 
@@ -180,8 +406,28 @@ describe("denied — the blocking-hop answer", () => {
     expect(blocked!.evidence.cite).toBe("acls.core1.PROTECT_SERVERS[3]");
     expect(blocked!.evidence.raw).toBe("deny ip any any");
     expect(blocked!.evidence.label).toContain("PROTECT_SERVERS");
-    expect(blocked!.evidence.label).toContain("line 3");
+    // 1-based, with the list length: the 0-based record index lives only in the citation (A3).
+    expect(blocked!.evidence.label).toContain("line 4 of 4");
+    expect(blocked!.evidence.label).not.toMatch(/line 3\b/);
     expect(blocked!.evidence.label).toContain("core1");
+  });
+
+  it("is headlined as a denial, with no evidence item left undecided (A3)", () => {
+    /* REGRESSION: headlined "INDETERMINATE — THE MODEL COULD NOT DECIDE THIS FLOW" over a "denied"
+       chip, because the unbound INET_RETURN's unevaluable line was counted against the flow, and
+       every trace said no binding was collected anywhere. PROTECT_SERVERS is bound OUT on Vlan30. */
+    /* UPDATED 2026-09-21 (critic B1): the denial is decided by a BOUND list with no evidence item left
+       undecided — but it is not SCOPED, because the ingress before the modelled path is assumed:
+       traced from core2 (HSRP Standby) the flow is dropped, not denied. OBSERVED is the ceiling. */
+    expect(claimBadge(trace)).toBe("PARTIAL");
+    expect(scopeTuple(trace).indeterminateEvidence).toBe(0);
+    /* UPDATED 2026-09-22 (auditor, B1): the egress to Vlan30 rests on core1's connected route from a
+       table the snapshot shows incomplete, which is named as a routing gap too. */
+    expect(unobservedPolicyInputs(trace).map((g) => g.kind).sort()).toEqual(["ingress-alternate", "ingress-port-unobserved", "rib-partial"]);
+    expect(trace.claim).toContain("applied outbound on core1 Vlan30 (interfaces.core1.Vlan30)");
+    expect(trace.caveats.join(" ")).not.toMatch(/binding was collected anywhere/);
+    expect(trace.caveats.join(" ")).toMatch(/core1: 2 interface ACL bindings were observed/);
+    expect(trace.caveats.join(" ")).toMatch(/1 port has an access-group whose ACL name the collector did not project \(Gi1\/0\/5/);
   });
 
   it("is not poisoned by the unevaluable icmp line above it, because protocol excludes it", () => {
@@ -191,48 +437,54 @@ describe("denied — the blocking-hop answer", () => {
     expect(trace.caveats.join(" ")).toContain("PROTECT_SERVERS");
   });
 
-  it("offers a counterexample: the same pair on a port the ACL does permit", () => {
+  it("offers no counterexample on this snapshot: every nearby delivery rests on an incomplete table", () => {
+    /* UPDATED 2026-09-22 (auditor, B1): a counterexample must be a definite delivery on its modelled
+       path, and on this snapshot every candidate at core1 is delivered on a route chosen from a table
+       the snapshot shows incomplete. Nothing is offered, and the reason says the search ran. The
+       offered-counterexample branch runs in engine.counterfactual.test.ts. */
     const cx = counterexample(flow, trace);
-    expect(cx.found).toBe(true);
-    if (!cx.found) return;
-    expect(cx.flow.srcIp).toBe(flow.srcIp);
-    expect(cx.flow.dstIp).toBe(flow.dstIp);
-    expect([443, 22]).toContain(cx.flow.dstPort);
-    expect(cx.trace.outcome).toBe("delivered");
+    expect(cx.found).toBe(false);
+    if (cx.found) return;
+    expect(cx.reason).toMatch(/nearby variations/);
   });
 
-  it("cites the line its own trace was decided by, not the line that generated the candidate", () => {
-    /* Candidates are varied by protocol and port ONLY — never by address — and the verdict comes
-       from an independent traceFlow() run. So the line that SUGGESTED a candidate routinely cannot
-       match the flow's addresses at all, and narrating it produces a confident sentence about
-       evidence nobody checked.
-       Measured on the shipped snapshot, the card asserted: "tcp/22 from 10.0.10.50 to 10.0.30.10 is
-       delivered: core1 ACL MGMT_IN line 0 (acls.core1.MGMT_IN[0]) permits tcp/22 for this address
-       pair" — while acls.core1.MGMT_IN[0] is `permit tcp object-group MGMT_HOSTS any eq 22` whose
-       group resolves to 10.0.99.10/32 and 10.0.40.0/24, excluding 10.0.10.50 entirely, and while
-       the engine's own trace of that very flow named acls.core1.PROTECT_SERVERS[1].
-       This asserts the invariant that makes the sentence checkable: every ACL citation in the
-       rationale must appear in the evidence of a fresh trace of the counterexample's own flow. */
-    const cx = counterexample(flow, trace);
-    expect(cx.found).toBe(true);
-    if (!cx.found) return;
-
-    const fresh = traceFlow(cx.flow);
-    expect(fresh.outcome).toBe("delivered");
-    const evidenceCites = new Set<string>();
-    for (const hop of fresh.hops) {
-      if (hop.decidedBy !== null) evidenceCites.add(hop.decidedBy.cite);
-      for (const e of hop.evidence) evidenceCites.add(e.cite);
-    }
-
-    const citedInRationale = cx.rationale.match(/acls\.[A-Za-z0-9_.-]+\[\d+\]/g) ?? [];
-    // A rationale with no citation at all is allowed (it then makes no causal claim); a rationale
-    // that DOES cite must cite something the trace actually consulted.
-    for (const cite of citedInRationale) expect([...evidenceCites]).toContain(cite);
-
-    // And on this snapshot the flow really is decided by a line, so the honest sentence names one.
-    expect(citedInRationale.length).toBeGreaterThan(0);
+  it("a denial by a heuristically selected list is never SCOPED", () => {
+    /* A denial decided by the list the specificity rule chose is what that list WOULD do, not
+       evidence that it is applied here. The rule runs only where a binding is unknown: for icmp to
+       10.0.10.1 the packet leaves by Vlan10, whose access port Gi1/0/5 has an unnamed outbound
+       access-group. The unknown binding is itself an undecided input, so the badge falls below
+       OBSERVED, to INDETERMINATE. */
+    /* UPDATED 2026-09-21: icmp to 10.0.10.1 stays inside 10.0.10.0/24 and is no longer routed (it
+       is reported as not modelled). icmp to an off-fabric address leaves core1 the same way and is
+       denied by the same heuristically selected list. */
+    const t = traceFlow({ srcIp: "10.0.10.50", dstIp: "8.8.8.8", protocol: "icmp", dstPort: null, srcPort: null });
+    expect(t.outcome).toBe("denied");
+    expect(unobservedPolicyInputs(t).map((g) => g.kind)).toContain("acl-unbound-denial");
+    expect(claimBadge(t)).not.toBe("SCOPED");
+    expect(T1_verdict(t)).toMatch(/no access-group binding for the denying list at core1/);
   });
+
+  it("no longer offers the core2 delivery as a counterexample to the core2 drop", () => {
+    /* REGRESSION: this drop used to be answered with tcp 10.0.20.50 -> 10.0.10.10:443 "DELIVERED",
+       rendered SCOPED, although core2 has no collected ACL. */
+    const dropFlow = tcp("10.0.20.50", "198.51.100.7", 443);
+    const dropped = traceFlow(dropFlow);
+    expect(dropped.outcome).toBe("dropped");
+    const cx = counterexample(dropFlow, dropped);
+    /* Asserted unconditionally. Both checks used to sit behind `if (cx.found)`, so on the branch
+       that is actually current — no counterexample at all — only `dropped.outcome` was checked and
+       the test could not fail. It now pins that nothing is offered, AND that this is because the
+       variations at core2 were searched and none was a definite delivery: an early exit such as
+       "no blocking hop was recorded" would also read `found: false` while having searched nothing. */
+    expect(cx.found).toBe(false);
+    if (cx.found) return; // narrows the union for the reason check below; unreachable after the line above
+    expect(cx.reason).toMatch(/nearby variations derived from the evidence at core2/);
+    expect(cx.reason).toMatch(/not proof that none exists/);
+  });
+
+  /* "any counterexample it does offer is a definite delivery", the two citation tests and the
+     citation sweep moved to engine.counterfactual.test.ts: on this snapshot no counterexample is offered at all (see above),
+     so here they could only pass vacuously. */
 });
 
 describe("indeterminate — an ACL line we cannot evaluate", () => {
@@ -519,11 +771,17 @@ describe("no hop reads as success inside a result that is not one", () => {
 });
 
 describe("ACLs that were NOT applied are reported as unknown, not as absent", () => {
-  it("names MGMT_IN, whose object-group could never be scored, on a core1 trace", () => {
-    const t = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443));
+  it("names MGMT_IN, whose object-group could never be scored, on a core1 trace that fell back", () => {
+    // A hop with an unknown binding (Gi1/0/5 out) — the only place "not applied" is a heuristic.
+    const t = traceFlow(tcp("10.0.30.50", "10.0.10.77", 443));
     const joined = t.caveats.join(" ");
     expect(joined).toContain("MGMT_IN");
     expect(joined).toMatch(/not evidence/i);
+  });
+
+  it("where every binding was observed, an unbound list is stated as not filtering, with the interfaces named", () => {
+    const joined = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443)).caveats.join(" ");
+    expect(joined).toMatch(/core1 also defines INET_RETURN, MGMT_IN, VOICE_FILTER, bound to none of the interfaces this flow crosses at core1 \(Vlan10 in, Vlan30 out/);
   });
 });
 
@@ -532,7 +790,12 @@ describe("ACLs that were NOT applied are reported as unknown, not as absent", ()
    here against the REAL compiled snapshot, not a fixture, because each one was true-looking and
    wrong on the app's own headline flow. */
 describe("undecidability is a property of the deciding HOST, not of the ACL the heuristic picked", () => {
+  /* Scoped to the FALLBACK (no binding consulted — the evaluateAcls unit seam, which is exactly what
+     a hop with an unknown binding runs). Where the bindings are observed the heuristic does not
+     pick at all; see "a permit that steps over an undecidable line" above. */
   const headline = tcp("10.0.10.50", "10.0.30.10", 443);
+  const src = parseIpv4("10.0.10.50")!;
+  const dst = parseIpv4("10.0.30.10")!;
 
   it("the preconditions this test rests on are the real ones", () => {
     // If these change, the assertions below stop meaning what they say.
@@ -541,31 +804,35 @@ describe("undecidability is a property of the deciding HOST, not of the ACL the 
     expect(lineEvaluability(inet[1]!).evaluable).toBe(false);
     expect(matchTri(inet[0]!, headline, parseIpv4("10.0.10.50")!, parseIpv4("10.0.30.10")!)).toBe("yes");
     expect(matchTri(inet[1]!, headline, parseIpv4("10.0.10.50")!, parseIpv4("10.0.30.10")!)).toBe("yes");
-    // and no access-group binding exists anywhere, so "not applied" is a heuristic, not evidence
-    expect(JSON.stringify(fabric).includes("access-group")).toBe(false);
   });
 
-  it("a line in a NON-selected ACL that could match and cannot be decided lowers the badge", () => {
-    const t = traceFlow(headline);
-    const cites = t.hops.flatMap((h) => h.evidence).map((e) => String(e.cite));
+  it("a line in a NON-selected ACL that could match and cannot be decided is emitted as undecided evidence", () => {
+    const r = evaluateAcls("core1", headline, src, dst);
+    const cites = r.evidence.map((e) => String(e.cite));
     expect(cites).toContain("acls.core1.INET_RETURN[0]");
     expect(cites).toContain("acls.core1.INET_RETURN[1]");
-    expect(scopeTuple(t).indeterminateEvidence).toBeGreaterThan(0);
-    expect(claimBadge(t)).not.toBe("SCOPED");
-    expect(T1_verdict(t)).not.toContain("0 evidence items were indeterminate");
+    expect(r.evidence.filter((e) => e.kind === "absence").length).toBeGreaterThan(0);
   });
 
-  it("the verdict is still decided by the line that decided it, not by the undecidable ones", () => {
-    const t = traceFlow(headline);
-    expect(t.outcome).toBe("delivered");
-    const aclHop = t.hops.find((h) => h.evidence.some((e) => e.kind === "acl"));
-    expect(String(aclHop?.evidence.find((e) => e.kind === "acl")?.cite)).toBe("acls.core1.PROTECT_SERVERS[0]");
+  it("the matching applied line stays listed first, but it no longer decides a permit on its own", () => {
+    const r = evaluateAcls("core1", headline, src, dst);
+    expect(r.verdict).toBe("indeterminate");
+    expect(String(r.evidence.find((e) => e.kind === "acl")?.cite)).toBe("acls.core1.PROTECT_SERVERS[0]");
+    expect(String(r.decidedBy?.cite)).toBe("acls.core1.INET_RETURN[0]");
+  });
+
+  it("with the hop's OBSERVED bindings, the unbound list cannot decide it (A3)", () => {
+    const r = evaluateAcls("core1", headline, src, dst, undefined, { ingress: "Vlan10", egress: "Vlan30" });
+    expect(r.bindingMode).toBe("observed");
+    expect(r.verdict).toBe("permit");
+    expect(String(r.decidedBy?.cite)).toBe("acls.core1.PROTECT_SERVERS[0]");
+    expect(r.evidence.map((e) => e.cite)).not.toContain("acls.core1.INET_RETURN[0]");
   });
 });
 
 describe("the not-applied caveat MEASURES its claim about each discarded list", () => {
   it("names the specific undecidable line instead of calling it a catch-all", () => {
-    const joined = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443)).caveats.join(" ");
+    const joined = evaluateAcls("core1", tcp("10.0.10.50", "10.0.30.10", 443), parseIpv4("10.0.10.50")!, parseIpv4("10.0.30.10")!).caveats.join(" ");
     expect(joined).toContain("acls.core1.INET_RETURN[1]");
     expect(joined).toMatch(/INET_RETURN \(matches this flow at acls\.core1\.INET_RETURN\[1\]/);
   });
@@ -597,8 +864,10 @@ describe("no suggestion claims uniqueness it did not count", () => {
   });
 
   it("and the claim would have been false: more than one flow ends in delivery", () => {
-    const delivered = [22, 443]
-      .flatMap((p) => ["10.0.30.10", "10.0.30.50", "10.0.30.100"].map((d) => tcp("10.0.10.50", d, p)))
+    // UPDATED: flows into core1's 10.0.30.0/24 now trace indeterminate (they step over INET_RETURN[0]),
+    // so this counts definite deliveries at core2 instead — the uniqueness point is unchanged.
+    const delivered = [22, 443, 3389]
+      .flatMap((p) => ["10.0.10.10", "10.0.20.10"].map((d) => tcp("10.0.20.10", d, p)))
       .map((f) => traceFlow(f))
       .filter((t) => t.outcome === "delivered");
     expect(delivered.length).toBeGreaterThan(1);
@@ -684,7 +953,11 @@ describe("determinism and budget", () => {
       median,
       `counterexample median ${median.toFixed(2)} ms over 7 runs (slowest ${runs[6]!.toFixed(2)} ms)`,
     ).toBeLessThan(TRIPWIRE_MS);
-    expect(counterexample(flow, t).found).toBe(true);
+    /* The search ran (its reason says so) and found nothing definite on this snapshot; the found
+       branch runs in engine.counterfactual.test.ts. */
+    const cx = counterexample(flow, t);
+    expect(cx.found).toBe(false);
+    if (!cx.found) expect(cx.reason).toMatch(/nearby variations/);
   });
 
   it("gives the same counterexample every time", () => {
@@ -951,38 +1224,41 @@ describe("an unresolvable object-group is this model's gap, not the collector's"
   });
 });
 
-describe("an FHRP virtual address ingresses at the member observed Active", () => {
-  /* REGRESSION — step 1 of resolveIngress sorted owners by hasRib then host NAME and never read
-     fhrpRole, and emitted no caveat when several hosts owned the address. For VLAN 20 the evidence
-     records core2 Active and core1 Standby, yet 10.0.20.1 — the address every VLAN-20 host uses as
-     its gateway — ingressed at core1 purely because "core1" sorts first. Since only core1 holds a
-     route to 10.0.30.0/24, the same forwarding question then returned two contradictory DEFINITE
-     verdicts depending only on which address in one subnet you typed. */
+describe("an FHRP group's hosts ingress at the member observed Active", () => {
+  /* REGRESSION — ingress used to be ordered by host NAME and never read fhrpRole. For VLAN 20 the
+     evidence records core2 Active and core1 Standby, yet the flow ingressed at core1 purely because
+     "core1" sorts first.
+     UPDATED 2026-09-22 (auditor, B2): the virtual address 10.0.20.1 itself is no longer walked at
+     all — a packet sourced from it is originated by the group's active router and arrives inbound on
+     no interface — so the ordering is pinned on a HOST in the subnet, and the VIP on its refusal. */
   const vip = traceFlow(tcp("10.0.20.1", "10.0.30.10", 443));
   const host = traceFlow(tcp("10.0.20.50", "10.0.30.10", 443));
 
-  it("enters at the observed Active member, citing the record that observed the role", () => {
+  it("a host in the subnet enters at the observed Active member", () => {
     const active = fabric.l3.find((r) => r.vlan === 20 && r.fhrpRole === "Active")!;
     expect(active.host).toBe("core2"); // l3_forwarding[4]; the premise, read from the data
-    expect(vip.hops[0]!.host).toBe(active.host);
-  });
-
-  it("gives the gateway address and a host in its subnet the same answer", () => {
-    expect(vip.hops[0]!.host).toBe(host.hops[0]!.host);
-    expect(vip.outcome).toBe(host.outcome);
+    expect(host.hops[0]!.host).toBe(active.host);
   });
 
   it("discloses the other group member rather than silently picking one", () => {
-    const naming = vip.caveats.filter((c) => c.includes("core1") && c.includes("10.0.20.1"));
+    const naming = host.caveats.filter((c) => c.includes("core1"));
     expect(naming.length).toBeGreaterThan(0);
-    expect(naming.join(" ")).toMatch(/Standby|point-in-time/);
+    expect(naming.join(" ")).toMatch(/Standby|point-in-time|may enter via/);
+  });
+
+  it("the virtual address is refused as router-originated, naming every group member", () => {
+    expect(refusalOf(vip)?.kind).toBe("router-originated");
+    expect(vip.hops).toEqual([]);
+    expect(refusalOf(vip)?.reason).toMatch(/core1/);
+    expect(refusalOf(vip)?.reason).toMatch(/core2/);
   });
 
   it("does not manufacture ambiguity where one host owns an address twice", () => {
     // core1's Vlan10 address is also a `local` /32 in its RIB: two records, one host.
     const t = traceFlow(tcp("10.0.10.2", "10.0.30.10", 443));
-    expect(t.hops[0]!.host).toBe("core1");
-    expect(t.caveats.filter((c) => c.includes("is an address of") && c.includes("core1, core1"))).toEqual([]);
+    expect(refusalOf(t)?.kind).toBe("router-originated");
+    expect(t.claim).not.toContain("core1, core1");
+    expect(refusalOf(t)?.reason).not.toContain("core1, core1");
   });
 });
 
@@ -999,8 +1275,12 @@ describe("a subnet's own address is not a host, on the way in or the way out", (
       expect(t.caveats.join(" "), dst).toContain("ip directed-broadcast");
       expect(t.hops[t.hops.length - 1]!.decidedBy!.kind).toBe("absence");
     }
-    // Control: a host address in the same prefix, same port, is still delivered.
-    expect(traceFlow(tcp("10.0.10.50", "10.0.30.10", 443)).outcome).toBe("delivered");
+    // Control: a host address in the same prefix is NOT given the non-host sentence (it is
+    // indeterminate for a different, ACL reason — see "a permit that steps over an undecidable line").
+    const control = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443));
+    expect(control.claim).not.toMatch(/network address|directed-broadcast address/);
+    // And a host address on a prefix with no undecided input is still delivered.
+    expect(traceFlow(tcp("10.0.20.10", "10.0.10.10", 443)).outcome).toBe("delivered");
   });
 
   it("refuses to simulate a flow sourced from a subnet address", () => {
@@ -1016,5 +1296,25 @@ describe("a subnet's own address is not a host, on the way in or the way out", (
   it("leaves a /31 alone, where both addresses really are hosts", () => {
     const p = parsePrefix("10.0.30.0/31")!;
     expect(addressRoleIn(p, parseIpv4("10.0.30.0")!)).toBe("host");
+  });
+});
+
+/* ── A2: an egress the RIB already decides is not "not observed" ───────────────────────────────── */
+describe("a next-hop-only route's egress is resolved through the same host's RIB", () => {
+  it("0.0.0.0/0 via 10.0.10.254 leaves by Vlan10, citing both route records", () => {
+    const t = traceFlow(tcp("10.0.10.50", "8.8.8.8", 443));
+    const hop = t.hops[0]!;
+    expect(hop.host).toBe("core1");
+    expect(hop.nextHop).toBe("10.0.10.254");
+    expect(hop.outIntf).toBe("Vlan10");
+    const cites = hop.evidence.filter((e) => e.kind === "route").map((e) => e.cite);
+    expect(cites).toContain("routes.core1[0]");
+    expect(cites).toContain("routes.core1[2]");
+  });
+
+  it("stops after one level and refuses a non-connected resolution", () => {
+    const winner = { prefix: "0.0.0.0/0", source: "static", nextHop: "192.0.2.1", outIntf: null, adminDistance: 1, cite: "routes.x[0]" };
+    const recursive = { prefix: "192.0.2.0/24", source: "static", nextHop: "10.9.9.9", outIntf: null, adminDistance: 1, cite: "routes.x[1]" };
+    expect(resolveEgress("x", winner, parseIpv4("8.8.8.8")!, [winner, recursive])).toBeNull();
   });
 });

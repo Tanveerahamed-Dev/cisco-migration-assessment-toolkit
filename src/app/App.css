@@ -38,10 +38,11 @@
 
 .qbar__label {
   flex: none;
-  color: var(--text-faint);
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
   font-size: var(--fs-0);
   line-height: var(--lh-0);
-  letter-spacing: var(--ls-0);
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
 }
 
@@ -60,7 +61,7 @@
    sentence must not make the row scroll on a first visit, when there is nothing to scroll to. */
 .qbar__empty {
   min-width: 0;
-  color: var(--text-muted);
+  color: var(--text);
   font-size: var(--fs-1);
   line-height: var(--lh-1);
 }
@@ -72,7 +73,7 @@
   margin-inline-start: auto;
   min-height: var(--target-min);
   padding-inline: var(--sp-2);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
@@ -103,7 +104,9 @@
 .url-notice__mark {
   flex: none;
   margin-block-start: 0.1em;
-  color: var(--claim-out-of-scope);
+  /* A rendered glyph is text for WCAG 1.4.3 even when aria-hidden; --claim-out-of-scope is a
+     non-text token, so the mark takes the muted ink. */
+  color: var(--text-muted);
   font-weight: var(--fw-semibold);
 }
 
@@ -116,7 +119,7 @@
   margin-inline-start: auto;
   min-height: var(--target-min);
   min-width: var(--target-min);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
@@ -253,7 +256,7 @@
 .paneswitch__fabric {
   min-height: var(--target-min);
   padding-inline: var(--sp-3);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
@@ -337,30 +340,10 @@
   line-height: var(--lh-1);
 }
 
-.stage-pending__spinner {
-  width: var(--sp-5);
-  height: var(--sp-5);
-  border: 2px solid var(--border);
-  border-block-start-color: var(--accent);
-  border-radius: var(--radius-pill);
-  animation: stage-pending-spin 900ms linear infinite;
-}
-
-/* The only looping animation in the application, and it loops for the one legitimate reason:
-   it marks work whose duration is not known in advance (design brief 4.8). It stops existing the
-   moment the chunk lands, and reduced motion replaces the rotation with a static ring. */
-@keyframes stage-pending-spin {
-  to {
-    transform: rotate(1turn);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .stage-pending__spinner {
-    animation: none;
-    border-block-start-color: var(--accent);
-  }
-}
+/* (The unbounded `stage-pending-spin` spinner that used to be declared here was dead CSS — no
+   component ever rendered `.stage-pending__spinner` — and is removed; acceptance report O18. The
+   trace packet marker, bounded at three loops, is the only looping animation in the product; see
+   design brief §4.8.) */
 
 /* ── stage: the scene is warming up ────────────────────────────────────────────
    Drawn OVER the canvas rather than in place of it, because by this point the canvas exists and
@@ -386,6 +369,17 @@
   color: var(--text-muted);
   text-align: center;
   pointer-events: none;
+}
+
+/* Two states the warm-up overlay must never be drawn over (surfaces.tsx :: Stage says why):
+   - the renderer FAILED — Fabric3D's fallback is the true statement, and "starting the renderer"
+     beside it would be a false one;
+   - the renderer chunk is still being FETCHED — `StagePending` already says the fabric is being
+     drawn, and two status regions saying it at once is noise for a screen reader.
+   `display: none` removes it from the accessibility tree as well, which is the point. */
+.app__stage:has(.fabric3d__fallback) .stage-warmup,
+.app__stage:has(.stage-pending) .stage-warmup {
+  display: none;
 }
 
 .stage-warmup__bar {

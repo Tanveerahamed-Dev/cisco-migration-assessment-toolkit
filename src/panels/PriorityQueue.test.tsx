@@ -62,6 +62,21 @@ const click = (el: Element): void => {
   });
 };
 
+/**
+ * Let the SPLIT selection commit land.
+ *
+ * Clicking a finding row marks it from the queue's local state synchronously and hands the store
+ * write that re-aims the other surfaces to `requestAnimationFrame(() => setTimeout(..., 0))` —
+ * acceptance E3, journey 1 (see `pendingFinding` in PriorityQueue). A test asserting on STORE state
+ * after a row click waits one frame plus one task; a test asserting on what the ROW shows does not.
+ */
+async function settleCommit(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 const setQuery = (q: string): void => {
   act(() => useInvestigation.getState().setQuery(q));
 };
@@ -185,13 +200,43 @@ describe("grouping states the denominator", () => {
     expect(textOf(header!)).toContain("no wave value was collected");
   });
 
+  it("grouped by Device, unfiltered, never prints an observed zero for a device never collected (B1)", () => {
+    /* The vocabulary fill used to push `{observed: true, items: []}` for every host, so the three
+       never-collected devices read "AP-FLOOR1 0" exactly like an assessed, clean box. */
+    const uncollected = fabric.devices.filter((d) => !d.collected).map((d) => d.host.toLowerCase());
+    expect(uncollected.length).toBeGreaterThan(0);
+    for (const corpus of ["Findings", "Cross-layer"]) {
+      const c = mount(<PriorityQueue debounceMs={0} />);
+      const tab = [...c.querySelectorAll<HTMLElement>('[role="tab"], button')].find((b) =>
+        textOf(b).startsWith(corpus),
+      );
+      if (tab) click(tab);
+      const select = [...c.querySelectorAll<HTMLSelectElement>("select")][0]!;
+      act(() => {
+        select.value = "host";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      const observedZero = groupRows(c).filter((r) => {
+        const label = r.querySelector('.ag__grouplabel[data-observed="yes"]');
+        const count = r.querySelector(".ag__groupcount");
+        return label !== null && textOf(count as HTMLElement).trim() === "0" &&
+          uncollected.includes(textOf(label as HTMLElement).trim().toLowerCase());
+      });
+      expect(observedZero.map((r) => textOf(r)), corpus).toEqual([]);
+      // Empty buckets for COLLECTED devices are still drawn: the rule is collection, not emptiness.
+      expect(groupRows(c).length).toBeGreaterThan(0);
+      act(() => mounted.pop()!.root.unmount());
+    }
+  });
+
   it("a group collapses and its rows leave the row model rather than being hidden by CSS", () => {
     const c = mount(<PriorityQueue debounceMs={0} />);
     const before = dataRows(c).length;
     const critical = groupRows(c).find((r) => textOf(r).startsWith("Critical"))!;
     click(critical.querySelector('[role="gridcell"]')!);
     expect(dataRows(c).length).toBe(before - severityCounts(fabric.findings)["Critical"]!);
-    expect(critical.getAttribute("aria-expanded")).toBe("false");
+    // Expanded state is on the focusable group CELL (A11Y critic D2: an expandable row is treegrid).
+    expect(critical.querySelector('[role="gridcell"]')?.getAttribute("aria-expanded")).toBe("false");
   });
 });
 
@@ -208,6 +253,28 @@ describe("filter accounting", () => {
     // Fails CLOSED: zero rows, not the whole unfiltered fleet dressed up as a result.
     expect(dataRows(c)).toHaveLength(0);
     expect(textOf(c)).toContain("No findings match this scope");
+  });
+
+  it("prints no observed zero tallies for a scope in which every device was never collected (B1)", () => {
+    /* `is:uncollected` drew "CRITICAL 0 / HIGH 0 / … / INFO 0" as group rows marked
+       data-observed="yes", while the Device pane refuses to tally the same scope ("finding counts: not
+       observed"). An empty bucket there is silence about boxes nobody assessed, not a zero. */
+    setQuery("is:uncollected");
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    expect(groupRows(c)).toHaveLength(0);
+    expect(c.querySelector('.ag__grouplabel[data-observed="yes"]')).toBeNull();
+    expect(textOf(c)).toMatch(/evidence gap, not an observation/);
+    // The rule is the clause scope, not the chip: an uncollected host named directly does the same.
+    const uncollected = fabric.devices.find((d) => !d.collected)!;
+    setQuery(`host:${uncollected.host}`);
+    const c2 = mount(<PriorityQueue debounceMs={0} />);
+    for (const g of groupRows(c2)) expect(textOf(g)).not.toMatch(/\b0\b/);
+  });
+
+  it("still draws empty severity buckets where the scope WAS collected", () => {
+    setQuery("category:QoS severity:Critical");
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    expect(groupRows(c).length).toBeGreaterThan(0);
   });
 
   it("an empty result explains itself with the clause that emptied it", () => {
@@ -345,7 +412,7 @@ describe("filter accounting", () => {
 /* ══ selection re-aims, it does not reset ══════════════════════════════════ */
 
 describe("selection", () => {
-  it("writes the shared selection and leaves the fabric and the flow untouched", () => {
+  it("writes the shared selection and leaves the fabric and the flow untouched", async () => {
     const device = fabric.devices[0]!;
     act(() =>
       useInvestigation.setState({
@@ -357,6 +424,10 @@ describe("selection", () => {
     const target = fabric.findings.find((f) => f.id === "F003")!;
     const row = dataRows(c).find((r) => textOf(r).includes(target.id))!;
     click(row.querySelector('[aria-colindex="3"]')!);
+    /* The acknowledgement is synchronous: the clicked row is marked in the click's own commit,
+       before the shared write that re-aims every other surface has landed. */
+    expect(row.getAttribute("data-active")).toBe("yes");
+    await settleCommit();
 
     const s = useInvestigation.getState();
     expect(s.findingId).toBe(target.id);
@@ -365,6 +436,24 @@ describe("selection", () => {
     // Rail B re-aims to the tab that can render this record — re-aiming, not blanking.
     expect(s.evidenceTab).toBe("findings");
     expect(row.getAttribute("data-active")).toBe("yes");
+  });
+
+  it("commits the click to the queue alone, and the shared write lands a task later", async () => {
+    /* E3, journey 1: the click's own commit must not carry the cross-surface re-aim. The store is
+       untouched until the deferred write, and a later action supersedes one that has not landed. */
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    const [a, b] = dataRows(c);
+    click(a!.querySelector('[aria-colindex="3"]')!);
+    expect(a!.getAttribute("data-active")).toBe("yes");
+    expect(useInvestigation.getState().findingId, "the store write must not run inside the click").toBeNull();
+    // A second click before the first write lands: the second one wins, never the first.
+    click(b!.querySelector('[aria-colindex="3"]')!);
+    expect(b!.getAttribute("data-active")).toBe("yes");
+    expect(a!.getAttribute("data-active")).not.toBe("yes");
+    await settleCommit();
+    const bId = b!.querySelector('[role="rowheader"]')?.textContent?.trim();
+    expect(useInvestigation.getState().findingId).toBe(bId);
+    expect(b!.getAttribute("data-active")).toBe("yes");
   });
 
   it("the drill affordance is a separate control from the row click", () => {
@@ -433,11 +522,12 @@ describe("batch selection", () => {
     expect(textOf(c)).toContain("2 selected");
   });
 
-  it("Escape clears the batch before it clears the selection", () => {
+  it("Escape clears the batch before it clears the selection", async () => {
     const c = mount(<PriorityQueue debounceMs={0} />);
     const cell = dataRows(c)[0]!.querySelector<HTMLElement>('[role="rowheader"]')!;
     act(() => cell.focus());
     click(dataRows(c)[0]!.querySelector('[aria-colindex="3"]')!);
+    await settleCommit();
     keyOn(document.activeElement!, "x");
     expect(textOf(c)).toContain("1 selected");
     keyOn(document.activeElement!, "Escape");
@@ -464,17 +554,69 @@ describe("the cross-layer corpus", () => {
     expect(textOf(c)).toContain(fabric.crossLayer[0]!.layers ?? "");
   });
 
-  it("selecting a cross-layer record re-aims the shared selection at the punchlist row it joins to", () => {
+  it("selecting a cross-layer record re-aims the shared selection at the punchlist row it joins to", async () => {
     const c = mount(<PriorityQueue debounceMs={0} />);
     click([...c.querySelectorAll<HTMLElement>('[role="radio"]')].find((b) => textOf(b).includes("Cross-layer"))!);
     const row = dataRows(c)[0]!;
     click(row.querySelector('[aria-colindex="3"]')!);
+    await settleCommit();
     const id = useInvestigation.getState().findingId;
     expect(id).not.toBeNull();
     const finding = fabric.findings.find((f) => f.id === id);
     expect(finding, "the join must resolve to a real punchlist row").toBeDefined();
     // The join is on the record itself, so the two rows must describe the same thing.
     expect(fabric.crossLayer.some((x) => x.title === finding!.title && x.severity === finding!.severity)).toBe(true);
+  });
+
+  /* 2026-09-22 critic, A4: with the cross-layer table showing, a finding selected from the palette
+     had no row in the DOM at all — neither marked nor revealed. */
+  const joinsCrossLayer = (id: string): boolean => {
+    const f = fabric.findings.find((x) => x.id === id)!;
+    const same = (a: { severity: string; title: string; detail: string | null }) =>
+      a.severity === f.severity && a.title === f.title && (a.detail ?? "") === (f.detail ?? "");
+    return fabric.crossLayer.some(same) && fabric.findings.filter(same).length === 1;
+  };
+  const radio = (c: HTMLElement, label: string): HTMLElement =>
+    [...c.querySelectorAll<HTMLElement>('[role="radio"]')].find((b) => textOf(b).includes(label))!;
+
+  it("a finding selected from another surface while on the cross-layer table re-aims the queue to a row that holds it", () => {
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    click(radio(c, "Cross-layer"));
+    expect(dataRows(c)).toHaveLength(fabric.crossLayer.length);
+    const lone = fabric.findings.find((f) => !joinsCrossLayer(f.id));
+    expect(lone, "precondition: some finding has no cross-layer row").toBeDefined();
+    act(() => useInvestigation.getState().selectFinding(lone!.id));
+    expect(radio(c, "Findings").getAttribute("aria-checked")).toBe("true");
+    const active = dataRows(c).filter((r) => r.getAttribute("data-active") === "yes");
+    expect(active).toHaveLength(1);
+    expect(textOf(active[0]!)).toContain(lone!.id);
+  });
+
+  it("a deep link onto a persisted cross-layer choice lands on the punchlist row too", () => {
+    localStorage.setItem("atlas-scope.queue.corpus", "cross-layer");
+    const lone = fabric.findings.find((f) => !joinsCrossLayer(f.id))!;
+    act(() => useInvestigation.getState().selectFinding(lone.id));
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    expect(radio(c, "Findings").getAttribute("aria-checked")).toBe("true");
+    expect(dataRows(c).some((r) => r.getAttribute("data-active") === "yes" && textOf(r).includes(lone.id))).toBe(true);
+  });
+
+  it("a finding that HAS a cross-layer row keeps the cross-layer table and marks that row", () => {
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    click(radio(c, "Cross-layer"));
+    const joined = fabric.findings.find((f) => joinsCrossLayer(f.id));
+    expect(joined, "precondition: some finding joins a cross-layer row").toBeDefined();
+    act(() => useInvestigation.getState().selectFinding(joined!.id));
+    expect(radio(c, "Cross-layer").getAttribute("aria-checked")).toBe("true");
+    expect(dataRows(c).filter((r) => r.getAttribute("data-active") === "yes")).toHaveLength(1);
+  });
+
+  it("switching to the cross-layer table AFTER a selection is not bounced back", () => {
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    const lone = fabric.findings.find((f) => !joinsCrossLayer(f.id))!;
+    act(() => useInvestigation.getState().selectFinding(lone.id));
+    click(radio(c, "Cross-layer"));
+    expect(radio(c, "Cross-layer").getAttribute("aria-checked")).toBe("true");
   });
 });
 
@@ -591,12 +733,39 @@ describe("a selection from another surface is revealed, not merely marked", () =
     expect(textOf(c)).toContain(`${expected} of ${fabric.findings.length} shown findings name ${host}`);
   });
 
+  it("counts rows folded inside a collapsed group, and says where they are", () => {
+    /* With Medium collapsed (a persisted, ordinary state), `?d=core1` read "21 of 146 shown
+       findings name core1" while the Device pane on the same screen said 32: the count walked
+       only the rendered rows while its denominator counted every shown row. */
+    const host = "core1";
+    const named = fabric.findings.filter((f) => f.devices.includes(host));
+    const medium = named.filter((f) => String(f.severity) === "Medium").length;
+    expect(medium, "this test needs Medium findings naming the host").toBeGreaterThan(0);
+
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    installLayout(c);
+    const header = groupRows(c).find((r) => textOf(r).toLowerCase().startsWith("medium"))!;
+    click(header.querySelector('[role="gridcell"]')!);
+    expect(header.querySelector('[role="gridcell"]')?.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => useInvestigation.getState().selectDevice(host));
+
+    const marked = c.querySelectorAll('[data-related="yes"]');
+    expect(marked).toHaveLength(named.length - medium);
+    const text = textOf(c);
+    expect(text).toContain(`${named.length} of ${fabric.findings.length} shown findings name ${host}`);
+    expect(text).toContain(`${named.length - medium} marked on the row's trailing edge`);
+    expect(text).toContain(`${medium} in the collapsed Medium group`);
+  });
+
   it("says nothing is published rather than nothing is wrong when no row names the device", () => {
     const c = mount(<PriorityQueue debounceMs={0} />);
     installLayout(c);
     const quiet = fabric.devices.find((d) => !fabric.findings.some((f) => f.devices.includes(d.host)));
-    if (!quiet) return; // every device carries a finding in this snapshot; nothing to assert
-    act(() => useInvestigation.getState().selectDevice(quiet.id));
+    // A precondition, not an early return: a return here would let this test pass with zero
+    // assertions the day every device carries a finding.
+    expect(quiet, "precondition: a device no finding names").toBeDefined();
+    act(() => useInvestigation.getState().selectDevice(quiet!.id));
     expect(c.querySelectorAll('[data-related="yes"]')).toHaveLength(0);
     expect(textOf(c)).toContain("not an assessment that");
   });

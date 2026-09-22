@@ -31,6 +31,47 @@ would not be.
 | `refs/batfish-fwd-validation.png` | A Jupyter notebook. Invaluable for its **claim vocabulary** (which we adopted in `docs/design-brief.md` §6) but not a UI to compare against. |
 | `refs/apg-data-grid.png` | The W3C APG example. A conformance reference for keyboard behaviour, deliberately unstyled. |
 
+## What the blind panel actually established — and what it did not
+
+Three rounds, three critic lenses per sheet, twelve sheets per round:
+
+| Round | Verdicts | Ours won | Tied | Lost |
+|---|---|---|---|---|
+| 1 | 33 | 32 | 0 | 1 |
+| 2 | 36 | 36 | 0 | 0 |
+| 3 | 36 | 36 | 0 | 0 |
+
+**Read that table with suspicion. I do.** Two things undermine the win count as evidence that this
+application is better than Forward Enterprise or Grafana:
+
+1. **The critics could identify the reference.** The round-2 decoder reported "in every verdict the
+   critic's loser was the REFERENCE panel (Forward Networks demo capture…". The brand-cropped
+   `-craft` variants did not prevent it — the tour UI is recognisable on its own.
+2. **The references are wrapped in demo chrome.** The Forward captures carry the Storylane tour
+   modal ("End-to-End Path Search Demo") and a "Click on Vulnerability" coachmark over the centre of
+   the working surface; the Grafana captures carry a "Create free account" promotional banner. A
+   critic comparing a clean working application against a screenshot with a modal blocking it is
+   judging the WRAPPER, not the product. Limit 1 below explains why the tours could not be
+   advanced past their opening step.
+
+A third reason for caution: one round-1 verdict declared a "decisive" win while listing **zero**
+faults on our panel. Under the protocol in `docs/acceptance.md`, a critic who cannot name a
+specific, actionable reason has not done the job, and that verdict should be discarded.
+
+**So the head-to-head win count is reported, and is NOT offered as proof of C1.** It saturated at
+72 of 72 across rounds 2–3, and a signal that cannot move cannot discriminate. From round 4 the
+critique loop stopped using it as a convergence condition, in either direction, and dropped to one
+critic per sheet.
+
+**What the panel DID establish, and this part is solid:** the critics were required to list every
+specific, actionable fault in OUR panel regardless of who won, and they did — 8 to 24 per critic,
+roughly 350 across three rounds. Those fault lists fed the repair waves, and their per-critic count
+fell from a peak of 24 in round 2 to 7–13 in round 3. That is real evidence of improvement, measured
+against itself rather than against a compromised comparison.
+
+The honest statement of acceptance C1 is therefore **UNPROVEN** against the named products, with the
+reason above — not PASS.
+
 ## Known limits of this reference set — stated so nobody assumes otherwise
 
 1. **Only two distinct Forward screens.** The Storylane demos are guided tours gated on clicking a

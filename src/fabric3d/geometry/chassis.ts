@@ -12,8 +12,14 @@
  * per-device Mesh would spend that on the switches alone.
  *
  * Openings without CSG. Two techniques, chosen per feature:
- *   - port bank: a GRID of thin metal bars with a dark backplate 0.22 units behind it. The gaps
- *     between bars are real holes and carry real parallax.
+ *   - port bank: ONE plate carrying a mipmapped port-grille texture (materials.ts, GRILLE_*) on a
+ *     second UV set. It used to be a GRID of 0.16-0.18-unit metal bars over a dark backplate, and
+ *     that grid is geometry below Nyquist at every overview distance: a bar is under one pixel,
+ *     so it rasterises in some columns and not others and the bank breaks into glyph-like shapes
+ *     ("PUE4I8", "NO35HN") — measured at low tier at every zoom the camera allows, and at high tier
+ *     at DPR 1 on access-tier chassis (review/shots/render-audit3/crop2x-core1-low.png,
+ *     z-zf-access11.png). Geometry has no mip chain; a texture does. Minified, the grille now
+ *     averages to its mean tone instead of aliasing, at every tier and every DPR.
  *   - SFP cage / console: a dark plate seated 0.03 units proud of a slightly larger metal plate,
  *     so the metal reads as a surround. Two boxes instead of eighteen, at the size where parallax
  *     would not be visible anyway.
@@ -25,7 +31,10 @@
 import {
   BoxGeometry,
   BufferGeometry,
+  CircleGeometry,
+  CylinderGeometry,
   EdgesGeometry,
+  Float32BufferAttribute,
   LatheGeometry,
   Matrix4,
   PlaneGeometry,
@@ -67,6 +76,10 @@ export interface ChassisParts {
 const FIT = 0.95;
 const W = CHASSIS_EXTENT.width * FIT;
 const D = CHASSIS_EXTENT.depth * 0.83;
+
+/** The band indicator bar on a rack chassis faceplate (world units). See buildRackMount. */
+const LED_BAR_W = 1.7;
+const LED_BAR_H = 0.6;
 
 interface KindSpec {
   width: number;
@@ -179,30 +192,16 @@ function buildRackMount(spec: KindSpec, bevelSegments: number, fineDetail: boole
   if (spec.portCols > 0 && spec.portRows > 0 && portRegion > 0.8) {
     const cols = spec.portCols;
     const rows = spec.portRows;
-    const cellW = portRegion / cols;
     const bankH = Math.min(innerH - 0.5, rows * 0.78);
-    const cellH = bankH / rows;
-    const barT = 0.16;
     const gridZ = hz + 0.04;
-
-    // Horizontal separators, then verticals: the bars ARE the metal and the gaps are the ports.
-    for (let r = 0; r <= rows; r += 1) {
-      const y = -bankH / 2 + r * cellH;
-      bezelParts.push(at(box(portRegion + barT, barT, 0.2), portLeft + portRegion / 2, y, gridZ));
-    }
-    for (let c = 0; c <= cols; c += 1) {
-      const x = portLeft + c * cellW;
-      bezelParts.push(at(box(0.18, bankH + barT, 0.2), x, 0, gridZ));
-    }
-    // The contact block inside each opening. Small, but it is what gives the bank its texture at
-    // distance — a flat dark rectangle behind a grid reads as a printed pattern.
-    for (let r = 0; r < rows; r += 1) {
-      for (let c = 0; c < cols; c += 1) {
-        const x = portLeft + (c + 0.5) * cellW;
-        const y = -bankH / 2 + (r + 0.5) * cellH;
-        darkParts.push(at(box(cellW * 0.6, cellH * 0.44, 0.08), x, y, hz - 0.06));
-      }
-    }
+    /* One plate, one texture tile per port (see the header). The plate still stands proud of the
+       well's back wall, so the bank keeps its silhouette depth against the frame; what moved into
+       the texture is only the sub-pixel bar pattern that geometry cannot filter. */
+    // grilleUv reads UV0 as 0..1 across the plate, so it runs BEFORE uvScale rescales UV0.
+    const plate = box(portRegion, bankH, 0.2);
+    grilleUv(plate, cols, rows);
+    uvScale(plate, 2);
+    bezelParts.push(at(plate, portLeft + portRegion / 2, 0, gridZ));
   }
 
   if (spec.cages > 0) {
@@ -221,10 +220,16 @@ function buildRackMount(spec: KindSpec, bevelSegments: number, fineDetail: boole
 
   /* Status block: one band indicator bar plus three activity pips. Emissive, and driven by the
      instance colour, so the band a device is in is legible from the overview without a label. */
+  /* The band bar fills the status region's width and is LED_BAR_H tall. It was 1.15 x 0.2 — about
+     5 x 1 px at the overview — and at that size the band hue could not be read off the render at
+     all: the chassis BODY cannot carry it either (scene.ts BODY_BAND_TINT history: AgX compresses the lit
+     lid's chroma until Poor and Critical sit ~5 dE apart), so in practice the band was read from
+     the DOM chip letter, not the 3-D view (C5 audit). */
   const ledX = -innerW / 2 + ledRegion / 2 - 0.05;
-  ledParts.push(at(box(1.15, 0.2, 0.07), ledX, innerH / 2 - 0.3, hz + 0.24));
+  const barTop = innerH / 2 - 0.18;
+  ledParts.push(at(box(LED_BAR_W, LED_BAR_H, 0.07), ledX, barTop - LED_BAR_H / 2, hz + 0.24));
   for (let i = 0; i < 3; i += 1) {
-    ledParts.push(at(box(0.16, 0.16, 0.06), ledX - 0.42 + i * 0.42, innerH / 2 - 0.72, hz + 0.24));
+    ledParts.push(at(box(0.16, 0.16, 0.06), ledX - 0.42 + i * 0.42, barTop - LED_BAR_H - 0.3, hz + 0.24));
   }
 
   /* The lid panel. A shallow inset covering most of the top, raised 0.05 off the shell so a
@@ -249,14 +254,40 @@ function buildRackMount(spec: KindSpec, bevelSegments: number, fineDetail: boole
   if (fineDetail && spec.ventSlots > 0) {
     const slots = spec.ventSlots;
     const bankW = w * 0.42;
-    const pitch = bankW / slots;
     const slotD = d * 0.5;
-    for (let i = 0; i < slots; i += 1) {
-      const x = w * 0.26 - bankW / 2 + i * pitch;
-      darkParts.push(at(box(pitch * 0.45, 0.1, slotD), x, h / 2 - 0.03, -d * 0.06));
-    }
+    /* ONE plate carrying the grille texture, not `slots` dark boxes (C5 critic, 2026-09-22). The
+       slats were 0.3-unit geometry at a 0.66-unit pitch — under a pixel at the overview at DPR 1 —
+       so the bank of 16 aliased into 3-4 diagonal bars that crawled under a 3 px orbit, at BOTH
+       tiers (SMAA cannot recover sub-pixel geometry). This is the port bank's own fix, applied to
+       the same class of feature: a texture has a mip chain and geometry does not, so minified the
+       vent now averages to its mean tone instead of beating against the pixel grid. */
+    const vent = box(bankW, 0.03, slotD);
+    ventUv(vent, slots);
+    uvScale(vent, 2);
+    bezelParts.push(at(vent, w * 0.26, h / 2 + 0.085, -d * 0.06));
     // A shallow recessed tray around the louvers, so the slots sit in a panel rather than on the lid.
-    bodyParts.push(at(uvScale(rbox(bankW + 0.5, 0.08, slotD + 0.5, 1, 0.06), 2), w * 0.26, h / 2 - 0.08, -d * 0.06));
+    /* BURIED UNTIL 2026-09-21. The slots spanned h/2 - 0.08 .. + 0.02 and this tray h/2 - 0.12 .. - 0.04,
+       while the lid panel above tops out at h/2 + 0.04 — so both sat INSIDE the lid and the louvers,
+       the high tier's main piece of lid detail, never drew a pixel (found auditing why high and low
+       looked alike, C5). Tray now h/2 + 0.04 .. + 0.07 on the lid, slots + 0.07 .. + 0.10 on it. */
+    bodyParts.push(at(uvScale(rbox(bankW + 0.5, 0.03, slotD + 0.5, 1, 0.012), 2), w * 0.26, h / 2 + 0.055, -d * 0.06));
+  }
+
+  /* OVERVIEW CUES — the part of the hardware the default camera can actually resolve.
+     MEASURED (C5 audit, both tiers): at the overview distance each chassis is a ~40 px tinted slab;
+     port, ear and LED detail only resolves when dollied in, because it is all on the FRONT face and
+     the default view looks steeply down at the LID. So three features are carried on the lid at
+     every tier — merged into parts that already exist, so they cost triangles, never draw calls:
+       - a front lip: the dark top edge of the faceplate, the line that says "this side is the front";
+       - the status bar echoed on the lid's front-left corner, emissive and instance-coloured like
+         the faceplate bar, so the band reads from the overview instead of only from the label chip;
+       - at the tiers without the louvered vent bank, one dark vent panel where the bank sits.
+     Each is sized for ~2 px of depth at the overview (the lid is foreshortened by cos(polar)). */
+  const lidY = h / 2 + 0.07;
+  darkParts.push(at(box(w - 1.2, 0.06, 0.7), 0, lidY, hz - 0.5));
+  ledParts.push(at(box(LED_BAR_W * 2, 0.06, 1.2), -w / 2 + 0.6 + LED_BAR_W, lidY + 0.01, hz - 1.6));
+  if (!fineDetail && spec.ventSlots > 0) {
+    darkParts.push(at(box(w * 0.42, 0.06, d * 0.5), w * 0.26, lidY, -d * 0.06));
   }
 
   /* Rack ears. They break the rectangle at exactly the place the eye checks for scale, and the
@@ -338,6 +369,57 @@ function buildAccessPoint(spec: KindSpec, bevelSegments: number): ChassisParts {
   return finish([body], bezelParts, darkParts, [], ledParts, [r, h / 2, r], h / 2);
 }
 
+/**
+ * Second UV set for the port-grille map (materials.ts, `grille`, texture channel 1): one texture
+ * tile per port, so a plate of `cols` x `rows` ports repeats the tile that many times.
+ */
+function grilleUv(g: BufferGeometry, cols: number, rows: number): void {
+  const uv = g.getAttribute("uv");
+  const out = new Float32Array(uv.count * 2);
+  for (let i = 0; i < uv.count; i += 1) {
+    out[i * 2] = uv.getX(i) * cols;
+    out[i * 2 + 1] = uv.getY(i) * rows;
+  }
+  g.setAttribute("uv1", new Float32BufferAttribute(out, 2));
+}
+
+/**
+ * The lid vent bank on the same grille map: one tile per slot across U, and a CONSTANT V on a row
+ * of the tile that crosses only bar metal and the dark opening (below the contact block, above the
+ * upper-bar shadow). Across the bank that reads as dark slots between metal ribs; the constant V has
+ * zero derivative, so the sampler's mip level follows the slot pitch alone and the bank minifies to
+ * its mean tone. Exported so a test can pin the row against `grilleTile`.
+ */
+export const VENT_ROW_V = 0.2;
+function ventUv(g: BufferGeometry, slots: number): void {
+  const uv = g.getAttribute("uv");
+  const out = new Float32Array(uv.count * 2);
+  for (let i = 0; i < uv.count; i += 1) {
+    out[i * 2] = uv.getX(i) * slots;
+    out[i * 2 + 1] = VENT_ROW_V;
+  }
+  g.setAttribute("uv1", new Float32BufferAttribute(out, 2));
+}
+
+/**
+ * Every other bezel part samples the grille at ONE constant point inside the tile's metal bar
+ * (GRILLE_METAL_UV), which is white, so the map multiplies the bezel colour by exactly 1. A
+ * constant UV has zero screen-space derivatives, so the sampler stays on mip 0 — the averaged
+ * darker mips of the port openings can never reach the frame, however far away it is.
+ */
+export const GRILLE_METAL_UV: readonly [number, number] = [0.02, 0.5];
+function ensureGrilleUv(g: BufferGeometry): BufferGeometry {
+  if (g.getAttribute("uv1") !== undefined) return g;
+  const n = g.getAttribute("position").count;
+  const out = new Float32Array(n * 2);
+  for (let i = 0; i < n; i += 1) {
+    out[i * 2] = GRILLE_METAL_UV[0];
+    out[i * 2 + 1] = GRILLE_METAL_UV[1];
+  }
+  g.setAttribute("uv1", new Float32BufferAttribute(out, 2));
+  return g;
+}
+
 function finish(
   bodyParts: BufferGeometry[],
   bezelParts: BufferGeometry[],
@@ -349,7 +431,7 @@ function finish(
 ): ChassisParts {
   const parts: ChassisParts = {
     body: mergeOrEmpty(bodyParts),
-    bezel: mergeOrEmpty(bezelParts),
+    bezel: mergeOrEmpty(bezelParts.map(ensureGrilleUv)),
     dark: mergeOrEmpty(darkParts),
     rail: mergeOrEmpty(railParts),
     led: mergeOrEmpty(ledParts),
@@ -366,15 +448,90 @@ function finish(
   return parts;
 }
 
-export function buildChassis(
-  kind: string,
-  opts: { bevelSegments: number; fineDetail: boolean },
-): ChassisParts {
-  const k = normaliseKind(kind);
+export interface ChassisBuildOptions {
+  bevelSegments: number;
+  fineDetail: boolean;
+}
+
+function buildChassisUncached(k: ChassisKind, opts: ChassisBuildOptions): ChassisParts {
   const spec = SPEC[k];
   return k === "ap"
     ? buildAccessPoint(spec, opts.bevelSegments)
     : buildRackMount(spec, opts.bevelSegments, opts.fineDetail);
+}
+
+/* ── pre-built chassis: the geometry work moved OFF the scene-creation task ──────────────────────
+ *
+ * Acceptance E5, cold load (review finding, 2026-09-22): `createScene` ran as ONE ~150-260 ms task in
+ * the Fabric3D mount effect, and a keystroke fired while it ran waited for all of it. CPU profile of
+ * the release build (sourcemapped): buildChassis was ~26 % of that task — the rounded-box bevels,
+ * port grids and vent slots of each rack-mount kind, merged. It is pure, deterministic and
+ * tier-independent (quality.ts SCENE_DETAIL), so it can be done earlier, one kind per slice with a
+ * yield between, exactly as the procedural map bytes already are (materials.ts
+ * prepareProceduralMaps). `buildChassis` then hands out CLONES of the prepared parts, so every
+ * caller still owns — and disposes — its own geometry, and a later rebuild never shares buffers
+ * with a disposed graph. Without a prepare call nothing changes: the parts are built in place. */
+const prepared = new Map<string, ChassisParts>();
+const preparedKey = (k: ChassisKind, o: ChassisBuildOptions): string =>
+  `${k}|${o.bevelSegments}|${o.fineDetail ? 1 : 0}`;
+
+function cloneParts(src: ChassisParts): ChassisParts {
+  const parts: ChassisParts = {
+    body: src.body.clone(),
+    bezel: src.bezel.clone(),
+    dark: src.dark.clone(),
+    rail: src.rail.clone(),
+    led: src.led.clone(),
+    half: [src.half[0], src.half[1], src.half[2]],
+    topY: src.topY,
+    dispose(): void {
+      parts.body.dispose();
+      parts.bezel.dispose();
+      parts.dark.dispose();
+      parts.rail.dispose();
+      parts.led.dispose();
+    },
+  };
+  return parts;
+}
+
+export function buildChassis(kind: string, opts: ChassisBuildOptions): ChassisParts {
+  const k = normaliseKind(kind);
+  const ready = prepared.get(preparedKey(k, opts));
+  return ready === undefined ? buildChassisUncached(k, opts) : cloneParts(ready);
+}
+
+/** Every chassis kind `normaliseKind` can return, so a caller can prepare them all up front. */
+export const ALL_CHASSIS_KINDS: readonly ChassisKind[] = Object.freeze(["device", "router", "ap"]);
+
+/** True once every kind in `kinds` has prepared parts for `opts`. */
+export function chassisPrepared(kinds: Iterable<string>, opts: ChassisBuildOptions): boolean {
+  for (const kind of kinds) if (!prepared.has(preparedKey(normaliseKind(kind), opts))) return false;
+  return true;
+}
+
+/**
+ * Build the parts for every kind in `kinds` ahead of the scene, ONE kind per slice, yielding to the
+ * event loop before each. Idempotent: a kind already prepared costs nothing. Yield is
+ * `scheduler.yield()` where it exists (resumes ahead of other queued tasks) and a zero timeout
+ * otherwise — the same rule as materials.ts prepareProceduralMaps, stated there.
+ */
+export async function prepareChassis(kinds: Iterable<string>, opts: ChassisBuildOptions): Promise<void> {
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  const yieldNow = (): Promise<void> =>
+    typeof sched?.yield === "function"
+      ? sched.yield()
+      : new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
+  const todo = new Set<ChassisKind>();
+  for (const kind of kinds) todo.add(normaliseKind(kind));
+  for (const k of todo) {
+    const key = preparedKey(k, opts);
+    if (prepared.has(key)) continue;
+    await yieldNow();
+    if (!prepared.has(key)) prepared.set(key, buildChassisUncached(k, opts));
+  }
 }
 
 /* ── secondary geometry, shared across kinds ───────────────────────────────── */
@@ -383,40 +540,161 @@ export function buildChassis(
  * The wireframe silhouette drawn over an uncollected device. Built from the BODY only: running
  * edge detection over the ports and vents of a device we never reached would draw detail we did
  * not observe, which is precisely the lie this treatment exists to prevent.
+ *
+ * Built from the kind's REFERENCE body (one bevel segment, no fine detail), never from the tier's
+ * own tessellation. At 24 degrees a single-segment bevel keeps every real corner, but the high
+ * tier's three-segment bevel turns each corner into facets under the threshold, and the outline
+ * lost its twelve box edges: measured, the uncollected router rendered as a see-through wireframe
+ * box at `low` and as an apparently opaque shell at `high` (72 edge vertices against 144). A
+ * "never collected" encoding that disappears on better hardware is absence rendered as health.
  */
-export function chassisSilhouette(parts: ChassisParts): BufferGeometry {
+export function chassisSilhouette(kind: string): BufferGeometry {
+  if (normaliseKind(kind) === "ap") return accessPointSilhouette();
+  const reference = buildChassis(kind, { bevelSegments: 1, fineDetail: false });
   // 24 degrees: keeps the bevel's facet ring out of the outline while retaining every real corner.
-  return new EdgesGeometry(parts.body, 24);
+  const edges = new EdgesGeometry(reference.body, 24);
+  for (const g of [reference.body, reference.bezel, reference.dark, reference.rail, reference.led]) g.dispose();
+  return edges;
+}
+
+/**
+ * The access point's outline: ONE ring at its widest radius, at mid-height.
+ *
+ * Edge detection over a lathe is the wrong tool for a curved form. Every break in the fillet
+ * profile (seven segments, 15-45 degrees apart) passes the 24-degree threshold somewhere, so the
+ * EdgesGeometry of the radome was four or five concentric rings stacked at the rim — MEASURED (C5
+ * critic, AP-floor1 dollied in, both tiers): contour lines that read as a stack of coins, and
+ * nothing like the rack kinds' clean box outline. The puck's silhouette from any orbit angle is
+ * dominated by its widest circle, so that circle is the outline, as line segments.
+ */
+function accessPointSilhouette(): BufferGeometry {
+  const r = SPEC.ap.width / 2;
+  const segments = 96;
+  const pos = new Float32Array(segments * 6);
+  for (let i = 0; i < segments; i += 1) {
+    const a0 = (i / segments) * Math.PI * 2;
+    const a1 = ((i + 1) / segments) * Math.PI * 2;
+    pos.set([Math.cos(a0) * r, 0, Math.sin(a0) * r, Math.cos(a1) * r, 0, Math.sin(a1) * r], i * 6);
+  }
+  const g = new BufferGeometry();
+  g.setAttribute("position", new Float32BufferAttribute(pos, 3));
+  return g;
 }
 
 export type StateRingShape = "solid" | "dashed" | "double";
 
 /**
- * The operational-state ring, laid flat on the deck around a chassis footprint.
+ * Height (world units — the instance matrix scales the ring in X/Z only) of the low curb every
+ * ring band stands on.
+ *
+ * WHY THE RING IS NOT FLAT. It was a bare RingGeometry lying on the deck: a band 0.07 of the
+ * footprint radius wide (~0.8 units) whose near arc, seen at the 12-degree elevation the orbit
+ * clamp allows (camera.ts MAX_POLAR 78 degrees), projects to 0.8 x sin 12 = 0.17 units — under one
+ * pixel at every overview distance. Coverage that is not there cannot be anti-aliased, so the
+ * SOLID ring (`up`) rasterised as a row of dashes that crawled with a 1-2 px camera nudge and read
+ * exactly like the DASHED ring (`not collected / unknown`): a meaning collision (C5 critic,
+ * reproduced 2026-09-21 on access16 at high tier).
+ *
+ * A vertical wall keeps its projected height at grazing angles (0.45 x cos 12 = 0.44 units, which
+ * with the band's own 0.17 is ~3.6x the old coverage; 0.3 was tried and still broke on the second
+ * row back) and is edge-on, i.e. invisible, from above,
+ * so the ring's read at the default 32-degree view barely changes. Each band gets an outward wall
+ * on its outer edge (the near arc) and an inward wall on its inner edge (the far arc), so it keeps
+ * a front-facing surface on every side without a double-sided material.
+ */
+export const STATE_RING_WALL = 0.45;
+
+/** CylinderGeometry measures theta from +Z towards +X; the flattened RingGeometry from +X towards -Z. */
+const RING_TO_CYLINDER_THETA = Math.PI / 2;
+
+/** An open cylinder wall between y0 and y1, facing outwards (or inwards when `inward`). */
+function ringWall(
+  radius: number,
+  y0: number,
+  y1: number,
+  segments: number,
+  thetaStart: number,
+  thetaLength: number,
+  inward: boolean,
+): BufferGeometry {
+  const g = new CylinderGeometry(
+    radius,
+    radius,
+    y1 - y0,
+    segments,
+    1,
+    true,
+    thetaStart + RING_TO_CYLINDER_THETA,
+    thetaLength,
+  ).toNonIndexed();
+  at(g, 0, (y0 + y1) / 2, 0);
+  if (inward) {
+    // Reverse the winding and the normals so the face points at the ring's centre.
+    for (const name of ["position", "normal", "uv"]) {
+      const a = g.getAttribute(name);
+      for (let t = 0; t < a.count; t += 3) {
+        for (let c = 0; c < a.itemSize; c += 1) {
+          const v1 = a.getComponent(t + 1, c);
+          a.setComponent(t + 1, c, a.getComponent(t + 2, c));
+          a.setComponent(t + 2, c, v1);
+        }
+      }
+    }
+    const n = g.getAttribute("normal");
+    for (let i = 0; i < n.count; i += 1) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i));
+  }
+  return g;
+}
+
+/**
+ * The operational-state ring, laid on the deck around a chassis footprint.
  *
  * Three SHAPES, not three colours. `up`, `down` and `unknown` must be distinguishable in a
  * greyscale capture (acceptance D8), and a ring on the deck is legible from the default camera
  * elevation in a way a rim on a vertical faceplate is not. Unit radius 1: the instance matrix
  * scales it to the chassis footprint, which is why one geometry serves all three kinds.
+ *
+ * Each band is a flat annulus plus a low curb (STATE_RING_WALL). The shapes survive grazing views
+ * because the curb carries them too: the dashed ring's curb is dashed with it, and the double
+ * ring's outer curb is split into two stacked stripes, so from the side it still reads as two
+ * lines rather than one thick one.
  */
 export function buildStateRing(shape: StateRingShape): BufferGeometry {
   const flat = (g: BufferGeometry): BufferGeometry => {
     g.applyMatrix4(m4.makeRotationX(-Math.PI / 2));
     return g;
   };
+  const band = (
+    inner: number,
+    outer: number,
+    segments: number,
+    thetaStart = 0,
+    thetaLength = Math.PI * 2,
+    outerStripes: readonly (readonly [number, number])[] = [[0, STATE_RING_WALL]],
+  ): BufferGeometry[] => [
+    flat(new RingGeometry(inner, outer, segments, 1, thetaStart, thetaLength).toNonIndexed()),
+    ...outerStripes.map(([y0, y1]) => ringWall(outer, y0, y1, segments, thetaStart, thetaLength, false)),
+    ringWall(inner, 0, STATE_RING_WALL, segments, thetaStart, thetaLength, true),
+  ];
   if (shape === "solid") {
-    return flat(new RingGeometry(0.93, 1.0, 72, 1).toNonIndexed());
+    return mergeOrEmpty(band(0.93, 1.0, 72));
   }
   if (shape === "double") {
-    const inner = flat(new RingGeometry(0.86, 0.915, 72, 1).toNonIndexed());
-    const outer = flat(new RingGeometry(0.955, 1.01, 72, 1).toNonIndexed());
-    return mergeOrEmpty([inner, outer]);
+    const h = STATE_RING_WALL;
+    return mergeOrEmpty([
+      ...band(0.86, 0.915, 72),
+      // Two stripes with a gap between them, one wall-height apart: the side view of "two lines".
+      ...band(0.955, 1.01, 72, 0, Math.PI * 2, [
+        [0, h * 0.8],
+        [h * 1.6, h * 2.4],
+      ]),
+    ]);
   }
   const dashes: BufferGeometry[] = [];
   const count = 10;
   const span = (Math.PI * 2) / count;
   for (let i = 0; i < count; i += 1) {
-    dashes.push(flat(new RingGeometry(0.93, 1.0, 6, 1, i * span, span * 0.55).toNonIndexed()));
+    dashes.push(...band(0.93, 1.0, 6, i * span, span * 0.55));
   }
   return mergeOrEmpty(dashes);
 }
@@ -453,6 +731,13 @@ export function buildRoleGlyph(glyph: RoleGlyph): BufferGeometry {
     at(box(0.07, 0.25, t), -0.275, 0, 0),
     at(box(0.07, 0.25, t), 0.275, 0, 0),
   ]);
+}
+
+/** Unit-diameter disc in the XZ plane, UV-mapped like `unitDecal` — the hatch on a round lid. */
+export function unitDiscDecal(): BufferGeometry {
+  const g = new CircleGeometry(0.5, 64).toNonIndexed();
+  g.applyMatrix4(m4.makeRotationX(-Math.PI / 2));
+  return g;
 }
 
 /** Unit quad in the XZ plane, used for hatch decals, contact shadows and the selection halo. */

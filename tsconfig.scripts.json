@@ -18,11 +18,14 @@
    * scripts build viewports from. Fixing that is annotation work in files another review lane is
    * actively editing, so it is named here instead of being silently implied.
    *
-   * `noImplicitAny` is off for the same honest reason: the scripts are plain JavaScript with no
-   * annotations, and 24 of the 24 diagnostics it produced on `tools/` were "parameter implicitly
-   * has an 'any' type" — a request to rewrite the file in JSDoc, not a defect report. Everything
-   * else strict mode checks (wrong property, wrong arity, a null that is not handled, an unreachable
-   * branch) stays on, and that is the class the missing coverage was hiding.
+   * THIS PROJECT IS FULLY `strict`, noImplicitAny included (since 2026-09-22). Until then it ran
+   * strict minus noImplicitAny: measured 2026-09-21 with `--noImplicitAny`, 18 diagnostics, all in
+   * `tools/compile-snapshot.mjs` (12 TS7006 unannotated parameter, 6 TS7053 implicit index). That
+   * file is now JSDoc-annotated — with src/data/fabric.json hashed before and after to prove the
+   * compiled output byte-identical — and the flag is on. `src/core/scripts-typecheck.test.ts`
+   * asserts both that this config does not relax it and that a program built with it FORCED on
+   * reports nothing, so a future `"noImplicitAny": false` cannot hide a regression.
+   * `noUncheckedIndexedAccess` is on too (0 diagnostics), matching tsconfig.json.
    */
   "compilerOptions": {
     "target": "ES2023",
@@ -30,7 +33,8 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
     "allowJs": true,
     "checkJs": true,
     "resolveJsonModule": true,

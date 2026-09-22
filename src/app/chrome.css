@@ -155,7 +155,6 @@
 .snapdetail__row dd {
   min-width: 0;
   font-size: var(--fs-1);
-  overflow-wrap: anywhere;
 }
 
 .snapdetail__row code {
@@ -435,8 +434,32 @@
    every item inside it is `white-space: nowrap`, so a shrinking flex item does not wrap — it
    overflows its own box and paints on top of its neighbour. That failure looks like a rendering
    fault and it lands on the one line in the product whose job is to be readable at all times. */
-.sb > * {
+.sb > *,
+.sb__rest > * {
   flex: none;
+}
+
+/* B7: the coverage group is the one part of the bar that may not leave the screen. It is outside
+   the scroll region (`.sb__rest`), may shrink to its widest single denominator, and WRAPS its
+   denominators onto a second line below that — every figure stays in view at 320px. */
+.sb > .sb__group {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+/* Everything else on the line: the horizontal scroll region the whole bar used to be. It takes the
+   remaining width (none, at a phone width, so it moves to its own line) and scrolls inside itself. */
+.sb__rest {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: thin;
 }
 
 .sb__spacer {
@@ -451,8 +474,12 @@
   min-width: 0;
 }
 
+/* LABELLED SEGMENTS, not debug output (blind-panel polish finding: "dim micro-type"). The key
+   is a label in --text-muted at medium weight and the value beside it is --text, so each segment
+   reads as "label: value" at 11px rather than as one grey run. */
 .sb__key {
-  color: var(--text-faint);
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
   font-size: var(--fs-0);
   letter-spacing: var(--ls-0);
   white-space: nowrap;
@@ -468,7 +495,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: none;
-  color: var(--text-muted);
+  color: var(--text);
   font-size: var(--fs-0);
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--ls-0);
@@ -476,7 +503,7 @@
   cursor: pointer;
 }
 
-/* The ring is drawn INSIDE these two controls. `shell.css` gives `.app__status` an `overflow-x`,
+/* The ring is drawn INSIDE these two controls. `.sb__rest` (the bar's scroll region) has an `overflow-x`,
    which makes the block axis a scroll region too, so a ring at a positive offset on a 24px
    control inside a 26px bar is clipped top and bottom — the single most common way a focus
    indicator disappears without anyone noticing, because it still looks fine on whichever control
@@ -521,15 +548,15 @@
 .sb__sel-id {
   font-family: var(--font-mono);
   font-size: var(--fs-0);
-  color: var(--text-muted);
+  color: var(--text);
 }
 
 .sb__when {
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .sb__sel-none {
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 /* The scene readout is a control once there is a reading to disclose, so it takes the same
@@ -582,10 +609,20 @@
 }
 
 .sb__converged {
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
-.sb__dot {
+/* A SEPARATOR, not text (D4 audit, 2026-09-21). The "·" measured 3.85:1 light / 3.89:1 dark at
+   11px — the one pair under 4.5:1 in every measured state — which is only a failure if the dot is
+   text. It is not: it says nothing the adjacent words do not, and it was already aria-hidden. It
+   is now generated content with an EMPTY alternative, so no text node exists for assistive
+   technology or a contrast audit to read: the honest encoding of pure decoration (WCAG 1.4.3
+   exempts it). The token stays --border-strong because the chrome is achromatic and a separator
+   must not compete with the words it separates. The first `content` is the fallback for engines
+   without the alt-text syntax. */
+.sb__dot::before {
+  content: "\00B7";
+  content: "\00B7" / "";
   color: var(--border-strong);
 }
 
@@ -731,7 +768,7 @@
 .covpanel__badge[data-badge="SCOPED"] {
   color: var(--claim-scoped);
 }
-.covpanel__badge[data-badge="OBSERVED"] {
+.covpanel__badge[data-badge="PARTIAL"] {
   color: var(--claim-observed);
 }
 .covpanel__badge[data-badge="INDETERMINATE"] {
@@ -739,7 +776,8 @@
 }
 /* --claim-out-of-scope is a NON-TEXT token (3.85:1). The word is drawn in --text-muted and only
    the border carries the token, so the badge never falls below the 4.5:1 text floor. */
-.covpanel__badge[data-badge="OUT OF SCOPE"] {
+.covpanel__badge[data-badge="OUT OF SCOPE"],
+.covpanel__badge[data-badge="INVALID INPUT"] {
   color: var(--text-muted);
   border-color: var(--claim-out-of-scope);
   border-style: dashed;
