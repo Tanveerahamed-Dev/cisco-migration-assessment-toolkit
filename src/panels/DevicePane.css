@@ -160,8 +160,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.dp-wrap {
-}
+/* .dp-wrap sets no wrap licence (acceptance C2, 2026-09-22). It used to carry `overflow-wrap: anywhere`,
+   which every identifier inside it inherited; a list of host names or a title wraps at its spaces,
+   and an identifier in it moves to the next line whole. The class stays as the hook the markup uses.
+   Owner of the rule: "wrapping" in src/ui/primitives.css. */
 
 .dp-chips {
   display: flex;

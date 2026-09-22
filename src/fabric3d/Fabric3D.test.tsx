@@ -524,7 +524,7 @@ describe("labels", () => {
     mock.projections.set("core1", { x: 40, y: 40, visible: true });
     mock.projections.set("core2", { x: 300, y: 300, visible: false });
     const m = mount(<Fabric3D />);
-    flushFrames();
+    flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
 
     const visible = m.container.querySelector('[data-device="core1"]');
     const occluded = m.container.querySelector('[data-device="core2"]');
@@ -596,7 +596,7 @@ describe("re-aiming", () => {
         width: 1160, height: 962, x: 340, y: 92,
         toJSON: () => ({}),
       }) as DOMRect;
-    flushFrames();
+    flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
 
     const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
     expect(el?.dataset["visible"]).toBe("true");
@@ -626,7 +626,7 @@ describe("re-aiming", () => {
     if (!el || !name) throw new Error("no label");
     box(el, 0, 200);
     box(name, 4, 110);
-    flushFrames();
+    flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
 
     // Unclamped, the pill would start at 1140 - 59 = 1081 and run to 1281, past the 1160 stage.
     expect(el.style.transform).toBe("translate3d(956px, 400px, 0) translate(0, -160%)");
@@ -668,22 +668,95 @@ describe("re-aiming", () => {
       box(el, 0, 110);
       box(name, 0, 110);
     }
-    flushFrames();
+    /* Enough passes for a clear name to appear (two: labelResolve `labelDwellVerdict`'s temporal
+       hold), so a withheld name below is withheld by GEOMETRY, never by the hold. This test used to
+       flush ONE frame and accept "displaced OR withheld": both at the checkpoint and after the C5
+       dwell gate it always ended withheld, so its displaced branch never ran and nothing pinned
+       which outcome the geometry forces. Each outcome now has its own geometry, and is pinned. */
+    flushFrames(3);
     const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
-    // Either displaced clear of core2's body (never DOWN onto its own, which spans 398..440) or
-    // withheld; never left at home across core2.
-    const t = el?.style.transform ?? "";
-    const y = Number(/translate3d\([-\d.]+px, ([-\d.]+)px/.exec(t)?.[1] ?? "NaN");
-    if (el?.dataset["visible"] === "true") {
-      expect(y, t).not.toBe(400);
-      const top = y - 16 * 1.6;
-      const overlapsCore2 = top < 395 - 3 && top + 16 > 360 + 3;
-      const overlapsOwn = top < 440 - 3 && top + 16 > 398 + 3;
-      expect(overlapsCore2, t).toBe(false);
-      expect(overlapsOwn, t).toBe(false);
-    } else {
-      expect(el?.dataset["visible"]).not.toBe("true");
+    /* Here the only escapes are one row up (onto core2's body, 363..392 inset) and one row down
+       (onto core1's own, 401..437 inset): an ordinary name has no honest slot and is WITHHELD —
+       never left at home across core2, never pushed down onto its own hardware. */
+    expect(el?.dataset["visible"], el?.style.transform).toBe("false");
+    m.unmount();
+  });
+
+  it("the projected body is what withholds that name: without core2's body the same frames show it at home (control)", () => {
+    const box = (el: HTMLElement, left: number, width: number): void => {
+      Object.defineProperty(el, "offsetWidth", { configurable: true, get: () => width });
+      Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
+      Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
+    };
+    mock.projections.set("core1", { x: 500, y: 400, visible: true });
+    mock.projections.set("core2", { x: 900, y: 700, visible: true });
+    mock.chassisBoxes.set("core1", { x0: 440, y0: 398, x1: 560, y1: 440 });
+    // core2's body where its anchor is: nowhere near core1's name.
+    mock.chassisBoxes.set("core2", { x0: 840, y0: 698, x1: 960, y1: 740 });
+    const m = mount(<Fabric3D />);
+    const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
+    if (overlay === null) throw new Error("the label overlay did not render");
+    overlay.getBoundingClientRect = (): DOMRect =>
+      ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
+    for (const id of ["core1", "core2"]) {
+      const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`);
+      const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
+      if (!el || !name) throw new Error(`no label for ${id}`);
+      box(el, 0, 110);
+      box(name, 0, 110);
     }
+    flushFrames(3);
+    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    expect(el?.dataset["visible"]).toBe("true");
+    expect(el?.style.transform).toBe("translate3d(445px, 400px, 0) translate(0, -160%)");
+    m.unmount();
+  });
+
+  it("displaces a name one row UP, clear of a projected body over its home, when that slot still reads as its own (C5)", () => {
+    /* The displaced outcome, which the test above no longer leaves to chance. core2's body is WIDE
+       and to the LEFT: it covers the left end of core1's home slot (x 445..457, y 374.4..390.4) but
+       its top-centre — where a name is read as core2's — is ~120 px from the slot one row up, so
+       that slot is bound to core1 (readsAsOwn) and clear of every body. */
+    const box = (el: HTMLElement, left: number, width: number): void => {
+      Object.defineProperty(el, "offsetWidth", { configurable: true, get: () => width });
+      Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
+      Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
+    };
+    mock.projections.set("core1", { x: 500, y: 400, visible: true });
+    mock.projections.set("core2", { x: 900, y: 700, visible: true });
+    mock.chassisBoxes.set("core1", { x0: 440, y0: 398, x1: 560, y1: 440 });
+    mock.chassisBoxes.set("core2", { x0: 300, y0: 370, x1: 460, y1: 420 });
+    const m = mount(<Fabric3D />);
+    const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
+    if (overlay === null) throw new Error("the label overlay did not render");
+    overlay.getBoundingClientRect = (): DOMRect =>
+      ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
+    for (const id of ["core1", "core2"]) {
+      const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`);
+      const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
+      if (!el || !name) throw new Error(`no label for ${id}`);
+      box(el, 0, 110);
+      box(name, 0, 110);
+    }
+    flushFrames(3);
+    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    const t = el?.style.transform ?? "";
+    expect(el?.dataset["visible"], t).toBe("true");
+    const y = Number(/translate3d\([-\d.]+px, ([-\d.]+)px/.exec(t)?.[1] ?? "NaN");
+    // Displaced: not at home across core2's body…
+    expect(y, t).not.toBe(400);
+    const top = y - 16 * 1.6;
+    const bodies = [
+      { x0: 300 + 3, x1: 460 - 3, y0: 370 + 3, y1: 420 - 3 }, // core2
+      { x0: 440 + 3, x1: 560 - 3, y0: 398 + 3, y1: 440 - 3 }, // core1's own
+    ];
+    for (const b of bodies) {
+      const overlaps = 445 < b.x1 && 445 + 110 > b.x0 && top < b.y1 && top + 16 > b.y0;
+      expect(overlaps, `${t} over body ${JSON.stringify(b)}`).toBe(false);
+    }
+    // …and UP (one row: label height 16 + row gutter 6), never down onto its own hardware.
+    expect(y, t).toBe(400 - 22);
+    expect(el?.dataset["leader"], "a displaced name is tied back to its device").toBe("yes");
     m.unmount();
   });
 
@@ -739,7 +812,7 @@ describe("re-aiming", () => {
         expect(readAs(id), `${when}: ${id}'s shown name must read as its own (${el.style.transform})`).toBe(id);
       }
     };
-    flushFrames();
+    flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
     check("default");
     act(() => useInvestigation.getState().selectDevice("core1"));
     flushFrames(3);

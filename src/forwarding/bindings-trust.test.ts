@@ -11,6 +11,8 @@
  * byte-for-byte the shipped content), and the module is re-imported against it. The positive
  * control runs first on the real file, so a refusal below cannot be explained by an empty file.
  */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import real from "./acl-bindings.json";
 import { fabric } from "../core/data";
@@ -65,4 +67,85 @@ describe("acl-bindings.json is refused when it was compiled from other bytes", (
     expect(sentences.length).toBeGreaterThan(0);
     for (const line of sentences) expect(line).toMatch(/are not read in this build/);
   });
+
+  /* O15. A digest names bytes only together with the FORM it was taken over (tools/source-binding.mjs:
+     LF-normalised). A sidecar whose digest string matches but that states another form — or states
+     none, as every sidecar did before the canonical form existed — is a claim about different bytes
+     that merely prints the same hex, and must be refused like any other mismatch. The same holds for
+     a byte length that disagrees: the digest and the length are one binding, not two alternatives. */
+  it.each([
+    ["states a different digest form", (m: Record<string, unknown>) => ({ ...m, sourceDigestForm: "raw-working-tree" })],
+    ["states no digest form at all", (m: Record<string, unknown>) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== "sourceDigestForm"))],
+    ["states a different byte length", (m: Record<string, unknown>) => ({ ...m, sourceBytes: Number(m.sourceBytes) + 1 })],
+  ])("a sidecar with the same sourceSha256 that %s is refused", async (_why, rewrite) => {
+    expect((REAL.meta as Record<string, unknown>).sourceDigestForm, "the shipped sidecar states its form").toBe(fabric.meta.sourceDigestForm);
+    const b = await loadWith({ ...REAL, meta: rewrite(REAL.meta as Record<string, unknown>) as Sidecar["meta"] });
+    expect(b.BINDINGS_TRUSTED).toBe(false);
+    const kinds = new Set(EVERY.map((e) => b.bindingAt(e.host, e.port, e.dir).kind));
+    expect([...kinds]).toEqual(["unknown"]);
+  });
+});
+
+/* O15, FOR THE CLASS. A rule copied into one of the sidecar consumers is not a rule for the class:
+   every compiled sidecar that binds itself to the snapshot's source bytes must be refused on ANY
+   binding-field mismatch — digest, form, byte length, source — not only on a different digest.
+   The denominator is structural: every JSON module under src/ (the snapshot itself excepted) whose
+   `meta` carries a `sourceSha256` is a sidecar, and the partition check fails if one appears that
+   this table does not exercise. */
+describe("every source-bound sidecar consumer fails closed on any binding mismatch", () => {
+  const SRC = resolve(__dirname, "..");
+  const CONSUMERS: { json: string; mod: string; flag: string }[] = [
+    { json: "forwarding/acl-bindings.json", mod: "./bindings", flag: "BINDINGS_TRUSTED" },
+    { json: "forwarding/rib-evidence.json", mod: "./rib-completeness", flag: "RIB_EVIDENCE_TRUSTED" },
+    { json: "panels/producer-emission.json", mod: "../panels/producer-emission", flag: "PRODUCER_EMISSION_TRUSTED" },
+  ];
+  const specOf = (json: string): string => `../${json}`.replace("../forwarding/", "./");
+
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((n) => {
+      const p = join(dir, n);
+      return statSync(p).isDirectory() ? walk(p) : p.endsWith(".json") ? [p] : [];
+    });
+
+  it("the table covers every source-bound sidecar under src/", () => {
+    const found = walk(SRC)
+      .map((p) => relative(SRC, p).split(sep).join("/"))
+      .filter((rel) => rel !== "data/fabric.json")
+      .filter((rel) => {
+        const doc = JSON.parse(readFileSync(join(SRC, rel), "utf8")) as { meta?: Record<string, unknown> };
+        return doc !== null && typeof doc === "object" && typeof doc.meta?.sourceSha256 === "string";
+      })
+      .sort();
+    expect(found).toEqual(CONSUMERS.map((c) => c.json).sort());
+  });
+
+  const rewrites: [string, (m: Record<string, unknown>) => Record<string, unknown>][] = [
+    ["states a different digest form", (m) => ({ ...m, sourceDigestForm: "raw-working-tree" })],
+    ["states no digest form at all", (m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== "sourceDigestForm"))],
+    ["states a different byte length", (m) => ({ ...m, sourceBytes: Number(m.sourceBytes) + 1 })],
+    ["names a different source file", (m) => ({ ...m, source: `${String(m.source)}.other` })],
+  ];
+
+  for (const c of CONSUMERS) {
+    const real = JSON.parse(readFileSync(join(SRC, c.json), "utf8")) as { meta: Record<string, unknown> };
+    const load = async (doc: unknown): Promise<Record<string, unknown>> => {
+      vi.resetModules();
+      vi.doMock(specOf(c.json), () => ({ default: doc }));
+      try {
+        return (await import(/* @vite-ignore */ c.mod)) as Record<string, unknown>;
+      } finally {
+        vi.doUnmock(specOf(c.json));
+      }
+    };
+
+    it(`${c.json}: positive control — the shipped pair is trusted`, async () => {
+      expect((await load(real))[c.flag]).toBe(true);
+    });
+
+    for (const [why, rewrite] of rewrites)
+      it(`${c.json}: the same sourceSha256 that ${why} is refused`, async () => {
+        expect(real.meta.sourceSha256).toBe(fabric.meta.sourceSha256);
+        expect((await load({ ...real, meta: rewrite(real.meta) }))[c.flag]).toBe(false);
+      });
+  }
 });

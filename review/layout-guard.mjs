@@ -33,11 +33,27 @@
  *   ATLAS_URL=http://localhost:4181 node review/layout-guard.mjs
  * Exits non-zero on the first violated invariant.
  */
+import { readFileSync } from "node:fs";
 import { chromium } from "@playwright/test";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4180";
 /** A flow that really traces on the shipped snapshot, carried in the URL envelope. */
-const SNAP = process.env["ATLAS_SNAP"] ?? "9cc348bd58bb";
+/* The snapshot tag the app writes into its URL envelope, DERIVED — never typed in. It used to be the
+   literal `9cc348bd…`, which went stale the moment the compiled source binding changed (O15): every
+   run would then have opened a snapshot-mismatch page and measured that instead. The tag is the first
+   SNAP_LEN hex characters of fabric.json's meta.sourceSha256, exactly as src/app/urlSync.ts builds it;
+   both halves are read from those files, and a missing half stops the run rather than guessing. */
+const snapshotTag = () => {
+  const fabricMeta = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8")).meta;
+  const sync = readFileSync(new URL("../src/app/urlSync.ts", import.meta.url), "utf8");
+  const len = Number(/const SNAP_LEN = (\d+);/.exec(sync)?.[1]);
+  const sha = fabricMeta?.sourceSha256;
+  if (typeof sha !== "string" || !/^[0-9a-f]{64}$/.test(sha) || !Number.isInteger(len) || len <= 0) {
+    throw new Error("layout-guard: cannot derive the snapshot tag from src/data/fabric.json + src/app/urlSync.ts");
+  }
+  return sha.slice(0, len);
+};
+const SNAP = process.env["ATLAS_SNAP"] ?? snapshotTag();
 const FLOW = encodeURIComponent("10.0.10.50>10.0.30.10>tcp>3389");
 /** The grid's own floor: its sticky header plus six rows. Fewer than this is a blanked queue. */
 const MIN_HITTABLE_ROWS = 4;

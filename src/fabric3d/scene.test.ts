@@ -35,6 +35,7 @@ import { buildStudioRig, disposeScene } from "./env";
 import { checkAuthoringBands, readTokens, RECEDE_ATTRIBUTE } from "./materials";
 import { chooseQuality, profileFor, type GpuCapabilities } from "./quality";
 import { Vector3 } from "three";
+import ts from "typescript";
 
 const devices = fabricJson.devices as Device[];
 const links = fabricJson.links as Link[];
@@ -607,5 +608,91 @@ describe("frame-rate telemetry is not seeded with a plausible reading (tripwire:
     expect(start).toBeGreaterThan(-1);
     const end = source.indexOf("\n  }", start);
     expect(source.slice(start, end)).toContain("framesTimed,");
+  });
+});
+
+/* ══ C5: the scene honours the DOM label layer's "still converging" report ═══════════════════
+
+   (tripwire: source text — an AST read, for the reason the file header states.) FabricLabels.tsx
+   calls `scene.reportLabelsConverging?.(converging)` every tick: the DOM's settled pass is
+   history-free (F6) and has no dwell, so a name it changed fewer than LABEL_MIN_DWELL_PASSES
+   passes ago can blink back the moment the scene settles (MEASURED, capture-motion
+   `access12 hidden for only 5 frame(s)`). The behavioural contract is pinned by
+   FabricLabels.dwell.test.tsx against a fake scene that behaves as below; this pins that the REAL
+   scene is that scene: the report is stored without a render request, `labelsSettled()` stays
+   false while it is true, and `converged()` — the one predicate captures wait on — counts it as
+   dirty. The second block pins that both label surfaces agree on hover urgency (labelResolve
+   `labelUrgent`): a hovered device is urgent only on a still camera. */
+describe("the DOM label report and hover urgency are honoured by the scene (tripwire: source text)", () => {
+  const file = resolve(process.cwd(), "src/fabric3d/scene.ts");
+  const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ES2023, true, ts.ScriptKind.TS);
+  const all = (pred: (n: ts.Node) => boolean): ts.Node[] => {
+    const out: ts.Node[] = [];
+    const visit = (n: ts.Node): void => {
+      if (pred(n)) out.push(n);
+      n.forEachChild(visit);
+    };
+    visit(sf);
+    return out;
+  };
+  const idents = (n: ts.Node): Set<string> => {
+    const out = new Set<string>();
+    const visit = (m: ts.Node): void => {
+      if (ts.isIdentifier(m)) out.add(m.text);
+      m.forEachChild(visit);
+    };
+    visit(n);
+    return out;
+  };
+  const method = (name: string): ts.Node | undefined =>
+    all((n) => ts.isMethodDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name)[0];
+
+  it("declares reportLabelsConverging on the widened scene interface", () => {
+    const iface = all((n) => ts.isInterfaceDeclaration(n) && n.name.text === "FabricSceneEx")[0];
+    expect(iface).toBeDefined();
+    expect(idents(iface!).has("reportLabelsConverging")).toBe(true);
+  });
+
+  it("stores the report without requesting a render", () => {
+    const m = method("reportLabelsConverging");
+    expect(m, "scene.ts implements no reportLabelsConverging: the DOM report is a no-op").toBeDefined();
+    const ids = idents(m!);
+    expect(ids.has("domLabelsConverging")).toBe(true);
+    expect(ids.has("markDirty")).toBe(false);
+  });
+
+  it("keeps labelsSettled() false while the DOM layer is still converging", () => {
+    const m = method("labelsSettled");
+    expect(m).toBeDefined();
+    expect(idents(m!).has("domLabelsConverging")).toBe(true);
+  });
+
+  it("counts a converging DOM label set as dirty in converged()", () => {
+    const fn = all((n) => ts.isFunctionDeclaration(n) && n.name?.text === "converged")[0];
+    expect(fn).toBeDefined();
+    const dirtyProp = all(
+      (n) => ts.isPropertyAssignment(n) && ts.isIdentifier(n.name) && n.name.text === "dirty" && fn!.pos <= n.pos && n.end <= fn!.end,
+    )[0] as ts.PropertyAssignment | undefined;
+    expect(dirtyProp).toBeDefined();
+    expect(idents(dirtyProp!.initializer).has("domLabelsConverging")).toBe(true);
+  });
+
+  it("treats a hovered device as urgent only on a still camera, as the DOM layer does", () => {
+    const fn = all((n) => ts.isFunctionDeclaration(n) && n.name?.text === "recomputeLabels")[0];
+    expect(fn).toBeDefined();
+    /* Every condition in recomputeLabels that tests the hovered device must also read the camera's
+       motion — directly, or through labelResolve's labelUrgent. */
+    const hoverTests = all(
+      (n) =>
+        fn!.pos <= n.pos &&
+        n.end <= fn!.end &&
+        ts.isIfStatement(n) &&
+        idents(n.expression).has("hoverDevice"),
+    ) as ts.IfStatement[];
+    expect(hoverTests.length).toBeGreaterThan(0);
+    for (const t of hoverTests) {
+      const ids = idents(t.expression);
+      expect(ids.has("labelsCameraMoving") || ids.has("labelUrgent"), t.expression.getText(sf)).toBe(true);
+    }
   });
 });

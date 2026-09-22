@@ -259,6 +259,12 @@ card. **A UI that tints its own furniture cannot make a Critical finding louder 
 
 #### 3.3.1 Light theme (`:root`)
 
+**Owner: `src/core/tokens.css`.** The hex values below are a cache of it. Reconciled 2026-09-22
+(open-issues O20): 18 light and 13 dark colour tokens here had drifted from the shipped tokens —
+e.g. `--sev-high` read `#a14a0a` here while tokens.css ships `#803804` — so every drifted value now
+carries the owner's own measured ratios (`tokens.css:` comments; light columns are surface-1 ·
+surface-3 · `--chip-ink` on the fill). When the two disagree, tokens.css is right.
+
 ```css
 :root {
   color-scheme: light dark;
@@ -279,8 +285,7 @@ card. **A UI that tints its own furniture cannot make a Critical finding louder 
 
   /* borders */
   --border:        #d7dce4; /* 1.38:1 on bg — STRUCTURAL HAIRLINE ONLY, never a control boundary */
-  --border-strong: #7f8899; /* 3.57:1 bg · 3.36:1 s1 · 3.13:1 s2
-                               CHANGED from #c3cad5 (was 1.65:1 — FAILED 1.4.11 as a control edge) */
+  --border-strong: #747e91; /* tokens.css: 4.09:1 bg · 3.85:1 s1 · 3.58:1 s2 · 3.30:1 s3 — control edges */
 
   /* the single accent */
   --accent:      #0b6f68;  /* 6.02:1 bg · 5.67:1 s1 · 4.86:1 s3
@@ -289,29 +294,29 @@ card. **A UI that tints its own furniture cannot make a Critical finding louder 
   --focus:       #0b6bd3;  /* 5.18:1 bg · 4.87:1 s1 · 4.57:1 on --stage-bg */
 
   /* severity — every value >=4.5:1 on the WORST surface it may appear on (surface-3) */
-  --sev-critical: #b52626; /* 6.04:1 s1 · 5.18:1 s3   CHANGED from #c02b2b (4.68 on s3) */
-  --sev-high:     #a14a0a; /* 5.65:1 s1 · 4.84:1 s3   CHANGED from #b4530c (4.05 on s3) */
-  --sev-medium:   #7a5d00; /* 5.82:1 s1 · 4.99:1 s3   CHANGED from #8a6a00 (4.09 on s3) */
-  --sev-low:      #275f8c; /* 6.37:1 s1 · 5.46:1 s3   CHANGED from #2c6a9b (4.65 on s3) */
-  --sev-info:     #4e5768; /* 6.84:1 s1 · 5.87:1 s3 — tracks --text-muted deliberately */
+  --sev-critical: #8c1111; /* tokens.css: 8.97 · 7.69 · 9.53 */
+  --sev-high:     #803804; /* tokens.css: 7.95 · 6.82 · 8.45 */
+  --sev-medium:   #6e5000; /* tokens.css: 7.03 · 6.03 · 7.47 */
+  --sev-low:      #246190; /* tokens.css: 6.20 · 5.31 · 6.59 */
+  --sev-info:     #58677c; /* tokens.css: 5.42 · 4.65 · 5.76 */
 
   /* operational state — unknown is a THIRD thing, neither green nor red */
-  --state-up:      #1b6d3d; /* 5.99:1 s1 · 5.13:1 s3 */
-  --state-down:    #b52626; /* 6.04:1 s1 · 5.18:1 s3 */
-  --state-unknown: #6b5c99; /* 5.47:1 s1 · 4.68:1 s3   CHANGED from #7a6ba8 (4.09 on s3) */
+  --state-up:     #1b7352; /* tokens.css: 5.46 · 4.68 · 5.80 */
+  --state-down:   #8c1111; /* tokens.css: 8.97 · 7.69 · 9.53 — tracks --sev-critical by design */
+  --state-unknown: #63488c; /* tokens.css: 6.97 · 5.97 · 7.40 */
 
   /* health bands */
-  --band-excellent: #1b6d3d; /* 5.99:1 s1 */
-  --band-good:      #3f7733; /* 5.07:1 s1 · 4.35:1 s3   CHANGED from #4a8a3c (3.96 s1 — FAILED) */
-  --band-fair:      #7a5d00; /* 5.82:1 s1 */
-  --band-poor:      #a14a0a; /* 5.65:1 s1 */
-  --band-critical:  #b52626; /* 6.04:1 s1 */
+  --band-excellent: #1b7352; /* tokens.css: 5.46 · 4.68 · 5.80 */
+  --band-good:    #40681d; /* tokens.css: 6.15 · 5.27 · 6.53 */
+  --band-fair:    #6e5000; /* tokens.css: 7.03 · 6.03 · 7.47 */
+  --band-poor:    #803804; /* tokens.css: 7.95 · 6.82 · 8.45 */
+  --band-critical: #8c1111; /* tokens.css: 8.97 · 7.69 · 9.53 */
 
   /* claim strength — §6. Deliberately NOT on the severity ramp. */
-  --claim-observed:      #4e5768; /* 6.84:1 s1 — a complete traversal over partial evidence */
-  --claim-scoped:        #275f8c; /* 6.37:1 s1 — bounded and complete within its scope */
-  --claim-indeterminate: #6b5c99; /* 5.47:1 s1 — the model could not decide. NEVER grey-as-disabled. */
-  --claim-out-of-scope:  #7f8899; /* 3.57:1 — non-text use only (rules, hatching), always with a word */
+  --claim-observed: #58677c; /* tokens.css: 5.42 · 4.65 — a complete traversal over partial evidence */
+  --claim-scoped: #246190; /* tokens.css: 6.20 · 5.31 — bounded and complete within its scope */
+  --claim-indeterminate: #63488c; /* tokens.css: 6.97 · 5.97 — the model could not decide */
+  --claim-out-of-scope: #747e91; /* tokens.css: 3.85 s1 · 3.30 s3 — NON-TEXT only (rules, hatching), and always accompanied by the word */
 
   /* elevation */
   --shadow-1: 0 1px 2px rgb(16 22 32 / 8%);
@@ -350,24 +355,24 @@ directions and the OS default is honoured.
   --focus:       #5aa8ff;  /*  7.64:1 s1 · 7.85:1 on --stage-bg */
 
   --sev-critical: #ff6b6b; /*  6.82:1 s1 */
-  --sev-high:     #ff9f45; /*  9.28:1 s1 */
-  --sev-medium:   #f2cc4a; /* 12.18:1 s1 */
-  --sev-low:      #6fb3ef; /*  8.44:1 s1 */
-  --sev-info:     #96a1b2; /*  7.24:1 s1 */
+  --sev-high:     #ff8317; /* tokens.css: 7.67 · 6.40 · 7.67 */
+  --sev-medium:   #dca80c; /* tokens.css: 8.70 · 7.26 · 8.70 */
+  --sev-low:      #89c1f3; /* tokens.css: 9.90 · 8.26 · 9.90 */
+  --sev-info:     #c0c9d4; /* tokens.css: 11.31 · 9.44 · 11.31 */
 
-  --state-up:      #47d18a; /*  9.69:1 s1 */
+  --state-up:     #4de0a5; /* tokens.css: 11.28 · 9.42 · 11.28 */
   --state-down:    #ff6b6b; /*  6.82:1 s1 */
-  --state-unknown: #a99bdc; /*  7.58:1 s1 */
+  --state-unknown: #bea5e7; /* tokens.css: 8.76 · 7.31 · 8.76 */
 
-  --band-excellent: #47d18a;
-  --band-good:      #8bd45f; /* 10.53:1 s1 */
-  --band-fair:      #f2cc4a;
-  --band-poor:      #ff9f45;
+  --band-excellent: #4de0a5; /* tokens.css: 11.28 · 9.42 · 11.28 */
+  --band-good:    #7bd12f; /* tokens.css: 9.92 · 8.28 · 9.92 */
+  --band-fair:    #dca80c; /* tokens.css: 8.70 · 7.26 · 8.70 */
+  --band-poor:    #ff8317; /* tokens.css: 7.67 · 6.40 · 7.67 */
   --band-critical:  #ff6b6b;
 
-  --claim-observed:      #96a1b2; /* 7.24:1 */
-  --claim-scoped:        #6fb3ef; /* 8.44:1 */
-  --claim-indeterminate: #a99bdc; /* 7.58:1 */
+  --claim-observed: #c0c9d4; /* tokens.css: 11.31 · 9.44 */
+  --claim-scoped: #89c1f3; /* tokens.css: 9.90 · 8.26 */
+  --claim-indeterminate: #bea5e7; /* tokens.css: 8.76 · 7.31 */
   --claim-out-of-scope:  #61728f; /* 3.89:1 — non-text only */
 
   --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
@@ -380,10 +385,10 @@ light theme) — measured:
 
 | Chip | Dark: ink `#0d1117` on fill | Light: ink `#ffffff` on fill |
 |---|---|---|
-| Critical | `#ff6b6b` → **6.82:1** | `#b52626` → **6.42:1** |
-| High | `#ff9f45` → **9.28:1** | `#a14a0a` → **6.00:1** |
-| Medium | `#f2cc4a` → **12.18:1** | `#7a5d00` → **6.19:1** |
-| Low | `#6fb3ef` → **8.44:1** | `#275f8c` → **6.77:1** |
+| Critical | `#ff6b6b` → **6.82:1** | `#8c1111` → **9.53:1** |
+| High | `#ff8317` → **7.67:1** | `#803804` → **8.45:1** |
+| Medium | `#dca80c` → **8.70:1** | `#6e5000` → **7.47:1** |
+| Low | `#89c1f3` → **9.90:1** | `#246190` → **6.59:1** |
 
 **The light theme is not the dark theme inverted** (acceptance C4). Two concrete structural
 differences that must hold:
@@ -634,12 +639,13 @@ shared position and it is non-negotiable.
 | Element | Dark, on `--stage-bg` `#0a0d13` | Light, on `--stage-bg` `#eef1f5` |
 |---|---|---|
 | Trace path (`--accent`) | `#3fd0c9` → **10.26:1** | `#0b6f68` → **5.31:1** |
-| Blocked hop | `#ff6b6b` → **7.01:1** | `#b52626` → **5.67:1** |
+| Blocked hop | `#ff6b6b` → **7.01:1** | `#8c1111` → **8.41:1** |
 | Dimmed off-path link | `#5c6678` → **3.36:1** | `#78839a` → **3.36:1** |
-| `up` state | `#47d18a` → **9.96:1** | `#1b6d3d` → **5.61:1** |
-| `unknown` state | `#a99bdc` → **7.79:1** | `#6b5c99` → **5.13:1** |
+| `up` state | `#4de0a5` → **11.59:1** | `#1b7352` → **5.12:1** |
+| `unknown` state | `#bea5e7` → **9.01:1** | `#63488c` → **6.54:1** |
 | Node label | `#c7d0dd` → **12.50:1** | `#2a3140` → **11.50:1** |
 
+(The blocked-hop and state rows were recomputed on 2026-09-22 from the shipped tokens.css values — O20.)
 Every one clears 3:1; labels and path colours clear 4.5:1. **Minimum painted stroke is 2 CSS px at
 DPR 1**, so the ratio is measured on real pixels rather than antialiased fringe.
 
@@ -802,23 +808,34 @@ never clears selection.
 Acceptance C6: nothing loops or pulses without a reason; nothing exceeds 300 ms except a deliberate
 camera move.
 
+**What a duration means here.** Every fade below is FINITE: it has an explicit start (the frame its
+target changes), an explicit duration and an explicit curve, and it shows its end state — the target
+itself, not a value near it — on the first frame at or after start + duration. At 60 Hz that frame
+can be up to one frame (16.7 ms) after the nominal duration, so each JavaScript-stepped fade also
+states the time its end state is first on screen at 60 fps, measured by stepping the real ease, and
+that time is what is held under 300 ms. (Until 2026-09-22 the three JavaScript fades were
+EXPONENTIAL — `k = min(1, dt / RECEDE_MS); cur += (tgt - cur) * k` — so their "durations" were time
+constants: measured, the recession settled at 1,350 ms, the hover rim at ~417 ms and the halo at
+~917 ms. The ease owner is now `src/fabric3d/emphasis.ts`, and `src/core/motion-inventory.test.ts`
+parses `src/` and fails on an exponential step anywhere, and steps each ease against its row here.)
+
 | Animation | Duration | Easing | Justification |
 |---|---|---|---|
 | Camera tween (`focusDevice`, `resetCamera`) | **620 ms** (`--dur-camera`) | `cubic-bezier(0.16, 1, 0.3, 1)` | The one deliberate exception. A cut between camera poses destroys the spatial model; 620 ms is long enough to follow and short enough not to be waited on. |
-| Selection rim + halo fade-in | **140 ms** (`--dur-fast`) | `--ease-out` | Acknowledgement of a click. |
-| Hover rim | **80 ms** (`--dur-instant`) | linear | Must feel like a cursor property, not a transition. |
-| Dim / undim on filter change | **240 ms** (`--dur-medium`) | `--ease-out` | Long enough to see *which* nodes left the set. |
+| Selection rim + halo fade-in (`SELECT_MS`, `SELECT_EASE` in `src/fabric3d/emphasis.ts`) | **140 ms** (`--dur-fast`); end state first on screen — settles in **150 ms** at 60 fps (9 frames) | `--ease-out` | Acknowledgement of a click. The rim rides the halo's ease, so the two land together. Under reduced motion: lands on its target in the frame the selection changes. |
+| Hover rim (`HOVER_MS`, `HOVER_EASE`) | **80 ms** (`--dur-instant`); settles in **83.4 ms** at 60 fps (5 frames) | linear | Must feel like a cursor property, not a transition. Under reduced motion: lands on its target in the frame the hover changes. |
+| Dim / undim on filter change (`RECEDE_MS`, `RECEDE_EASE`) | **240 ms** (`--dur-medium`); settles in **250 ms** at 60 fps (15 frames) | `--ease-out` | Long enough to see *which* nodes left the set. Devices, cable segments, state rings and role glyphs recede on this one ease. Under reduced motion: lands on its target in the frame the subject changes. |
 | Trace path draw-on | **240 ms total**, staggered 18 ms per hop | `--ease-out` | The stagger *is* the information — it shows hop order. Total capped at 240 ms regardless of hop count. |
-| Trace packet marker | **1.6 s loop, one marker, stops after 3 loops** | linear | The only looping animation that runs in the product (the spinner below is declared but not rendered). Justification: it distinguishes a live trace overlay from a static path screenshot. It then leaves the path drawn. |
-| Stage-pending spinner (`stage-pending-spin`, `src/app/App.css`) | **900ms per turn, `infinite`** | linear | The one UNBOUNDED loop the code declares; the legitimate reason for it would be work of unknown duration. **Not rendered today:** no component uses `.stage-pending__spinner` — `StagePending` is a determinate skeleton and `StageWarmup` a determinate progress bar — so it never runs (guarded by `src/core/motion-inventory.test.ts`). Under reduced motion: `animation: none`, a static ring. |
-| Quality-tier cross-fade (`TIER_FADE_MS`, `src/fabric3d/scene.ts`) | **300 ms** opacity, started one frame after the new tier presents | `ease-in-out` | A tier change (manual or the automatic step-down) swaps SMAA, SSAO and outlines in one frame — a measured 3.6 % canvas pop. The old tier's frame is held over the canvas and faded out. Exceeds nothing: 300 ms is the C6 ceiling. Under reduced motion: no fade — the held frame is removed in one step on the new tier's first frame (a swap, not an animation). |
+| Trace packet marker | **1.6 s loop, one marker, stops after 3 loops** | linear | The only looping animation in the product, and it is bounded. Justification: it distinguishes a live trace overlay from a static path screenshot. It then leaves the path drawn. (No stylesheet declares an unbounded loop: the unrendered stage-pending spinner App.css used to declare was dead CSS and is deleted — open-issues O18.) |
+| Quality-tier cross-fade (`TIER_FADE_MS`, `src/fabric3d/scene.ts`) | **280 ms** opacity, started once the new tier's frames are ordinary ones | `ease-in-out` | A tier change (manual or the automatic step-down) swaps SMAA, SSAO and outlines in one frame — a measured 3.6 % canvas pop. The old tier's frame is held over the canvas and faded out. 280 ms, not 300: a 300 ms transition MEASURED 299.9–300.1 ms (acceptance grading, C6) — at the ceiling, not under it — and a transition's end state can land up to one 60 Hz frame after its duration, so 280 + 16.7 stays under 300. Under reduced motion: no fade — the held frame is removed in one step on the new tier's first frame (a swap, not an animation). |
 | Panel / inspector open | **240 ms** height, **140 ms** opacity | `--ease-out` | |
 | Command palette | **140 ms** | `--ease-out` | |
 
 **`prefers-reduced-motion: reduce` — the contract:** `--dur-instant/fast/medium/camera` all collapse
 to `1ms` (already implemented in `tokens.css`); the camera **jumps** to its target pose; the trace
-draws instantly and fully; the packet marker **does not run at all**; the spinner is a static ring;
-the tier cross-fade becomes a one-frame swap. The end state is byte-identical
+draws instantly and fully; the packet marker **does not run at all**; the recession, hover-rim and
+selection eases land on their targets in the frame their target changes; the tier cross-fade
+becomes a one-frame swap. The end state is byte-identical
 to the animated end state. **The reduced-motion path never shows less information, only less
 movement.**
 

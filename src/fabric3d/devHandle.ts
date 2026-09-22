@@ -71,14 +71,14 @@ export function sceneHandleRequested(): boolean {
    * reasoned about (2026-09-21, `vite preview` of a production bundle): opening
    * `?s=fabric&__atlasScene=1` left `window.__atlasScene === undefined`, because `urlSync`
    * normalises the address bar to the fields it owns — `location.href` had already become
-   * `?v=1&snap=9cc348bd58bb` — and this module lives in the LAZY `Fabric3D` chunk, which is
+   * `?v=1&snap=<the 12-hex snapshot tag>` — and this module lives in the LAZY `Fabric3D` chunk, which is
    * fetched and evaluated after that rewrite has happened. Reading the flag "once, eagerly" is
    * only eager relative to this chunk, not to the page.
    *
    * `performance.getEntriesByType("navigation")[0].name` is the URL the document was fetched
    * with. `replaceState` does not touch it, so it answers "was this page OPENED with the flag?"
    * no matter how late the question is asked. Measured on the same build: href
-   * `…?v=1&snap=9cc348bd58bb`, navigation entry `…?s=fabric&__atlasScene=1`.
+   * `…?v=1&snap=<tag>`, navigation entry `…?s=fabric&__atlasScene=1`.
    */
   const asked = (href: string): boolean => {
     try {

@@ -47,6 +47,9 @@ import {
   SEVERITY_ICON,
   STATE_ICON,
 } from "./icons";
+/* The one owner of focus return (acceptance D3). A dependency-free DOM leaf, so importing it from
+   the primitives layer creates no cycle. */
+import { returnFocus } from "../app/focus-return";
 import "./primitives.css";
 
 const cx = (...parts: (string | false | null | undefined)[]): string =>
@@ -1308,7 +1311,7 @@ export function Dialog({
       release = null;
       /* Restore on close AND on unmount: a dialog whose parent is removed while it is open would
          otherwise leave focus on <body>, which silently resets keyboard navigation to the top. */
-      returnTo.current?.focus();
+      returnFocus(returnTo.current, null);
     };
   }, [open, initialFocus]);
 
@@ -1687,8 +1690,8 @@ export function Empty({
 
 /**
  * A static placeholder block. Deliberately NOT animated: the trace packet marker is the only
- * looping animation in this product (design brief 4.8), and a shimmering skeleton would be a
- * second one with no information behind it.
+ * looping animation that runs in this product (design brief 4.8), and a shimmering skeleton would
+ * be a second one with no information behind it.
  */
 export function Skeleton({
   lines = 1,
@@ -1720,6 +1723,28 @@ export function Skeleton({
  * It takes an `onOpen` callback and does not import the Inspector — the Inspector is a surface,
  * and a primitive that reached into one would couple this file to half the app.
  */
+/**
+ * An identifier path with a <wbr> after every separator (`.` `_` `/` `-` `:`). CSS offers no
+ * break opportunity at `.` or `_`, so a path longer than its column either overflows or — under an
+ * `overflow-wrap` licence — splits between two letters ("acls.core1.PROTECT_SERV / ERS[3]",
+ * acceptance C2-1, measured at 1440 px). This gives it sanctioned breaks at identifier boundaries
+ * only; `textContent` and the accessible name are unchanged.
+ */
+function identifierBreaks(text: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let run = "";
+  let k = 0;
+  for (const ch of text) {
+    run += ch;
+    if (ch === "." || ch === "_" || ch === "/" || ch === "-" || ch === ":") {
+      out.push(run, <wbr key={k++} />);
+      run = "";
+    }
+  }
+  if (run !== "") out.push(run);
+  return out;
+}
+
 export function Cite({
   cite,
   onOpen,
@@ -1740,7 +1765,7 @@ export function Cite({
       aria-label={`Open source record ${cite}`}
     >
       <IconCite className="ui-cite__glyph" />
-      <span className="ui-cite__path">{label ?? cite}</span>
+      <span className="ui-cite__path">{identifierBreaks(label ?? cite)}</span>
     </button>
   );
 }

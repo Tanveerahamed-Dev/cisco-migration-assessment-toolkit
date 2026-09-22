@@ -199,35 +199,42 @@ const MUTATIONS = [
 
   /* ── claims — src/core/claims.ts (refutation §6; open-issues R16) ───────────────────────────── */
   {
-    id: "claims-c1-empty-traversal",
+    id: "claims-c1-decided-owner",
     engine: "src/core/claims.ts",
-    record: "refutation §6 C1 (both owners of the empty-traversal rule reverted)",
-    what: "a traversal that visited nothing earns SCOPED again",
+    record: "refutation §6 C1 (the empty-traversal rule for decided outcome words: hopsSupportOutcome)",
+    what: "a delivered traversal that visited nothing earns SCOPED again",
+    edits: [{ file: "src/core/claims.ts", find: "  if (last === undefined) return false;", replace: "  if (last === undefined) return true;" }],
+    tests: ["src/core/claims.test.ts"],
+  },
+  {
+    id: "claims-undetermined-word-badge",
+    engine: "src/core/claims.ts",
+    record: "refutation §6 C2/C3 (2026-09-22 probe: an unrecognised outcome word earned SCOPED; the outcome-band rule)",
+    what: "an outcome word that bands UNDETERMINED earns a badge from its traversal again (SCOPED over clean hops, and over none)",
     edits: [
-      { file: "src/core/claims.ts", find: "  if (trace.hops.length === 0) return \"INDETERMINATE\";", replace: "" },
-      { file: "src/core/claims.ts", find: "  if (last === undefined) return false;", replace: "  if (last === undefined) return true;" },
+      {
+        file: "src/core/claims.ts",
+        find: '  if (bandOfOutcome(trace.outcome) === "UNDETERMINED") return "INDETERMINATE";',
+        replace: '  if (trace.outcome === "indeterminate") return "INDETERMINATE";',
+      },
     ],
     tests: ["src/core/claims.test.ts"],
   },
   {
-    id: "claims-c1-guard-alone",
+    id: "claims-c1-both-owners",
     engine: "src/core/claims.ts",
-    record: "refutation §6 C1 (the claimBadge empty-hop line alone; acceptance F2)",
-    what: "the claimBadge empty-hop guard alone is deleted",
-    edits: [{ file: "src/core/claims.ts", find: "  if (trace.hops.length === 0) return \"INDETERMINATE\";", replace: "" }],
+    record: "refutation §6 C1 (both owners of the empty-traversal rule reverted together)",
+    what: "a traversal that visited nothing earns SCOPED again, under any outcome word",
+    edits: [
+      { file: "src/core/claims.ts", find: "  if (last === undefined) return false;", replace: "  if (last === undefined) return true;" },
+      {
+        file: "src/core/claims.ts",
+        find: '  if (bandOfOutcome(trace.outcome) === "UNDETERMINED") return "INDETERMINATE";',
+        replace: '  if (trace.outcome === "indeterminate") return "INDETERMINATE";',
+      },
+    ],
     tests: ["src/core/claims.test.ts"],
-  },
-  {
-    id: "claims-c1-guard-alone-delivered-only",
-    engine: "src/core/claims.ts",
-    record: "refutation §6 C1 (why the guard was unpinned)",
-    what: "the same deletion, judged ONLY by the delivered zero-hop case",
-    edits: [{ file: "src/core/claims.ts", find: "  if (trace.hops.length === 0) return \"INDETERMINATE\";", replace: "" }],
-    tests: ["src/core/claims.test.ts"],
-    pattern: "delivered trace with ZERO hops",
-    expect: "survives",
-    why:
-      "EQUIVALENT for decided outcome words: hopsSupportOutcome's `last === undefined` check refuses the same trace, so no delivered fixture can tell the line apart. The unrecognised-outcome case (claims-c1-guard-alone) is the one that isolates it.",
+    pattern: "EMPTY traversal",
   },
   {
     id: "claims-c3-undefined-band",
@@ -258,6 +265,33 @@ const MUTATIONS = [
     ],
     tests: ["src/core/claims.test.ts"],
     pattern: "C2",
+  },
+
+  /* ── source binding — O15 / acceptance F5 (not a refutation.md engine section; reported below
+        the documented engines, and a survivor still fails the run). ─────────────────────────────── */
+  {
+    id: "binding-raw-working-tree",
+    engine: "tools/source-binding.mjs",
+    record: "open-issues O15 / acceptance F5 (the digest binds the LF-normalised form)",
+    what: "every compiler hashes the raw working-tree bytes again, so a CRLF checkout binds another digest",
+    edits: [{ file: "tools/source-binding.mjs", find: "export function lfNormalise(raw) {\n", replace: "export function lfNormalise(raw) {\n  if (raw !== null) return raw;\n" }],
+    tests: ["src/core/provenance.test.ts"],
+    pattern: "O15",
+  },
+  {
+    id: "binding-trust-digest-only",
+    engine: "src/forwarding/bindings.ts",
+    record: "open-issues O15 (a sidecar is trusted only on the same digest, form and length)",
+    what: "acl-bindings.json is trusted on a matching digest string alone, whatever byte form or length it states",
+    edits: [
+      {
+        file: "src/forwarding/bindings.ts",
+        find: "export const BINDINGS_TRUSTED = sameSourceBinding(FILE.meta, fabric.meta);",
+        replace: "export const BINDINGS_TRUSTED = FILE.meta.sourceSha256 === fabric.meta.sourceSha256 || sameSourceBinding(FILE.meta, fabric.meta);",
+      },
+    ],
+    tests: ["src/forwarding/bindings-trust.test.ts"],
+    pattern: "same sourceSha256",
   },
 ];
 
@@ -317,7 +351,7 @@ const VITEST = join(PKG, "node_modules", "vitest", "vitest.mjs");
 function runTests(tests, pattern) {
   const args = [VITEST, "run", ...tests, ...(pattern === undefined ? [] : ["-t", pattern])];
   const r = spawnSync(process.execPath, args, { cwd: scratch, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.replace(/\[[0-9;]*m/g, "");
+  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.replace(/\u001b\[[0-9;]*m/g, "");
   const failed = Number(/Tests\s+(\d+) failed/.exec(out)?.[1] ?? 0);
   const passed = Number(/(\d+) passed/.exec(/Tests\s+[^\n]*/.exec(out)?.[0] ?? "")?.[1] ?? 0);
   const firstFailure = /(AssertionError[^\n]*|Error:[^\n]*)/.exec(out)?.[1] ?? "";
@@ -431,6 +465,11 @@ for (const path of documented) {
   }
   const verdict = e.problems.length === 0 && e.killed === e.total && e.total > 0 ? "PASS" : "FAIL";
   console.log(`ENGINE ${path}: ${verdict} — ${e.killed} of ${e.total} reverted guard(s) turned the named regression test red${e.problems.length === 0 ? "" : `; ${e.problems.join(", ")}`}`);
+}
+for (const [path, e] of byEngine) {
+  if (documented.includes(path)) continue;
+  const verdict = e.problems.length === 0 && e.killed === e.total && e.total > 0 ? "PASS" : "FAIL";
+  console.log(`ENGINE ${path} (not a refutation.md section): ${verdict} — ${e.killed} of ${e.total} reverted guard(s) turned the named regression test red${e.problems.length === 0 ? "" : `; ${e.problems.join(", ")}`}`);
 }
 for (const path of uncovered) {
   if (only.length === 0) bad += 1;

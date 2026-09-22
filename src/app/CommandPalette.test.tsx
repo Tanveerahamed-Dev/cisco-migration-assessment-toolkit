@@ -555,6 +555,25 @@ describe("command palette", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it("lands on the stage, never <body>, when the invoker can no longer take focus (D3)", async () => {
+    const stage = document.createElement("div");
+    stage.id = "stage";
+    stage.tabIndex = -1;
+    const trigger = document.createElement("button");
+    document.body.append(stage, trigger);
+    trigger.focus();
+
+    mount(<CommandPalette />);
+    act(() => useInvestigation.getState().setPaletteOpen(true, trigger));
+    trigger.disabled = true;
+    press("Escape", {}, paletteInput());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(stage);
+  });
+
   it("runs the active row on Enter", () => {
     openPaletteUI();
     const device = fabric.devices.find((d) => d.collected);
@@ -578,6 +597,27 @@ describe("shortcut help", () => {
     expect(sheet).not.toBeNull();
     const text = sheet?.textContent ?? "";
     for (const s of shortcuts()) expect(text).toContain(s.label);
+  });
+
+  it("returns focus to the menu's trigger when the item that opened it has unmounted (D3)", async () => {
+    mount(<ShortcutHelp />);
+    const trigger = document.createElement("button");
+    trigger.setAttribute("aria-controls", "help-origin-menu");
+    const menu = document.createElement("div");
+    menu.id = "help-origin-menu";
+    const item = document.createElement("button");
+    menu.appendChild(item);
+    document.body.append(trigger, menu);
+    item.focus();
+    act(() => setHelpOpen(true));
+    expect(document.querySelector(".kb-help")).not.toBeNull();
+    menu.remove();
+    act(() => setHelpOpen(false));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("shows a half-typed sequence on screen", () => {

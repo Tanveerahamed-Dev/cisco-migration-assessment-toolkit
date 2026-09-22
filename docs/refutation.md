@@ -226,27 +226,46 @@ banding `UNDETERMINED`. Pinned by `claims.test.ts` →
 *"REFUTED: an unrecognised verdict bands as UNDETERMINED, never as nothing"* (two tests). **Both
 fail against the pre-fix source.**
 
-### CONFIRMED and NOT fixed — open
+**C2 — `claimBadge` never cross-checked `trace.outcome` against the hop verdicts.** FIXED
+(open-issues R16; this section recorded it as OPEN until 2026-09-22, after the fix had landed).
 
-**C2 — `claimBadge` never cross-checks `trace.outcome` against the hop verdicts.** OPEN.
-
-Measured: a trace with `outcome: "delivered"` whose only hop has `verdict: "loop"` returns
-`"SCOPED"`, while `bandOfHop` on that same hop correctly returns `"REFUTED"`. The badge consults
-only the trace-level outcome and the host-modelling coverage; it never looks at what the hops
-actually say. Two parts of the same module disagree about the same trace and the badge takes the
+Measured: a trace with `outcome: "delivered"` whose only hop has `verdict: "loop"` returned
+`"SCOPED"`, while `bandOfHop` on that same hop correctly returned `"REFUTED"`. The badge consulted
+only the trace-level outcome and the host-modelling coverage; it never looked at what the hops
+actually said. Two parts of the same module disagreed about the same trace and the badge took the
 more flattering side.
 
-**Not fixed here, deliberately.** The tempting repair — "every hop must band `RESOLVED`" — is
-wrong: it would turn a genuinely `denied` flow into `INDETERMINATE`, and a denied flow is a
-*confidently answered* question. That is visible immediately in capture state `06-path-blocked`.
-The honest repair is an **invariant on the engine** (a `delivered` outcome requires a final
-`delivered` hop; a `denied` outcome requires a `denied` hop), enforced where traces are produced,
-which is `src/forwarding/engine.ts`'s lane and not the badge's. Recorded here rather than patched
-in the wrong module.
+The tempting repair — "every hop must band `RESOLVED`" — is wrong: it would turn a genuinely
+`denied` flow into `INDETERMINATE`, and a denied flow is a *confidently answered* question. The
+repair that landed is `hopsSupportOutcome` in `claims.ts`: one rule, read through `bandOfHop`, that
+no hop bands `UNDETERMINED`, the last hop bands exactly as the outcome does, and a `delivered`
+outcome needs every hop `RESOLVED`. `claimBadge` and `isDecidedOutcome` (and so `bandOfTrace`) both
+ask it, so the badge and the band cannot disagree about one trace. It was placed in the claims
+module after all, not the engine: the function is exported and applied to whatever `Trace` a caller
+holds, so an engine-side invariant alone would again be an assumption about a caller. Pinned by
+`claims.test.ts` → *"REFUTED (C2): no outcome earns a stronger badge than its hops support"*.
 
-**Reachability:** not reachable from the current engine, which does not emit self-contradictory
-traces. That is an assumption about a caller, not a property of an exported function — which is the
-precise thing C1 proved can go wrong.
+**C2/C3 follow-up, found 2026-09-22 by probe.** `hopsSupportOutcome` waves through an outcome word
+it does not recognise ("claims nothing, so nothing for the hops to contradict"), and `claimBadge`
+only answered the literal word `indeterminate` early. So a trace whose outcome was an
+unrecognised runtime value (C3's input) over ORDINARY hops — every host modelled, no policy gap —
+earned `"SCOPED"` while `bandOfTrace` beside it said `UNDETERMINED`: the C2 disagreement, reached
+through the C3 door. Measured red before the fix: `expected 'SCOPED' to be 'INDETERMINATE'`.
+Repair: `claimBadge` withholds every badge above `INDETERMINATE` from ANY word that
+`bandOfOutcome` bands `UNDETERMINED`. Pinned by *"an unrecognised outcome word over a clean,
+fully-modelled traversal is INDETERMINATE, not SCOPED"* and by a sweep over every
+UNDETERMINED-banding word against no hop and every hop verdict.
+
+**Consequence for C1's line.** The C1 repair had been a dedicated line in `claimBadge`
+(`if (trace.hops.length === 0) return "INDETERMINATE"`) that the acceptance grading found
+UNPINNED: deleting it left every claims test green, because for a decided word
+`hopsSupportOutcome` refuses a zero-hop trace too. It decided only the unrecognised-word case —
+which the follow-up rule above now covers, hops or none. The line then decided nothing on any input
+(measured: deleted, all claims tests stay green) and was removed. The empty-traversal rule has two
+owners, each load-bearing and each killed by a mutation (`review/mutation-check.mjs`
+`claims-c1-decided-owner`, `claims-undetermined-word-badge`, `claims-c1-both-owners`), and a
+property test — *"an EMPTY traversal earns no badge above INDETERMINATE under any outcome word at
+all"* — pins it across every word.
 
 ### CONFIRMED as a disclosed limit — no change
 
@@ -292,23 +311,31 @@ direction for this gate.
 
 ## 7. Where F3 stands
 
-| Engine | Refuted | Confirmed defects | Fixed | "Failed before the fix" verifiable |
-|---|---|---|---|---|
-| forwarding | yes (×2 passes) | 5 | 5 | no — attested in prose only |
-| blast | yes | 7 | 7 | no — attested in prose only |
-| layout | yes | 4 | 4 | no — attested in prose only |
-| query | yes | 1 class | yes | no — attested in prose only |
-| compiler | yes (fidelity only) | 4 | 4 | no — attested in prose only |
-| claims | **yes, 2026-09-21** | 3 confirmed + 1 disclosed limit | 2 of 3 | **yes — refuter output recorded above** |
+| Engine | Refuted | Confirmed defects | Fixed | Pre-fix history | Reverted guard turns its test red (`review/mutation-check.mjs`) |
+|---|---|---|---|---|---|
+| forwarding | yes (×2 passes) | 5 | 5 | no — attested in prose only | yes — 4 mutations, 4 killed |
+| blast | yes | 7 | 7 | no — attested in prose only | yes — 2 mutations, 2 killed |
+| layout | yes | 4 | 4 | no — attested in prose only | yes — 2 mutations, 2 killed |
+| query | yes | 1 class | yes | no — attested in prose only | yes — 1 mutation, 1 killed |
+| compiler | yes (fidelity only) | 4 | 4 | no — attested in prose only | yes — 2 mutations, 2 killed (rebuilt, then tested) |
+| claims | **yes, 2026-09-21** | 3 confirmed (+ the 2026-09-22 C2/C3 follow-up) + 1 disclosed limit | **3 of 3, and the follow-up** | **yes — refuter output recorded above** | yes — 5 mutations, 5 killed |
 
-**F3 is now supportable for the report half and remains qualified on the history half.** The
-reports exist and cite their evidence; the "failed before the fix" half is verifiable for `claims`
-and, for the other five engines, rests on the refuters' own prose. A reviewer grading F3 should
-grade it on that split rather than on a single word.
+(Counts as run on 2026-09-22: `node review/mutation-check.mjs` exited 0, 16 of 16 mutations killed,
+every targeted test green unmutated first. It also carries two source-binding mutations — O15, not
+engine sections — reported after the documented engines.)
 
-Two items remain open and neither should be silently carried:
+**F3 is supportable for the report half; the history half is now executable evidence of a stated,
+narrower kind.** The reports exist and cite their evidence. For every engine, `review/mutation-check.mjs`
+reverts each recorded guard in a scratch copy of the current tree and requires the named regression
+test to go red; a mutation that survives, a guard text that no longer occurs exactly once, a baseline
+that was not green, or an engine section of this document with no mutation, all exit non-zero. **It
+does not recreate pre-fix history** — it proves each test detects the defect's shape in today's
+code, not that the test was red on the source as it stood before the fix — and it says so in its
+own output. A reviewer grading F3 should grade it on that split rather than on a single word.
 
-1. **C2** — the badge does not cross-check the trace outcome against the hop verdicts. Owner:
-   whoever owns the engine's trace invariants.
-2. **The compiler was refuted for what it drops, not for what it transforms.** No pass has yet
+One item remains open and should not be silently carried:
+
+1. **The compiler was refuted for what it drops, not for what it transforms.** No pass has yet
    attacked a field that survives compilation with a changed meaning.
+
+(C2 was listed here as open until 2026-09-22; it had been fixed in `claims.ts` — see §6.)

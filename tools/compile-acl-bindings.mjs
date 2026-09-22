@@ -18,18 +18,16 @@
  *
  * Run: node tools/compile-acl-bindings.mjs
  */
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSource } from "./source-binding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = resolve(HERE, "../../webapp/sample_data/sample_fleet.snapshot.json");
 const OUT = resolve(HERE, "../src/forwarding/acl-bindings.json");
 
-const raw = readFileSync(SRC);
-const snap = JSON.parse(raw.toString("utf8"));
-const sha256 = createHash("sha256").update(raw).digest("hex");
+/* The source and the bytes that bind it: tools/source-binding.mjs owns the rule (LF-normalised). */
+const { snap, binding } = readSource(HERE);
 
 const NOT_OBSERVED = /^\s*\[NOT OBSERVED\]/i;
 /** @param {unknown} v @returns {string | null} */
@@ -68,9 +66,9 @@ for (const [host, ports] of Object.entries(obj(snap.interfaces)).sort(([a], [b])
 }
 
 const out = {
-  meta: { source: "webapp/sample_data/sample_fleet.snapshot.json", sourceSha256: sha256, sourceBytes: raw.length },
+  meta: { ...binding },
   hosts,
 };
 writeFileSync(OUT, JSON.stringify(out, null, 1) + "\n");
 const bound = Object.values(hosts).flat().filter((r) => r.aclIn !== null || r.aclOut !== null).length;
-console.log(`acl-bindings: ${Object.keys(hosts).length} hosts, ${bound} bound interface(s), sha ${sha256.slice(0, 8)}`);
+console.log(`acl-bindings: ${Object.keys(hosts).length} hosts, ${bound} bound interface(s), sha ${binding.sourceSha256.slice(0, 8)} (${binding.sourceDigestForm})`);

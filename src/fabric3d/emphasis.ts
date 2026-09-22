@@ -129,7 +129,18 @@ export function createEaseChannel(value = 0): EaseChannel {
 
 /**
  * Advance a channel one frame towards `target`. A changed target STARTS a new ease from wherever
- * the channel is now (so an interrupted fade never jumps). Returns true when the value changed.
+ * the channel is now (so an interrupted fade never jumps). Returns true while the ease is running
+ * (the value changed, or has not yet reached `to`), false once it rests on its target.
+ *
+ * determinism: `ch.elapsedMs` accumulates the render loop's frame delta, which comes from the rAF
+ * clock, so a MID-ease value does depend on this machine's frame timing. What is drawn in a SETTLED
+ * frame does not: `easeValue` returns `to` itself (not a value near it) once `elapsedMs` reaches the
+ * duration — at once under reduced motion — and this returns true on every frame before that, which
+ * keeps the scene dirty, so `converged()` (the settle the F6 captures wait on) cannot be reached
+ * while any channel is mid-ease. An interrupted ease restarts from a timing-dependent value but
+ * still ends on its target. The settled value is therefore a function of the target alone — pinned
+ * by `emphasis.test.ts` ("an ease channel's settled value does not depend on this machine's frame
+ * timing": steady, jittery and coarse dt sequences land bit-identically).
  */
 export function stepEaseChannel(ch: EaseChannel, spec: EaseSpec, target: number, dt: number, reduced = false): boolean {
   if (target !== ch.to) {
@@ -247,6 +258,11 @@ export function markEmphasisDirty(state: EmphasisState): void {
 /**
  * Advance one frame by `dt` ms along RECEDE_EASE. Returns true when anything moved — the caller
  * uses that to keep rendering. Under `reduced` motion every value lands on its target at once.
+ *
+ * determinism: `state.elapsed` and each segment's `elapsed` accumulate the rAF frame delta, exactly
+ * as `stepEaseChannel`'s `elapsedMs` does (see the note there), and the same argument holds: the
+ * last frame of every ease writes the target itself and reports motion, so the uploaded values a
+ * settled frame draws are the targets alone (`emphasis.test.ts`: three dt sequences, bit-identical).
  *
  * Allocates nothing per frame: `frame()` runs on every rAF tick and a per-frame allocation there
  * is a garbage-collection pause in the middle of an interaction. (A cable batch's bookkeeping is

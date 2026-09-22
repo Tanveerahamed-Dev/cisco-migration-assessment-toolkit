@@ -22,6 +22,7 @@ import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
 import { counterexample, isDefiniteDelivery, traceFlow } from "../forwarding/engine";
+import { formatPrefix, parseInterfaceAddress, parseIpv4, prefixContains } from "../forwarding/ip";
 import { ClaimCard, IntentClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import {
@@ -379,6 +380,72 @@ describe("validateFlowForm", () => {
     expect(icmp.flow?.dstPort).toBeNull();
     const tcp = validateFlowForm({ srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: "443" });
     expect(tcp.flow?.dstPort).toBe(443);
+  });
+});
+
+/* C2 (acceptance, 2026-09-22): both address fields showed the same placeholder, "10.0.10.50", so the
+   empty form suggested a flow from a host to itself — the one example that can never be the question
+   a reader is asking. Each field's example must be its own address, and each must be one this
+   snapshot can answer questions about: inside a subnet the collection actually observed on an L3
+   interface. The subnets are re-derived here from the compiled records, not read back from the
+   component, so a component that invents an address cannot also invent the subnet that excuses it. */
+describe("PathTrace — the flow form's example addresses", () => {
+  const observedSubnets = fabric.l3.flatMap((r) => {
+    const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+    return a === null ? [] : [a.prefix];
+  });
+  const routerAddresses = new Set(
+    fabric.l3.flatMap((r) => {
+      const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+      const vip = r.vip === null ? null : parseIpv4(r.vip);
+      return [a?.ip ?? null, vip].filter((x): x is NonNullable<typeof x> => x !== null);
+    }),
+  );
+  const subnetOf = (ip: string): string | null => {
+    const v = parseIpv4(ip);
+    if (v === null) return null;
+    const p = observedSubnets.find((s) => prefixContains(s, v));
+    return p === undefined ? null : formatPrefix(p);
+  };
+  const placeholders = (): { src: string; dst: string } => {
+    const { container } = mount(<PathTrace />);
+    const byLabel = (name: string): HTMLInputElement => {
+      const label = [...container.querySelectorAll("label")].find((l) => text(l).trim().startsWith(name));
+      const input = label ? document.getElementById(label.htmlFor) : null;
+      if (!(input instanceof HTMLInputElement)) throw new Error(`no input is labelled "${name}"`);
+      return input;
+    };
+    return { src: byLabel("Source IP").placeholder, dst: byLabel("Destination IP").placeholder };
+  };
+
+  it("rests on a snapshot that observed more than one subnet", () => {
+    expect(new Set(observedSubnets.map(formatPrefix)).size).toBeGreaterThan(1);
+  });
+
+  it("shows a different example in the Source IP and Destination IP fields", () => {
+    const { src, dst } = placeholders();
+    expect(src).not.toBe("");
+    expect(dst).not.toBe("");
+    expect(src).not.toBe(dst);
+  });
+
+  it("draws each example from a subnet the collection observed, never a router's own address", () => {
+    const { src, dst } = placeholders();
+    for (const ip of [src, dst]) {
+      expect(subnetOf(ip), `${ip} lies in no observed subnet`).not.toBeNull();
+      expect(routerAddresses.has(parseIpv4(ip)!), `${ip} is a gateway address, not a client`).toBe(false);
+    }
+    // Two subnets were observed, so the example flow crosses between them rather than staying in one.
+    expect(subnetOf(src)).not.toBe(subnetOf(dst));
+  });
+
+  it("names the field's own example in that field's validation message", () => {
+    const { src, dst } = placeholders();
+    const r = validateFlowForm({ srcIp: "", dstIp: "10.0.30.0/24", protocol: "tcp", dstPort: "" });
+    expect(r.errors.srcIp).toContain(src);
+    expect(r.errors.dstIp).toContain(dst);
+    expect(r.errors.srcIp).not.toContain(dst);
+    expect(r.errors.dstIp).not.toContain(src);
   });
 });
 

@@ -176,6 +176,21 @@ function buildRackMount(spec: KindSpec, bevelSegments: number, fineDetail: boole
 
   bezelParts.push(at(uvScale(rbox(w - 0.6, barH, frameT, 1, 0.08), 2), 0, h / 2 - barH / 2 - 0.17, frameZ));
   bezelParts.push(at(uvScale(rbox(w - 0.6, barH, frameT, 1, 0.08), 2), 0, -h / 2 + barH / 2 + 0.17, frameZ));
+  /* THE HOOD: the painted top cover carried forward over the faceplate frame (C5 motion, 2026-09-22).
+     MEASURED with review/capture-motion.mjs's own orbit-keys-slow replay plus a per-cluster raycast
+     and isolation (removing geometry in-page, one part at a time): every flip-flop cluster the
+     harness reported on a chassis edge was the TOP FACE OF THE FRAME'S TOP BAR — a 0.34-deep strip
+     of bright bare metal standing proud of the body's front edge, 0.17 below the lid. From the
+     camera's range (polar 24-78 degrees) that strip is under a pixel wide at the overview, between
+     the band-tinted lid and the ground, so it crawled as the damped orbit crept (0.03 px/frame) —
+     not a depth tie (no two surfaces along any cluster ray were within 0.2 units). Removing the bar
+     removed the clusters; changing its roughness, normal map or anisotropy did not.
+     So the cover now runs over it: body paint from the lid's flat top (the bevel starts at
+     hz - bevel) to the faceplate's front plane, down to the bar. Seen from above the lid simply ends
+     at the faceplate — one edge, lid to ground — and the metal frame still reads from the front. */
+  bodyParts.push(
+    at(uvScale(rbox(w - 2 * bevel, 0.17, frameT + bevel, 1, 0.02), 3), 0, h / 2 - 0.085, hz + (frameT - bevel) / 2),
+  );
   bezelParts.push(at(uvScale(rbox(barW, innerH, frameT, 1, 0.08), 2), -innerW / 2 - barW / 2, 0, frameZ));
   bezelParts.push(at(uvScale(rbox(barW, innerH, frameT, 1, 0.08), 2), innerW / 2 + barW / 2, 0, frameZ));
 
@@ -720,7 +735,12 @@ export function buildRoleGlyph(glyph: RoleGlyph): BufferGeometry {
   if (glyph === "distribution") {
     const armL = box(0.09, 0.42, t);
     armL.applyMatrix4(m4.makeRotationZ(0.62));
-    const armR = box(0.09, 0.42, t);
+    /* The two arms CROSS where they meet, and at equal thickness their faces there were coplanar
+       and overlapping — a depth tie on the lid (C5; `chassis.coplanar.test.ts` found it: planes
+       0.0000 apart, overlap 0.019). The right arm is 0.02 thicker, so where the arms cross its faces
+       stand 0.01 proud of the left arm's (0.021 world units after the scene's 2.1 scale): resolved
+       by the depth buffer, and invisible as a step at any camera distance. */
+    const armR = box(0.09, 0.42, t + 0.02);
     armR.applyMatrix4(m4.makeRotationZ(-0.62));
     return mergeOrEmpty([at(armL, -0.11, 0, 0), at(armR, 0.11, 0, 0)]);
   }

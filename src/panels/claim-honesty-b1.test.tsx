@@ -129,6 +129,23 @@ describe("every surface that draws an outcome follows the trace's band", () => {
     expect(traces.find((t) => t.id === "permitted")).toBeUndefined();
   });
 
+  it("state 06: the 3-D chip's ending and the path panel's verdict come from one owner and agree", () => {
+    /* The D8 refuter's question (acceptance report, 2026-09-22): in state 06 the path panel reads
+       "… on core1 denies this flow" while the 3-D chip reads "? UNDECIDED". Investigated: the chip's
+       ending is `traceMarkOf` (Fabric3D.tsx), which reads the claim owner's `bandOfHopIn` /
+       `bandOfTrace` — the same owner ClaimCard's badge and HopList read. "denies this flow" is the
+       ACL line's own evidence text quoted INSIDE the undecided card ("That denial is not decided"),
+       not a verdict. So the two agree; this pins it on the exact flow the capture uses. */
+    const t = traceFlow({ srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 3389, srcPort: null });
+    expect(t.outcome, "precondition: the engine's raw outcome word is a denial").toBe("denied");
+    expect(bandOfTrace(t)).toBe("UNDETERMINED");
+    expect(traceMarkOf(t)?.kind, "the 3-D chip's ending").toBe("undetermined");
+    const el = mount(<ClaimCard trace={t} counterexample={counterexample(t.flow, t)} />);
+    const card = el.textContent ?? "";
+    expect(card).toMatch(/not decided/);
+    expect(card).not.toMatch(/\bBLOCKED\b|\bDENIED\b/);
+  });
+
   it("the preset list draws every undecided flow as undecided", () => {
     const el = mount(<PathTrace />);
     const rows = [...el.querySelectorAll<HTMLElement>(".pt-preset__outcome")];
@@ -142,18 +159,21 @@ describe("every surface that draws an outcome follows the trace's band", () => {
     });
   });
 
-  it("an offered nearby flow wears its own band, not a green outcome word", () => {
-    /* UPDATED 2026-09-22 (auditor, B1): the suggested denial's nearby variations all rest on core1's
-       incomplete table, so none is definite and nothing is offered on this snapshot; a denial is
-       never answered by an undecided "delivered". The offered-flow band is pinned in decided-surfaces.counterfactual.test.tsx. */
+  it("the undecided denial is offered no nearby flow at all, so its card shows no green outcome word", () => {
+    /* RENAMED 2026-09-22 (acceptance grading, F2: this test was mislabelled). It was titled "an
+       offered nearby flow wears its own band", but on this snapshot nothing is ever offered: the
+       suggested denial's nearby variations all rest on core1's incomplete table, so none is
+       definite (auditor, B1). The body therefore only ever proved the NOT-offered branch; the title
+       claimed the other one. The offered-flow band ("a decided counter outcome wearing its own
+       band") is pinned where a decided counterexample exists, on host sources:
+       decided-surfaces.counterfactual.test.tsx. This test now says what it proves, and asserts the
+       snapshot fact it rests on rather than silently taking whichever branch the data allows — if a
+       nearby flow ever becomes definite here, this fails first and the title gets revisited. */
     const denied = traces.find((t) => t.id === "denied");
     expect(denied).toBeDefined();
     const ce = counterexample(denied!.trace.flow, denied!.trace);
-    if (ce.found) {
-      const el = mount(<ClaimCard trace={denied!.trace} counterexample={ce} />);
-      expect(el.querySelector<HTMLElement>(".claim__counter-outcome")?.dataset.band).toBe(bandOfTrace(ce.trace));
-      return;
-    }
+    expect(ce.found, "a nearby flow is now offered for the suggested denial: this test's premise changed").toBe(false);
+    if (ce.found) return; // unreachable after the assertion above; narrows the type
     expect(ce.reason).toMatch(/nearby variations/);
     const el = mount(<ClaimCard trace={denied!.trace} counterexample={ce} />);
     expect(el.querySelector(".claim__counter-outcome")).toBeNull();

@@ -452,7 +452,6 @@
   font-size: var(--fs-0);
   line-height: var(--lh-0);
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .surface-error__retry {

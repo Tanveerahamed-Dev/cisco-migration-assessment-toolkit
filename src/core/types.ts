@@ -275,10 +275,38 @@ export interface Coverage {
   cite: Cite;
 }
 
-export interface SnapshotMeta {
+/**
+ * What binds a compiled file to the snapshot it was read from. Written by every `tools/compile-*.mjs`
+ * through `tools/source-binding.mjs`, the one owner of the rule.
+ *
+ * `sourceSha256` and `sourceBytes` are taken over the LF-NORMALISED bytes of `source` (every CR LF
+ * read as LF, nothing else changed) — the form Git stores, so the digest equals
+ * `git cat-file blob HEAD:<source> | sha256sum` and is the same from a CRLF or an LF checkout.
+ * `sourceDigestForm` names that form; a digest without its form does not say which bytes it binds.
+ */
+export interface SourceBinding {
   source: string;
-  sourceBytes: number;
+  sourceDigestForm: "lf-normalised";
   sourceSha256: string;
+  sourceBytes: number;
+}
+
+/**
+ * Whether a sidecar's `meta` binds the SAME source bytes as `bound`. Every binding field must agree —
+ * the form included, and a sidecar that states no form fails — so a digest taken over other bytes
+ * (another snapshot, or the same snapshot in another byte form) can never be read as this build's.
+ */
+export function sameSourceBinding(meta: Partial<Record<keyof SourceBinding, unknown>> | null | undefined, bound: SourceBinding): boolean {
+  if (meta === null || meta === undefined) return false;
+  return (
+    meta.source === bound.source &&
+    meta.sourceDigestForm === bound.sourceDigestForm &&
+    meta.sourceSha256 === bound.sourceSha256 &&
+    meta.sourceBytes === bound.sourceBytes
+  );
+}
+
+export interface SnapshotMeta extends SourceBinding {
   schema: string | null;
   scriptVersion: string | null;
   collectedAt: string | null;
@@ -355,7 +383,12 @@ export interface Trace {
   flow: Flow;
   outcome: TraceOutcome;
   hops: Hop[];
-  /** One sentence stating exactly what this result does and does not claim. */
+  /**
+   * The statement of exactly what this result does and does not claim. Prose, not a single sentence:
+   * a decided claim routinely runs to two or more (the verdict, then what it does not cover — e.g.
+   * "…is denied at core1 by … . Received traffic …; stateful return traffic is not modelled."), and
+   * an undecided delivery appends the sentence saying why it is undecided.
+   */
   claim: string;
   /** Every reason the result is narrower than it looks. Never empty when scope is limited. */
   caveats: string[];

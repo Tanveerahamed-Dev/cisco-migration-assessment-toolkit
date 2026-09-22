@@ -21,6 +21,7 @@ import type { Device } from "../core/types";
 
 import type { FabricScene } from "./contract";
 import { LABEL_DROP_EVERY_FRAMES } from "./emphasis";
+import { labelDwellVerdict, labelSettleMayReverse, labelUrgent } from "./labelResolve";
 
 /** Gutter (CSS px) between two placed label boxes, side by side. Below this they read as one smear. */
 const DECLUTTER_GUTTER = 4;
@@ -365,6 +366,23 @@ export function FabricLabels({
     let prevPose: number[] = [];
     let prevSeq = "";
     let settledNow = false;
+    /* THE DWELL (acceptance C5, label popping). Whether a name may appear or leave THIS pass, given
+       what it did on the passes before, is decided by labelResolve's `labelDwellVerdict` — the gate
+       the scene's resolver uses too — never by a rule of this file's own. MEASURED before (motion
+       audit, 2026-09-22, the harness's six camera sequences on a real GPU): the scene resolver
+       blinked on none, while this layer — spatial hysteresis, but no time dwell, and free to show
+       a hidden name mid-move — blinked on four (`access16 hidden 4f` orbiting, `access2`/`access4`
+       2–4 frame runs at a focus fly, `access15 hidden 1f` at a reset fly). What the gate needs:
+         `ages`     passes since each label's drawn verdict last changed (0xffff = never changed, the
+                    scene's own initial age), advanced at the top of every pass from `lastShown`;
+         `pending`  the one-pass temporal hold, per label;
+         `cameraMoving` this tick's projections differ from the previous tick's (see poseHeld). */
+    const ages = new Map<string, number>();
+    const lastShown = new Map<string, boolean>();
+    const pendingIds = new Set<string>();
+    /** The names forced (urgent) on this pass: the settled pass cannot move them (see STILL CONVERGING). */
+    const forcedIds = new Set<string>();
+    let cameraMoving = true;
     const poseHeld = (seqKey: string): boolean => {
       const same =
         seqKey === prevSeq && pose.length === prevPose.length && pose.every((v, i) => Object.is(v, prevPose[i]));
@@ -434,6 +452,17 @@ export function FabricLabels({
       const container = containerRef.current;
       if (!scene || !container) return;
 
+      /* Advance the dwell ages from the verdicts the previous pass drew (DOM attribute reads only,
+         no layout). A change made on pass t reads as age 0 on pass t+1 — the scene resolver's
+         arithmetic exactly. */
+      for (const [id, el] of els) {
+        const now = el.dataset.visible === "true";
+        const before = lastShown.get(id);
+        const age = ages.get(id);
+        ages.set(id, before === undefined || age === undefined ? 0xffff : before !== now ? 0 : Math.min(0xffff, age + 1));
+        lastShown.set(id, now);
+      }
+
       /* RESPONSIVENESS FIX, 2026-09-21 (acceptance E3). This read `getBoundingClientRect()` on
          every animation frame. A layout read in a rAF callback that follows a React commit forces
          the whole page's style and layout synchronously, inside this callback — the CPU profile
@@ -482,6 +511,7 @@ export function FabricLabels({
       for (const id of baseOrder) push(id);
       placed.length = 0;
       leaders.length = 0;
+      forcedIds.clear();
 
       /* PASS 1 — WRITES ONLY. Project every anchor, hide the invisible ones and apply the marks.
          Nothing in this pass reads layout.
@@ -516,6 +546,9 @@ export function FabricLabels({
         // An anchor behind the camera or occluded by a chassis reports invisible. Drawing its label
         // anyway would attach a hostname to a device the viewer cannot see.
         if (!p || !p.visible) {
+          // Left the view (or the scene's own resolver dropped it): gone at once, never held —
+          // the gate's rule for an anchor that is not on screen, as in resolveLabels.
+          pendingIds.delete(id);
           hide(id, el);
           continue;
         }
@@ -552,7 +585,9 @@ export function FabricLabels({
         else pose.push(q.x, q.y, q.visible ? 1 : 0);
       }
       const sceneIdle = (scene as FabricScene & { labelsSettled?: () => boolean }).labelsSettled;
-      settledNow = poseHeld(seq.join("|")) && (typeof sceneIdle !== "function" || sceneIdle.call(scene));
+      const still = poseHeld(seq.join("|"));
+      cameraMoving = !still;
+      settledNow = still && (typeof sceneIdle !== "function" || sceneIdle.call(scene));
       // A fresh start for the stagger: the next drop after the camera moves again is paced from here.
       if (settledNow) ticksSinceDrop = LABEL_DROP_EVERY_FRAMES;
 
@@ -758,8 +793,15 @@ export function FabricLabels({
            left out, and MEASURED (A6): selecting core1 strands nine hosts and only six carried the
            mark; access2, access8 and access16 were decluttered by each other's marks, their
            STRANDED pill gone while the Inspector listed them. */
-        const forced =
-          id === sel || id === hov || isAlarmed || isCut || wantStranded !== "" || wantFinding !== "";
+        /* The hovered host is forced only on a still camera (labelResolve `labelUrgent`): an orbit
+           drag's pointer crosses devices without pointing at any, and forcing each one's name in on
+           the way past was itself a pop (motion probe, high tier). */
+        const forced = labelUrgent(
+          id === sel || isAlarmed || isCut || wantStranded !== "" || wantFinding !== "",
+          id === hov,
+          cameraMoving,
+        );
+        if (forced) forcedIds.add(id);
         /* Hysteresis, same rule and same reason as scene.ts LABEL_HYSTERESIS_PX: a label already
            on screen must overlap by more than the margin before it goes, a hidden one must clear
            by it before it comes back. Without it the two passes flicker names on and off for
@@ -806,6 +848,7 @@ export function FabricLabels({
           const own = leaderFor(t, off);
           return own !== null && placed.some((b) => touches(own, b));
         };
+        let clear = true;
         if (blocked(test, nameOffAnchor)) {
           /* A forced label is never hidden, and two forced labels must not smear into one either;
              an ordinary label near the edge gets the same search so the clamp does not cost it its
@@ -855,16 +898,35 @@ export function FabricLabels({
               break;
             }
           }
-          if (!found && !forced) {
-            if (settledNow || !shown || mayDrop()) {
-              releaseHome(id);
-              hide(id, el);
-              continue;
-            }
-            /* Held for a later frame: keeps its own anchor, like a forced label that found no slot. */
-          }
           /* If nothing clears, a forced label keeps its own anchor — overlapping is the lesser
              failure than silently dropping the mark. */
+          clear = found;
+        }
+        /* WHETHER the name is drawn this pass is the shared dwell gate's answer (labelResolve
+           `labelDwellVerdict`, the scene resolver's own rule), given only what THIS layer's geometry
+           says: is the box clear. A forced label is urgent and exempt; the settled pass is
+           history-free (F6). A hidden name whose box has cleared waits, claiming no box, while the
+           camera moves and for its dwell; a shown name whose box is taken is held at its own anchor
+           until its dwell runs out, and then leaves at the stagger's pace. */
+        const verdict = labelDwellVerdict({
+          wasShown: shown,
+          age: ages.get(id) ?? 0xffff,
+          pending: pendingIds.has(id),
+          clear,
+          urgent: forced,
+          cameraMoving,
+          settled: settledNow,
+        });
+        if (verdict.pending) pendingIds.add(id);
+        else pendingIds.delete(id);
+        if (!verdict.show) {
+          if (!verdict.leaving || settledNow || mayDrop()) {
+            releaseHome(id);
+            hide(id, el);
+            continue;
+          }
+          /* Its turn in the stagger has not come: held for a later frame at its own anchor. */
+          dy = 0;
         }
         box = dy === 0 ? box : { ...box, y: box.y + dy };
         const offAnchor = Math.abs(left + size.nameC - x) > LEADER_MIN_PX || dy !== 0 || flipped;
@@ -901,6 +963,30 @@ export function FabricLabels({
          back to the scene's telemetry. Duck-typed: the frozen contract has no such method, and a
          scene without it simply keeps its resolver's count. */
       (scene as FabricScene & { reportLabelsShown?: (n: number) => void }).reportLabelsShown?.(placed.length);
+
+      /* STILL CONVERGING (acceptance C5, the settle's half of the dwell — labelResolve
+         `labelSettleMayReverse`). The settled pass above is history-free (F6) and so has no dwell:
+         run while a name here changed fewer than LABEL_MIN_DWELL_PASSES passes ago, it can reverse
+         that change within a few frames — MEASURED, `access12 hidden for only 5 frame(s)` in a
+         six-frame dolly (review/capture-motion.mjs, light/high). This layer cannot hold the scene's
+         settle, so it says whether it is still converging, and a scene that honours the report keeps
+         `labelsSettled()` (and its `converged`) false meanwhile; the reversal then lands only after the
+         dwell, and a capture is never taken of a set this layer is about to change. Conservative: any
+         name whose verdict is younger than the dwell, except the ones the settled pass cannot move —
+         a forced (urgent) name, and one with no anchor on screen. Duck-typed like the calls above; a
+         scene without the method settles as before. */
+      let converging = false;
+      for (let i = 0; i < seq.length && !converging; i += 1) {
+        const id = seq[i];
+        const p = projected[i];
+        if (id === undefined || !p || !p.visible || forcedIds.has(id)) continue;
+        const el = els.get(id);
+        if (!el) continue;
+        const changed = (el.dataset.visible === "true") !== lastShown.get(id);
+        const age = changed ? 0 : Math.min(0xffff, (ages.get(id) ?? 0xffff) + 1);
+        if (!labelSettleMayReverse(age)) converging = true;
+      }
+      (scene as FabricScene & { reportLabelsConverging?: (b: boolean) => void }).reportLabelsConverging?.(converging);
     };
 
     frame = requestAnimationFrame(tick);

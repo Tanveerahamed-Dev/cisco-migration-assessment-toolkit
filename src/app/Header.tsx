@@ -170,7 +170,7 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
       label="Snapshot provenance"
       align="start"
       trigger={
-        <button type="button" className="hdr-snap" title={`${m.source} — sha256 ${m.sourceSha256}`}>
+        <button type="button" className="hdr-snap" title={`${m.source} — sha256 (${m.sourceDigestForm}) ${m.sourceSha256}`}>
           <span className="hdr-snap__line1">
             <span className="hdr-snap__file">{compact ? sha8 : file}</span>
           </span>
@@ -220,7 +220,7 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
           </div>
           <div className="snapdetail__row">
             <dt>Size</dt>
-            <dd>{`${groupDigits(m.sourceBytes)} bytes`}</dd>
+            <dd>{`${groupDigits(m.sourceBytes)} bytes (LF-normalised)`}</dd>
           </div>
           <div className="snapdetail__row">
             <dt>Schema</dt>
@@ -252,7 +252,8 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
         <p className="snapdetail__note">
           Every figure in this application is read from this file. It is a frozen collection, not a
           live view of the network: nothing here reflects a change made after the collection time
-          above.
+          above. The sha256 and size are taken over the file's LF-normalised form (every CR LF read
+          as LF, the form Git stores), so they are the same on a Windows and a Linux checkout.
         </p>
       </div>
     </Popover>

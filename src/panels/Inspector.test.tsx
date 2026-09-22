@@ -313,6 +313,23 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
     expect(body).toContain(FIRST_FINDING.cite);
   });
 
+  /* O15: the digest and the byte count are taken over the LF-normalised form (tools/source-binding.mjs),
+     not over the raw bytes of a Windows (CRLF) checkout, which are longer. A page that says "those
+     exact bytes" without naming the form sends a reader to hash the wrong file. */
+  it("names the byte form its digest and byte count are taken over", () => {
+    expect(fabric.meta.sourceDigestForm).toBe("lf-normalised");
+    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const p = panel(c, "provenance")!;
+    const labels = [...p.querySelectorAll("dt")].map((d) => d.textContent ?? "");
+    expect(labels).toContain("Source sha256 (LF-normalised)");
+    expect(labels).toContain("Source bytes (LF-normalised)");
+    const body = text(p);
+    expect(body).toContain("LF-normalised form");
+    expect(body).toContain("git cat-file blob HEAD:");
+    expect(body).toContain("a CRLF copy on disk is longer than that count");
+    expect(body).toContain("Recompile from a file whose LF-normalised form has that digest");
+  });
+
   it("says which layer answered the citation rather than implying the source was read", () => {
     const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
     expect(text(panel(c, "provenance"))).toContain("the compiled record carrying it");
@@ -497,6 +514,64 @@ describe("the panel is a dock, not a detour", () => {
     expect(sep.getAttribute("aria-valuenow")).toBe(sep.getAttribute("aria-valuemin"));
     key(sep, "End");
     expect(sep.getAttribute("aria-valuenow")).toBe(sep.getAttribute("aria-valuemax"));
+  });
+});
+
+/* Acceptance D3: closing the dock gives focus back through the ONE focus-return owner. MEASURED on
+   the preview build before this was routed (review/audit-d3-focus.mjs): every Inspector close path
+   landed on <body> — an Inspector opened with `i` has no `openInspector` capture, and one whose
+   invoker unmounted focused nothing. */
+describe("closing the Inspector never drops focus to <body> (D3)", () => {
+  const extras: HTMLElement[] = [];
+  afterEach(() => {
+    for (const el of extras.splice(0)) el.remove();
+  });
+  const addButton = (label: string): HTMLButtonElement => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    document.body.appendChild(b);
+    extras.push(b);
+    return b;
+  };
+  const setOpen = (v: boolean): void => {
+    act(() => useInvestigation.getState().setInspectorOpen(v));
+  };
+
+  it("returns to the element focused when it opened, even when opened without openInspector (the `i` path)", () => {
+    const c = mount(<Inspector cite={MODEL_CITE} />);
+    const invoker = addButton("invoker");
+    invoker.focus();
+    setOpen(true);
+    expect(c.querySelector('[role="tablist"]')!.contains(document.activeElement)).toBe(true);
+    setOpen(false);
+    expect(document.activeElement).toBe(invoker);
+  });
+
+  it("falls back to the stage when the invoker unmounted while the dock was open", () => {
+    const stage = document.createElement("div");
+    stage.id = "stage";
+    stage.tabIndex = -1;
+    document.body.appendChild(stage);
+    extras.push(stage);
+    mount(<Inspector />);
+    const invoker = addButton("invoker");
+    invoker.focus();
+    act(() => openInspector(MODEL_CITE));
+    invoker.remove();
+    setOpen(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(stage);
+  });
+
+  it("does not steal focus back when the reader closed it by moving focus elsewhere", () => {
+    mount(<Inspector />);
+    const invoker = addButton("invoker");
+    const elsewhere = addButton("elsewhere");
+    invoker.focus();
+    act(() => openInspector(MODEL_CITE));
+    elsewhere.focus();
+    setOpen(false);
+    expect(document.activeElement).toBe(elsewhere);
   });
 });
 

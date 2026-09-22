@@ -8,20 +8,19 @@
  *   - Every record carries `cite`: a dotted path back into the snapshot so the Inspector can show
  *     the raw evidence a claim rests on. A claim with no `cite` is a bug.
  *   - The source file's sha256 + byte length are stamped into `meta` so a rendered view can be
- *     bound to the exact bytes it was compiled from.
+ *     bound to the exact bytes it was compiled from — taken over the LF-normalised bytes, the form
+ *     Git stores (`meta.sourceDigestForm`); tools/source-binding.mjs owns that rule for every compiler.
  */
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSource } from "./source-binding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = resolve(HERE, "../../webapp/sample_data/sample_fleet.snapshot.json");
 const OUT = resolve(HERE, "../src/data/fabric.json");
 
-const raw = readFileSync(SRC);
-const snap = JSON.parse(raw.toString("utf8"));
-const sha256 = createHash("sha256").update(raw).digest("hex");
+/* The source and the bytes that bind it: tools/source-binding.mjs owns the rule (LF-normalised). */
+const { path: SRC, snap, binding, workingTree } = readSource(HERE);
 
 /** Absence is absence. "", "-", "N/A" and the engine's explicit [NOT OBSERVED] marker all mean unobserved. */
 const NOT_OBSERVED = /^\s*\[NOT OBSERVED\]/i;
@@ -459,9 +458,7 @@ const coverage = {
 
 const out = {
   meta: {
-    source: "webapp/sample_data/sample_fleet.snapshot.json",
-    sourceBytes: raw.length,
-    sourceSha256: sha256,
+    ...binding,
     schema: val(snap.schema),
     scriptVersion: val(snap.script_version),
     collectedAt: val(snap.collected_at),
@@ -489,7 +486,8 @@ const text = JSON.stringify(out);
 writeFileSync(OUT, text, "utf8");
 console.log(`compiled ${SRC}`);
 console.log(`     -> ${OUT}  (${(text.length / 1024).toFixed(0)} KB)`);
-console.log(`  sha256(source) = ${sha256}`);
+console.log(`  sha256(source, ${binding.sourceDigestForm}) = ${binding.sourceSha256}  (${binding.sourceBytes} bytes)`);
+console.log(`  sha256(working tree, not bound) = ${workingTree.sha256}  (${workingTree.bytes} bytes)`);
 console.log(
   `  devices=${devices.length} (inventoried=${coverage.devicesInventoried}, topology-only=${coverage.devicesOnTopologyOnly})`,
 );

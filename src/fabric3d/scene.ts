@@ -106,7 +106,7 @@ import {
   type RoleGlyph,
   type StateRingShape,
 } from "./geometry/chassis";
-import { buildCables, createCableMaterial, type CableSet } from "./geometry/cables";
+import { buildCables, coverageGamma, createCableMaterial, setCoverageGamma, type CableSet } from "./geometry/cables";
 import { DECK_DROP, Y_HALO, Y_STATE_RING, buildGround, type GroundSet } from "./geometry/ground";
 import { createInteraction, PICK_LAYER, type Interaction } from "./interaction";
 import { resolveLabels } from "./labelResolve";
@@ -1338,6 +1338,8 @@ function invisibleMaterial(): MeshBasicMaterial {
 function buildGhostLineMaterial(tokens: TokenPalette): LineMaterial {
   const mat = createCableMaterial("solid", 1.4, 0.95, { vertexColors: false });
   mat.color.copy(tokens.color("--claim-indeterminate"));
+  // Display-linear edge coverage, as every cable stroke (geometry/cables.ts coverageGamma).
+  setCoverageGamma(mat, coverageGamma(tokens));
   return mat;
 }
 
@@ -1366,6 +1368,15 @@ export interface FabricSceneEx extends FabricScene {
    * stranded / cut-point marks that widen them. An instrument that cannot be wrong is not one.
    */
   reportLabelsShown(n: number): void;
+  /**
+   * The DOM label layer reports, every tick, whether it is still CONVERGING: a name it changed fewer
+   * than LABEL_MIN_DWELL_PASSES passes ago that its history-free settled pass could reverse
+   * (labelResolve `labelSettleMayReverse`, acceptance C5). While true, `labelsSettled()` and
+   * `converged` stay false, so the settle — and a capture — waits out the DOM dwell (at most about
+   * 200 ms after the last non-forced change; it cannot deadlock). No render is requested: nothing
+   * needs drawing.
+   */
+  reportLabelsConverging(b: boolean): void;
   /**
    * The screen rectangle a device's chassis body covers right now, in the same space as
    * `project()`, or null when it is not wholly in front of the camera. The DOM label layer keeps
@@ -1572,6 +1583,8 @@ const createSceneImpl = (
   let chassisDistance = new Float32Array(0);
   /** What the DOM label layer really placed, when one is mounted. See reportLabelsShown. */
   let labelsPlaced: number | null = null;
+  /** The DOM label layer is still inside its dwell. See reportLabelsConverging. */
+  let domLabelsConverging = false;
   /** A pending label (see recomputeLabels) needs one more rendered frame to appear. */
   let labelsNeedFrame = false;
   /** Resolver passes since an on-screen label last left (see the staggered drops in recomputeLabels). */
@@ -1855,7 +1868,10 @@ const createSceneImpl = (
       // LABEL_HYSTERESIS_PX, moving camera only), then the nearer label takes the box.
       let cls = 60;
       if (s.id === selectedDevice) cls = 0;
-      else if (s.id === hoverDevice) cls = 1;
+      // Hover is urgent only on a still camera — labelResolve `labelUrgent`, the DOM layer's rule
+      // too: an orbit drag's pointer crosses devices without pointing at any, and claiming a box
+      // for each would drop a neighbour's name with no dwell.
+      else if (s.id === hoverDevice && !labelsCameraMoving) cls = 1;
       else if (highlight?.blockedHost === s.id) cls = 2;
       else if (trace !== null && trace.hops.some((h) => h.host === s.id)) cls = 3;
       else if (highlight !== null && highlight.hosts.includes(s.id)) cls = 4;
@@ -2315,14 +2331,20 @@ const createSceneImpl = (
    * true cross-fade between the two tiers' frames. Reduced motion removes it in one step on that
    * same frame instead: a swap, never an animation.
    *
-   * 300 ms, and STARTED ONE FRAME LATE (C5 critic, 2026-09-22: "a hard cut in a single frame").
+   * STARTED ONE FRAME LATE (C5 critic, 2026-09-22: "a hard cut in a single frame"; the fade was 300 ms then).
    * Measured in-page with a per-rAF opacity trace on a real GPU: the overlay held for 289 ms, then
    * went 0.92 -> 0.50 across ONE 91 ms frame — the new chain's first composed frame is the heavy
    * one, and a CSS transition started in the same task as that render spends its first half inside
    * it. Sampled by screenshots ~250 ms apart the remaining 100 ms could not register at all, so a
    * working fade read as a cut. The transition now starts on the animation frame AFTER the new
-   * tier has presented, and runs long enough to span several ordinary frames. */
-  const TIER_FADE_MS = 300;
+   * tier has presented, and runs long enough to span several ordinary frames.
+   *
+   * 280 ms, not 300 (acceptance C6, 2026-09-22): the 300 ms fade MEASURED 299.9-300.1 ms — at the
+   * ceiling, not under it — and a transition's end state is first on screen up to one 60 Hz frame
+   * after its duration, so the duration must leave that frame of room: 280 + 16.7 < 300. Still ~17
+   * ordinary frames, so the one-frame-late start above keeps its margin. Held by
+   * `src/core/motion-inventory.test.ts` (and its §4.8 row). */
+  const TIER_FADE_MS = 280;
   const TIER_FADE_FRAME_MS = 40;
   const TIER_FADE_STABLE_FRAMES = 3;
   const TIER_FADE_MAX_WAIT_MS = 1200;
@@ -3340,7 +3362,8 @@ const createSceneImpl = (
     return isConverged({
       compiled,
       // A frame rendered with occlusion suspended for motion is not the frame the scene settles on.
-      dirty: dirty || motionReducedRender,
+      // Nor is one whose DOM label set is about to change (reportLabelsConverging).
+      dirty: dirty || motionReducedRender || domLabelsConverging,
       stillFrames,
       cameraTweening: cameraRig.isTweening(),
     });
@@ -3610,8 +3633,12 @@ const createSceneImpl = (
       labelsPlaced = Math.max(0, Math.min(graph.order.length, Math.round(n)));
     },
 
+    reportLabelsConverging(b: boolean): void {
+      domLabelsConverging = b;
+    },
+
     labelsSettled(): boolean {
-      return labelsSettledPass && !dirty;
+      return labelsSettledPass && !dirty && !domLabelsConverging;
     },
 
     chassisScreenBox(deviceId: string): { x0: number; y0: number; x1: number; y1: number } | null {

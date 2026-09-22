@@ -38,6 +38,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { recordReturn, returnFocus, type ReturnRecord } from "../app/focus-return";
 import { aclUndecidability } from "../core/acl-coverage";
 import { bandObserved } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
@@ -673,6 +674,7 @@ export function Inspector({
   const { copy, status } = useCopyToClipboard();
   const tablistRef = useRef<HTMLDivElement>(null);
   const openedRef = useRef(false);
+  const invokerRef = useRef<ReturnRecord | null>(null);
 
   useEffect(() => {
     setHeight(readStoredHeight());
@@ -687,10 +689,20 @@ export function Inspector({
   useEffect(() => {
     if (open && !openedRef.current) {
       openedRef.current = true;
+      /* The invoker is whatever held focus as the dock opened (the `i` shortcut path has no
+         `openInspector` capture); `openInspector`'s capture is the fallback. Recorded through the
+         focus-return owner so the invoker's own opener is captured while it still exists. */
+      invokerRef.current = recordReturn(document.activeElement, tablistRef.current) ?? recordReturn(focusReturn);
+      focusReturn = null;
       tablistRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
     } else if (!open && openedRef.current) {
       openedRef.current = false;
-      focusReturn?.focus();
+      const invoker = invokerRef.current;
+      invokerRef.current = null;
+      /* Only when the close left focus nowhere: a reader who closed the dock by moving focus
+         elsewhere keeps it there. */
+      const now = document.activeElement;
+      if (now === null || now === document.body) returnFocus(invoker, null, [document.getElementById("stage")]);
     }
   }, [open]);
 
@@ -1044,7 +1056,7 @@ export function Inspector({
             <KeyRow label="Source file" mono>
               {orNotObserved(m.source, (s) => s, { what: "source file" })}
             </KeyRow>
-            <KeyRow label="Source sha256" mono>
+            <KeyRow label="Source sha256 (LF-normalised)" mono>
               <span className="insp-sha">
                 {orNotObserved(m.sourceSha256, (s) => s, {
                   what: "source sha256",
@@ -1057,7 +1069,7 @@ export function Inspector({
                 onClick={() => copy(m.sourceSha256, "source sha256")}
               />
             </KeyRow>
-            <KeyRow label="Source bytes" mono>
+            <KeyRow label="Source bytes (LF-normalised)" mono>
               {orNotObserved(m.sourceBytes, (n) => `${n.toLocaleString("en-GB")} bytes`, {
                 what: "source byte length",
               })}
@@ -1092,14 +1104,17 @@ export function Inspector({
             recorded fact.
           </p>
           <p className="insp-note">
-            The source record itself lives in the file named above, which is {""}
-            {m.sourceBytes.toLocaleString("en-GB")} bytes and is deliberately not bundled with this
-            build. The sha256 is the compiler's DECLARATION about the bytes it read — this page
-            reads it back out of the compiled model, it does not recompute it, so on its own it is
-            a label rather than a proof. What makes it a binding is a check that runs elsewhere:
+            The source record itself lives in the file named above and is deliberately not bundled
+            with this build. Its sha256 and byte count ({m.sourceBytes.toLocaleString("en-GB")} bytes)
+            are taken over the file's LF-normalised form — every CR LF read as LF, the form Git
+            stores — so they are the same on a Windows (CRLF) and a Linux (LF) checkout and equal{" "}
+            <code>git cat-file blob HEAD:&lt;source&gt; | sha256sum</code>; a CRLF copy on disk is
+            longer than that count. The sha256 is the compiler's DECLARATION about those bytes — this
+            page reads it back out of the compiled model, it does not recompute it, so on its own it
+            is a label rather than a proof. What makes it a binding is a check that runs elsewhere:
             the build's test suite recomputes the digest from the named file and rebuilds this
-            model from it, and fails if either disagrees. Recompile from a file with that digest
-            and you reproduce this model, byte for byte.
+            model from it, and fails if either disagrees. Recompile from a file whose LF-normalised
+            form has that digest and you reproduce this model, byte for byte.
           </p>
         </TabPanel>
 

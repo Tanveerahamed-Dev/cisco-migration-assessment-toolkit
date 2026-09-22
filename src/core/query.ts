@@ -948,6 +948,12 @@ export type ClauseScope =
       uncollected: DeviceRef[];
       /** Nothing in scope was collected: this result is silence, not observation. */
       evidenceBlind: boolean;
+      /**
+       * Devices whose OWN answer to the clause is undecided (neither in scope nor decided out) —
+       * e.g. `is:healthy` on a favourable band that partly measures missing evidence (B1). Rows
+       * naming only them are undetermined, and "no device matches" must not be said over them.
+       */
+      undecided: DeviceRef[];
     }
   | { kind: "not-device-scoped"; reason: string };
 
@@ -1046,6 +1052,9 @@ interface EntitySpec<T> {
    * carry no unobservable text fields.
    */
   textUndecidable?: (item: T) => boolean;
+  /** The hosts a via-devices clause resolves this row through — the same list `liftHosts` reads —
+   *  so the note can say how many undetermined rows name no device the fleet knows at all. */
+  hostsOf?: (item: T) => readonly string[];
 }
 
 /** The devices a clause selects, by their own attributes, with their collection status. */
@@ -1056,7 +1065,8 @@ const deviceScopeOf = (def: KeyDef, clause: Clause): ClauseScope => {
   if (!bound || bound.how !== "direct")
     return { kind: "not-device-scoped", reason: `"${def.key}" does not select devices by their own attributes.` };
   const m = makeMatcher(clause.values);
-  const inScope = fabric.devices.filter((d) => (clause.negated ? negate(bound.fn(d, m)) : bound.fn(d, m)) === "yes");
+  const answer = (d: Device): Tri => (clause.negated ? negate(bound.fn(d, m)) : bound.fn(d, m));
+  const inScope = fabric.devices.filter((d) => answer(d) === "yes");
   const uncollected = inScope.filter((d) => !d.collected).map(deviceRef);
   return {
     kind: "device-scope",
@@ -1064,18 +1074,32 @@ const deviceScopeOf = (def: KeyDef, clause: Clause): ClauseScope => {
     collectedInScope: inScope.length - uncollected.length,
     uncollected,
     evidenceBlind: inScope.length > 0 && uncollected.length === inScope.length,
+    undecided: fabric.devices.filter((d) => answer(d) === "unknown").map(deviceRef),
   };
 };
 
 const scopeNote = (clause: Clause, label: string, scope: ClauseScope): string | null => {
   if (scope.kind !== "device-scope") return null;
+  const asked = `"${clause.key}:${clause.values.join(", ")}"`;
+  /* Devices whose own answer is undecided are neither in scope nor decided out, so "no device
+     matches" is not said over them (B1: is:healthy over five qualified favourable bands). */
+  const n = scope.undecided.length;
+  const undecided =
+    n === 0
+      ? null
+      : `${n} ${n === 1 ? "device is" : "devices are"} undecided for ${asked} (${listHosts(scope.undecided)}), so ${label} naming them are undetermined, not excluded.`;
   if (scope.inScope === 0)
-    return `No device in this fleet matches "${clause.key}:${clause.values.join(", ")}", so no ${label} could match it either.`;
-  if (scope.uncollected.length === 0) return null;
+    return n === 0
+      ? `No device in this fleet matches ${asked}, so no ${label} could match it either.`
+      : `No device in this fleet is decided to match ${asked}. ${undecided}`;
+  if (scope.uncollected.length === 0) return undecided;
   const hosts = listHosts(scope.uncollected);
-  return scope.evidenceBlind
-    ? `Every device this names (${hosts}) was never collected, so no ${label} about it can exist. This empty result is an evidence gap, not an observation.`
-    : `${scope.uncollected.length} of ${scope.inScope} devices in scope were never collected (${hosts}); ${label} naming them are unknown, not absent.`;
+  return joinNotes(
+    scope.evidenceBlind
+      ? `Every device this names (${hosts}) was never collected, so no ${label} about it can exist. This empty result is an evidence gap, not an observation.`
+      : `${scope.uncollected.length} of ${scope.inScope} devices in scope were never collected (${hosts}); ${label} naming them are unknown, not absent.`,
+    undecided,
+  );
 };
 
 const clauseNote = (
@@ -1085,6 +1109,8 @@ const clauseNote = (
   label: string,
   undetermined: number,
   total: number,
+  /** Of the undetermined rows, those that name no device the fleet knows (via-devices only). */
+  namingNoDevice: number,
 ): string | null => {
   // Where the VALUE is the question (`has:`, `is:`), the message has to name the value: "has" alone
   // tells the user nothing about WHICH field went unanswered.
@@ -1096,8 +1122,18 @@ const clauseNote = (
       return `${subject} is not carried by ${label} and cannot be derived for them; every row is undetermined.`;
     case "incomplete":
       return `"${clause.key}:" has no value yet, so it is not filtering.`;
-    case "via-devices":
-      return `Resolved through each record's device list.${undetermined > 0 ? ` ${undetermined} of ${total} name no device the fleet knows, so they are undetermined.` : ""}`;
+    case "via-devices": {
+      /* Two different reasons leave a row undetermined here, and the note says which: the record
+         names no device the fleet knows, or every device it names answers the question "unknown"
+         itself (B1: `is:healthy` on a qualified favourable band). Attributing both to the first
+         told the reader 14 findings named no device when one did. */
+      const own = undetermined - namingNoDevice;
+      const parts = [
+        namingNoDevice > 0 ? `${namingNoDevice} of ${total} name no device the fleet knows` : null,
+        own > 0 ? `${own} of ${total} name only devices whose own answer to ${subject} is itself undecided` : null,
+      ].filter((x): x is string => x !== null);
+      return `Resolved through each record's device list.${parts.length > 0 ? ` ${parts.join("; ")}, so they are undetermined, not excluded.` : ""}`;
+    }
     case "via-findings":
       return `Resolved through each device's findings.${undetermined > 0 ? ` ${undetermined} of ${total} were never collected, so their findings are unknown — not absent.` : ""}`;
     default:
@@ -1261,7 +1297,18 @@ function applyClauses<T>(items: readonly T[], parsed: ParsedQuery, spec: EntityS
       withoutThisClause: without,
       scope: e.scope,
       note: joinNotes(
-        e.verdictNote ?? clauseNote(e.applicability, e.clause, e.def, spec.label, undetermined, total),
+        e.verdictNote ??
+          clauseNote(
+            e.applicability,
+            e.clause,
+            e.def,
+            spec.label,
+            undetermined,
+            total,
+            e.tri.filter(
+              (t, i) => t === "unknown" && !(spec.hostsOf?.(items[i] as T) ?? []).some((h) => deviceByHost.has(h)),
+            ).length,
+          ),
         scopeNote(e.clause, spec.label, e.scope),
       ),
     };
@@ -1299,6 +1346,7 @@ const FINDING_SPEC: EntitySpec<Finding> = {
   evidenceDerived: true,
   bind: (def) => def.finding,
   haystack: findingHaystack,
+  hostsOf: (f) => f.devices,
 };
 const DEVICE_SPEC: EntitySpec<Device> = {
   label: "devices",
@@ -1319,6 +1367,7 @@ const CROSS_SPEC: EntitySpec<CrossLayerFinding> = {
   evidenceDerived: true,
   bind: (def) => def.crossLayer,
   haystack: crossHaystack,
+  hostsOf: (c) => c.hosts,
 };
 
 export const applyToFindings = (findings: readonly Finding[], parsed: ParsedQuery): FilterResult<Finding> =>

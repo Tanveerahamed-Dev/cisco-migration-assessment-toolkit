@@ -388,3 +388,51 @@ describe("WCAG 1.4.3 — a token tokens.css declares non-text is never a text co
     expect(offenders, `non-text tokens used as text ink:\n${offenders.join("\n")}`).toEqual([]);
   });
 });
+
+/* ══ the design brief's colour table is a CACHE of this file (design-brief §3.3, open-issues O20) ══
+
+   The brief states "Owner: src/core/tokens.css. The hex values below are a cache of it". O20 found
+   31 colour tokens (18 light, 13 dark) had drifted — `--sev-high` read `#a14a0a` there while this
+   file shipped `#803804` — and nothing pinned the cache to its owner, so the drift can recur. The
+   denominator is every `--token: #hex` the brief's §3.3.1 and §3.3.2 code blocks state (not a list
+   of names), plus every fill in its severity-chip table; each must equal the shipped value. */
+describe("design-brief §3.3 restates tokens.css exactly", () => {
+  const BRIEF = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "docs", "design-brief.md");
+  const brief = readFileSync(BRIEF, "utf8").replace(/\r\n/g, "\n");
+  /** The first ```css block after a heading line that starts with `heading`. */
+  const cssBlockAfter = (heading: string): string => {
+    const at = brief.indexOf(`\n${heading}`);
+    if (at < 0) return "";
+    const open = brief.indexOf("```css\n", at);
+    const close = open < 0 ? -1 : brief.indexOf("\n```", open + 7);
+    return open < 0 || close < 0 ? "" : brief.slice(open + 7, close);
+  };
+  const hexTokens = (block: string): [string, string][] =>
+    [...block.matchAll(/(--[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})\s*;/g)].map((m) => [m[1]!, m[2]!.toLowerCase()]);
+
+  const THEMES: { heading: string; shipped: Record<string, string> }[] = [
+    { heading: "#### 3.3.1", shipped: light },
+    { heading: "#### 3.3.2", shipped: dark },
+  ];
+
+  for (const t of THEMES) {
+    it(`${t.heading}: every hex token the brief states equals the shipped token`, () => {
+      const stated = hexTokens(cssBlockAfter(t.heading));
+      expect(stated.length, `${t.heading} states no colour tokens — the parser or the brief moved`).toBeGreaterThan(20);
+      const drift = stated
+        .filter(([name, hex]) => (t.shipped[name] ?? "(not shipped)").toLowerCase() !== hex)
+        .map(([name, hex]) => `${name}: brief ${hex}, tokens.css ${t.shipped[name] ?? "(not shipped)"}`);
+      expect(drift).toEqual([]);
+    });
+  }
+
+  it("the severity-chip table's fills are the shipped severity tokens", () => {
+    const rows = [...brief.matchAll(/^\| (Critical|High|Medium|Low) \| `(#[0-9a-fA-F]{6})` → \*\*[\d.]+:1\*\* \| `(#[0-9a-fA-F]{6})` → \*\*[\d.]+:1\*\* \|$/gm)];
+    expect(rows.map((r) => r[1])).toEqual(["Critical", "High", "Medium", "Low"]);
+    for (const r of rows) {
+      const tok = `--sev-${r[1]!.toLowerCase()}`;
+      expect(r[2]!.toLowerCase(), `${tok} dark`).toBe(dark[tok]!.toLowerCase());
+      expect(r[3]!.toLowerCase(), `${tok} light`).toBe(light[tok]!.toLowerCase());
+    }
+  });
+});

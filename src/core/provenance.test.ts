@@ -201,6 +201,44 @@ describe("the source binding the whole product displays", () => {
   });
 });
 
+/* ── Nothing outside the compiled files pins the snapshot's digest ─────────────────────────────
+ *
+ * WHAT WAS WRONG. When the bound form changed (O15) the displayed tag changed with it, and three
+ * places still carried the old one as a literal: `review/layout-guard.mjs` defaulted its URL
+ * envelope to the old 12-character tag `snap=9cc348bd…` (every run would have opened a snapshot-mismatch page), and
+ * `src/fabric3d/devHandle.ts`/`.test.ts` carried it in example URLs. A literal copy of a digest is a
+ * cache that nothing invalidates. So the rule is structural: in every authored code file of the tree
+ * — found with `git ls-files -co --exclude-standard`, not listed — no hex literal of 8 or more
+ * characters may be a prefix of the bound digest, or of this checkout's working-tree digest (the
+ * form that used to be bound). The compiled JSON files are where the digest lives; Markdown records
+ * measurements. An abbreviated citation (`9cc348bd…5dfd`, hex followed by an ellipsis) is prose
+ * that cannot be used as a value, and is allowed. */
+describe("no authored code file pins the snapshot digest", () => {
+  it("every snap tag and digest is derived from the compiled meta, never typed in", () => {
+    const listed = execFileSync("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: PKG, encoding: "utf8" })
+      .split("\0")
+      .filter((p) => /\.(ts|tsx|mts|cts|js|mjs|cjs|html)$/.test(p))
+      .filter((p) => existsSync(resolve(PKG, p)));
+    expect(listed, "the scan must see this file itself (not vacuous)").toContain("src/core/provenance.test.ts");
+    expect(listed).toContain("review/layout-guard.mjs");
+    const raw = readFileSync(SOURCE);
+    const digests = [meta.sourceSha256, sha256(raw)];
+    const HEX = /(?<![0-9a-fA-F])([0-9a-f]{8,64})(?![0-9a-fA-F]|…)/g;
+    const pins: string[] = [];
+    for (const rel of listed) {
+      const text = readFileSync(resolve(PKG, rel), "utf8");
+      for (const m of text.matchAll(HEX)) {
+        const lit = m[1]!;
+        if (digests.some((d) => d.startsWith(lit))) {
+          const line = text.slice(0, m.index).split("\n").length;
+          pins.push(`${rel}:${line} ${lit}`);
+        }
+      }
+    }
+    expect(pins, "derive the tag from fabric.meta.sourceSha256 (or snapshotTag()) instead").toEqual([]);
+  });
+});
+
 /* ── Every compiled data file, not the one this file was first written for ──────────────────────
  *
  * WHAT WAS WRONG. The gate above names `fabric.json` and `compile-snapshot.mjs`. A second compiler
@@ -298,6 +336,16 @@ describe("every compiled data file is reproduced by its compiler from the named 
           `compiler changed and the file was not regenerated (run \`node tools/${name}\`).`,
       ).toBe(true);
     }
+  });
+
+  it.each(COMPILERS)("%s takes its binding from tools/source-binding.mjs and hashes nothing itself", (name) => {
+    /* One rule, not N copies of it: a compiler that hashes the source on its own can drift back to
+       the raw working-tree bytes without any other test noticing until a CRLF host compiles it. */
+    const text = readFileSync(join(TOOLS, name), "utf8");
+    expect(HELPERS, "the shared binding module must exist beside the compilers").toContain("source-binding.mjs");
+    expect(text, `tools/${name} must import the shared binding rule`).toMatch(/from\s+["']\.\/source-binding\.mjs["']/);
+    expect(text, `tools/${name} must not hash anything itself`).not.toMatch(/["']node:crypto["']|\bcreateHash\s*\(/);
+    expect(text, `tools/${name} must not read the snapshot itself`).not.toMatch(/sample_fleet\.snapshot\.json["']/);
   });
 
   it.each(COMPILERS)("%s writes the same bytes from a CRLF checkout as from an LF one (O15)", (name) => {

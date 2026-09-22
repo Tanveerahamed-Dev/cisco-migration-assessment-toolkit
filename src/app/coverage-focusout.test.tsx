@@ -62,6 +62,33 @@ describe("coverage disclosure focus-out", () => {
     });
   }
 
+  it("closing it gives focus to the bar's landmark, never <body>, when the opener has unmounted (D3)", () => {
+    /* The bar inside a named region, as the owner's step 4 expects of any surface. */
+    host = document.createElement("section");
+    host.setAttribute("aria-label", "Application");
+    const opener = document.createElement("button");
+    opener.textContent = "Opener";
+    document.body.append(host, opener);
+    root = createRoot(host);
+    act(() => root!.render(<StatusBar />));
+    opener.focus();
+    const btn = [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("collected"))!;
+    act(() => btn.click());
+    expect(panel()).not.toBeNull();
+    opener.remove();
+    const closeBtn = panel()!.querySelector<HTMLButtonElement>('button[aria-label="Close the coverage disclosure"]')!;
+    act(() => closeBtn.click());
+    expect(panel()).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(host);
+  });
+
+  it("names the byte form of the snapshot digest it shows (O15)", () => {
+    mount();
+    const sha = host!.querySelector<HTMLElement>(".sb__sha")!;
+    expect(sha.title).toMatch(/^Source snapshot sha256 \(LF-normalised\) [0-9a-f]{64}$/);
+  });
+
   it("stays open while focus moves among the status bar's own triggers", () => {
     mount();
     const buttons = [...host!.querySelectorAll("button")];

@@ -455,7 +455,14 @@ export function scopeTuple(trace: Trace): ScopeTuple {
 export function claimBadge(trace: Trace): ClaimBadge {
   if (isInvalidInput(trace)) return "INVALID INPUT";
   if (trace.outcome === "out-of-scope") return "OUT OF SCOPE";
-  if (trace.outcome === "indeterminate") return "INDETERMINATE";
+  /* The badge may not claim more than the outcome WORD does. A word that bands UNDETERMINED claims
+     nothing — `indeterminate`, and any value this module does not recognise (C3: a runtime string
+     from compiled JSON). This used to test `outcome === "indeterminate"` only, so an unrecognised
+     word over a clean, fully-modelled traversal fell through to the traversal checks and earned
+     SCOPED while `bandOfTrace` beside it said UNDETERMINED (2026-09-22 probe, claims.test.ts): the
+     C2 disagreement reached through the C3 door. Read through `bandOfOutcome`, the one owner of the
+     word-level mapping, so a word it cannot band can never out-rank its own band here. */
+  if (bandOfOutcome(trace.outcome) === "UNDETERMINED") return "INDETERMINATE";
   const s = scopeTuple(trace);
   if (s.unmodelledOnPath > 0 || s.indeterminateEvidence > 0) return "INDETERMINATE";
   /* A traversal that visited NOTHING decided nothing, and must not be able to earn the strongest
@@ -466,8 +473,16 @@ export function claimBadge(trace: Trace): ClaimBadge {
      returned SCOPED. The badge was computed from what was ABSENT rather than from what was
      PRESENT, which is the product's own named failure shape occurring in the function that decides
      its strongest claim. The repair is to require positive evidence: at least one hop actually
-     traversed. */
-  if (trace.hops.length === 0) return "INDETERMINATE";
+     traversed.
+     WHERE THAT RULE LIVES NOW (2026-09-22). It used to be a line here, `if (trace.hops.length === 0)
+     return "INDETERMINATE"`, and that line was unpinned (acceptance F2): for a decided word
+     (delivered / denied / dropped) `hopsSupportOutcome` refuses a zero-hop trace too (`last ===
+     undefined`), so the line only ever decided an UNRECOGNISED word. The outcome-band rule above
+     now withholds every badge from such a word, hops or none — so the line decided nothing on any
+     input (measured: deleted, all claims tests stay green) and was removed rather than kept as a
+     guard no test can reach. The rule has exactly two owners, each load-bearing and each pinned in
+     claims.test.ts: the outcome-band rule above (every UNDETERMINED word), and `hopsSupportOutcome`
+     just below (every decided word; `review/mutation-check.mjs` claims-c1-empty-traversal). */
   /* The outcome word may not claim more than the hops say (docs/refutation.md C2): a `delivered`
      trace whose path ends in a loop, or a refusal whose terminal hop passed, is a trace that
      contradicts itself, and a self-contradicting answer is not a scoped one. Read through

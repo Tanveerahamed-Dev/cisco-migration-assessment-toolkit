@@ -59,8 +59,15 @@
    The one exception is an UNBREAKABLE-TOKEN CONTAINER: a box that holds a single token longer than
    its column with no boundary a reader could accept (a sha256), where the only alternative to a
    last-resort break is painting past the pane. Such a container may set `overflow-wrap: anywhere`,
-   and every one that does says so in a comment next to it. `review/capture.mjs text` reports any
-   break with a letter or digit on both sides as `mid-identifier` (or `mid-word`). */
+   and every one that does says so in a comment next to it, in the words UNBREAKABLE-TOKEN
+   CONTAINER. A token that no longer splits must still FIT: the part holding it needs a floor no
+   narrower than its longest token (see .ui-notobs__why), or a <wbr> after each separator.
+
+   Enforced by review/capture.mjs, not by this comment: `text` reports a line break inside a token
+   with no boundary character on either side (`mid-identifier`, or `mid-word` for a plain word),
+   including one that falls between two text nodes, and a line that runs past its block's content
+   edge (`overrun`); `wrap` fails any token-break licence in src/ without the words above; and
+   `selftest` proves each of those detectors still fires on a layout whose answer is known. */
 :where(code, kbd, samp, [class*="mono"]) {
   overflow-wrap: normal;
   word-break: normal;
@@ -104,9 +111,16 @@
   height: 0.75em;
 }
 
+/* The reason's floor is the LARGER of a readable measure and its own longest token. The basis
+   (16ch) is the measure: a wrapping flex line takes the reason beside the words only when 16ch fits
+   there. The minimum is left `auto`, which for a flex item is its min-content width — the longest
+   unbreakable token in the reason. It used to be `min(16ch, 100%)`, a floor BELOW that token: at
+   1440 the device pane's "(num_power_supplies)" (110px) sat in a 105px reason column beside "not
+   observed" and ran 4.9px over the dashed rim, because an identifier no longer splits between two
+   letters (see "wrapping" above) and nothing else made room for it. With the minimum at the token,
+   a reason that cannot fit beside the words moves under them and takes the whole box. */
 .ui-notobs__why {
   flex: 1 1 16ch;
-  min-inline-size: min(16ch, 100%);
   color: var(--text-muted);
   font-weight: var(--fw-regular);
   white-space: normal;

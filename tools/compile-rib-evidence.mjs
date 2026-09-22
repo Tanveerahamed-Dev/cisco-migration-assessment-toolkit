@@ -26,18 +26,16 @@
  *
  * Run: node tools/compile-rib-evidence.mjs
  */
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSource } from "./source-binding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = resolve(HERE, "../../webapp/sample_data/sample_fleet.snapshot.json");
 const OUT = resolve(HERE, "../src/forwarding/rib-evidence.json");
 
-const raw = readFileSync(SRC);
-const snap = JSON.parse(raw.toString("utf8"));
-const sha256 = createHash("sha256").update(raw).digest("hex");
+/* The source and the bytes that bind it: tools/source-binding.mjs owns the rule (LF-normalised). */
+const { snap, binding } = readSource(HERE);
 
 /** @param {unknown} v @returns {Record<string, any>} */
 const obj = (v) => (v !== null && typeof v === "object" && !Array.isArray(v) ? v : {});
@@ -107,9 +105,7 @@ for (const [host, rec] of Object.entries(obj(snap.overlay))) {
 const sorted = Object.fromEntries(Object.entries(hosts).sort(([a], [b]) => a.localeCompare(b)));
 const out = {
   meta: {
-    source: "webapp/sample_data/sample_fleet.snapshot.json",
-    sourceSha256: sha256,
-    sourceBytes: raw.length,
+    ...binding,
     routingProtocols,
     routingProtocolsFrom: "routing_neighbors",
   },
@@ -117,5 +113,5 @@ const out = {
 };
 writeFileSync(OUT, JSON.stringify(out, null, 1) + "\n");
 console.log(
-  `rib-evidence: ${Object.keys(sorted).length} hosts, routing protocols [${routingProtocols.join(", ")}], sha ${sha256.slice(0, 8)}`,
+  `rib-evidence: ${Object.keys(sorted).length} hosts, routing protocols [${routingProtocols.join(", ")}], sha ${binding.sourceSha256.slice(0, 8)} (${binding.sourceDigestForm})`,
 );

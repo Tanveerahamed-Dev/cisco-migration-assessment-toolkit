@@ -229,6 +229,8 @@ const interactionDurations = (entries) => {
 
 /** Canvas points proven to select a device, found once per run by `J2`'s `prime`. */
 const J2_HITS = [];
+/** The characters J3 types, one per repetition; shared by its act and its per-rep effect check. */
+const J3_CHARS = "coreaccesswitdb";
 
 /** Label candidates reordered tier-by-tier, heaviest (link degree) first — see `deviceAnchors`. */
 const stratifyByTier = (labels) => {
@@ -353,16 +355,30 @@ const JOURNEYS = [
        centre leaves the URL at `?s=findings` and changes nothing. So the journey must click a
        cell, and `verify` asserts the selection actually happened rather than trusting the click. */
     ready: ".ag__row--data [role=\"gridcell\"]",
+    /* HARNESS FIX (acceptance report E3, 2026-09-22). `verify` used to CLICK a finding before the
+       measured loop to prove selection worked — which spent the first selection after load, the
+       expensive one (measured by the sweep at worstLoAF 93.4 ms in 1 of 3 reps), outside the
+       measurement. Every J1 figure was therefore a SECOND-or-later selection. The pre-loop check now
+       only counts rows (no interaction), and the proof that each measured click selected a finding is
+       taken AFTER that rep's timing has been captured (`effect`), so rep 0 is the first selection
+       after load and a click that selected nothing is excluded from the figure rather than counted
+       as a fast one. */
     verify: async (page) => {
       const n = await page.locator(".ag__row--data").count();
-      if (n < 5) return `only ${n} finding data rows present`;
-      const before = await page.evaluate(() => location.search);
-      await page.locator(".ag__row--data").nth(2).locator('[role="gridcell"]').first().click();
-      await page.waitForTimeout(400);
-      const after = await page.evaluate(() => location.search);
-      return /[?&]f=/.test(after) && after !== before
-        ? null
-        : `selecting a finding did not change the investigation (URL ${before} -> ${after})`;
+      return n < 5 ? `only ${n} finding data rows present` : null;
+    },
+    verifyInteracts: false,
+    effect: {
+      before: (page) => page.evaluate(() => location.search),
+      check: async (page, before) => {
+        const ok = await page
+          .waitForFunction((prev) => location.search !== prev && /[?&]f=/.test(location.search), before, { timeout: 3000 })
+          .then(() => true)
+          .catch(() => false);
+        if (ok) return null;
+        const after = await page.evaluate(() => location.search);
+        return `the click selected no finding (URL ${before} -> ${after})`;
+      },
     },
     act: async (page, i) => {
       const rows = page.locator(".ag__row--data");
@@ -388,6 +404,23 @@ const JOURNEYS = [
        device's projected screen anchor, so the label's transform gives a point that is ON the
        device. The click still goes to the CANVAS at that point — this remains a real 3-D pick, not
        a DOM shortcut. */
+    /* STATED, not fixed: the anchors are found by clicking the canvas until the APP reports a device
+       selected, so the first device selections after load are spent discovering them. Recorded per
+       run in `firstInteractionConsumedBeforeLoop`. */
+    consumesFirstInteraction: "prime clicks candidate canvas points until the app reports a device selected, so the first device selections after load are spent finding the anchors",
+    effect: {
+      before: async () => null,
+      check: async (page, _before, i) => {
+        const want = J2_HITS[i % J2_HITS.length]?.id ?? null;
+        const ok = await page
+          .waitForFunction((id) => (location.search.match(/[?&]d=([^&]*)/) || [])[1] === id, want, { timeout: 3000 })
+          .then(() => true)
+          .catch(() => false);
+        if (ok) return null;
+        const got = await page.evaluate(() => (location.search.match(/[?&]d=([^&]*)/) || [])[1] ?? null);
+        return `the click aimed at ${want} selected ${got ?? "nothing"}`;
+      },
+    },
     prime: async (page) => {
       J2_HITS.length = 0;
       J2_HITS.push(...(await deviceAnchors(page)));
@@ -412,6 +445,20 @@ const JOURNEYS = [
        the build — verified by enumerating every input on all four surfaces. The journey was
        unmeasurable only because the harness was pointed at an element that does not exist. */
     ready: ".hdr-query__input, .pq-query__input, [data-journey=\"query-input\"]",
+    /* HARNESS FIX (2026-09-22, the J1 defect's class). This verify TYPES a character, so run before
+       the loop it spent the first keystroke after load outside the measurement. It now runs AFTER the
+       loop (`verifyAfter`), and each measured keystroke's own effect is checked once its timing is
+       captured (`effect`), so rep 0 is the first keystroke and a keystroke that changed nothing is
+       excluded rather than counted as fast. */
+    verifyAfter: true,
+    effect: {
+      before: async () => null,
+      check: async (page, _before, i) => {
+        const want = J3_CHARS.charAt(i % J3_CHARS.length);
+        const v = await page.locator(".hdr-query__input, [data-journey=\"query-input\"]").first().inputValue();
+        return v === want ? null : `the keystroke "${want}" left the query reading ${JSON.stringify(v)}`;
+      },
+    },
     verify: async (page) => {
       const input = page.locator(".hdr-query__input, [data-journey=\"query-input\"]").first();
       await input.click();
@@ -483,8 +530,7 @@ const JOURNEYS = [
         .waitForFunction(() => document.querySelectorAll(".ag__row--data").length >= 100, null, { timeout: 5000 })
         .catch(() => {});
       await page.waitForTimeout(400);
-      const CHARS = "coreaccesswitdb";
-      await page.keyboard.press(CHARS.charAt(i % CHARS.length));
+      await page.keyboard.press(J3_CHARS.charAt(i % J3_CHARS.length));
     },
   },
   {
@@ -503,6 +549,17 @@ const JOURNEYS = [
        E2 figure is the worst of them per repetition (worstPerRep), so one slow later character or
        Backspace cannot be diluted by seven fast ones. */
     ready: ".hdr-query__input, [data-journey=\"query-input\"]",
+    /* Types "core" and erases it: run AFTER the loop, so the first measured repetition is the first
+       typing after load (the J1 defect's class, 2026-09-22). Each rep's own effect — the field back to
+       empty by keyboard — is checked once its timing is captured. */
+    verifyAfter: true,
+    effect: {
+      before: async () => null,
+      check: async (page) => {
+        const v = await page.locator(".hdr-query__input, [data-journey=\"query-input\"]").first().inputValue();
+        return v === "" ? null : `four Backspaces left the query reading ${JSON.stringify(v)}`;
+      },
+    },
     verify: async (page) => {
       const input = page.locator(".hdr-query__input, [data-journey=\"query-input\"]").first();
       await input.click();
@@ -549,12 +606,44 @@ const JOURNEYS = [
        (endpoint_identity[0]) and 10.0.20.0/24 is a connected route on core1 (routes.core1[4]). */
     url: "/?s=path&flow=10.0.10.50>10.0.20.10>tcp>443",
     ready: '#rail-path form.pt-form button[type="submit"]',
+    /* HARNESS FIX (acceptance report E1, 2026-09-22). `verify` ran BEFORE the measured act and
+       proved only that the URL-SEEDED flow had rendered a result — not that any timed swap+submit
+       traced anything. A submit that was short-circuited (same flow) or ignored would have been
+       timed as a fast trace. The pre-loop check below still reads the button and the seeded result
+       (neither is an interaction); the proof now belongs to the SAME act that was timed: after each
+       rep's timing is captured, `effect` requires the investigated flow in the URL AND the rendered
+       result to have changed, and every rep's outcome is reported (`repEffects`, `repsWithEffect`). */
     verify: async (page) => {
       const btn = page.locator('#rail-path form.pt-form button[type="submit"]').first();
       const txt = (await btn.textContent()) ?? "";
       if (!/trace/i.test(txt)) return `submit button reads ${JSON.stringify(txt)}, not a trace action`;
       const result = await page.locator("#rail-path .pt-result__title, #rail-path h3").count();
       return result > 0 ? null : "no trace result rendered for the seeded flow — the panel mounted but did not trace";
+    },
+    verifyInteracts: false,
+    effect: {
+      before: (page) =>
+        page.evaluate(() => ({
+          flow: new URLSearchParams(location.search).get("flow"),
+          result: document.querySelector("#rail-path .pt-result")?.textContent ?? null,
+        })),
+      check: async (page, before) => {
+        const ok = await page
+          .waitForFunction(
+            (prev) => {
+              const flow = new URLSearchParams(location.search).get("flow");
+              const result = document.querySelector("#rail-path .pt-result")?.textContent ?? null;
+              return flow !== null && flow !== prev.flow && result !== null && result !== prev.result;
+            },
+            before,
+            { timeout: 3000 },
+          )
+          .then(() => true)
+          .catch(() => false);
+        if (ok) return null;
+        const now = await page.evaluate(() => new URLSearchParams(location.search).get("flow"));
+        return `the timed swap+submit produced no new trace (flow ${before?.flow} -> ${now}; result ${before?.result === null ? "absent" : "unchanged or absent"})`;
+      },
     },
     act: async (page) => {
       /* Every repetition must be a genuinely NEW flow: re-submitting the identical flow is
@@ -582,6 +671,10 @@ const JOURNEYS = [
     id: "J5-open-palette",
     url: "/",
     ready: "body",
+    /* Opens the palette, so it runs AFTER the loop: before it, it spent the first palette open after
+       load (the chunk/first-mount cost) outside the measurement (the J1 defect's class, 2026-09-22).
+       The palette is closed again within the rep, so no per-rep effect can be read after timing. */
+    verifyAfter: true,
     /* `ready: "body"` is always satisfiable, so this journey NEEDS an effect check — without one it
        measures the browser's response to a keypress that did nothing and reports PASS. It did
        exactly that against the scaffold: 16 ms, one sample, no palette in the application at all.
@@ -765,7 +858,12 @@ for (const j of JOURNEYS.filter((x) => !ONLY || ONLY.some((o) => x.id.includes(o
     /* Prove the interaction actually DOES something before measuring how fast it does it. A
        latency figure for a no-op is not a fast interaction, it is a missing one — and it is worse
        than no figure at all, because it reports as PASS. */
-    if (typeof j.verify === "function") {
+    /* A verify that PERFORMS the journey's own interaction runs after the measured loop instead
+       (`verifyAfter`), so it cannot spend the first interaction after load outside the measurement.
+       Recorded either way, per journey, so a reader can see whether rep 0 was the first. */
+    rec.firstInteractionConsumedBeforeLoop =
+      j.consumesFirstInteraction ?? (typeof j.verify === "function" && !j.verifyAfter && j.verifyInteracts !== false ? "verify performs the journey's interaction before the loop" : null);
+    if (typeof j.verify === "function" && !j.verifyAfter) {
       const why = await j.verify(page).catch((e) => `verify threw: ${String(e).slice(0, 120)}`);
       if (why) {
         /* A verify failure on a window that is not presenting is the environment, not the app
@@ -810,12 +908,18 @@ for (const j of JOURNEYS.filter((x) => !ONLY || ONLY.some((o) => x.id.includes(o
     let ok = 0;
     const repStarts = [];
     const allEntries = [];
+    /* PER-REP EFFECT (acceptance report E1/E3, 2026-09-22). The proof that a timed act DID what the
+       journey claims is taken from THAT act, after its timing has been captured: one entry per
+       successful act, null = effect observed, a string = why not. A rep whose act had no observed
+       effect timed a no-op and is excluded from the figure (never counted as a fast interaction). */
+    const repEffects = [];
     for (let i = 0; i < REPS; i++) {
       if (process.env.ATLAS_TEST_MINIMIZE_LATE === "1" && i === 3 && HEADED) {
         const cdp2 = await ctx.newCDPSession(page);
         const { windowId } = await cdp2.send("Browser.getWindowForTarget");
         await cdp2.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
       }
+      const effectBefore = j.effect ? await j.effect.before(page).catch(() => null) : null;
       repStarts.push(await page.evaluate(() => performance.now()));
       try {
         await j.act(page, i);
@@ -832,6 +936,7 @@ for (const j of JOURNEYS.filter((x) => !ONLY || ONLY.some((o) => x.id.includes(o
         return ev;
       });
       allEntries.push(...window_);
+      if (j.effect) repEffects.push(await j.effect.check(page, effectBefore, i).catch((e) => `effect check threw: ${String(e).slice(0, 120)}`));
     }
     await page.evaluate(
       () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300)))),
@@ -893,7 +998,23 @@ for (const j of JOURNEYS.filter((x) => !ONLY || ONLY.some((o) => x.id.includes(o
       if (bin < 0) { rec.interactionsBeforeFirstRep++; continue; }
       repWorst[bin] = Math.max(repWorst[bin] ?? 0, dur);
     }
+    rec.firstInteraction = {
+      worstMs: repWorst[0] === null || repWorst[0] === undefined ? null : Number(repWorst[0].toFixed(1)),
+      effectObserved: j.effect ? repEffects[0] === null : null,
+      consumedBeforeLoop: rec.firstInteractionConsumedBeforeLoop,
+    };
+    if (j.effect) {
+      rec.repEffects = repEffects.map((why, k) => ({ rep: k, effect: why === null, why }));
+      rec.repsWithEffect = repEffects.filter((w) => w === null).length;
+      for (let k = 0; k < repWorst.length; k++) if (repEffects[k] !== null && repEffects[k] !== undefined) repWorst[k] = null;
+    }
     const perRepWorst = repWorst.filter((v) => v !== null);
+    /* A verify that interacts runs here, after every timed rep, and a failure still withholds the
+       verdict: a feature that does not work was not measured, however fast the keypresses were. */
+    const postVerifyWhy =
+      typeof j.verify === "function" && j.verifyAfter
+        ? await j.verify(page).catch((e) => `verify threw: ${String(e).slice(0, 120)}`)
+        : null;
 
     /* Presentation health at the end of the measured window (see the INSTRUMENT note). */
     rec.presentation = await page
@@ -925,15 +1046,23 @@ for (const j of JOURNEYS.filter((x) => !ONLY || ONLY.some((o) => x.id.includes(o
       rec.presentationFailure = true;
       rec.reason = `window stopped presenting during the measured loop (end-of-loop rAF median ${pr.rafIntervalMedianMs ?? "none in 5 s"} ms, bar < ${PRESENTING_MAX_RAF_MS} ms) — harness environment, not the app; ${perRepWorst.length} of ${ok} reps had entries`;
     }
+    if (postVerifyWhy) {
+      rec.measured = false;
+      rec.reason = `verify (after the loop): ${postVerifyWhy}`;
+    }
     rec.reps = ok;
     rec.samples = durations.length;
     rec.repsWithASample = perRepWorst.length;
     if (!rec.measured)
       rec.reason =
         rec.reason ??
-        (perRepWorst.length === 0
-          ? `no interaction entries observed (presentation: visibility=${rec.presentation?.visibilityNow}, visibility changes=${(rec.presentation?.visibilityLog?.length ?? 1) - 1}, focus=${rec.presentation?.hasFocus}, rAF median=${rec.presentation?.rafIntervalMedianMs}ms max=${rec.presentation?.rafIntervalMaxMs}ms)`
-          : `only ${perRepWorst.length} of ${ok} repetitions produced an Event Timing entry; E2 needs >= ${MIN_REPS_WITH_SAMPLE} — a rep with no entry was not observed, it was not fast`);
+        /* The effect is asked FIRST: a no-op act yields entries too (measured: a J4 whose submit was
+           never clicked still produced 25 swap-click entries), so "no entries" would misname it. */
+        (j.effect && rec.repsWithEffect < ok
+          ? `only ${perRepWorst.length} of ${ok} repetitions both produced an Event Timing entry and had a verified effect — ${ok - rec.repsWithEffect} timed act(s) changed nothing (first: ${repEffects.find((w) => w !== null)}); E2 needs >= ${MIN_REPS_WITH_SAMPLE}, and a no-op is not a fast interaction`
+          : perRepWorst.length === 0
+            ? `no interaction entries observed (presentation: visibility=${rec.presentation?.visibilityNow}, visibility changes=${(rec.presentation?.visibilityLog?.length ?? 1) - 1}, focus=${rec.presentation?.hasFocus}, rAF median=${rec.presentation?.rafIntervalMedianMs}ms max=${rec.presentation?.rafIntervalMaxMs}ms)`
+            : `only ${perRepWorst.length} of ${ok} repetitions produced an Event Timing entry; E2 needs >= ${MIN_REPS_WITH_SAMPLE} — a rep with no entry was not observed, it was not fast`);
     rec.inp = {
       p50: pct(durations, 50),
       p75: pct(durations, 75),
@@ -1049,6 +1178,10 @@ for (const j of JOURNEYS.filter((x) => !ONLY || ONLY.some((o) => x.id.includes(o
     `${rec.verdict.padEnd(12)} ${(rec.e3Verdict ?? "-").padEnd(9)} ${rec.id.padEnd(22)} worstPerRep p95=${rec.worstPerRep?.p95 ?? "-"}ms p50=${rec.worstPerRep?.p50 ?? "-"}ms max=${rec.worstPerRep?.max ?? "-"}ms | pooled p95=${rec.inp?.p95 ?? "-"}ms  samples=${rec.samples ?? 0}  longTasks>50ms=${rec.longTasks?.over50ms ?? "-"} (max ${rec.longTasks?.maxMs ?? "-"}ms, ON-PATH ${rec.longTasksOver50OnPath ?? "-"}${rec.onPathByPhase ? ` = input-delay ${rec.onPathByPhase["input-delay"]} / in-handler ${rec.onPathByPhase["in-handler"]} / post-handler ${rec.onPathByPhase["post-handler-pre-present"]}` : ""})${rec.reason ? "  [" + rec.reason + "]" : ""}`,
   );
   if (rec.dilution) console.log(`             ${" ".repeat(22)} DILUTION: ${rec.dilution}`);
+  if (rec.firstInteraction)
+    console.log(
+      `             ${" ".repeat(22)} first interaction after load: ${rec.firstInteraction.consumedBeforeLoop ? `NOT MEASURED HERE — ${rec.firstInteraction.consumedBeforeLoop}` : `rep 0 worst ${rec.firstInteraction.worstMs ?? "-"} ms`}${rec.repEffects ? `; acts with a verified effect ${rec.repsWithEffect} of ${rec.reps}` : "; per-rep effect not checkable"}`,
+    );
 }
 
 hostLoadMeter.sample();

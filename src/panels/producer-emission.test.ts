@@ -18,9 +18,18 @@ const SRC = resolve(__dirname, "../../../webapp/sample_data/sample_fleet.snapsho
 const raw = readFileSync(SRC);
 const snap = JSON.parse(raw.toString("utf8")) as Record<string, any>;
 
+/* The bound form (O15, tools/source-binding.mjs): the LF-normalised bytes — every CR LF read as LF,
+   nothing else touched — which is what Git stores, so the digest is the same from a CRLF (Windows)
+   or an LF checkout. Restated here independently of the tool (latin1 is a byte-preserving decode).
+   This used to hash the RAW disk bytes, i.e. the Windows working tree, which no clone reproduces. */
+const lfNormalised = Buffer.from(raw.toString("latin1").split("\r\n").join("\n"), "latin1");
+
 describe("the emission sidecar is bound to the same bytes", () => {
-  it("sha256 matches the source and the compiled fabric", () => {
-    expect(emission.meta.sourceSha256).toBe(createHash("sha256").update(raw).digest("hex"));
+  it("sha256 matches the source (LF-normalised form) and the compiled fabric", () => {
+    expect(emission.meta.sourceDigestForm).toBe("lf-normalised");
+    expect(emission.meta.sourceSha256).toBe(createHash("sha256").update(lfNormalised).digest("hex"));
+    expect(emission.meta.sourceBytes).toBe(lfNormalised.byteLength);
+    expect(emission.meta.sourceSha256).toBe(fabric.meta.sourceSha256);
     expect(PRODUCER_EMISSION_TRUSTED).toBe(true);
   });
 });

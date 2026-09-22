@@ -1,8 +1,9 @@
 {
  "meta": {
   "source": "webapp/sample_data/sample_fleet.snapshot.json",
-  "sourceSha256": "9cc348bd58bbc2ed204692b42fec3c51a64c530f0b900e26ee7911f4357f5dfd",
-  "sourceBytes": 3148592,
+  "sourceDigestForm": "lf-normalised",
+  "sourceSha256": "9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
+  "sourceBytes": 3072771,
   "routingProtocols": [
    "bgp",
    "eigrp",

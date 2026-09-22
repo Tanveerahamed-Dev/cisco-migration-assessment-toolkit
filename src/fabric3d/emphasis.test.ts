@@ -15,6 +15,9 @@
  * WHAT IT DOES NOT PROVE. Nothing here renders. That the shader consumes `aRecede` the way this
  * value assumes is scene.test.ts's shader-patch assertions plus the capture harness, not this.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import fabricJson from "../data/fabric.json";
 import type { Device, Link } from "../core/types";
@@ -22,6 +25,11 @@ import { computeLayout } from "./layout";
 import { profileFor } from "./quality";
 import { buildFabricGraph } from "./scene";
 import {
+  HOVER_EASE,
+  RECEDE_EASE,
+  SELECT_EASE,
+  createEaseChannel,
+  stepEaseChannel,
   RECEDE_DEPTH,
   RECEDE_NEIGHBOUR,
   STILL_FRAMES_FOR_CONVERGENCE,
@@ -229,5 +237,98 @@ describe("the convergence rule the capture harness waits on", () => {
     expect(isConverged({ ...settled, cameraTweening: true })).toBe(false);
     expect(isConverged({ ...settled, stillFrames: STILL_FRAMES_FOR_CONVERGENCE - 1 })).toBe(false);
     expect(isConverged({ ...settled, stillFrames: STILL_FRAMES_FOR_CONVERGENCE })).toBe(true);
+  });
+});
+
+/* ── C6: the recession is a FINITE ease, and settles when §4.8 says it does ───────────────────────
+ *
+ * The independent refuter measured THIS machine, not a channel in isolation: `stepEmphasis` at
+ * 60 fps reached 99 % at 1,067 ms and settled at 1,350 ms, while §4.8 promised 240 ms — the
+ * `RECEDE_MS` constant was an exponential time constant. So the settle time is asserted here on the
+ * real graph, through `stepEmphasis` itself, against the row §4.8 states for `RECEDE_MS` (read from
+ * the brief, not copied), and reduced motion is asserted to land every value in one frame. */
+describe("C6: stepEmphasis settles within the §4.8 row for RECEDE_MS, and snaps under reduced motion", () => {
+  const FRAME_60 = 1000 / 60;
+  const brief = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "docs", "design-brief.md"), "utf8");
+  const s48 = brief.slice(brief.indexOf("### 4.8 "), brief.indexOf("### 4.9 "));
+  const row = s48.split("\n").find((l) => l.startsWith("|") && l.includes("`RECEDE_MS`"));
+  const stated = Number(/settles in \*\*(\d+(?:\.\d+)?) ms\*\* at 60 fps/.exec(row ?? "")?.[1]);
+
+  /** Frames until every uploaded value equals its target, and whether `stepEmphasis` said so. */
+  function framesToTarget(reduced: boolean): { frames: number; reportedRestAt: number } {
+    const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
+    try {
+      const state = focusOn(graph, "core1");
+      const target = (): number[] => {
+        const out: number[] = [];
+        for (const s of graph.order) out.push(state.target[s.index] as number);
+        for (const b of graph.cables.batches) for (const id of b.segmentLinkIds) out.push(Math.fround(state.linkTarget.get(id) ?? 0));
+        return out;
+      };
+      const want = target();
+      let frames = 0;
+      let reportedRestAt = -1;
+      while (frames < 1000) {
+        stepEmphasis(graph, state, FRAME_60, reduced);
+        frames += 1;
+        const got = uploaded(graph);
+        if (got.every((v, i) => Object.is(v, want[i]))) {
+          // One more step: a machine that is AT its target must report rest.
+          reportedRestAt = stepEmphasis(graph, state, FRAME_60, reduced) ? -1 : frames + 1;
+          break;
+        }
+      }
+      return { frames, reportedRestAt };
+    } finally {
+      graph.dispose();
+    }
+  }
+
+  it("the brief states a settle time for RECEDE_MS (the check is not vacuous)", () => {
+    expect(row, "§4.8 has a row naming `RECEDE_MS`").toBeDefined();
+    expect(Number.isFinite(stated) && stated > 0).toBe(true);
+  });
+
+  it("every device and cable segment is exactly on target no later than §4.8 states, and under 300 ms", () => {
+    const { frames, reportedRestAt } = framesToTarget(false);
+    const settledMs = Math.round(frames * FRAME_60 * 1000) / 1000;
+    expect(settledMs, `the recession settled at ${settledMs.toFixed(1)} ms; §4.8 states ${stated} ms`).toBeLessThanOrEqual(stated);
+    expect(settledMs).toBeLessThan(300);
+    // Not instantaneous either: an ease that lands in one frame is a cut, not a 240 ms dim.
+    expect(frames).toBeGreaterThan(10);
+    expect(reportedRestAt, "stepEmphasis kept reporting motion after every value reached its target").toBeGreaterThan(0);
+  });
+
+  it("under reduced motion every value lands on its target in the first frame", () => {
+    expect(framesToTarget(true).frames).toBe(1);
+  });
+});
+
+/* ── The scalar channel the hover rim and halo use: the settled value is the target, whatever dt ── */
+describe("C6 / F6: an ease channel's settled value does not depend on this machine's frame timing", () => {
+  const run = (dts: readonly number[], spec = SELECT_EASE): { value: number; frames: number; movingUntilLanded: boolean } => {
+    const ch = createEaseChannel(0);
+    let frames = 0;
+    let movingUntilLanded = true;
+    // Interrupted half-way: a new target starts a new ease from wherever the value is.
+    for (let i = 0; i < 3; i += 1, frames += 1) stepEaseChannel(ch, spec, 0.7, dts[frames % dts.length] as number);
+    while (frames < 1000) {
+      const moving = stepEaseChannel(ch, spec, 0.35, dts[frames % dts.length] as number);
+      frames += 1;
+      if (ch.value !== 0.35 && !moving) movingUntilLanded = false;
+      if (!moving) break;
+    }
+    return { value: ch.value, frames, movingUntilLanded };
+  };
+
+  it("lands bit-identically on the target under steady, jittery and coarse frame times", () => {
+    for (const spec of [SELECT_EASE, HOVER_EASE, RECEDE_EASE]) {
+      const a = run(STEADY, spec);
+      const b = run(JITTERY, spec);
+      const c = run(COARSE, spec);
+      expect([a.value, b.value, c.value], spec.name).toEqual([0.35, 0.35, 0.35]);
+      expect(a.movingUntilLanded && b.movingUntilLanded && c.movingUntilLanded, `${spec.name} reported rest before landing`).toBe(true);
+      expect(a.frames, `${spec.name}: the frame counts differed, so the agreement is not three identical runs`).not.toBe(c.frames);
+    }
   });
 });

@@ -22,6 +22,7 @@
  * timeout uses setTimeout, which schedules — it does not read a clock into rendered output.
  */
 import { useEffect, useSyncExternalStore } from "react";
+import { recordReturn, returnFocus, type ReturnRecord } from "./focus-return";
 
 /* ══ types ═════════════════════════════════════════════════════════════════ */
 
@@ -515,26 +516,28 @@ export const clearPendingKeys = (): void => setPending([]);
    bindings owns whether their documentation is on screen. */
 
 let helpOpen = false;
-let helpReturn: HTMLElement | null = null;
+let helpReturn: ReturnRecord | null = null;
 const helpListeners = new Set<() => void>();
 
 export function setHelpOpen(v: boolean, focusReturn?: HTMLElement | null): void {
   if (helpOpen === v) return;
   helpOpen = v;
-  if (v) helpReturn = focusReturn ?? (document.activeElement as HTMLElement | null);
+  // Recorded through the focus-return owner at OPEN time, so the invoker's own opener (the menu
+  // trigger around a menu item) is captured while it still exists.
+  if (v) helpReturn = recordReturn(focusReturn ?? document.activeElement);
   for (const l of helpListeners) l();
   if (!v) {
-    // Focus goes back to the exact invoking element (WCAG 2.4.3, acceptance D3). The Dialog
-    // primitive also restores, but it restores to whatever had focus when it mounted; a caller
-    // that opened the sheet from a menu item that has since unmounted needs this explicit target.
-    // Focused once now and once after React has unmounted the sheet: while the modal is still
+    // Focus goes back to the exact invoking element (WCAG 2.4.3, acceptance D3), or — when that
+    // item has since unmounted — to what opened it; the owner (./focus-return.ts) decides. The
+    // Dialog primitive also restores, but only to whatever had focus when it mounted.
+    // Returned once now and once after React has unmounted the sheet: while the modal is still
     // mounted the page behind it is `inert` and refuses focus, so the first call can be a no-op.
     const target = helpReturn;
     helpReturn = null;
-    target?.focus?.();
+    returnFocus(target, null);
     if (target && typeof setTimeout === "function") {
       setTimeout(() => {
-        if (target.isConnected && document.activeElement !== target) target.focus?.();
+        returnFocus(target, null);
       }, 0);
     }
   }

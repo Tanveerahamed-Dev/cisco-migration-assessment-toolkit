@@ -22,7 +22,7 @@
  */
 import evidenceJson from "./rib-evidence.json";
 import { fabric, routesOf } from "../core/data";
-import type { Cite } from "../core/types";
+import { sameSourceBinding, type Cite, type SourceBinding } from "../core/types";
 
 interface ProtocolRow {
   protocol: string;
@@ -49,14 +49,15 @@ interface HostEvidence {
   overlay: OverlayPeer[];
 }
 interface EvidenceFile {
-  meta: { source: string; sourceSha256: string; sourceBytes: number; routingProtocols: string[]; routingProtocolsFrom: string };
+  meta: SourceBinding & { routingProtocols: string[]; routingProtocolsFrom: string };
   hosts: Record<string, HostEvidence>;
 }
 
 const FILE = evidenceJson as unknown as EvidenceFile;
 
-/** The sidecar is evidence only about the bytes it was compiled from. */
-export const RIB_EVIDENCE_TRUSTED = FILE.meta.sourceSha256 === fabric.meta.sourceSha256;
+/** The sidecar is evidence only about the bytes it was compiled from: every binding field must
+ *  agree — digest, its form, byte length and source (O15, `sameSourceBinding`). */
+export const RIB_EVIDENCE_TRUSTED = sameSourceBinding(FILE.meta, fabric.meta);
 
 /** One reason a collected table cannot be read as complete, with the record that says so. */
 export interface RibIncompleteness {

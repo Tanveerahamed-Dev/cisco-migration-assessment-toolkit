@@ -16,7 +16,12 @@
  * gate, and neither is an opt-in nobody opted in with.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { snapshotTag } from "../app/urlSync";
 import { SCENE_HANDLE_PARAM, SCENE_HANDLE_STORAGE_KEY, sceneHandleRequested } from "./devHandle";
+
+/* The address bar as `urlSync` normalises it — with THIS build's snapshot tag, derived rather than
+   typed in, so the fixture cannot go stale when the compiled source binding changes. */
+const NORMALISED = `/?v=1&snap=${snapshotTag()}`;
 
 const navEntries = (...urls: string[]): void => {
   vi.spyOn(performance, "getEntriesByType").mockImplementation((type: string) =>
@@ -44,7 +49,7 @@ describe("sceneHandleRequested — who gets a handle to the renderer", () => {
 
   it("says NO to an ordinary visitor of a production build", () => {
     vi.stubEnv("DEV", false);
-    navEntries("http://localhost/?v=1&snap=9cc348bd58bb");
+    navEntries(`http://localhost${NORMALISED}`);
     expect(sceneHandleRequested()).toBe(false);
   });
 
@@ -59,14 +64,14 @@ describe("sceneHandleRequested — who gets a handle to the renderer", () => {
     /* This is the production failure exactly: the page was OPENED with the flag, the router
        rewrote the address bar, and only then did the lazy chunk holding this module evaluate. */
     vi.stubEnv("DEV", false);
-    window.history.replaceState({}, "", "/?v=1&snap=9cc348bd58bb");
+    window.history.replaceState({}, "", NORMALISED);
     navEntries(`http://localhost/?s=fabric&${SCENE_HANDLE_PARAM}=1`);
     expect(sceneHandleRequested()).toBe(true);
   });
 
   it("does not turn itself on from a navigation that never asked", () => {
     vi.stubEnv("DEV", false);
-    window.history.replaceState({}, "", "/?v=1&snap=9cc348bd58bb");
+    window.history.replaceState({}, "", NORMALISED);
     navEntries("http://localhost/?s=fabric&other=1");
     expect(sceneHandleRequested()).toBe(false);
   });

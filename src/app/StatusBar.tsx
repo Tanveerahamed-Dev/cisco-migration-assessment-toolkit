@@ -57,6 +57,7 @@ import type { QualityTier, SceneStats } from "../fabric3d/contract";
 import { IconClose } from "../ui/icons";
 import { IconButton, NotObserved } from "../ui/primitives";
 import { CoverageBar } from "./CoverageBar";
+import { returnFocus } from "./focus-return";
 import "./chrome.css";
 
 /** The claim-strength vocabulary, with the token each badge is drawn in (design brief §6.4). */
@@ -132,7 +133,7 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
     /* Focus returns to the exact control that opened the panel. Dropping focus on <body> silently
        resets keyboard navigation to the top of the document, which costs a keyboard user the
        whole header every time they check a denominator. */
-    returnTo.current?.focus();
+    returnFocus(returnTo.current, barRef.current);
     returnTo.current = null;
   }, []);
 
@@ -268,7 +269,7 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
               page is running on — two different numbers, and the source one is what binds this model
               to an upstream artefact. The Inspector's Provenance tab carries the full argument,
               including that this value is the compiler's declaration read back, not a recomputation. */}
-          <code className="sb__sha" title={`Source snapshot sha256 ${fabric.meta.sourceSha256}`}>
+          <code className="sb__sha" title={`Source snapshot sha256 (LF-normalised) ${fabric.meta.sourceSha256}`}>
             {fabric.meta.sourceSha256.slice(0, 8)}
           </code>
           <span className="sb__when">

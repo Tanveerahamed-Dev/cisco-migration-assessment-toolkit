@@ -63,6 +63,103 @@ export interface LabelResolverState {
  */
 export const LABEL_MIN_DWELL_PASSES = 12;
 
+/**
+ * THE ONE DWELL GATE — every per-label show/hide decision over TIME, for both label surfaces.
+ *
+ * Two surfaces decide whether a name is drawn: this module's `resolveLabels` (the scene's resolver)
+ * and FabricLabels.tsx's DOM declutter (the text the reader actually sees). Each used to own its
+ * own rule, and they disagreed: MEASURED (C5 motion audit, 2026-09-22, the harness's six camera
+ * sequences on a real GPU) the scene resolver blinked on none, while the DOM layer — which had a
+ * spatial hysteresis but no time dwell, and let a hidden name reappear while the camera moved —
+ * blinked on four of six (`access16 hidden 4f` in an orbit drag, `access2`/`access4` 2–4 frame runs
+ * at a focus fly, `access15 hidden 1f` at a reset fly). Both now ask THIS function, so the two
+ * cannot disagree about when a name may appear or leave. Each surface keeps only its own GEOMETRY
+ * (what "clear" means for its boxes) and the shared stagger pacing (`dropEveryPasses`).
+ *
+ * The rules, in order:
+ *   - settled (the final still frame): history-free — shown iff urgent or clear (acceptance F6);
+ *   - urgent (an investigation subject: selected, hovered, alarmed, marked): shown at once, kept;
+ *   - a shown label whose box is still clear stays;
+ *   - a shown label whose box is taken stays until LABEL_MIN_DWELL_PASSES passes after it appeared
+ *     (`held`); after that it LEAVES (and the caller's stagger may still pace the leaving);
+ *   - a hidden label whose box is clear does NOT appear while the camera moves, nor within the
+ *     dwell of its last change: it waits, `pending`, claiming no box;
+ *   - otherwise it needs its box clear on two consecutive passes (the one-frame temporal hold)
+ *     before it appears.
+ */
+export interface LabelDwellInput {
+  /** The label was drawn after the previous pass. */
+  wasShown: boolean;
+  /** Passes since its verdict last changed; `Infinity` when the caller keeps no age. */
+  age: number;
+  /** It found its box clear on the previous pass while hidden (the temporal hold). */
+  pending: boolean;
+  /** Its box is clear this pass (the surface's own geometry says so). */
+  clear: boolean;
+  /** An investigation subject: exempt from every hold. */
+  urgent: boolean;
+  /** The camera moved this pass. */
+  cameraMoving: boolean;
+  /** The scene is idle and this is its final frame. */
+  settled: boolean;
+}
+
+export interface LabelDwellVerdict {
+  /** Draw the label this pass. */
+  show: boolean;
+  /** Shown only because its dwell has not run out: its box is taken, so it claims none. */
+  held: boolean;
+  /** Carry into the next pass as the temporal hold. */
+  pending: boolean;
+  /** A shown label the gate lets leave this pass; the caller's stagger may still pace it. */
+  leaving: boolean;
+}
+
+/**
+ * Which label is URGENT (exempt from every hold of the gate below). A MARKED label — the selection,
+ * the trace's ending, a cut point, a stranded host, a finding's host — always: its mark is the
+ * answer to the question on screen. The HOVERED label only while the camera is still. During an
+ * orbit drag the pointer sweeps across devices without pointing at any of them, and exempting
+ * each one it crosses is itself the popping: MEASURED (motion probe, high tier, orbit drag, 3 of 3
+ * runs, with the dwell gate in place) access16 left under the dwell's rules and came straight back
+ * 2–4 frames later because the drag's pointer crossed its chassis. On a still camera a hovered
+ * name still shows at once (design brief 4.7: hover promotes the label).
+ */
+export const labelUrgent = (marked: boolean, hovered: boolean, cameraMoving: boolean): boolean =>
+  marked || (hovered && !cameraMoving);
+
+/**
+ * THE SETTLE'S HALF OF THE DWELL. The settled pass is history-free (F6), so it has no dwell of its
+ * own: whatever it disagrees with, it reverses at once. It therefore may not RUN while it would
+ * reverse a label younger than the dwell — a surface keeps asking for passes (the scene resolver's
+ * `needsFrame`) or reports itself still converging (the DOM layer) until every such label has held
+ * its verdict LABEL_MIN_DWELL_PASSES passes. `age` is the label's age AFTER the pass just run (0 =
+ * it changed on that pass), which is the age the next, settled pass would see.
+ *
+ * MEASURED (review/capture-motion.mjs, light/high/dolly-in, 2026-09-22): `access12 hidden for only
+ * 5 frame(s)` in a move of six moving frames — the name left at the start of the move and the
+ * settled pass on the first idle frame put it straight back, the move having ended before its
+ * dwell did. The final set is unchanged (still the history-free one, F6); only WHEN it is reached.
+ */
+export const labelSettleMayReverse = (age: number): boolean => age >= LABEL_MIN_DWELL_PASSES;
+
+export function labelDwellVerdict(g: LabelDwellInput): LabelDwellVerdict {
+  if (g.settled) {
+    const show = g.urgent || g.clear;
+    return { show, held: false, pending: false, leaving: g.wasShown && !show };
+  }
+  if (g.urgent) return { show: true, held: false, pending: false, leaving: false };
+  if (g.wasShown) {
+    if (g.clear) return { show: true, held: false, pending: false, leaving: false };
+    if (g.age < LABEL_MIN_DWELL_PASSES) return { show: true, held: true, pending: false, leaving: false };
+    return { show: false, held: false, pending: false, leaving: true };
+  }
+  if (!g.clear) return { show: false, held: false, pending: false, leaving: false };
+  if (g.cameraMoving || g.age < LABEL_MIN_DWELL_PASSES) return { show: false, held: false, pending: true, leaving: false };
+  if (g.pending) return { show: true, held: false, pending: false, leaving: false };
+  return { show: false, held: false, pending: true, leaving: false };
+}
+
 export interface LabelResolverInput {
   /** Screen boxes, 4 per label (x0, y0, x1, y1); NaN in x0 = anchor not visible. */
   boxes: Float32Array;
@@ -91,7 +188,8 @@ export interface LabelResolverResult {
   kept: Uint8Array;
   shown: number;
   behind: number;
-  /** A held or pending label needs another pass to reach its verdict. Always false when settled. */
+  /** A held or pending label needs another pass to reach its verdict, or the settled pass would
+   *  reverse a label younger than the dwell (`labelSettleMayReverse`). Always false when settled. */
   needsFrame: boolean;
 }
 
@@ -114,6 +212,7 @@ export function resolveLabels(input: LabelResolverInput, state: LabelResolverSta
   let shown = 0;
   let behind = 0;
   let pendingAny = false;
+  const held: number[] = [];
   const age = state.age !== undefined && state.age.length === n ? state.age : null;
   for (const i of rank) {
     if (Number.isNaN(boxes[i * 4] ?? NaN)) {
@@ -139,53 +238,38 @@ export function resolveLabels(input: LabelResolverInput, state: LabelResolverSta
       clear = false;
       behind += 1;
     }
-    if (settled) {
-      /* The final frame: a clear box is placed now. The temporal hold exists to stop a name
-         flashing into a gap for one frame of a MOVING camera; a still camera has no next frame. */
-      state.pending[i] = 0;
-      if (urgent || clear) {
-        kept[i] = 1;
-        shown += 1;
-      }
-      continue;
-    }
-    /* A hidden name that has become clear does not appear while the camera moves, nor within the
-       dwell of its last change (LABEL_MIN_DWELL_PASSES): it stays pending, and claims no box. */
-    const heldBack =
-      !urgent &&
-      state.wasKept[i] === 0 &&
-      (input.cameraMoving === true || (age !== null && (age[i] ?? 0) < LABEL_MIN_DWELL_PASSES));
-    if (clear && heldBack) {
-      state.pending[i] = 1;
-      pendingAny = true;
-    } else if (urgent || (clear && (state.wasKept[i] === 1 || state.pending[i] === 1))) {
+    /* The verdict over TIME is the shared gate's (`labelDwellVerdict` above), never re-derived
+       here: the DOM label layer asks the same function, so the two surfaces cannot disagree. The
+       settled pass is history-free inside it (F6); a hidden name that has become clear does not
+       appear while the camera moves nor within its dwell, and stays pending, claiming no box. */
+    const v = labelDwellVerdict({
+      wasShown: state.wasKept[i] === 1,
+      age: age === null ? Infinity : (age[i] ?? 0),
+      pending: state.pending[i] === 1,
+      clear,
+      urgent,
+      cameraMoving: input.cameraMoving === true,
+      settled,
+    });
+    state.pending[i] = v.pending ? 1 : 0;
+    if (v.pending) pendingAny = true;
+    if (v.held) held.push(i);
+    else if (v.show) {
       kept[i] = 1;
-      state.pending[i] = 0;
       shown += 1;
-    } else if (clear) {
-      state.pending[i] = 1;
-      pendingAny = true;
-    } else {
-      state.pending[i] = 0;
     }
   }
 
   let needsFrame = pendingAny;
-  if (!settled && age !== null) {
-    /* The LEAVING half of the dwell (LABEL_MIN_DWELL_PASSES): a name that appeared fewer than the
-       dwell's passes ago keeps its box a little longer. Before the staggered drops, so a label held
-       here is not also counted as one of their leavers. (The APPEARING half is in the placement
-       loop above, so a held-back name never claims a box it will not draw.) */
-    for (let i = 0; i < n; i += 1) {
-      if ((age[i] ?? 0) >= LABEL_MIN_DWELL_PASSES) continue;
-      if (Number.isNaN(boxes[i * 4] ?? NaN)) continue; // left the view: gone, never held
-      if ((classOf[i] ?? 0) < URGENT_CLASS_BELOW) continue;
-      if (state.wasKept[i] === 1 && kept[i] === 0) {
-        kept[i] = 1;
-        shown += 1;
-        needsFrame = true;
-      }
-    }
+  /* The LEAVING half of the dwell: a name the gate holds (it appeared fewer than
+     LABEL_MIN_DWELL_PASSES passes ago) keeps its box a little longer. Kept only after placement, so
+     a leaving name never blocks one being placed, and before the staggered drops, so a label held
+     here is not also counted as one of their leavers. A label that left the VIEW (NaN box) never
+     reaches the gate: gone, never held. */
+  for (const i of held) {
+    kept[i] = 1;
+    shown += 1;
+    needsFrame = true;
   }
   if (!settled) {
     /* STAGGERED DROPS: at most one label that was on screen and still has an anchor leaves per
@@ -218,5 +302,20 @@ export function resolveLabels(input: LabelResolverInput, state: LabelResolverSta
     }
   }
   state.wasKept.set(kept);
+  if (!settled && age !== null && !needsFrame) {
+    /* The settled pass the scene would run next, on these same boxes (it runs over the frame last
+       rendered), computed on scratch state so nothing here moves the real history. Where it would
+       reverse a label younger than the dwell, another pass is owed: the scene keeps rendering its
+       still frames — each an ordinary pass under the gate — and runs its settled pass only once
+       the reversal would no longer be a blink (`labelSettleMayReverse`). Urgent labels and labels
+       with no anchor are the same in both passes, so they never hold it. */
+    const hf = resolveLabels(
+      { ...input, settled: true, cameraMoving: false },
+      { wasKept: kept.slice(), pending: new Uint8Array(n), passesSinceDrop: input.dropEveryPasses },
+    ).kept;
+    for (let i = 0; i < n && !needsFrame; i += 1) {
+      if ((hf[i] ?? 0) !== (kept[i] ?? 0) && !labelSettleMayReverse(age[i] ?? 0)) needsFrame = true;
+    }
+  }
   return { kept, shown, behind, needsFrame };
 }

@@ -1,18 +1,24 @@
 /**
  * capture.mjs — deterministic screenshot harness for the visual-review loop.
  *
- * Four jobs:
+ * Jobs:
  *   1. `node review/capture.mjs app`    — capture Atlas Scope in a fixed set of investigation states.
  *   2. `node review/capture.mjs refs`   — capture the quality-bar reference products.
  *   3. `node review/capture.mjs reduced`— the `prefers-reduced-motion` evidence (acceptance D7).
  *   4. `node review/capture.mjs twice`  — capture, re-capture, byte-compare (acceptance F6).
+ *   5. `node review/capture.mjs text`   — clipped/broken text, coverage, tab overflow per state (C2, B7, D4);
+ *                                        its verdict also carries 6 and 7.
+ *   6. `node review/capture.mjs wrap`   — the static token-break licence scan of src/ (C2); no server.
+ *   7. `node review/capture.mjs selftest` — the text/tab/wrap detectors on fixtures with a known
+ *                                        answer, so a blind detector cannot read as a clean app; no server.
  *
  * Determinism matters more than convenience here: a critic comparing two runs must be looking at a
  * difference we made, not at a layout that reshuffled. So: fixed viewport, fixed deviceScaleFactor,
  * animations disabled at capture time, web fonts awaited, and the app's own layout seeded.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
@@ -190,8 +196,8 @@ async function verifyRendered(page, state) {
  *               identifiers ("may legitimately wrap anywhere"), so `overflow-wrap: anywhere` on a
  *               prose block could split a config key between two letters and the check, scoped to
  *               letters-only words, could not see it by construction. An identifier may break only
- *               at a `_ . / -` boundary or not at all (owner: src/ui/primitives.css); a break with a
- *               letter or digit on BOTH sides is never that.
+ *               at a `_ . / -` boundary or not at all (owner: src/ui/primitives.css); a break with
+ *               no boundary character on EITHER side ("SERV / ERS", "[ / 3]") is never that.
  *
  * Scrolled-away content is not "clipped": a list or a horizontal scroll region hides content the
  * reader can reach. That is a different invariant, checked for the one surface where it is a
@@ -244,6 +250,30 @@ function readTextFidelity(L) {
     return (p.length < 4 ? 1 : p[3]) >= 0.5;
   };
   const snippet = (t) => (t.length > 80 ? `${t.slice(0, 77)}...` : t);
+  /* A token BOUNDARY: a character an identifier may break at (`_ . / -`, plus `:`, `|` and `\`),
+     the dashes prose breaks after, the explicit break characters (soft hyphen, zero-width space),
+     and white space. A line break with none of these on either side splits a token (see
+     "Wrapping" below). */
+  const BOUNDARY = /[\s_.\/:|\\\-­​‐-―]/u;
+  /* The whitespace-free run of `s` around a line break before index `i`, less wrapping punctuation
+     — but a closing bracket the token itself opened stays: "acls.core1.PROTECT_SERVERS[3]" is
+     reported whole, not as "…SERVERS[3". A plain word and an identifier are different kinds
+     because they have different owners (prose wraps at spaces; an identifier may break only at a
+     boundary, or not at all — src/ui/primitives.css). */
+  const tokenAround = (s, i) => {
+    const tokStart = Math.max(0, s.slice(0, i).search(/\S+$/u));
+    const tokEnd = i + (s.slice(i).match(/^\S+/u)?.[0].length ?? 0);
+    let token = s.slice(tokStart, tokEnd).replace(/^[("'‘“\[{<]+/u, "");
+    const opener = { ")": "(", "]": "[", "}": "{", ">": "<" };
+    const count = (t, c) => t.split(c).length - 1;
+    while (token.length > 0 && /[)"'’”\]}>,;:!?.]/u.test(token.at(-1))) {
+      const c = token.at(-1);
+      if (opener[c] !== undefined && count(token, opener[c]) >= count(token, c)) break;
+      token = token.slice(0, -1);
+    }
+    const identifier = /[_.\/:\d-]/u.test(token) || !/^\p{L}+$/u.test(token);
+    return { token, identifier, left: s.slice(tokStart, i), right: s.slice(i, tokEnd) };
+  };
 
   const byElement = new Map();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -402,6 +432,44 @@ function readTextFidelity(L) {
       }
     }
 
+    /* Overrun: a line painted past the CONTENT edge of the block that lays it out. Once an
+       identifier is no longer licensed to split between two letters (C2), a token wider than its
+       column does not break — it runs on, into the box's padding and edge ("(num_power_supplies)"
+       over the dashed rim of a not-observed box at 1440, 2026-09-22) or past it. Neither `clipped`
+       (nothing hides it) nor `escaped` (the surface behind it is still its own) can see that. Only
+       the part a reader can see counts, and a scroller or an ellipsis is a different, reachable
+       case. The cure is never the old licence: the token must fit (give the part a floor no
+       narrower than its longest token), break at a boundary (<wbr>), or live in a declared
+       UNBREAKABLE-TOKEN CONTAINER. */
+    {
+      let blk = el;
+      while (blk.parentElement && /^(inline|contents)$/.test(getComputedStyle(blk).display)) blk = blk.parentElement;
+      const bcs = blk === el ? cs : getComputedStyle(blk);
+      if (!/auto|scroll/.test(bcs.overflowX) && bcs.textOverflow !== "ellipsis" && cs.textOverflow !== "ellipsis") {
+        const bb = blk.getBoundingClientRect();
+        const cL = bb.left + blk.clientLeft + parseFloat(bcs.paddingLeft);
+        const cR = bb.left + blk.clientLeft + blk.clientWidth - parseFloat(bcs.paddingRight);
+        let over = 0;
+        for (const l of lines) {
+          const mid = (l.top + l.bottom) / 2;
+          if (mid < Math.max(paintT, clipT) || mid > Math.min(paintB, clipB)) continue;
+          const segL = Math.max(l.left, paintL, clipL);
+          const segR = Math.min(l.right, paintR, clipR);
+          if (segR <= segL) continue;
+          over = Math.max(over, segR - cR, cL - segL);
+        }
+        if (over > 1 && blk.clientWidth > 0) {
+          const token = text.split(/\s+/u).reduce((a, t) => (t.length > a.length ? t : a), "");
+          findings.push({
+            kind: "overrun",
+            selector: selectorOf(el),
+            text: snippet(fullText),
+            detail: `a line runs ${over.toFixed(1)} px past the content edge of ${selectorOf(blk)} (longest token "${token}"; white-space ${cs.whiteSpace}, overflow-wrap ${cs.overflowWrap})`,
+          });
+        }
+      }
+    }
+
     /* Wrapping: distinct line tops. */
     if (lines.length >= 2) {
       const tops = lines;
@@ -415,13 +483,17 @@ function readTextFidelity(L) {
           detail: `wraps into ${tops.length} lines no wider than ${(column / ch).toFixed(1)} characters (limit ${L.minColumnCh})`,
         });
       } else {
-        /* Find each line break inside the text and ask whether it split a TOKEN: two letters or
-           digits on either side of the break, with no space, hyphen or separator between them.
-           A plain word ("collecte / d") and an identifier ("num_power_supplie / s)",
-           "10.0.1 / 0.50") are both tokens; they are reported as different kinds because they
-           have different owners (prose wraps at spaces; an identifier may break only at a
-           `_ . / -` boundary, or not at all — src/ui/primitives.css). `hyphens: auto` licenses
-           a hyphenated break inside a plain word only, never inside an identifier. */
+        /* Find each line break inside the text and ask whether it split a TOKEN: a break with no
+           space on either side and no BOUNDARY character beside it. The boundaries are the ones
+           an identifier may break at (`_ . / -`, plus `:` and `|`), the dashes prose breaks after,
+           and the explicit break characters (soft hyphen, zero-width space). So "collecte / d",
+           "num_power_supplie / s)" and "10.0.1 / 0.50" are breaks inside a token, and so are
+           "PROTECT_SERVERS[ / 3]" and "nodes[host= / AP" — a letter-or-digit rule on both sides
+           would have passed the last two, which only `overflow-wrap: anywhere` can produce.
+           A plain word and an identifier are reported as different kinds because they have
+           different owners (prose wraps at spaces; an identifier may break only at a boundary,
+           or not at all — src/ui/primitives.css). `hyphens: auto` licenses a hyphenated break
+           inside a plain word only, never inside an identifier. */
         for (const n of nodes) {
           const s = n.nodeValue;
           if (s.length > 600) continue;
@@ -433,12 +505,8 @@ function readTextFidelity(L) {
             const r = range.getClientRects()[0];
             if (!r) continue;
             const top = Math.round(r.top);
-            if (prevTop !== null && top > prevTop + 2 && i > 0 && /[\p{L}\p{N}]/u.test(s[i - 1]) && /[\p{L}\p{N}]/u.test(s[i])) {
-              /* The token: the whitespace-free run around the break, less wrapping punctuation. */
-              const tokStart = s.slice(0, i).search(/\S+$/u);
-              const tokEnd = i + (s.slice(i).match(/^\S+/u)?.[0].length ?? 0);
-              const token = s.slice(tokStart, tokEnd).replace(/^[("'‘“\[{<]+|[)"'’”\]}>,;:!?.]+$/gu, "");
-              const identifier = /[_.\/:\d-]/u.test(token) || !/^\p{L}+$/u.test(token);
+            if (prevTop !== null && top > prevTop + 2 && i > 0 && !BOUNDARY.test(s[i - 1]) && !BOUNDARY.test(s[i])) {
+              const { token, identifier, left, right } = tokenAround(s, i);
               if (!identifier && cs.hyphens === "auto") {
                 prevTop = top;
                 continue;
@@ -447,7 +515,7 @@ function readTextFidelity(L) {
                 kind: identifier ? "mid-identifier" : "mid-word",
                 selector: selectorOf(el),
                 text: snippet(fullText),
-                detail: `the ${identifier ? "identifier" : "word"} "${token}" is broken across lines as "${s.slice(tokStart, i)} / ${s.slice(i, tokEnd)}" (line tops ${prevTop}, ${top}; overflow-wrap ${cs.overflowWrap}, word-break ${cs.wordBreak})`,
+                detail: `the ${identifier ? "identifier" : "word"} "${token}" is broken across lines as "${left} / ${right}" (line tops ${prevTop}, ${top}; overflow-wrap ${cs.overflowWrap}, word-break ${cs.wordBreak})`,
               });
               break;
             }
@@ -455,6 +523,77 @@ function readTextFidelity(L) {
           }
         }
       }
+    }
+  }
+  /* A line break exactly BETWEEN two text nodes. The walk above looks for breaks inside one node's
+     text (its first character has nothing before it to compare with), so it could not see a split
+     that falls where one node ends: "num_power_supp" + "lies", rendered as two nodes — `{a}{b}` in
+     JSX, a comment between them, the edge of an inline <b> or <code> — and broken right there is
+     the same broken identifier. Two nodes are one run of text when they share a block and nothing
+     between them offers a break of its own: a <wbr> or <br> is a sanctioned break, and an atomic
+     inline (an image, an icon, a control, an inline-block badge) is a break opportunity on either
+     side. A display:none element between them is transparent. */
+  {
+    const flows = (e) => {
+      const d = getComputedStyle(e).display;
+      return d === "inline" || d === "contents";
+    };
+    const ATOMIC = new Set(["IMG", "SVG", "svg", "CANVAS", "VIDEO", "AUDIO", "IFRAME", "OBJECT", "EMBED", "INPUT", "SELECT", "TEXTAREA", "BUTTON", "METER", "PROGRESS", "math"]);
+    const blockOf = (node) => {
+      let e = node.parentElement;
+      while (e && e !== document.body && flows(e) && !ATOMIC.has(e.tagName)) e = e.parentElement;
+      return e;
+    };
+    const charRect = (n, i) => {
+      const r = document.createRange();
+      r.setStart(n, i);
+      r.setEnd(n, i + 1);
+      return r.getClientRects()[0] ?? null;
+    };
+    const painted = [];
+    const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let t = tw.nextNode(); t; t = tw.nextNode()) {
+      const p = t.parentElement;
+      if (!t.nodeValue || !p || p.closest("script,style,noscript,svg,canvas")) continue;
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      if (r.getClientRects().length > 0) painted.push(t);
+    }
+    for (let k = 1; k < painted.length && findings.length < L.maxFindings; k++) {
+      const a = painted[k - 1];
+      const b = painted[k];
+      const sa = a.nodeValue;
+      const sb = b.nodeValue;
+      if (BOUNDARY.test(sa.at(-1)) || BOUNDARY.test(sb[0])) continue;
+      const ra = charRect(a, sa.length - 1);
+      const rb = charRect(b, 0);
+      if (!ra || !rb || Math.round(rb.top) <= Math.round(ra.top) + 2) continue;
+      const block = blockOf(a);
+      if (block === null || block !== blockOf(b)) continue;
+      let sanctioned = false;
+      const between = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      between.currentNode = a;
+      for (let n = between.nextNode(); n && n.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING; n = between.nextNode()) {
+        if (getComputedStyle(n).display === "none") continue;
+        if (n.tagName === "WBR" || n.tagName === "BR" || ATOMIC.has(n.tagName) || !flows(n)) {
+          sanctioned = true;
+          break;
+        }
+      }
+      if (sanctioned) continue;
+      const el = b.parentElement;
+      const box = el.getBoundingClientRect();
+      if (box.right <= 0 || box.left >= vw || box.bottom <= 0 || box.top >= vh) continue;
+      if (hiddenFromSight(a.parentElement) || hiddenFromSight(el)) continue;
+      const cs = getComputedStyle(el);
+      const { token, identifier, left, right } = tokenAround(sa + sb, sa.length);
+      if (!identifier && cs.hyphens === "auto") continue;
+      findings.push({
+        kind: identifier ? "mid-identifier" : "mid-word",
+        selector: selectorOf(el),
+        text: snippet(block.textContent.replace(/\s+/g, " ").trim()),
+        detail: `the ${identifier ? "identifier" : "word"} "${token}" is broken across lines as "${left} / ${right}", at the boundary between two text nodes (line tops ${Math.round(ra.top)}, ${Math.round(rb.top)}; overflow-wrap ${cs.overflowWrap}, word-break ${cs.wordBreak})`,
+      });
     }
   }
   /* A closed <select> paints its chosen option inside its own box, and that text is not a text
@@ -501,8 +640,9 @@ const READ_TEXT_FIDELITY = `(${readTextFidelity.toString()})(${JSON.stringify(TE
  * So, per `[role=tablist]` a reader can see: if its content is wider than its box
  * (scrollWidth > clientWidth), there must be a VISIBLE overflow affordance, which here means a
  * horizontal scroll container whose scrollbar actually takes space (`scrollbar-width: none` or an
- * overflow of hidden/clip/visible does not count). Independently, every tab must lie inside the
- * viewport horizontally unless it is inside such a scroller. Self-contained; serialised into the page.
+ * overflow of hidden/clip/visible does not count). Independently, every tab must lie horizontally
+ * inside the viewport AND inside every ancestor that clips it (a pane with `overflow: hidden`), unless
+ * the strip is such a scroller. Self-contained; serialised into the page.
  */
 function readTabOverflow() {
   const out = [];
@@ -524,10 +664,24 @@ function readTabOverflow() {
     const scroller = cs.overflowX === "auto" || cs.overflowX === "scroll";
     const bar = list.offsetHeight - list.clientHeight - parseFloat(cs.borderTopWidth) - parseFloat(cs.borderBottomWidth);
     const affordance = scroller && bar > 0;
+    /* The horizontal window a tab can be seen through: the list's own box, the viewport, and every
+       ancestor that CLIPS on x with no way to scroll (hidden/clip). A strip wider than its pane is
+       not caught by the strip's own scrollWidth (it is as wide as its content); the pane's clip is
+       what hides the tab, so the pane's edge is part of the test. */
+    let winL = Math.max(0, r.left);
+    let winR = Math.min(vw, r.right);
+    for (let a = list.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+      const acs = getComputedStyle(a);
+      if (acs.display === "inline" || acs.display === "contents") continue;
+      if (acs.overflowX !== "hidden" && acs.overflowX !== "clip") continue;
+      const ab = a.getBoundingClientRect();
+      winL = Math.max(winL, ab.left + a.clientLeft);
+      winR = Math.min(winR, ab.left + a.clientLeft + a.clientWidth);
+    }
     const tabs = [...list.querySelectorAll('[role="tab"]')].filter(seen);
     const past = tabs.filter((t) => {
       const b = t.getBoundingClientRect();
-      return b.right > Math.min(vw, r.right) + 0.5 || b.left < Math.max(0, r.left) - 0.5;
+      return b.right > winR + 0.5 || b.left < winL - 0.5;
     });
     const names = (ts) => ts.map((t) => `"${(t.textContent || "").replace(/\s+/g, " ").trim()}" ${Math.round(t.getBoundingClientRect().left)}-${Math.round(t.getBoundingClientRect().right)}`).join(", ");
     if (list.scrollWidth > list.clientWidth + 1 && !affordance) {
@@ -536,12 +690,85 @@ function readTabOverflow() {
           `(overflow-x ${cs.overflowX}, scrollbar ${Math.max(0, bar)} px, innerWidth ${vw})` + (past.length ? `; hidden tabs ${names(past)}` : ""),
       );
     } else if (past.length && !affordance) {
-      out.push(`tablist "${label}" paints tabs outside its box / the viewport (innerWidth ${vw}): ${names(past)}`);
+      out.push(`tablist "${label}" paints tabs outside the window they can be seen through (its box, a clipping ancestor, the viewport: x${Math.round(winL)}-${Math.round(winR)}, innerWidth ${vw}): ${names(past)}`);
     }
   }
   return out;
 }
 const READ_TAB_OVERFLOW = `(${readTabOverflow.toString()})()`;
+
+/**
+ * C2: a licence to break a token between two letters is granted in ONE kind of place only.
+ *
+ * `readTextFidelity` sees a mid-identifier break only where a captured state happens to lay one out
+ * at a captured width; the CAUSE is a stylesheet declaration, and that is visible statically, in
+ * every state at once. The 2026-09-22 break ("num_power_supplie / s") came from `overflow-wrap:
+ * anywhere` on a prose block, inherited by the identifier inside the sentence — and the same
+ * declaration sat on fifteen other blocks, most of which no capture state had yet made narrow enough
+ * to break.
+ *
+ * The class, not a list of rules: every declaration in src/**\/*.css whose VALUE licenses a break
+ * inside a token — `overflow-wrap`/`word-wrap: anywhere|break-word`, `word-break: break-all|
+ * break-word` (the legacy alias of `anywhere`), `line-break: anywhere`. Each is allowed only on an
+ * UNBREAKABLE-TOKEN CONTAINER (owner: "wrapping" in src/ui/primitives.css), and must say so: the
+ * words `UNBREAKABLE-TOKEN CONTAINER` in the rule, or in the comment directly above it. Anything
+ * else is a finding naming the file, line, selector and declaration. Comments are not
+ * declarations: the owner's own prose quotes `overflow-wrap: anywhere` and is not a licence.
+ */
+const WRAP_LICENCE = /\b(?:overflow-wrap|word-wrap)\s*:\s*(?:anywhere|break-word)\b|\bword-break\s*:\s*(?:break-all|break-word)\b|\bline-break\s*:\s*anywhere\b/gi;
+const WRAP_JUSTIFICATION = "UNBREAKABLE-TOKEN CONTAINER";
+
+function readWrapLicences(root = resolve(HERE, "..", "src")) {
+  const files = [];
+  const scripts = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (name.endsWith(".css")) files.push(p);
+      else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)) scripts.push(p);
+    }
+  };
+  walk(root);
+  const out = [];
+  const where = (file) => relative(resolve(HERE, ".."), file).replace(/\\/g, "/");
+  /* The same licence written as an inline style or a CSS string in a component: the class is the
+     declaration, not the file type it happens to live in. Justified by the same words within the
+     few lines above it. Tests are excluded: they name the values in order to assert on them. */
+  const INLINE_LICENCE = /\b(?:overflowWrap|wordWrap)\s*:\s*["'`](?:anywhere|break-word)|\bwordBreak\s*:\s*["'`](?:break-all|break-word)|\blineBreak\s*:\s*["'`]anywhere/gi;
+  for (const file of scripts.sort()) {
+    const src = readFileSync(file, "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (c) => c.replace(/[^\n]/g, " "));
+    for (const re of [INLINE_LICENCE, WRAP_LICENCE]) {
+      for (const m of code.matchAll(re)) {
+        if (src.slice(Math.max(0, m.index - 600), m.index).includes(WRAP_JUSTIFICATION)) continue;
+        out.push(`wrap licence without justification: ${where(file)}:${code.slice(0, m.index).split("\n").length} { ${m[0]} } — a break inside a token is allowed only on an ${WRAP_JUSTIFICATION} that says so (owner: "wrapping" in src/ui/primitives.css)`);
+      }
+    }
+  }
+  for (const file of files.sort()) {
+    const css = readFileSync(file, "utf8");
+    /* Blank the comments (keeping every offset) so a quoted declaration is not a declaration. */
+    const code = css.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+    for (const m of code.matchAll(WRAP_LICENCE)) {
+      const at = m.index;
+      const open = code.lastIndexOf("{", at);
+      const close = code.indexOf("}", at);
+      /* The prelude: from the end of the previous rule (or the enclosing @-block's brace) to this
+         rule's brace. It holds the selector and the comment directly above it. */
+      const preludeStart = Math.max(code.lastIndexOf("}", open), code.lastIndexOf("{", open - 1)) + 1;
+      const rule = css.slice(preludeStart, close === -1 ? css.length : close);
+      if (rule.includes(WRAP_JUSTIFICATION)) continue;
+      const selector = code.slice(preludeStart, open).replace(/\s+/g, " ").trim();
+      const line = code.slice(0, at).split("\n").length;
+      out.push(
+        `wrap licence without justification: ${where(file)}:${line} ${selector} { ${m[0]} } — ` +
+          `a break inside a token is allowed only on an ${WRAP_JUSTIFICATION} that says so (owner: "wrapping" in src/ui/primitives.css)`,
+      );
+    }
+  }
+  return { files: files.length, scripts: scripts.length, findings: out };
+}
 
 /**
  * B7: the coverage denominators are PERMANENTLY visible — at every viewport, not only the two the
@@ -1369,18 +1596,229 @@ async function checkText() {
     }
   }
   await browser.close();
-  const verdict = checked === 0 ? "NOT ESTABLISHED" : failures.length ? "FAIL" : "PASS";
-  console.log(`${verdict}  text  ${checked - failures.length} of ${checked} states free of clipped/broken text, with coverage wholly visible and no tab hidden off its strip`);
+  /* The cause, checked statically across every state at once (see readWrapLicences). Stated on its
+     own line, so a states count of N of N can never be read as covering it. */
+  const licences = checkWrapLicences();
+  /* And the detectors themselves, on layouts whose answer is known (see selfTest): "N of N states
+     clean" from a detector that has gone blind reads exactly like a clean app, which is how R25
+     recorded 72 of 72 while identifiers were splitting. A blind detector makes the count NOT
+     ESTABLISHED, never PASS. */
+  const live = await selfTest();
+  const verdict = checked === 0 ? "NOT ESTABLISHED" : failures.length || !licences ? "FAIL" : !live ? "NOT ESTABLISHED" : "PASS";
+  console.log(
+    `${verdict}  text  ${checked - failures.length} of ${checked} states free of clipped/broken text, with coverage wholly visible and no tab hidden off its strip` +
+      `; wrap licences ${licences ? "all justified" : "UNJUSTIFIED (above)"}; detectors ${live ? "live on every known case" : "NOT LIVE (above)"}`,
+  );
   if (verdict !== "PASS") process.exitCode = 3;
+}
+
+/** `node review/capture.mjs wrap` — the static half of the text check alone; no server needed. */
+function checkWrapLicences() {
+  const { files, scripts, findings } = readWrapLicences();
+  for (const f of findings) console.log(`  BAD  ${f}`);
+  const ok = files > 0 && findings.length === 0;
+  console.log(`${files === 0 ? "NOT ESTABLISHED" : ok ? "PASS" : "FAIL"}  wrap  ${findings.length} unjustified token-break licence(s) across ${files} stylesheet(s) and ${scripts} source module(s)`);
+  return ok;
+}
+
+/**
+ * `node review/capture.mjs selftest` — the text, tab and wrap detectors, run against pages and
+ * stylesheets whose answer is known. No server needed.
+ *
+ * Why it exists (C2, 2026-09-22): R25 recorded "72 of 72 states free of clipped/broken text" with a
+ * detector that could not see an identifier break at all, and the app states cannot tell a clean
+ * app from a blind detector: 72 of 72 reads the same either way. A detector is only evidence when it
+ * has been seen to fire. Each case below is a layout with exactly one known answer; a POSITIVE case
+ * that stops being reported means the detector went blind, and a NEGATIVE case that starts being
+ * reported means it started crying wolf (the <wbr> a citation breaks at, a prose line break). The
+ * layouts use a monospace font with widths in `ch`, so where each line breaks is fixed by the text.
+ * Every text fixture must actually wrap, or the case is itself a finding. `text` runs this too and
+ * cannot PASS while it fails.
+ */
+const SELFTEST_TEXT_CASES = [
+  {
+    name: "an identifier split between two letters is a mid-identifier break, named whole",
+    html: `<p class="box" style="width:calc(17ch + 1px)">(num_power_supplies) is zero</p>`,
+    want: { kind: "mid-identifier", token: "num_power_supplies" },
+  },
+  {
+    name: "a split just after an opening bracket is a mid-identifier break (no letter on the left)",
+    html: `<p class="box" style="width:calc(27ch + 1px)">acls.core1.PROTECT_SERVERS[3]</p>`,
+    want: { kind: "mid-identifier", token: "acls.core1.PROTECT_SERVERS[3]" },
+  },
+  {
+    name: "a plain word split between two letters is a mid-word break",
+    html: `<p class="box" style="width:calc(10ch + 1px)">uncollectedness</p>`,
+    want: { kind: "mid-word", token: "uncollectedness" },
+  },
+  {
+    name: "a split that falls exactly where one text node ends and the next begins is still a split",
+    html: `<p class="box" style="width:calc(14ch + 1px)">num_power_supp<!-- node boundary -->lies</p>`,
+    want: { kind: "mid-identifier", token: "num_power_supplies" },
+  },
+  {
+    name: "a split that falls exactly at an inline element's edge is still a split",
+    html: `<p class="box" style="width:calc(14ch + 1px)">num_power_supp<b>lies</b></p>`,
+    want: { kind: "mid-identifier", token: "num_power_supplies" },
+  },
+  {
+    name: "an identifier that breaks at the <wbr> after a separator is not a finding",
+    html: `<p class="box" style="width:calc(20ch + 1px)">acls.<wbr>core1.<wbr>PROTECT_<wbr>SERVERS[3]</p>`,
+    want: null,
+  },
+  {
+    name: "a break at a <wbr> is sanctioned even between two letters (the author put it there)",
+    html: `<p class="box" style="width:calc(14ch + 1px)">num_power_supp<wbr>lies</p>`,
+    want: null,
+  },
+  {
+    name: "a break beside an inline-block badge is a break opportunity, not a split",
+    html: `<p class="box" style="width:calc(8ch + 1px)">Findings<span style="display:inline-block">4</span></p>`,
+    want: null,
+  },
+  {
+    name: "an identifier that moves to the next line whole is not a finding",
+    html: `<p class="box" style="width:calc(20ch + 1px);overflow-wrap:normal">reported (num_power_supplies)</p>`,
+    want: null,
+  },
+  {
+    name: "a token wider than its column that no longer splits runs past the content edge: an overrun",
+    html: `<p class="box" style="width:calc(10ch + 1px);overflow-wrap:normal">(num_power_supplies) is</p>`,
+    want: { kind: "overrun", token: "(num_power_supplies)" },
+  },
+  {
+    name: "the same token inside a horizontal scroller is reachable, not an overrun",
+    html: `<div style="width:calc(10ch + 1px);overflow-x:auto"><p class="box" style="overflow-wrap:normal">(num_power_supplies) is</p></div>`,
+    want: null,
+  },
+  {
+    name: "prose wrapping at its spaces is not a finding",
+    html: `<p class="box" style="width:calc(12ch + 1px)">the producer reported zero for every device</p>`,
+    want: null,
+  },
+  {
+    name: "a forced <br> between two tokens is not a finding",
+    html: `<p class="box" style="width:calc(30ch + 1px)">num_power<br>supplies</p>`,
+    want: null,
+  },
+];
+
+const SELFTEST_TAB_CASES = [
+  {
+    name: "a strip wider than its box with its scrollbar hidden hides a tab",
+    html: `<div role="tablist" aria-label="Fixture" style="display:flex;width:200px;overflow-x:auto;scrollbar-width:none">${"<button role=tab style='flex:none;width:80px'>Tab</button>".repeat(5)}</div>`,
+    want: /tablist "Fixture" overflows with no visible affordance/,
+  },
+  {
+    name: "a strip clipped by its pane (not by itself) hides a tab",
+    html: `<div style="width:200px;overflow:hidden"><div role="tablist" aria-label="Fixture" style="display:flex;width:500px">${"<button role=tab style='flex:none;width:80px'>Tab</button>".repeat(5)}</div></div>`,
+    want: /tablist "Fixture" paints tabs outside the window they can be seen through/,
+  },
+  {
+    name: "a strip that wraps its tabs onto a second row hides nothing",
+    html: `<div role="tablist" aria-label="Fixture" style="display:flex;flex-wrap:wrap;width:200px;overflow-x:auto;scrollbar-width:none">${"<button role=tab style='flex:none;width:80px'>Tab</button>".repeat(5)}</div>`,
+    want: null,
+  },
+];
+
+/* Stylesheets and modules with a known set of licences. Each BAD marker is a line the scan must
+   name; everything else must pass. */
+const SELFTEST_WRAP_FIXTURES = {
+  "fixture.css": [
+    ".bare { overflow-wrap: anywhere; } /* BAD */",
+    "/* UNBREAKABLE-TOKEN CONTAINER: a verbatim config line can hold one token longer than its column. */",
+    ".justified { overflow-wrap: anywhere; }",
+    ".legacy { word-break: break-word; } /* BAD */",
+    "/* prose that quotes overflow-wrap: anywhere is not a declaration */",
+    ".quoted { color: red; }",
+    "@media (min-width: 1px) {",
+    "  .nested { line-break: anywhere; } /* BAD */",
+    "}",
+    ".alias { word-wrap: break-word; } /* BAD */",
+    ".fine { overflow-wrap: normal; word-break: normal; }",
+  ].join("\n"),
+  "Fixture.tsx": [
+    "export const style = { overflowWrap: \"anywhere\" }; // BAD",
+    "// UNBREAKABLE-TOKEN CONTAINER: a fixture whose value is one unbroken digest.",
+    "export const digest = { wordBreak: \"break-all\" };",
+  ].join("\n"),
+  "Fixture.test.tsx": "export const asserted = { overflowWrap: \"anywhere\" };",
+};
+
+async function selfTest() {
+  const problems = [];
+  let ran = 0;
+  const browser = await chromium.launch({ args: GPU_ARGS });
+  const page = await (await browser.newContext({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 })).newPage();
+  const shell = (body) =>
+    `<!doctype html><html lang="en"><head><style>body{margin:8px} .box{margin:0 0 16px;font:16px/20px monospace;overflow-wrap:anywhere;word-break:normal;hyphens:manual}</style></head><body>${body}</body></html>`;
+  for (const c of SELFTEST_TEXT_CASES) {
+    await page.setContent(shell(c.html));
+    const findings = (await page.evaluate(READ_TEXT_FIDELITY)).filter((f) => f.kind === "mid-word" || f.kind === "mid-identifier" || f.kind === "overrun");
+    ran++;
+    const said = describeTextFindings(findings).join(" | ") || "nothing";
+    /* Every case must actually wrap: a clean answer from a fixture that fits on one line is a
+       guard tested where it is inert, and proves nothing about the break it is named for. */
+    const lines = await page.evaluate(() => Math.round(document.querySelector(".box").getBoundingClientRect().height / 20));
+    if (lines < 2) problems.push(`${c.name}: the fixture laid out on ${lines} line(s), so it tests no break at all`);
+    else if (c.want === null) {
+      if (findings.length) problems.push(`${c.name}: expected no break or overrun finding, got ${said}`);
+    } else if (!findings.some((f) => f.kind === c.want.kind && f.detail.includes(`"${c.want.token}"`))) {
+      problems.push(`${c.name}: expected ${c.want.kind} naming "${c.want.token}", got ${said}`);
+    }
+  }
+  for (const c of SELFTEST_TAB_CASES) {
+    await page.setContent(shell(c.html));
+    const findings = await page.evaluate(READ_TAB_OVERFLOW);
+    ran++;
+    const said = findings.join(" | ") || "nothing";
+    if (c.want === null ? findings.length > 0 : !findings.some((f) => c.want.test(f))) {
+      problems.push(`${c.name}: expected ${c.want === null ? "no tab finding" : c.want}, got ${said}`);
+    }
+  }
+  await browser.close();
+
+  const dir = mkdtempSync(join(tmpdir(), "atlas-wrap-selftest-"));
+  try {
+    const expected = [];
+    for (const [name, body] of Object.entries(SELFTEST_WRAP_FIXTURES)) {
+      writeFileSync(join(dir, name), body);
+      if (/\.test\.tsx?$/.test(name)) continue;
+      body.split("\n").forEach((l, i) => {
+        if (/BAD \*\/$|\/\/ BAD$/.test(l)) expected.push(`${name}:${i + 1}`);
+      });
+    }
+    const { findings } = readWrapLicences(dir);
+    ran++;
+    const named = findings.map((f) => f.match(/([\w.]+:\d+)\b/)?.[1] ?? f);
+    const missing = expected.filter((e) => !named.includes(e));
+    const extra = named.filter((n) => !expected.includes(n));
+    if (missing.length || extra.length) {
+      problems.push(`wrap-licence scan: expected exactly ${expected.join(", ")}; missed ${missing.join(", ") || "none"}; also named ${extra.join(", ") || "none"}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  for (const p of problems) console.log(`  BAD  ${p}`);
+  const verdict = ran === 0 ? "NOT ESTABLISHED" : problems.length ? "FAIL" : "PASS";
+  console.log(`${verdict}  selftest  ${ran - problems.length} of ${ran} detector cases gave their known answer (text breaks, tab overflow, wrap licences)`);
+  return verdict === "PASS";
 }
 
 const mode = process.argv[2];
 if (mode === "app") await captureApp();
 else if (mode === "text") await checkText();
+else if (mode === "selftest") {
+  if (!(await selfTest())) process.exitCode = 3;
+}
+else if (mode === "wrap") {
+  if (!checkWrapLicences()) process.exitCode = 3;
+}
 else if (mode === "refs") await captureRefs();
 else if (mode === "reduced") await captureReduced();
 else if (mode === "twice") await captureTwice(process.argv[3] === undefined ? 2 : Number(process.argv[3]));
 else {
-  console.error("usage: node review/capture.mjs app|refs|reduced|twice [N]|text [390,768,1440,1920]");
+  console.error("usage: node review/capture.mjs app|refs|reduced|twice [N]|text [390,768,1440,1920]|wrap|selftest");
   process.exit(2);
 }

@@ -886,8 +886,12 @@ export function DataGrid<T>({
   const leaveGrid = useCallback((): void => {
     /* Leaving goes SOMEWHERE: the declared exit target if it is still mounted, else the region
        landmark around the grid (the queue's labelled section), else focus stays on the cell.
-       This used to `blur()` the cell, which parked focus on <body> on every Escape in the only
-       production host, since it declares no exit target (acceptance D3). One owner decides. */
+       This used to `blur()` the cell whenever no exit target was declared, which parks focus on
+       <body> (acceptance D3), and to focus a declared target without checking it was still
+       mounted, which silently did nothing. The queue — the one production host today — no longer
+       declares an exit target and handles every Escape itself (`onEscape` returns true), so this
+       path is reached by a host that lets Escape through; it must still never drop focus. One
+       owner decides: src/app/focus-return.ts. */
     returnFocus(exitFocusRef?.current ?? null, gridRef.current);
   }, [exitFocusRef]);
 

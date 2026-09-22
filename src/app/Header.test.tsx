@@ -113,6 +113,17 @@ describe("the header names the snapshot it is showing", () => {
     expect(text).toContain(String(fabric.meta.sourceBytes).replace(/\B(?=(\d{3})+(?!\d))/g, " "));
   });
 
+  it("names the byte form the digest and the byte count are taken over (O15)", () => {
+    const c = mount(<Header />);
+    const trigger = c.querySelector<HTMLButtonElement>(".hdr-snap")!;
+    expect(trigger.title).toContain(`sha256 (${fabric.meta.sourceDigestForm}) ${fabric.meta.sourceSha256}`);
+    click(trigger);
+    const panel = document.querySelector('[role="dialog"][aria-label="Snapshot provenance"]')!;
+    const text = panel.textContent ?? "";
+    expect(text).toContain("bytes (LF-normalised)");
+    expect(text).toContain("LF-normalised form");
+  });
+
   it("teaches the query grammar with values that exist in this snapshot", () => {
     const example = exampleQuery();
     const c = mount(<Header />);

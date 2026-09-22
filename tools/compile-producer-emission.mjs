@@ -22,18 +22,16 @@
  *
  * Run: node tools/compile-producer-emission.mjs
  */
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSource } from "./source-binding.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = resolve(HERE, "../../webapp/sample_data/sample_fleet.snapshot.json");
 const OUT = resolve(HERE, "../src/panels/producer-emission.json");
 
-const raw = readFileSync(SRC);
-const snap = JSON.parse(raw.toString("utf8"));
-const sha256 = createHash("sha256").update(raw).digest("hex");
+/* The source and the bytes that bind it: tools/source-binding.mjs owns the rule (LF-normalised). */
+const { snap, binding } = readSource(HERE);
 
 /** @param {unknown} v @returns {Record<string, any>} */
 const obj = (v) => (v !== null && typeof v === "object" && !Array.isArray(v) ? v : {});
@@ -81,9 +79,7 @@ for (const host of [...hosts].sort()) {
 const sortObj = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 const out = {
   meta: {
-    source: "webapp/sample_data/sample_fleet.snapshot.json",
-    sourceSha256: sha256,
-    sourceBytes: raw.length,
+    ...binding,
     aclLineFields: ACL_LINE_FIELDS,
     deviceHealthFields: DEVICE_HEALTH_FIELDS,
   },

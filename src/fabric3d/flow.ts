@@ -39,7 +39,7 @@ import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { bandOfTrace } from "../core/claims";
 import type { Trace } from "../core/types";
-import { createCableMaterial } from "./geometry/cables";
+import { coverageGamma, createCableMaterial, setCoverageGamma } from "./geometry/cables";
 import type { TokenPalette } from "./materials";
 
 export const DRAW_ON_MS = 240;
@@ -396,6 +396,11 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
     tetherColours.stop = critical.clone();
     tetherColours.undecided = undecidedTint.clone();
     tetherTint = "";
+    /* The trace strokes are cable strokes: their edge coverage is re-fitted to this palette's ground
+       so it stays display-linear (geometry/cables.ts coverageGamma — without it the light stage
+       washed a stroke's anti-aliased fringe out and the stroke read a pixel thinner). */
+    const gamma = coverageGamma(t);
+    for (const m of [pathMaterial, blockedMaterial, tetherMaterial]) setCoverageGamma(m, gamma);
   };
   applyTint(tokens);
 

@@ -17,8 +17,9 @@
  * IT HAS A VERDICT AND AN EXIT CODE. See THE GATE at the foot of this file — it did not, and E5 was
  * the only performance criterion whose named evidence command could not go red.
  */
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 import { VISIBLE_AFFORDANCE_JS, affordancePaintedAt } from "./working-affordance.mjs";
@@ -128,12 +129,41 @@ const INIT = `
    affordance" test is not applicable to it, and saying so is the honest form. A script-free,
    non-blocking frame AFTER the first paint is judged like any other. When FCP was never observed the
    carve-out does not apply (absence is not permission). */
+/* NOT SANCTIONED BY DEFAULT (acceptance report E5, 2026-09-22). The carve-out above was written into
+   this harness and never into the criterion: docs/acceptance.md does not exempt pre-first-paint frames,
+   and a 294.5 ms frame with no working affordance on screen was passing E5 on this file's word alone.
+   A harness may not grant its own exemption. So the carve-out now applies ONLY when docs/acceptance.md
+   carries the owner's sanction as a line of its own, beginning exactly with
+       E5 EXEMPTION (owner-sanctioned): pre-first-paint
+   (read at run time, below). Without that line every such frame is JUDGED — counted as an unannounced
+   frame and failing the bar — and still listed separately so the owner can see what the decision
+   covers. Adding the line is the owner's decision; this harness never writes it. */
+const SANCTION_LINE = /^E5 EXEMPTION \(owner-sanctioned\): pre-first-paint\b/m;
+const CARVE_OUT_SANCTIONED = (() => {
+  try {
+    return SANCTION_LINE.test(readFileSync(new URL("../docs/acceptance.md", import.meta.url), "utf8"));
+  } catch {
+    return false; // an unreadable criterion sanctions nothing
+  }
+})();
 const CARVE_OUT = "pre-first-paint: a frame that began before first-contentful-paint, ran no page script and blocked input for 0 ms is not judged against the 200 ms affordance bar (no screen existed for an affordance to be on)";
 const isBrowserOnlyFrame = (e, fcp) =>
   (e.blockingDuration ?? 0) === 0 &&
   (e.scripts || []).every((sc) => sc.instrument === true) &&
   typeof fcp === "number" &&
   e.startTime < fcp;
+
+/** The fixed keystroke instants every run probes (page clock, ms after navigation commit). */
+const FIXED_PROBES_MS = [600, 1200, 1800, 2400, 3000, 3600, 4400];
+/** A post-first-paint frame that blocked input for longer than this is one a keystroke must be aimed at. */
+const PROBE_FRAME_MIN_MS = 50;
+/** At most this many targeted probes per run, so the probes themselves do not become the load. */
+const MAX_TARGETED_PROBES = 12;
+/** Frames observed by earlier runs, aimed at by later ones: { atMs, frameAtMs, frameMs, fromRun }. */
+const probeTargets = [];
+/** The post-first-paint frames over PROBE_FRAME_MIN_MS that blocked input (blockingDuration > 0). */
+const blockingFramesAfterPaint = (loaf, fcp) =>
+  typeof fcp === "number" ? loaf.filter((e) => e.duration > PROBE_FRAME_MIN_MS && (e.blockingDuration ?? 0) > 0 && e.startTime >= fcp) : [];
 
 const runs = [];
 for (let r = 0; r < RUNS; r++) {
@@ -145,14 +175,34 @@ for (let r = 0; r < RUNS; r++) {
   const nav = page.goto(PAGE_URL, { waitUntil: "commit", timeout: 30000 });
   await nav;
   /* Type into the page at intervals across the load. Every keystroke is a real user input, so its
-     Event Timing duration is the honest answer to "was the UI responsive at that moment". */
+     Event Timing duration is the honest answer to "was the UI responsive at that moment".
+
+     PROBES AIMED AT THE LONG FRAMES (acceptance report E5 / open-issues O20, 2026-09-22). The probes
+     used to fire only at seven FIXED times, so the ~145 ms post-first-paint blocking frames were
+     simply never under a keystroke, and "no keystroke over 200 ms" was a statement about seven
+     instants rather than about the load. Every run after the first now ALSO fires a probe into each
+     post-first-paint blocking frame over 50 ms that an EARLIER run observed (40 % of the way into
+     it — cold loads repeat closely but not exactly), and each run reports how many of ITS OWN such
+     frames a keystroke actually landed in (`keystrokeCoverage`), so an unprobed frame is visible
+     rather than silently read as responsive.
+     And the probes are timed on the NODE clock mapped to the page clock once, not by asking the page
+     for performance.now() before each one: that evaluate waits for the very main thread the probe
+     is trying to catch busy, so the old loop could only ever fire BETWEEN long frames. */
   const presses = [];
-  for (const at of [600, 1200, 1800, 2400, 3000, 3600, 4400]) {
-    const now = await page.evaluate(() => performance.now());
-    if (now < at) await page.waitForTimeout(at - now);
-    const t = await page.evaluate(() => performance.now());
+  const schedule = [
+    ...FIXED_PROBES_MS.map((at) => ({ at, kind: "fixed" })),
+    ...probeTargets.map((t) => ({ at: t.atMs, kind: "targeted", target: t })),
+  ].sort((a, b) => a.at - b.at);
+  const tA = performance.now();
+  const pageAt = await page.evaluate(() => performance.now());
+  const clockOffset = pageAt - (tA + performance.now()) / 2;
+  const pageNow = () => performance.now() + clockOffset;
+  for (const p of schedule) {
+    const wait = p.at - pageNow();
+    if (wait > 0) await sleep(wait);
+    const firedAtMs = +pageNow().toFixed(0);
     await page.keyboard.press("k").catch(() => {});
-    presses.push({ requestedAtMs: at, firedAtMs: +t.toFixed(0) });
+    presses.push({ kind: p.kind, requestedAtMs: +p.at.toFixed(0), firedAtMs, ...(p.target ? { aimedAtFrame: p.target } : {}) });
   }
   await page.waitForTimeout(6000);
   const data = await page.evaluate(() => ({
@@ -220,7 +270,7 @@ for (let r = 0; r < RUNS; r++) {
           browserOnly: isBrowserOnlyFrame(e, data.affPaint.fcp),
         };
       })
-      .filter((e) => !e.workingAffordancePresent && !e.browserOnly)
+      .filter((e) => !e.workingAffordancePresent && !(e.browserOnly && CARVE_OUT_SANCTIONED))
       .sort((a, b) => b.durationMs - a.durationMs),
     /* Reported, never silently dropped: the frames the rule below did not count, and why. */
     browserOnlyFramesOver200ms: data.loaf
@@ -233,13 +283,35 @@ for (let r = 0; r < RUNS; r++) {
     presses,
     keystrokes: data.ev,
     worstKeystrokeMs: data.ev.length ? Math.max(...data.ev.map((e) => e.duration)) : null,
+    /* Which of THIS run's post-first-paint blocking frames a keystroke actually landed in (by the
+       keystroke's own Event Timing startTime), so the keystroke bar's reach is stated, not assumed. */
+    keystrokeCoverage: (() => {
+      const frames = blockingFramesAfterPaint(data.loaf, data.affPaint.fcp).map((e) => {
+        const hit = data.ev.find((k) => k.name === "keydown" && k.startTime >= e.startTime && k.startTime <= e.startTime + e.duration);
+        return { atMs: e.startTime, durationMs: e.duration, blockingMs: e.blockingDuration, probedBy: hit ? { startTime: hit.startTime, durationMs: hit.duration } : null };
+      });
+      return { frameMinMs: PROBE_FRAME_MIN_MS, frames, probed: frames.filter((f) => f.probedBy !== null).length, total: frames.length };
+    })(),
   });
+  /* Aim the later runs at what this one observed (see the probe note above). */
+  for (const e of blockingFramesAfterPaint(data.loaf, data.affPaint.fcp)) {
+    if (probeTargets.length >= MAX_TARGETED_PROBES) break;
+    const atMs = e.startTime + e.duration * 0.4;
+    if (probeTargets.some((t) => Math.abs(t.atMs - atMs) < 40)) continue;
+    probeTargets.push({ atMs: +atMs.toFixed(0), frameAtMs: e.startTime, frameMs: e.duration, fromRun: r + 1 });
+  }
   console.log(`run ${r + 1}: worst animation frame ${worstLoaf ? worstLoaf.duration : "-"}ms (blocking ${worstLoaf ? worstLoaf.blockingDuration : "-"}ms) at ${worstLoaf ? worstLoaf.startTime : "-"}ms`);
   console.log(`         frames over 200ms: ${runs[r].over200ms.map((e) => e.duration + "ms@" + e.startTime).join(", ") || "none"}`);
   console.log(`         presentation: rAF median ${presentation.rafMedianMs ?? "none"} ms${presentation.fullRate ? "" : " — NOT FULL RATE"}; first paint ${data.affPaint.fcp ?? "never"} ms`);
-  console.log(`         carve-out pre-first-paint frames (no page script, blocking 0, began before FCP — not counted): ${runs[r].browserOnlyFramesOver200ms.map((e) => e.durationMs + "ms@" + e.atMs).join(", ") || "none"}`);
+  console.log(`         pre-first-paint frames (no page script, blocking 0, began before FCP) — ${CARVE_OUT_SANCTIONED ? "carve-out SANCTIONED by docs/acceptance.md, not counted" : "carve-out NOT sanctioned by docs/acceptance.md, COUNTED against the bar"}: ${runs[r].browserOnlyFramesOver200ms.map((e) => e.durationMs + "ms@" + e.atMs).join(", ") || "none"}`);
   console.log(`         .stage-pending visible ${runs[r].stagePendingWindowMs ? runs[r].stagePendingWindowMs.join("..") + "ms" : "NEVER"}; during worst frame: ${JSON.stringify(runs[r].domDuringWorstFrame)}`);
   console.log(`         keystrokes during load (ms): ${data.ev.map((e) => e.name + " " + e.duration + "@" + e.startTime).join(", ") || "none observed"}`);
+  const cov = runs[r].keystrokeCoverage;
+  console.log(
+    `         probes: ${presses.filter((p) => p.kind === "fixed").length} fixed + ${presses.filter((p) => p.kind === "targeted").length} aimed at earlier runs' long frames; ` +
+      `post-first-paint blocking frames over ${PROBE_FRAME_MIN_MS} ms with a keystroke IN them: ${cov.probed} of ${cov.total}` +
+      `${cov.total > cov.probed ? ` — unprobed: ${cov.frames.filter((f) => f.probedBy === null).map((f) => f.durationMs + "ms@" + f.atMs).join(", ")}` : ""}`,
+  );
   if (worstLoaf?.scripts?.length) {
     console.log(`         attributed scripts: ${JSON.stringify(worstLoaf.scripts)}`);
     const inst = worstLoaf.scripts.filter((x) => x.instrument);
@@ -317,10 +389,11 @@ writeFileSync(
       },
       hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, throttled: hostPowerThrottled },
       presentation: { runsBelowFullRate: notFullRate, fullRateMaxRafMs: FULL_RATE_MAX_RAF_MS },
-      carveOuts: [CARVE_OUT],
+      carveOuts: [{ rule: CARVE_OUT, sanctionedByAcceptanceMd: CARVE_OUT_SANCTIONED, sanctionLine: String(SANCTION_LINE) }],
       buildFreshness: freshness,
       bar: { animationFrameMs: FRAME_BAR_MS, keystrokeMs: KEYSTROKE_BAR_MS, rule: "a frame over the bar is a finding only when no working affordance was on screen" },
       unannouncedFramesOver200ms: unannounced,
+      keystrokeCoverage: { perRun: runs.map((r) => ({ run: r.run, probed: r.keystrokeCoverage.probed, total: r.keystrokeCoverage.total })), targetsAimedAt: probeTargets },
       keystrokesOverBar: slowKeys,
       url: PAGE_URL,
       runs,
@@ -330,7 +403,15 @@ writeFileSync(
   ),
 );
 
-console.log(`carve-out: ${CARVE_OUT}`);
+console.log(`carve-out: ${CARVE_OUT} — ${CARVE_OUT_SANCTIONED ? "SANCTIONED by docs/acceptance.md" : "NOT sanctioned by docs/acceptance.md, so NOT applied: such frames are judged"}`);
+{
+  const probed = runs.reduce((a, r) => a + r.keystrokeCoverage.probed, 0);
+  const total = runs.reduce((a, r) => a + r.keystrokeCoverage.total, 0);
+  console.log(
+    `keystroke coverage: ${probed} of ${total} post-first-paint blocking frame(s) over ${PROBE_FRAME_MIN_MS} ms had a keystroke land in them across ${runs.length} run(s)` +
+      `${total > probed ? " — the keystroke bar says nothing about the unprobed ones" : ""}`,
+  );
+}
 console.log(`power: ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " — THROTTLED" : ""}; presentation below full rate in run(s): ${notFullRate.join(", ") || "none"}`);
 console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) (bar ${MAX_HOST_BUSY_FRACTION * 100}%); build: ${freshness.fresh ? "fresh" : "NOT FRESH — " + freshness.why}`);
 console.log(`${verdict}  E5  ${why}${hostQuiet && freshness.fresh ? "" : "  [NOT ACCEPTANCE EVIDENCE]"}`);

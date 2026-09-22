@@ -8,7 +8,7 @@
  * WHY THIS EXISTS. C5's static checklist passes at high and low, but four of its items are properties
  * of MOTION and were never captured frame by frame: z-fighting on coplanar surfaces while the camera
  * moves, LOD / effect / label popping, the ambient-occlusion drop and restore around a camera stop at
- * the high tier, and the 300 ms quality-tier cross-fade. A screenshot taken every ~250 ms cannot see
+ * the high tier, and the quality-tier cross-fade (TIER_FADE_MS, under C6's 300 ms). A screenshot taken every ~250 ms cannot see
  * a one-frame pop (the tier-fade comment in scene.ts records exactly that mistake), so this harness
  * captures EVERY animation frame the scene renders and judges the sequence numerically.
  *
@@ -39,7 +39,7 @@
  * imported: importing capture.mjs runs its CLI). Exit code: 0 only when every check PASSES; 3 on any
  * FAIL; 4 when a check could not be established (UNPROVEN) and nothing failed.
  */
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
@@ -72,6 +72,22 @@ async function serverIdentity(url = APP) {
   }
 }
 
+/* The tier cross-fade's duration and the eases' settle times are READ FROM THE SOURCE that owns
+   them, not copied: a copy here is how the harness kept judging a 300 ms fade against "300 ms"
+   after the question became "under 300 ms" (acceptance C6). */
+const SRC_DIR = resolve(HERE, "..", "src");
+function constFrom(file, name) {
+  const text = readFileSync(resolve(SRC_DIR, file), "utf8");
+  const m = new RegExp(`const\\s+${name}\\s*=\\s*(\\d+(?:\\.\\d+)?)\\s*;`).exec(text);
+  if (!m) throw new Error(`capture-motion: ${name} not found in src/${file} — the harness cannot state its bar`);
+  return Number(m[1]);
+}
+const TIER_FADE_MS = constFrom("fabric3d/scene.ts", "TIER_FADE_MS");
+const RECEDE_MS = constFrom("fabric3d/emphasis.ts", "RECEDE_MS");
+/** Acceptance C6: every animation except a deliberate camera move ends under this. */
+const C6_BAR_MS = 300;
+const FRAME_60_MS = 1000 / 60;
+
 /* ── THRESHOLDS — each one stated, and why ─────────────────────────────────────────────────────
  *
  * Luma is Rec.709 over 8-bit sRGB values (0-255). "Still" means the camera did not change between
@@ -97,8 +113,10 @@ const T = {
   POP_DELTA: 4,
   POP_MAX_PIXELS: 60,
   /* Frames after a hover change are excluded from the still-frame pop check (the hover rim / recede
-     easing is a designed transition, RECEDE_MS = 240 in emphasis.ts) and counted separately. */
-  HOVER_SETTLE_MS: 320,
+     easing is a designed transition: finite eases in emphasis.ts, the longest RECEDE_MS, whose end
+     state is on screen within one frame of it) and counted separately. Read from the source, plus
+     four frames of slack for a host that drops frames. */
+  HOVER_SETTLE_MS: Math.ceil(RECEDE_MS + 5 * FRAME_60_MS),
   /* MOTION SPIKE. During motion every frame changes; a pop shows as ONE frame whose change is far
      above its neighbours' at the same camera speed. Frame change is normalised by the camera change
      (mean luma delta per px of anchor motion); a frame > 3x the median of its +-4 neighbours AND
@@ -117,7 +135,24 @@ const T = {
      frame steps is flip-flopping. Isolated single pixels are anti-aliasing sparkle on sub-pixel
      edges (judged elsewhere in C5); z-fighting is a PATCH on a coplanar overlap, so the check fails
      on any 4-connected cluster of >= ZF_CLUSTER flip-flopping pixels (a 4x4 patch), or when
-     flip-flopping pixels exceed ZF_MAX_SHARE of the canvas in total. */
+     flip-flopping pixels exceed ZF_MAX_SHARE of the canvas in total.
+     The two rules are REPORTED as two items (2026-09-22), with unchanged thresholds and the same
+     exit code, because they measure different things and the name was hiding which one failed. A
+     per-cluster raycast at the recorded camera pose (scratch probe, recorded in open-issues) found
+     no cluster ray that crossed two surfaces within 0.02 units — the clusters were a sub-pixel strip
+     of the faceplate frame and cable joints — and the SHARE rule is carried, after both were fixed,
+     by isolated single-pixel edge sparkle along cables (~60 %) and chassis edges (~30 %), which is
+     aliasing, not a depth tie. A failing share is therefore printed as what it is.
+     ATTRIBUTED (repair wave 2c, 2026-09-23): the sparkle is made by the SMAA stage, not by the
+     scene. This harness, run unchanged on the dev build with ONLY SMAAEffect's blend weights cleared
+     in-page after its weights pass, measured 7-65 flip px in all 8 orbit sequences (bar: 120 px of
+     the 760x790 canvas) and 0 clusters >= ZF_CLUSTER, every item PASS, exit 0 — against 300-732 px
+     with SMAA on. SMAA's per-frame edge/pattern decisions on 1-3 px features (analytically
+     anti-aliased cables, state-ring curbs, faceplate strips) toggle as the damped orbit creeps. The
+     intermittent 16x1 row on a near-horizontal cable (1 of 48 sequences) did not appear in that run
+     and has the shape of SMAA's orthogonal long-edge blend, but one clean run of an intermittent
+     cluster is not proof of its cause. The lever
+     is src/fabric3d/postfx.ts (SMAA configuration / temporal stability), not geometry. */
   SLOW_PX: 0.25,
   FLIP_DELTA: 12,
   FLIP_MIN_REVERSALS: 3,
@@ -147,16 +182,19 @@ const T = {
   AO_MAX_SHARE: 0.005,
   AO_STRONG_DELTA: 32,
   AO_MAX_STRONG_SHARE: 0.0005,
-  /* TIER CROSS-FADE. scene.ts: TIER_FADE_MS = 300, ease-in-out, started once the new tier's frames
-     are ordinary. The measured fade (first frame the overlay's opacity leaves 1 to the frame it is
-     gone or <= 0.005) must last 300 ms within [250, 400] ms: one 60 Hz frame of start slop below,
-     the 50 ms removal backstop plus a frame above. No single frame may carry more than
+  /* TIER CROSS-FADE. scene.ts: TIER_FADE_MS (read above), ease-in-out, started once the new tier's
+     frames are ordinary. The measured fade (the frame before the overlay's opacity leaves 1 to the
+     frame it is gone or <= 0.005) must be at least TIER_FADE_MS - 50 ms (the tail below 0.005 of an
+     ease-in-out, plus a frame of start slop) and UNDER the C6 bar of 300 ms. The upper bound used
+     to be 400 ms around a 300 ms fade, so a fade AT the ceiling passed here while the grading
+     measured 299.9-300.1 ms and failed C6 on it. No single frame may carry more than
      FADE_MAX_STEP (0.25) of opacity — an ease-in-out over 18 frames peaks near 0.09/frame, so 0.25
      allows a dropped frame; the critic's "cut" was 0.92 -> 0.50 (0.42) and 0.94 -> 0.056. The
      composited picture must agree: no frame may carry more than FADE_MAX_PIXEL_SHARE (40 %) of the
      total pixel change from the old tier's picture to the new one. */
-  FADE_MIN_MS: 250,
-  FADE_MAX_MS: 400,
+  FADE_MIN_MS: TIER_FADE_MS - 50,
+  /* exclusive: a fade that lasts 300 ms is not under 300 ms */
+  FADE_MAX_MS: C6_BAR_MS,
   FADE_MAX_STEP: 0.25,
   FADE_MAX_PIXEL_SHARE: 0.4,
   FADE_MIN_VISIBLE_DELTA: 0.1,
@@ -1058,7 +1096,10 @@ function verdict(fails, established, why) {
 }
 
 const zf = all.flatMap((s) =>
-  s.zfight.clusterCount > 0 || s.zfight.flipShare > T.ZF_MAX_SHARE ? [`${s.leg}/${s.sequence}: ${s.zfight.clusterCount} flip-flop clusters >= ${T.ZF_CLUSTER} px (largest ${s.zfight.clusters[0]?.size ?? 0} px at ${JSON.stringify(s.zfight.clusters[0]?.bbox ?? null)}), ${s.zfight.flipPixels} flip px (${s.zfight.flipShare})`] : [],
+  s.zfight.clusterCount > 0 ? [`${s.leg}/${s.sequence}: ${s.zfight.clusterCount} flip-flop clusters >= ${T.ZF_CLUSTER} px (largest ${s.zfight.clusters[0]?.size ?? 0} px at ${JSON.stringify(s.zfight.clusters[0]?.bbox ?? null)}), ${s.zfight.flipPixels} flip px (${s.zfight.flipShare})`] : [],
+);
+const sparkle = all.flatMap((s) =>
+  s.zfight.flipShare > T.ZF_MAX_SHARE ? [`${s.leg}/${s.sequence}: ${s.zfight.flipPixels} flip-flopping px, ${s.zfight.flipShare} of the canvas (bar ${T.ZF_MAX_SHARE}); ${s.zfight.clusterCount} clusters >= ${T.ZF_CLUSTER} px`] : [],
 );
 const zfSlowSteps = dense.reduce((a, s) => a + s.zfight.slowStepsJudged, 0);
 const popFails = [
@@ -1094,7 +1135,7 @@ for (const l of legs) {
   for (const f of l.fades) {
     if (!f.established) continue;
     fadesEstablished++;
-    if (f.fadeMs < T.FADE_MIN_MS || f.fadeMs > T.FADE_MAX_MS) fadeFails.push(`${l.theme}/${f.tag}: fade lasted ${f.fadeMs} ms (bar ${T.FADE_MIN_MS}-${T.FADE_MAX_MS})`);
+    if (f.fadeMs < T.FADE_MIN_MS || f.fadeMs >= T.FADE_MAX_MS) fadeFails.push(`${l.theme}/${f.tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS})`);
     if (f.maxOpacityStep > T.FADE_MAX_STEP) fadeFails.push(`${l.theme}/${f.tag}: opacity fell ${f.maxOpacityStep} in one frame (frame ${f.maxOpacityStepFrame}; bar ${T.FADE_MAX_STEP})`);
     if (f.compositeJudged && f.compositeMaxOneFrameShare > T.FADE_MAX_PIXEL_SHARE) fadeFails.push(`${l.theme}/${f.tag}: one frame carried ${f.compositeMaxOneFrameShare} of the composited change (frame ${f.compositeMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
   }
@@ -1102,10 +1143,11 @@ for (const l of legs) {
 const fadeNotEst = legs.flatMap((l) => l.fades.filter((f) => !f.established).map((f) => `${l.theme}/${f.tag}: ${f.why}`));
 
 const items = {
-  "z-fighting (coplanar surfaces during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
+  "z-fighting (flip-flop PATCHES >= ZF_CLUSTER px during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
+  "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
   "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),
   "AO drop and restore at camera stop (high tier)": verdict(aoFails, aoRestores >= 4 && aoUnjudged.length === 0 && notDense.length === 0 && legProblems.length === 0, `${aoRestores} restores observed at the high tier${aoUnjudged.length ? "; not judged: " + aoUnjudged.join("; ") : ""}`),
-  "300 ms quality-tier cross-fade": verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
+  [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
 };
 
 const report = {

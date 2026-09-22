@@ -207,7 +207,6 @@
 .pt-preset__why,
 .pt-preset__prov {
   min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .pt-preset__title {
@@ -433,7 +432,6 @@
   letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--text-faint);
-  overflow-wrap: anywhere;
 }
 
 .hop__val {
@@ -445,7 +443,6 @@
   font-size: var(--fs-1);
   line-height: var(--lh-1);
   color: var(--text);
-  overflow-wrap: anywhere;
 }
 
 /* The row that ended the hop. It is marked by a rule and a weight change rather than a fill: the
@@ -510,6 +507,8 @@
   background: var(--surface-2);
   border-radius: var(--radius-sm);
   padding: 2px var(--sp-1);
+  /* UNBREAKABLE-TOKEN CONTAINER: a verbatim config line can hold one token (an ACL or object-group
+     name) longer than the hop column, and it must stay inside the panel. */
   overflow-wrap: anywhere;
 }
 
@@ -608,7 +607,6 @@
        value, not under the label. */
     padding: 1px 0 1px calc(5.5rem + var(--sp-1));
     border-bottom: 0;
-    overflow-wrap: anywhere;
   }
   .hop__alts td::before {
     content: attr(data-col);
@@ -660,9 +658,6 @@
 /* ══ the claim card ════════════════════════════════════════════════════════ */
 
 .claim {
-  /* Caveat prose carries file paths and backticked config fragments that no line break can split
-     on a word boundary. It engages only when a line would otherwise overflow. */
-  overflow-wrap: anywhere;
   border: var(--hairline) solid var(--border);
   border-left: 3px solid var(--claim-observed);
   border-radius: var(--radius-md);
@@ -750,7 +745,6 @@
   min-width: 0;
   font-size: var(--fs-1);
   color: var(--text-muted);
-  overflow-wrap: anywhere;
 }
 
 .claim__sentence {

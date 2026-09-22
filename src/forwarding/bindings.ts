@@ -22,7 +22,7 @@
  */
 import bindingsJson from "./acl-bindings.json";
 import { aclsOf, fabric, linksByHost, routesOf } from "../core/data";
-import type { Cite, Hop, HopEvidence } from "../core/types";
+import { sameSourceBinding, type Cite, type Hop, type HopEvidence, type SourceBinding } from "../core/types";
 import { formatIpv4, parseInterfaceAddress, parseIpv4, prefixContains, rankPrefixMatches, type Ipv4 } from "./ip";
 
 export type Direction = "in" | "out";
@@ -40,14 +40,15 @@ interface BindingRecord {
 }
 
 interface BindingsFile {
-  meta: { source: string; sourceSha256: string; sourceBytes: number };
+  meta: SourceBinding;
   hosts: Record<string, BindingRecord[]>;
 }
 
 const FILE = bindingsJson as unknown as BindingsFile;
 
-/** The sidecar is evidence only about the bytes it was compiled from. */
-export const BINDINGS_TRUSTED = FILE.meta.sourceSha256 === fabric.meta.sourceSha256;
+/** The sidecar is evidence only about the bytes it was compiled from — the same digest, over the same
+    byte form (LF-normalised), of the same length. A sidecar stating no form is refused. */
+export const BINDINGS_TRUSTED = sameSourceBinding(FILE.meta, fabric.meta);
 
 const BY_HOST: ReadonlyMap<string, ReadonlyMap<string, BindingRecord>> = new Map(
   Object.entries(FILE.hosts).map(([host, recs]) => [host, new Map(recs.map((r) => [r.port, r] as const))] as const),

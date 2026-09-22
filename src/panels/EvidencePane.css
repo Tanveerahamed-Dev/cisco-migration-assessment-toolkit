@@ -126,8 +126,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.ev-wrap {
-}
+/* .ev-wrap sets no wrap licence (acceptance C2, 2026-09-22). It used to carry `overflow-wrap: anywhere`,
+   which every identifier inside it inherited; a list of host names or a title wraps at its spaces,
+   and an identifier in it moves to the next line whole. The class stays as the hook the markup uses.
+   Owner of the rule: "wrapping" in src/ui/primitives.css. */
 
 .ev-prose {
   margin: 0;
@@ -329,8 +331,10 @@
   color: var(--accent);
 }
 
-.ev-siblings__title {
-}
+/* .ev-siblings__title sets no wrap licence (acceptance C2, 2026-09-22). It used to carry `overflow-wrap: anywhere`,
+   which every identifier inside it inherited; a list of host names or a title wraps at its spaces,
+   and an identifier in it moves to the next line whole. The class stays as the hook the markup uses.
+   Owner of the rule: "wrapping" in src/ui/primitives.css. */
 
 .ev-siblings__more {
   padding-block: var(--sp-2);

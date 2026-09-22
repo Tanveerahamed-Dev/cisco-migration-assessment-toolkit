@@ -391,16 +391,18 @@ describe("REFUTED (C2): no outcome earns a stronger badge than its hops support"
     expect(claimBadge(trace("dropped", [hop("forwarded")]))).toBe("INDETERMINATE");
   });
 
-  /* ── the empty-hop guard (`claimBadge`, `if (trace.hops.length === 0) return "INDETERMINATE"`) ──
-   * UNPINNED until 2026-09-22 (acceptance report, F2): deleting that line left every claims test
-   * green. The reason is measured, not guessed: for a DECIDED outcome word (delivered / denied /
-   * dropped) the same zero-hop trace is also refused by `hopsSupportOutcome`, whose
-   * `last === undefined` check returns false, so the guard is shadowed there and no delivered
-   * fixture can tell it apart. It is the ONLY thing between an empty traversal and SCOPED when
-   * the outcome word is one this module does not recognise — the C3 case, a runtime value from
-   * compiled JSON, which `bandOfOutcome` bands UNDETERMINED and `hopsSupportOutcome` therefore
-   * waves through ("claims nothing, so nothing for the hops to contradict"). This fixture (the
-   * no-ingress-gap source above, so no policy gap can produce PARTIAL instead) is that case. */
+  /* ── the empty-traversal rule (C1) and its owners ──
+   * There used to be a dedicated line in `claimBadge`, `if (trace.hops.length === 0) return
+   * "INDETERMINATE"`, and it was UNPINNED (acceptance report, F2): deleting it left every claims test
+   * green. Measured, not guessed: for a DECIDED outcome word (delivered / denied / dropped) the same
+   * zero-hop trace is also refused by `hopsSupportOutcome`, whose `last === undefined` check returns
+   * false. The line was the only thing between an empty traversal and SCOPED for an UNRECOGNISED
+   * outcome word (the C3 case) — until the 2026-09-22 probe below showed an unrecognised word earned
+   * SCOPED over ORDINARY hops too, and the repair (no badge above INDETERMINATE for any word that
+   * bands UNDETERMINED) covers the zero-hop case as well. The line then decided nothing on any input
+   * and was removed. The two tests below pin the rule at its two remaining owners, and the sweep
+   * after them pins it for every outcome word at once. This fixture is the no-ingress-gap source
+   * above, so no policy gap can produce PARTIAL instead. */
   it("a delivered trace with ZERO hops is INDETERMINATE on the no-gap fixture, where only emptiness can withhold SCOPED", () => {
     const t = trace("delivered", []);
     expect(t.hops).toHaveLength(0);
@@ -408,14 +410,57 @@ describe("REFUTED (C2): no outcome earns a stronger badge than its hops support"
     // withheld badge here is caused by the missing hop and nothing else.
     expect(claimBadge(trace("delivered", [hop("delivered")]))).toBe("SCOPED");
     expect(claimBadge(t)).toBe("INDETERMINATE");
-    expect(hopsSupportOutcome(t), "the second, shadowing owner of the same rule").toBe(false);
+    expect(hopsSupportOutcome(t), "the owner of the rule for decided words").toBe(false);
   });
 
-  it("a ZERO-hop trace whose outcome word is unrecognised is INDETERMINATE — the empty-hop guard's own case", () => {
+  it("a ZERO-hop trace whose outcome word is unrecognised is INDETERMINATE — the outcome-band rule's case, hopsSupportOutcome does not decide it", () => {
     const t = trace("recirculated" as never, []);
     expect(bandOfOutcome(t.outcome), "precondition: an unrecognised word bands UNDETERMINED (C3)").toBe("UNDETERMINED");
-    expect(hopsSupportOutcome(t), "precondition: hopsSupportOutcome does not refuse it, so it cannot shadow the guard").toBe(true);
+    expect(hopsSupportOutcome(t), "precondition: hopsSupportOutcome does not refuse it, so only the outcome-band rule can").toBe(true);
     expect(claimBadge(t)).toBe("INDETERMINATE");
+  });
+
+  /* ── an outcome word this module does not recognise, over ORDINARY hops (2026-09-22 probe) ──
+   * `hopsSupportOutcome` waves an unrecognised word through ("claims nothing, so nothing for the
+   * hops to contradict"), `bandOfOutcome` bands it UNDETERMINED (C3) — and `claimBadge` then went on
+   * to judge the TRAVERSAL: every host modelled, no policy gap, so SCOPED. The product's strongest
+   * badge was awarded to a verdict word it cannot read, while the band beside it said UNDETERMINED:
+   * the C2 shape (two parts of this module disagreeing about one trace, the badge taking the
+   * flattering side) reached through the C3 door. Measured red before the fix: 'SCOPED'. */
+  it("an unrecognised outcome word over a clean, fully-modelled traversal is INDETERMINATE, not SCOPED", () => {
+    const clean = [hop("forwarded", 0), hop("delivered", 1)];
+    // Control: the same hops under a word this module DOES read reach SCOPED, so the fixture is clean.
+    expect(claimBadge(trace("delivered", clean))).toBe("SCOPED");
+    const t = trace("recirculated" as never, clean);
+    expect(bandOfOutcome(t.outcome), "precondition (C3)").toBe("UNDETERMINED");
+    expect(bandOfTrace(t)).toBe("UNDETERMINED");
+    expect(claimBadge(t)).toBe("INDETERMINATE");
+  });
+
+  it("no badge above INDETERMINATE for ANY outcome word whose band is UNDETERMINED, over no hop or any single hop", () => {
+    /* The class, not the one word: every outcome whose band claims nothing (the two undecided words
+       of the union, plus an unrecognised runtime value) against every hop verdict. Out-of-scope is
+       its own badge; everything else must be INDETERMINATE — never SCOPED, never PARTIAL. */
+    const words = ["indeterminate", "out-of-scope", "recirculated", ""] as const;
+    const verdicts = ["forwarded", "delivered", "no-route", "denied", "loop", "ttl-exceeded", "unmodeled"] as const;
+    for (const w of words) {
+      expect(bandOfOutcome(w as never), `precondition: ${w} bands UNDETERMINED`).toBe("UNDETERMINED");
+      for (const hops of [[], ...verdicts.map((v) => [hop(v)])]) {
+        const badge = claimBadge(trace(w as never, hops));
+        const over = hops.length === 0 ? "no hop" : `a ${hops[0]!.verdict} hop`;
+        expect(badge, `${JSON.stringify(w)} over ${over}`).toBe(w === "out-of-scope" ? "OUT OF SCOPE" : "INDETERMINATE");
+      }
+    }
+  });
+
+  it("an EMPTY traversal earns no badge above INDETERMINATE under any outcome word at all", () => {
+    /* C1 as a property over the whole word set, so neither owner of the rule can be removed without
+       a red here: the decided words (hopsSupportOutcome's), the undecided words (the outcome-band
+       rule's) and an unrecognised runtime value. */
+    for (const w of ["delivered", "denied", "dropped", "indeterminate", "recirculated"] as const) {
+      expect(claimBadge(trace(w as never, [])), `${w} with zero hops`).toBe("INDETERMINATE");
+    }
+    expect(claimBadge(trace("out-of-scope", []))).toBe("OUT OF SCOPE");
   });
 
   it("every real trace the product offers already satisfies the invariant, so the rule moves none of them", () => {

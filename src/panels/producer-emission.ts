@@ -15,10 +15,10 @@
  */
 import emissionJson from "./producer-emission.json";
 import { fabric } from "../core/data";
+import { sameSourceBinding, type SourceBinding } from "../core/types";
 
 interface EmissionFile {
-  meta: {
-    sourceSha256: string;
+  meta: SourceBinding & {
     aclLineFields: Record<string, string>;
     deviceHealthFields: Record<string, string>;
   };
@@ -28,7 +28,8 @@ interface EmissionFile {
 
 const FILE = emissionJson as unknown as EmissionFile;
 
-export const PRODUCER_EMISSION_TRUSTED = FILE.meta.sourceSha256 === fabric.meta.sourceSha256;
+/* Every binding field must agree — digest, its form, byte length and source (O15, `sameSourceBinding`). */
+export const PRODUCER_EMISSION_TRUSTED = sameSourceBinding(FILE.meta, fabric.meta);
 
 const ACL_LINE_PATH = /^acls\.[^.[\]]+\.[^[\]]+\[\d+\]$/;
 

@@ -3,11 +3,15 @@
  * <body>.
  *
  * `leaveGrid` used to focus `exitFocusRef` when one was given and otherwise call `active.blur()` on
- * the focused cell. The only production host, `PriorityQueue`, passes no `exitFocusRef`, so Escape
- * in the findings grid put focus on <body> every time. The blur also ran when an exit target was
- * given but had since unmounted (it was focused without an `isConnected` check, a silent no-op that
- * left focus where it was). Both now go through `src/app/focus-return.ts`, which falls back to the
- * surface's region landmark.
+ * the focused cell, which parks focus on <body>. A given exit target was focused without an
+ * `isConnected` check, a silent no-op when it had unmounted. Both now go through
+ * `src/app/focus-return.ts`, which falls back to the surface's region landmark.
+ *
+ * Scope, stated rather than implied: the one production host, `PriorityQueue`, currently answers
+ * every Escape itself (its `onEscape` returns true), so these paths are the grid's contract for any
+ * host that lets Escape through — the shape PriorityQueue had before, with `exitFocusRef` on its
+ * filter input — not a path the running queue reaches today. The real-browser grid cases are in
+ * review/audit-d3-focus.mjs.
  */
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";

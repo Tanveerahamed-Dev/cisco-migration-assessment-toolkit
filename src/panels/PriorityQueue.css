@@ -768,7 +768,6 @@
      inside its 56px ceiling. */
   padding-block-end: 2px;
   white-space: normal;
-  overflow-wrap: break-word;
 }
 
 .pq .ag[data-density="comfortable"] .pq-title__host {

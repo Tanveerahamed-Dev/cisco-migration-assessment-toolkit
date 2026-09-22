@@ -166,6 +166,99 @@ export function cableInk(tokens: TokenPalette, token: string, restChroma = 1): C
   return { display: { ink, receded }, ink: pre(ink), receded: pre(receded) };
 }
 
+/**
+ * Every colour token `classifyLink` can paint a cable in — discovered by running it over every
+ * status x bridge x speed combination, not listed by hand, so a new encoding joins the fit below
+ * the day it is written.
+ */
+export function cableColourTokens(): string[] {
+  const out = new Set<string>();
+  for (const opStatus of ["up", "down", "unknown", "admin-down", null]) {
+    for (const isBridge of [true, false, null]) {
+      for (const speedMbps of [null, 100, 1000, 10000]) {
+        const link = { id: "L", a: "a", b: "b", speedMbps, opStatus, isBridge, isPortChannel: false, members: [] };
+        out.add(classifyLink(link as unknown as Link).colorToken);
+      }
+    }
+  }
+  return [...out].sort();
+}
+
+/**
+ * The exponent a cable's edge coverage is raised to before it becomes alpha, so that what reaches
+ * the SCREEN is linear in coverage (C5, "1px hairline links").
+ *
+ * WHY. The coverage blend happens in the composer's linear HDR buffer, before AgX. On the light
+ * stage the ground's pre-image is ~3.6 and a dark ink's ~0.03, so a 50 %-covered edge pixel holds
+ * ~1.8 linear — and AgX, which compresses the top of its range, puts that on screen only 16-18 % of
+ * the way from the ground to the ink. The anti-aliased fringe vanished and light-theme cables
+ * MEASURED ~1 CSS px (median coverage-integrated width 1.83 px, a one-pixel core on 32 of 72
+ * crossings, against 2.76 px and 2 of 51 on the dark stage). On the dark stage the same blend lands
+ * 63-83 % of the way, so dark strokes read fatter than their encoded width.
+ *
+ * HOW. For this palette's worst-case ground (`cableGround`) and every ink AND receded ink a cable
+ * can carry, the displayed position of a pixel blended at alpha c^gamma is computed through the
+ * real AgX forward curve, and gamma is chosen (0.01 steps) to minimise the squared distance from
+ * the geometric coverage c over c = 0.1..0.9. One exponent per palette: the inks of one stage sit
+ * close together in luminance, and a per-fragment inverse tone map would cost a lookup per pixel for
+ * a residual the unit test bounds at +-0.15 at half coverage.
+ */
+const gammaCache = new WeakMap<TokenPalette, number>();
+export function coverageGamma(tokens: TokenPalette): number {
+  const hit = gammaCache.get(tokens);
+  if (hit !== undefined) return hit;
+  const { y: groundY } = cableGround(tokens);
+  const gL = agxInverse([groundY, groundY, groundY]);
+  const inks: { pre: Vec3; shown: number }[] = [];
+  for (const token of cableColourTokens()) {
+    const pair = cableInk(tokens, token);
+    for (const c of [pair.ink, pair.receded]) {
+      const pre: Vec3 = [c.r, c.g, c.b];
+      inks.push({ pre, shown: luminance(agxForward(pre)) });
+    }
+  }
+  const errorAt = (g: number): number => {
+    let err = 0;
+    for (const ink of inks) {
+      if (Math.abs(groundY - ink.shown) < 1e-6) continue;
+      for (let c = 0.1; c < 0.95; c += 0.1) {
+        const a = Math.pow(c, g);
+        const blended: Vec3 = [
+          gL[0] + (ink.pre[0] - gL[0]) * a,
+          gL[1] + (ink.pre[1] - gL[1]) * a,
+          gL[2] + (ink.pre[2] - gL[2]) * a,
+        ];
+        const shown = (groundY - luminance(agxForward(blended))) / (groundY - ink.shown);
+        err += (shown - c) ** 2;
+      }
+    }
+    return err;
+  };
+  /* Coarse (0.1) then fine (0.01) around the coarse minimum: ~50 evaluations instead of ~280, because
+     this runs inside buildCables on the scene-creation task (acceptance E5 budgets that task). */
+  let best = 1;
+  let bestErr = Infinity;
+  for (let g = 0.2; g <= 3.0 + 1e-9; g += 0.1) {
+    const e = errorAt(g);
+    if (e < bestErr) [best, bestErr] = [g, e];
+  }
+  const centre = best;
+  for (let g = centre - 0.1; g <= centre + 0.1 + 1e-9; g += 0.01) {
+    const e = errorAt(g);
+    if (g > 0 && e < bestErr) [best, bestErr] = [g, e];
+  }
+  best = Math.round(best * 100) / 100;
+  gammaCache.set(tokens, best);
+  return best;
+}
+
+/** Set the display-linear coverage exponent on a material made by createCableMaterial. */
+export function setCoverageGamma(mat: LineMaterial, gamma: number): void {
+  const u = mat.uniforms.coverageGamma;
+  if (u === undefined) mat.uniforms.coverageGamma = { value: gamma };
+  else u.value = gamma;
+}
+
 /** What AgX will actually put on screen for a pre-image — exported for the contrast ratchet. */
 export function displayedLuminance(pre: Color): number {
   return luminance(agxForward([pre.r, pre.g, pre.b]));
@@ -644,6 +737,9 @@ export function createCableMaterial(
    * steps; with it OFF, 609 of 828 — 77.1 % against 73.6 %. It was slightly WORSE than nothing,
    * which is what an unused multisample coverage path does when the composer runs multisampling: 0.
    * The stair-stepping is fixed in postfx.ts, by feeding SMAA an image it can actually read. */
+  /* Display-linear edge coverage (see coverageGamma). 1 until the owner of the palette sets it:
+     buildCables does, for every batch, and re-fits it in retint. */
+  mat.uniforms.coverageGamma = { value: 1 };
   patchRecession(mat, nominalPx, rails > 1 ? { rails, railPx: widthPx, gapPx } : null);
   return mat;
 }
@@ -698,7 +794,7 @@ function patchRecession(
   mat.fragmentShader = mat.fragmentShader
     .replace(
       "uniform vec3 diffuse;",
-      "uniform vec3 diffuse;\n\t\tvarying float vRecede;\n\t\tvarying vec3 vRecedeInk;",
+      "uniform vec3 diffuse;\n\t\tuniform float coverageGamma;\n\t\tvarying float vRecede;\n\t\tvarying vec3 vRecedeInk;",
     )
     .replace(
       "gl_FragColor = vec4( diffuseColor.rgb, alpha );",
@@ -735,6 +831,21 @@ function patchRecession(
         `float _core = max( ${edgeU.toFixed(5)} / _px - 0.5, 0.5 );`,
         "float _cov = clamp( _core + 1.0 - _dist, 0.0, 1.0 );",
         ...(railSpec === null ? [] : railCut(railSpec, nominalWidthPx)),
+        /* Coverage is geometric; what the reader sees is the tone-mapped blend. Re-shaped so a pixel's
+           DISPLAYED position between ground and ink tracks its coverage (coverageGamma): without it the
+           light stage's fringe washed out and its cables landed ~1 px wide. 0 and 1 are fixed points,
+           so the opaque core and the outside of the stroke are untouched. */
+        "_cov = pow( _cov, coverageGamma );",
+        /* NO ROUND CAPS INSIDE A CABLE (C5 motion, 2026-09-22). A cable is a polyline of short
+           segments, and LineMaterial gives every segment a round cap, so consecutive segments OVERLAP
+           at every joint. Both overlapping fragments are nearly the same depth, and which one is
+           nearer flips as the camera creeps; the partially-covered edge pixels there are then blended
+           once or twice on alternate frames. MEASURED with review/capture-motion.mjs's orbit-keys-slow
+           replay: the remaining flip-flop cluster (9 x 7 px on a cable fan, two segments of one batch
+           0.02 units apart along the ray) appeared in ~2 of 3 runs with caps and in 0 of 4 without.
+           The joints between segments of a gently curved cable need no cap: the outer-side wedge a
+           5-degree bend leaves is under a tenth of a pixel. */
+        "if ( abs( vUv.y ) > 1.0 ) discard;",
         "gl_FragColor = vec4( _rgb, alpha * _cov );",
       ].join("\n\t\t\t"),
     );
@@ -880,6 +991,7 @@ export function buildCables(input: CableBuildInput): CableSet {
       rails: bucket.rails,
       railGapPx: bucket.gapPx,
     });
+    setCoverageGamma(material, coverageGamma(tokens));
     const object = new LineSegments2(geometry, material);
     object.name = `cables:${bucket.key}`;
     object.frustumCulled = false; // a single batch spans the whole fabric; its bounds are never off-screen
@@ -901,7 +1013,9 @@ export function buildCables(input: CableBuildInput): CableSet {
     },
     retint(next: TokenPalette): void {
       const nextInk = inkTable(next);
+      const gamma = coverageGamma(next);
       for (const b of batches) {
+        setCoverageGamma(b.material, gamma);
         const colours = b.object.geometry.getAttribute("instanceColorStart") as
           | InterleavedBufferAttribute
           | undefined;

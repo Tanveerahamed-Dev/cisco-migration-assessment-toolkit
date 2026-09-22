@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Band,
   Button,
+  Cite,
   Dialog,
   IconButton,
   Meter,
@@ -482,5 +483,30 @@ describe("miscellaneous guarantees", () => {
     const { container } = mount(<Button onClick={onClick}>Go</Button>);
     click(container.querySelector("button")!);
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* C2-1: an identifier path never breaks mid-word. CSS offers no break opportunity at `.` or `_`,
+   and a token longer than its column otherwise splits between two letters under an
+   `overflow-wrap` licence ("acls.core1.PROTECT_SERV / ERS[3]", measured at 1440 px). The Cite
+   offers a <wbr> after every identifier separator instead; text and accessible name are unchanged. */
+describe("Cite", () => {
+  it("offers a line break only after identifier separators, without changing its text", () => {
+    const path = "acls.core1.PROTECT_SERVERS[3]";
+    const { container } = mount(<Cite cite={path} onOpen={() => {}} />);
+    const el = container.querySelector(".ui-cite__path")!;
+    expect(el.textContent).toBe(path);
+    expect(el.querySelectorAll("wbr")).toHaveLength(3);
+    for (const w of el.querySelectorAll("wbr")) expect(w.previousSibling?.textContent).toMatch(/[._/:-]$/);
+    expect(container.querySelector("button")!.getAttribute("aria-label")).toBe(`Open source record ${path}`);
+  });
+
+  it("breaks a visible label the same way and leaves a separator-free token whole", () => {
+    const { container } = mount(<Cite cite="x" label="collection_completeness" onOpen={() => {}} />);
+    const el = container.querySelector(".ui-cite__path")!;
+    expect(el.textContent).toBe("collection_completeness");
+    expect(el.querySelectorAll("wbr")).toHaveLength(1);
+    const { container: c2 } = mount(<Cite cite="core1" onOpen={() => {}} />);
+    expect(c2.querySelectorAll(".ui-cite__path wbr")).toHaveLength(0);
   });
 });

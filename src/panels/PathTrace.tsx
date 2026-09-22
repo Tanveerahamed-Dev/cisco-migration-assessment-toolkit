@@ -97,14 +97,15 @@ const PORTED = (p: Flow["protocol"]): boolean => p === "tcp" || p === "udp";
  * and shows a real address from this snapshot, because the most common failure is not a typo — it
  * is a reader who does not yet know which addresses this collection can answer questions about.
  */
-function addressError(label: string, raw: string): string | undefined {
+function addressError(label: "source" | "destination", raw: string): string | undefined {
+  const example = EXAMPLE_ADDRESSES[label];
   const v = raw.trim();
-  if (v === "") return `Enter a ${label} IPv4 address, for example ${EXAMPLE_ADDRESS}.`;
+  if (v === "") return `Enter a ${label} IPv4 address, for example ${example}.`;
   if (v.includes("/")) {
-    return `${v} names a subnet. This traces one flow, so enter a single address inside it — for example ${EXAMPLE_ADDRESS}.`;
+    return `${v} names a subnet. This traces one flow, so enter a single address inside it — for example ${example}.`;
   }
   if (parseIpv4(v) === null) {
-    return `${v} is not an IPv4 address. Use four dot-separated numbers, each 0 to 255, for example ${EXAMPLE_ADDRESS}.`;
+    return `${v} is not an IPv4 address. Use four dot-separated numbers, each 0 to 255, for example ${example}.`;
   }
   return undefined;
 }
@@ -185,11 +186,6 @@ const ROUTER_ADDRESSES: ReadonlySet<number> = (() => {
     if (vip !== null) s.add(vip);
   }
   return s;
-})();
-
-const EXAMPLE_ADDRESS: string = (() => {
-  const ep = fabric.endpoints.find((e) => e.ip !== null && parseIpv4(e.ip) !== null);
-  return ep?.ip ?? "10.0.0.1";
 })();
 
 export interface IntentAddress {
@@ -350,6 +346,48 @@ const PROTECTED_PREFIXES: readonly { text: string; cite: Cite; acl: string; host
 
 const SRC_MAX = 4;
 const DST_MAX = 3;
+
+/**
+ * The example each address field shows — its placeholder, and the "for example" in its validation
+ * message. ONE PER FIELD (acceptance C2, 2026-09-22): a single shared example put "10.0.10.50" in
+ * both Source IP and Destination IP, so the empty form suggested a flow from a host to itself, the
+ * one question nobody asks.
+ *
+ * Both come from the same evidence the intent catalogue uses (`addressesIn`), so neither is typed
+ * from nothing:
+ *   - the SOURCE is a client address inside an observed subnet, an observed endpoint when there is
+ *     one (the subnet with an observed endpoint is preferred for exactly that reason);
+ *   - the DESTINATION is a client address in a DIFFERENT observed subnet, preferring one a collected
+ *     ACL names, because that is where policy decides a flow and so where a trace is most telling.
+ * Router-owned addresses are excluded from both: a gateway is not a client. Only when the snapshot
+ * observed a single subnet does the destination fall back to a second address inside it, and only
+ * when it observed none do the fields show RFC 5737 documentation addresses, which can never be
+ * mistaken for a host on this network.
+ */
+const EXAMPLE_ADDRESSES: { readonly source: string; readonly destination: string } = (() => {
+  const clients = (sub: SubnetEvidence): IntentAddress[] =>
+    addressesIn(sub, SRC_MAX, false).filter((a) => {
+      const v = parseIpv4(a.ip);
+      return v !== null && !ROUTER_ADDRESSES.has(v);
+    });
+  const srcSub =
+    OBSERVED_SUBNETS.find((s) => clients(s)[0]?.provenance === "observed") ??
+    OBSERVED_SUBNETS.find((s) => clients(s).length > 0) ??
+    null;
+  const source = srcSub === null ? null : (clients(srcSub)[0]?.ip ?? null);
+
+  const named = (s: SubnetEvidence): boolean => PROTECTED_PREFIXES.some((p) => p.text === s.text);
+  const others = OBSERVED_SUBNETS.filter((s) => s !== srcSub);
+  let destination: string | null = null;
+  for (const s of [...others.filter(named), ...others.filter((s) => !named(s))]) {
+    destination = clients(s)[0]?.ip ?? null;
+    if (destination !== null) break;
+  }
+  if (destination === null && srcSub !== null) {
+    destination = clients(srcSub).find((a) => a.ip !== source)?.ip ?? null;
+  }
+  return { source: source ?? "192.0.2.10", destination: destination ?? "192.0.2.20" };
+})();
 
 /**
  * The intents on offer, constructed from the snapshot rather than written down.
@@ -1313,7 +1351,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
               inputMode="decimal"
               autoComplete="off"
               spellCheck={false}
-              placeholder={EXAMPLE_ADDRESS}
+              placeholder={EXAMPLE_ADDRESSES.source}
               value={form.srcIp}
               onChange={(e) => setField("srcIp", e.currentTarget.value)}
               {...(errors.srcIp ? { error: errors.srcIp } : {})}
@@ -1331,7 +1369,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
               inputMode="decimal"
               autoComplete="off"
               spellCheck={false}
-              placeholder={EXAMPLE_ADDRESS}
+              placeholder={EXAMPLE_ADDRESSES.destination}
               value={form.dstIp}
               onChange={(e) => setField("dstIp", e.currentTarget.value)}
               {...(errors.dstIp ? { error: errors.dstIp } : {})}

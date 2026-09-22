@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { unassessedScoringDomains } from "./band-qualification";
 import { fabric } from "./data";
-import { applyToDevices, groupDevicesBy, parseQuery, sortDevicesBy, suggest } from "./query";
+import { applyToDevices, applyToFindings, groupDevicesBy, parseQuery, sortDevicesBy, suggest } from "./query";
 import type { Device } from "./types";
 
 const AUDITED = ["core2", "dist1", "dist2", "podacc1", "podacc2"];
@@ -88,5 +88,34 @@ describe("band questions in the query language carry the qualification (B1)", ()
     const plainExcellent: Device = { ...byHost("podacc1"), id: "zzz-plain", host: "zzz-plain", collected: false };
     const sorted = sortDevicesBy([byHost("podacc1"), plainExcellent], [{ field: "band", direction: "asc" }]);
     expect(sorted.map((d) => d.host)).toEqual(["zzz-plain", "podacc1"]);
+  });
+
+  it("the is:healthy note over findings says WHY rows are undecided, and does not call the undecided hosts non-matching", () => {
+    /* MEASURED (running app, 2026-09-22): the finding view's note for is:healthy read "14 of 146
+       name no device the fleet knows, so they are undetermined. No device in this fleet matches
+       "is:healthy", so no findings could match it either." Only ONE finding (F142) names no
+       device; the other 13 name a qualified host whose own answer is undecided, and "no device
+       matches" read as "no device is healthy" while five hosts are undecided, not decided no. */
+    const hosts = new Set(fabric.devices.map((d) => d.host));
+    const namesNone = fabric.findings.filter((f) => f.devices.every((h) => !hosts.has(h))).length;
+    const r = applyToFindings(fabric.findings, parseQuery("is:healthy"));
+    const c = r.clauses[0]!;
+    const note = c.note ?? "";
+    expect(c.undetermined, "precondition: more findings are undecided than name no device").toBeGreaterThan(namesNone);
+    const m = /(\d+) of \d+ name no device the fleet knows/.exec(note);
+    expect(m?.[1], `the note's "name no device" count: ${note}`).toBe(String(namesNone));
+    // The rest are attributed to the devices' own undecided answer, with the count stated.
+    expect(note).toContain(`${c.undetermined - namesNone} of ${r.total}`);
+    expect(note).toMatch(/itself undecided/);
+    // And the scope does not say "no device matches" as if every host were decided against.
+    expect(note).not.toMatch(/No device in this fleet matches/);
+    /* The undecided devices, restated independently: every qualified favourable band, plus every
+       device with no band observed at all — and nothing else. Counted in words in the note (the
+       host list itself is bounded by the note's own rule); the structured scope carries them all. */
+    if (c.scope.kind !== "device-scope") throw new Error("expected a device-scoped clause");
+    const expected = fabric.devices.filter((d) => isQualified(d) || d.band === null).map((d) => d.host).sort();
+    expect(c.scope.undecided.map((x) => x.host).sort()).toEqual(expected);
+    for (const d of QUALIFIED) expect(expected).toContain(d.host);
+    expect(note).toContain(`${expected.length} devices are undecided`);
   });
 });

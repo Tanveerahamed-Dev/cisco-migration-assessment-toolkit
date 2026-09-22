@@ -57,6 +57,7 @@ import {
   useCommandTargets,
   type Command,
 } from "./commands";
+import { returnFocus } from "./focus-return";
 import { formatShortcut, shortcutText, useGlobalKeyboard } from "./keyboard";
 import "./CommandPalette.css";
 
@@ -255,10 +256,7 @@ function landFocus(find: Landing): void {
     const a = document.activeElement;
     if (a !== null && a !== document.body) return;
     const el = find(tick);
-    if (el && el.isConnected) {
-      el.focus({ preventScroll: true });
-      if (document.activeElement === el) return;
-    }
+    if (el && returnFocus(el, null) === el) return;
     tick += 1;
     if (tick < LANDING_TICKS) setTimeout(step, LANDING_TICK_MS);
   };
@@ -454,8 +452,7 @@ export function CommandPalette(): ReactNode {
     /* The store carries the exact invoking element (design brief 7.4 rule 4). Dialog restores too,
        but it restores to whatever was active when it mounted; this is the explicit target. */
     const back = focusReturn;
-    if (back && back !== document.body && back.isConnected) back.focus?.();
-    else landFocus(landing ?? stageLanding);
+    if (returnFocus(back === document.body ? null : back, null) === null) landFocus(landing ?? stageLanding);
   }, [setPaletteOpen, focusReturn]);
 
   useEffect(() => {
