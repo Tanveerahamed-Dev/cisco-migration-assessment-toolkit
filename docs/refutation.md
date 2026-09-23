@@ -24,8 +24,9 @@ The distinction matters: a test suite written by the author encodes the author's
 problem, so it agrees with the author's mistakes. The refuter's question is "what does this claim
 that it did not measure?", and the finding is a counterexample, not an opinion.
 
-**The provenance limit, stated first because it qualifies everything else.** `atlas-scope` has no
-Git history of its own; it is an untracked directory inside its parent repository
+**The provenance limit, stated first because it qualifies everything else.** When this section was
+first written, `atlas-scope` had no Git history of its own; it was an untracked directory inside its
+parent repository
 (`git status --short` in the parent reports `?? atlas-scope/`). F3 asks for "a regression test that
 **failed before the fix**", and for every engine except `claims` that half is **attested in prose
 by the refuter, not verifiable from history**. A reader can confirm the test exists, that it pins a
@@ -33,7 +34,9 @@ named defect, and that the code now satisfies it. A reader cannot independently 
 red first. That is a real gap in F3's evidence and it is not closed by this document.
 
 It is closed going forward: a repository was initialised for `atlas-scope` on 2026-09-21, baseline
-commit `857b520`, so every refutation from this point has a before and an after. That commit is a
+commit `857b520` — since rebuilt marker-free as `50a3dc5`, which differs from it by one comment line
+(`docs/open-issues.md` O10; the history continues `254694b`, `1d19e22`) — so every refutation from
+this point has a before and an after. That commit is a
 snapshot taken while several repair agents were working in the tree — its value is being a
 *before*, not being tidy. Retroactively the gap cannot be closed at all, and asserting otherwise
 would be exactly the kind of unearned confidence the refuters exist to catch.

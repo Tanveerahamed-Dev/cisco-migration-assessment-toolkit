@@ -133,6 +133,11 @@ command lists **3** untracked entries under `src` and `tools` — two new test f
 readings before that checkpoint were 48, then 88). Any count here is a cache of that command.
 Committing is the owner's decision; until the tree is committed and F1–F6 are re-run on a clean
 checkout of the resulting commit, cite every F result as "on the working tree of <date>".
+**Updated 2026-09-23:** `857b520` above is a superseded root — it was rebuilt marker-free as
+`50a3dc5`, which differs from it by one comment line in `src/forwarding/engine.test.ts`
+(`docs/open-issues.md` O10). The tree is now committed as `1d19e22` (repair wave 2c) and the same
+command lists nothing. F1–F6 have not yet been re-run on a clean checkout of `1d19e22`
+(`docs/open-issues.md` O23), so the citation rule above still applies.
 
 **The source snapshot lives OUTSIDE this repository.** Every compiler (`tools/compile-snapshot.mjs`,
 `tools/compile-acl-bindings.mjs`, `tools/compile-rib-evidence.mjs`) reads

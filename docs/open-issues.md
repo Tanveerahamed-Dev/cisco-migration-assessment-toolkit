@@ -5,8 +5,328 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **Repair wave 2c (reconciled 2026-09-23, committed as `1d19e22`).** Entries R26–R38 and the moved
+> O10, O15 and O18 below, and the rewritten O12, O16, O17 and O20 plus the new O21–O23 under Open,
+> record what the five wave-2c repair clusters (focus return / D3, band and labels / B1, layout / C2,
+> motion / C5–C6, provenance / O15–F2–F3) and the merged-tree gate reported. **Every FIXED below was
+> checked by the reconciler before it was written:** the code named was read at the line given, and
+> the named tests were re-run in one invocation (35 files, `Tests 649 passed (649)`, exit 0), and both
+> `tsc` configs exit 0 (`tsconfig.json`; `tsconfig.scripts.json` with `--noImplicitAny`). On a
+> scratch `vite build` of `1d19e22` served on its own port (stopped afterwards) the reconciler also
+> re-ran `node review/audit-d3-focus.mjs` (`210 case(s), 0 failed.`, exit 0) and
+> `node review/capture.mjs text` (`PASS selftest 17 of 17`, `PASS wrap 0 unjustified`, `PASS text
+> 72 of 72 states`, exit 0), and ran `node review/mutation-check.mjs` (18 of 18 KILLED, exit 0,
+> `node_modules` intact afterwards). The orchestrator verified the full suite at `1d19e22`
+> (`vitest` 121 files, 1571 tests, exit 0) and ran `node review/capture-motion.mjs` (exit 3, O16).
+> **Not re-run by the reconciler, and cited as "reported" wherever it appears:** `capture.mjs app`,
+> `capture.mjs twice 5` (F6), `capture.mjs reduced` (D7), the INP and cold-load harness runs, the
+> agents' in-page probes and screenshots (they live in the orchestrating session's scratchpad, not
+> in this repository), and every agent mutation other than those `mutation-check.mjs` executes. As
+> before, a fixed defect does not by itself move its acceptance criterion; nothing here is a re-grade.
+>
+> **History.** `50a3dc5` (root; rebuilt marker-free from the original `857b520`, see O10) →
+> `254694b` (checkpoint of the interrupted wave-2 tree, suite red on purpose at 15 of 1465) →
+> `1d19e22` (repair wave 2c). A sha `857b520` anywhere below refers to the superseded root.
+
+### O10. The nested repository and the untracked tree — DECIDED (own local repository) and RESOLVED by commit; `tracked-sources.test.ts` GREEN at `1d19e22` (moved from Open, 2026-09-23)
+Originally recorded (acceptance F2, 2026-09-22) as OWNER DECISION: `src/core/tracked-sources.test.ts`
+was red on 19 untracked runtime-imported modules, compiled files and compilers (17 at acceptance),
+and `atlas-scope/.git` had been created by a repair agent without being asked (filesystem birth time
+of `.git` 2026-09-21 09:09:53 +0300), with a single commit that postdated the fixes whose "failed
+before" it was meant to anchor.
+
+**Decision (2026-09-23).** Taken by the orchestrator on the owner's delegated instruction to take the
+best decision: Atlas Scope keeps its own repository at `atlas-scope/.git`, local, with no remote. It
+is not folded into the parent repository and not re-initialised.
+
+**The root was rebuilt before its first real use.** The original root `857b520` carried an absolute
+home-directory path in a comment in `src/forwarding/engine.test.ts`, and the Windows user name in that
+path is one of the parent repository's client-marker patterns. It was replaced by `50a3dc5`, which
+differs from `857b520` by exactly that one line — verified by the reconciler with
+`git diff --stat 857b520 50a3dc5` (`src/forwarding/engine.test.ts | 2 +-`, one insertion, one
+deletion); the new line names "the engine repository root — the parent of atlas-scope/" instead.
+`857b520` is on no branch; every older citation of it in this file and in `docs/` means that
+superseded root. History since, from `git log`: `254694b` ("wip: checkpoint the interrupted wave-2
+tree", committed red — 15 of 1465 — so that each failing test is on record before its fix) and
+`1d19e22` (repair wave 2c). Every commit candidate is scanned with the parent repository's own marker
+patterns (`cisco_toolkit/distribution_verify.py` `_client_marker_patterns`) before it is committed.
+
+**The untracked-files half is resolved by commit.** `254694b` tracked the 19 files and `1d19e22`
+tracked `tools/source-binding.mjs` (the one new module every compiler imports). At `1d19e22`
+`git status --short --untracked-files=all src tools` lists nothing, the orchestrator's full run is
+green (121 files, 1571 tests, exit 0), and the reconciler's targeted run includes
+`tracked-sources.test.ts` green ("no runtime-imported module, compiled file or compiler is
+untracked"). The test was not loosened.
+
+**What this does not establish.** No criterion is re-graded here: F1–F6 have not been re-run on a
+clean checkout of `1d19e22` (O23). The source snapshot still lives in the parent repository, so
+`git show HEAD:<source>` inside `atlas-scope` cannot reach it. `50a3dc5` inherits `857b520`'s
+limitation as a provenance baseline; `254694b` → `1d19e22` is the first pair in this history in which
+failing tests were committed before their fixes (R34).
+
+### O15. F5 — the recorded source digest bound CRLF working-tree bytes, not the committed blob — FIXED (moved from Open, 2026-09-23)
+Found by the acceptance refuter: `meta.sourceSha256` was `9cc348bd…5dfd`, the Windows CRLF checkout of
+`webapp/sample_data/sample_fleet.snapshot.json`, so F5 held on this host's disk only.
+
+**Fix (wave 2c, provenance cluster; the three consumer and wording changes applied by the gate).**
+`tools/source-binding.mjs` (new, tracked in `1d19e22`) is the one owner of the binding rule: it hashes
+the LF-normalised bytes and records `meta.sourceDigestForm: "lf-normalised"`. All four
+`tools/compile-*.mjs` import it; `provenance.test.ts` enforces that by globbing `tools/`. Every
+sidecar consumer fails closed on any binding mismatch through `types.ts` `sameSourceBinding` (digest,
+form, byte length, source) — verified in code: `bindings.ts:51`, `rib-completeness.ts:60`,
+`producer-emission.ts:32`. The Inspector, Header and StatusBar label the digest and byte count as
+LF-normalised.
+
+**Verified.** By the orchestrator: `fabric.json` and the three sidecars all bind
+`9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089` (3,072,771 bytes, form
+`lf-normalised`), which equals `git cat-file blob HEAD:webapp/sample_data/sample_fleet.snapshot.json |
+sha256sum` in the parent repository, and recompiling `fabric.json` is byte-identical. Re-checked by
+the reconciler: the four `meta` blocks read as above; the parent's blob hashes `9580aa09…3089` and is
+3,072,771 bytes; `sha256sum src/data/fabric.json` is `2f558c38…a308`. **Pinned by**
+`src/core/provenance.test.ts` (the CRLF-vs-LF binding test and one "writes the same bytes from a CRLF
+checkout as from an LF one" test per compiler), `src/forwarding/bindings-trust.test.ts` ("every
+source-bound sidecar consumer fails closed on any binding mismatch", which finds sidecars
+structurally), `src/panels/producer-emission.test.ts`, `Inspector.test.tsx` ("names the byte form its
+digest and byte count are taken over") and `Header.test.tsx` ("… (O15)") — all re-run green.
+`mutation-check.mjs` reverts `lfNormalise` and the form-aware trust check (both KILLED in the
+reconciler's run). Reported before the fix: `Tests 12 failed | 10 passed (22)` in provenance.
+
+**Digest pins, same cluster.** `review/layout-guard.mjs`, `devHandle.ts` and `devHandle.test.ts` carried
+the stale tag `9cc348bd58bb`; they now derive it, and `provenance.test.ts` "no authored code file pins
+the snapshot digest" (green) fails on any hex literal of 8+ characters that prefixes the bound or the
+working-tree digest. By design, links minted before the change are refused as snapshot mismatches (the
+tag moved from `9cc348bd` to `9580aa09`). **F5 is not re-graded here** (O23).
+
+### O18. Motion-inventory residuals — CLOSED (moved from Open, 2026-09-23)
+Both items are done. `src/ui/primitives.tsx:1693` (Skeleton comment) now says "looping animation that
+runs in this product" (verified). The dead `.stage-pending__spinner` / `@keyframes stage-pending-spin`
+CSS was deleted (a comment at `App.css:343` records it) and the §4.8 row with it. **Pinned by**
+`motion-inventory.test.ts` "no stylesheet declares an unbounded loop and nothing renders the deleted
+spinner…" and its first test, which proves the keyframe scanner live on a planted stylesheet — re-run
+green.
+
+### R26. D3 — focus fell to `<body>` after the snapshot popover, and on every Inspector close path — FIXED
+Found by the acceptance grading (D3: popover, Tab, Escape → `BODY`; `Header.tsx:479` fell back to
+`e.currentTarget.blur()`). Cause, established by the focus-return cluster from history: wave 1 added a
+Tab-out handler to the Popover primitive (`primitives.tsx:1064–1088`, absent in `50a3dc5`); Tab off the
+panel's last control closes it and focuses the query input, whose focus event records the popover's
+Copy button as origin; that button unmounts, and Header's latent blur arm fired. The rewritten runtime
+audit then found a second, unreported path: the Inspector's close (`focusReturn?.focus()`, no fallback,
+origin recorded only by `openInspector()`) landed on `BODY` in 24 of 210 cases — every close of an
+Inspector opened with `i`, and two citation-opened cases.
+
+**Fix.** One owner, `src/app/focus-return.ts`: the recorded target, else its opener (captured through
+`aria-controls` at record time), else explicit fallbacks, else the labelled region landmark; it never
+blurs. Every decider routes through it — verified in code: `Header.tsx:481`, `DataGrid.tsx:895`,
+`Inspector.tsx:695–705` (invoker recorded on every open path; returns only when focus is on `<body>` or
+null, so closing by moving focus elsewhere is not overridden; `#stage` fallback), `keyboard.ts:537/540`,
+`CommandPalette.tsx:259/455`, `StatusBar.tsx:136`, and the Dialog cleanup at `primitives.tsx:1314`.
+`PENDING_ROUTING` in the guard is empty (`focus-return.guard.test.ts:367–370`).
+
+**Pinned by** `src/app/focus-return.guard.test.ts` (one `ts.Program` over the vitest include globs with
+a partition check, symbols resolved rather than names; rejects `blur` calls, un-owned `isConnected`
+fallbacks and `.focus()` on a captured `activeElement`/`relatedTarget` origin; a shrink-only ratchet),
+`Header.focus-return.test.tsx` (3), `DataGrid.focus-return.test.tsx` (3), `Inspector.test.tsx` "closing
+the Inspector never drops focus to <body> (D3)" (3), two D3 tests in `CommandPalette.test.tsx` and one
+in `coverage-focusout.test.tsx` — all re-run green. The runtime audit `review/audit-d3-focus.mjs` was
+rewritten (5 states × 2 viewports; a case that did not open is NOT DRIVEN and fails; every required
+kind must be driven) and re-run by the reconciler on the scratch build: `210 case(s), 0 failed.`,
+`Driven, by kind: dialog=8 popover=105 field=32 grid=16 tab=33 find bar=6 inspector=9 copy=1`, exit 0.
+Reported: 24 failures before the Inspector change, 40 with the Header regression re-planted; reverting
+Header turns 3 tests red, reverting `DataGrid.leaveGrid` turns 5 red.
+
+**Recorded alongside.** No toast component exists in this build (the old audit counted the visually
+hidden `#sr-alert` live region as one). `DataGrid.leaveGrid` is not reachable from the running findings
+queue, because `PriorityQueue`'s `onEscape` consumes every Escape; the grid tests pin the grid's
+contract for hosts that let Escape through, and the comments now say so. The Dialog deliberately
+returns to a bare element, not an opener fallback, which would pre-empt the palette's own landing. The
+agents' D1/D2 re-drives (36 unique stops, no trap; one `tabindex=0`, `aria-rowcount` 152) are
+reported. D3 is not re-graded here; no real screen reader was used.
+
+### R27. B1 — four surfaces bypassed `presentBand`, and the `is:healthy` note misattributed its undecided rows — FIXED
+From O12's B1 residual (acceptance B1 FAIL: `is:healthy` answered yes for five qualified hosts). The
+surface fix landed in the interrupted wave 2 and was committed in `254694b`; wave 2c verified it and
+fixed a new defect. **Structural guard:** `src/core/band-read.guard.test.ts` resolves every read of
+`Device.band` with the type checker and allows it only in `band-qualification.ts`; its liveness test
+plants a module that reads the band under any name, by destructuring or laundered, and it is flagged.
+Reported mutations: raw reads planted in `query.ts` turned the guard and three behavioural tests red; a
+destructuring rename and an optional element access planted in `PriorityQueue.tsx` were flagged.
+**New defect, found live:** the Findings note said "14 of 146 name no device the fleet knows", true of
+F142 only; the other 13 name qualified hosts whose own answer is undecided. `query.ts` now splits the
+count, `ClauseScope` carries `undecided`, and the note says no device is *decided* to match. **Pinned
+by** `query.band-qualification.test.ts` ("is:healthy answers no qualified host with yes",
+"-is:healthy does not turn the qualified hosts into a decided no either", "the is:healthy note over
+findings says WHY rows are undecided…"), `band-read.guard.test.ts` and
+`band-qualification.surfaces.test.tsx` — re-run green. Reported red before: `expected '14' to be '1'`.
+The running-app checks (chassis `E*`, legend "Excellent, partial · 2", palette pill "Excellent
+(partial)") are reported from the agents' frozen-build screenshots. B1 is not re-graded here.
+
+### R28. C2 — identifier splits, an overrun, a hidden tab and identical placeholders, and a detector that could not see them — FIXED; R25's "72 of 72" superseded, then re-established under the wider detector
+Found by the acceptance grading (C2: `(num_power_supplie / s)`, Raw tab off the pane edge, both IP
+placeholders `10.0.10.50`). Wave 2c found more of the same class once the detector could see it:
+`acls.core1.PROTECT_SERV / ERS[3]` and `collection_completenes / s` in citation paths (dark and light,
+1440, states 06 and 08), and `(num_power_supplies)` running 4.9 px past its not-observed box once it
+could no longer split.
+
+**Fixes.** Prose blocks carry no token-break licence; a licence is allowed only with an
+`UNBREAKABLE-TOKEN CONTAINER` justification (`primitives.css` "wrapping"; kept on `.hop__raw` and
+`.insp-sha`), and nine unjustified licences in `PathTrace.css`, `PriorityQueue.css:771` and
+`App.css:455` were removed. `Cite` renders a `<wbr>` after each identifier separator
+(`primitives.tsx:1733`, used at `:1768`; text and `aria-label` unchanged). `.ui-notobs__why` lost its
+`min-inline-size` floor below its longest token. `.ui-tabs` wraps with a thin visible scrollbar as
+backstop. `PathTrace.tsx` derives `EXAMPLE_ADDRESSES` — source `10.0.10.50`, destination `10.0.30.10`
+from a different observed subnet — and each validation message names its own field's example.
+
+**The detector.** `readTextFidelity` now flags a break inside any whitespace-free token with no boundary
+character beside it, a split exactly between two text nodes (a `<wbr>`, `<br>` or atomic inline between
+them is sanctioned), and a line that overruns its block's content edge. `node review/capture.mjs wrap`
+statically fails every unjustified licence, and `selftest` runs 17 known-answer cases; `text` cannot
+PASS while a detector is blind. **Pinned by** `primitives.test.tsx` (`Cite`: 2 tests) and
+`PathTrace.test.tsx` ("the flow form's example addresses": 4) — re-run green — and by the harness,
+re-run by the reconciler on the scratch build: `wrap` 0 unjustified, `selftest` 17 of 17, `text` 72 of
+72, exit 0. Reported: `text` 68 of 72 and `wrap` FAIL 9 before the cross-cluster changes; re-injecting
+each old rule brings its finding back.
+
+**R25's wave-1 "PASS 72 of 72" is superseded:** it was measured with a detector that exempted
+identifiers, node-boundary splits and overruns. The 72 of 72 above is the first measured with them.
+During the wave the official `twice 5` read NOT ESTABLISHED (text findings count as render failures);
+the gate reports `F6 PASS: 32 of 32 frames byte-identical across 5 runs` once `Cite` landed — reported,
+not re-run by the reconciler. Descender clipping remains undetected (O17).
+
+### R29. C6 — the emphasis, hover and halo fades were exponential and settled in 417–1,350 ms; the tier fade sat at 300 ms; the inventory could not see rAF eases — FIXED
+Found by the acceptance refuter (C6 overturned to FAIL). **Fix.** `src/fabric3d/emphasis.ts` owns
+finite eases — `RECEDE_MS = 240`, `HOVER_MS = 80`, `SELECT_MS = 140` (verified at `:76–80`) — that land
+exactly on their target on the first frame at or after their duration and snap under reduced motion;
+`TIER_FADE_MS = 280` (`scene.ts:2347`), so its end state shows before 300 ms at 60 Hz. §4.8 rows state
+each duration and its settle time at 60 fps (250 / 83.4 / 150 ms). Mid-ease values depend on frame timing; the
+settled value does not, because `easeValue` returns the target itself — which the `determinism:` notes
+on `stepEaseChannel` and `stepEmphasis` state, and `determinism.test.ts` accepts.
+
+**Pinned by** `src/core/motion-inventory.test.ts` (steps every exported ease against its §4.8 row; a
+TypeScript-compiler scan that fails any exponential per-frame step — `x += (t-x)*k`, `k = f(dt/*_MS)`,
+`damp()`, `x = lerp(x,…)`, and, widened in the continuation pass, the in-place `v.lerp(t,k)` /
+`q.slerp(t,k)` spelling unless the receiver is a call chain or re-initialised in the same function),
+`src/fabric3d/emphasis.test.ts` (settle within the `RECEDE_MS` row; bit-identical landing under
+steady, jittery and coarse frame timing) and `determinism.test.ts` — re-run green. Reported red before:
+"the recession settled at 1333.3 ms; §4.8 states 250 ms" and "TIER_FADE_MS = 300 ms can first show its
+end state at 316.7 ms". The motion harness's fade item passed 24 of 24 at 266.5–266.7 ms (reported by
+the agents; the orchestrator's `capture-motion` run shows it passing). The gate limit it exposed is O22.
+
+### R30. C5 — label popping (O16's label half) — FIXED
+Found by the C5 motion harness (O16: 29–31 label blinks, clustered at fly-to starts). **Fix.** Every
+per-label show/hide decision over time goes through `labelResolve.ts` `labelDwellVerdict` (minimum
+dwell, no appearing while the camera moves, a one-pass hold, urgent labels exempt) for both the scene
+resolver and the DOM declutter; a hovered label is urgent only on a still camera (`labelUrgent`, and
+`scene.ts:1874`). The settled pass (history-free, for F6) can no longer reverse a label younger than the
+dwell: the resolver requests frames while it would (`labelSettleMayReverse`), and the DOM layer reports
+`reportLabelsConverging`, which `scene.ts` now folds into `labelsSettled()` and `converged()` —
+verified at `scene.ts:1587`, `:3366`, `:3637`, `:3641` (applied by the gate). **Pinned by**
+`FabricLabels.dwell.test.tsx` (10, including DOM-vs-resolver parity and "a name that left in a move
+shorter than the dwell does not blink back when the scene settles"), `labelResolve.test.ts` (the
+settle-reversal tests), `FabricLabels.settled.test.tsx`, `render-c5-*.test.ts` and five
+`scene.test.ts` tests — re-run green. The `scene.test.ts` five are **source-text tripwires**, not
+behaviour: they check that `scene.ts` declares and reads the report, and the behavioural contract lives
+in the DOM test's fake scene. Reported: `label blinks 0` in all 24 `capture-motion` sequences (agents
+and gate) and 0 in 36 frozen-build probe sequences, down from 31; one DOM trade on the shared, HMR-edited
+dev server did not recur and is not authoritative. Informational, no change: scene label age advances
+per resolver pass while the DOM's advances per rAF.
+
+### R31. C5 — the "z-fighting" clusters were not depth ties; three geometry sources removed — FIXED (what still fails is edge shimmer, O16)
+A per-frame camera replay and a raycast of every flip-flop cluster found no ray crossing two chassis
+surfaces within 0.02 units (reported). Three sources were isolated and removed: the faceplate frame's
+top bar seen from above (a body-painted hood, `chassis.ts`); overlapping `LineMaterial` round caps at
+cable joints (discarded inside a cable, `cables.ts`); and one true coplanar overlap, the distribution
+role glyph's crossing arms. **Pinned by** `src/fabric3d/geometry/chassis.coplanar.test.ts` (every
+chassis part, role glyph and state ring checked for same-facing overlaps within 0.002, a from-above
+check that the front edge is paint, and a liveness case) and `cables.ink.test.ts` "every cable stroke
+discards LineMaterial's round cap…" — re-run green. The app `tsc` error this new test briefly caused
+(TS2459, `QualityTier` not exported) is gone: it imports from `../contract`. Reported: mutations M6/M7
+(hood removed, equal arms) turn it red; the cap discard's outer-bend notch was measured at worst 1.23°,
+3e-4 px deep — a measurement not re-run. Also recorded: the A5 grader's camera-proxy coordinates could
+not be reproduced with the agents' metric; double-click still moves to core1 and Reset returns to the
+same rest projection (no camera code changed).
+
+### R32. C5 — light-theme links read as ~1 px — FIXED in code; the width figures are reported, not verified
+Root cause (reported): edge coverage was blended in the linear HDR buffer before the AgX tone map, so on
+the light stage a half-covered pixel landed only 16–18 % of the way to the ink. **Fix:**
+`coverageGamma(tokens)` (`cables.ts:207`), fitted through the real AgX curve over every `classifyLink`
+token and applied to every cable batch, trace stroke and the ghost wireframe. **Pinned by**
+`cables.ink.test.ts` ("the defect is real without the correction…", "every cable material the fabric
+builds applies the palette's gamma…") — re-run green. **Not verified:** the painted-width figures (light
+2 px class median 1.96 / p10 1.84 against dark 1.88 / 1.74, from a perpendicular probe that also showed
+the earlier scanline p10 1.89 was angle-confounded) come from a probe in the orchestrating session's
+scratchpad; there is no browser gate for stroke width.
+
+### R33. F2 test quality — a tautological tamper test, an unpinned guard, a mislabelled test, and a label test that pinned nothing — FIXED
+Found by the acceptance grading (F2) and, for the last, by the band/labels cluster.
+`provenance.test.ts`'s tamper test now goes through the gate `fileIsCompilerOutput` ("detects a
+hand-edited acl-bindings.json — the failure path, through the same gate"). The `claims.ts:470`
+empty-hop guard became dead code on every input after R34 and was removed (a comment at `claims.ts:477`
+records where the rule lives); "an EMPTY traversal earns no badge above INDETERMINATE under any outcome
+word at all" pins the rule. `claim-honesty-b1.test.tsx:145` is renamed to what it proves ("the undecided
+denial is offered no nearby flow at all…") and asserts its premise `ce.found === false`. And
+`Fabric3D.test.tsx` "keeps a name off the chassis bodies the scene PROJECTS…" accepted
+displaced-or-withheld after one frame, so under the two-pass hold its displaced branch never ran (it
+stayed green with a name's own chassis made non-blocking); it is now three tests — withheld, a control
+without core2's body, and "displaces a name one row UP…". All re-run green. The mutations that go with
+them are reported, except the claims ones, which `mutation-check.mjs` executes.
+
+### R34. `claimBadge` awarded SCOPED to an unrecognised outcome word (a C2/C3 follow-up) — FIXED; F3 gains an executable mutation run
+Found by the provenance cluster following the acceptance report's open question: over ordinary,
+fully-modelled hops, an outcome word the engine does not know earned SCOPED while `bandOfTrace` said
+UNDETERMINED. **Fix:** `claimBadge` returns INDETERMINATE for any outcome whose `bandOfOutcome` is
+UNDETERMINED. **Pinned by** `claims.test.ts` ("an unrecognised outcome word over a clean, fully-modelled
+traversal is INDETERMINATE, not SCOPED", the zero-hop case, and a sweep over every UNDETERMINED word) —
+re-run green; reported red before, `expected 'SCOPED' to be 'INDETERMINATE'`.
+
+**F3 evidence.** `node review/mutation-check.mjs` copies the tree to a scratch directory and reverts
+every recorded guard of every engine `refutation.md` names, plus two O15 guards. Re-run by the
+reconciler: 18 of 18 KILLED (engine 4, blast 2, layout 2, query 1, compile-snapshot 2, claims 5,
+source-binding 1, bindings 1), exit 0, printing its own LIMIT — it does NOT recreate pre-fix history.
+`refutation.md` §6/§7 now record C2 as FIXED (verified at `:229` and `:341`). Separately, `254694b`
+committed tests written ahead of their fixes red (provenance 8, motion-inventory 4, determinism 1,
+source-hygiene 1, per its commit message; not re-run at that commit by the reconciler), so for those
+tests "failed before the fix" is now in history. F3 is not re-graded here.
+
+### R35. D8 refuter question (state 06: "on core1 denies this flow" beside "? UNDECIDED") — NOT A DEFECT, now pinned
+Raised by the acceptance D8 refuter and assigned to no group. The 3-D chip's ending (`traceMarkOf`), the
+claim card and the hop list read the same claim owner (`bandOfHopIn` / `bandOfTrace`); "denies this
+flow" is the ACL line's evidence quoted inside a card that says "That denial is not decided". A pin in
+`claim-honesty-b1.test.tsx` for 10.0.10.50 → 10.0.30.10 tcp/3389 (raw outcome denied, band
+UNDETERMINED, mark undetermined, card matches /not decided/) is green. Reported mutation: forcing
+`traceMarkOf` to "blocked" on a denied outcome gives 2 failures.
+
+### R36. `--sev-high` brief drift was 31 drifted colour tokens — FIXED, and now guarded (O20's first item)
+The motion cluster found that design-brief §3.3 had drifted from `src/core/tokens.css` on 18 light and
+13 dark tokens, not only `--sev-high`, and reconciled all 31 (the chip table and canvas-contrast rows
+recomputed; tokens.css named authoritative). Its report said no test guarded it; the merged-tree gate
+then added one: `contrast.test.ts` "design-brief §3.3 restates tokens.css exactly" (every
+`--token:#hex` in §3.3.1 and §3.3.2 and the severity-chip fills) — 3 tests, re-run green. Reported
+mutation: writing `#a14a0a` back into the brief turns it red.
+
+### R37. E1/E3 harness gaps and the E5 probe placement — FIXED in the harnesses; the runs are reported, not verified
+Found by the acceptance grading (J1's verify spent the first selection; J4's verify ran before the
+measured act) and O20 (E5 probes at fixed times; an unsanctioned pre-FCP carve-out). **Verified in code
+only:** `review/measure-inp.mjs` checks each rep's effect after its timing (`repEffects`,
+`repsWithEffect`, `verifyAfter` on the journeys that spent their first act), and
+`review/audit-e5-coldload.mjs` aims probes at earlier runs' long frames, reports `keystrokeCoverage`,
+and applies the pre-FCP carve-out only if `docs/acceptance.md` holds a line beginning
+`E5 EXEMPTION (owner-sanctioned): pre-first-paint` (`:137`; no such line exists, see O20). **Not
+verified:** the runs — J4 with its submit removed reads PASS on the old harness and NOT MEASURED on the
+new; `6 pass, 0 NOT MEASURED` with 25 of 25 verified effects; E5 now failing on a 264.7 ms pre-FCP frame
+and 14 slow keystrokes. Every one was on a busy host on battery, which the harness itself refuses as
+acceptance evidence. E1–E5 are not re-graded.
+
+### R38. Stale documents and a type doc comment — FIXED
+From acceptance-report item 7 and B2's type drift. Verified by reading: `docs/acceptance.md` E3 (`:82`)
+gives resizes 105–149.7 ms and eleven classes over 50 ms, with the eight input-handler classes marked
+outside E3's claim (O21); the F5 row describes the LF-normalised binding and moving `fabric.json`
+digests (`2f558c38…a308` now, matching `sha256sum`); F1 reads full strict (the reconciler's run of both
+`tsc` configs exits 0, see the banner); F3 cites `mutation-check.mjs`. `refutation.md` §6/§7 are
+corrected (R34). `types.ts` documents `claim` as prose of two or more sentences (comment only).
+
 > **Acceptance-close wave 1 (reconciled 2026-09-22).** Entries R16–R25 below, and O10–O20 under
-> Open, record the "Known issues carried forward" list of `docs/acceptance-report.md` and what four
+> Open (O10, O15 and O18 have since moved to Resolved, above), record the "Known issues carried forward" list of `docs/acceptance-report.md` and what four
 > parallel repair lanes (claims-engine, fabric-surfaces, layout, compiler-evidence) say they changed.
 > Each lane's claim was checked before it was written here: the code named was read at the line
 > given, and the named tests were re-run by the reconciler in one invocation (16 files,
@@ -142,7 +462,7 @@ the old defect. **Verified by running the gate** (reconciler, 2026-09-22, agains
 without it.` exit 0 (reduce: `--dur-camera=1ms cameraPoses=1`; control: `.62s`, 24 poses). The gate is
 its own evidence; there is no unit test pinning the call-site contract.
 
-### R24. C6 — the §4.8 motion inventory omitted the spinner and the tier cross-fade — FIXED (dead CSS remains, O18)
+### R24. C6 — the §4.8 motion inventory omitted the spinner and the tier cross-fade — FIXED (the dead CSS it found was deleted in wave 2c; O18 closed)
 Found by the acceptance grading (C6): a 900 ms infinite spinner (`App.css:349`) and the 300 ms tier
 fade (`TIER_FADE_MS`) were missing from §4.8, and `App.css` and `flow.ts` each called their own
 animation "the only looping animation". The lane also found that no component renders
@@ -155,7 +475,7 @@ every `*_MS` constant put into an inline `transition`), requires §4.8 to name e
 spinner to remain unrendered. Reported red before (4 failed, e.g. `@keyframes stage-pending-spin is
 not in §4.8`); re-run green by the reconciler.
 
-### R25. B1 (six surfaces), B7, C2, C3, D4 — health-band qualification and layout-fidelity defects — FIXED on the surfaces named; residuals in O12, O17
+### R25. B1 (six surfaces), B7, C2, C3, D4 — health-band qualification and layout-fidelity defects — FIXED on the surfaces named; the B1 residual fixed in R27, layout residuals in O17; the 72-of-72 text PASS superseded (R28)
 **B1** (acceptance grading): a favourable band on a host with unassessed scoring domains was qualified
 only in the Device pane. The fabric-surfaces lane reproduced it on five hosts (podacc1, podacc2
 Excellent; core2, dist1, dist2 Good) and moved the rule to one owner, `src/core/band-qualification.ts`
@@ -186,6 +506,12 @@ was found and fixed by eye); citations now wrap everywhere, so rows holding one 
 the :4180 dev server): `node review/capture.mjs text` → `PASS  text  72 of 72 states free of
 clipped/broken text and with coverage wholly visible`, exit 0; palette-footer contrast min 5.05:1
 (dark) and 5.7:1 (light) at every width.
+
+**Superseded in part (2026-09-23).** The `PASS text 72 of 72` above was measured with a detector that
+exempted identifiers, so it could not see the `num_power_supplies` split the acceptance grading then
+found (C2); with identifiers, node-boundary splits and overruns detected, the tree first measured 68
+of 72, and 72 of 72 only after wave 2c's fixes (R28, re-run by the reconciler on `1d19e22`). The B1
+residual this entry left in O12 is fixed (R27).
 
 ### L1. The critique loop declared convergence on zero evidence — FIXED (review apparatus, not product)
 The loop that drives the blind panel and the six specialist audits (it lives in the orchestrating
@@ -504,293 +830,8 @@ green. Fixed with word-boundary matching plus clause-scoped negation detection, 
 sentences are now regression tests. The limit is documented in the code: the check is lexical, not
 semantic, and is a backstop rather than a proof.
 
-## Open
-
-### O10. `tracked-sources.test.ts` is red until the owner commits the tree — OWNER DECISION; and a nested repository was created without being asked
-Found by the acceptance grading (F2): `npx vitest run` exits 1 because
-`src/core/tracked-sources.test.ts:145` lists runtime-imported modules, compiled files and compilers
-that are not tracked. At acceptance it listed 17; after wave 1 it lists **19** (re-run by the
-reconciler, 2026-09-22): `src/analysis/port-claims.ts`, `src/core/band-qualification.ts`,
-`src/core/placeholders.ts`, `src/fabric3d/{canvasKeys,labelResolve,panelInput,stepdown}.ts`,
-`src/forwarding/{acl-bindings.json,acl-line.ts,bindings.ts,rib-completeness.ts,rib-evidence.json}`,
-`src/mount.tsx`, `src/panels/{deferPastPaint.ts,producer-emission.json,producer-emission.ts}`,
-`tools/{compile-acl-bindings,compile-producer-emission,compile-rib-evidence}.mjs`. The only commit is
-`857b520`, so the build cannot be reproduced from any commit (this also makes F5 unreproducible from
-`857b520`).
-
-**This test is right to be red and must not be loosened.** The fix is to commit the tree, which is the
-repository owner's decision; no agent in this wave ran a git command that writes. Until then F2 cannot
-be graded PASS whatever else is green.
-
-**The repository itself.** `atlas-scope/.git` is a nested repository inside the `Enhancements`
-checkout (which lists `atlas-scope/` as untracked). It was created by a repair agent without being
-asked (filesystem birth time of `.git`: 2026-09-21 09:09:53 +0300), and its single commit is titled
-"initialise the atlas-scope repository (F3 provenance baseline)". Whether Atlas Scope should live in
-a nested repository, in the parent repository, or be re-initialised is an **OWNER DECISION**; so is
-whether `857b520` may stand as any kind of provenance baseline, given that it postdates the fixes
-whose "failed before" it was meant to anchor (acceptance F3). A side effect worth knowing: the source
-snapshot `webapp/sample_data/sample_fleet.snapshot.json` is outside this nested repository, so
-`git show HEAD:<source>` here cannot reach it.
-
-### O11. Should an earlier refused hop undercut a denial? — OWNER DECISION
-From R16. The claims-engine lane did not make the rule "every hop before the last must be RESOLVED"
-for denials: `src/fabric3d/flow-terminal.counterfactual.test.ts:76` (another lane's file) builds a
-two-hop denial where both hops say denied, and the strict rule turns it red. The lane's reasoning: for
-a refusal, an earlier refused hop never makes the claim stronger. If the strict rule is wanted, that
-fixture must change `{ ...first, nextHost: first.host }` to
-`{ ...first, verdict: "forwarded", nextHost: first.host }` and the rule be tightened in
-`hopsSupportOutcome`. Not decided; recorded so it is not mistaken for an oversight.
-
-### O12. A1 — evidence for a finding holds for 12 of 146; B1's qualification is missing from four more surfaces — OPEN
-**A1** (acceptance grading, FAIL). The compiler-evidence lane reproduced it and searched the source
-snapshot for any per-finding pointer to an interface, ACL line or config block: none exists. The only
-field the compiler dropped was `source_command` (33 of 146 punchlist rows), which names a show-command
-assigned by category (`cisco_toolkit/analyze.py` ~7599, `_PUNCH_SOURCE_COMMAND`), not a record. It is
-now compiled (`sourceCommand`, via a `PUNCHLIST_FIELDS` map in `tools/compile-snapshot.mjs:222` that
-stops the build on any unknown punchlist key — verified in code) and rendered once per finding by
-`FindingSource` in `EvidencePane.tsx`, saying explicitly it is where the evidence came from, not a
-record to open. Pinned by `src/panels/EvidencePane.source.test.tsx` (its first test is class-wide:
-every producer key must reach the compiled finding) and new pins in `EvidencePane.namedconfig.test.ts`
-(33 cited; only F106/F107 land on literal text, through the existing MGMT_IN match) — both re-run
-green. `fabric.json` is now `6c7d78ab…6fa9095` (verified by the reconciler's `sha256sum`); the lane
-reports that removing the one line gives back `fce33d24…0da8`. **The grade does not move: still 12 of
-146.** Closing A1 needs the engine to publish per-finding record pointers — a producer change, not an
-Atlas Scope change.
-
-**B1 residual** (fabric-surfaces lane, verified by grep): four surfaces still print the raw band with
-no qualification and do not call `presentBand` — `src/app/CommandPalette.tsx:194`
-(`<Band band={d.band} />`), `src/core/query.ts:189` (row description `band ${d.band}`),
-`src/core/query.ts:219` (the "healthy" filter answers yes for any Excellent/Good band — the most
-consequential, since it is an answer, not a label), and `src/panels/PriorityQueue.tsx:184` (band
-column). B1 is not closed while these remain; a guard applied to six of ten surfaces is still the
-named-subset shape.
-
-### O13. B8 — the counterexample's positive state never renders on real data — OPEN (UNPROVEN)
-After R17, the claims-engine lane re-swept: **0 of 2,498** real denied or dropped flows get a
-counterexample. The one real-data near-miss the acceptance grading found was an artefact of the bug
-R17 fixed. "Counterexample — the nearest flow that behaves differently" still renders only in
-`engine.counterfactual.test.ts` on a fixture. B8 stays UNPROVEN; it cannot be exercised on this
-snapshot, and should not be made to render by loosening the near-miss rule.
-
-### O14. `failureImpact(h).engine.record` aliases the compiled snapshot — OPEN (owner: `blast.ts` / `core/data.ts`)
-Found by the hollow-test repair (R19): the new `repeatable()` check wrote a junk key into the first
-result and it appeared in `engine.record` on the second run. `blast.ts` returns the compiled
-`failure_impact` record itself (`return { record, basis: "different-measure", … }`, ~`:1267`), and
-`core/data.ts` does not freeze `fabric` (verified by grep: no `Object.freeze`). Any caller that writes
-to the result mutates the snapshot for every later caller. Fix: copy the record in
-`compareEngineImpact`, or deep-freeze `fabric` in `core/data.ts`. Until then, `blast.test.ts` skips
-objects that belong to the snapshot, with a comment saying why. Reported by the lane, confirmed in
-code by the reconciler, not independently reproduced.
-
-### O15. F5 — the recorded source digest binds to CRLF working-tree bytes, not the committed blob — OPEN
-Found by the acceptance refuter: `meta.sourceSha256` is `9cc348bd…5dfd` (still so in the recompiled
-`fabric.json`, verified), which is the Windows CRLF checkout of
-`webapp/sample_data/sample_fleet.snapshot.json`; the committed LF blob in the parent repository
-hashes `9580aa09…3089` (refuter's measurement, not re-run). F5 is therefore byte-reproducible on this host only, and not from a clone. Not
-addressed in wave 1. Options: hash a normalised form, pin the file's EOL in the parent
-`.gitattributes`, or record both digests and say which binds.
-
-### O16. C5 — motion render quality: z-fighting and label popping FAIL — OPEN
-Measured by the C5 motion harness `review/capture-motion.mjs` (fresh release build on :4181,
-1440×900, DPR 1, ANGLE/Intel D3D11, dark/light × high/low, every rAF captured at 59.9 fps median; the
-harness exits 3). Report `review/shots/motion/report.json`, frames under `review/shots/motion/_evidence/`
-(2.8 GB, gitignored).
-
-| Item | Verdict | Evidence |
-|---|---|---|
-| Z-fighting | **FAIL** | 1,234 slow frame steps: pixels reverse 3+ times in 6 frames by ≥12/255 while the camera moves 0.0006–0.07 px/frame; 17–30 px clusters (e.g. dark/low at x507–511, y598–611); 0.07–0.13 % of canvas in 10 sequences. At both tiers, so not SSAO or SMAA. Zoomed: a chassis's thin right side face seen edge-on, where it meets lid and floor ring — near-coplanar depth ties. `_evidence/dark/{high,low}/orbit-keys-slow/flipflop-*.png` |
-| LOD / effect / label popping | **FAIL (labels only)** | Canvas: 0 pops over 2,667 still pairs, 0 motion spikes. Labels: 29 blinks (a visible/hidden run ≤5 frames), 6 of one frame (e.g. `access15` hidden 1 frame at reset-fly 28–29), clustered at fly-to starts. `series.json` `vis` logs |
-| AO drop/restore (high) | PASS | 8 of 8; returns 133–150 ms after fly-to (hold 140 ms); worst jump 0.061 % ≥8/255 against a 0.5 % bar |
-| 300 ms tier cross-fade | PASS | 24 of 24; 299.9–300.1 ms, max step 0.10/frame (bar 0.25) |
-
-C5 therefore moves from UNPROVEN to **FAIL** on this evidence. The pixels cannot say which faces tie;
-the chassis side-face/lid/floor-ring geometry is the first place to look. Also recorded: one early run
-(before the final harness) cut a high→low fade — overlay opacity 0.98 → gone across a 517 ms frame gap —
-and it did not recur in 36 later fades; cause unknown, left open rather than dismissed. The harness
-forces `preserveDrawingBuffer` and wraps `requestAnimationFrame`; each is justified in its header.
-
-### O17. Layout residuals after R25 — OPEN
-- **768 px queue overflow.** At 768 the queue rows overflow their own track; after B7 the status bar
-  covers them instead of the reverse. Whether those rows can still be scrolled into view was not
-  checked.
-- **Descender clipping** is invisible to `readTextFidelity` (midpoint rule), so a clamp that cuts
-  descenders passes the gate.
-- **Proof scope** (closed as far as it goes). The layout lane measured only :4180; the reconciler
-  re-ran `capture.mjs text` on the :4181 build (72 of 72, exit 0), and the merged-tree gate ran
-  `capture.mjs app` on :4181 (32 of 32, exit 0), which applies the same checks per frame. The
-  detector itself has not been independently refuted.
-- **Compact density** still truncates titles by design (windowing needs uniform row height). C3 was
-  graded at comfortable density; compact is not covered by the fix.
-
-### O18. Motion-inventory residuals — OPEN (small; owners of `primitives.tsx`, `App.css`)
-- `src/ui/primitives.tsx:1672` (Skeleton comment) still says, unqualified, that the packet marker is
-  the only looping animation; it should say "the only looping animation that runs". It passes
-  `motion-inventory.test.ts` today.
-- `src/app/App.css` ~343–368: `.stage-pending__spinner` and `@keyframes stage-pending-spin` are dead
-  CSS (no component renders them). Deleting them is cleaner; the §4.8 row and the last test in
-  `motion-inventory.test.ts` would then need updating together.
-
-### O19. C1 — a valid blind verdict set is not achievable against these reference products — OWNER DECISION
-`docs/acceptance.md` C1 asks for blind, side-by-side verdicts with ≥2 independent critics per pairing,
-the critic not told which is which. Against the current references that condition cannot be met, not
-merely has not been:
-- **The references identify themselves by content and chrome.** `review/REFERENCES.md` records that
-  the round-2 decoder found "in every verdict the critic's loser was the REFERENCE panel", that the
-  brand-cropped `-craft` variants did not prevent identification, and that the Forward captures carry
-  the Storylane tour modal and a "Click on Vulnerability" coachmark while the Grafana captures carry a
-  "Create free account" banner. Two automated drivers failed to advance the tours past their opening
-  step, so no chrome-free Forward capture exists. A critic who can tell which image is the demo is not
-  blind, however the files are named.
-- **What evidence exists.** Rounds R1 32/33, R2 36/36, R3 36/36 head-to-head wins (withdrawn as C1
-  evidence by `REFERENCES.md` itself: saturated at 72/72, so it cannot discriminate); ~350 specific
-  faults listed against OUR panel across three rounds, falling from a peak of 24 per critic to 7–13 —
-  real evidence of improvement measured against itself, which is not what C1 asks; and
-  `review/blind/KEY.json` for 12 sheets with **no recorded verdicts**, beside 20 sheet images, 8 of
-  them orphans the KEY cannot decode.
-- **Why none of it is C1 evidence.** Blindness is the criterion's load-bearing property, and every
-  recorded verdict was given by a critic who could identify the reference.
-
-C1 stays UNPROVEN. Moving it needs an owner decision: supply references that can be captured clean
-(product access rather than a guided demo), choose different reference products, or restate C1 in
-`acceptance.md` to what can honestly be measured. Re-running more rounds against these images would
-produce more of the same non-evidence.
-
-### O20. Minor drift and E5 harness limits carried from acceptance — OPEN
-- **`--sev-high` brief drift.** `docs/design-brief.md:293` says `#a14a0a`; `src/core/tokens.css:167`
-  (and `:411`) has `#803804` (verified). One of the two is stale; the tokens carry their own measured
-  ratios, so the brief is the likelier cache.
-- **E5 keystroke probes** are sampled at fixed times, so the post-FCP frames that block ~145 ms were
-  never probed by a keystroke.
-- **E5 pre-FCP carve-out** is not sanctioned in `acceptance.md`; a warm-browser probe supported it
-  (0 frames over 200 ms before FCP), but a criterion exemption belongs in the criterion.
-
-### O8. The ignore-ACLs counterfactual (design-brief §5.2 step 6) is NOT BUILT — and is no longer advertised
-Found by an independent critic, confirmed at the source. The command palette carried
-**"Toggle the ignore-ACLs counterfactual"** with the shortcut `M`, and explained its unavailability
-as *"the path panel is not on screen in this layout, so this action has nothing to act on"* — a
-sentence rendered **with the path panel on screen and a trace drawn**
-(`?s=path&flow=10.0.10.50>10.0.30.10>tcp>3389`). Nothing in `src/` ever registered a target or
-published a `data-atlas-command` owner for `acl.toggleCounterfactual`, so `capabilityAvailable()`
-was permanently false. `claims.ts :: T6_counterfactual()` — the brief's T6 template — has zero call
-sites outside its own module.
-
-**What was done, and what was deliberately not.** The palette row and the orphaned capability are
-removed, and `src/app/commands.capability-owners.test.ts` now asserts over the source that EVERY
-member of the `Capability` union has a registrar or a DOM owner — so an orphan is a build failure
-rather than a misleading palette row. The feature itself was not built here: doing it properly
-needs (a) a `traceFlow(flow, { ignoreAcls })` option in `src/forwarding/engine.ts` — feasible, the
-ACL gate has exactly one call site, `engine.ts:1293` — and (b) the `MODE · ignore acls` chip the
-brief requires to be carried in the shareable URL, which is `src/core/store.ts` + `urlSync.ts`.
-This repair pass was scoped out of both files. `T6_counterfactual()` is retained unused, as the
-written contract for the pair of statements that feature must render.
-
-**Do not close this by re-adding the palette row.** A verb announced with a false reason is worse
-than an absent one: the reader concludes their layout is wrong.
-
-### O9. B6 asked for the raw SOURCE record; the Inspector can only show the compiled one
-The source snapshot is not bundled with the build, so for any citation that is not itself a model
-path the Inspector renders the compiled record that carries the citation and says so verbatim:
-*"This citation names a record in the source snapshot, which is not bundled with this build. Shown
-below is the compiled record that carries the citation…"*. The behaviour is honest and citation
-resolution is sound (a probe over all 652 model cites plus the 16 the engine emits at runtime
-resolved every one). The **criterion** was what overclaimed, so `docs/acceptance.md` B6 has been
-restated to describe what the product does and states.
-
-The capability gap is real and is left open here rather than papered over: shipping a lazily
-fetched side file of the snapshot subtrees that carry a cite, keyed by cite, would let the Inspector
-show actual snapshot JSON. That is a compiler change (`tools/compile-snapshot.mjs`) and was out of
-scope for this pass.
-
-### O6. At the `high` quality tier, bloom turns honest status rings into halos
-Captured at `review/shots/fabric-auto.png` (auto-selected tier `high` on real Intel D3D11, 80 draw
-calls, 225k triangles). Every chassis is wrapped in a heavy warm halo that buries the port banks,
-bevels and faceplates — the silhouette detail that is the entire reason the chassis geometry exists.
-Compare `review/shots/fabric-check.png` at tier `low`, where bloom is off and the same fabric reads
-noticeably *better*.
-
-**It is not a correctness bug, and that distinction matters.** The rim colour is the device's health
-band, and 18 of the 26 devices in this fleet really are Poor or Critical
-(`{Poor: 12, Critical: 6, Good: 3, Excellent: 2, null: 3}`). A fabric that looks alarming is an
-honest rendering of an alarming fleet. What is wrong is the calibration: at 18 simultaneous glows
-the effect stops reading as "these devices are in a bad band" and starts reading as an undifferentiated
-alarm wash, which is a failure of the encoding rather than of the data.
-
-It surfaced only after R5 was fixed: while the shader was failing, the status rims drew nothing at
-all, so there was nothing for bloom to pick up. Fixing one defect exposed the next.
-
-Candidate levers, in the order I would try them — **not yet applied**, because the render critic
-should reach its own verdict first rather than being handed mine:
-  - `state-rim.emissiveIntensity` (currently 1.05) versus the brief's `luminanceThreshold: 1.0`
-    floor — the rim is only just crossing the threshold, so a small reduction may drop it out
-    entirely, which would be the wrong fix;
-  - `SelectiveBloomEffect` `intensity` / `radius` / `levels`;
-  - rim geometry screen size, so the glow is proportionate at overview distance.
-
-### O7. A `SCOPED` badge on a verdict whose own caveat undercuts it — QUESTION FOR THE HONESTY AUDIT
-Observed in `review/shots/panels-check.png`. The trace for tcp/3389 `10.0.10.50 -> 10.0.30.10`
-renders the **SCOPED** badge — the strongest this product has — while its own claim sentence reads:
-
-> "…is denied at core1 by ACL PROTECT_SERVERS line 3 …; **the ACL's interface binding was not
-> collected**, and stateful return traffic is not modelled."
-
-The badge is behaving exactly as specified: `claimBadge` awards SCOPED when the traversal completed,
-every host on the path is in `coverage.routableHosts`, and no HOP-level evidence item is an absence.
-Here core1 is modelled, there is one hop, and nothing at hop level is indeterminate. The rule fires
-correctly.
-
-The question is whether the rule is right. No `ip access-group` binding was collected anywhere in
-this snapshot, so we do not actually know that `PROTECT_SERVERS` is applied to the interface this
-flow traverses. That is not a peripheral caveat — it is uncertainty about **whether the named rule
-governs this packet at all**, which is the entire content of the verdict. A badge that says "as
-strong as this product gets" sitting above a sentence that says "we could not confirm this ACL
-applies here" is at least in tension, and possibly the exact overclaim §6 exists to prevent.
-
-Two defensible readings, and I am deliberately not choosing between them here:
-  - **As designed.** SCOPED never meant "certain"; it means the traversal was complete within the
-    collected RIBs, and the caveats are rendered immediately beneath it in full. The badge grades
-    COVERAGE, not confidence.
-  - **A gap.** Trace-level caveats that bear on whether the deciding rule applies should demote the
-    badge to OBSERVED, so badge and prose cannot disagree.
-
-**Assigned to the honesty audit in the critique loop**, which did not build any of this and should
-reach its own conclusion. If it agrees this is a gap, the fix is in `claimBadge` — a caveat
-classifier that distinguishes peripheral limits from ones that undercut the deciding evidence.
-
-**Update 2026-09-21 — the premise was false.** The snapshot DOES carry bindings (`interfaces.core1.
-Vlan30.acl_out = PROTECT_SERVERS`, `interfaces.core1.Vlan20.acl_in = VOICE_FILTER`, and a
-`candidate_projection_incomplete` marker on core1 Gi1/0/5); the shared compiler never projected them.
-They are now compiled by `tools/compile-acl-bindings.mjs` into `src/forwarding/acl-bindings.json`
-(sha-bound to fabric.json) and read by `src/forwarding/bindings.ts`. A hop applies exactly the lists
-bound on the interfaces it enters and leaves by when those bindings are observed; the specificity rule
-runs only where one is unknown, and the hop names which and why. The 3389 denial now reads "the list is
-applied outbound on core1 Vlan30 (interfaces.core1.Vlan30)", so the SCOPED badge and the sentence
-under it agree. A denial by a heuristically chosen list still records an `acl-unbound-denial` policy
-gap and cannot be SCOPED.
-
-### O5. First-look observations on the 3-D fabric (mine, recorded BEFORE independent critique)
-Written down now, deliberately **not** fed to the critique loop's render critic. The critics judge
-blind; if they independently surface the same items that is convergent evidence, and if they find
-things this list misses that is a measure of how much a single reviewer misses. Feeding my notes
-in first would destroy both signals.
-
-Observed from `review/shots/fabric-check.png`, 1600×900, dark theme, SwiftShader (quality tier
-`low`, so some of this may be tier-specific — flagged where relevant):
-
-1. **Camera framing is too wide.** The fabric occupies roughly 40 % of the frame; the rest is empty
-   background. The brief's framing should fit the bounding sphere with margin, not with a void.
-2. **The layout reads as a hub-and-spoke starburst, not a tiered hierarchy.** The core pair sits at
-   top centre and everything radiates from it. `layout.ts` does run barycentre sweeps and its tests
-   assert measurably fewer crossings than naive ordering — so this may be a CAMERA-ANGLE problem
-   (a near-plan view projecting a clean tier structure into a radial one) rather than a layout
-   problem. Worth distinguishing before anyone "fixes" the layout.
-3. **Heavy cable crossing in the middle band**, following from (2).
-4. **Contact grounding reads as soft blobs** rather than crisp occlusion. Possibly the `low`
-   quality tier disabling or downscaling SSAO under SwiftShader; needs a check at `high`.
-5. **No device labels** in this capture — expected, since `FabricLabels` is a DOM overlay and the
-   preview harness mounts only the canvas. Not a defect; noted so it is not mistaken for one.
-
-None of these is a correctness defect. They are craft items, which is exactly the category the
-blind comparison exists to adjudicate.
+> **Moved from Open (2026-09-23).** R15, R9, R10, O2 and O3 were resolved before wave 2c but were
+> filed under Open; they are moved here unchanged.
 
 ### R15. F6 failed — the status bar painted the live frame rate into every captured frame — fps cause FIXED; the 1-LSB scrim residual FIXED at the capture layer; F6 PASSES on `twice 5` against the preview, dev server (:4180) not measured (heading corrected 2026-09-22)
 
@@ -1008,3 +1049,315 @@ Any test importing `node:fs` failed typecheck with `Cannot find module 'node:fs'
 `@types/node` is installed. Resolved by adding `"node"` to `compilerOptions.types`, which the
 claim-lint gate needs in order to read the source tree from inside the test suite. A gate that has
 to live outside the suite is a gate nobody runs.
+
+## Open
+
+Moved to Resolved on 2026-09-23: O10, O15 and O18 (closed in wave 2c), and R15, R9, R10, O2 and O3
+(resolved earlier but filed here). New in wave 2c: O21–O23.
+
+### O11. Should an earlier refused hop undercut a denial? — OWNER DECISION
+From R16. The claims-engine lane did not make the rule "every hop before the last must be RESOLVED"
+for denials: `src/fabric3d/flow-terminal.counterfactual.test.ts:76` (another lane's file) builds a
+two-hop denial where both hops say denied, and the strict rule turns it red. The lane's reasoning: for
+a refusal, an earlier refused hop never makes the claim stronger. If the strict rule is wanted, that
+fixture must change `{ ...first, nextHost: first.host }` to
+`{ ...first, verdict: "forwarded", nextHost: first.host }` and the rule be tightened in
+`hopsSupportOutcome`. Not decided; recorded so it is not mistaken for an oversight.
+
+### O12. A1 — evidence for a finding holds for 12 of 146 — OPEN, NOT CLOSABLE IN ATLAS SCOPE (needs per-finding record pointers from the producer); B1's four-surface residual FIXED (R27)
+**A1** (acceptance grading, FAIL). The compiler-evidence lane reproduced it and searched the source
+snapshot for any per-finding pointer to an interface, ACL line or config block: none exists. The only
+field the compiler dropped was `source_command` (33 of 146 punchlist rows), which names a show-command
+assigned by category (`cisco_toolkit/analyze.py` ~7599, `_PUNCH_SOURCE_COMMAND`), not a record. It is
+now compiled (`sourceCommand`, via a `PUNCHLIST_FIELDS` map in `tools/compile-snapshot.mjs:222` that
+stops the build on any unknown punchlist key — verified in code) and rendered once per finding by
+`FindingSource` in `EvidencePane.tsx`, saying explicitly it is where the evidence came from, not a
+record to open. Pinned by `src/panels/EvidencePane.source.test.tsx` (its first test is class-wide:
+every producer key must reach the compiled finding) and new pins in `EvidencePane.namedconfig.test.ts`
+(33 cited; only F106/F107 land on literal text, through the existing MGMT_IN match) — both re-run
+green. `fabric.json` was then `6c7d78ab…6fa9095` (verified by the reconciler's `sha256sum` in wave 1;
+since O15 it is `2f558c38…a308`). **The grade does not move: still 12 of 146.** Closing A1 needs the
+engine to publish per-finding record pointers — a producer change in the parent repository's engine,
+not an Atlas Scope change; the data it would need is, per finding, the interface, ACL line or config
+block the finding was derived from. Not re-examined in wave 2c.
+
+**B1 residual — FIXED (see R27).** Wave 1 left four surfaces printing the raw band without
+`presentBand` (`CommandPalette.tsx:194`, `query.ts:189`, `query.ts:219` — the `is:healthy` answer — and
+`PriorityQueue.tsx:184`). They were routed through the owner in the interrupted wave 2 (committed in
+`254694b`), and `band-read.guard.test.ts` now checks the class — every typed read of `Device.band` —
+rather than a list of surfaces.
+
+### O13. B8 — the counterexample's positive state never renders on real data — OPEN (UNPROVEN)
+After R17, the claims-engine lane re-swept: **0 of 2,498** real denied or dropped flows get a
+counterexample. The one real-data near-miss the acceptance grading found was an artefact of the bug
+R17 fixed. "Counterexample — the nearest flow that behaves differently" still renders only in
+`engine.counterfactual.test.ts` on a fixture. B8 stays UNPROVEN; it cannot be exercised on this
+snapshot, and should not be made to render by loosening the near-miss rule. NOT CLOSABLE IN CODE on
+this data: it needs a snapshot in which some denied or dropped flow has a nearest flow that behaves
+differently. Not re-examined in wave 2c (R35's pin asserts the one related real flow is offered no
+nearby flow).
+
+### O14. `failureImpact(h).engine.record` aliases the compiled snapshot — OPEN (owner: `blast.ts` / `core/data.ts`)
+Found by the hollow-test repair (R19): the new `repeatable()` check wrote a junk key into the first
+result and it appeared in `engine.record` on the second run. `blast.ts` returns the compiled
+`failure_impact` record itself (`return { record, basis: "different-measure", … }`, ~`:1267`), and
+`core/data.ts` does not freeze `fabric` (verified by grep: no `Object.freeze`). Any caller that writes
+to the result mutates the snapshot for every later caller. Fix: copy the record in
+`compareEngineImpact`, or deep-freeze `fabric` in `core/data.ts`. Until then, `blast.test.ts` skips
+objects that belong to the snapshot, with a comment saying why. Reported by the lane, confirmed in
+code by the reconciler, not independently reproduced. No wave-2c cluster owned or touched it.
+
+### O16. C5 — motion render quality: edge shimmer under camera orbit still FAILS; label popping and the geometry z-fighting FIXED (R30, R31) — OPEN (owner: `src/fabric3d/postfx.ts`, or the C5 owner's decision on the bar)
+**Status at `1d19e22` (orchestrator's run).** `node review/capture-motion.mjs` exits 3 on two items:
+**z-fighting** — one 16 px cluster, dark/high/orbit-drag; and **edge sparkle** — flip share
+0.00054–0.00132 of the canvas (325–793 px) against a 0.0002 bar, on all 8 orbit sequences. Label
+popping (0 blinks), AO drop/restore and the 280 ms tier fade PASS (R29, R30).
+
+**Attribution (motion cluster, reported; the probes are in the orchestrating session's scratchpad).**
+The unchanged harness, run on the dev build with only `SMAAEffect`'s blend weights cleared in-page,
+passed every item on all 48 sequences (flip px 7–65 against the 120 px bar; 0 clusters), so the
+remaining failure is made by the SMAA stage's per-frame edge and pattern decisions on 1–3 px features
+(cables, state-ring curbs, faceplate strips) under the damped orbit's sub-pixel creep — temporal edge
+aliasing, not a depth tie. Cable depth ties contribute nothing (cable `depthWrite=false` with SMAA off
+gave the same count). **No single SMAA setting closes it:** diagonal detection off 259 px (the largest
+single knob); corner detection off, no change; MEDIUM/LOW presets 347/350; LUMA detection 1408;
+excluding cable pixels from the blend 185; diagonal off plus that exclusion 107 (light/low) and 187–194
+(dark/high); 2× supersampling 75–125, at 4× fill cost.
+
+**What would close it.** An anti-aliasing stage that is stable under motion — for example multisampled
+rendering through the composer, or SMAA output accumulated with history while the camera creeps and
+reset at rest so settled frames stay byte-identical for F6 — measured against E4's frame rate on the
+real GPU; or an explicit decision by the C5 owner on whether this share bar is C5's "aliased edges"
+item. **Raising the bar is not a fix.** Also for that owner: the cluster rule counts 4-connected pixels,
+so a 16×1 single-row run qualifies although the harness comment calls a cluster a 4×4 patch; making the
+rule 2-D narrows a check and needs sign-off.
+
+**Original measurement (2026-09-22, before wave 2c), retained.** Measured by the C5 motion harness
+`review/capture-motion.mjs` (fresh release build on :4181, 1440×900, DPR 1, ANGLE/Intel D3D11,
+dark/light × high/low, every rAF captured at 59.9 fps median; the harness exits 3). Report
+`review/shots/motion/report.json`, frames under `review/shots/motion/_evidence/` (2.8 GB, gitignored).
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| Z-fighting | **FAIL** | 1,234 slow frame steps: pixels reverse 3+ times in 6 frames by ≥12/255 while the camera moves 0.0006–0.07 px/frame; 17–30 px clusters (e.g. dark/low at x507–511, y598–611); 0.07–0.13 % of canvas in 10 sequences. At both tiers, so not SSAO or SMAA. Zoomed: a chassis's thin right side face seen edge-on, where it meets lid and floor ring — near-coplanar depth ties. `_evidence/dark/{high,low}/orbit-keys-slow/flipflop-*.png` |
+| LOD / effect / label popping | **FAIL (labels only)** | Canvas: 0 pops over 2,667 still pairs, 0 motion spikes. Labels: 29 blinks (a visible/hidden run ≤5 frames), 6 of one frame (e.g. `access15` hidden 1 frame at reset-fly 28–29), clustered at fly-to starts. `series.json` `vis` logs |
+| AO drop/restore (high) | PASS | 8 of 8; returns 133–150 ms after fly-to (hold 140 ms); worst jump 0.061 % ≥8/255 against a 0.5 % bar |
+| 300 ms tier cross-fade | PASS | 24 of 24; 299.9–300.1 ms, max step 0.10/frame (bar 0.25) |
+
+Two statements in that table are superseded by wave 2c: the clusters were **not** near-coplanar depth
+ties on the chassis side face (R31), and "at both tiers, so not SSAO or SMAA" could not rule out
+SMAA, which is on at every tier (`quality.ts`, `smaa: true` in all three profiles). The tier fade is now 280 ms (R29). Also recorded then, and still
+unexplained: one early run cut a high→low fade across a 517 ms frame gap and did not recur in 36 later
+fades. The harness forces `preserveDrawingBuffer` and wraps `requestAnimationFrame`; each is justified
+in its header.
+
+### O17. Layout residuals after R25 — OPEN
+- **768 px queue overflow.** At 768 the queue rows overflow their own track; after B7 the status bar
+  covers them instead of the reverse. Whether those rows can still be scrolled into view was not
+  checked.
+- **Descender clipping** is invisible to `readTextFidelity` (midpoint rule), so a clamp that cuts
+  descenders passes the gate. Wave 2c widened the detector (identifier splits, node-boundary splits,
+  overruns; R28) but not this.
+- **Proof scope** (closed as far as it goes). The layout lane measured only :4180; the reconciler
+  re-ran `capture.mjs text` on the :4181 build (72 of 72, exit 0), and the merged-tree gate ran
+  `capture.mjs app` on :4181 (32 of 32, exit 0), which applies the same checks per frame. That 72 of 72
+  was measured with a detector blind to identifiers and is superseded; the wave-2c 72 of 72 (R28) was
+  re-run by the reconciler on a scratch build of `1d19e22`. The detector now has a known-answer
+  self-test (17 cases) but has not been independently refuted.
+- **Compact density** still truncates titles by design (windowing needs uniform row height). C3 was
+  graded at comfortable density; compact is not covered by the fix.
+
+### O19. C1 — a valid blind verdict set is not achievable against these reference products — OWNER DECISION
+`docs/acceptance.md` C1 asks for blind, side-by-side verdicts with ≥2 independent critics per pairing,
+the critic not told which is which. Against the current references that condition cannot be met, not
+merely has not been:
+- **The references identify themselves by content and chrome.** `review/REFERENCES.md` records that
+  the round-2 decoder found "in every verdict the critic's loser was the REFERENCE panel", that the
+  brand-cropped `-craft` variants did not prevent identification, and that the Forward captures carry
+  the Storylane tour modal and a "Click on Vulnerability" coachmark while the Grafana captures carry a
+  "Create free account" banner. Two automated drivers failed to advance the tours past their opening
+  step, so no chrome-free Forward capture exists. A critic who can tell which image is the demo is not
+  blind, however the files are named.
+- **What evidence exists.** Rounds R1 32/33, R2 36/36, R3 36/36 head-to-head wins (withdrawn as C1
+  evidence by `REFERENCES.md` itself: saturated at 72/72, so it cannot discriminate); ~350 specific
+  faults listed against OUR panel across three rounds, falling from a peak of 24 per critic to 7–13 —
+  real evidence of improvement measured against itself, which is not what C1 asks; and
+  `review/blind/KEY.json` for 12 sheets with **no recorded verdicts**, beside 20 sheet images, 8 of
+  them orphans the KEY cannot decode.
+- **Why none of it is C1 evidence.** Blindness is the criterion's load-bearing property, and every
+  recorded verdict was given by a critic who could identify the reference.
+
+C1 stays UNPROVEN. Moving it needs an owner decision: supply references that can be captured clean
+(product access rather than a guided demo), choose different reference products, or restate C1 in
+`acceptance.md` to what can honestly be measured. Re-running more rounds against these images would
+produce more of the same non-evidence.
+
+### O20. Minor drift and E5 harness limits carried from acceptance — `--sev-high` drift FIXED (R36); the probe gap FIXED in the harness (R37); the pre-FCP carve-out is an OWNER DECISION; E5 stays UNPROVEN
+- **`--sev-high` brief drift — FIXED (R36).** It was one of 31 drifted tokens; all reconciled, and
+  `contrast.test.ts` now guards §3.3 against `tokens.css`.
+- **E5 keystroke probes — FIXED in the harness (R37), run not verified.** They were sampled at fixed
+  times, so the post-FCP frames that block ~145 ms were never probed. Probes are now also aimed at long
+  frames earlier runs observed, and each run reports its keystroke coverage.
+- **E5 pre-FCP carve-out — OWNER DECISION.** It was never sanctioned in `acceptance.md`. The harness
+  now applies it only if `docs/acceptance.md` holds a line beginning
+  `E5 EXEMPTION (owner-sanctioned): pre-first-paint`; there is none, so pre-FCP frames are judged (a
+  264.7 ms pre-FCP frame now fails E5, reported). Adding that line, or not, is the owner's decision; a
+  warm-browser probe had supported the exemption (0 frames over 200 ms before FCP).
+- **E5 itself stays UNPROVEN, leaning FAIL.** The only runs are on a busy host on battery (14
+  keystrokes over 200 ms, worst 560 ms, at 81 % busy), which the harness refuses as acceptance
+  evidence. It needs a quiet run on AC power.
+
+### O21. E3 — eight input-handler interactions outside the five journeys cross 50 ms — OPEN (owner: the performance cluster)
+Found by re-measurement for acceptance.md (provenance cluster, from the e5-sweep 16:30Z report,
+3 repetitions, release preview, busy host on battery — laboratory only). Eleven action classes cross
+50 ms (worst Long Animation Frame); eight are input-handler interactions outside the declared
+journeys: Inspector open on the raw source record 62–144 ms, command palette 98 ms (1 of 3), first
+selection after load 93 ms (1 of 3), theme toggles 51–83 ms, clearing the query filter 59–68 ms,
+Ctrl+End in the grid 59 ms (1 of 3), path-trace swap+submit 53 ms (1 of 3). `acceptance.md` E3 now says
+"no single task over 50 ms" is claimed only on the journeys' paths. Open question for the owner: which,
+if any, become journeys or get their work chunked. Not re-measured by the reconciler.
+
+### O22. The determinism gate is keyed on field NAMES — OPEN (shape; owner: `src/core/determinism.test.ts`)
+Found by the motion cluster in wave 2c. `FRAME_TIMING_OWNERS` lists frame-timing fields by name, so it
+saw the ease channel's `elapsedMs` but cannot see `stepEmphasis`'s identically derived `state.elapsed`,
+which was annotated voluntarily. That is a hand-maintained list standing in for the class it means
+("a clock-derived value"): the next clock-derived field under a new name reaches a renderer unannounced.
+No failing case exists today; the fix is to follow provenance from the rAF timestamp and `performance`
+reads (as R15 did for bindings) rather than names.
+
+### O23. No criterion has been re-graded on a clean checkout of `1d19e22` — OPEN (owner: the next acceptance grading)
+Every F1–F6 result in `docs/acceptance-report.md` was taken on an uncommitted working tree, and
+`acceptance.md` asks for a re-run on a clean checkout of the resulting commit. The tree is now committed
+(O10), but that re-run has not happened: no one has cloned `atlas-scope` at `1d19e22` and run `tsc`,
+`vitest`, the build, the compilers or the capture gates from the clone. One limit that re-run will meet
+is structural, not a defect of the commit: the compilers read
+`../../webapp/sample_data/sample_fleet.snapshot.json`, which only the parent repository tracks, so
+reproducing F5 from a clone needs the parent at a revision whose blob hashes `9580aa09…3089`.
+
+### O8. The ignore-ACLs counterfactual (design-brief §5.2 step 6) is NOT BUILT — and is no longer advertised
+Found by an independent critic, confirmed at the source. The command palette carried
+**"Toggle the ignore-ACLs counterfactual"** with the shortcut `M`, and explained its unavailability
+as *"the path panel is not on screen in this layout, so this action has nothing to act on"* — a
+sentence rendered **with the path panel on screen and a trace drawn**
+(`?s=path&flow=10.0.10.50>10.0.30.10>tcp>3389`). Nothing in `src/` ever registered a target or
+published a `data-atlas-command` owner for `acl.toggleCounterfactual`, so `capabilityAvailable()`
+was permanently false. `claims.ts :: T6_counterfactual()` — the brief's T6 template — has zero call
+sites outside its own module.
+
+**What was done, and what was deliberately not.** The palette row and the orphaned capability are
+removed, and `src/app/commands.capability-owners.test.ts` now asserts over the source that EVERY
+member of the `Capability` union has a registrar or a DOM owner — so an orphan is a build failure
+rather than a misleading palette row. The feature itself was not built here: doing it properly
+needs (a) a `traceFlow(flow, { ignoreAcls })` option in `src/forwarding/engine.ts` — feasible, the
+ACL gate has exactly one call site, `engine.ts:1293` — and (b) the `MODE · ignore acls` chip the
+brief requires to be carried in the shareable URL, which is `src/core/store.ts` + `urlSync.ts`.
+This repair pass was scoped out of both files. `T6_counterfactual()` is retained unused, as the
+written contract for the pair of statements that feature must render.
+
+**Do not close this by re-adding the palette row.** A verb announced with a false reason is worse
+than an absent one: the reader concludes their layout is wrong.
+
+### O9. B6 asked for the raw SOURCE record; the Inspector can only show the compiled one
+The source snapshot is not bundled with the build, so for any citation that is not itself a model
+path the Inspector renders the compiled record that carries the citation and says so verbatim:
+*"This citation names a record in the source snapshot, which is not bundled with this build. Shown
+below is the compiled record that carries the citation…"*. The behaviour is honest and citation
+resolution is sound (a probe over all 652 model cites plus the 16 the engine emits at runtime
+resolved every one). The **criterion** was what overclaimed, so `docs/acceptance.md` B6 has been
+restated to describe what the product does and states.
+
+The capability gap is real and is left open here rather than papered over: shipping a lazily
+fetched side file of the snapshot subtrees that carry a cite, keyed by cite, would let the Inspector
+show actual snapshot JSON. That is a compiler change (`tools/compile-snapshot.mjs`) and was out of
+scope for this pass.
+
+### O6. At the `high` quality tier, bloom turns honest status rings into halos
+Captured at `review/shots/fabric-auto.png` (auto-selected tier `high` on real Intel D3D11, 80 draw
+calls, 225k triangles). Every chassis is wrapped in a heavy warm halo that buries the port banks,
+bevels and faceplates — the silhouette detail that is the entire reason the chassis geometry exists.
+Compare `review/shots/fabric-check.png` at tier `low`, where bloom is off and the same fabric reads
+noticeably *better*.
+
+**It is not a correctness bug, and that distinction matters.** The rim colour is the device's health
+band, and 18 of the 26 devices in this fleet really are Poor or Critical
+(`{Poor: 12, Critical: 6, Good: 3, Excellent: 2, null: 3}`). A fabric that looks alarming is an
+honest rendering of an alarming fleet. What is wrong is the calibration: at 18 simultaneous glows
+the effect stops reading as "these devices are in a bad band" and starts reading as an undifferentiated
+alarm wash, which is a failure of the encoding rather than of the data.
+
+It surfaced only after R5 was fixed: while the shader was failing, the status rims drew nothing at
+all, so there was nothing for bloom to pick up. Fixing one defect exposed the next.
+
+Candidate levers, in the order I would try them — **not yet applied**, because the render critic
+should reach its own verdict first rather than being handed mine:
+  - `state-rim.emissiveIntensity` (currently 1.05) versus the brief's `luminanceThreshold: 1.0`
+    floor — the rim is only just crossing the threshold, so a small reduction may drop it out
+    entirely, which would be the wrong fix;
+  - `SelectiveBloomEffect` `intensity` / `radius` / `levels`;
+  - rim geometry screen size, so the glow is proportionate at overview distance.
+
+### O7. A `SCOPED` badge on a verdict whose own caveat undercuts it — QUESTION FOR THE HONESTY AUDIT
+Observed in `review/shots/panels-check.png`. The trace for tcp/3389 `10.0.10.50 -> 10.0.30.10`
+renders the **SCOPED** badge — the strongest this product has — while its own claim sentence reads:
+
+> "…is denied at core1 by ACL PROTECT_SERVERS line 3 …; **the ACL's interface binding was not
+> collected**, and stateful return traffic is not modelled."
+
+The badge is behaving exactly as specified: `claimBadge` awards SCOPED when the traversal completed,
+every host on the path is in `coverage.routableHosts`, and no HOP-level evidence item is an absence.
+Here core1 is modelled, there is one hop, and nothing at hop level is indeterminate. The rule fires
+correctly.
+
+The question is whether the rule is right. No `ip access-group` binding was collected anywhere in
+this snapshot, so we do not actually know that `PROTECT_SERVERS` is applied to the interface this
+flow traverses. That is not a peripheral caveat — it is uncertainty about **whether the named rule
+governs this packet at all**, which is the entire content of the verdict. A badge that says "as
+strong as this product gets" sitting above a sentence that says "we could not confirm this ACL
+applies here" is at least in tension, and possibly the exact overclaim §6 exists to prevent.
+
+Two defensible readings, and I am deliberately not choosing between them here:
+  - **As designed.** SCOPED never meant "certain"; it means the traversal was complete within the
+    collected RIBs, and the caveats are rendered immediately beneath it in full. The badge grades
+    COVERAGE, not confidence.
+  - **A gap.** Trace-level caveats that bear on whether the deciding rule applies should demote the
+    badge to OBSERVED, so badge and prose cannot disagree.
+
+**Assigned to the honesty audit in the critique loop**, which did not build any of this and should
+reach its own conclusion. If it agrees this is a gap, the fix is in `claimBadge` — a caveat
+classifier that distinguishes peripheral limits from ones that undercut the deciding evidence.
+
+**Update 2026-09-21 — the premise was false.** The snapshot DOES carry bindings (`interfaces.core1.
+Vlan30.acl_out = PROTECT_SERVERS`, `interfaces.core1.Vlan20.acl_in = VOICE_FILTER`, and a
+`candidate_projection_incomplete` marker on core1 Gi1/0/5); the shared compiler never projected them.
+They are now compiled by `tools/compile-acl-bindings.mjs` into `src/forwarding/acl-bindings.json`
+(sha-bound to fabric.json) and read by `src/forwarding/bindings.ts`. A hop applies exactly the lists
+bound on the interfaces it enters and leaves by when those bindings are observed; the specificity rule
+runs only where one is unknown, and the hop names which and why. The 3389 denial now reads "the list is
+applied outbound on core1 Vlan30 (interfaces.core1.Vlan30)", so the SCOPED badge and the sentence
+under it agree. A denial by a heuristically chosen list still records an `acl-unbound-denial` policy
+gap and cannot be SCOPED.
+
+### O5. First-look observations on the 3-D fabric (mine, recorded BEFORE independent critique)
+Written down now, deliberately **not** fed to the critique loop's render critic. The critics judge
+blind; if they independently surface the same items that is convergent evidence, and if they find
+things this list misses that is a measure of how much a single reviewer misses. Feeding my notes
+in first would destroy both signals.
+
+Observed from `review/shots/fabric-check.png`, 1600×900, dark theme, SwiftShader (quality tier
+`low`, so some of this may be tier-specific — flagged where relevant):
+
+1. **Camera framing is too wide.** The fabric occupies roughly 40 % of the frame; the rest is empty
+   background. The brief's framing should fit the bounding sphere with margin, not with a void.
+2. **The layout reads as a hub-and-spoke starburst, not a tiered hierarchy.** The core pair sits at
+   top centre and everything radiates from it. `layout.ts` does run barycentre sweeps and its tests
+   assert measurably fewer crossings than naive ordering — so this may be a CAMERA-ANGLE problem
+   (a near-plan view projecting a clean tier structure into a radial one) rather than a layout
+   problem. Worth distinguishing before anyone "fixes" the layout.
+3. **Heavy cable crossing in the middle band**, following from (2).
+4. **Contact grounding reads as soft blobs** rather than crisp occlusion. Possibly the `low`
+   quality tier disabling or downscaling SSAO under SwiftShader; needs a check at `high`.
+5. **No device labels** in this capture — expected, since `FabricLabels` is a DOM overlay and the
+   preview harness mounts only the canvas. Not a defect; noted so it is not mistaken for one.
+
+None of these is a correctness defect. They are craft items, which is exactly the category the
+blind comparison exists to adjudicate.
