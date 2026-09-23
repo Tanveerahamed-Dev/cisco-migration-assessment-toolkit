@@ -124,7 +124,7 @@ export interface PostChain {
   /** The invariant a unit test pins: pass classes in order, with the effects inside each pass. */
   describe(): string[];
   /**
-   * The history weight the NEXT render may use (see `historyWeightFor`), 0..HISTORY_AA.weight. It
+   * The history weight the NEXT render may use (see `nextHistoryWeight`), 0..HISTORY_AA.weight. It
    * is used only when the chain holds a valid previous frame; anything the chain itself changes (a
    * size, the motion-suspended occlusion stage, a retint) invalidates that frame, and the render
    * after it is plain. Consumed by one render: an unset weight is 0.
@@ -170,9 +170,21 @@ export interface PostChain {
  * unchanged), whenever the camera moves faster than a pixel a frame (where a history would trail),
  * and on any frame where something other than the camera changed (a selection, an ease, a tier, a
  * size, the occlusion stage switching for motion): a history is only ever a previous picture of the
- * SAME content. Near both ends of its range the weight ramps rather than switching, so turning it on
- * or off is never itself a visible step; and a frame drawn with a history is always followed by a
- * plain one before the scene reports `converged` (scene.ts). */
+ * SAME content. A frame drawn with a history is always followed by a plain one before the scene
+ * reports `converged` (scene.ts).
+ *
+ * THE WEIGHT ITSELF EASES (acceptance report 2026-09-23, C5 (a)). Ramping the weight over camera
+ * SPEED was not enough: a speed ramp says nothing about a camera that STOPS. Measured by the
+ * grading, dark reset-fly, a contended host: a 0.465 px creep after a 166.6 ms gap was blended at
+ * 0.75, the next frame was still and therefore plain, and 46,569 px changed with nothing moving —
+ * the whole history's lag landing in one frame. So `nextHistoryWeight` moves the weight by at most
+ * `maxStepPerFrame` per presented frame, both on the way in and on a still frame's way out (the drain
+ * after an unannounced stop, 6 frames, over before the occlusion stage returns). A stop known in
+ * advance — a tween's landing — is ramped out BEFORE it (`arrivalRampMs`, stretched to the frames
+ * the current frame rate leaves), and a frame the camera moved on may drop to the ceiling its motion
+ * sets (a history at or past a pixel would trail; one held up to a known landing would be that lag
+ * again): the catch-up then rides on a frame whose picture is moving anyway. The one absolute is a
+ * content change: 0 at once, since mixing two different pictures is wrong, not merely visible. */
 export const HISTORY_AA = Object.freeze({
   /** Weight of the previous frame at full strength. */
   weight: 0.75,
@@ -182,6 +194,10 @@ export const HISTORY_AA = Object.freeze({
   fullToPx: 0.5,
   /** ...and is back to zero here and above: a history of a frame this far away would trail. */
   offAtPx: 1,
+  /** The most the weight may change between two presented frames. */
+  maxStepPerFrame: 0.125,
+  /** A camera arrival known in advance (a tween) ramps the weight to zero over at least this long. */
+  arrivalRampMs: 150,
 });
 
 /** The history weight for a camera that moved `stepPx` drawing-buffer pixels since the last render. */
@@ -191,6 +207,45 @@ export function historyWeightFor(stepPx: number): number {
   if (stepPx < h.fullFromPx) return h.weight * (stepPx / h.fullFromPx);
   if (stepPx <= h.fullToPx) return h.weight;
   return h.weight * ((h.offAtPx - stepPx) / (h.offAtPx - h.fullToPx));
+}
+
+/**
+ * The weight the NEXT presented frame uses.
+ *
+ * `previous` is the weight the last presented frame used (`historyWeightUsed`), `stepPx` the camera's
+ * step since it, `contentChanged` whether anything but the camera changed since it, `arrivalInMs`
+ * how long until the camera is known to come to rest (0 on a tween's landing frame, null when no
+ * arrival is known) and `frameMs` the last frame interval.
+ */
+export function nextHistoryWeight(
+  previous: number,
+  stepPx: number,
+  contentChanged: boolean,
+  arrivalInMs: number | null,
+  frameMs: number,
+): number {
+  const h = HISTORY_AA;
+  /* A history is only ever a previous picture of the SAME content, and never one a pixel or more
+     away: those two are absolute, whatever the weight was. */
+  if (contentChanged || !(stepPx >= 0) || stepPx >= h.offAtPx) return 0;
+  const prev = previous > 0 ? Math.min(h.weight, previous) : 0;
+  /* What the camera's motion asks for: the step rule, and, when the camera's arrival at rest is
+     known in advance, a ramp to zero over the frames before it — at least `arrivalRampMs`, and at
+     least as many frames at the current frame rate as the weight needs to get there in steps. */
+  let arrival: number = h.weight;
+  if (arrivalInMs !== null) {
+    const horizon = Math.max(h.arrivalRampMs, (h.weight / h.maxStepPerFrame) * (frameMs > 0 ? frameMs : 0));
+    arrival = h.weight * Math.min(1, Math.max(0, arrivalInMs / horizon));
+  }
+  const target = Math.min(historyWeightFor(stepPx), arrival);
+  const eased = Math.min(prev + h.maxStepPerFrame, Math.max(prev - h.maxStepPerFrame, target));
+  if (!(stepPx > 0)) return eased;
+  /* A frame the camera MOVED on may fall below the eased value, to the ceiling its own motion sets:
+     a history kept above the trail ramp would ghost, and one kept up to a known arrival would be a
+     lag landing on the still frame after it — the reported pop. The catch-up then rides on a frame
+     whose picture is moving anyway, never on a still one. */
+  const trail = stepPx <= h.fullToPx ? h.weight : historyWeightFor(stepPx);
+  return Math.min(eased, trail, arrival);
 }
 
 /**

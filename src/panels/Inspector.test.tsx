@@ -254,11 +254,18 @@ describe("the Data tab shows the record behind a claim", () => {
     expect(row!.querySelector('[data-not-applicable="true"]')).toBeTruthy();
   });
 
-  it("renders a connected route's missing administrative distance as 0 by definition, not as not observed", () => {
+  /* AMENDED 2026-09-23, with evidence. This used to pin the reading "0 — a connected route's
+     administrative distance by definition". The acceptance report (B1, "allows no inference
+     exemption") rejected exactly that wording: the record carries no number, and the value slot put
+     the digit 0 in it. The doctrine this test guards is unchanged — a structural null is NOT "not
+     observed" — and is still asserted below; only the words in the value slot changed, to "not
+     recorded", with the platform convention stated as the reason. */
+  it("renders a connected route's missing administrative distance as not recorded — never as 0, and not as not observed", () => {
     const { notApplicableReason } = claims;
     const i = fabric.routes["core1"]!.findIndex((r) => r.source === "connected" && r.adminDistance === null);
     expect(i, "precondition: a connected route with no AD in the record").toBeGreaterThanOrEqual(0);
-    expect(notApplicableReason(fabric.routes["core1"]![i], "adminDistance")).toMatch(/^0 — a connected route/);
+    expect(notApplicableReason(fabric.routes["core1"]![i], "adminDistance")).toMatch(/^not recorded — .*a connected route's administrative distance is zero by platform convention/);
+    expect(notApplicableReason(fabric.routes["core1"]![i], "adminDistance")).not.toMatch(/^0\b/);
     expect(notApplicableReason({ prefix: "0.0.0.0/0", source: "static", adminDistance: null }, "adminDistance")).toBeNull();
     const c = mount(<Inspector cite={`routes.core1[${i}]`} forceOpen />);
     const row = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])].find((r) => text(r.querySelector(".insp-kv__key")) === "adminDistance");

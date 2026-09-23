@@ -21,6 +21,7 @@
  * surface emits one.
  */
 import { fabric } from "./data";
+import { isRouteRecord, routeFieldReading } from "./route-fields";
 import type { Cite, Device, Hop, Trace, TraceOutcome } from "./types";
 import { INVALID_INPUT_REFUSALS, isDefiniteDelivery, portOperatorsInText, REFUSAL_UNDECIDING_KINDS, refusalOf, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
 
@@ -679,6 +680,17 @@ export function absence(reason?: string | null): Absence {
   return { text: `${NOT_OBSERVED_TEXT} — ${detail}`, description: NOT_OBSERVED_DESCRIPTION, hasReason: true };
 }
 
+/* ── a route record's fields: owned by `route-fields.ts`, re-exported here ───────
+   How a route record's `adminDistance` and `nextHop` read (and how a null distance RANKS) is decided
+   in ONE place, `core/route-fields.ts`, which every surface renders through
+   `HopList.tsx :: RouteFieldValue`. It lives in its own leaf module, not here, so the forwarding
+   engine can consult the same owner without importing this module back (this module imports the
+   engine). DECISION CHANGED 2026-09-23 (acceptance B1): a connected or local route's null
+   administrative distance reads "not recorded", with the zero-by-platform-convention given as the
+   reason, never as the value — superseding the 2026-09-22 auditor decision ("0 — … by definition").
+   The decision record is in route-fields.ts. */
+export { adminDistanceRank, isRouteRecord, routeFieldReading, type RouteField, type RouteFieldReading } from "./route-fields";
+
 /**
  * A `null` that is STRUCTURAL rather than missing: the record's own shape says the field cannot
  * carry a value, so rendering it "not observed" would claim an evidence gap that does not exist —
@@ -695,19 +707,10 @@ export function absence(reason?: string | null): Absence {
 export function notApplicableReason(record: unknown, field: string): string | null {
   if (typeof record !== "object" || record === null) return null;
   const r = record as Record<string, unknown>;
-  // A routing-table entry: a connected or local route is attached, so it has no next hop by definition.
-  if (field === "nextHop" && typeof r.prefix === "string" && "source" in r && r.nextHop === null) {
-    const src = typeof r.source === "string" ? r.source.toLowerCase() : null;
-    if (src === "connected" || src === "local") return `n/a — a ${src} route has no next hop`;
-    return null;
-  }
-  /* A connected or local route's administrative distance is 0 by definition on every platform — the
-     value the engine itself ranks it by (`adminDistanceOf`). The collected record simply carries no
-     number for it, which is not an unobserved quantity (2026-09-22 auditor, B1). */
-  if (field === "adminDistance" && typeof r.prefix === "string" && "source" in r && r.adminDistance === null) {
-    const src = typeof r.source === "string" ? r.source.toLowerCase() : null;
-    if (src === "connected" || src === "local") return `0 — a ${src} route's administrative distance by definition; the record carries no value`;
-    return null;
+  // A routing-table entry: its route fields are read by the ONE owner below, never decided here twice.
+  if ((field === "nextHop" || field === "adminDistance") && isRouteRecord(record)) {
+    const reading = routeFieldReading(record, field);
+    return reading.kind === "not-applicable" ? reading.text : null;
   }
   /* An interface ACL-binding record (forwarding/acl-bindings.json): a null direction on a port whose
      running configuration WAS observed, with no unprojected candidate for that direction, is an

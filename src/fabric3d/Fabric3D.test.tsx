@@ -1771,6 +1771,93 @@ describe("measure-inp: no journey spends its first interaction before the measur
   });
 });
 
+/* ── measure-inp item 12a/12c: a failure is named, and an unmeasured run is not a violation ──────
+ *
+ * The acceptance report (2026-09-23, E harness item 12) found two harness defects independent of the
+ * host: (a) J2's anchor discovery ended `FIRST_SELECTION.beforeClick(spage).catch(() => null)`, so a
+ * fabric that never settled was swallowed and the run printed "J2 anchors …: none" with no reason;
+ * (c) the across-runs E3 verdict counted a NOT MEASURED run as not clean, so three clean runs and one
+ * unmeasured run read UNSTABLE and rolled up to E3 FAIL. Both are pinned here by executing the
+ * harness's own exported code, not by reading it. */
+describe("measure-inp: anchor discovery names its failures; E3 across runs does not count NOT MEASURED as a violation", () => {
+  interface Discovery {
+    hits: { id: string }[];
+    reasons: string[];
+  }
+  interface HarnessModule {
+    discoverJ2Anchors(launch: () => Promise<unknown>, opts: { app: string; context: object; initScript: string; log?: (l: string) => void }): Promise<Discovery>;
+    J2_ANCHOR_REASONS: string[];
+    e3StableVerdict(runs: { journeys?: Record<string, { e3?: string }> }[], id: string, minRuns: number): { runs: number; measured: number; notMeasured: number; clean: number; stable: string };
+  }
+  const load = async (): Promise<HarnessModule> =>
+    (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "measure-inp.mjs")).href)) as HarnessModule;
+
+  /** A browser whose fabric never settles: the canvas wait times out, and the canvas has no box. */
+  const unsettledBrowser = (closed: { n: number }) => ({
+    newContext: async () => ({
+      addInitScript: async () => undefined,
+      newPage: async () => ({
+        goto: async () => null,
+        waitForTimeout: async () => undefined,
+        waitForSelector: async () => {
+          throw new Error("page.waitForSelector: Timeout 15000ms exceeded.\nCall log: waiting for canvas");
+        },
+        waitForFunction: async () => ({}),
+        evaluate: async () => [],
+        locator: () => ({ first: () => ({ boundingBox: async () => null }) }),
+        mouse: { click: async () => undefined },
+      }),
+    }),
+    close: async () => void (closed.n += 1),
+  });
+
+  it("a fabric that never settles is reported with its cause, on the anchors line and to J2", async () => {
+    const { discoverJ2Anchors, J2_ANCHOR_REASONS } = await load();
+    const lines: string[] = [];
+    const closed = { n: 0 };
+    const d = await discoverJ2Anchors(async () => unsettledBrowser(closed), { app: "http://x", context: {}, initScript: "", log: (l) => lines.push(l) });
+    expect(d.hits).toEqual([]);
+    expect(d.reasons.join(" "), "the swallowed beforeClick failure is named").toMatch(/never reached a drawn, settled state.*Timeout 15000ms/);
+    expect(d.reasons.join(" ")).toMatch(/no scanned canvas point/);
+    expect(lines, "one anchors line").toHaveLength(1);
+    expect(lines[0], "'none' is never printed without its reason").toMatch(/: none — .*never reached a drawn, settled state/);
+    expect(J2_ANCHOR_REASONS, "J2's act reads the same reasons when it reports NOT MEASURED").toEqual(d.reasons);
+    expect(closed.n, "the throwaway browser is closed").toBe(1);
+  });
+
+  it("a browser that cannot launch is a named reason, not a thrown run", async () => {
+    const { discoverJ2Anchors } = await load();
+    const lines: string[] = [];
+    const d = await discoverJ2Anchors(
+      async () => {
+        throw new Error("browserType.launch: Executable doesn't exist");
+      },
+      { app: "http://x", context: {}, initScript: "", log: (l) => lines.push(l) },
+    );
+    expect(d.reasons.join(" ")).toMatch(/anchor discovery threw: .*Executable doesn't exist/);
+    expect(lines[0]).toMatch(/: none — anchor discovery threw/);
+  });
+
+  const runs = (...v: string[]) => v.map((e3) => ({ journeys: { J: { e3 } } }));
+
+  it("three clean runs and one NOT MEASURED run are STABLE PASS over the three that measured", async () => {
+    const { e3StableVerdict } = await load();
+    expect(e3StableVerdict(runs("E3-PASS", "E3-PASS", "NOT MEASURED", "E3-PASS"), "J", 3)).toEqual({ runs: 4, measured: 3, notMeasured: 1, clean: 3, stable: "STABLE PASS" });
+  });
+
+  it("an unmeasured run cannot make up the run count either", async () => {
+    const { e3StableVerdict } = await load();
+    expect(e3StableVerdict(runs("E3-PASS", "NOT MEASURED", "NOT MEASURED"), "J", 3).stable).toBe("INSUFFICIENT RUNS");
+    expect(e3StableVerdict(runs("E3-FAIL", "NOT MEASURED", "E3-FAIL", "E3-FAIL"), "J", 3).stable).toBe("STABLE FAIL");
+  });
+
+  it("a real violation still decides it: one E3-FAIL among clean runs is UNSTABLE", async () => {
+    const { e3StableVerdict } = await load();
+    expect(e3StableVerdict(runs("E3-PASS", "E3-FAIL", "E3-PASS"), "J", 3).stable).toBe("UNSTABLE");
+    expect(e3StableVerdict([{ journeys: {} }, ...runs("E3-PASS")], "J", 1)).toEqual({ runs: 1, measured: 1, notMeasured: 0, clean: 1, stable: "STABLE PASS" });
+  });
+});
+
 /* ── measure-inp item 15: the headed window must fit the screen it is measured on ── */
 describe("measure-inp: the headed window is planned inside the screen's work area", () => {
   interface Plan {

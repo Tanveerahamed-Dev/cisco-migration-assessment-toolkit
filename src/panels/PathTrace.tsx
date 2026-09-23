@@ -983,6 +983,32 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
   const [pending, setPending] = useState<{ flow: Flow; trace: Trace; hop?: number } | null>(null);
   /** Bumped by every explicit run, so re-running the SAME flow still lands on its answer. */
   const [runSeq, setRunSeq] = useState(0);
+  /** Cancels the store write a `run` has deferred past the next paint, while it has not landed. */
+  const runCommit = useRef<(() => void) | null>(null);
+
+  /* `pending` is an acknowledgement of a flow the STORE is about to hold — never a second owner.
+     When the store's question moves somewhere else before that write lands (a Back, a shared link,
+     another surface setting a flow), the acknowledgement is stale and goes, and a `run` commit still
+     in flight is dropped rather than landing afterwards and undoing the move.
+
+     Found as a lead in the 2026-09-23 acceptance report and reproduced through real browser history
+     traversal in a background tab, where no frame is painted: a restored flow's store write was
+     cancelled by the next Back, nothing released `pending`, and a PARTIAL card for the flow the
+     reader had left stood under a refused shared link — and stayed when the tab was shown.
+
+     Runs only when the store's flow or refusal CHANGES, so a run's own in-flight window (store still
+     on the previous flow) is untouched; the functional update compares identity, so a `pending`
+     the restore effect set in this same commit is never the one released. */
+  useEffect(() => {
+    if (pending === null) return;
+    if (flow !== null && flowKey(flow) === flowKey(pending.flow)) return;
+    runCommit.current?.();
+    runCommit.current = null;
+    const stale = pending;
+    setPending((p) => (p === stale ? null : p));
+    /* `pending` is read, not tracked: only a move of the store's question can make it stale. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow, flowRefused]);
 
   /* The store owns the flow, so a flow that arrives from anywhere — this form, a preset, a
      counterexample, a shared URL — is traced the same way. That is what makes a link reproducible:
@@ -1104,13 +1130,16 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
       };
       /* rAF puts this after the acknowledgement frame has been PAINTED; the setTimeout inside
          it puts it in a task of its own rather than inside the frame callback, where it would
-         extend that same animation frame and defeat the split. Both are feature-detected: a
-         jsdom render has neither, and a trace that only ran in a browser would be untestable. */
-      if (typeof requestAnimationFrame === "function" && typeof setTimeout === "function") {
-        requestAnimationFrame(() => setTimeout(commitRest, 0));
-      } else {
+         extend that same animation frame and defeat the split — `deferPastPaint` is exactly
+         `requestAnimationFrame(() => setTimeout(fn, 0))`, feature-detected (a render with neither
+         commits at once), and it returns a cancel. The cancel is kept so a move of the store's
+         question before this lands can drop it (see the effect beside `pending`); a newer run
+         supersedes an older one the same way. */
+      runCommit.current?.();
+      runCommit.current = deferPastPaint(() => {
+        runCommit.current = null;
         commitRest();
-      }
+      });
     },
     [setFlow, setTrace],
   );

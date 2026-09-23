@@ -197,7 +197,7 @@ describe("6. one port, one cable", () => {
   });
 
   it("the detector is structural: a synthetic map with a shared member port is caught, a clean one is not", () => {
-    const base: Link = { id: "X1", a: "h1", aPort: "Po1", b: "h2", bPort: "Po1", isPortChannel: true, members: ["Gi1 ↔ Gi1"], speedMbps: null, opStatus: "up", confirmation: "Both ends", betweenness: null, isBridge: null, pairsCut: null, centralityRank: null, cite: "x" };
+    const base: Link = { id: "X1", a: "h1", aPort: "Po1", b: "h2", bPort: "Po1", isPortChannel: true, members: ["Gi1 ↔ Gi1"], speedMbps: null, opStatus: "up", confirmation: "Both ends", betweenness: null, isBridge: null, pairsCut: null, centralityRank: null, centralityCite: null, cite: "x" };
     const other: Link = { ...base, id: "X2", aPort: "Gi1", b: "h3", bPort: "Gi9", isPortChannel: false, members: [], confirmation: "One end (h3)" };
     expect(findPortDisputes([base]).length).toBe(0);
     const found = findPortDisputes([base, other]);

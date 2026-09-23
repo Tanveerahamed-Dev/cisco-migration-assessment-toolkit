@@ -115,6 +115,45 @@ const impactByHost = new Map(arr(snap.failure_impact).map((f) => [f.host, f]));
    the blast radius. It is emitted with collected:false so the UI can never imply we assessed it. */
 const hosts = [...new Set([...cableNodes.map((n) => n.host), ...Object.keys(obj(snap.devices))])].sort();
 
+/* PER-FIELD PROVENANCE (acceptance B6). A device record is assembled from up to four source records —
+   the inventory (`devices.<host>`), the cable-map node, the health score and the failure impact — so
+   one `cite` cannot say where each field came from: the Device pane used to show Model, Criticality
+   and Tier under the single inventory citation, a record that holds no criticality and no tier.
+   `fieldCites` names, for each compiled field, the source record it was READ from, and it names one
+   only where that record exists. A field with no entry is either absent (null) or the compiler's own
+   default, and a surface must say which rather than borrow another record's citation. */
+const INVENTORY_FIELDS = ["platform", "model", "serial", "swVersion", "uptime", "powerSupplies", "modules"];
+const NODE_FIELDS = ["tier", "order", "opStatus", "badges"];
+const HEALTH_FIELDS = ["score", "band", "criticality", "dataQuality", "deductions"];
+/**
+ * @param {string} host
+ * @param {Record<string, any> | undefined} d  inventory record
+ * @param {Record<string, any> | undefined} n  cable-map node
+ * @param {Record<string, any> | undefined} h  health score
+ * @returns {Record<string, string>}
+ */
+const deviceFieldCites = (host, d, n, h) => {
+  /** @type {Record<string, string>} */
+  const out = {};
+  const inv = `devices.${host}`;
+  const node = `cable_map.nodes[host=${host}]`;
+  const health = `health_scores[switch=${host}]`;
+  const own = d ? inv : node;
+  out.id = own;
+  out.host = own;
+  if (d) out.collected = inv;
+  else if (n && typeof n.collected === "boolean") out.collected = node;
+  if (d) for (const f of INVENTORY_FIELDS) out[f] = inv;
+  if (n) for (const f of NODE_FIELDS) out[f] = node;
+  if (n && val(n.kind) !== null) out.kind = node;
+  if (h && val(h.role) !== null) out.role = health;
+  else if (n && val(n.role) !== null) out.role = node;
+  else if (h) out.role = health;
+  else if (n) out.role = node;
+  if (h) for (const f of HEALTH_FIELDS) out[f] = health;
+  return out;
+};
+
 const devices = hosts.map((host) => {
   const d = obj(snap.devices)[host];
   const n = nodeByHost.get(host);
@@ -155,19 +194,64 @@ const devices = hosts.map((host) => {
           cite: `failure_impact[host=${host}]`,
         }
       : null,
+    fieldCites: deviceFieldCites(host, d, n, h),
     cite: d ? `devices.${host}` : `cable_map.nodes[host=${host}]`,
   };
 });
 
+/* The source records the device fields above were read from, compiled under the SAME path the
+   citations name, so a citation into them resolves inside the model to the very record that carries
+   the figure — not to an assembled device record that also carries a dozen fields the cited source
+   record never held. Only the fields the compiler reads are carried (a node's `ports` are the
+   cables, compiled as `links`); nothing is defaulted here — an absent source value is null. */
+const cableMapNodes = cableNodes.map((n) => ({
+  host: n.host,
+  kind: val(n.kind),
+  role: val(n.role),
+  tier: Number.isFinite(n.tier) ? n.tier : null,
+  order: Number.isFinite(n.order) ? n.order : null,
+  collected: typeof n.collected === "boolean" ? n.collected : null,
+  opStatus: val(n.op_status),
+  badges: strs(n.badges, `cable_map.nodes[host=${n.host}].badges`),
+  cite: `cable_map.nodes[host=${n.host}]`,
+}));
+const healthScores = arr(snap.health_scores).map((h) => ({
+  switch: h.switch,
+  role: val(h.role),
+  score: Number.isFinite(h.score) ? h.score : null,
+  band: val(h.band),
+  criticality: Number.isFinite(h.criticality) ? h.criticality : null,
+  dataQuality: Number.isFinite(h.data_quality) ? h.data_quality : null,
+  deductions: strs(h.deductions, `health_scores[switch=${h.switch}].deductions`),
+  cite: `health_scores[switch=${h.switch}]`,
+}));
+
 /* links -------------------------------------------------------------------- */
 /** @param {unknown} a @param {unknown} ap @param {unknown} b @param {unknown} bp */
 const centralityKey = (a, ap, b, bp) => [`${a}|${ap}`, `${b}|${bp}`].sort().join("::");
+/* The engine's own link_centrality rows, compiled under their source path so `link_centrality[k]`
+   resolves inside the model to the record that carries the figures (acceptance B6: the link pane
+   showed betweenness, bridge status, pairs cut and rank with no citation at all, and the model did
+   not contain the record they came from). Read with the same guards the link fields use. */
+const linkCentrality = arr(snap.link_centrality).map((c, k) => ({
+  aHost: val(c.a_host),
+  aPort: val(c.a_port),
+  bHost: val(c.b_host),
+  bPort: val(c.b_port),
+  betweenness: Number.isFinite(c.betweenness) ? c.betweenness : null,
+  isBridge: typeof c.is_bridge === "boolean" ? c.is_bridge : null,
+  pairsCut: Number.isFinite(c.pairs_cut) ? c.pairs_cut : null,
+  rank: Number.isFinite(c.rank) ? c.rank : null,
+  cite: `link_centrality[${k}]`,
+}));
+/** @type {Map<string, { row: any, k: number }>} */
 const centrality = new Map();
-for (const c of arr(snap.link_centrality)) {
-  centrality.set(centralityKey(c.a_host, c.a_port, c.b_host, c.b_port), c);
-}
+arr(snap.link_centrality).forEach((c, k) => {
+  centrality.set(centralityKey(c.a_host, c.a_port, c.b_host, c.b_port), { row: c, k });
+});
 const links = arr(snap.cable_map?.cables).map((c, i) => {
-  const cen = centrality.get(centralityKey(c.a, c.a_port, c.b, c.b_port));
+  const hit = centrality.get(centralityKey(c.a, c.a_port, c.b, c.b_port));
+  const cen = hit?.row;
   return {
     id: `L${i}`,
     a: c.a,
@@ -199,6 +283,10 @@ const links = arr(snap.cable_map?.cables).map((c, i) => {
     isBridge: cen && typeof cen.is_bridge === "boolean" ? cen.is_bridge : null,
     pairsCut: cen && Number.isFinite(cen.pairs_cut) ? cen.pairs_cut : null,
     centralityRank: cen && Number.isFinite(cen.rank) ? cen.rank : null,
+    /* The link_centrality row the four figures above were read from, or null when the engine
+       scored no such cable — a citation of its own, because `cite` names the cable record, which
+       holds none of them. */
+    centralityCite: hit ? `link_centrality[${hit.k}]` : null,
     cite: `cable_map.cables[${i}]`,
   };
 });
@@ -479,6 +567,11 @@ const out = {
   protocols,
   endpoints,
   coverage,
+  /* Source records the device and link figures were read from, under the paths their citations
+     name (acceptance B6). Appended last so every earlier model path is unchanged. */
+  cable_map: { nodes: cableMapNodes },
+  health_scores: healthScores,
+  link_centrality: linkCentrality,
 };
 
 mkdirSync(dirname(OUT), { recursive: true });

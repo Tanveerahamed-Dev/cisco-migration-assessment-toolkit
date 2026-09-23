@@ -30,7 +30,8 @@ import {
   bandOfHopIn,
   hopUndecided,
   hopUndecidedGaps,
-  notApplicableReason,
+  routeFieldReading,
+  type RouteField,
   outcomeUndecidingGaps,
   type ClaimBand,
   type HopUndecided,
@@ -412,44 +413,61 @@ function Fact({
 }
 
 /**
- * One field of a route RECORD, rendered through the owner of "is this null structural?"
- * (`claims.ts :: notApplicableReason`) before the not-observed treatment is allowed to claim it.
+ * One field of a route RECORD, as its ONE owner reads it (`route-fields.ts :: routeFieldReading`, re-exported by `claims.ts`).
  *
- * The Inspector read that owner and this list did not, so the same connected route's null AD was
- * "0 — a connected route's administrative distance by definition" in one and "not observed" in the
- * other (2026-09-23 acceptance report, B1 item 14). Every route-record field this list renders goes
- * through here — the winner's and every beaten alternative's — so the two surfaces cannot disagree
- * about any field, not only the one that was reported. `data-route-field` / `data-route-cite` name
- * the record and field, which is what lets a test compare this cell to the Inspector's.
+ * Exported because every surface that prints a route field renders THIS — the hop list here, the
+ * Device pane's Routing tab and the Inspector's field table. B1 failed twice for one class: the same
+ * connected route's null AD read "0 — … by definition" on one surface and "not observed" on another,
+ * because each surface decided for itself, and the first fix wired two of the three to a shared
+ * helper. Now none of them decides: they render the owner's reading, and a type-checker guard
+ * (`HopList.admin-distance.test.tsx`) fails if any module outside the owner reads the field.
+ * `classes` changes only the styling, never the words.
  */
-function RouteField<K extends "nextHop" | "adminDistance">({
+export function RouteFieldValue({
   route,
   field,
-  what,
-  why,
   mono = false,
+  compact = false,
+  classes,
 }: {
   route: RouteEntry;
-  field: K;
-  what: string;
-  why?: string;
+  field: RouteField;
   mono?: boolean;
+  /**
+   * For a cell too narrow for the reason: the value-slot word is shown and the reason is carried
+   * off-screen and in the tooltip. The element's words are the same either way — only what is
+   * painted differs, so a reader, a screen reader and a test all read the owner's full reading.
+   */
+  compact?: boolean;
+  classes?: { notApplicable?: string; value?: string };
 }): ReactElement {
-  const value = route[field];
-  const na = value === null ? notApplicableReason(route, field) : null;
+  const reading = routeFieldReading(route, field);
+  if (reading.kind === "not-applicable") {
+    return (
+      <span className={classes?.notApplicable ?? "hop__note"} data-not-applicable="true" title={compact ? reading.text : undefined}>
+        {compact && reading.reason !== null ? (
+          <>
+            {reading.short}
+            <span className="visually-hidden">{` — ${reading.reason}`}</span>
+          </>
+        ) : (
+          reading.text
+        )}
+      </span>
+    );
+  }
+  if (reading.kind === "absent") return <NotObserved what={reading.what} why={reading.why} compact />;
+  return <span className={classes?.value ?? (mono ? "hop__mono" : undefined)}>{reading.text}</span>;
+}
+
+/**
+ * The hop list's route field: the owner's reading, marked with `data-route-field` /
+ * `data-route-cite` so a test can compare this cell to the Inspector's for the same record.
+ */
+function RouteField({ route, field, mono = false }: { route: RouteEntry; field: RouteField; mono?: boolean }): ReactElement {
   return (
     <span className="hop__route-field" data-route-field={field} data-route-cite={route.cite}>
-      {na !== null ? (
-        <span className="hop__note" data-not-applicable="true">
-          {na}
-        </span>
-      ) : (
-        orNotObserved(value, (v) => <span className={mono ? "hop__mono" : undefined}>{String(v)}</span>, {
-          what,
-          ...(why === undefined ? {} : { why }),
-          compact: true,
-        })
-      )}
+      <RouteFieldValue route={route} field={field} mono={mono} />
     </span>
   );
 }
@@ -469,20 +487,15 @@ function RouteFact({
       {/* A connected or local route HAS no next hop — the prefix is on an interface. Rendering
           "not observed" there would manufacture a gap in evidence that is not missing, which is
           the mirror image of rendering absence as health and just as wrong. That judgement belongs
-          to `notApplicableReason`, which RouteField consults; every other route source is expected
+          to `routeFieldReading`, which RouteField renders; every other route source is expected
           to name a next hop, so a null there is a real absence. */}
-      {route.nextHop === null && notApplicableReason(route, "nextHop") !== null ? null : <span className="hop__sep">via</span>}
-      <RouteField route={route} field="nextHop" what="next-hop address" why="the collected route names no next-hop address" mono />
+      {routeFieldReading(route, "nextHop").kind === "not-applicable" ? null : <span className="hop__sep">via</span>}
+      <RouteField route={route} field="nextHop" mono />
       <span className="hop__meta">
         {orNotObserved(route.source, (v) => <span>{v}</span>, { what: "route source", compact: true })}
         <span className="hop__sep">·</span>
         <span className="hop__key-inline">AD</span>
-        <RouteField
-          route={route}
-          field="adminDistance"
-          what="administrative distance"
-          why="the collected routing table did not record a distance for this entry"
-        />
+        <RouteField route={route} field="adminDistance" />
       </span>
       <CiteLink cite={route.cite} onOpen={onOpenCite} />
     </Fact>
@@ -598,7 +611,7 @@ function Alternatives({
             <td className="hop__mono" role="cell" data-col="Prefix">{r.prefix}</td>
             <td role="cell" data-col="Source">{orNotObserved(r.source, undefined, { what: "route source", compact: true })}</td>
             <td className="hop__mono" role="cell" data-col="Next hop">
-              <RouteField route={r} field="nextHop" what="next-hop address" />
+              <RouteField route={r} field="nextHop" />
             </td>
             <td className="hop__mono" role="cell" data-col="Out">
               {(() => {
@@ -629,7 +642,7 @@ function Alternatives({
               })()}
             </td>
             <td role="cell" data-col="AD">
-              <RouteField route={r} field="adminDistance" what="administrative distance" />
+              <RouteField route={r} field="adminDistance" />
             </td>
             <td role="cell" data-col="Evidence">
               <CiteLink cite={r.cite} onOpen={onOpenCite} />

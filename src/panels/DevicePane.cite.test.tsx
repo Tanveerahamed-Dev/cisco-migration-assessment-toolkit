@@ -207,11 +207,15 @@ describe("B6: identity and health rows cite a record that carries the value they
   });
 
   it("each link centrality citation names a source record holding betweenness, is_bridge, pairs_cut and rank", () => {
+    let links = 0;
     for (const l of fabric.links) {
       if (l.betweenness === null) continue;
+      links += 1;
       const c = showLink(l.id, "summary");
       const sec = sectionTitled(c, /^Centrality/)!;
-      for (const cite of new Set(citesIn(sec))) {
+      const cites = new Set(citesIn(sec));
+      expect(cites.size, `${l.id}: the centrality section cites nothing`).toBeGreaterThan(0);
+      for (const cite of cites) {
         const src = sourceRecord(cite) as Record<string, unknown> | undefined;
         expect(src, `${l.id}: ${cite} names nothing in the source`).toBeDefined();
         expect(src!["betweenness"]).toBe(l.betweenness);
@@ -221,6 +225,7 @@ describe("B6: identity and health rows cite a record that carries the value they
       }
       unmountAll();
     }
+    expect(links).toBe(fabric.coverage.linksWithCentrality);
   });
 
   it("a health figure cites the health_scores record, not the inventory record that holds no score", () => {

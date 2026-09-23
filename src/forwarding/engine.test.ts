@@ -13,10 +13,14 @@ import { bandOfHop, bandOfTrace, claimBadge, scopeTuple, T1_verdict } from "../c
 import type { AclLine, Flow } from "../core/types";
 import { addressRoleIn, formatIpv4, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains } from "./ip";
 import {
+  ACL_PASSES_PER_HOP,
   blockingHop,
   chooseRoute,
+  COUNTEREXAMPLE_CANDIDATE_CAP,
   counterexample,
+  engineWork,
   evaluateAcls,
+  ingressCandidates,
   isDefiniteDelivery,
   isDefiniteOnModelledPath,
   lineEvaluability,
@@ -923,63 +927,65 @@ describe("determinism and budget", () => {
   });
 
   /**
-   * A wall-clock TRIPWIRE, not a latency budget — and the distinction is why this reads the way it
-   * does.
+   * A STRUCTURAL bound, not a clock (acceptance F2 / O26).
    *
-   * A unit test does not control the machine. This suite routinely runs while a dozen other
-   * processes compete for the CPU, and the original form of this test (a single measurement against
-   * a 5 ms bound) failed under that load and passed on a quiet run. A red that means "the host was
-   * busy" is indistinguishable from a red that means "someone made this quadratic", which makes the
-   * gate worse than useless: it trains people to re-run until green.
+   * These two tests used to take the median of 7 wall-clock runs against a 50 ms tripwire. A unit
+   * test does not control the machine: under multi-agent load the counterexample median measured
+   * 54.66 ms for a search that takes a few milliseconds on a quiet host, and a red that means "the
+   * host was busy" cannot be told from one that means "someone made this quadratic". Time budgets are
+   * measured against the running application by the E harnesses (`review/measure-inp.mjs` and
+   * friends), which label themselves laboratory.
    *
-   * So: take a MEDIAN over repeats, which is robust to a scheduler stall, and set the bound far
-   * above any plausible one. What survives is the thing a unit test can honestly assert — that the
-   * algorithm has not blown up. The actual 200 ms interaction budget is measured against the real
-   * application by `review/measure-inp.mjs`, which labels itself LABORATORY and reports NOT
-   * MEASURED rather than guessing.
+   * What survives here is the thing a unit test can honestly assert on any machine: how much WORK
+   * the engine does, in its own units (`engineWork()`). A trace runs at most one trace per ingress
+   * candidate of its source (itself plus one memoised trace per alternate, which cannot recurse), at
+   * most TTL_LIMIT hop iterations per trace, and asks the matcher about each ACL line on a hop at most
+   * ACL_PASSES_PER_HOP times. `engine.work-bound.test.ts` sweeps the same bounds over the whole flow
+   * space and over long lists; the timing is still measured and REPORTED, never asserted.
    */
-  it("does not blow up algorithmically on any suggested flow", () => {
-    const TRIPWIRE_MS = 50; // 10x the 5 ms design target; see the note above
+  it("does not blow up algorithmically on any suggested flow (work, not wall clock)", async ({ annotate }) => {
+    const maxLines = Math.max(0, ...Object.values(fabric.acls).map((named) => Object.values(named).reduce((n, ls) => n + ls.length, 0)));
+    const timings: string[] = [];
     for (const f of suggestedFlows()) {
-      const runs: number[] = [];
-      for (let i = 0; i < 7; i++) runs.push(traceFlow(f.flow).elapsedMs);
-      runs.sort((a, b) => a - b);
-      const median = runs[3]!;
-      expect(
-        median,
-        `${f.id} median ${median.toFixed(2)} ms over 7 runs (slowest ${runs[6]!.toFixed(2)} ms)`,
-      ).toBeLessThan(TRIPWIRE_MS);
+      const src = parseIpv4(f.flow.srcIp);
+      const perRequest = Math.max(1, src === null ? 0 : ingressCandidates(src).length);
+      const before = engineWork();
+      const t = traceFlow(f.flow);
+      const after = engineWork();
+      const traces = after.traces - before.traces;
+      const hops = after.hops - before.hops;
+      expect(traces, `${f.id}: traces vs ${perRequest} ingress candidates`).toBeGreaterThanOrEqual(1);
+      expect(traces, `${f.id}: traces vs ${perRequest} ingress candidates`).toBeLessThanOrEqual(perRequest);
+      expect(hops, `${f.id}: hop iterations`).toBeLessThanOrEqual(traces * TTL_LIMIT);
+      expect(after.lineMatches - before.lineMatches, `${f.id}: ACL line matches`).toBeLessThanOrEqual(hops * ACL_PASSES_PER_HOP * maxLines);
+      timings.push(`${f.id} ${t.elapsedMs.toFixed(2)} ms`);
     }
+    await annotate(`single-run trace times (reported, not asserted): ${timings.join(", ")}`);
   });
 
-  it("keeps the counterexample search inside the same interaction budget", () => {
+  it("keeps the counterexample search inside its candidate budget (work, not wall clock)", async ({ annotate }) => {
     /* The UI asks for a counterexample in the same gesture that runs the trace, so its cost is part
-       of that interaction, not a separate one.
-
-       A TRIPWIRE, measured the same way as the one above and for the same reason. This test used
-       to take a SINGLE measurement against a 5 ms bound — sixteen lines below the comment
-       explaining why that form is invalid here — and it duly went red under parallel load during
-       an audit, saying nothing whatever about `counterexample`. Median over repeats, bound set far
-       above any plausible quiet-run figure. */
-    const TRIPWIRE_MS = 50; // 10x the 5 ms design target; see the note above
+       of that interaction. Its budget is COUNTEREXAMPLE_CANDIDATE_CAP candidates, each traced once
+       (plus, the first time, its memoised alternate-ingress traces). */
     const t = traceFlow(flow);
-    const runs: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const before = performance.now();
-      counterexample(flow, t);
-      runs.push(performance.now() - before);
-    }
-    runs.sort((a, b) => a - b);
-    const median = runs[3]!;
-    expect(
-      median,
-      `counterexample median ${median.toFixed(2)} ms over 7 runs (slowest ${runs[6]!.toFixed(2)} ms)`,
-    ).toBeLessThan(TRIPWIRE_MS);
+    const src = parseIpv4(flow.srcIp)!;
+    const perRequest = Math.max(1, ingressCandidates(src).length);
+    const before = engineWork();
+    const started = performance.now();
+    const cx = counterexample(flow, t);
+    const ms = performance.now() - started;
+    const w = engineWork();
     /* The search ran (its reason says so) and found nothing definite on this snapshot; the found
        branch runs in engine.counterfactual.test.ts. */
-    const cx = counterexample(flow, t);
     expect(cx.found).toBe(false);
-    if (!cx.found) expect(cx.reason).toMatch(/nearby variations/);
+    if (cx.found) return;
+    expect(cx.reason).toMatch(/nearby variations/);
+    const considered = Number(/None of the (\d+) nearby variations/.exec(cx.reason)?.[1] ?? NaN);
+    expect(considered).toBeGreaterThan(0);
+    expect(considered).toBeLessThanOrEqual(COUNTEREXAMPLE_CANDIDATE_CAP);
+    expect(w.traces - before.traces).toBeLessThanOrEqual(considered * perRequest);
+    expect(w.hops - before.hops).toBeLessThanOrEqual((w.traces - before.traces) * TTL_LIMIT);
+    await annotate(`counterexample: ${considered} candidates, ${w.traces - before.traces} traces, ${ms.toFixed(2)} ms (reported, not asserted)`);
   });
 
   it("gives the same counterexample every time", () => {

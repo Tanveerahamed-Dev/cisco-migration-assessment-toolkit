@@ -751,3 +751,52 @@ describe("the pass-by-pass warm-up primes the interaction visuals on every step 
     expect(ps.map((p) => p.enabled)).toEqual(profile);
   });
 });
+
+/* ══ C5 (2026-09-23): the scene feeds the motion rules what they judge (tripwire: source text) ════
+
+   The rules themselves are stepped frame by frame where they live (postfx.ts `nextHistoryWeight` in
+   render-c5-r4.test.ts; stepdown.ts `createTierFadeHold` in stepdown.fadehold.test.ts). jsdom has
+   no WebGL, so `frame` cannot run here; what CAN be pinned is that the render loop hands each rule
+   the inputs its tests assume — a rule stepped on inputs the scene never supplies proves nothing.
+   The pixels are review/capture-motion.mjs's evidence. */
+describe("C5: the render loop feeds the history and tier-fade rules their real inputs (tripwire: source text)", () => {
+  const source = readFileSync(resolve(process.cwd(), "src/fabric3d/scene.ts"), "utf8");
+  const frameBody = source.slice(source.indexOf("function frame(now: number): void {"), source.indexOf("\n  function converged()"));
+
+  it("the history weight is eased from the weight the last presented frame USED, with the camera's known arrival", () => {
+    expect(frameBody).toMatch(/nextHistoryWeight\(\s*post\.historyWeightUsed\(\),\s*cameraStep,\s*contentVersion !== renderedContentVersion,\s*cameraArrivalInMs,\s*raw,?\s*\)/);
+    expect(frameBody).not.toMatch(/historyWeightFor\(/);
+    /* A tween's landing frame arrives now: the rig stops reporting a tween during this frame's update. */
+    expect(frameBody).toMatch(/const tweenBefore = cameraRig\.isTweening\(\);\s*const cameraMoved = cameraRig\.update\(now\);/);
+    expect(frameBody).toMatch(/tweenBefore && !tweenAfter\s*\?\s*0/);
+  });
+
+  it("the tier change's re-presented snapshot frame is weighted like any other frame, never dropped to plain", () => {
+    const snap = source.slice(source.indexOf("function snapshotForTierFade(): void {"), source.indexOf("\n  function releaseTierFade("));
+    expect(snap).toMatch(/post\.setHistoryWeight\(\s*nextHistoryWeight\(post\.historyWeightUsed\(\), cameraStepSinceRenderPx\(\),[^;]*\);\s*post\.render\(0\);/);
+  });
+
+  it("a frame drawn with a history keeps frames coming until the weight has drained, and `converged` waits for it", () => {
+    expect(frameBody).toContain("if (historyInLastRender && !cameraMoved) requestFrame();");
+    expect(source).toMatch(/dirty: dirty \|\| motionReducedRender \|\| domLabelsConverging \|\| historyInLastRender/);
+  });
+
+  it("the tier fade's hold is released by a camera move or a content change since the new tier presented", () => {
+    const release = source.slice(source.indexOf("function releaseTierFade(now: number): void {"), source.indexOf("\n  function applyQuality("));
+    expect(release).toContain("createTierFadeHold(now)");
+    expect(release).toMatch(/hold\.frame\(lastNow, lastFrameMs, lastCameraMotionAt > now \|\| contentVersion !== heldContent\)/);
+    expect(release).toContain("setTimeout(once, TIER_FADE_HOLD_DEFAULTS.maxHoldMs)");
+    expect(frameBody).toContain("releaseTierFade(now);");
+    /* ...and the tier change's own owed re-render is not a content change, or it would release it. */
+    expect(frameBody).toMatch(/warmupFrames -= 1;\s*requestFrame\(\);/);
+  });
+
+  it("a held step-down lands only with the camera at rest — before the gate, so its 6 s backstop cannot land it mid-orbit", () => {
+    const land = source.slice(source.indexOf("function landHeldStepDown(now: number): boolean {"), source.indexOf("\n  /**", source.indexOf("function landHeldStepDown(now: number): boolean {")));
+    const rest = land.indexOf("if (cameraRig.isTweening() || now - lastCameraMotionAt < MOTION_HOLD_MS) return false;");
+    const gate = land.indexOf("gestureGate.mayLand(");
+    expect(rest, "the camera-rest check").toBeGreaterThan(-1);
+    expect(gate, "the gesture gate").toBeGreaterThan(rest);
+    expect(land.slice(0, rest)).not.toMatch(/applyQuality\(/);
+  });
+});

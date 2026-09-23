@@ -44,7 +44,8 @@ import { presentBand, unassessedScoringDomains } from "../core/band-qualificatio
 import { aclUndecidability } from "../core/acl-coverage";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { placeholderZero } from "../core/placeholders";
-import { notApplicableReason, T9_disagreement } from "../core/claims";
+import { T9_disagreement } from "../core/claims";
+import { RouteFieldValue } from "./HopList";
 import { failureImpact, linkFailureImpact } from "../analysis/blast";
 import { cableCountPhrase, disputeSentence, disputesOf, hostCableAccount } from "../analysis/port-claims";
 import { useInvestigation, type EvidenceTab } from "../core/store";
@@ -199,10 +200,27 @@ export { unassessedScoringDomains };
 export interface KvRow {
   k: string;
   v: ReactNode;
-  cite?: Cite;
+  /** The record(s) the value was read from. Several when the row reads several records. */
+  cite?: Cite | readonly Cite[];
+  /**
+   * Set instead of `cite` when the value is a computation of THIS application, not a field of any
+   * record: the basis, in words, rendered on the row as `data-derived` and read aloud with it.
+   */
+  derived?: string;
   /** Renders the value across the full width under its key — for prose and long strings. */
   wide?: boolean;
 }
+
+/**
+ * A row of the Device pane: it MUST say where its value comes from — a citation to the record that
+ * carries it, or the basis of this application's own computation (acceptance B6). `KvRow` keeps both
+ * optional for the surfaces outside this pane; every row this pane renders is typed as this.
+ */
+export type EvidenceRow = Omit<KvRow, "cite" | "derived"> &
+  ({ cite: Cite | readonly Cite[]; derived?: undefined } | { derived: string; cite?: undefined });
+
+const citesOf = (c: Cite | readonly Cite[] | undefined): Cite[] =>
+  c === undefined ? [] : [...new Set(typeof c === "string" ? [c] : c)];
 
 export function Kv({
   rows,
@@ -216,17 +234,45 @@ export function Kv({
   return (
     <dl className={cx("dp-kv", className)}>
       {rows.map((r) => (
-        <div key={r.k} className={cx("dp-kv__row", r.wide && "dp-kv__row--wide")}>
+        <div key={r.k} className={cx("dp-kv__row", r.wide && "dp-kv__row--wide")} data-derived={r.derived}>
           <dt className="dp-kv__k">{r.k}</dt>
           <dd className="dp-kv__v">
             {r.v}
-            {r.cite ? <CiteButton cite={r.cite} onOpen={onOpenCite} className="dp-kv__cite" /> : null}
+            {citesOf(r.cite).map((c) => (
+              <CiteButton key={c} cite={c} onOpen={onOpenCite} className="dp-kv__cite" />
+            ))}
+            {r.derived !== undefined && r.cite === undefined ? (
+              <span className="visually-hidden">{` — computed by this application: ${r.derived}`}</span>
+            ) : null}
           </dd>
         </div>
       ))}
     </dl>
   );
 }
+
+/** `Kv` for this pane: every row states its evidence, and the type refuses one that does not. */
+function EvidenceKv({ rows, onOpenCite }: { rows: readonly EvidenceRow[]; onOpenCite: (cite: Cite) => void }): ReactElement {
+  return <Kv rows={rows} onOpenCite={onOpenCite} />;
+}
+
+/**
+ * The evidence for one field of a device record: the source record the compiler READ it from
+ * (`Device.fieldCites`). A null field with no such record is an absence, visible on the device's own
+ * record, so that record is cited. A non-null value no source record carries is the compiler's own
+ * default, and says so instead of borrowing a citation that does not hold it.
+ */
+function deviceFieldEvidence(device: Device, field: keyof Device): { cite: Cite } | { derived: string } {
+  const c = device.fieldCites?.[field];
+  if (c !== undefined) return { cite: c };
+  const v = device[field];
+  if (v === null || v === undefined) return { cite: device.cite };
+  return { derived: `the compiler's default for ${String(field)} — no source record carries it for ${device.host}` };
+}
+
+/** The basis stated on every row of our own blast-radius computation. */
+const OUR_BLAST_BASIS =
+  "our blast-radius analysis over the compiled cable map (analysis/blast.ts); a computation, not a field of any source record";
 
 export function Section({
   title,
@@ -523,9 +569,10 @@ function DataQuality({ n }: { n: number }): ReactElement {
 
 function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (c: Cite) => void }): ReactElement {
   const links = linksByHost.get(device.host) ?? [];
-  const rows: KvRow[] = [
-    { k: "Host", v: <span className="dp-mono">{device.host}</span> },
-    { k: "Kind", v: device.kind },
+  const ev = (field: keyof Device): { cite: Cite } | { derived: string } => deviceFieldEvidence(device, field);
+  const rows: EvidenceRow[] = [
+    { k: "Host", v: <span className="dp-mono">{device.host}</span>, ...ev("host") },
+    { k: "Kind", v: device.kind, ...ev("kind") },
     {
       k: "Role",
       v: orNotObserved(device.role, (s) => s, {
@@ -533,26 +580,30 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
         why: "the engine assigned no role to this device",
         compact: true,
       }),
+      ...ev("role"),
     },
     {
       k: "Tier",
       v: orNotObserved(device.tier, (t) => `${t} — ${describeTier(t)}`, { what: "tier", compact: true }),
+      ...ev("tier"),
     },
-    { k: "State", v: <StateDot state={device.opStatus} showLabel /> },
+    { k: "State", v: <StateDot state={device.opStatus} showLabel />, ...ev("opStatus") },
     {
       k: "Platform",
       v: orNotObserved(device.platform, (s) => s, { what: "platform", compact: true }),
+      ...ev("platform"),
     },
-    { k: "Model", v: orNotObserved(device.model, (s) => <span className="dp-mono">{s}</span>, { what: "model", compact: true }) },
-    { k: "Serial", v: orNotObserved(device.serial, (s) => <span className="dp-mono">{s}</span>, { what: "serial", compact: true }) },
-    { k: "Software", v: orNotObserved(device.swVersion, (s) => <span className="dp-mono">{s}</span>, { what: "software version", compact: true }) },
-    { k: "Uptime", v: orNotObserved(device.uptime, (s) => s, { what: "uptime", compact: true }) },
+    { k: "Model", v: orNotObserved(device.model, (s) => <span className="dp-mono">{s}</span>, { what: "model", compact: true }), ...ev("model") },
+    { k: "Serial", v: orNotObserved(device.serial, (s) => <span className="dp-mono">{s}</span>, { what: "serial", compact: true }), ...ev("serial") },
+    { k: "Software", v: orNotObserved(device.swVersion, (s) => <span className="dp-mono">{s}</span>, { what: "software version", compact: true }), ...ev("swVersion") },
+    { k: "Uptime", v: orNotObserved(device.uptime, (s) => s, { what: "uptime", compact: true }), ...ev("uptime") },
     {
       k: "Power supplies",
       v: orNotObserved(device.powerSupplies, (n) => <FleetConstant n={n} constant={PSU_CONSTANT} field="num_power_supplies" what="power supplies" device={device} deviceField="powerSupplies" />, {
         what: "power supplies",
         compact: true,
       }),
+      ...ev("powerSupplies"),
     },
     {
       k: "Modules",
@@ -560,9 +611,11 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
         what: "modules",
         compact: true,
       }),
+      ...ev("modules"),
     },
     {
       k: "Badges",
+      ...ev("badges"),
       v:
         device.badges.length > 0 ? (
           <span className="dp-chips">
@@ -578,11 +631,15 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
     },
     /* Routed through the same one-port-one-cable detector the link pane uses: AP-floor1 appears on
        17 cable records whose shared port Gi0 lets at most one of them be real. */
-    { k: "Cables", v: cableCountPhrase(hostCableAccount(device.host, links)) },
+    {
+      k: "Cables",
+      v: cableCountPhrase(hostCableAccount(device.host, links)),
+      derived: `counted by this application over the ${plural(links.length, "cable_map.cables record")} naming ${device.host}, with each disputed port counted once (analysis/port-claims.ts)`,
+    },
   ];
   return (
-    <Section title="Identity" note={<>Source record <span className="dp-mono">{device.cite}</span></>}>
-      <Kv rows={rows} onOpenCite={onOpenCite} />
+    <Section title="Identity" note={<>Source record <CiteButton cite={device.cite} onOpen={onOpenCite} /></>}>
+      <EvidenceKv rows={rows} onOpenCite={onOpenCite} />
     </Section>
   );
 }
@@ -640,14 +697,17 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
       {/* Score is a row of this grid, not a widget parked above it. The band pill rides the value's
           own baseline: it is the same measurement stated as a band, so putting it under a separate
           right-aligned caption invented a second column that nothing else in the pane uses. */}
-      <Kv
+      <EvidenceKv
         rows={[
           {
             k: "Score",
+            ...deviceFieldEvidence(device, "score"),
             v: (
               <>
                 <Meter label="Health score" value={device.score} max={100} tone={tone} />
-                <Band band={presentation} cite={device.cite} onOpenCite={onOpenCite} {...(qualified ? { className: "dp-band--partial" } : {})} />
+                {/* The band's own citation names the record the band was READ from (health_scores),
+                    not the inventory record, which holds no band and no score (B6). */}
+                <Band band={presentation} cite={device.fieldCites?.band ?? device.cite} onOpenCite={onOpenCite} {...(qualified ? { className: "dp-band--partial" } : {})} />
                 {unassessed.length > 0 ? (
                   <span className="dp-score-gap" data-score-unassessed={unassessed.length}>
                     {`score does not reflect: ${unassessed.join(", ")} — never assessed on ${device.host}, so nothing there could deduct`}
@@ -662,10 +722,12 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               what: "criticality",
               compact: true,
             }),
+            ...deviceFieldEvidence(device, "criticality"),
           },
           {
             k: "Data quality",
             v: orNotObserved(device.dataQuality, (n) => <DataQuality n={n} />, { what: "data quality", compact: true }),
+            ...deviceFieldEvidence(device, "dataQuality"),
           },
         ]}
         onOpenCite={onOpenCite}
@@ -833,7 +895,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               onOpenCite={onOpenCite}
             />
           ) : (
-            <Kv
+            <EvidenceKv
               rows={[
                 {
                   k: "Severity",
@@ -843,12 +905,13 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
                     ) : (
                       orNotObserved(theirs.severity, (s) => s, { what: "impact severity", compact: true })
                     ),
+                  cite: theirs.cite,
                 },
-                { k: "Endpoints stranded", v: orNotObserved(theirs.stranded, (n) => n.toLocaleString("en-GB"), { what: "stranded endpoints", compact: true }) },
-                { k: "VLANs", v: orNotObserved(theirs.vlans, (n) => String(n), { what: "VLAN count", compact: true }) },
-                { k: "Hard partitions", v: orNotObserved(theirs.hard, (n) => String(n), { what: "hard partitions", compact: true }) },
-                { k: "Backed up", v: orNotObserved(theirs.backup, (n) => String(n), { what: "backed-up VLANs", compact: true }) },
-                { k: "FHRP covered", v: orNotObserved(theirs.fhrp, (n) => String(n), { what: "FHRP-covered VLANs", compact: true }) },
+                { k: "Endpoints stranded", v: orNotObserved(theirs.stranded, (n) => n.toLocaleString("en-GB"), { what: "stranded endpoints", compact: true }), cite: theirs.cite },
+                { k: "VLANs", v: orNotObserved(theirs.vlans, (n) => String(n), { what: "VLAN count", compact: true }), cite: theirs.cite },
+                { k: "Hard partitions", v: orNotObserved(theirs.hard, (n) => String(n), { what: "hard partitions", compact: true }), cite: theirs.cite },
+                { k: "Backed up", v: orNotObserved(theirs.backup, (n) => String(n), { what: "backed-up VLANs", compact: true }), cite: theirs.cite },
+                { k: "FHRP covered", v: orNotObserved(theirs.fhrp, (n) => String(n), { what: "FHRP-covered VLANs", compact: true }), cite: theirs.cite },
                 { k: "Detail", v: orNotObserved(theirs.detail, (s) => s, { what: "impact detail", compact: true }), wide: true, cite: theirs.cite },
               ]}
               onOpenCite={onOpenCite}
@@ -871,18 +934,20 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
 
         <div className="dp-cmp__col">
           <h4 className="dp-cmp__head">Our computed blast radius</h4>
-          <Kv
+          <EvidenceKv
             rows={[
-              { k: "Presence", v: ours.presence },
-              { k: "Certainty", v: <span data-certainty={ours.certainty} className="dp-certainty">{ours.certainty}</span> },
+              { k: "Presence", v: ours.presence, derived: OUR_BLAST_BASIS },
+              { k: "Certainty", v: <span data-certainty={ours.certainty} className="dp-certainty">{ours.certainty}</span>, derived: OUR_BLAST_BASIS },
               {
                 k: "Articulation point",
+                derived: OUR_BLAST_BASIS,
                 v: ours.certainty === "not-determinable"
                   ? <NotObserved what="articulation point" why={ours.reasoningLimit ?? "the radius could not be computed"} compact />
                   : ours.isArticulationPoint ? "yes — removing it partitions the graph" : "no",
               },
               {
                 k: "Components",
+                derived: OUR_BLAST_BASIS,
                 /* "1 before → 1 after" is a measured no-impact result. It may not be shown for a
                    subject that was never in the connectivity graph: the two numbers are then
                    equal because nothing was computed, not because nothing would break. The
@@ -893,6 +958,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               },
               {
                 k: "Newly stranded",
+                derived: OUR_BLAST_BASIS,
                 v: ourStranded === null || ours.certainty === "not-determinable"
                   ? <NotObserved what="stranded hosts" why={ours.reasoningLimit ?? ours.presence} compact />
                   : ours.newlyStranded.length === 0
@@ -901,6 +967,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               },
               {
                 k: "Endpoints behind the cut",
+                derived: `${OUR_BLAST_BASIS}, floored by the endpoint_identity records behind the cut`,
                 v: orNotObserved(eps.floorTotal, (n) => `at least ${n.toLocaleString("en-GB")}`, {
                   what: "endpoints behind the cut",
                   why: eps.note,
@@ -909,6 +976,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               },
               {
                 k: "Severed cables",
+                derived: OUR_BLAST_BASIS,
                 /* The same port-dispute ceiling as the Cables row: 17 severed RECORDS on a port
                    that terminates one cable is not 17 severed cables. */
                 v: (() => {
@@ -1415,18 +1483,19 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
                 <GradedSeverity severity={r.severity} unassessed={null} />
                 <CiteButton cite={r.cite} onOpen={onOpenCite} />
               </div>
-              <Kv
+              <EvidenceKv
                 rows={[
-                  { k: "SVI address", v: orNotObserved(r.sviIp, (s) => <span className="dp-mono">{s}</span>, { what: "SVI address", compact: true }) },
-                  { k: "Primary subnet", v: orNotObserved(r.primarySubnet, (s) => <span className="dp-mono">{s}</span>, { what: "primary subnet", compact: true }) },
-                  { k: "Secondary", v: orNotObserved(r.secondary, (s) => <span className="dp-mono">{s}</span>, { what: "secondary address", compact: true }) },
-                  { k: "FHRP", v: orNotObserved(r.fhrp, (s) => s, { what: "FHRP protocol", compact: true }) },
-                  { k: "FHRP role", v: orNotObserved(r.fhrpRole, (s) => s, { what: "FHRP role", compact: true }) },
-                  { k: "Virtual IP", v: orNotObserved(r.vip, (s) => <span className="dp-mono">{s}</span>, { what: "virtual IP", compact: true }) },
-                  { k: "Routing source", v: orNotObserved(r.routingSource, (s) => s, { what: "routing source", compact: true }) },
-                  { k: "Next hop", v: orNotObserved(r.nextHop, (s) => <span className="dp-mono">{s}</span>, { what: "next hop", compact: true }) },
+                  { k: "SVI address", v: orNotObserved(r.sviIp, (s) => <span className="dp-mono">{s}</span>, { what: "SVI address", compact: true }), cite: r.cite },
+                  { k: "Primary subnet", v: orNotObserved(r.primarySubnet, (s) => <span className="dp-mono">{s}</span>, { what: "primary subnet", compact: true }), cite: r.cite },
+                  { k: "Secondary", v: orNotObserved(r.secondary, (s) => <span className="dp-mono">{s}</span>, { what: "secondary address", compact: true }), cite: r.cite },
+                  { k: "FHRP", v: orNotObserved(r.fhrp, (s) => s, { what: "FHRP protocol", compact: true }), cite: r.cite },
+                  { k: "FHRP role", v: orNotObserved(r.fhrpRole, (s) => s, { what: "FHRP role", compact: true }), cite: r.cite },
+                  { k: "Virtual IP", v: orNotObserved(r.vip, (s) => <span className="dp-mono">{s}</span>, { what: "virtual IP", compact: true }), cite: r.cite },
+                  { k: "Routing source", v: orNotObserved(r.routingSource, (s) => s, { what: "routing source", compact: true }), cite: r.cite },
+                  { k: "Next hop", v: orNotObserved(r.nextHop, (s) => <span className="dp-mono">{s}</span>, { what: "next hop", compact: true }), cite: r.cite },
                   {
                     k: "Tracking",
+                    cite: r.cite,
                     /* The engine writes its OWN absence prose into `trackingUnobserved`. It is the
                        reason the field is empty, and a generic placeholder would delete it. */
                     v: orNotObserved(r.tracking ?? r.trackingUnobserved, (s) => s, {
@@ -1437,6 +1506,7 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
                   },
                   {
                     k: "Risk",
+                    cite: r.cite,
                     v: orNotObserved(r.risk ?? r.riskUnobserved, (s) => s, { what: "risk", compact: true }),
                     wide: true,
                   },
@@ -1468,11 +1538,12 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
             columns={[
               { id: "prefix", header: "Prefix", width: "10rem", rowHeader: true, text: (r) => r.prefix, render: (r) => <span className="dp-mono">{r.prefix}</span> },
               { id: "src", header: "Source", width: "6.5rem", render: (r) => orNotObserved(r.source, (s) => s, { what: "route source", compact: true }) },
-              { id: "ad", header: "AD", width: "4rem", align: "end", render: (r) => num(r.adminDistance, "administrative distance") },
-              { id: "nh", header: "Next hop", width: "9rem", render: (r) => {
-                  const na = r.nextHop === null ? notApplicableReason(r, "nextHop") : null;
-                  return na !== null ? <span className="dp-quiet" data-not-applicable="true">{na}</span> : orNotObserved(r.nextHop, (s) => <span className="dp-mono">{s}</span>, { what: "next hop", compact: true });
-                } },
+              /* Both route fields render their ONE owner's reading (claims.ts routeFieldReading), through
+                 the renderer the Path panel and the Inspector use. The AD column used to print the
+                 field raw, so a connected route's null AD read "not observed" here and something else
+                 there (acceptance B1, failed twice for this class). */
+              { id: "ad", header: "AD", width: "4rem", align: "end", render: (r) => <RouteFieldValue route={r} field="adminDistance" compact classes={{ notApplicable: "dp-quiet" }} /> },
+              { id: "nh", header: "Next hop", width: "9rem", render: (r) => <RouteFieldValue route={r} field="nextHop" classes={{ notApplicable: "dp-quiet", value: "dp-mono" }} /> },
               { id: "out", header: "Out", width: "8rem", render: (r) => orNotObserved(r.outIntf, (s) => <span className="dp-mono">{s}</span>, { what: "egress interface", compact: true }) },
               { id: "cite", header: "Evidence", width: "minmax(10rem, 1fr)", render: (r) => <CiteButton cite={r.cite} onOpen={onOpenCite} /> },
             ]}
@@ -1812,18 +1883,20 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
             </span>
           </button>
         </div>
-        <Kv
+        <EvidenceKv
           rows={[
-            { k: "State", v: <StateDot state={link.opStatus} showLabel /> },
-            { k: "Speed", v: orNotObserved(link.speedMbps, (n) => `${n.toLocaleString("en-GB")} Mbps`, { what: "speed", compact: true }) },
+            { k: "State", v: <StateDot state={link.opStatus} showLabel />, cite: link.cite },
+            { k: "Speed", v: orNotObserved(link.speedMbps, (n) => `${n.toLocaleString("en-GB")} Mbps`, { what: "speed", compact: true }), cite: link.cite },
             {
               k: "Port channel",
+              cite: link.cite,
               v: link.isPortChannel
                 ? <span className="dp-mono dp-wrap">{link.members.length > 0 ? link.members.join(", ") : "members not observed"}</span>
                 : "no — a single cable",
             },
             {
               k: "How confirmed",
+              cite: link.cite,
               v: orNotObserved(link.confirmation, (s) => s, {
                 what: "adjacency confirmation",
                 why: "the engine did not record how this adjacency was confirmed",
@@ -1833,6 +1906,7 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
             },
             {
               k: "Port conflict",
+              derived: "compared by this application against every cable_map.cables record for a port placed on two cables (analysis/port-claims.ts)",
               v:
                 disputes.length === 0
                   ? "none — no port this cable names is on another cable in the map"
@@ -1853,7 +1927,11 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
         title="Centrality — the snapshot's own measure"
         note={`Centrality was computed for ${fabric.coverage.linksWithCentrality} of ${fabric.links.length} links in this snapshot. A link without it is unmeasured, not unimportant.`}
       >
-        <Kv
+        {/* Each figure cites the link_centrality row it was READ from (compiled under that path, so the
+            Inspector opens the very record that carries it). The cable record `link.cite` holds none
+            of these, so it is cited only where no centrality row exists — the record whose lack of one
+            is the absence (acceptance B6). */}
+        <EvidenceKv
           rows={[
             {
               k: "Cutting it partitions",
@@ -1862,22 +1940,24 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
                 why: "link centrality was not computed for this cable",
                 compact: true,
               }),
+              cite: link.centralityCite ?? link.cite,
             },
-            { k: "Betweenness", v: orNotObserved(link.betweenness, (n) => n.toFixed(4), { what: "betweenness", compact: true }) },
-            { k: "Pairs cut", v: num(link.pairsCut, "pairs cut") },
-            { k: "Centrality rank", v: num(link.centralityRank, "centrality rank") },
+            { k: "Betweenness", v: orNotObserved(link.betweenness, (n) => n.toFixed(4), { what: "betweenness", compact: true }), cite: link.centralityCite ?? link.cite },
+            { k: "Pairs cut", v: num(link.pairsCut, "pairs cut"), cite: link.centralityCite ?? link.cite },
+            { k: "Centrality rank", v: num(link.centralityRank, "centrality rank"), cite: link.centralityCite ?? link.cite },
           ]}
           onOpenCite={onOpenCite}
         />
       </Section>
 
       <Section title="Our computed blast radius" note="Computed from the cable map, independently of the snapshot's own centrality pass.">
-        <Kv
+        <EvidenceKv
           rows={[
-            { k: "Presence", v: ours.presence },
-            { k: "Certainty", v: <span className="dp-certainty" data-certainty={ours.certainty}>{ours.certainty}</span> },
+            { k: "Presence", v: ours.presence, derived: OUR_BLAST_BASIS },
+            { k: "Certainty", v: <span className="dp-certainty" data-certainty={ours.certainty}>{ours.certainty}</span>, derived: OUR_BLAST_BASIS },
             {
               k: "Cutting it partitions",
+              derived: OUR_BLAST_BASIS,
               v: orNotObserved(ours.isBridge, (b) => (b ? "yes" : "no"), {
                 what: "bridge status",
                 /* A carrying cable with no verdict was withheld for its own reason (a disputed port);
@@ -1891,6 +1971,7 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
             },
             {
               k: "Components",
+              derived: OUR_BLAST_BASIS,
               /* Measured 2026-09-21: 19 of 44 links are excluded from the projection and returned
                  `componentsBefore === componentsAfter === 1` — rendered here as a clean
                  "1 before → 1 after" directly above prose saying no blast radius was computed for
@@ -1901,6 +1982,7 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
             },
             {
               k: "Newly stranded",
+              derived: OUR_BLAST_BASIS,
               v: ours.certainty === "not-determinable"
                 ? <NotObserved what="stranded hosts" why={eps.note ?? ours.presence} compact />
                 : ours.newlyStranded.length === 0
@@ -1909,6 +1991,7 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
             },
             {
               k: "Endpoints behind the cut",
+              derived: `${OUR_BLAST_BASIS}, floored by the endpoint_identity records behind the cut`,
               v: orNotObserved(eps.floorTotal, (n) => `at least ${n.toLocaleString("en-GB")}`, {
                 what: "endpoints behind the cut",
                 why: eps.note,
@@ -2206,6 +2289,9 @@ function countFindings(hosts: readonly string[]): number {
   return seen.size;
 }
 
+/** The port records a joined row was read from: the interface record, the physical-health row, or both. */
+const portCites = (r: PortRow): Cite[] => [r.intf?.cite, r.phys?.cite].filter((c): c is Cite => c !== undefined);
+
 function LinkEnds({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) => void }): ReactElement {
   const ends: { host: string; port: string | null }[] = [
     { host: link.a, port: link.aPort },
@@ -2232,23 +2318,27 @@ function LinkEnds({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) => v
                 onOpenCite={onOpenCite}
               />
             ) : (
-              <Kv
+              <EvidenceKv
                 rows={[
-                  { k: "Port", v: <span className="dp-mono">{row.port}</span> },
-                  { k: "Status", v: portField(row, "status") },
-                  { k: "Speed", v: portField(row, "speed") },
-                  { k: "Duplex", v: portField(row, "duplex") },
-                  { k: "Media", v: orNotObserved(row.phys?.media ?? row.intf?.linkType, (s) => s, { what: "media", compact: true }) },
-                  { k: "CRC errors", v: num(row.phys?.crcErrors, "CRC errors") },
-                  { k: "Input errors", v: num(row.phys?.inputErrors, "input errors") },
-                  { k: "Output drops", v: num(row.phys?.outputDrops, "output drops") },
+                  /* Every row cites the port record(s) it READ: both where the value is joined from
+                     the interface and physical-health records, the physical-health row alone for its
+                     counters — and, where a record is missing, the one that exists, whose lack of the
+                     field is the absence shown (acceptance B6). */
+                  { k: "Port", v: <span className="dp-mono">{row.port}</span>, cite: portCites(row) },
+                  { k: "Status", v: portField(row, "status"), cite: portCites(row) },
+                  { k: "Speed", v: portField(row, "speed"), cite: portCites(row) },
+                  { k: "Duplex", v: portField(row, "duplex"), cite: portCites(row) },
+                  { k: "Media", v: orNotObserved(row.phys?.media ?? row.intf?.linkType, (s) => s, { what: "media", compact: true }), cite: portCites(row) },
+                  { k: "CRC errors", v: num(row.phys?.crcErrors, "CRC errors"), cite: row.phys?.cite ?? portCites(row) },
+                  { k: "Input errors", v: num(row.phys?.inputErrors, "input errors"), cite: row.phys?.cite ?? portCites(row) },
+                  { k: "Output drops", v: num(row.phys?.outputDrops, "output drops"), cite: row.phys?.cite ?? portCites(row) },
                   {
                     k: "Description",
                     v: row.intf === null
                       ? <NotObserved what="description" why="no interface record for this port" compact />
                       : orNotObserved(row.intf.description, (s) => s, { what: "description", compact: true }),
                     wide: true,
-                    cite: row.intf?.cite ?? row.phys?.cite,
+                    cite: row.intf?.cite ?? portCites(row),
                   },
                 ]}
                 onOpenCite={onOpenCite}

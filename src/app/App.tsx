@@ -22,6 +22,7 @@ import { OPEN_CITE_EVENT } from "../panels/DevicePane";
 import { openInspector, setInspectorCite } from "../panels/Inspector";
 import { flowKey } from "../panels/PathTrace";
 import { Chip } from "../ui/primitives";
+import { handOffFocus, returnFocus } from "./focus-return";
 import { CommandPalette } from "./CommandPalette";
 import {
   announce,
@@ -49,6 +50,11 @@ const LOG_LIMIT = 24;
 
 /* ── the query bar: the investigation question as removable tokens ─────────── */
 
+/** The header's question field: the "query.focus" command's target, and the field focus falls back
+ *  to when a scope token's removal (or "Clear scope") leaves no other token to move to. */
+const QUERY_FIELD = '#app-header form[role="search"] input';
+const queryField = (): HTMLInputElement | null => document.querySelector<HTMLInputElement>(QUERY_FIELD);
+
 function QueryBar(): ReactElement {
   const query = useInvestigation((s) => s.query);
   const severities = useInvestigation((s) => s.severities);
@@ -73,7 +79,7 @@ function QueryBar(): ReactElement {
 
   if (query !== "") {
     tokens.push(
-      <Chip key="q" mono removeLabel="Remove the free-text query" onRemove={() => setQuery("")}>
+      <Chip key="q" removeSuccessor={queryField} mono removeLabel="Remove the free-text query" onRemove={() => setQuery("")}>
         {query}
       </Chip>,
     );
@@ -81,14 +87,14 @@ function QueryBar(): ReactElement {
   for (const s of SEVERITY_ORDER) {
     if (!severities.has(s)) continue;
     tokens.push(
-      <Chip key={`sev-${s}`} tone="accent" removeLabel={`Remove the ${s} severity filter`} onRemove={() => toggleSeverity(s)}>
+      <Chip key={`sev-${s}`} removeSuccessor={queryField} tone="accent" removeLabel={`Remove the ${s} severity filter`} onRemove={() => toggleSeverity(s)}>
         {`severity ${s}`}
       </Chip>,
     );
   }
   for (const r of [...roles].sort()) {
     tokens.push(
-      <Chip key={`role-${r}`} tone="accent" removeLabel={`Remove the ${r} role filter`} onRemove={() => toggleRole(r)}>
+      <Chip key={`role-${r}`} removeSuccessor={queryField} tone="accent" removeLabel={`Remove the ${r} role filter`} onRemove={() => toggleRole(r)}>
         {`role ${r}`}
       </Chip>,
     );
@@ -96,6 +102,7 @@ function QueryBar(): ReactElement {
   if (onlyUncollected) {
     tokens.push(
       <Chip
+        removeSuccessor={queryField}
         key="unc"
         tone="accent"
         removeLabel="Stop restricting to devices the collector never reached"
@@ -107,21 +114,21 @@ function QueryBar(): ReactElement {
   }
   if (findingId !== null) {
     tokens.push(
-      <Chip key="f" mono removeLabel={`Deselect finding ${findingId}`} onRemove={() => selectFinding(null)}>
+      <Chip key="f" removeSuccessor={queryField} mono removeLabel={`Deselect finding ${findingId}`} onRemove={() => selectFinding(null)}>
         {`finding ${findingId}`}
       </Chip>,
     );
   }
   if (deviceId !== null) {
     tokens.push(
-      <Chip key="d" mono removeLabel={`Deselect device ${deviceId}`} onRemove={() => selectDevice(null)}>
+      <Chip key="d" removeSuccessor={queryField} mono removeLabel={`Deselect device ${deviceId}`} onRemove={() => selectDevice(null)}>
         {`device ${deviceId}`}
       </Chip>,
     );
   }
   if (linkId !== null) {
     tokens.push(
-      <Chip key="l" mono removeLabel={`Deselect link ${linkId}`} onRemove={() => selectLink(null)}>
+      <Chip key="l" removeSuccessor={queryField} mono removeLabel={`Deselect link ${linkId}`} onRemove={() => selectLink(null)}>
         {`link ${linkId}`}
       </Chip>,
     );
@@ -130,6 +137,7 @@ function QueryBar(): ReactElement {
     const label = `${flow.srcIp} to ${flow.dstIp} ${flow.protocol}${flow.dstPort === null ? "" : `:${flow.dstPort}`}`;
     tokens.push(
       <Chip
+        removeSuccessor={queryField}
         key="flow"
         mono
         tone="accent"
@@ -167,7 +175,7 @@ function QueryBar(): ReactElement {
           </div>
         )}
         {tokens.length === 0 ? null : (
-          <button type="button" className="qbar__clear" onClick={clearAll}>
+          <button type="button" className="qbar__clear" onClick={(e) => handOffFocus(e.currentTarget, clearAll, [queryField])}>
             Clear scope
           </button>
         )}
@@ -210,6 +218,8 @@ export function App(): ReactElement {
      choice: a control that silently undoes itself on the next breakpoint crossing is worse than
      no control. */
   const fabricChosen = useRef(false);
+  /** The frame's body: where the skip link lands when the stage is not on screen. */
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const [evidenceView, setEvidenceView] = useState<EvidenceView>("finding");
   const [alert, setAlert] = useState("");
   const [log, setLog] = useState<readonly string[]>([]);
@@ -361,7 +371,7 @@ export function App(): ReactElement {
   useEffect(() => {
     const release = [
       registerCommandTarget("query.focus", () => {
-        const el = document.querySelector<HTMLInputElement>('#app-header form[role="search"] input');
+        const el = queryField();
         if (el === null) {
           announce("The query bar is not on screen in this layout.");
           return;
@@ -441,7 +451,23 @@ export function App(): ReactElement {
       data-drawer={ladder.drawer && drawerOpen ? "open" : undefined}
       data-fabric3d={fabricVisible ? "on" : "off"}
     >
-      <a className="skip-link" href="#stage">
+      <a
+        className="skip-link"
+        href="#stage"
+        onClick={(e) => {
+          /* Below the stacked breakpoint the stage is display:none until the reader turns the fabric
+             on, and following "#stage" there moved focus nowhere: MEASURED (review/audit-d3-focus.mjs
+             --self-removing, 390x844, pre-fix build) Enter on this link left focus on <body>. With
+             no stage on screen, the link skips the header to the first control of the body instead
+             (the pane switch and the fabric toggle live there) — the owner decides. */
+          const stage = document.getElementById("stage");
+          if (stage !== null && stage.getClientRects().length > 0) return;
+          e.preventDefault();
+          const body = bodyRef.current;
+          const first = body?.querySelector<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex='0']");
+          returnFocus(null, body, [first]);
+        }}
+      >
         Skip to the fabric
       </a>
 
@@ -453,14 +479,18 @@ export function App(): ReactElement {
         <QueryBar />
       </ErrorBoundary>
 
-      <div className="app__body">
+      <div className="app__body" ref={bodyRef}>
         {notice === null ? null : (
           <div className="url-notice" role="presentation">
             <span className="url-notice__mark" aria-hidden="true">
               !
             </span>
             <p className="url-notice__text">{notice.message}</p>
-            <button type="button" className="url-notice__dismiss" onClick={() => setNoticeDismissed(true)}>
+            <button
+              type="button"
+              className="url-notice__dismiss"
+              onClick={(e) => handOffFocus(e.currentTarget, () => setNoticeDismissed(true), [queryField])}
+            >
               Dismiss
             </button>
           </div>

@@ -13,6 +13,7 @@
  * the one that fires. Absence is absence.
  */
 import { aclsOf, fabric, hasRib, linksByHost, routesOf } from "../core/data";
+import { adminDistanceRank, routeFieldReading } from "../core/route-fields";
 import { aclLineName } from "./acl-line";
 import { ribIncompleteness, ribIncompletenessSentence } from "./rib-completeness";
 import {
@@ -63,16 +64,29 @@ export const TTL_LIMIT = 16;
 
 /**
  * The work the engine has done since it loaded, counted in its own units: `traceFlow` calls
- * (including the memoised alternate-ingress traces a trace judges itself by) and hop-loop
- * iterations. A COUNT, not a clock — it is the same on a quiet host and a loaded one, which is what
- * lets a unit test bound the engine's work structurally (see `COUNTEREXAMPLE_CANDIDATE_CAP`). No
- * trace outcome, claim or surface reads it.
+ * (including the memoised alternate-ingress traces a trace judges itself by), hop-loop iterations,
+ * and ACL line matches (`matchTri` calls — the innermost loop, where a quadratic would live). A
+ * COUNT, not a clock — it is the same on a quiet host and a loaded one, which is what lets a unit
+ * test bound the engine's work structurally (see `COUNTEREXAMPLE_CANDIDATE_CAP` and
+ * `engine.work-bound.test.ts`). No trace outcome, claim or surface reads it.
  */
 export interface EngineWork {
   traces: number;
   hops: number;
+  lineMatches: number;
 }
-const WORK: EngineWork = { traces: 0, hops: 0 };
+const WORK: EngineWork = { traces: 0, hops: 0, lineMatches: 0 };
+
+/**
+ * How many times one hop may ask the matcher about each ACL line on its host. Counted from the code,
+ * not measured: `evaluateAcls` runs the observed-binding pass (one `runLists`) and, where a binding
+ * was not observed, the specificity pass (`undecidableInUnappliedAcls`, `notAppliedCaveat`,
+ * `runLists` — one pass each over the lists they read); `receivedAtOwner` may run one more
+ * observed-binding pass at the delivering hop. Five passes, each over at most every line on the
+ * host. A sixth pass, or a pass nested inside another, is a change to the engine's cost that has to
+ * raise this number on purpose — which is what `engine.work-bound.test.ts` holds it to.
+ */
+export const ACL_PASSES_PER_HOP = 5;
 
 /** A copy of the running work counters; take two and subtract to measure one call. */
 export function engineWork(): EngineWork {
@@ -655,6 +669,7 @@ function excludedBecause(line: AclLine, flow: Flow, srcIp: Ipv4, dstIp: Ipv4): s
  * output rather than only through a trace.
  */
 export function matchTri(line: AclLine, flow: Flow, srcIp: Ipv4, dstIp: Ipv4): Tri {
+  WORK.lineMatches += 1;
   const rep = lineEvaluability(line).representative;
   const portsApply = line.proto !== null && ["tcp", "udp"].includes(line.proto.toLowerCase());
   // A dimension the text check did not vouch for contributes "unknown", never a verdict. This is
@@ -1577,12 +1592,9 @@ export function resolveNextHost(fromHost: string, route: RouteEntry, links = lin
 
 /* ── route selection ────────────────────────────────────────────────────────── */
 
-/** Connected and local routes are AD 0 on every platform; an unobserved AD is left unknown. */
-function adminDistanceOf(r: RouteEntry): number | null {
-  if (r.adminDistance !== null) return r.adminDistance;
-  if (r.source === "connected" || r.source === "local") return 0;
-  return null;
-}
+/* How a route's administrative distance RANKS (a connected/local null ranks as 0) and how it READS
+   are decided by one owner, core/route-fields.ts — a leaf module, so importing it makes no cycle. */
+const adminDistanceOf = adminDistanceRank;
 
 export interface RouteChoice {
   winner: RouteEntry;
@@ -1607,7 +1619,7 @@ export function chooseRoute(host: string, dstIp: Ipv4, routes: readonly RouteEnt
     const withAd = tied.filter((t) => adminDistanceOf(t.item) !== null);
     if (withAd.length === tied.length) {
       winner = [...tied].sort((a, b) => adminDistanceOf(a.item)! - adminDistanceOf(b.item)!)[0]!.item;
-      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)}; the lowest administrative distance (${adminDistanceOf(winner)}) was followed and equal-cost paths were not explored.`;
+      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)}; the lowest administrative distance (${routeFieldReading(winner, "adminDistance").text}) was followed and equal-cost paths were not explored.`;
     } else {
       caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} and administrative distance was not observed for all of them (${tied.filter((t) => adminDistanceOf(t.item) === null).map((t) => t.item.cite).join(", ")}); the first in RIB order was followed. Which one the device actually prefers is unproven.`;
     }
@@ -2976,16 +2988,26 @@ function buildSuggestions(): SuggestedFlow[] {
           );
         }
 
-        // An unevaluable line above the deny: the honest "cannot say" case.
-        const unevaluable = lines.find((l) => !lineEvaluability(l).evaluable && l.proto !== null);
+        /* An unevaluable line above the deny: the honest "cannot say" case. The rationale says the
+           line "could match this flow", so that is ASKED of the matcher for the flow actually built,
+           not assumed from the line's protocol: a protocol this flow form cannot carry (gre, esp…)
+           used to become a tcp flow, and a line whose port excludes the borrowed port was still
+           described as able to match it. */
+        const unevaluable = lines
+          .filter((l) => !lineEvaluability(l).evaluable && l.proto !== null)
+          .map((l) => {
+            const p = (l.proto ?? "").toLowerCase();
+            const isIcmp = p === "icmp";
+            const flow: Flow = { ...permitted, protocol: (isIcmp ? "icmp" : p === "udp" ? "udp" : "tcp") as Flow["protocol"], dstPort: isIcmp ? null : permitted.dstPort };
+            return { l, p, flow };
+          })
+          .find((c) => matchTri(c.l, c.flow, src, dst) !== "no");
         if (unevaluable !== undefined) {
-          const p = (unevaluable.proto ?? "").toLowerCase();
-          const isIcmp = p === "icmp";
           take(
             "unevaluable",
-            `${p.toUpperCase()} into ${formatPrefix(dstPrefix)}`,
-            { ...permitted, protocol: (isIcmp ? "icmp" : p === "udp" ? "udp" : "tcp") as Flow["protocol"], dstPort: isIcmp ? null : permitted.dstPort },
-            `${unevaluable.cite} ("${unevaluable.raw ?? "text not collected"}") could match this flow and cannot be evaluated, so the engine refuses to decide it rather than guessing.`,
+            `${unevaluable.p.toUpperCase()} into ${formatPrefix(dstPrefix)}`,
+            unevaluable.flow,
+            `${unevaluable.l.cite} ("${unevaluable.l.raw ?? "text not collected"}") could match this flow and cannot be evaluated, so the engine refuses to decide it rather than guessing.`,
             "indeterminate",
             observedAt(src),
           );

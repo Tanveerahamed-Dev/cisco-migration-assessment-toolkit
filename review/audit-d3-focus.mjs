@@ -74,11 +74,14 @@
  *
  *   node review/audit-d3-focus.mjs                       # the production preview on :4181
  *   ATLAS_URL=http://localhost:4180 node review/audit-d3-focus.mjs
+ *   node review/audit-d3-focus.mjs --self-removing       # ONLY the self-removing-control pass, at
+ *                                                        # 1440, 768 and 390 (see that section)
  *
  * Exit 0: every case driven, none on BODY, and every focus stop visible. Exit 1: a case landed on
  * BODY or did not run, a focus stop was not visible, or a required kind was never driven or never
  * checked for visibility. Exit 2: nothing was driven at all.
  */
+import { readFileSync } from "node:fs";
 import { chromium } from "@playwright/test";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4181";
@@ -743,6 +746,197 @@ async function auditToasts(page, where) {
     await landed(page, "toast", `${where} toast "${text}"`, "focus → Escape");
   }
 }
+
+/* ── self-removing controls (`--self-removing`) ────────────────────────────────
+ * MEASURED (acceptance report, D3 overturned PASS to FAIL): the passes above open and close
+ * surfaces; none of them pressed a control that takes ITSELF out of the page. 'Remove the Critical
+ * severity filter', reached after 7 Tabs, Enter, 2.5 s: activeElement BODY, no :focus/:focus-visible
+ * element at all — and the same for 'Remove the High severity filter', 'Clear scope', 'Deselect
+ * device core1' and 'Stop investigating the flow …'. 390, 768 and the Inspector/evidence panes were
+ * never checked.
+ *
+ * THE CLASS IS DISCOVERED BY DRIVING, NOT LISTED. The page is loaded with every kind of scope token
+ * (query, two severities, a role, the uncollected-only restriction, a finding, a device, a link, a
+ * flow). The tab order is walked ONCE with real Tab presses from the top of the document to record
+ * every stop. Then, for every stop k, from that seeded page: Tab k+1 times from the top (the stop
+ * reached must be the one recorded), press Enter — and, on a page of its own, Space — and read the page
+ * one second later. A stop whose element is no longer in the document IS a self-removing control,
+ * whatever it is called and whichever pane it lives in. For each of those, focus must have moved to
+ * an element that is SEEN (the same hit test and >=3:1 indicator pixels as every other stop in this
+ * file); and no press of any stop may leave focus on <body>. The page is reloaded before a press
+ * only when the previous press changed it (the URL, the tab stops or the open dialogs differ from
+ * the seeded page), which, with the six (width, key) sweeps on parallel pages, keeps ~100 stops x 2 keys x 3
+ * widths inside one run. MEASURED 2026-09-23 on a host saturated by four other agents: 53 min with
+ * three pages (pre-fix build, where every self-removing press forced a reload), 30 min with six
+ * (fixed build: 574 presses, 154 self-removing cases, exit 0). Run it on its own, not inside the
+ * default pass, whose own three widths already approach a 1500 s budget.
+ *
+ *   node review/audit-d3-focus.mjs --self-removing       # against ATLAS_URL, default :4181
+ *
+ * Exit 1 if any press landed on BODY, any successor was not visible, a recorded stop could not be
+ * reached again, or a width found NO self-removing control at all (the seed then did not reach the
+ * screen, and the pass proved nothing).
+ */
+const SR_VIEWPORTS = [
+  [1440, 900, "desktop"],
+  [768, 1024, "tablet"],
+  [390, 844, "phone"],
+];
+
+const srSeedUrl = () => {
+  const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
+  const p = new URLSearchParams();
+  p.set("s", "findings");
+  p.set("q", "gateway");
+  p.set("sev", "CH");
+  p.set("role", "access");
+  p.set("unc", "1");
+  p.set("f", fabricJson.findings[0].id);
+  p.set("d", "core1");
+  if (fabricJson.links?.[0]?.id) p.set("l", fabricJson.links[0].id);
+  p.set("flow", "10.0.10.50>10.0.30.10>tcp>3389");
+  return `${APP}/?${p.toString()}`;
+};
+
+/**
+ * The focused element's identity — its STRUCTURAL path (tag and child index from <body>), because a
+ * name can be live: the status bar's scene readout reads "refining" and later "settled", and a
+ * name-based identity failed to find that stop again after a reload. The name is carried for the
+ * report only. Keeps a live handle to the element on `window.__srProbe`.
+ */
+const srIdentify = () => {
+  const a = document.activeElement;
+  window.__srProbe = a;
+  if (a === null || a === document.body) return null;
+  const path = [];
+  for (let n = a; n !== null && n !== document.body; n = n.parentElement) {
+    path.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+  }
+  const name = (a.getAttribute("aria-label") ?? (a.textContent ?? "")).trim().replace(/\s+/g, " ").slice(0, 60);
+  return { path: path.reverse().join("/"), label: `${a.tagName}${a.getAttribute("role") ? `[${a.getAttribute("role")}]` : ""} "${name}"` };
+};
+
+/** What a reload would restore: the URL, the DOM-order tab stops and the open dialogs. */
+const srSignature = () => {
+  const sel = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+  const stops = [...document.querySelectorAll(sel)]
+    .filter((el) => el.tabIndex >= 0 && !el.disabled && el.getClientRects().length > 0 && el.closest("[inert]") === null)
+    .map((el) => `${el.tagName}|${el.id}|${el.className}`);
+  const dialogs = [...document.querySelectorAll("[role=dialog], [role=menu], [role=listbox], [role=alertdialog]")].filter(
+    (el) => el.getClientRects().length > 0,
+  ).length;
+  return `${location.search}\n${dialogs}\n${stops.join("\n")}`;
+};
+
+/** Put the sequential-focus starting point back at the top of the document. */
+const srToTop = () => {
+  window.scrollTo(0, 0);
+  /* A click-free way to reset the navigation starting point: a focusable probe at the very top. */
+  let probe = document.getElementById("__sr-top");
+  if (probe === null) {
+    probe = document.createElement("span");
+    probe.id = "__sr-top";
+    probe.tabIndex = -1;
+    document.body.prepend(probe);
+  }
+  probe.focus();
+};
+
+async function srLoad(page, url) {
+  await page.goto(url, { waitUntil: "load" });
+  await page.waitForSelector("#query-bar .ui-chip__remove", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+}
+
+async function srAudit(browser, [w, h, vp], key) {
+  const out = { vp: `${vp} [${key}]`, members: [], notDriven: [], pressed: 0 };
+  const ctx = await browser.newContext({ viewport: { width: w, height: h } });
+  await ctx.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
+  /* Every load starts from the SAME page: a press that stores a per-reader preference (the fabric
+     legend's open state, a column choice) must not change the tab order of every later load —
+     MEASURED: Space on "Legend" left it stored open, and the next load's order no longer matched. */
+  await ctx.addInitScript(() => {
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch {
+      /* storage blocked: nothing persists anyway */
+    }
+  });
+  const page = await ctx.newPage();
+  const url = srSeedUrl();
+  await srLoad(page, url);
+  const seededSig = await page.evaluate(srSignature);
+  /* One lap of real Tab presses from the top of the page records the order. */
+  await page.evaluate(srToTop);
+  const order = [];
+  for (let i = 0; i < 300; i += 1) {
+    await page.keyboard.press("Tab");
+    const id = await page.evaluate(srIdentify);
+    if (id === null) break;
+    if (i > 0 && (await page.evaluate(() => window.__srFirst === window.__srProbe))) break;
+    if (i === 0) await page.evaluate(() => (window.__srFirst = window.__srProbe));
+    order.push(id);
+  }
+  console.log(`INFO  ${out.vp}: ${order.length} tab stops on the seeded page, walked by Tab`);
+  let dirty = false;
+  for (let k = 0; k < order.length; k += 1) {
+    const name = `${vp} ${order[k].label} (stop ${k + 1})`;
+    if (!dirty && (await page.evaluate(srSignature)) !== seededSig) dirty = true;
+    let reached = false;
+    for (let attempt = 0; attempt < 2 && !reached; attempt += 1) {
+      if (dirty || attempt > 0) {
+        await srLoad(page, url);
+        dirty = false;
+      }
+      await page.evaluate(srToTop);
+      for (let i = 0; i <= k; i += 1) await page.keyboard.press("Tab");
+      reached = (await page.evaluate(srIdentify))?.path === order[k].path;
+      if (!reached) dirty = true;
+    }
+    if (!reached) {
+      out.notDriven.push(name);
+      notDriven(name, `Tab x${k + 1} → ${key}`, "the recorded stop was not reached again by Tab");
+      continue;
+    }
+    out.pressed += 1;
+    await page.keyboard.press(key === "Space" ? " " : "Enter");
+    const active = await settled(page);
+    const removed = await page.evaluate(() => window.__srProbe instanceof Element && !window.__srProbe.isConnected);
+    if (removed) out.members.push(order[k].label);
+    if (!removed && active.tag !== "BODY" && active.tag !== "NONE") continue;
+    dirty = true;
+    record(removed ? "self-removing" : "activation", `${name}${removed ? " (removed itself)" : ""}`, `Tab x${k + 1} → ${key}`, active);
+    if (active.tag !== "BODY" && active.tag !== "NONE") await checkVisible(page, "self-removing successor", name, `Tab x${k + 1} → ${key}`);
+  }
+  await ctx.close();
+  return out;
+}
+
+async function runSelfRemoving() {
+  const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+  let outs;
+  try {
+    /* One page per width AND key: most of a case is waiting (the load, the one-second settle), so
+       six pages in parallel keep the pass near the time of one. */
+    outs = await Promise.all(SR_VIEWPORTS.flatMap((v) => ["Enter", "Space"].map((key) => srAudit(browser, v, key))));
+  } finally {
+    await browser.close();
+  }
+  console.log("");
+  for (const o of outs) console.log(`${o.vp}: ${o.pressed} press(es); ${o.members.length} self-removing: ${o.members.join("; ") || "NONE"}`);
+  const failed = results.filter((r) => !r.ok);
+  const visFailed = visResults.filter((r) => !r.ok);
+  const empty = outs.filter((o) => o.members.length === 0).map((o) => o.vp);
+  console.log(`\n${results.length} self-removing/BODY case(s), ${failed.length} failed.`);
+  for (const f of failed) console.log(`  FAIL ${f.surface} :: ${f.scenario} (${f.why})`);
+  console.log(`${visResults.length} successor(s) checked for visibility, ${visFailed.length} not visible.`);
+  for (const f of visFailed) console.log(`  NOT VISIBLE [${f.stop}] ${f.surface} :: ${f.scenario} (${f.why})`);
+  if (empty.length > 0) console.log(`NO SELF-REMOVING CONTROL FOUND at ${empty.join(", ")}: the seed did not reach the screen.`);
+  process.exit(failed.length === 0 && visFailed.length === 0 && empty.length === 0 ? 0 : 1);
+}
+
+if (process.argv.includes("--self-removing")) await runSelfRemoving();
 
 /* ── run ───────────────────────────────────────────────────────────────────── */
 

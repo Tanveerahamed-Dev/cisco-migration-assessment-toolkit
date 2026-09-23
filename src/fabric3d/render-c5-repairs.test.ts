@@ -243,3 +243,61 @@ describe("capture-motion: the motion-spike rule has a floor under its reference 
     expect(Number.isFinite(spikes[0]?.ratio ?? Number.NaN), "the reported ratio is against the floored reference").toBe(true);
   });
 });
+
+/* ── capture-motion grades a leg only at the tier it declares ────────────────────────────────────
+ *
+ * Acceptance report 2026-09-23 (C5, harness defect): `analyseMotion` recorded `tiersSeen` and no
+ * verdict read it; the tier was checked once, at leg start. The dark "high" reset-fly that failed on
+ * a history-blend pop had actually rendered at LOW (the automatic step-down fired mid-leg), and a
+ * "high" leg that ran at low reported `legProblems []`. A sequence whose frames were not all rendered
+ * at the leg's declared tier is now a FAIL of its own, and a leg problem, so no item is graded on
+ * evidence about a tier it does not name. Known answers both ways. */
+describe("capture-motion: a sequence is graded only at the tier its leg declares", () => {
+  interface TierHeld { declared: string; tiersSeen: string[]; frames: number; framesOffTier: number; firstOffTierFrame: number | null }
+  interface TierModule {
+    analyseMotion(seq: { id: string; what: string }, meta: unknown[], L: Uint8Array[], w: number, h: number, tier: string): { tiersSeen: string[]; tierHeld: TierHeld };
+    declaredTierFails(leg: string, analysed: readonly { sequence: string; tierHeld: TierHeld }[]): string[];
+  }
+  const load = async (): Promise<TierModule> =>
+    (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "capture-motion.mjs")).href)) as TierModule;
+  const W = 4;
+  const H = 4;
+  const run = async (declared: string, tiers: string[]) => {
+    const m = await load();
+    const meta = tiers.map((quality, t) => ({ i: t, ts: t * 16.7, cam: [t * 0.1, 0], vis: "", hover: null, fade: null, aoSuspended: false, quality, framesTimed: t, w: W, h: H }));
+    const L = tiers.map(() => new Uint8Array(W * H).fill(90));
+    const a = { sequence: "known-answer", ...m.analyseMotion({ id: "known-answer", what: "synthetic" }, meta, L, W, H, declared) };
+    return { a, fails: m.declaredTierFails(`dark/${declared}`, [a]) };
+  };
+
+  it("a leg declared high whose frames went high -> low FAILS, naming the first off-tier frame", async () => {
+    const { a, fails } = await run("high", ["high", "high", "high", "low", "low", "low"]);
+    expect(a.tiersSeen).toEqual(["high", "low"]);
+    expect(a.tierHeld).toEqual({ declared: "high", tiersSeen: ["high", "low"], frames: 6, framesOffTier: 3, firstOffTierFrame: 3 });
+    expect(fails).toHaveLength(1);
+    expect(fails[0]).toMatch(/dark\/high\/known-answer: 3 of 6 frames rendered at low, not the declared high \(first at frame 3\)/);
+  });
+
+  it("a step-down through balanced is caught too, whatever tier it lands on", async () => {
+    const { fails } = await run("high", ["high", "balanced", "balanced", "low"]);
+    expect(fails).toHaveLength(1);
+    expect(fails[0]).toMatch(/3 of 4 frames rendered at balanced, low/);
+  });
+
+  it("a sequence rendered wholly at its declared tier is not a problem, at either tier", async () => {
+    expect((await run("high", ["high", "high", "high"])).fails).toEqual([]);
+    expect((await run("low", ["low", "low", "low"])).fails).toEqual([]);
+  });
+
+  it("a frame with no reported tier is not evidence about the declared one", async () => {
+    const { fails } = await run("low", ["low", "", "low"]);
+    expect(fails).toHaveLength(1);
+    expect(fails[0]).toMatch(/1 of 3 frames rendered at \(none\)/);
+  });
+
+  it("a sequence whose tier record is missing fails closed rather than passing", async () => {
+    const m = await load();
+    const fails = m.declaredTierFails("dark/high", [{ sequence: "no-record" } as unknown as { sequence: string; tierHeld: TierHeld }]);
+    expect(fails).toEqual([expect.stringMatching(/dark\/high\/no-record: no per-frame tier record/)]);
+  });
+});

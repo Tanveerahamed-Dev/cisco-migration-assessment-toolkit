@@ -59,25 +59,40 @@ describe("step 4's record list", () => {
     }
   });
 
-  it("for every finding, every access list is on screen and a shorter list states the cap in words", () => {
-    let capped = 0;
-    for (const f of fabric.findings) {
-      const targets = targetsOf(f.id);
-      if (targets.length === 0) continue;
-      const c = mountFor(f.id);
-      const shown = buttonsIn(c);
-      for (const t of targets) {
-        if (t.kind === "acl") expect(shown.some((b) => b.includes(t.label)), `${f.id}: ${t.label}`).toBe(true);
-      }
-      const cap = c.querySelector(".ev-cfgactions__cap")?.textContent ?? null;
-      if (shown.length < targets.length) {
-        capped += 1;
-        expect(cap, f.id).toContain(`Showing ${shown.length} of ${targets.length}`);
-      } else {
-        expect(cap, f.id).toBeNull();
-      }
-      act(() => mounted.pop()!.root.unmount());
+  /* EVERY FINDING, ONE TEST EACH (acceptance report F2, 2026-09-23). This was one test mounting the
+     real pane for every finding in a loop: 13.5-15.7 s on a green full-suite run and a timeout at
+     30 s on a loaded one, so its limit could not tell a hang from a busy host. The cost is React-dev
+     + jsdom per mount, not the product's ranking (see EvidencePane.source.test.tsx), so the claim is
+     kept whole — every finding with records, each in the real pane — and split one finding per
+     test. The cross-finding precondition (at least one list is capped) is gathered as they run and
+     asserted after them, together with a count proving every one of them ran. */
+  const withTargets = fabric.findings.filter((f) => targetsOf(f.id).length > 0).map((f) => f.id);
+  let visited = 0;
+  let capped = 0;
+
+  it("the snapshot has findings with records to list (the per-finding tests below are over this list)", () => {
+    expect(withTargets.length).toBeGreaterThan(0);
+  });
+
+  it.each(withTargets)("%s: every access list is on screen, and a shorter list states the cap in words", (id) => {
+    const targets = targetsOf(id);
+    const c = mountFor(id);
+    const shown = buttonsIn(c);
+    for (const t of targets) {
+      if (t.kind === "acl") expect(shown.some((b) => b.includes(t.label)), `${id}: ${t.label}`).toBe(true);
     }
+    const cap = c.querySelector(".ev-cfgactions__cap")?.textContent ?? null;
+    if (shown.length < targets.length) {
+      capped += 1;
+      expect(cap, id).toContain(`Showing ${shown.length} of ${targets.length}`);
+    } else {
+      expect(cap, id).toBeNull();
+    }
+    visited += 1;
+  });
+
+  it("precondition, over all of the above: at least one finding holds more records than the cap", () => {
+    expect(visited, "every per-finding test above ran and passed (a filtered or failed run proves nothing here)").toBe(withTargets.length);
     expect(capped, "precondition: at least one finding holds more records than the cap").toBeGreaterThan(0);
   });
 

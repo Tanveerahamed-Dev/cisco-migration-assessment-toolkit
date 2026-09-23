@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { HISTORY_AA, historyWeightFor } from "./postfx";
+import { HISTORY_AA, historyWeightFor, nextHistoryWeight } from "./postfx";
 import { PerspectiveCamera, Vector3 } from "three";
 import {
   createPresentationCadence,
@@ -243,6 +243,92 @@ describe("C5: a creeping camera's frames are blended with the last, and a still 
       prev = w;
     }
     expect(Math.max(...steps)).toBeLessThan(0.05);
+  });
+
+  /* ── the weight itself eases (acceptance report 2026-09-23, C5 (a)) ────────────────────────────
+   *
+   * MEASURED by the grading: dark reset-fly frame 59, the camera still, 46,569 px changed — the
+   * previous frame was a 0.465 px creep after a 166.6 ms gap, blended at 0.75, and the still frame
+   * after it was plain: the weight went 0.75 -> 0 in one frame, and the whole history's lag landed
+   * at once with nothing moving to carry it. `nextHistoryWeight` is the per-frame decision the scene
+   * makes (scene.ts, the render section of `frame`), driven here frame by frame. */
+  interface Frame { stepPx: number; frameMs: number; content?: boolean; arrivalInMs?: number | null }
+  const drive = (frames: readonly Frame[]): number[] => {
+    let w = 0;
+    return frames.map((f) => (w = nextHistoryWeight(w, f.stepPx, f.content ?? false, f.arrivalInMs ?? null, f.frameMs)));
+  };
+  const jumps = (ws: readonly number[]): number[] => ws.map((w, i) => Math.abs(w - (i === 0 ? 0 : ws[i - 1]!)));
+  const still = (n: number): Frame[] => Array.from({ length: n }, () => ({ stepPx: 0, frameMs: 1000 / 60 }));
+  const creep = (n: number, px: number): Frame[] => Array.from({ length: n }, () => ({ stepPx: px, frameMs: 1000 / 60 }));
+
+  it("a 0.465 px creep, a 166.6 ms gap, then a stop: no presented frame moves the weight by more than the stated step", () => {
+    const frames = [...still(3), ...creep(30, 0.465), { stepPx: 0.465, frameMs: 166.6 }, ...still(20)];
+    const ws = drive(frames);
+    const stopAt = 3 + 30 + 1;
+    expect(Math.max(...ws), "the creep still gets the full blend (the sparkle fix is kept)").toBe(HISTORY_AA.weight);
+    expect(Math.max(...jumps(ws)), `weights ${ws.map((w) => w.toFixed(3)).join(" ")}`).toBeLessThanOrEqual(HISTORY_AA.maxStepPerFrame + 1e-12);
+    expect(ws[ws.length - 1], "the plain frame the scene owes before `converged` is reached").toBe(0);
+    const plainAt = ws.findIndex((w, i) => i >= stopAt && w === 0);
+    expect(plainAt - stopAt + 1, "frames of draining after the stop").toBe(Math.ceil(HISTORY_AA.weight / HISTORY_AA.maxStepPerFrame));
+  });
+
+  it("eases IN as well: the first creeping frame after a still one is not blended at full weight", () => {
+    const ws = drive([...still(3), ...creep(10, 0.1)]);
+    expect(ws[3]).toBeLessThanOrEqual(HISTORY_AA.maxStepPerFrame);
+    expect(Math.max(...jumps(ws))).toBeLessThanOrEqual(HISTORY_AA.maxStepPerFrame + 1e-12);
+  });
+
+  it("the drain after a stop is over before the occlusion stage returns (MOTION_HOLD_MS) at 60 fps", () => {
+    const scene = readFileSync(resolve(process.cwd(), "src/fabric3d/scene.ts"), "utf8");
+    const hold = Number(/const MOTION_HOLD_MS = (\d+);/.exec(scene)?.[1]);
+    expect(hold).toBeGreaterThan(0);
+    expect(Math.ceil(HISTORY_AA.weight / HISTORY_AA.maxStepPerFrame) * (1000 / 60)).toBeLessThan(hold);
+  });
+
+  it("a tween's arrival is ramped out BEFORE it lands, so the still frames after a landing change nothing — even after a slow frame", () => {
+    /* 620 ms tween: 60 fps creep until 430 ms, then ONE 166.6 ms frame (the audited host), then the
+       landing frame the rig reports as the end of the tween, then still frames. */
+    const frames: Frame[] = [];
+    let t = 0;
+    while (t + 1000 / 60 <= 430) {
+      t += 1000 / 60;
+      frames.push({ stepPx: 0.3, frameMs: 1000 / 60, arrivalInMs: 620 - t });
+    }
+    t += 166.6;
+    frames.push({ stepPx: 0.465, frameMs: 166.6, arrivalInMs: Math.max(0, 620 - t) });
+    frames.push({ stepPx: 0.01, frameMs: 1000 / 60, arrivalInMs: 0 });
+    const landing = frames.length - 1;
+    frames.push(...still(12));
+    const ws = drive(frames);
+    expect(Math.max(...ws), "the tween's creep is still blended").toBe(HISTORY_AA.weight);
+    expect(ws[landing], "the landing frame is the plain chain's").toBe(0);
+    const stillChanges = ws.slice(landing + 1).map((w, i) => Math.abs(w - ws[landing + i]!));
+    expect(Math.max(...stillChanges), "a still frame after the landing moves the weight").toBe(0);
+    /* A drop larger than the stated step is only ever carried by a frame the camera moved on. */
+    jumps(ws).forEach((j, i) => {
+      if (j > HISTORY_AA.maxStepPerFrame + 1e-12) expect(frames[i]!.stepPx, `frame ${i} drops ${j.toFixed(3)} with the camera still`).toBeGreaterThan(0);
+    });
+  });
+
+  it("at 60 fps the arrival ramp needs no drop larger than the stated step", () => {
+    const frames: Frame[] = [];
+    for (let t = 1000 / 60; t < 620; t += 1000 / 60) frames.push({ stepPx: 0.3, frameMs: 1000 / 60, arrivalInMs: Math.max(0, 620 - t) });
+    frames.push({ stepPx: 0.001, frameMs: 1000 / 60, arrivalInMs: 0 }, ...still(8));
+    const ws = drive(frames);
+    expect(Math.max(...ws)).toBe(HISTORY_AA.weight);
+    expect(Math.max(...jumps(ws))).toBeLessThanOrEqual(HISTORY_AA.maxStepPerFrame + 1e-12);
+    expect(ws[frames.length - 9]).toBe(0);
+  });
+
+  it("keeps its invariants: weight 0 on any content change, and at once when the camera outruns the trail limit", () => {
+    const creepThen = (last: Frame): number => drive([...creep(20, 0.2), last]).at(-1)!;
+    expect(creepThen({ stepPx: 0.2, frameMs: 1000 / 60, content: true })).toBe(0);
+    expect(creepThen({ stepPx: 0, frameMs: 1000 / 60, content: true })).toBe(0);
+    expect(creepThen({ stepPx: HISTORY_AA.offAtPx, frameMs: 1000 / 60 })).toBe(0);
+    expect(creepThen({ stepPx: Number.POSITIVE_INFINITY, frameMs: 1000 / 60 })).toBe(0);
+    expect(nextHistoryWeight(Number.NaN, Number.NaN, false, null, 16.7)).toBe(0);
+    /* Never above the trail ramp on a moving frame: 0.75 px allows half the full weight. */
+    expect(creepThen({ stepPx: 0.75, frameMs: 1000 / 60 })).toBeLessThanOrEqual(historyWeightFor(0.75));
   });
 
   it("at full weight, a pixel SMAA toggles by 80 levels every frame steps by less than the flip rule's 12", async () => {

@@ -289,6 +289,22 @@ where something other than the camera changed. Every settled frame, and so every
 unchanged; a frame drawn with a history is always followed by a plain one before the scene reports
 `converged`.
 
+**The weight itself eases (repair wave 4, 2026-09-23).** The speed ramp above did not cover a camera
+that STOPS. The acceptance grading measured it on a contended host, dark reset-fly: the tween's
+landing frame was a 0.465 px step after a 166.6 ms gap, blended at 0.75; the next frame was still and
+therefore plain, and **46,569 px** changed with nothing moving — the history's whole lag in one frame.
+`postfx.ts :: nextHistoryWeight` is now the per-frame decision: the weight moves by at most
+**0.125** per presented frame (`maxStepPerFrame`) on the way in and, on a still frame, on the way out
+(a drain of 6 frames, ~100 ms at 60 fps, over before the occlusion stage returns at `MOTION_HOLD_MS`);
+a stop known in advance — a tween's landing, whose clock the scene observes — is ramped out over the
+**150 ms** before it (`arrivalRampMs`, stretched to six frames at the current frame rate), and the
+landing frame itself is plain; a frame the camera MOVED on may drop to the ceiling its motion sets
+(the trail ramp, or that arrival ramp), so a catch-up rides on a moving frame, never a still one. A
+content change still zeroes it at once. The re-presented frame a tier change snapshots for its
+cross-fade is weighted the same way (it was drawn plain, a second one-frame drop). Pinned frame by
+frame in `render-c5-r4.test.ts`; the same probe against 2d9712c and this tree, dev build, reset fly:
+largest one-frame weight change **0.75 → 0.125**, and 0 on every still frame.
+
 **A/B, same host** (repair wave 3, R5): flip-flopping pixels over the orbit sequences were
 **300 / 699 px** at `d3e2a1c` and **5-40 px** after. Re-measured on the merged wave-3 tree
 (2026-09-23, release preview, same host): **9-35 px** per orbit sequence across the four legs

@@ -53,6 +53,7 @@ import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js
 import { presentBand } from "../core/band-qualification";
 import type { Device, Link, Trace } from "../core/types";
 import {
+  CAMERA_TWEEN_MS,
   createCameraRig,
   frameSphereFromCurrentView,
   measureDrawnBounds,
@@ -122,7 +123,7 @@ import {
   type ProceduralMaps,
   type TokenPalette,
 } from "./materials";
-import { createPostChain, historyWeightFor, type PostChain } from "./postfx";
+import { createPostChain, nextHistoryWeight, type PostChain } from "./postfx";
 import { createPanelInputGate, isFabricTarget } from "./panelInput";
 import {
   createForeignWorkLedger,
@@ -131,6 +132,8 @@ import {
   createPresentationCadence,
   createStepDownJudge,
   createStepUpPolicy,
+  createTierFadeHold,
+  TIER_FADE_HOLD_DEFAULTS,
   displayLimitReason,
   effectiveBars,
   frameIsFabricEvidence,
@@ -2084,6 +2087,17 @@ const createSceneImpl = (
   const stepPrev = new Vector3();
   let stepPrevValid = false;
   let lastCameraStep = Number.POSITIVE_INFINITY;
+  /* WHEN the camera will come to rest, where that is known in advance — a tween — so the history
+     blend is ramped out before the landing instead of dropped on the still frame after it (postfx.ts
+     `nextHistoryWeight`; acceptance report 2026-09-23, C5 (a)). The rig starts a tween's clock on
+     the first update after `moveTo`, with that update's `now`, and runs it for CAMERA_TWEEN_MS; the
+     frame on which it stops reporting a tween is the landing frame. Observed from outside the rig,
+     so a tween re-issued while one is in flight keeps the first one's start: its arrival then reads
+     EARLY, which only ramps the blend out sooner — less smoothing, never a lag landing on a still
+     frame. null when no arrival is known (damping, a drag): there the step itself shrinks to the
+     stop, and a still frame drains the weight in stated steps. */
+  let tweenObservedFrom: number | null = null;
+  let cameraArrivalInMs: number | null = null;
   /**
    * How far, in DRAWING-BUFFER pixels, the camera has moved every device anchor since the last
    * presenting render: the largest screen displacement of any chassis centre between the two
@@ -2486,9 +2500,6 @@ const createSceneImpl = (
    * ordinary frames, so the one-frame-late start above keeps its margin. Held by
    * `src/core/motion-inventory.test.ts` (and its §4.8 row). */
   const TIER_FADE_MS = 280;
-  const TIER_FADE_FRAME_MS = 40;
-  const TIER_FADE_STABLE_FRAMES = 3;
-  const TIER_FADE_MAX_WAIT_MS = 1200;
   let tierFade: { el: HTMLCanvasElement; fading: boolean; timer: ReturnType<typeof setTimeout> | null } | null =
     null;
 
@@ -2522,6 +2533,13 @@ const createSceneImpl = (
        back later. Re-presenting it through the old chain in this same task makes the drawing buffer
        hold it for the copy below. One frame at the old tier, paid only on a tier change. */
     try {
+      /* ...with the history weight the loop would give this frame, not a plain one. An unset weight
+         is 0, and this re-render IS presented (it becomes the overlay): taken mid-creep, a plain one
+         dropped the blend 0.75 -> 0 in one frame — part of the 6.08x change the C5 grading measured
+         at the light/high orbit's step-down (2026-09-23). */
+      post.setHistoryWeight(
+        nextHistoryWeight(post.historyWeightUsed(), cameraStepSinceRenderPx(), contentVersion !== renderedContentVersion, cameraArrivalInMs, lastFrameMs),
+      );
       post.render(0);
       ctx.drawImage(canvas, 0, 0);
     } catch {
@@ -2536,8 +2554,8 @@ const createSceneImpl = (
     tierFade = { el, fading: false, timer: null };
   }
 
-  /** Called after a composed frame lands on the canvas: release the old tier's picture. */
-  function releaseTierFade(): void {
+  /** Called after a composed frame lands on the canvas (at `now`): release the old tier's picture. */
+  function releaseTierFade(now: number): void {
     if (tierFade === null || tierFade.fading) return;
     if (reducedMotion) {
       clearTierFade();
@@ -2565,27 +2583,30 @@ const createSceneImpl = (
          per-rAF opacity trace, dark, real GPU: high -> low faded smoothly over 300 ms, but
          low -> high went 1 -> 0.94 and then stalled in one 210 ms frame (the high chain's
          remaining program links / first SSAO + bloom targets) that swallowed the whole fade, so
-         the next frame read 0.056: a cut. The fade therefore waits for TIER_FADE_STABLE_FRAMES
-         consecutive frames under TIER_FADE_FRAME_MS, with a backstop so an overlay can never hold
-         the fabric for longer than TIER_FADE_MAX_WAIT_MS. */
+         the next frame read 0.056: a cut. The fade therefore waits for ordinary frames — but only
+         while the view under the overlay is the one it was taken from (`createTierFadeHold` in
+         ./stepdown, which carries the rule, its bound and the C5 measurement that shaped it: a
+         step-down mid-orbit on a contended host held a frozen frame for ~1,000 ms). The first
+         frame on which the camera moved or the content changed starts the fade. */
       let started = false;
       const once = (): void => {
         if (started) return;
         started = true;
         start();
       };
+      const hold = createTierFadeHold(now);
+      const heldContent = contentVersion;
       /* Reads the loop's own per-frame interval (`lastFrameMs`, measured for every frame in
-         `frame`) rather than a clock of its own; it only decides WHEN the overlay's CSS fade
-         begins, and the frame underneath is the new tier's frame either way. */
-      let calm = 0;
+         `frame`) and its camera-motion stamp rather than a clock of its own; `frame` runs before
+         this in each animation frame (it was queued first). It only decides WHEN the overlay's CSS
+         fade begins, and the frame underneath is the new tier's frame either way. */
       const watch = (): void => {
         if (started || tierFade !== fade) return;
-        calm = lastFrameMs > 0 && lastFrameMs < TIER_FADE_FRAME_MS ? calm + 1 : 0;
-        if (calm >= TIER_FADE_STABLE_FRAMES) once();
+        if (hold.frame(lastNow, lastFrameMs, lastCameraMotionAt > now || contentVersion !== heldContent)) once();
         else requestAnimationFrame(watch);
       };
       requestAnimationFrame(watch);
-      fade.timer = setTimeout(once, TIER_FADE_MAX_WAIT_MS);
+      fade.timer = setTimeout(once, TIER_FADE_HOLD_DEFAULTS.maxHoldMs);
     } else {
       start();
     }
@@ -3157,7 +3178,17 @@ const createSceneImpl = (
       heldStepDown = null;
       return false;
     }
-    if (!gestureGate.mayLand(now, heldStepDown.since, cameraRig.isTweening())) return false;
+    /* NEVER while the camera moves — a tween, a drag, a damped orbit's tail (C5 (b), 2026-09-23).
+       A tier change re-warms the new chain, and the canvas presents nothing until that warm-up ends:
+       landed mid-orbit on the contended host it froze the view for ~600 ms-1 s while the camera kept
+       moving (measured twice: the grading's light/high orbit frame 407, and this wave's dark/high
+       orbit-drag frame 550, where a drag that outlasted the gesture gate's 6 s backstop landed it).
+       So camera motion is not one of the gate's bounded holds but an absolute one, checked BEFORE the
+       gate: the verdict lands on the first frame the camera has been at rest for MOTION_HOLD_MS,
+       which a gesture always reaches when it ends. The gate's own bounds (quiet input, a held
+       pointer, `maxHoldMs`) still apply on top of it, unchanged. */
+    if (cameraRig.isTweening() || now - lastCameraMotionAt < MOTION_HOLD_MS) return false;
+    if (!gestureGate.mayLand(now, heldStepDown.since, false)) return false;
     const held = heldStepDown;
     heldStepDown = null;
     const next: QualityTier = decision.tier === "high" ? "balanced" : "low";
@@ -3265,8 +3296,19 @@ const createSceneImpl = (
      * about the window. */
     interaction.flushHover();
 
+    const tweenBefore = cameraRig.isTweening();
     const cameraMoved = cameraRig.update(now);
     if (cameraMoved) lastCameraMotionAt = now;
+    /* The camera's known arrival (see `tweenObservedFrom`): 0 on the landing frame. */
+    const tweenAfter = cameraRig.isTweening();
+    if (!tweenAfter) tweenObservedFrom = null;
+    else if (tweenObservedFrom === null) tweenObservedFrom = now;
+    cameraArrivalInMs =
+      tweenBefore && !tweenAfter
+        ? 0
+        : tweenObservedFrom !== null
+          ? Math.max(0, CAMERA_TWEEN_MS - (now - tweenObservedFrom))
+          : null;
     /* "Moving" for the labels spans the damping tail: a pose change within MOTION_HOLD_MS, the
        same window the occlusion suspension uses, so a creeping orbit does not read as still. */
     labelsCameraMoving = now - lastCameraMotionAt < MOTION_HOLD_MS;
@@ -3278,8 +3320,9 @@ const createSceneImpl = (
 
     if (emphasisMoved || fadesMoved || flowMoved) markDirty();
     else if (cameraMoved) requestFrame();
-    /* The last presented frame mixed in a history (postfx.ts HISTORY_AA): a plain frame is owed the
-       moment the camera stops, so the frame a still view settles on is the plain chain's output. */
+    /* The last presented frame mixed in a history (postfx.ts HISTORY_AA): once the camera stops, the
+       frames that drain the weight to zero in stated steps are owed (`nextHistoryWeight`), so the
+       frame a still view settles on is the plain chain's output. */
     if (historyInLastRender && !cameraMoved) requestFrame();
     /* The last render was taken with occlusion suspended for motion (see PostChain.setMotion): the
        still frame is owed as soon as the camera has held still for MOTION_HOLD_MS. */
@@ -3287,10 +3330,12 @@ const createSceneImpl = (
     /* A held step-down lands on the first quiet frame, rendered or idle. */
     if (landHeldStepDown(now)) return;
     // See applyQuality: the first frame of a new post chain is atypical, so it is never the last
-    // one rendered. Costs at most two frames, and only after an explicit tier change.
+    // one rendered. Costs at most two frames, and only after an explicit tier change. The frame is
+    // OWED, not new content (`requestFrame`): the tier cross-fade's hold reads a content change as
+    // "the picture under the overlay moved on" and would otherwise be released by its own re-render.
     if (warmupFrames > 0) {
       warmupFrames -= 1;
-      markDirty();
+      requestFrame();
     }
 
     if (!dirty) {
@@ -3415,10 +3460,14 @@ const createSceneImpl = (
 
     refreshRims();
     /* The history blend (postfx.ts HISTORY_AA): only for a frame whose content is the last presented
-       frame's, weighted by how far the camera moved since that frame. */
+       frame's, weighted by how far the camera moved since that frame — and EASED from the weight
+       that frame used, so neither turning it on nor draining it after a stop is a one-frame step
+       (`nextHistoryWeight`; acceptance report 2026-09-23, C5 (a)). */
     const cameraStep = cameraStepSinceRenderPx();
     lastCameraStep = cameraStep;
-    post.setHistoryWeight(contentVersion === renderedContentVersion ? historyWeightFor(cameraStep) : 0);
+    post.setHistoryWeight(
+      nextHistoryWeight(post.historyWeightUsed(), cameraStep, contentVersion !== renderedContentVersion, cameraArrivalInMs, raw),
+    );
     renderer.info.reset();
     if (!firstRendered) {
       firstRendered = true;
@@ -3430,7 +3479,7 @@ const createSceneImpl = (
     historyInLastRender = post.historyWeightUsed() > 0;
     renderedContentVersion = contentVersion;
     rememberRenderedCamera();
-    releaseTierFade();
+    releaseTierFade(now);
 
     /* A rebuild frame costs about 50 extra calls once (see DRAW_CALL_BUDGET); a REGRESSION costs
        them every frame. Two consecutive breaching rendered frames separates the two without

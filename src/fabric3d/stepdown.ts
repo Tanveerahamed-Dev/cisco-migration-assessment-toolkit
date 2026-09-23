@@ -576,6 +576,11 @@ export function frameIsFabricEvidence(ledger: ForeignWorkLedger, from: number, t
  * pointerup outside the window, or a genuinely sustained orbit) stops counting as a gesture, and a
  * held verdict older than `maxHoldMs` lands regardless. A machine that is really too slow is
  * therefore still stepped down within a few seconds of sustained load, which is E4's own rule.
+ *
+ * Camera motion is NOT one of these bounded holds (C5 (b), 2026-09-23): the scene refuses a landing
+ * while the camera moves BEFORE it asks this gate (scene.ts `landHeldStepDown`), because the rebuilt
+ * chain presents nothing until its re-warm-up ends and a mid-orbit landing froze a moving view for
+ * ~600 ms-1 s. `maxHoldMs` therefore overrides input quiet and a held pointer, never a moving camera.
  */
 
 export interface GestureGateOptions {
@@ -595,10 +600,11 @@ export interface GestureGate {
   /** A pointer went down (`true`) or up/cancelled (`false`) at `at`. */
   notePointer(down: boolean, at: number): void;
   /**
-   * May a tier change held since `heldSince` land at `now`? `tweening` is the camera rig's own
-   * state. A held verdict older than `maxHoldMs` always may.
+   * May a tier change held since `heldSince` land at `now`? `cameraMoving` is true while the camera
+   * is not at rest — a tween in flight, or any motion (a damping tail included) within the scene's
+   * motion hold. A held verdict older than `maxHoldMs` always may.
    */
-  mayLand(now: number, heldSince: number, tweening: boolean): boolean;
+  mayLand(now: number, heldSince: number, cameraMoving: boolean): boolean;
 }
 
 export function createGestureGate(opts: Partial<GestureGateOptions> = {}): GestureGate {
@@ -614,11 +620,64 @@ export function createGestureGate(opts: Partial<GestureGateOptions> = {}): Gestu
       lastInput = Math.max(lastInput, at);
       pointerDownAt = down ? at : null;
     },
-    mayLand(now, heldSince, tweening) {
+    mayLand(now, heldSince, cameraMoving) {
       if (now - heldSince >= o.maxHoldMs) return true;
-      if (tweening) return false;
+      if (cameraMoving) return false;
       if (pointerDownAt !== null && now - pointerDownAt < o.maxHeldMs) return false;
       return now - lastInput >= o.quietMs;
+    },
+  };
+}
+
+/* ── HOW LONG the old tier's picture may be held over the new tier's frames ─────────────────────
+ *
+ * A tier change lays the old tier's last frame over the canvas and fades it out once the new tier
+ * has presented (scene.ts, "tier cross-fade"). The fade waits for the new tier's frames to be
+ * ORDINARY ones — `calmFrames` consecutive frames under `calmFrameMs` — because a heavy frame just
+ * after the swap (the new chain's first-use program links) swallowed a fade started at once
+ * (measured low -> high, one 210 ms frame: opacity 0.94 -> 0.056, a cut). `maxHoldMs` bounds it.
+ *
+ * AND IT NEVER HOLDS A PICTURE THE FABRIC HAS LEFT (acceptance report 2026-09-23, C5 (b)). The
+ * calm wait was the ONLY release besides the backstop, and a contended host never presents three
+ * frames under 40 ms: an automatic step-down mid-orbit held the old tier's frame at opacity 1 for
+ * ~1,000 ms while the camera kept moving underneath — 126 of 282 moving frames changed nothing on
+ * screen, then a 6.08x one-frame jump. The overlay is only a faithful stand-in while the frames
+ * under it show the SAME view of the SAME content, so the first frame on which the camera moved or
+ * the content changed starts the fade: from then the new tier is the one presenting motion, and the
+ * cross-fade is the whole transition. The calm wait now applies only to a still view, where the held
+ * picture IS the current one, at the old tier, and nothing waits on it.
+ */
+export interface TierFadeHoldOptions {
+  /** A frame interval under this is an ordinary one. */
+  calmFrameMs: number;
+  /** This many consecutive ordinary frames release the hold. */
+  calmFrames: number;
+  /** The hold never outlasts this, counted from the new tier's first presented frame. */
+  maxHoldMs: number;
+}
+
+export const TIER_FADE_HOLD_DEFAULTS: TierFadeHoldOptions = { calmFrameMs: 40, calmFrames: 3, maxHoldMs: 1200 };
+
+export interface TierFadeHold {
+  /**
+   * One animation frame after the new tier's first presented frame (`since`). `frameMs` is that
+   * frame's interval; `viewChanged` whether the camera moved or the content changed since `since`.
+   * True when the fade must start now.
+   */
+  frame(now: number, frameMs: number, viewChanged: boolean): boolean;
+}
+
+export function createTierFadeHold(since: number, opts: Partial<TierFadeHoldOptions> = {}): TierFadeHold {
+  const o: TierFadeHoldOptions = { ...TIER_FADE_HOLD_DEFAULTS, ...opts };
+  let calm = 0;
+  return {
+    frame(now, frameMs, viewChanged) {
+      /* The picture under the overlay is no longer the one it was taken from: holding it now would
+         freeze a moving camera or an animating fabric. The new tier presents the change instead. */
+      if (viewChanged) return true;
+      if (now - since >= o.maxHoldMs) return true;
+      calm = frameMs > 0 && frameMs < o.calmFrameMs ? calm + 1 : 0;
+      return calm >= o.calmFrames;
     },
   };
 }

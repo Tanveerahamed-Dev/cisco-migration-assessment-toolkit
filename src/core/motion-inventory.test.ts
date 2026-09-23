@@ -21,7 +21,10 @@
  *        `elapsed / X_MS`) or is interpolated into an inline `transition`/`animation`; every ease the
  *        ease owner exports; every OrbitControls `dampingFactor`. And any inline `transition` or
  *        `animation` a script sets in a form this scan cannot resolve fails, so a new spelling
- *        cannot hide.
+ *        cannot hide. And every HOLD before such motion: a `setTimeout` whose callback starts it
+ *        (directly or through the local functions it calls), with its delay resolved through a local
+ *        constant or an object constant's numeric property anywhere in src/ (C6, 2026-09-23: the
+ *        tier step-down hold had no §4.8 bound). A delay it cannot resolve fails the same way.
  *
  * WHAT IS REQUIRED of §4.8's table, both directions:
  *   forward  each discovered item is named in backticks in the first cell of a row whose Duration
@@ -249,13 +252,49 @@ interface ScriptMotion {
   file: string;
   line: number;
   name: string;
-  kind: "progress" | "inline-css" | "ease" | "damping";
-  /** The constant's value: ms for a duration, a per-frame factor for damping. */
+  /** `delay`: the wait before a timer starts script-set motion (a hold), not the motion itself. */
+  kind: "progress" | "inline-css" | "ease" | "damping" | "delay";
+  /** The constant's value: ms for a duration or a delay, a per-frame factor for damping. */
   value: number | undefined;
 }
 
-/** Every animation-timing constant one script declares, found by what the code DOES with it. */
-export function scriptMotionIn(file: string, text: string): { found: ScriptMotion[]; unresolved: string[] } {
+const stripExpr = (e: ts.Expression): ts.Expression => {
+  let x = e;
+  while (ts.isParenthesizedExpression(x) || ts.isAsExpression(x) || ts.isNonNullExpression(x) || ts.isSatisfiesExpression(x)) x = x.expression;
+  return x;
+};
+
+/** `NAME.prop` -> value for every numeric property of an object-literal constant one script declares
+ *  (`const X = { … }`, `const X: T = { … }`, `Object.freeze({ … })`): how a delay spelled as an
+ *  options object's property (`TIER_FADE_HOLD_DEFAULTS.maxHoldMs`) is resolved from its owner. */
+export function numericPropsIn(text: string): Map<string, number> {
+  const sf = ts.createSourceFile("props.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const out = new Map<string, number>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) {
+      let init = stripExpr(n.initializer);
+      if (ts.isCallExpression(init) && init.expression.getText(sf) === "Object.freeze" && init.arguments[0] !== undefined) init = stripExpr(init.arguments[0]);
+      if (ts.isObjectLiteralExpression(init)) {
+        for (const p of init.properties) {
+          if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ts.isNumericLiteral(stripExpr(p.initializer))) {
+            out.set(`${n.name.text}.${p.name.text}`, Number((stripExpr(p.initializer) as ts.NumericLiteral).text));
+          }
+        }
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/** Every animation-timing constant one script declares, found by what the code DOES with it.
+ *  `external` resolves `NAME.prop` delays declared in another file (see `numericPropsIn`). */
+export function scriptMotionIn(
+  file: string,
+  text: string,
+  external: ReadonlyMap<string, number> = new Map(),
+): { found: ScriptMotion[]; unresolved: string[] } {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const consts = new Map<string, number>();
   const found: ScriptMotion[] = [];
@@ -268,13 +307,69 @@ export function scriptMotionIn(file: string, text: string): { found: ScriptMotio
     ts.forEachChild(n, collect);
   };
   collect(sf);
-  const strip = (e: ts.Expression): ts.Expression => {
-    let x = e;
-    while (ts.isParenthesizedExpression(x) || ts.isAsExpression(x) || ts.isNonNullExpression(x)) x = x.expression;
-    return x;
-  };
+  const props = new Map([...external, ...numericPropsIn(text)]);
+  const strip = stripExpr;
   const MOTION_PROP = /^(transition|animation|transitionDuration|animationDuration|transitionDelay|animationDelay)$/;
+  /** An inline motion property SET to something other than a clearing value. */
+  const setsMotionAt = (n: ts.Node): boolean => {
+    const isSet =
+      (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left) && MOTION_PROP.test(n.left.name.text)) ||
+      (ts.isPropertyAssignment(n) && (ts.isIdentifier(n.name) || ts.isStringLiteral(n.name)) && MOTION_PROP.test(n.name.text));
+    if (!isSet) return false;
+    const value = ts.isBinaryExpression(n) ? n.right : (n as ts.PropertyAssignment).initializer;
+    return !(ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) || !/^(|none)$/.test(value.text.trim());
+  };
+  /* DELAYED STARTS. A local function "starts motion" when its body sets an inline motion property or
+     calls (by name) a local function that does — to a fixed point, so `setTimeout(once, …)` where
+     `once` calls `start` and `start` sets the transition is found. By name within the file: two
+     same-named locals over-approximate (more timers inventoried, never fewer). */
+  const bodies = new Map<string, ts.Node[]>();
+  const noteFn = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name !== undefined && n.body !== undefined) bodies.set(n.name.text, [...(bodies.get(n.name.text) ?? []), n.body]);
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) {
+      const init = strip(n.initializer);
+      if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) bodies.set(n.name.text, [...(bodies.get(n.name.text) ?? []), init.body]);
+    }
+    ts.forEachChild(n, noteFn);
+  };
+  noteFn(sf);
+  const starters = new Set<string>();
+  const startsMotion = (root: ts.Node): boolean => {
+    let hit = false;
+    const scan = (n: ts.Node): void => {
+      if (hit) return;
+      if (setsMotionAt(n)) hit = true;
+      else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && starters.has(n.expression.text)) hit = true;
+      else ts.forEachChild(n, scan);
+    };
+    scan(root);
+    return hit;
+  };
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, bs] of bodies) if (!starters.has(name) && bs.some(startsMotion)) (starters.add(name), (grew = true));
+  }
+  const isTimer = (e: ts.Expression): boolean =>
+    (ts.isIdentifier(e) && e.text === "setTimeout") || (ts.isPropertyAccessExpression(e) && e.name.text === "setTimeout");
   const visit = (n: ts.Node): void => {
+    // A delayed start: `setTimeout(cb, delay)` whose callback starts motion.
+    if (ts.isCallExpression(n) && isTimer(n.expression) && n.arguments.length >= 2) {
+      const cb = strip(n.arguments[0]!);
+      const starts = ts.isIdentifier(cb) ? starters.has(cb.text) : (ts.isArrowFunction(cb) || ts.isFunctionExpression(cb)) && startsMotion(cb.body);
+      if (starts) {
+        const d = strip(n.arguments[1]!);
+        const name = d.getText(sf);
+        const value = ts.isNumericLiteral(d)
+          ? Number(d.text)
+          : ts.isIdentifier(d)
+            ? consts.get(d.text)
+            : ts.isPropertyAccessExpression(d)
+              ? props.get(name)
+              : undefined;
+        if (value === undefined) unresolved.push(`${file}:${lineOf(n)} ${n.getText(sf).replace(/\s+/g, " ").slice(0, 100)}`);
+        /* A 0 ms timer defers a task; it holds nothing on screen. */ else if (value > 0) found.push({ file, line: lineOf(n), name, kind: "delay", value });
+      }
+    }
     // A progress fraction: `something / X_MS`.
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.SlashToken) {
       const r = strip(n.right);
@@ -310,7 +405,10 @@ export function scriptMotionIn(file: string, text: string): { found: ScriptMotio
   return { found, unresolved };
 }
 
-const scriptScan = files.filter((f) => /\.tsx?$/.test(f)).map((f) => scriptMotionIn(rel(f), readFileSync(f, "utf8")));
+const scriptFiles = files.filter((f) => /\.tsx?$/.test(f));
+/** Every numeric property of every object-literal constant in src/, for delays spelled `X.prop`. */
+const treeProps = new Map(scriptFiles.flatMap((f) => [...numericPropsIn(readFileSync(f, "utf8"))]));
+const scriptScan = scriptFiles.map((f) => scriptMotionIn(rel(f), readFileSync(f, "utf8"), treeProps));
 const scriptMotion: ScriptMotion[] = [
   ...scriptScan.flatMap((s) => s.found),
   // The eases the fabric steps (their divisor is `spec.durationMs`, so they are read from the owner).
@@ -429,13 +527,50 @@ describe("the motion scan is live and its denominator is the real tree", () => {
     expect(unresolved.map((u) => u.split(" ")[0])).toEqual(["planted.ts:8", "planted.ts:10", "planted.ts:11"]);
   });
 
+  it("the script scan finds a DELAYED start — a timer whose callback starts a transition — and resolves its delay", () => {
+    /* Acceptance report 2026-09-23 (C6): "The tier step-down hold has no §4.8 bound." The hold is the
+       wait before an inline fade starts, and the scan saw only the fade: a timer that starts motion is
+       found by what its callback DOES (directly, or through the local functions it calls), its delay
+       resolved through local constants or an exported object's numeric property. */
+    const { found, unresolved } = scriptMotionIn(
+      "planted-delay.ts",
+      [
+        "const FADE_MS = 120;",
+        "export function f(el: HTMLElement, a: number) {",
+        "  const start = (): void => { el.style.transition = `opacity ${FADE_MS}ms linear`; };",
+        "  const once = (): void => start();",
+        "  setTimeout(once, HOLD.maxHoldMs);",
+        "  window.setTimeout(() => once(), 90);",
+        "  setTimeout(start, 0);",
+        "  setTimeout(() => el.remove(), 5000);",
+        "  setTimeout(once, a + 1);",
+        "}",
+      ].join("\n"),
+      new Map([["HOLD.maxHoldMs", 1200]]),
+    );
+    expect(found.filter((f) => f.kind === "delay").map((f) => [f.name, f.value])).toEqual([
+      ["HOLD.maxHoldMs", 1200],
+      ["90", 90],
+    ]);
+    expect(unresolved.map((u) => u.split(" ")[0])).toEqual(["planted-delay.ts:9"]);
+    expect(numericPropsIn("export const HOLD: Opts = { calmMs: 40, maxHoldMs: 1200 };\nconst A = Object.freeze({ b: 2, c: 'x' });")).toEqual(
+      new Map([
+        ["HOLD.calmMs", 40],
+        ["HOLD.maxHoldMs", 1200],
+        ["A.b", 2],
+      ]),
+    );
+  });
+
   it("walks the real stylesheets and scripts, and finds the motion they carry", () => {
     expect(stylesheets.length, "the walk found the stylesheets").toBeGreaterThan(3);
     expect(stylesheets.map(rel)).toContain("src/core/tokens.css");
     expect(TOKENS.get("--dur-instant")).toBe("80ms");
     expect(cssMotion.length, "CSS transitions/animations in the tree").toBeGreaterThan(10);
     expect(cssCollapse.length, "reduced-motion collapse declarations in the tree").toBeGreaterThan(0);
-    expect([...scriptByName.keys()].sort()).toEqual(expect.arrayContaining(["CAMERA_TWEEN_MS", "DRAW_ON_MS", "PACKET_LOOP_MS", "TIER_FADE_MS", "dampingFactor"]));
+    expect([...scriptByName.keys()].sort()).toEqual(
+      expect.arrayContaining(["CAMERA_TWEEN_MS", "DRAW_ON_MS", "PACKET_LOOP_MS", "TIER_FADE_MS", "TIER_FADE_HOLD_DEFAULTS.maxHoldMs", "dampingFactor"]),
+    );
     expect(rows.length, "§4.8 table rows").toBeGreaterThan(5);
   });
 
@@ -629,7 +764,10 @@ describe("C6: motion ends under 300 ms at 60 Hz unless §4.8 exempts it by name"
     const problems: string[] = [];
     let judged = 0;
     for (const s of scriptByName.values()) {
-      if (s.kind === "damping" || s.value === undefined) continue;
+      /* A `delay` is the wait BEFORE script-set motion starts — nothing moves during it — so it is
+         held to the next test's rule, not to this one's; every motion the scan found before delays
+         were discovered is judged here exactly as it was. */
+      if (s.kind === "damping" || s.kind === "delay" || s.value === undefined) continue;
       judged += 1;
       if (s.value + FRAME_60 >= C6_BAR_MS && !EXEMPT.test(rowNaming(s.name)?.raw ?? "")) {
         problems.push(`${s.file}:${s.line} ${s.name} = ${s.value} ms can first show its end state at ${(s.value + FRAME_60).toFixed(1)} ms`);
@@ -637,6 +775,30 @@ describe("C6: motion ends under 300 ms at 60 Hz unless §4.8 exempts it by name"
     }
     expect(problems).toEqual([]);
     expect(judged).toBeGreaterThan(3);
+  });
+
+  it("every hold before script-set motion is BOUNDED, and §4.8 states the bound the code has", () => {
+    /* Acceptance report 2026-09-23 (C6): "The tier step-down hold has no §4.8 bound." A hold is not
+       an animation, but a hold with no stated bound is how a frozen frame came to stand over a moving
+       orbit for ~1,000 ms (C5). So each delay the scan finds must be on a row whose first bold
+       duration is the code's own bound, and must say what happens under reduced motion; that the
+       tier hold never holds over a camera move or a content change is pinned where the rule lives
+       (src/fabric3d/stepdown.fadehold.test.ts). */
+    const delays = [...scriptByName.values()].filter((s) => s.kind === "delay");
+    expect(delays.map((d) => d.name), "the scan finds the tier-fade hold").toContain("TIER_FADE_HOLD_DEFAULTS.maxHoldMs");
+    const problems: string[] = [];
+    for (const d of delays) {
+      const row = rowNaming(d.name);
+      if (row === undefined) problems.push(`${d.file}:${d.line} ${d.name}: no §4.8 row states this hold's bound`);
+      else if (boldTimesIn(row.cells[1] ?? "")[0] !== d.value) problems.push(`${d.file}:${d.line} ${d.name}: the row's bound is ${boldTimesIn(row.cells[1] ?? "")[0]} ms, the code's is ${d.value} ms`);
+      if (row !== undefined && !/reduced motion/i.test(row.raw)) problems.push(`${d.file}:${d.line} ${d.name}: the row does not state its reduced-motion behaviour`);
+    }
+    expect(problems).toEqual([]);
+    /* The rule is live: the same check over a table without the row names the hold. */
+    const bare = rows.filter((r) => !r.names.includes("TIER_FADE_HOLD_DEFAULTS.maxHoldMs"));
+    expect(scriptProblems(bare)).toContain(
+      `${scriptByName.get("TIER_FADE_HOLD_DEFAULTS.maxHoldMs")!.file}:${scriptByName.get("TIER_FADE_HOLD_DEFAULTS.maxHoldMs")!.line} \`TIER_FADE_HOLD_DEFAULTS.maxHoldMs\`: no §4.8 row names it`,
+    );
   });
 
   it("the exemptions are exactly the deliberate camera moves and the bounded packet loop", () => {

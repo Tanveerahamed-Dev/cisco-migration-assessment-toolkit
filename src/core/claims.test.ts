@@ -470,3 +470,43 @@ describe("REFUTED (C2): no outcome earns a stronger badge than its hops support"
     for (const t of walked) expect(hopsSupportOutcome(t), JSON.stringify(t.flow)).toBe(true);
   });
 });
+
+describe("routeFieldReading — the one owner of how a route field reads (B1)", () => {
+  const route = (over: Partial<import("./types").RouteEntry>): import("./types").RouteEntry => ({
+    prefix: "10.0.0.0/24",
+    source: "connected",
+    nextHop: null,
+    outIntf: "Vlan10",
+    adminDistance: null,
+    cite: "routes.x[0]",
+    ...over,
+  });
+
+  it("reads each of the three states from the record's own fields", async () => {
+    const { routeFieldReading, adminDistanceRank } = await import("./claims");
+    const connected = routeFieldReading(route({}), "adminDistance");
+    expect(connected.kind).toBe("not-applicable");
+    expect(connected.text).toMatch(/^not recorded — /);
+    expect(connected.text).not.toMatch(/^0\b/);
+    const staticNull = routeFieldReading(route({ source: "static", nextHop: "10.0.0.1" }), "adminDistance");
+    expect(staticNull).toMatchObject({ kind: "absent", text: "not observed", what: "administrative distance", why: expect.stringMatching(/did not record a distance/) });
+    expect(routeFieldReading(route({ source: "static", adminDistance: 1 }), "adminDistance")).toMatchObject({ kind: "value", text: "1" });
+    expect(routeFieldReading(route({ source: "local" }), "nextHop")).toMatchObject({ kind: "not-applicable", text: "n/a — a local route has no next hop" });
+    // The ranking convention is decided here too, and a null static route has no rank.
+    expect(adminDistanceRank(route({}))).toBe(0);
+    expect(adminDistanceRank(route({ source: "static" }))).toBeNull();
+    expect(adminDistanceRank(route({ source: "ospf", adminDistance: 110 }))).toBe(110);
+  });
+
+  it("every compiled route record's null reads the same through notApplicableReason as through the owner", async () => {
+    const { routeFieldReading, notApplicableReason: na } = await import("./claims");
+    const all = Object.values(fabric.routes).flat();
+    expect(all.length).toBeGreaterThan(0);
+    for (const r of all) {
+      for (const f of ["adminDistance", "nextHop"] as const) {
+        const reading = routeFieldReading(r, f);
+        expect(na(r, f), `${r.cite}.${f}`).toBe(reading.kind === "not-applicable" ? reading.text : null);
+      }
+    }
+  });
+});

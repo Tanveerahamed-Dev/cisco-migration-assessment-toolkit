@@ -109,14 +109,28 @@ describe("the pane shows the finding's own evidence pointer, and says what it is
     expect(el?.textContent ?? "").toMatch(/cites no source command/);
   });
 
-  it("every finding renders exactly one source line, cited or uncited, matching its compiled field", () => {
-    for (const f of fabric.findings) {
-      const c = mountFor(f.id);
-      const els = c.querySelectorAll<HTMLElement>("[data-finding-source]");
-      expect(els.length, f.id).toBe(1);
-      expect(els[0]!.dataset.findingSource, f.id).toBe(f.sourceCommand ? "cited" : "uncited");
-      act(() => mounted.pop()!.root.unmount());
-      c.remove();
-    }
+});
+
+/* EVERY FINDING, ONE TEST EACH (acceptance report F2, 2026-09-23). This was one test looping over all
+   146 findings, a full pane mount each: 13.5-15.7 s on a green full-suite run and a timeout at 30 s
+   on a loaded one — so its 30 s limit could not tell a hang from a busy host. Profiled 2026-09-23
+   (one scratch run on a shared, busy host; a CPU profile of the loop agreed), the cost is React-dev +
+   jsdom per mount — about 330 elements a pane, ~34 ms of render each, dominated by development-mode
+   element creation and DOM construction — not the product's evidence ranking (`configEvidenceFor` +
+   `nearestConfigFor` over all 146 findings: ~23 ms in total), so there is nothing in EvidencePane.tsx
+   to make cheaper. The claim is unchanged — every
+   finding in the snapshot, each rendered in the real pane — but each finding is its own test, so a
+   failure names its finding and the runner's timeout guards one mount, not 146. The denominator is
+   the snapshot's own list, and the first test pins it non-empty. */
+describe("every finding renders exactly one source line, cited or uncited, matching its compiled field", () => {
+  it("the snapshot has findings to render (the per-finding tests below are over this list)", () => {
+    expect(fabric.findings.length).toBeGreaterThan(0);
+  });
+
+  it.each(fabric.findings.map((f) => [f.id, f] as const))("%s", (_id, f) => {
+    const c = mountFor(f.id);
+    const els = c.querySelectorAll<HTMLElement>("[data-finding-source]");
+    expect(els.length, f.id).toBe(1);
+    expect(els[0]!.dataset.findingSource, f.id).toBe(f.sourceCommand ? "cited" : "uncited");
   });
 });

@@ -53,6 +53,14 @@ export interface Device {
   dataQuality: number | null;
   deductions: string[];
   impact: FailureImpact | null;
+  /**
+   * For each compiled field, the source record it was READ from (`devices.<host>`,
+   * `cable_map.nodes[host=…]`, `health_scores[switch=…]`), emitted by the compiler and only where that
+   * record exists. `cite` is the device's own record and holds none of the node or health fields, so a
+   * surface citing a field cites THIS. A field with no entry is absent (null) or the compiler's own
+   * default — never borrow another record's citation for it (acceptance B6).
+   */
+  fieldCites: Partial<Record<keyof Device, Cite>>;
   cite: Cite;
 }
 
@@ -73,6 +81,49 @@ export interface Link {
   isBridge: boolean | null;
   pairsCut: number | null;
   centralityRank: number | null;
+  /** The `link_centrality[k]` row the four centrality figures were read from; null when none scored it. */
+  centralityCite: Cite | null;
+  cite: Cite;
+}
+
+/**
+ * One row of the engine's `link_centrality`, compiled under its SOURCE path so the citation
+ * `link_centrality[k]` resolves inside the model to the record that carries the figures (B6).
+ */
+export interface LinkCentrality {
+  aHost: string | null;
+  aPort: string | null;
+  bHost: string | null;
+  bPort: string | null;
+  betweenness: number | null;
+  isBridge: boolean | null;
+  pairsCut: number | null;
+  rank: number | null;
+  cite: Cite;
+}
+
+/** One `health_scores` row, compiled under its source path (`health_scores[switch=…]`). */
+export interface HealthScore {
+  switch: string;
+  role: string | null;
+  score: number | null;
+  band: string | null;
+  criticality: number | null;
+  dataQuality: number | null;
+  deductions: string[];
+  cite: Cite;
+}
+
+/** One `cable_map.nodes` row, compiled under its source path (`cable_map.nodes[host=…]`). */
+export interface CableMapNode {
+  host: string;
+  kind: string | null;
+  role: string | null;
+  tier: number | null;
+  order: number | null;
+  collected: boolean | null;
+  opStatus: string | null;
+  badges: string[];
   cite: Cite;
 }
 
@@ -331,6 +382,10 @@ export interface Fabric {
   protocols: ProtocolHealth[];
   endpoints: Endpoint[];
   coverage: Coverage;
+  /** The source records device and link figures are read from, under the paths their citations name. */
+  cable_map: { nodes: CableMapNode[] };
+  health_scores: HealthScore[];
+  link_centrality: LinkCentrality[];
 }
 
 /* ── forwarding simulation contract ─────────────────────────────────────────

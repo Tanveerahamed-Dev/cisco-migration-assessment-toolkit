@@ -38,7 +38,7 @@
  * recurred: an instrument with no failing branch at all.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -134,6 +134,33 @@ function isGitIgnored(rel: string): boolean {
     return false; // exit 1: not ignored
   }
 }
+
+/**
+ * A HARNESS'S NAMED PIN EXISTS. An evidence harness that says "pinned by <test>" is telling its
+ * reader where the rule it depends on is enforced. `review/measure-inp.mjs` cited
+ * `src/fabric3d/measure-inp.harness.test.ts` twice (acceptance report, E harness item 12b,
+ * 2026-09-23); no such file ever existed — the pin lived in `Fabric3D.test.tsx` — so a reader
+ * following the citation found nothing and could fairly conclude the rule was unpinned. The class,
+ * not the instance: every tracked `review/*.mjs` (the underscore prefix is gitignored scratch) is
+ * read, and every `src/<dir>/<name>.test.ts(x)` path it names must exist.
+ */
+describe("every test a tracked review harness cites as its pin exists", () => {
+  const REVIEW = join(ROOT, "review");
+  const harnesses = readdirSync(REVIEW).filter((n) => n.endsWith(".mjs") && !n.startsWith("_"));
+  const cited = harnesses.flatMap((n) =>
+    [...readFileSync(join(REVIEW, n), "utf8").matchAll(/\bsrc\/[A-Za-z0-9_./-]+\.test\.tsx?\b/g)].map((m) => ({ harness: n, test: m[0] })),
+  );
+
+  it("the harnesses do cite tests (a scan that finds none pins nothing)", () => {
+    expect(harnesses.length).toBeGreaterThanOrEqual(5);
+    expect(cited.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("no cited test is missing", () => {
+    const missing = cited.filter((c) => !existsSync(join(ROOT, c.test))).map((c) => `${c.harness} cites ${c.test}`);
+    expect([...new Set(missing)]).toEqual([]);
+  });
+});
 
 describe("the exit-path check can fail — its red branch, executed", () => {
   it("rejects a script whose only non-zero exit is the usage branch", () => {

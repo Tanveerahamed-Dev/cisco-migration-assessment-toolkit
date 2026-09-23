@@ -1,0 +1,331 @@
+/**
+ * self-removing-focus.test.tsx — acceptance D3 for the class the first-pass audit did not drive: a
+ * control whose OWN activation unmounts it.
+ *
+ * MEASURED (acceptance report, D3 overturned PASS to FAIL): "reached 'Remove the Critical severity
+ * filter' after 7 Tabs (focus-visible=true) / after Enter + 2.5s: {tag: BODY}" — and the same for
+ * "Remove the High severity filter", "Clear scope", "Deselect device core1" and "Stop investigating
+ * the flow …". Each is a control that removes itself when pressed, so the element holding focus
+ * leaves the document and the browser parks focus on <body>. The keyboard reader's next Tab starts
+ * again from the top of the page and a screen reader announces nothing.
+ *
+ * THE DENOMINATOR IS DISCOVERED, NOT LISTED. The whole application is mounted with every kind of
+ * scope token the query bar can carry (a query, two severities, a role, the uncollected-only
+ * restriction, a finding, a device, a link and a flow). EVERY tab stop on screen is then pressed —
+ * with Enter, and separately with Space — from the seeded state, and a control that is no longer in
+ * the document afterwards IS a self-removing control, whatever it is called and wherever it lives.
+ * For each of those, focus must have been handed to a connected, unhidden focus target; and no press
+ * at all may leave focus on <body>, whether or not the control survived. The only thing asserted
+ * about the SET is a floor: every Chip primitive's remove control on screen is in it — so the drive
+ * cannot pass by pressing nothing.
+ *
+ * `:focus-visible` IS THE BROWSER AUDIT'S, NOT THIS FILE'S. MEASURED 2026-09-23 in this runner:
+ * jsdom matches `:focus-visible` on a focused text input and NEVER on a focused button or a
+ * `tabindex=-1` heading, whatever input preceded it — it has no input-modality heuristic. Asserting
+ * it here would fail every correct hand-off to a button. Chromium's heuristic (a script focus after
+ * a key press is focus-visible) is measured, with the ring's pixels, by the real-browser pass.
+ *
+ * FROM THE SEEDED STATE, EVERY TIME. Between presses the investigation is restored in place (the
+ * store is re-hydrated with the seeded snapshot, dialogs are closed, per-reader preferences are
+ * cleared). If the tab stops on screen then differ in any way from the seeded page's — a press
+ * changed something the store does not hold — the application is unmounted and mounted afresh
+ * before the next press. Remounting for every press is the same check and ~5x slower.
+ *
+ * KEYBOARD, AS JSDOM CAN DO IT. jsdom runs no activation behaviour for keys, so `press` dispatches
+ * the real keydown (and keyup, for Space) to the focused control — every key handler in the app
+ * sees what a browser would send — and then performs the browser's own default action for that key
+ * on that element (Enter: click a button, link or summary on keydown; Space: click a button,
+ * summary, checkbox or radio on keyup) unless a handler cancelled the key. The real-browser
+ * counterpart, reached by real Tab presses at 1440, 768 and 390 px, is
+ * `node review/audit-d3-focus.mjs --self-removing`.
+ */
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { fabric } from "../core/data";
+import { useInvestigation, type InvestigationState } from "../core/store";
+import { setCharacterKeyShortcuts, setHelpOpen } from "./keyboard";
+
+vi.mock("../fabric3d/Fabric3D", () => ({ default: () => <div />, Fabric3D: () => <div /> }));
+
+import { App } from "./App";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var IS_REACT_ACT_ENVIRONMENT: boolean;
+}
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+/* ── the seeded investigation: one token of every kind the scope bar renders ── */
+
+const LINK = fabric.links[0]?.id ?? null;
+const FLOW = "10.0.10.50>10.0.30.10>tcp>3389";
+const SEEDED = (): string => {
+  const p = new URLSearchParams();
+  p.set("s", "findings");
+  p.set("q", "gateway");
+  p.set("sev", "CH");
+  p.set("role", "access");
+  p.set("unc", "1");
+  p.set("f", fabric.findings[0]!.id);
+  p.set("d", "core1");
+  if (LINK !== null) p.set("l", LINK);
+  p.set("flow", FLOW);
+  return `/?${p.toString()}`;
+};
+
+/* ── the tab stops, by a stable identity ── */
+
+const hiddenByAncestor = (el: Element): boolean => {
+  for (let n: Element | null = el; n !== null; n = n.parentElement) {
+    if (n.hasAttribute("hidden") || n.hasAttribute("inert") || n.getAttribute("aria-hidden") === "true") return true;
+    if (n instanceof HTMLElement && (n.style.display === "none" || n.style.visibility === "hidden")) return true;
+  }
+  return false;
+};
+
+const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+
+/** Every tab stop in document order: focusable, not disabled, tabIndex >= 0, not hidden. */
+function tabStops(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (el) =>
+      el.tabIndex >= 0 &&
+      !(el as HTMLButtonElement).disabled &&
+      !hiddenByAncestor(el) &&
+      !(el instanceof HTMLInputElement && el.type === "hidden"),
+  );
+}
+
+const nameOf = (el: Element): string => {
+  const label = el.getAttribute("aria-label");
+  if (label !== null && label.trim() !== "") return label.trim();
+  const by = (el.getAttribute("aria-labelledby") ?? "")
+    .split(/\s+/)
+    .map((id) => (id === "" ? "" : (document.getElementById(id)?.textContent ?? "")))
+    .join(" ")
+    .trim();
+  return by || (el.textContent ?? "").trim() || el.getAttribute("placeholder") || el.tagName;
+};
+
+interface Stop {
+  ident: string;
+  occurrence: number;
+  el: HTMLElement;
+}
+
+function identify(els: readonly HTMLElement[]): Stop[] {
+  const seen = new Map<string, number>();
+  return els.map((el) => {
+    const role = el.getAttribute("role");
+    const ident = `${el.tagName.toLowerCase()}${role ? `[${role}]` : ""} "${nameOf(el).replace(/\s+/g, " ").slice(0, 60)}"`;
+    const occurrence = seen.get(ident) ?? 0;
+    seen.set(ident, occurrence + 1);
+    return { ident, occurrence, el };
+  });
+}
+
+const keyOf = (s: { ident: string; occurrence: number }): string => `${s.ident}${s.occurrence > 0 ? ` #${s.occurrence + 1}` : ""}`;
+const signature = (): string => identify(tabStops()).map(keyOf).join("\n");
+
+/* ── mounting and restoring ── */
+
+let current: { root: Root; container: HTMLElement } | null = null;
+let seeded: { state: InvestigationState; signature: string; search: string } | null = null;
+
+const flush = async (ms = 10, rounds = 3): Promise<void> => {
+  for (let i = 0; i < rounds; i += 1) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, ms));
+    });
+  }
+};
+
+/** State outside the investigation store that a press can leave behind. */
+function clearGlobals(): void {
+  act(() => {
+    setHelpOpen(false);
+    useInvestigation.setState({ paletteOpen: false, inspectorOpen: false });
+    setCharacterKeyShortcuts(true);
+  });
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+  } catch {
+    /* no storage: nothing to clear */
+  }
+}
+
+function unmount(): void {
+  if (current === null) return;
+  const c = current;
+  current = null;
+  act(() => c.root.unmount());
+  c.container.remove();
+  document.body.innerHTML = "";
+}
+
+async function mountSeeded(): Promise<void> {
+  unmount();
+  clearGlobals();
+  useInvestigation.getState().reset();
+  window.history.replaceState(null, "", SEEDED());
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => root.render(<App />));
+  current = { root, container };
+  /* The restored flow is traced after the first commit; the scope bar then carries every token. */
+  const deadline = Date.now() + 8000;
+  while (useInvestigation.getState().trace === null && Date.now() < deadline) await flush(10, 1);
+  await flush(10, 4);
+  if (seeded === null) seeded = { state: { ...useInvestigation.getState() }, signature: signature(), search: window.location.search };
+}
+
+/** Back to the seeded page: in place when that reproduces it exactly, by a fresh mount otherwise. */
+async function restore(): Promise<void> {
+  if (current === null || seeded === null) {
+    await mountSeeded();
+    return;
+  }
+  clearGlobals();
+  const s = seeded;
+  act(() => {
+    window.history.replaceState(null, "", `/${s.search}`);
+    useInvestigation.getState().hydrate(s.state);
+  });
+  await flush(10, 3);
+  if (signature() !== s.signature) await mountSeeded();
+}
+
+/* ── a key press, with the browser's default action ── */
+
+type ActivationKey = "Enter" | "Space";
+
+function press(el: HTMLElement, key: ActivationKey): void {
+  const init: KeyboardEventInit = { key: key === "Space" ? " " : "Enter", code: key, bubbles: true, cancelable: true };
+  const tag = el.tagName;
+  const type = el instanceof HTMLInputElement ? el.type : "";
+  act(() => {
+    const down = el.dispatchEvent(new KeyboardEvent("keydown", init));
+    if (key === "Enter") {
+      const activates = tag === "BUTTON" || tag === "SUMMARY" || (tag === "A" && el.hasAttribute("href")) || ["submit", "button", "reset"].includes(type);
+      if (down && activates) el.click();
+      el.dispatchEvent(new KeyboardEvent("keyup", init));
+      return;
+    }
+    const up = el.dispatchEvent(new KeyboardEvent("keyup", init));
+    const activates = tag === "BUTTON" || tag === "SUMMARY" || ["checkbox", "radio", "submit", "button", "reset"].includes(type);
+    if (down && up && activates) el.click();
+  });
+}
+
+/* ── the drive ── */
+
+interface Outcome {
+  stop: string;
+  removed: boolean;
+  landed: string;
+  ok: boolean;
+  why: string;
+}
+
+const describeActive = (): string => {
+  const a = document.activeElement;
+  if (a === null) return "null";
+  if (a === document.body) return "BODY";
+  return `${a.tagName.toLowerCase()} "${nameOf(a).replace(/\s+/g, " ").slice(0, 50)}"`;
+};
+
+async function drive(target: { ident: string; occurrence: number }, key: ActivationKey): Promise<Outcome | null> {
+  await restore();
+  const el = identify(tabStops()).find((s) => s.ident === target.ident && s.occurrence === target.occurrence)?.el;
+  if (el === undefined) return null;
+  act(() => el.focus());
+  if (document.activeElement !== el) return null;
+  press(el, key);
+  await flush(20, 4);
+  const removed = !el.isConnected;
+  const a = document.activeElement;
+  let why = "";
+  if (a === null || a === document.body || !a.isConnected) why = "focus was left on <body>";
+  else if (hiddenByAncestor(a)) why = "focus went to a hidden element";
+  else if (removed && a instanceof HTMLElement && !(a.tabIndex >= 0 || a.hasAttribute("tabindex"))) why = "the successor is not a focus target";
+  return { stop: keyOf(target), removed, landed: describeActive(), ok: why === "", why };
+}
+
+/* ── the tests ── */
+
+const realMatchMedia = window.matchMedia;
+
+beforeAll(() => {
+  /* Copy actions are tab stops too; jsdom has no clipboard, and a rejection there is not what this
+     file measures. */
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.resolve(), readText: () => Promise.resolve("") },
+  });
+});
+
+beforeEach(() => {
+  /* A desktop viewport, so the shell lays out every rail (jsdom has no matchMedia). */
+  window.matchMedia = ((q: string) => {
+    let matches = true;
+    for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
+      const bound = Number.parseFloat(m[2] as string) * 16;
+      matches &&= m[1] === "min" ? 1600 >= bound : 1600 <= bound;
+    }
+    if (/prefers-reduced-motion/.test(q)) matches = false;
+    return {
+      matches,
+      media: q,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    } as unknown as MediaQueryList;
+  }) as typeof window.matchMedia;
+  vi.spyOn(window, "open").mockImplementation(() => null);
+});
+
+afterEach(() => {
+  unmount();
+  seeded = null;
+  clearGlobals();
+  window.matchMedia = realMatchMedia;
+  window.history.replaceState(null, "", "/");
+  useInvestigation.getState().reset();
+  vi.restoreAllMocks();
+});
+
+describe("D3: a control that removes itself hands focus to a visible successor", () => {
+  for (const key of ["Enter", "Space"] as const) {
+    it(`every tab stop pressed with ${key}: none leaves focus on <body>, and every self-removing one hands it on`, { timeout: 1_200_000 }, async () => {
+      await mountSeeded();
+      const stops = identify(tabStops()).map(({ ident, occurrence }) => ({ ident, occurrence }));
+      /* The floor: every Chip primitive's remove control the seed put on screen (one per token, in
+         the scope bar and again in the queue's own chip row). */
+      const removers = identify(tabStops())
+        .filter((s) => s.el.matches(".ui-chip__remove"))
+        .map(keyOf);
+      expect(removers.length, "precondition: the seeded scope rendered its remove controls").toBeGreaterThanOrEqual(9);
+
+      const outcomes: Outcome[] = [];
+      const undriven: string[] = [];
+      for (const stop of stops) {
+        const o = await drive(stop, key);
+        if (o === null) undriven.push(keyOf(stop));
+        else outcomes.push(o);
+      }
+
+      const members = new Set(outcomes.filter((o) => o.removed).map((o) => o.stop));
+      const failed = outcomes.filter((o) => !o.ok).map((o) => `${o.stop} [${key}]${o.removed ? " (removed itself)" : ""} -> ${o.landed}: ${o.why}`);
+      expect(undriven, "tab stops that could not be found again and focused from the seeded state").toEqual([]);
+      expect(removers.filter((r) => !members.has(r)), "remove controls that did not remove themselves").toEqual([]);
+      expect(failed).toEqual([]);
+    });
+  }
+});

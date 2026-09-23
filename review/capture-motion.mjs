@@ -38,6 +38,11 @@
  * Reuses capture.mjs's GPU_ARGS, its server identification and its scene-handle opt-in (copied, not
  * imported: importing capture.mjs runs its CLI). Exit code: 0 only when every check PASSES; 3 on any
  * FAIL; 4 when a check could not be established (UNPROVEN) and nothing failed.
+ *
+ * A leg is graded only at the tier it declares: every recorded motion frame's `stats().quality` is
+ * compared with the leg's tier, and a sequence with any frame at another tier (an automatic
+ * step-down mid-leg, say) FAILS the "declared tier" item and is a leg problem, which leaves every
+ * other item UNPROVEN rather than graded on evidence about the wrong tier (`declaredTierFails`).
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -826,6 +831,7 @@ export function analyseMotion(seq, meta, L, w, h, tier) {
     what: seq.what,
     density: density(meta),
     tiersSeen: [...new Set(meta.map((f) => f.quality))],
+    tierHeld: tierHeldBy(meta, tier),
     cameraFramesMoving: cd.filter((x) => x > T.STILL_PX).length,
     maxCamPxPerFrame: r2(Math.max(...cd)),
     stillPairsJudged: stillPairs,
@@ -846,6 +852,39 @@ export function analyseMotion(seq, meta, L, w, h, tier) {
     _diffs: diffs.map((d) => (d ? { mean: r2(d.mean), over: d.over, max: d.max } : null)),
     _cd: cd.map((x) => Number(x.toPrecision(3))),
   };
+}
+
+/**
+ * WHICH TIER each recorded frame was actually rendered at, against the tier its leg DECLARES
+ * (acceptance report 2026-09-23, C5 harness defect). `tiersSeen` used to be recorded and read by no
+ * verdict, and the tier was checked once, at leg start — so the dark "high" reset-fly that failed on
+ * a history-blend pop had in fact been rendered at LOW after an automatic step-down, and a "high" leg
+ * that ran at low reported no leg problem. A frame whose `stats().quality` is not the declared tier
+ * (including a frame that reported none) is evidence about another tier. It is counted here, and
+ * `declaredTierFails` turns any such sequence into a FAIL and a leg problem, so no item is graded on
+ * evidence about a tier it does not name.
+ */
+export function tierHeldBy(meta, declared) {
+  const q = meta.map((f) => (typeof f.quality === "string" && f.quality !== "" ? f.quality : "(none)"));
+  let off = 0;
+  let first = null;
+  q.forEach((x, t) => {
+    if (x === declared) return;
+    off++;
+    if (first === null) first = t;
+  });
+  return { declared, tiersSeen: [...new Set(q)], frames: q.length, framesOffTier: off, firstOffTierFrame: first };
+}
+
+/** One FAIL line per analysed sequence that was not rendered wholly at its leg's declared tier. */
+export function declaredTierFails(leg, analysed) {
+  return analysed.flatMap((s) => {
+    const t = s.tierHeld;
+    if (!t || typeof t.framesOffTier !== "number") return [`${leg}/${s.sequence}: no per-frame tier record — the tier this sequence was rendered at is not established`];
+    if (t.framesOffTier === 0) return [];
+    const others = t.tiersSeen.filter((x) => x !== t.declared);
+    return [`${leg}/${s.sequence}: ${t.framesOffTier} of ${t.frames} frames rendered at ${others.join(", ")}, not the declared ${t.declared} (first at frame ${t.firstOffTierFrame})`];
+  });
 }
 
 /**
@@ -1147,8 +1186,12 @@ async function main() {
         delete a._diffs;
         delete a._cd;
         leg.sequences.push(a);
+        /* A sequence rendered (even partly) at another tier is not evidence about this leg's tier: a
+           leg problem (so no other item is established on it) and a FAIL of its own (below). */
+        for (const p of declaredTierFails(`${theme}/${tier}`, [a])) leg.problems.push(p);
         console.log(
-          `  ${seq.id}: ${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
+          `  ${seq.id}: tiers ${JSON.stringify(a.tierHeld.tiersSeen)}${a.tierHeld.framesOffTier ? ` (${a.tierHeld.framesOffTier} frames off the declared ${tier}, first at ${a.tierHeld.firstOffTierFrame})` : ""}, ` +
+            `${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
             `still pops ${a.stillPops.length}/${a.stillPairsJudged}, spikes ${a.motionSpikes.length}, flip px ${a.zfight.flipPixels}${a.zfight.flipClasses ? " " + JSON.stringify(a.zfight.flipClasses) : ""} (clusters>=${T.ZF_CLUSTER}: ${a.zfight.clusterCount}), ` +
             `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map((x) => x.kind + "@" + x.frame + (x.jump ? ` ${x.msAfterLastCameraChange}ms ${x.jump.shareOver8}` : "")))}`,
         );
@@ -1238,8 +1281,11 @@ async function main() {
     }
   }
   const fadeNotEst = legs.flatMap((l) => l.fades.filter((f) => !f.established).map((f) => `${l.theme}/${f.tag}: ${f.why}`));
+  const tierFails = legs.flatMap((l) => declaredTierFails(`${l.theme}/${l.tier}`, l.sequences));
+  const allLegsRan = legs.length === THEMES.length * TIERS.length && legs.every((l) => l.sequences.length === SEQUENCES.length);
 
   const items = {
+    "every recorded motion frame rendered at its leg's declared tier": verdict(tierFails, allLegsRan, `${all.length} sequences across ${legs.length} of ${THEMES.length * TIERS.length} legs, tier read from stats().quality on every recorded frame`),
     "z-fighting (flip-flop PATCHES >= ZF_CLUSTER px during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
     "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
     "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),

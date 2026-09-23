@@ -14,13 +14,27 @@
  * real red gets waved through. The fix is not a bigger number on one test: it is to stop the
  * runner's defaults from deciding the verdict.
  *
- *   - `testTimeout` far above any measured test (slowest solo: 2 266 ms) so a timeout means a hang,
- *     not a busy scheduler. The suite asserts CORRECTNESS; the latency budget that actually matters
- *     is measured against the running application by `review/measure-inp.mjs`, which labels itself
- *     LABORATORY, and by the median-over-repeats tripwires inside `engine.test.ts`.
+ *   - `testTimeout` at 30 s, meant as a HANG detector. This header used to justify it as "far above
+ *     any measured test (slowest solo: 2 266 ms)". That premise was false (acceptance report F2,
+ *     2026-09-23): on a GREEN full run two EvidencePane tests took 13.5 s and 15.7 s, and on a loaded
+ *     one they hit 30 s while not hung. Measured 2026-09-23, full `npx vitest run` with the host 84-86 %
+ *     busy (other agents' suites and a concurrent `review/mutation-check.mjs`): 42 of 2 041 tests took
+ *     over 10 s, and several tests left on this default read 30-74 s. No quiet-host (solo) figure has
+ *     been re-taken since, so this file quotes none. What holds instead is a RULE, not a number:
+ *     a unit test asserts no wall-clock time (a count of the work replaces it — see the "per-keystroke
+ *     work" block in `CommandPalette.test.tsx`), and a test whose unit of work is large is split one
+ *     record per test (the EvidencePane per-finding tests) rather than given a bigger limit. Raising
+ *     this number to make a loaded run green would only move the flake. The suite asserts
+ *     CORRECTNESS; the latency budget is measured against the running application by
+ *     `review/measure-inp.mjs` and `review/audit-e5-sweep.mjs`, which label themselves LABORATORY and
+ *     gate acceptance on a quiet host.
  *   - `maxWorkers` capped below the core count, so the suite does not oversubscribe the machine it
- *     is measuring on. The one deliberately long test (`blast.test.ts`, 946 two-cable
- *     perturbations, ~22 s) carries its own explicit timeout at the call site and is unaffected.
+ *     is measuring on. It cannot stop OTHER processes doing so: on the loaded run above, four test
+ *     files never started because Vitest's fixed 60 s worker-start timeout expired
+ *     ("[vitest-pool]: Failed to start forks worker"), which is the host, not the tests. Tests that
+ *     carry their own explicit timeout at the call site (`blast.test.ts`'s 946 two-cable
+ *     perturbations among them — 600 s there, and it took 319 s on that loaded run) are unaffected by
+ *     this default; each such override is its owner's to justify.
  *
  * It merges the app config rather than replacing it: vitest loads `vitest.config.ts` INSTEAD of
  * `vite.config.ts` when both exist, and the React plugin, the module resolution and the chunking

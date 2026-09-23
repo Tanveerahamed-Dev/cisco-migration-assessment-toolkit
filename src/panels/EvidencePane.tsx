@@ -59,6 +59,7 @@ import {
 } from "../ui/primitives";
 import { AclLines, Kv, Section, useOpenCite, type KvRow } from "./DevicePane";
 import "./EvidencePane.css";
+import { RouteFieldValue } from "./HopList";
 
 const cx = (...parts: (string | false | null | undefined)[]): string => parts.filter(Boolean).join(" ");
 
@@ -651,13 +652,13 @@ function ParsedRecord({
           <li key={r.cite} className="ev-cfg__route">
             <span className="ev-mono ev-cfg__route-prefix">{r.prefix}</span>
             <span className="ev-cfg__route-body">
-              via {orNotObserved(r.nextHop, (s) => <span className="ev-mono">{s}</span>, { what: "next hop", compact: true })}
+              via <RouteFieldValue route={r} field="nextHop" compact classes={{ value: "ev-mono" }} />
               {" out "}
               {orNotObserved(r.outIntf, (s) => <span className="ev-mono">{s}</span>, { what: "egress interface", compact: true })}
               {" ("}
               {orNotObserved(r.source, (s) => s, { what: "route source", compact: true })}
               {", AD "}
-              {orNotObserved(r.adminDistance, (n) => String(n), { what: "administrative distance", compact: true })}
+              <RouteFieldValue route={r} field="adminDistance" compact />
               {")"}
             </span>
             <CiteButton cite={r.cite} onOpen={onOpenCite} label="cite" />

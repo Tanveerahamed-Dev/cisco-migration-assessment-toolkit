@@ -20,6 +20,11 @@
  *   silently re-sorted the grid. "Rows exist in the DOM" is not the test; "a row returns ITSELF
  *   from elementFromPoint at its own centre" is, because that is what a click actually does.
  *
+ *   2c (O24): at 1280x800 with a trace the queue's own chrome left 2 of 146 rows hit-testable, so
+ *   the queue folds its Group / Order / Display block behind one "View" disclosure when that block
+ *   would crowd the rows out. Wherever that fold is in effect, the disclosure must be a labelled,
+ *   described, collapsed tab stop, and Enter on it must show every control it hid.
+ *
  * INVARIANT 3 — every citation in the evidence rail can be clicked.
  *   A citation a pointer user cannot open is an evidence chain that is only half reachable. The
  *   2026-09-21 critic (B6) found one blocked citation on EVERY device Summary tab: the Failure-impact
@@ -168,6 +173,42 @@ for (const [w, h] of ONLY === "hop" ? [] : VIEWPORTS) {
     }
     if (label === "with trace" && !r.tracePanelPresent) {
       failures.push(`${at}: the flow did not open the path panel, so this state proves nothing.`);
+    }
+    /* INVARIANT 2c — a folded view never hides a control (O24). When the queue folds its Group /
+       Order / Display block to keep rows on screen, the one disclosure that holds it must be a tab
+       stop, say what it controls and whether it is open, and open by keyboard onto every control it
+       hid. Checked wherever the fold happens, not at a listed width. */
+    const fold = await page.evaluate(() => {
+      const ctl = document.querySelector("#rail-queue .pq-controls");
+      if (!ctl || !ctl.hidden) return null;
+      const btn = document.querySelector(`#rail-queue [aria-controls="${ctl.id}"]`);
+      return {
+        btn: btn !== null,
+        tabStop: btn !== null && btn.tabIndex >= 0,
+        expanded: btn?.getAttribute("aria-expanded") ?? null,
+        name: btn?.textContent?.trim() ?? "",
+        described: (document.getElementById(btn?.getAttribute("aria-describedby") ?? "")?.textContent ?? "").trim(),
+        hiddenControls: ctl.querySelectorAll("select, button, input").length,
+      };
+    });
+    if (fold !== null) {
+      if (!fold.btn || !fold.tabStop || fold.expanded !== "false" || fold.name === "" || fold.described === "") {
+        failures.push(`${at}: the folded view controls have no labelled, collapsed, tab-reachable disclosure (${JSON.stringify(fold)}).`);
+      } else {
+        await page.locator("#rail-queue .pq-controls").evaluate((ctl) => document.querySelector(`[aria-controls="${ctl.id}"]`)?.focus());
+        await page.keyboard.press("Enter");
+        await page.waitForTimeout(300);
+        const open = await page.evaluate(() => {
+          const ctl = document.querySelector("#rail-queue .pq-controls");
+          const btn = document.querySelector(`#rail-queue [aria-controls="${ctl?.id}"]`);
+          const shown = [...(ctl?.querySelectorAll("select, button, input") ?? [])].filter((el) => el.getClientRects().length > 0).length;
+          return { hidden: ctl?.hidden, expanded: btn?.getAttribute("aria-expanded"), shown };
+        });
+        if (open.hidden !== false || open.expanded !== "true" || open.shown !== fold.hiddenControls)
+          failures.push(`${at}: Enter on the fold's disclosure did not show every control it hid (${JSON.stringify(open)}; ${fold.hiddenControls} hidden).`);
+        await page.keyboard.press("Enter");
+      }
+      console.log(`${at}: view controls folded under "${fold.name}" (${fold.hiddenControls} controls, disclosure ${fold.tabStop ? "tab-reachable" : "NOT reachable"})`);
     }
     console.log(
       `${at}: doc ${r.docScrollH}/${r.clientH}, ${r.hittable}/${r.rowsInDom} rows hit-testable` +

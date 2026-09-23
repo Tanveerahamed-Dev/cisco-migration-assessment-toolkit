@@ -62,11 +62,12 @@ import {
   type QueryToken,
   type SortSpec,
 } from "../core/query";
+import { handOffFocus, returnFocus } from "../app/focus-return";
 import { bandKey, bandKeyLabel } from "../core/band-qualification";
 import { useInvestigation } from "../core/store";
 import type { Cite, CrossLayerFinding, Finding } from "../core/types";
 import { SEVERITY_ORDER } from "../core/types";
-import { IconCite, IconClose, IconInfo, IconSearch } from "../ui/icons";
+import { IconChevronDown, IconChevronUp, IconCite, IconClose, IconInfo, IconSearch } from "../ui/icons";
 import {
   Button,
   Chip,
@@ -602,6 +603,55 @@ function ClauseRow({ outcome, noun }: { outcome: ClauseOutcome; noun: string }):
   );
 }
 
+/* ── the view-controls fold (O24) ───────────────────────────────────────────── */
+
+/**
+ * The queue folds its Group / Order / Display block behind one disclosure when showing it would
+ * leave fewer finding rows than this in view at rest. Six is the grid's own floor — its sticky
+ * header plus six rows (review/layout-guard.mjs, invariant 2, fails below four).
+ */
+const MIN_UNFOLDED_ROWS = 6;
+
+/**
+ * How many finding rows are in view AT REST with `shrink` px less port — the question the fold
+ * asks with `shrink` = 0 while the controls are shown, and = their height while they are folded
+ * (unfolding them would push the grid down by exactly that much). The port is the grid's box
+ * below its sticky header, cut by every clipping ancestor (the rail that holds the queue and the
+ * path panel), in coordinates with each such ancestor's scroll undone, so the answer does not
+ * change as the reader scrolls the rail. Rows are counted by their laid-out centres, as a click
+ * would find them — NOT as port height over one row's height: rows wrap to two or three lines,
+ * and MEASURED at 1440x900 with a trace the first row was 40 px and the next 56, so a height-based
+ * estimate read 6 rows where 4 were on screen. Null before layout (jsdom, a hidden rail).
+ */
+function restingRowsInView(root: HTMLElement, shrink: number): number | null {
+  const grid = root.querySelector<HTMLElement>(".ag__grid");
+  const rows = grid?.querySelectorAll<HTMLElement>(".ag__row--data") ?? [];
+  if (!grid || rows.length === 0) return null;
+  const g = grid.getBoundingClientRect();
+  if (!(g.height > 0)) return null;
+  /* Undo the scroll of every clipping ancestor: `offset` is added to every viewport y inside them. */
+  let offset = 0;
+  const clips: number[] = [];
+  for (let a = grid.parentElement; a !== null; a = a.parentElement) {
+    if (getComputedStyle(a).overflowY === "visible") continue;
+    offset += a.scrollTop;
+    const r = a.getBoundingClientRect();
+    clips.push(r.top + a.clientTop + a.clientHeight);
+  }
+  const head = grid.querySelector<HTMLElement>(".ag__row--head")?.getBoundingClientRect().height ?? 0;
+  const top = g.top + offset + head;
+  /* A clipping ancestor's own box does not move with its scroll, so its bottom is already at rest;
+     only the content inside it (the grid and its rows) is shifted by `offset`. */
+  const bottom = Math.min(g.bottom + offset, ...clips) - shrink;
+  let n = 0;
+  for (const row of rows) {
+    const r = row.getBoundingClientRect();
+    const mid = (r.top + r.bottom) / 2 + offset;
+    if (r.height > 0 && mid >= top && mid <= bottom) n += 1;
+  }
+  return n;
+}
+
 /* ── props ──────────────────────────────────────────────────────────────────── */
 
 export interface PriorityQueueProps {
@@ -709,6 +759,9 @@ export function PriorityQueue({
   }, []);
 
   const queryInputRef = useRef<HTMLInputElement | null>(null);
+  /** The filter field: where focus goes when a control that removes itself (a scope chip, the empty
+   *  state's "Clear the filter text") leaves nothing else in its group (acceptance D3). */
+  const queryField = useCallback((): HTMLInputElement | null => queryInputRef.current, []);
   /**
    * The painted-token layer under the real characters. It is a SEPARATE box from the input, so it
    * does not inherit the input's horizontal scroll: once a query was longer than the field, the
@@ -723,6 +776,128 @@ export function PriorityQueue({
     if (input && ink) ink.scrollLeft = input.scrollLeft;
   }, []);
   const accountingId = useId();
+
+  /* ── the view controls fold (O24) ──
+     MEASURED (acceptance, O24): at 1280x800 with a trace open only 2 of 146 finding rows were
+     hit-testable — the queue's chrome was ~330 px at the 280 px rail, and 145 px of it was the
+     Group / Order / Display block, stacked because the rail is too narrow to seat them side by side.
+     The grid kept its 19rem floor and ran under the end of its rail. So when the controls leave
+     fewer than MIN_UNFOLDED_ROWS finding rows in view at rest, they fold behind ONE disclosure
+     ("View", beside the filter field, so folding costs no line of its own).
+
+     The condition is MEASURED, never a width, and it is kept only while it WORKS:
+       - shown, the rows actually in view are counted (restingRowsInView); fewer than the floor folds;
+       - folded, the rows in view are counted again. If folding put no more rows on screen than the
+         unfolded count taken at the same geometry, it is undone and not retried at that geometry.
+         MEASURED: at 1920x1080 and 1440x900 with a trace, the rail's path track sits below its
+         share and takes whatever the queue gives up, so folding showed 4 rows exactly as unfolded
+         did — it hid the controls for nothing. At 1280x800 the path track is already at its floor,
+         and the same fold took the rows from 2 to 4.
+       - folded at a geometry never measured unfolded (the window grew while folded), the unfolded
+         count is estimated from the block's last measured height; enough rows unfolds.
+     Geometry is the clipping ancestors' size and child count and the queue's width: a resize, a
+     path panel arriving or leaving, starts a fresh measurement. Nothing about the controls' state
+     moves: they stay mounted (hidden while folded) and read and write exactly the preferences they
+     did before. */
+  const viewId = `${accountingId}-view`;
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  const viewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const controlsCost = useRef<number | null>(null);
+  /** At which geometry the unfolded rows were counted, how many, and whether folding there helped. */
+  const foldTrial = useRef<{ geometry: string; unfolded: number | null; futile: boolean }>({ geometry: "", unfolded: null, futile: false });
+  const [viewFolded, setViewFolded] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const foldRef = useRef({ viewFolded, viewOpen });
+  foldRef.current = { viewFolded, viewOpen };
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (root === null || typeof ResizeObserver === "undefined") return;
+    const geometryOf = (): string => {
+      const parts = [String(root.clientWidth)];
+      for (let a = root.parentElement; a !== null; a = a.parentElement) {
+        if (getComputedStyle(a).overflowY !== "visible") parts.push(`${a.clientWidth}x${a.clientHeight}/${a.childElementCount}`);
+      }
+      return parts.join("|");
+    };
+    const setFold = (fold: boolean, controls: HTMLElement): void => {
+      const active = document.activeElement;
+      if (fold) {
+        /* Folding under a reader who is IN the controls would hide the control they hold: keep the
+           block open under its disclosure instead, so their focus never falls to <body>. */
+        if (active instanceof Node && controls.contains(active)) setViewOpen(true);
+      } else {
+        if (active !== null && active === viewButtonRef.current) {
+          /* The disclosure is about to go; the controls it stood for take its place and the focus. */
+          const first = controls.querySelector<HTMLElement>("select, button, input");
+          queueMicrotask(() => {
+            if (document.activeElement === null || document.activeElement === document.body) returnFocus(null, root, [first]);
+          });
+        }
+        setViewOpen(false);
+      }
+      setViewFolded(fold);
+    };
+    const decide = (): void => {
+      const controls = controlsRef.current;
+      if (controls === null) return;
+      const { viewFolded: folded, viewOpen: open } = foldRef.current;
+      const shown = !controls.hidden;
+      if (shown) {
+        const h = controls.getBoundingClientRect().height;
+        if (h > 0) controlsCost.current = h;
+      }
+      /* Open under the disclosure is the reader's choice; the fold does not re-decide under them. */
+      if (folded && open) return;
+      const rows = restingRowsInView(root, 0);
+      if (rows === null) return;
+      const geometry = geometryOf();
+      const trial = foldTrial.current;
+      if (trial.geometry !== geometry) foldTrial.current = { geometry, unfolded: null, futile: false };
+      const t = foldTrial.current;
+      if (!folded) {
+        t.unfolded = rows;
+        if (rows < MIN_UNFOLDED_ROWS && !t.futile) setFold(true, controls);
+        return;
+      }
+      if (t.unfolded !== null) {
+        if (rows <= t.unfolded) {
+          t.futile = true;
+          setFold(false, controls);
+        }
+        return;
+      }
+      const cost = controlsCost.current;
+      const estimate = cost === null ? null : restingRowsInView(root, cost);
+      if (estimate !== null && estimate >= MIN_UNFOLDED_ROWS) setFold(false, controls);
+    };
+    const ro = new ResizeObserver(decide);
+    ro.observe(root);
+    const grid = root.querySelector(".ag__grid");
+    if (grid !== null) ro.observe(grid);
+    /* The space also moves when something ABOVE the queue in a clipping ancestor changes size (the
+       path panel's height handle) or arrives (a trace opening the path panel): observe every
+       clipping ancestor, each of its children, and its child list. MEASURED: without the child
+       list, a restored trace mounted the path panel after this effect ran and nothing re-decided —
+       the controls stayed unfolded at 1280x800 with 2 rows hit-testable. */
+    const mo = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
+      for (const r of records) for (const n of r.addedNodes) if (n instanceof Element) ro.observe(n);
+      decide();
+    });
+    for (let a = root.parentElement; a !== null; a = a.parentElement) {
+      if (getComputedStyle(a).overflowY === "visible") continue;
+      ro.observe(a);
+      for (const child of a.children) ro.observe(child);
+      mo?.observe(a, { childList: true });
+    }
+    window.addEventListener("resize", decide);
+    decide();
+    return () => {
+      ro.disconnect();
+      mo?.disconnect();
+      window.removeEventListener("resize", decide);
+    };
+    /* `density` moves the row height, which moves the answer without resizing any observed box. */
+  }, [viewFolded, viewOpen, density]);
 
   /* ── the drill and selection handlers ── */
 
@@ -1403,6 +1578,11 @@ export function PriorityQueue({
       .filter((x): x is { column: GridColumn<Finding | CrossLayerFinding>; field: string } => x.field !== null)
       .map((x) => ({ value: `${x.field}:desc`, label: `${x.column.headerLabel ?? x.column.header}, descending` })),
   ];
+  const groupValueNow = spec.groupKeys.some((g) => g.value === groupKey) ? groupKey : "severity";
+  const orderValueNow = ordering.kind === "ranked" ? "ranked" : `${ordering.spec.field}:${ordering.spec.direction}`;
+  /* What the folded "View" disclosure says it holds, read from the same options the selects show. */
+  const groupLabelNow = groupOptions.find((g) => g.value === groupValueNow)?.label ?? groupValueNow;
+  const orderLabelNow = orderOptions.find((o) => o.value === orderValueNow)?.label ?? spec.rankedLabel;
 
   return (
     <section className={["pq", className].filter(Boolean).join(" ")} aria-label="Priority queue" ref={rootRef}>
@@ -1456,137 +1636,153 @@ export function PriorityQueue({
       </div>
 
       {/* ── query bar ── */}
-      <div className="pq-query">
-        <IconSearch className="pq-query__glyph" />
-        <div className="pq-query__box">
-          <div className="pq-query__ink" aria-hidden="true" ref={queryInkRef}>
-            <QueryTokens input={draft} parsed={parsedDraft} />
-            {ghost ? <span className="pq-tok pq-ghost">{ghost}</span> : null}
-          </div>
-          <input
-            ref={queryInputRef}
-            id={`${accountingId}-q`}
-            className="pq-query__input"
-            type="text"
-            role="combobox"
-            aria-expanded={menuOpen && suggestions.length > 0}
-            // aria-controls only while the listbox exists: a reference to an absent id is a broken
-            // relationship, not an empty one.
-            {...(menuOpen && suggestions.length > 0 ? { "aria-controls": `${accountingId}-listbox` } : {})}
-            aria-autocomplete="list"
-            aria-label={`Filter ${spec.noun}`}
-            aria-describedby={`${accountingId}-help`}
-            {...(menuOpen && suggestions[activeSuggestion]
-              ? { "aria-activedescendant": `${accountingId}-opt-${activeSuggestion}` }
-              : {})}
-            autoComplete="off"
-            spellCheck={false}
-            /* Short enough to FIT the field at the 300px rail width. The old placeholder was a
-               three-clause example that was cut flush at the field edge with no ellipsis, so the
-               first thing the field taught the reader was that it truncates silently. The full
-               grammar is in the suggestion popup and the help sheet, which is where an example
-               that does not fit belongs. */
-            placeholder="severity:Critical"
-            /* A value longer than the field is readable on hover as well as by scrolling: the ink
-               layer cannot ellipsise without moving the caret off the real characters. */
-            title={draft === "" ? undefined : draft}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.currentTarget.value);
-              setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
-              setMenuOpen(true);
-              setActiveSuggestion(0);
-              syncInkScroll();
-            }}
-            onScroll={syncInkScroll}
-            onClick={(e) => {
-              setCaret(e.currentTarget.selectionStart ?? 0);
-              syncInkScroll();
-            }}
-            onKeyUp={(e) => {
-              setCaret(e.currentTarget.selectionStart ?? 0);
-              syncInkScroll();
-            }}
-            onFocus={() => setMenuOpen(true)}
-            onBlur={() => setMenuOpen(false)}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
+      <div className="pq-queryrow">
+        <div className="pq-query">
+          <IconSearch className="pq-query__glyph" />
+          <div className="pq-query__box">
+            <div className="pq-query__ink" aria-hidden="true" ref={queryInkRef}>
+              <QueryTokens input={draft} parsed={parsedDraft} />
+              {ghost ? <span className="pq-tok pq-ghost">{ghost}</span> : null}
+            </div>
+            <input
+              ref={queryInputRef}
+              id={`${accountingId}-q`}
+              className="pq-query__input"
+              type="text"
+              role="combobox"
+              aria-expanded={menuOpen && suggestions.length > 0}
+              // aria-controls only while the listbox exists: a reference to an absent id is a broken
+              // relationship, not an empty one.
+              {...(menuOpen && suggestions.length > 0 ? { "aria-controls": `${accountingId}-listbox` } : {})}
+              aria-autocomplete="list"
+              aria-label={`Filter ${spec.noun}`}
+              aria-describedby={`${accountingId}-help`}
+              {...(menuOpen && suggestions[activeSuggestion]
+                ? { "aria-activedescendant": `${accountingId}-opt-${activeSuggestion}` }
+                : {})}
+              autoComplete="off"
+              spellCheck={false}
+              /* Short enough to FIT the field at the 300px rail width. The old placeholder was a
+                 three-clause example that was cut flush at the field edge with no ellipsis, so the
+                 first thing the field taught the reader was that it truncates silently. The full
+                 grammar is in the suggestion popup and the help sheet, which is where an example
+                 that does not fit belongs. */
+              placeholder="severity:Critical"
+              /* A value longer than the field is readable on hover as well as by scrolling: the ink
+                 layer cannot ellipsise without moving the caret off the real characters. */
+              title={draft === "" ? undefined : draft}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.currentTarget.value);
+                setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
                 setMenuOpen(true);
-                setActiveSuggestion((i) => Math.min(i + 1, Math.max(0, suggestions.length - 1)));
-              } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setActiveSuggestion((i) => Math.max(0, i - 1));
-              } else if (e.key === "Enter" && menuOpen && suggestions.length > 0 && ghost !== "") {
-                e.preventDefault();
-                accept(activeSuggestion);
-              } else if (
-                e.key === "ArrowRight" &&
-                !e.shiftKey &&
-                !e.ctrlKey &&
-                !e.metaKey &&
-                !e.altKey &&
-                caret === draft.length &&
-                menuOpen &&
-                suggestions.length > 0 &&
-                ghost !== ""
-              ) {
-                // Accepting the inline ghost with ArrowRight at end-of-line is the completion
-                // gesture Tab used to carry. It is safe because ArrowRight at the end of the value
-                // has no other effect: it is not a navigation key that leaves the field.
-                e.preventDefault();
-                accept(activeSuggestion);
-              } else if (e.key === "Tab") {
-                // Tab MOVES FOCUS. It never accepts a completion and never mutates the query — a
-                // navigation key that silently rewrites the investigation scope is the defect this
-                // replaced. Closing the popup synchronously (rather than waiting for the blur
-                // handler's own render) also means the listbox is gone from the DOM before the
-                // next control in the tab order takes focus, so it cannot overlap that control's
-                // focus ring (SC 2.4.11/2.4.12).
-                if (menuOpen) flushSync(() => setMenuOpen(false));
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                if (menuOpen) setMenuOpen(false);
-                else if (draft !== "") setDraft("");
-              }
-            }}
-          />
-        </div>
-        {draft !== "" ? (
-          <IconButton
-            size="sm"
-            label="Clear the filter text"
-            icon={<IconClose />}
-            onClick={() => {
-              setDraft("");
-              queryInputRef.current?.focus();
-            }}
-          />
-        ) : null}
-        {menuOpen && suggestions.length > 0 ? (
-          <ul className="pq-suggest" id={`${accountingId}-listbox`} role="listbox" aria-label="Filter completions">
-            {suggestions.map((s, i) => (
-              <li
-                key={`${s.kind}:${s.value}`}
-                id={`${accountingId}-opt-${i}`}
-                role="option"
-                aria-selected={i === activeSuggestion}
-                className="pq-suggest__opt"
-                onMouseDown={(e) => {
+                setActiveSuggestion(0);
+                syncInkScroll();
+              }}
+              onScroll={syncInkScroll}
+              onClick={(e) => {
+                setCaret(e.currentTarget.selectionStart ?? 0);
+                syncInkScroll();
+              }}
+              onKeyUp={(e) => {
+                setCaret(e.currentTarget.selectionStart ?? 0);
+                syncInkScroll();
+              }}
+              onFocus={() => setMenuOpen(true)}
+              onBlur={() => setMenuOpen(false)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
                   e.preventDefault();
-                  accept(i);
-                }}
-              >
-                <span className="pq-suggest__value">{s.label}</span>
-                {s.detail ? <span className="pq-suggest__detail">{s.detail}</span> : null}
-                {s.count !== null ? <span className="pq-suggest__count">{s.count}</span> : null}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {menuOpen && suggestions.length === 0 && suggestion.note ? (
-          <p className="pq-query__note">{suggestion.note}</p>
+                  setMenuOpen(true);
+                  setActiveSuggestion((i) => Math.min(i + 1, Math.max(0, suggestions.length - 1)));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setActiveSuggestion((i) => Math.max(0, i - 1));
+                } else if (e.key === "Enter" && menuOpen && suggestions.length > 0 && ghost !== "") {
+                  e.preventDefault();
+                  accept(activeSuggestion);
+                } else if (
+                  e.key === "ArrowRight" &&
+                  !e.shiftKey &&
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.altKey &&
+                  caret === draft.length &&
+                  menuOpen &&
+                  suggestions.length > 0 &&
+                  ghost !== ""
+                ) {
+                  // Accepting the inline ghost with ArrowRight at end-of-line is the completion
+                  // gesture Tab used to carry. It is safe because ArrowRight at the end of the value
+                  // has no other effect: it is not a navigation key that leaves the field.
+                  e.preventDefault();
+                  accept(activeSuggestion);
+                } else if (e.key === "Tab") {
+                  // Tab MOVES FOCUS. It never accepts a completion and never mutates the query — a
+                  // navigation key that silently rewrites the investigation scope is the defect this
+                  // replaced. Closing the popup synchronously (rather than waiting for the blur
+                  // handler's own render) also means the listbox is gone from the DOM before the
+                  // next control in the tab order takes focus, so it cannot overlap that control's
+                  // focus ring (SC 2.4.11/2.4.12).
+                  if (menuOpen) flushSync(() => setMenuOpen(false));
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (menuOpen) setMenuOpen(false);
+                  else if (draft !== "") setDraft("");
+                }
+              }}
+            />
+          </div>
+          {draft !== "" ? (
+            <IconButton
+              size="sm"
+              label="Clear the filter text"
+              icon={<IconClose />}
+              onClick={() => {
+                setDraft("");
+                queryInputRef.current?.focus();
+              }}
+            />
+          ) : null}
+          {menuOpen && suggestions.length > 0 ? (
+            <ul className="pq-suggest" id={`${accountingId}-listbox`} role="listbox" aria-label="Filter completions">
+              {suggestions.map((s, i) => (
+                <li
+                  key={`${s.kind}:${s.value}`}
+                  id={`${accountingId}-opt-${i}`}
+                  role="option"
+                  aria-selected={i === activeSuggestion}
+                  className="pq-suggest__opt"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    accept(i);
+                  }}
+                >
+                  <span className="pq-suggest__value">{s.label}</span>
+                  {s.detail ? <span className="pq-suggest__detail">{s.detail}</span> : null}
+                  {s.count !== null ? <span className="pq-suggest__count">{s.count}</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {menuOpen && suggestions.length === 0 && suggestion.note ? (
+            <p className="pq-query__note">{suggestion.note}</p>
+          ) : null}
+        </div>
+        {viewFolded ? (
+          <Button
+            ref={viewButtonRef}
+            size="sm"
+            className="pq-viewbtn"
+            aria-expanded={viewOpen}
+            aria-controls={viewId}
+            aria-describedby={`${viewId}-now`}
+            icon={viewOpen ? <IconChevronUp /> : <IconChevronDown />}
+            onClick={() => setViewOpen((v) => !v)}
+          >
+            View
+          </Button>
         ) : null}
       </div>
 
@@ -1599,37 +1795,49 @@ export function PriorityQueue({
       {scopeClauses.length > 0 ? (
         <div className="pq-chips" aria-label="Scope carried from the investigation">
           {SEVERITY_ORDER.filter((s) => severities.has(s)).map((s) => (
-            <Chip key={s} removeLabel={`Remove the ${s} severity filter`} onRemove={() => toggleSeverity(s)}>
+            <Chip key={s} removeSuccessor={queryField} removeLabel={`Remove the ${s} severity filter`} onRemove={() => toggleSeverity(s)}>
               {`severity ${s}`}
             </Chip>
           ))}
           {[...roles].sort(cmpStr).map((r) => (
-            <Chip key={r} removeLabel={`Remove the ${r} role filter`} onRemove={() => toggleRole(r)}>
+            <Chip key={r} removeSuccessor={queryField} removeLabel={`Remove the ${r} role filter`} onRemove={() => toggleRole(r)}>
               {`role ${r}`}
             </Chip>
           ))}
           {onlyUncollected ? (
-            <Chip removeLabel="Remove the uncollected-devices filter" onRemove={() => setOnlyUncollected(false)}>
+            <Chip removeSuccessor={queryField} removeLabel="Remove the uncollected-devices filter" onRemove={() => setOnlyUncollected(false)}>
               devices never collected
             </Chip>
           ) : null}
         </div>
       ) : null}
 
-      {/* ── display options, inline ── */}
-      <div className="pq-controls">
+      {/* ── display options, inline — or folded under "View" when they would crowd out the rows ── */}
+      {viewFolded ? (
+        <p className="visually-hidden" id={`${viewId}-now`}>
+          {`Group, order and display options. Grouped by ${groupLabelNow}; order: ${orderLabelNow}.`}
+        </p>
+      ) : null}
+      <div
+        className="pq-controls"
+        id={viewId}
+        ref={controlsRef}
+        role="group"
+        aria-label="Group, order and display"
+        hidden={viewFolded && !viewOpen}
+      >
         <Select
           label="Group"
           className="pq-select"
           options={groupOptions}
-          value={spec.groupKeys.some((g) => g.value === groupKey) ? groupKey : "severity"}
+          value={groupValueNow}
           onChange={(e) => setGroupKey(e.currentTarget.value)}
         />
         <Select
           label="Order"
           className="pq-select"
           options={orderOptions}
-          value={ordering.kind === "ranked" ? "ranked" : `${ordering.spec.field}:${ordering.spec.direction}`}
+          value={orderValueNow}
           onChange={(e) => {
             const v = e.currentTarget.value;
             if (v === "ranked") {
@@ -1874,7 +2082,7 @@ export function PriorityQueue({
           {...(draft !== ""
             ? {
                 action: (
-                  <Button size="sm" onClick={() => setDraft("")}>
+                  <Button size="sm" onClick={(e) => handOffFocus(e.currentTarget, () => setDraft(""), [queryField])}>
                     Clear the filter text
                   </Button>
                 ),

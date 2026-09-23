@@ -98,12 +98,30 @@
    under the real characters. Any divergence in font, size, padding or letter-spacing between the
    two shows up as drifting colour under the caret, so they are declared together. */
 
+/* The field and, when the view controls are folded (O24), the one "View" disclosure beside it:
+   the fold costs no line of its own, which is the point of it. The row carries the margin the
+   field used to; the field takes every pixel the disclosure does not. */
+.pq-queryrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2);
+}
+
+.pq-queryrow > .pq-query {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.pq-viewbtn {
+  flex: none;
+}
 .pq-query {
   position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  margin: var(--sp-2);
+  margin: 0;
   padding-inline: var(--sp-2);
   border: var(--hairline) solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -299,6 +317,11 @@
   align-items: flex-end;
   gap: var(--sp-2);
   padding: 0 var(--sp-2) var(--sp-2);
+}
+
+/* Folded under "View" (O24). The block is display:flex, which outranks the UA [hidden] rule. */
+.pq-controls[hidden] {
+  display: none;
 }
 
 /* 4px between a field label and its control: at 0 the caps label sat on the select's top edge and

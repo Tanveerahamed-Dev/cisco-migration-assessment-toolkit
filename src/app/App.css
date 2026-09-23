@@ -46,11 +46,16 @@
   text-transform: uppercase;
 }
 
+/* The token row keeps its full width and the BAR scrolls (.qbar is overflow-x: auto). It used to be
+   a shrinkable flex item (`min-width: 0`), so on a narrow bar the chips overflowed their own box and
+   "Clear scope" — the next flex item — painted over them. MEASURED (review/audit-d3-focus.mjs
+   --self-removing, 390x844): focus handed to "Remove the access role filter" sat at x 357-374 with
+   "Clear scope" on top of it; elementFromPoint at its centre was the Clear button. */
 .qbar__tokens {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--sp-2);
-  min-width: 0;
 }
 
 /* The empty state is a statement about scope, not an absence of chrome: with nothing selected and

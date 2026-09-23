@@ -19,7 +19,7 @@ import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fabric } from "../core/data";
-import { useInvestigation } from "../core/store";
+import { decodeInvestigation, useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
 import { counterexample, isDefiniteDelivery, traceFlow } from "../forwarding/engine";
 import { formatPrefix, parseInterfaceAddress, parseIpv4, prefixContains } from "../forwarding/ip";
@@ -1320,5 +1320,110 @@ describe("an intent verdict carries the union of its flows' caveats", () => {
     for (const c of v.caveats) expect(said).toContain(c.text);
     /* The bound that most often flips a universal claim: the forward direction only. */
     expect(said).toMatch(/only the forward direction/i);
+  });
+});
+
+/* ══ a Back press never leaves a trace card the store no longer holds ══════ */
+
+describe("PathTrace — history Back while no frame has been painted (hidden tab)", () => {
+  /* REPRODUCED 2026-09-23 in the dev server through real browser history traversal
+     (`history.back()` — a genuine popstate, not a dispatched one) in a background tab, where
+     requestAnimationFrame does not fire: land on a refused shared link (…tcp>abc), traverse to an
+     entry naming a valid flow, then back to the refused one. The panel showed the refusal in the
+     form AND a PARTIAL card for the flow the reader had just left (acceptance report lead,
+     `PathTrace.tsx:1090`). Cause: the restore effect showed the flow from local `pending` and
+     deferred the store write past the next paint; the second Back changed the flow, the effect's
+     cleanup cancelled that write, and nothing released `pending` — so `shown = pending.trace`
+     outlived the store, even after the tab became visible.
+
+     A background tab is simulated the way a browser behaves: animation-frame callbacks are HELD,
+     not dropped, and run when the tab is shown. A Back is simulated the way urlSync applies one:
+     reset, then hydrate from the decoded URL. */
+  const held: (FrameRequestCallback | null)[] = [];
+  const hideTab = (): void => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => held.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      held[id - 1] = null;
+    });
+  };
+  const showTab = async (): Promise<void> => {
+    vi.unstubAllGlobals();
+    await act(async () => {
+      for (const cb of held.splice(0)) cb?.(performance.now());
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  };
+  const back = (search: string): void => {
+    act(() => {
+      const s = useInvestigation.getState();
+      s.reset();
+      s.hydrate(decodeInvestigation(search));
+    });
+  };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    held.splice(0);
+  });
+
+  const REFUSED = "?s=path&flow=10.0.10.50%3E10.0.30.10%3Etcp%3Eabc";
+  const VALID = `?s=path&flow=${encodeURIComponent(`${DENIED.srcIp}>${DENIED.dstIp}>tcp>${DENIED.dstPort}`)}`;
+
+  it("back to a refused shared link shows the refusal and no trace card, before and after the tab is shown", async () => {
+    hideTab();
+    back(REFUSED);
+    const { container } = mount(<PathTrace />);
+    expect(text(container)).toContain("The flow in the shared link was not run");
+    expect(container.querySelector(".pt-result")).toBeNull();
+
+    back(VALID);
+    // The panel answers the restored flow from local state at once (acceptance E5) ...
+    expect(container.querySelector(".pt-result")).not.toBeNull();
+
+    back(REFUSED);
+    // ... and a Back away from it before any frame was painted takes that answer with it.
+    expect(text(container)).toContain("The flow in the shared link was not run");
+    expect(container.querySelector(".pt-result"), "a trace card under a refused link").toBeNull();
+
+    await showTab();
+    expect(container.querySelector(".pt-result"), "the card came back when the tab was shown").toBeNull();
+    const s = useInvestigation.getState();
+    expect(s.flow).toBeNull();
+    expect(s.trace).toBeNull();
+    expect(s.flowRefused).not.toBeNull();
+  });
+
+  it("back to an entry that names no flow shows the presets, not the flow just left", async () => {
+    hideTab();
+    back("?s=path");
+    const { container } = mount(<PathTrace />);
+    back(VALID);
+    expect(container.querySelector(".pt-result")).not.toBeNull();
+    back("?s=path");
+    expect(container.querySelector(".pt-result"), "a trace card on an entry with no flow").toBeNull();
+    await showTab();
+    expect(container.querySelector(".pt-result")).toBeNull();
+    expect(useInvestigation.getState().trace).toBeNull();
+  });
+
+  it("a run whose store write has not landed yields to a Back, rather than overwriting it later", async () => {
+    /* The same shape from the other writer of `pending`: `run` (a preset, the form, a
+       counterexample) shows its answer at once and commits to the store a frame later. A Back
+       before that frame must win — the answer goes, and the deferred commit is dropped rather than
+       landing afterwards and silently undoing the Back. */
+    hideTab();
+    back(REFUSED);
+    const { container } = mount(<PathTrace />);
+    const pick = container.querySelector<HTMLButtonElement>(".pt-preset__btn");
+    expect(pick).not.toBeNull();
+    click(pick!);
+    expect(container.querySelector(".pt-result"), "the run answers at once").not.toBeNull();
+    back("?s=path");
+    expect(container.querySelector(".pt-result"), "a trace card after Back").toBeNull();
+    await showTab();
+    expect(container.querySelector(".pt-result"), "the dropped run's card after the tab was shown").toBeNull();
+    const st = useInvestigation.getState();
+    expect(st.flow, "the run's deferred commit landed after the Back").toBeNull();
+    expect(st.trace).toBeNull();
   });
 });

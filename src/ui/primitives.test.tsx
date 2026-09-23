@@ -94,6 +94,15 @@ describe("NotObserved / orNotObserved", () => {
     expect(el?.querySelector("svg")).not.toBeNull();
   });
 
+  it("separates the words from the visible reason in the accessible text, not only by layout", () => {
+    // The reason sits in its own box, so it LOOKS separated; but the text a screen reader or a copy
+    // reads was "not observedno RIB was collected" — two sentences fused into one word.
+    const { container } = mount(<NotObserved what="next hop" why="no RIB was collected on this device" />);
+    const text = container.querySelector(".ui-notobs")?.textContent ?? "";
+    expect(text).toContain("not observed — no RIB was collected on this device");
+    expect(text).not.toMatch(/not observedno/);
+  });
+
   it("keeps the words in the accessible name when the visible form is compact", () => {
     const { container } = mount(<NotObserved what="uptime" compact />);
     expect(container.textContent).toContain("not observed");

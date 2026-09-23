@@ -25,7 +25,28 @@
  *      when it is `aria-labelledby` one, else the labelled region itself — made programmatically
  *      focusable (`tabindex=-1`, never a Tab stop) for as long as it holds focus.
  *   5. Otherwise leave focus exactly where it is.
- * Never blur, and never land on <body>. `src/app/focus-return.guard.test.ts` parses every source
+ * Never blur, and never land on <body>.
+ *
+ * A SECOND DOOR, SAME RULE: a control that removes ITSELF (`handOffFocus`). A chip's remove button,
+ * "Clear scope", an empty state's own reset — the element holding focus is the thing the action
+ * takes out of the document, so there is nothing to "return" to and the browser parks focus on
+ * <body>. MEASURED (acceptance report D3, overturned PASS to FAIL): 'Remove the Critical severity
+ * filter' reached after 7 Tabs, Enter, and 2.5 s later activeElement was BODY with no ring; the same
+ * for 'Remove the High severity filter', 'Clear scope', 'Deselect device core1' and 'Stop
+ * investigating the flow …'. Such a control names no successor by hand. Its successor is found
+ * STRUCTURALLY, before the action runs, while everything around it still exists:
+ *   a. the nearest tab stop in the control's set that survives — the next one, else the previous
+ *      one — where the set is the nearest labelled group, list, toolbar or landmark around it (the
+ *      next chip, else the previous chip);
+ *   b. else the caller's stated successors, in order (the query field a scope bar edits);
+ *   c. else the set's labelling element, else the region landmark — made focusable as in rule 4.
+ * It acts only if focus was actually lost: a surface that already moved focus somewhere real (the
+ * grid, a heading it announces) keeps it. `src/app/self-removing-focus.test.tsx` presses EVERY tab
+ * stop of the mounted application with Enter and with Space and fails on any self-removing control
+ * that leaves focus on <body>; `review/audit-d3-focus.mjs --self-removing` does the same in Chromium
+ * by real Tab presses and also measures the successor's ring.
+ *
+ * `src/app/focus-return.guard.test.ts` parses every source
  * file and fails on a `.blur()` call anywhere but here, and on an `isConnected` focus branch whose
  * else-arm does not call this module.
  */
@@ -140,4 +161,106 @@ export function returnFocus(
   const mark = landmarkOf(context);
   if (mark !== null && focusLandmark(mark)) return mark;
   return null;
+}
+
+/* ══ a control that removes itself ═══════════════════════════════════════════ */
+
+/** A stated successor: an element, or a function that finds it when the hand-off runs. */
+export type Successor = Candidate | (() => Candidate);
+
+/** Anything that can be a tab stop. Filtered by `isTabStop`; never a list of this app's classes. */
+const TAB_STOP_SELECTOR = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+
+/**
+ * The SET a control belongs to: the nearest ancestor that groups controls and says so — an ARIA
+ * grouping role, a list, a fieldset, a region landmark, or any element carrying an accessible name.
+ */
+const SET_SELECTOR = [
+  "[role='group']",
+  "[role='toolbar']",
+  "[role='list']",
+  "[role='listbox']",
+  "[role='radiogroup']",
+  "[role='tablist']",
+  "[role='menu']",
+  "[role='menubar']",
+  "ul",
+  "ol",
+  "fieldset",
+  "[aria-label]",
+  "[aria-labelledby]",
+  REGION_SELECTOR,
+].join(",");
+
+const isTabStop = (el: HTMLElement): boolean =>
+  el.tabIndex >= 0 && !(el instanceof HTMLInputElement && el.type === "hidden") && takesFocus(el);
+
+interface HandOffPlan {
+  /** Tab stops of the control's set, nearest first: every one after it, then every one before it. */
+  readonly siblings: readonly HTMLElement[];
+  /** The set's labelling element, when it is `aria-labelledby` one that lies outside the set. */
+  readonly label: HTMLElement | null;
+  /** The region landmark around the control (rule 4). */
+  readonly landmark: HTMLElement | null;
+}
+
+/** Everything the hand-off may need, captured while the control and its surroundings still exist. */
+function planHandOff(control: HTMLElement): HandOffPlan {
+  const set = control.parentElement?.closest<HTMLElement>(SET_SELECTOR) ?? control.parentElement;
+  const stops =
+    set === null
+      ? []
+      : [...set.querySelectorAll<HTMLElement>(TAB_STOP_SELECTOR)].filter((s) => s !== control && !control.contains(s) && isTabStop(s));
+  const after = stops.filter((s) => (control.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+  const before = stops.filter((s) => (control.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_PRECEDING) !== 0).reverse();
+  const by = (set?.getAttribute("aria-labelledby") ?? "").split(/\s+/).find((id) => id !== "");
+  const labelEl = by === undefined ? null : document.getElementById(by);
+  return {
+    siblings: [...after, ...before],
+    label: labelEl instanceof HTMLElement && set !== null && !set.contains(labelEl) ? labelEl : null,
+    landmark: landmarkOf(control),
+  };
+}
+
+/** Focus is lost when nothing real holds it: <body>, nothing, or an element no longer in the page. */
+const focusLost = (): boolean => {
+  const a = document.activeElement;
+  return a === null || a === document.body || a === document.documentElement || !a.isConnected;
+};
+
+/** When to look again after the action: a microtask (React's discrete-event commit has run by then),
+ *  a task, and a frame-and-a-bit — the last for a removal that waits on a debounce or an effect. */
+const HANDOFF_DELAYS_MS: readonly number[] = [0, 50, 200];
+
+/**
+ * Run `action`, which removes `control` (or may), and if that leaves focus nowhere hand it to the
+ * control's structural successor (see the module comment, "A SECOND DOOR"). Call it from the
+ * control's activation handler — the click that Enter and Space also produce — with the control as
+ * `control`, typically `event.currentTarget`.
+ */
+export function handOffFocus(control: EventTarget | null | undefined, action: () => void, stated: readonly Successor[] = []): void {
+  if (typeof document === "undefined" || typeof HTMLElement === "undefined" || !(control instanceof HTMLElement)) {
+    action();
+    return;
+  }
+  const plan = planHandOff(control);
+  action();
+
+  let done = false;
+  const attempt = (): void => {
+    if (done) return;
+    if (!focusLost()) {
+      /* Focus is somewhere real. Unless it is still on the control and the control still stands (its
+         removal has not been committed yet), that was someone's decision: keep it. */
+      if (document.activeElement !== control || !control.isConnected) done = true;
+      return;
+    }
+    done = true;
+    for (const c of plan.siblings) if (tryFocus(c)) return;
+    for (const s of stated) if (tryFocus(typeof s === "function" ? s() : s)) return;
+    if (plan.label !== null && focusLandmark(plan.label)) return;
+    if (plan.landmark !== null) focusLandmark(plan.landmark);
+  };
+  queueMicrotask(attempt);
+  if (typeof setTimeout === "function") for (const ms of HANDOFF_DELAYS_MS) setTimeout(attempt, ms);
 }

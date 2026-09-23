@@ -450,7 +450,8 @@ export const JOURNEYS = [
        three such points exist the journey cannot run and `act` throws, which the harness reports as
        NOT MEASURED. */
     act: async (page, i) => {
-      if (J2_HITS.length < 3) throw new Error(`only ${J2_HITS.length} canvas points select a device`);
+      if (J2_HITS.length < 3)
+        throw new Error(`only ${J2_HITS.length} canvas points select a device${J2_ANCHOR_REASONS.length ? ` (anchor discovery: ${J2_ANCHOR_REASONS.join("; ")})` : ""}`);
       const a = J2_HITS[i % J2_HITS.length];
       await page.mouse.click(a.x, a.y);
     },
@@ -680,7 +681,11 @@ export const JOURNEYS = [
          So the flow is varied with the SWAP button, whose handler takes no event: it alternates
          A->B and B->A, and each submit therefore traces a flow the store has not got. Swap is
          itself an interaction, but it is a trivial one, and the verdict figure is the WORST
-         interaction in the repetition — which is the submit, i.e. the trace. */
+         interaction in the repetition — which is the submit, i.e. the trace.
+         SCOPE (decided 2026-09-23, docs/acceptance.md "E3's scope"): a declared journey is exactly
+         what its act times, so BOTH the swap and the submit belong to J4 — E3 counts a long task on
+         either — and review/audit-e5-sweep.mjs must not time them again as an "outside" action
+         (src/core/journey-scope.test.ts derives that from both files). */
       await page.locator("#rail-path .pt-form__swap").first().click();
       await page.waitForTimeout(80);
       await page.locator('#rail-path form.pt-form button[type="submit"]').first().click();
@@ -822,8 +827,9 @@ export function worstLoafOnPath(loafs, interactions) {
 /**
  * Why a journey's FIRST interaction after load is not its rep 0 — or null when it is.
  *
- * Recorded per journey in the report, and pinned by src/fabric3d/measure-inp.harness.test.ts, which
- * also executes every journey's pre-loop hooks against a recording page: a journey whose setup
+ * Recorded per journey in the report, and pinned by `src/fabric3d/Fabric3D.test.tsx` (describe
+ * "measure-inp: no journey spends its first interaction before the measured loop"), which also
+ * executes every journey's pre-loop hooks against a recording page: a journey whose setup
  * performs the kind of input it measures spends the most expensive instance of it (the first after
  * load) outside the measurement, and that is the defect E3's grading found in J2 (2026-09-23).
  */
@@ -884,11 +890,95 @@ const gotoWithRetry = async (page, url) => {
   }
 };
 
+/**
+ * Why J2's anchor discovery found what it found — every reason it did not find more, in words.
+ * Empty when discovery ran cleanly. Read by J2's `act`, so a NOT MEASURED J2 names its cause.
+ */
+export const J2_ANCHOR_REASONS = [];
+
+/**
+ * Find J2's canvas anchors ONCE, in a throwaway browser that is closed before any measured page
+ * opens (finding them clicks the canvas, and a click on a measured page would spend its first
+ * selection).
+ *
+ * HARNESS FIX (acceptance report, E harness item 12a, 2026-09-23). This used to be inline in `main`
+ * and ended `FIRST_SELECTION.beforeClick(spage).catch(() => null)`: when the fabric never reached a
+ * drawn, settled state, the failure was swallowed, the scan ran on an unsettled canvas, and the run
+ * printed "J2 anchors …: none" with no reason — so a NOT MEASURED J2 could not be told from a
+ * picking defect, a slow host or a server that served nothing. Every failure is now recorded and
+ * printed on the same line, and the scan still runs (an unsettled canvas may still pick) with its
+ * precondition named rather than assumed.
+ *
+ * @param {() => Promise<any>} launch  starts the throwaway browser
+ * @param {{ app: string, context: object, initScript: string, log?: (line: string) => void }} opts
+ * @returns {Promise<{ hits: { id: string, x: number, y: number }[], reasons: string[] }>}
+ */
+export async function discoverJ2Anchors(launch, { app, context, initScript, log = console.log }) {
+  const reasons = [];
+  let hits = [];
+  let scout = null;
+  try {
+    scout = await launch();
+    const sctx = await scout.newContext(context);
+    await sctx.addInitScript(initScript);
+    const spage = await sctx.newPage();
+    const nav = await gotoWithRetry(spage, `${app}${FIRST_SELECTION.url}`);
+    if (!nav.ok) {
+      reasons.push(`the server did not serve ${FIRST_SELECTION.url} (${nav.error ?? nav.firstError})`);
+    } else {
+      try {
+        await FIRST_SELECTION.beforeClick(spage);
+      } catch (e) {
+        reasons.push(`the fabric never reached a drawn, settled state before the scan (${String(e).split("\n")[0].slice(0, 160)}); the scan ran on an unsettled canvas`);
+      }
+      hits = await deviceAnchors(spage, FIRST_SELECTION.targets.map((t) => t.id));
+      if (hits.length === 0) reasons.push("no scanned canvas point made the application report a device selected");
+    }
+  } catch (e) {
+    reasons.push(`anchor discovery threw: ${String(e).split("\n")[0].slice(0, 160)}`);
+  } finally {
+    if (scout !== null) await scout.close().catch(() => null);
+  }
+  J2_HITS.length = 0;
+  J2_HITS.push(...hits);
+  J2_ANCHOR_REASONS.length = 0;
+  J2_ANCHOR_REASONS.push(...reasons);
+  log(
+    `  J2 anchors (found in a throwaway browser; first-selection targets first, then tier-stratified): ${hits.map((h) => h.id).join(", ") || "none"}` +
+      (reasons.length ? ` — ${reasons.join("; ")}` : ""),
+  );
+  return { hits, reasons };
+}
+
+/**
+ * E3 across runs of one build, for one journey. HARNESS FIX (acceptance report, E harness item 12c,
+ * 2026-09-23): a run in which the journey was NOT MEASURED used to be counted as "not clean", so
+ * three clean runs and one unmeasured run read UNSTABLE — and the roll-up then printed E3 FAIL for a
+ * journey no run had ever seen violate. An unmeasured run is neither clean nor a violation: it is
+ * counted apart (`notMeasured`), and the stable verdict is taken over the runs that measured.
+ * (A run whose journey was under-sampled but DID observe an on-path violation is E3-FAIL, not NOT
+ * MEASURED — see `rec.e3Verdict` — so it still counts against the journey.)
+ *
+ * @param {{ journeys?: Record<string, { e3?: string }> }[]} runs
+ * @param {string} id
+ * @param {number} minRuns
+ */
+export function e3StableVerdict(runs, id, minRuns) {
+  const seen = runs.map((h) => h.journeys?.[id]?.e3).filter(Boolean);
+  const measured = seen.filter((v) => v === "E3-PASS" || v === "E3-FAIL");
+  const clean = measured.filter((v) => v === "E3-PASS").length;
+  const stable =
+    measured.length < minRuns ? "INSUFFICIENT RUNS" : clean === measured.length ? "STABLE PASS" : clean === 0 ? "STABLE FAIL" : "UNSTABLE";
+  return { runs: seen.length, measured: measured.length, notMeasured: seen.length - measured.length, clean, stable };
+}
+
 /* ── the run ──────────────────────────────────────────────────────────────────────────────
    Everything that launches a browser, reads the host or writes a report lives in `main`, and
-   `main` runs only when this file is EXECUTED. Imported (src/fabric3d/measure-inp.harness.test.ts),
-   it is a module of pure journey definitions and helpers, so the rules the measurement depends on
-   can be pinned by a test instead of trusted. */
+   `main` runs only when this file is EXECUTED. Imported — by `src/fabric3d/Fabric3D.test.tsx` (the
+   first-interaction, window-plan, anchor-discovery and across-runs rules) and by
+   `src/core/journey-scope.test.ts` (the journeys' acts against the E5 sweep's and the declaration in
+   docs/acceptance.md) — it is a module of pure journey definitions and helpers, so the rules the
+   measurement depends on can be pinned by a test instead of trusted. */
 async function main() {
   const { chromium } = await import("@playwright/test");
   const hostCpuAtStart = cpuTicks();
@@ -979,24 +1069,13 @@ async function main() {
   /* J2's anchors, found ONCE, in a browser of their own that is closed before any measured page is
      opened: finding them clicks the canvas (see deviceAnchors), and a click on a measured page would
      spend its first selection. */
+  let anchorDiscovery = null;
   if (selected("J2-select-device-3d") || selected(FIRST_SELECTION.id)) {
-    const scout = await chromium.launch(LAUNCH);
-    try {
-      const sctx = await scout.newContext(CONTEXT);
-      await sctx.addInitScript(EXPOSE_SCENE);
-      const spage = await sctx.newPage();
-      const nav = await gotoWithRetry(spage, `${APP}${FIRST_SELECTION.url}`);
-      if (nav.ok) {
-        await FIRST_SELECTION.beforeClick(spage).catch(() => null);
-        J2_HITS.length = 0;
-        J2_HITS.push(...(await deviceAnchors(spage, FIRST_SELECTION.targets.map((t) => t.id))));
-      }
-    } catch (e) {
-      console.log(`  J2 anchor discovery failed: ${String(e).slice(0, 160)}`);
-    } finally {
-      await scout.close();
-    }
-    console.log(`  J2 anchors (found in a throwaway browser; first-selection targets first, then tier-stratified): ${J2_HITS.map((h) => h.id).join(", ") || "none"}`);
+    anchorDiscovery = await discoverJ2Anchors(() => chromium.launch(LAUNCH), {
+      app: APP,
+      context: CONTEXT,
+      initScript: EXPOSE_SCENE,
+    });
   }
 
   for (const j of JOURNEYS.filter((x) => selected(x.id))) {
@@ -1564,6 +1643,8 @@ async function main() {
     },
     presentation: { slowestJourneyRafMedianMs: slowestCadenceMs, fullRateMaxRafMs: FULL_RATE_MAX_RAF_MS, belowFullRate: presentationBelowFullRate },
     buildFreshness: freshness,
+    /* Where J2's anchors came from, and every reason discovery found fewer (see discoverJ2Anchors). */
+    j2AnchorDiscovery: anchorDiscovery,
     minRepsWithSample: MIN_REPS_WITH_SAMPLE,
     url: APP,
     reps: REPS,
@@ -1698,13 +1779,8 @@ async function main() {
     h.presentationBelowFullRate === false;
   const sameBuild = sameBuildAll.filter(isQuietRun);
   const busyRuns = sameBuildAll.length - sameBuild.length;
-  const verdictOf = (runs, id) => {
-    const seen = runs.map((h) => h.journeys?.[id]?.e3).filter(Boolean);
-    const clean = seen.filter((v) => v === "E3-PASS").length;
-    const stable =
-      seen.length < E3_MIN_RUNS ? "INSUFFICIENT RUNS" : clean === seen.length ? "STABLE PASS" : clean === 0 ? "STABLE FAIL" : "UNSTABLE";
-    return { runs: seen.length, clean, stable };
-  };
+  /* NOT MEASURED runs are counted apart, never as violations — see e3StableVerdict. */
+  const verdictOf = (runs, id) => e3StableVerdict(runs, id, E3_MIN_RUNS);
   out.e3.acrossRuns = {
     build: servedBuild,
     minRuns: E3_MIN_RUNS,
@@ -1745,10 +1821,10 @@ async function main() {
   }
   console.log(
     `E3 across runs of build ${out.e3.acrossRuns.build ?? "unknown"} (${out.e3.acrossRuns.runs} run(s), need ${E3_MIN_RUNS}): ${out.e3.stableVerdict} — ` +
-      Object.entries(out.e3.acrossRuns.perJourney).map(([id, j]) => `${id} ${j.stable} (${j.clean}/${j.runs} clean)`).join("; ") +
-      `\n  Counted: quiet-host runs only (host <= ${MAX_HOST_BUSY_FRACTION * 100}% busy); ${busyRuns} busy run(s) of this build excluded.` +
+      Object.entries(out.e3.acrossRuns.perJourney).map(([id, j]) => `${id} ${j.stable} (${j.clean}/${j.measured} measured runs clean${j.notMeasured ? `, ${j.notMeasured} NOT MEASURED` : ""})`).join("; ") +
+      `\n  Counted: quiet-host runs only (host <= ${MAX_HOST_BUSY_FRACTION * 100}% busy); ${busyRuns} busy run(s) of this build excluded; a NOT MEASURED run is neither clean nor a violation.` +
       `\n  LABORATORY, NOT ACCEPTANCE EVIDENCE — all ${sameBuildAll.length} run(s) incl. busy: ` +
-      Object.entries(out.e3.acrossRuns.allRunsLaboratory).map(([id, j]) => `${id} ${j.stable} (${j.clean}/${j.runs})`).join("; ") +
+      Object.entries(out.e3.acrossRuns.allRunsLaboratory).map(([id, j]) => `${id} ${j.stable} (${j.clean}/${j.measured}${j.notMeasured ? `, ${j.notMeasured} NM` : ""})`).join("; ") +
       "\n  A single run's E3-PASS is a sample; only the across-runs verdict over quiet runs is E3 evidence.",
   );
   console.log(

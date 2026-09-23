@@ -13,6 +13,13 @@
  * matcher (`matchTri`). "matches" must mean the matcher says yes; "could match" must mean it does
  * not say no. The sweep is over `FLOW_PROTOCOLS` — the engine's own protocol set, not a list typed
  * here — and over the suggested flows plus flows synthesised from every observed SVI subnet.
+ *
+ * Measured with the fix removed (address-only candidate lines, verb always "matches"): this sweep's
+ * 3,269 traces carried 78 protocol-excluded "matches" citations (the report's own generator, 3,968
+ * traces, counted 50 traces), and every case below went red; with the fix, 0. The sweep also audits
+ * the other sentences that say a cited line could match a flow — an applied list's undecidable
+ * line, a not-applied list's undecidable-line evidence, and a suggested flow's rationale — so the
+ * rule is held for the class of sentence, not the one parenthetical that was caught.
  */
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
@@ -78,8 +85,13 @@ interface Violation {
 }
 
 /**
- * Every "(<verb> this flow at <cite>" and "<LIST> (matches this flow only through catch-all lines)"
- * in one caveat, re-derived. Returns the violations and how many citations were checked.
+ * Every sentence in these texts that says a CITED line matches, or could match, this flow —
+ * re-derived from the line and the flow. The forms, all of which the engine emits:
+ *   "<LIST> (<verb> this flow at <cite>…"                       not-applied list, one line named
+ *   "<LIST> (<verb> this flow only through catch-all lines)"    not-applied list, catch-alls only
+ *   "(<cite>) "<raw>" could match this flow but …"              an applied list's undecidable line
+ *   "<cite> ("<raw>") could match this flow and …"              a suggested flow's rationale
+ * Returns the violations and how many citations were checked.
  */
 function audit(flow: Flow, caveats: readonly string[]): { violations: Violation[]; checked: number; excludedByProtocol: number } {
   const src = parseIpv4(flow.srcIp)!;
@@ -88,9 +100,12 @@ function audit(flow: Flow, caveats: readonly string[]): { violations: Violation[
   let checked = 0;
   let excludedByProtocol = 0;
   const text = caveats.join("\n");
-  for (const m of text.matchAll(/\b(matches|could match) this flow at (acls\.[^\s,;)]+)/g)) {
-    const verb = m[1]!;
-    const cite = m[2]!;
+  const cited = [
+    ...[...text.matchAll(/\b(matches|could match) this flow at (acls\.[^\s,;)]+)/g)].map((m) => ({ verb: m[1]!, cite: m[2]! })),
+    ...[...text.matchAll(/\((acls\.[^\s)]+)\) "[^"]*" (could match) this flow\b/g)].map((m) => ({ verb: m[2]!, cite: m[1]! })),
+    ...[...text.matchAll(/(?:^|\s)(acls\.[^\s(]+) \("[^"]*"\) (could match) this flow\b/g)].map((m) => ({ verb: m[2]!, cite: m[1]! })),
+  ];
+  for (const { verb, cite } of cited) {
     const line = lineAt(cite);
     expect(line, `unresolvable citation ${cite}`).toBeDefined();
     const tri = matchTri(line!, flow, src, dst);
@@ -103,7 +118,8 @@ function audit(flow: Flow, caveats: readonly string[]): { violations: Violation[
   }
   for (const m of text.matchAll(/(\w+) \((matches|could match) this flow only through catch-all lines\)/g)) {
     const [, name, verb] = m;
-    const host = /^(\S+) also defines/m.exec(text)?.[1];
+    // The host whose "also defines" sentence carries this parenthetical: the nearest one before it.
+    const host = [...text.slice(0, m.index).matchAll(/(\S+) also defines/g)].pop()?.[1];
     const lines = host === undefined ? [] : (fabric.acls[host]?.[name!] ?? []);
     const tris = lines.map((l) => matchTri(l, flow, src, dst));
     checked += 1;
@@ -125,16 +141,25 @@ describe("the not-applied-ACL caveat never says a line matches a flow its protoc
       const t = traceFlow(f);
       const r = audit(f, t.caveats);
       violations.push(...r.violations);
+      // Hop evidence says it too ("… could match this flow and cannot be evaluated"), citing the line separately.
+      for (const e of t.hops.flatMap((h) => h.evidence)) {
+        if (!/\bcould match this flow\b/.test(e.label)) continue;
+        const line = lineAt(e.cite);
+        if (line === undefined) continue;
+        const tri = matchTri(line, f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!);
+        r.checked += 1;
+        if (tri === "no") violations.push({ flow: JSON.stringify(f), cite: e.cite, verb: "could match (evidence)", tri });
+      }
       checked += r.checked;
       protocolViolations += r.excludedByProtocol;
       if (r.checked > 0) perProtocol.set(f.protocol, (perProtocol.get(f.protocol) ?? 0) + 1);
     }
     // Non-vacuity: the sweep reaches the caveat, and for more than the one protocol that was right by luck.
     expect(checked, `${flows.length} traces`).toBeGreaterThan(0);
-    expect([...perProtocol.keys()].sort(), "protocols whose traces carry a not-applied match citation").toEqual(
-      [...FLOW_PROTOCOLS].filter((p) => perProtocol.has(p)).sort(),
+    // Every protocol the engine accepts reaches a match citation, so a caveat right for one protocol only cannot hide.
+    expect([...perProtocol.keys()].sort(), `protocols whose traces carry a match citation: ${JSON.stringify([...perProtocol])}`).toEqual(
+      [...FLOW_PROTOCOLS].sort(),
     );
-    expect(perProtocol.size, JSON.stringify([...perProtocol])).toBeGreaterThanOrEqual(3);
     expect(protocolViolations, `${flows.length} traces; protocol-excluded "matches" citations`).toBe(0);
     expect(violations.slice(0, 5), `${violations.length} violations over ${flows.length} traces`).toEqual([]);
   });
@@ -153,6 +178,19 @@ describe("the not-applied-ACL caveat never says a line matches a flow its protoc
     // Every protocol reaches the seam, so a caveat that is right for tcp only cannot hide here.
     expect([...perProtocol.keys()].sort()).toEqual([...FLOW_PROTOCOLS].sort());
     expect(violations.slice(0, 5), `${violations.length} violations over ${flows.length} fallback evaluations`).toEqual([]);
+  });
+
+  it("the suggested flows' rationales say a line could match only where the matcher does not exclude it", () => {
+    const violations: Violation[] = [];
+    let checked = 0;
+    for (const s of suggestedFlows()) {
+      const r = audit(s.flow, [s.rationale]);
+      violations.push(...r.violations);
+      checked += r.checked;
+    }
+    // Non-vacuity: at least one suggestion names an undecidable line as able to match its flow.
+    expect(checked).toBeGreaterThan(0);
+    expect(violations).toEqual([]);
   });
 
   it("the headline udp case: INET_RETURN's tcp-only line is not cited to a udp flow", () => {

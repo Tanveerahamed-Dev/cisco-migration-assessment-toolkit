@@ -310,6 +310,28 @@ direction for this gate.
 - **Word-boundary handling.** `unhealthy`, `unproven`, `unverified` are correctly not flagged, which
   is the trap `claims.ts:103-106` documents and avoids. Confirmed working.
 
+**Not examined** (added 2026-09-23; §0 says every section records this, and until today this one did
+not — acceptance report F3). The 2026-09-21 refuter attacked five exported decision functions —
+`claimBadge`, `scopeTuple`, `bandOfOutcome`, `bandOfHop`, `forbiddenWordsIn` — and the 2026-09-22
+probe attacked `claimBadge` against `hopsSupportOutcome` through the C3 input. Nothing in this record
+is an adversarial pass over the rest of the module:
+- the other decision exports: `isDecidedOutcome`, `bandOfTrace`, `outcomeUndecidingGaps`,
+  `outcomeUndecidedCauses`, `undecidedOutcomeWord`, `hopUndecided`, `hopUndecidedGaps`, `bandOfHopIn`
+  and `isInvalidInput` — pinned by `claims.test.ts` and, for the owners of the empty-traversal rule,
+  by `review/mutation-check.mjs`, but written by the author, not attacked by a refuter;
+- the literal templates (`T1_verdict` … `T10_SAMPLE_PATH`, `sharePayload`), the absence helpers
+  (`absence`, `resolveAbsence`, `isAbsence`), the route-field readers (`routeFieldReading`,
+  `adminDistanceRank`, `notApplicableReason`, `isRouteRecord`) and `missingInventoryFields`;
+- the completeness of `FORBIDDEN_CLAIM_WORDS` and `STRONG_CLAIM_WORDS` — C6 probed where a
+  negation's scope ends, not whether an overclaim can be phrased in a word the lists do not hold;
+- the consumers: whether every surface that shows a band or badge (`ClaimCard`, `HopList`,
+  `PathTrace`, the fabric's `Fabric3D` / `flow`) renders the value this module returns rather than
+  re-deriving or overriding it. A correct badge rendered by a caller that ignores it is not examined
+  by any pass recorded here.
+
+The export list is read from `src/core/claims.ts` as of this date; `claims.ts` is edited by later
+repair waves, so re-derive it (`grep -n "^export" src/core/claims.ts`) rather than trusting this list.
+
 ---
 
 ## 7. Where F3 stands
@@ -323,9 +345,10 @@ direction for this gate.
 | compiler | yes (fidelity only) | 4 | 4 | no — attested in prose only | yes — 2 mutations, 2 killed (rebuilt, then tested) |
 | claims | **yes, 2026-09-21** | 3 confirmed (+ the 2026-09-22 C2/C3 follow-up) + 1 disclosed limit | **3 of 3, and the follow-up** | **yes — refuter output recorded above** | yes — 5 mutations, 5 killed |
 
-(Counts as run on 2026-09-22: `node review/mutation-check.mjs` exited 0, 16 of 16 mutations killed,
-every targeted test green unmutated first. It also carries two source-binding mutations — O15, not
-engine sections — reported after the documented engines.)
+(Counts as run on 2026-09-23 on the working tree: `node review/mutation-check.mjs` exited 0, **18 of
+18 mutations killed** — the 16 in the table above plus two source-binding mutations (O15, not engine
+sections, reported after the documented engines) — every targeted test green unmutated first. The
+2026-09-22 reading here said "16 of 16"; read the count from the run, not from this line.)
 
 **F3 is supportable for the report half; the history half is now executable evidence of a stated,
 narrower kind.** The reports exist and cite their evidence. For every engine, `review/mutation-check.mjs`

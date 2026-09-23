@@ -49,7 +49,7 @@ import {
 } from "./icons";
 /* The one owner of focus return (acceptance D3). A dependency-free DOM leaf, so importing it from
    the primitives layer creates no cycle. */
-import { returnFocus } from "../app/focus-return";
+import { handOffFocus, returnFocus, type Successor } from "../app/focus-return";
 import "./primitives.css";
 
 const cx = (...parts: (string | false | null | undefined)[]): string =>
@@ -119,6 +119,9 @@ export function NotObserved({
       {reason && compact ? (
         <span className="visually-hidden">{` Reason: ${reason}`}</span>
       ) : null}
+      {/* The reason's own box separates it visually; the hidden dash separates it in the TEXT, so a
+          screen reader or a copy does not read "not observedno RIB was collected". */}
+      {reason && !compact ? <span className="visually-hidden">{" — "}</span> : null}
       {reason && !compact ? <span className="ui-notobs__why">{reason}</span> : null}
       {!compact && cite && onOpenCite ? <Cite cite={cite} onOpen={onOpenCite} /> : null}
     </span>
@@ -282,6 +285,14 @@ export interface ChipProps {
   onRemove?: () => void;
   /** Accessible name for the remove control, e.g. "Remove severity filter Critical". */
   removeLabel?: string;
+  /**
+   * Where focus goes when removing this chip leaves no other control in its group — typically the
+   * field whose scope the chip was part of. Before that, focus goes to the next chip in the group,
+   * else the previous one; after it, to the group's label or region. The remove control takes
+   * ITSELF out of the page, so without a hand-off focus falls to <body> (acceptance D3; owned by
+   * `handOffFocus` in src/app/focus-return.ts).
+   */
+  removeSuccessor?: Successor;
   tone?: "neutral" | "accent";
   mono?: boolean;
   title?: string;
@@ -292,6 +303,7 @@ export function Chip({
   onClick,
   onRemove,
   removeLabel,
+  removeSuccessor,
   tone = "neutral",
   mono = false,
   title,
@@ -309,7 +321,7 @@ export function Chip({
         <button
           type="button"
           className="ui-chip__remove"
-          onClick={onRemove}
+          onClick={(e) => handOffFocus(e.currentTarget, onRemove, removeSuccessor === undefined ? [] : [removeSuccessor])}
           aria-label={removeLabel ?? "Remove"}
         >
           <IconClose />

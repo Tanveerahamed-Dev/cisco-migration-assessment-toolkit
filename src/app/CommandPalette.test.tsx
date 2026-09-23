@@ -17,7 +17,7 @@
  */
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fabric } from "../core/data";
 import { rankedSearch } from "../core/query";
@@ -46,6 +46,28 @@ import {
   setHelpOpen,
   type Shortcut,
 } from "./keyboard";
+
+/* Counts renders of the palette's rows (see "per-keystroke work" at the end of this file): the JSX
+   runtime is wrapped, for this file only, so that every creation of a palette row's root element is
+   counted. It delegates unchanged; nothing else is observed or altered. */
+const renderProbe = vi.hoisted(() => ({ paletteRows: 0 }));
+vi.mock("react/jsx-dev-runtime", async (importOriginal) => {
+  const m = await importOriginal<typeof import("react/jsx-dev-runtime")>();
+  const jsxDEV: typeof m.jsxDEV = (type, props, ...rest) => {
+    if (type === "div" && (props as { className?: unknown } | null)?.className === "palette__row") renderProbe.paletteRows += 1;
+    return m.jsxDEV(type, props, ...rest);
+  };
+  return { ...m, jsxDEV };
+});
+vi.mock("react/jsx-runtime", async (importOriginal) => {
+  const m = await importOriginal<typeof import("react/jsx-runtime")>();
+  const seen = (type: unknown, props: unknown): void => {
+    if (type === "div" && (props as { className?: unknown } | null)?.className === "palette__row") renderProbe.paletteRows += 1;
+  };
+  const jsx: typeof m.jsx = (type, props, ...rest) => (seen(type, props), m.jsx(type, props, ...rest));
+  const jsxs: typeof m.jsxs = (type, props, ...rest) => (seen(type, props), m.jsxs(type, props, ...rest));
+  return { ...m, jsx, jsxs };
+});
 
 declare global {
   // eslint-disable-next-line no-var
@@ -630,91 +652,119 @@ describe("shortcut help", () => {
   });
 });
 
-/* ══ measured responsiveness (laboratory, jsdom) ═══════════════════════════
-   Not an INP figure and never reported as one: jsdom has no compositor and no real paint. What it
-   does measure is the work the input handler is on the hook for — the search over the whole
-   dataset that a naive palette does per keystroke. The ceiling is the design brief's 50 ms
-   main-thread task limit (8.3 rule 1). */
+/* ══ per-keystroke work, counted (not timed) ═══════════════════════════════
+   Not an INP figure and never reported as one: jsdom has no compositor and no real paint. What the
+   unit suite CAN establish is the structure the input handler relies on — the search index built
+   once and reused, and a cursor move that re-renders the two rows it changes — and it establishes
+   that by COUNTING the work, not by timing it.
+
+   WHY NOT TIME IT (acceptance report F2, 2026-09-23, overturned PASS -> UNPROVEN). This block used
+   to assert wall-clock bounds: the median search time under 200 ms, and the worst of nine palette
+   opens and of twenty cursor moves under 400 ms. Under a loaded full-suite run the open read
+   "expected 533.2958999999992 to be less than 400" with nothing regressed — vitest runs files in
+   parallel, so a wall-clock bound in the unit suite measures what the host was doing, and its red
+   cannot be told from a regression. Raising the bound would only move the flake. The two regressions
+   the bound said it caught — an index rebuilt on open, and every row re-rendered on a cursor move —
+   are counted directly below, and a count does not depend on the host. The time budget itself
+   belongs to the E harnesses (review/measure-inp.mjs, review/audit-e5-sweep.mjs), which measure the
+   built application on a gated host. The timings are still printed, as a report, never asserted.
+
+   HOW IT COUNTS. Dataset reads: every array in the compiled dataset (`fabric`, to three levels) is
+   wrapped for the duration of the probe in a Proxy that counts element reads; building the search
+   index reads every device, finding and record, so a rebuild cannot hide. Row renders: the JSX
+   runtime is wrapped for this file (vi.mock at the top) and counts creations of the palette row's
+   own root element (`div.palette__row`), which happens once per PaletteRow render and at no other
+   time. LIMIT, stated: a search that stays over the built index but grows super-linearly inside it
+   reads no dataset element and is not caught here; that is a time property, and it is the E
+   harnesses'. */
+
+/** Element reads of the compiled dataset's collections while `fn` runs. */
+function datasetReads(fn: () => void): number {
+  let reads = 0;
+  const restore: (() => void)[] = [];
+  const count = <T extends object>(arr: T): T =>
+    new Proxy(arr, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) reads += 1;
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    });
+  const walk = (holder: Record<string, unknown>, depth: number): void => {
+    for (const [k, v] of Object.entries(holder)) {
+      if (Array.isArray(v)) {
+        holder[k] = count(v);
+        restore.push(() => {
+          holder[k] = v;
+        });
+      } else if (depth > 1 && v !== null && typeof v === "object") walk(v as Record<string, unknown>, depth - 1);
+    }
+  };
+  walk(fabric as unknown as Record<string, unknown>, 3);
+  expect(restore.length, "the probe wrapped the dataset's collections").toBeGreaterThan(5);
+  try {
+    fn();
+  } finally {
+    for (const r of restore.reverse()) r();
+  }
+  return reads;
+}
 
 describe("per-keystroke work", () => {
-  /**
-   * A tripwire against algorithmic blow-up, asserted on the MEDIAN — not a latency budget.
-   *
-   * The original form of this test asserted the WORST of 5 rounds against 50 ms, and it failed
-   * while six build agents shared this host. A worst-case wall-clock assertion in a unit suite
-   * measures scheduler contention: its red is indistinguishable from a genuine regression, so the
-   * only thing it reliably teaches is to re-run until green.
-   *
-   * The median is robust to a stall; the bound is set far above any plausible one. The real
-   * per-keystroke budget belongs to `review/measure-inp.mjs`, which measures the built application
-   * rather than a jsdom approximation of it and labels its numbers LABORATORY.
-   */
-  it("does not blow up algorithmically over a realistic typing run", () => {
-    const TRIPWIRE_MS = 200; // well above the 50 ms design target; see the note above
+  it("the probe sees a full pass over the dataset (its red branch, executed)", () => {
+    const reads = datasetReads(() => {
+      for (const f of fabric.findings) void f.id;
+      for (const d of fabric.devices) void d.id;
+    });
+    expect(reads).toBe(fabric.findings.length + fabric.devices.length);
+  });
+
+  it("typing reuses the search index built once: a keystroke reads no dataset record", () => {
     // Warm the index exactly as the real app does before the first keystroke lands.
     rankedSearch("warm");
     const term = fabric.devices[0]?.host ?? "core1";
     const prefixes = Array.from({ length: term.length }, (_, i) => term.slice(0, i + 1));
-
-    const samples: number[] = [];
-    for (let round = 0; round < 5; round++) {
-      for (const p of prefixes) {
-        const t0 = performance.now();
-        rankedSearch(p, { limit: 40 });
-        samples.push(performance.now() - t0);
-      }
-    }
-    samples.sort((a, b) => a - b);
-    const median = samples[Math.floor(samples.length / 2)] ?? 0;
-    const worst = samples[samples.length - 1] ?? 0;
-    // Reported in the run output so the numbers are visible, not merely asserted.
-    console.log(
-      `[laboratory, jsdom] per-keystroke rankedSearch: median ${median.toFixed(2)} ms, worst ${worst.toFixed(2)} ms over ${samples.length} samples`,
-    );
-    expect(median, `median ${median.toFixed(2)} ms, worst ${worst.toFixed(2)} ms`).toBeLessThan(TRIPWIRE_MS);
+    let hits = 0;
+    const t0 = performance.now();
+    const reads = datasetReads(() => {
+      for (const p of prefixes) hits += rankedSearch(p, { limit: 40 }).hits.length;
+    });
+    const ms = performance.now() - t0;
+    // Reported, not asserted (see above): a figure for a reader, from a host of unknown load.
+    console.log(`[laboratory, jsdom, not gated] ${prefixes.length} keystrokes of rankedSearch: ${ms.toFixed(2)} ms total, ${reads} dataset reads`);
+    expect(hits, "precondition: the typed term finds something, so the search did real work").toBeGreaterThan(0);
+    expect(reads, "a keystroke rebuilt (part of) the search index from the dataset").toBe(0);
   });
 
   it("opens over an index that already exists, rather than building one", () => {
     rankedSearch("warm");
     mount(<CommandPalette />);
-
-    const opens: number[] = [];
-    for (let i = 0; i < 10; i++) {
-      const t0 = performance.now();
-      act(() => useInvestigation.getState().setPaletteOpen(true));
-      opens.push(performance.now() - t0);
+    // The first open pays for the command list and the row builders; every later one is the
+    // steady state a user actually experiences.
+    act(() => useInvestigation.getState().setPaletteOpen(true));
+    act(() => useInvestigation.getState().setPaletteOpen(false));
+    let reads = 0;
+    for (let i = 0; i < 3; i++) {
+      reads += datasetReads(() => act(() => useInvestigation.getState().setPaletteOpen(true)));
+      expect(paletteInput(), "precondition: the palette opened").toBeTruthy();
       act(() => useInvestigation.getState().setPaletteOpen(false));
     }
-    const first = opens[0] ?? 0;
-    // The first open pays for the command list and the row builders; every later one is the
-    // steady state a user actually experiences. Reporting only the mean would hide the first.
-    const worst = Math.max(...opens.slice(1));
-    console.log(
-      `[laboratory, jsdom] palette open: first ${first.toFixed(2)} ms, worst thereafter ${worst.toFixed(2)} ms over ${opens.length} opens`,
-    );
+    expect(reads, "opening the palette read the dataset — an index built on open").toBe(0);
+  });
 
-    /* Cursor movement is the interaction that repeats: with the row memo it re-renders two rows,
-       not the whole list. Measured separately from the open, because they fail differently. */
-    act(() => useInvestigation.getState().setPaletteOpen(true));
+  it("a cursor move re-renders the two rows it changes, not every row", () => {
+    rankedSearch("warm");
+    openPaletteUI();
+    type("core");
+    const rows = options().length;
+    expect(rows, "precondition: enough rows that re-rendering all of them is distinguishable from two").toBeGreaterThanOrEqual(6);
     const input = paletteInput();
-    let worstMove = 0;
-    for (let i = 0; i < 20; i++) {
-      const t0 = performance.now();
-      press("ArrowDown", {}, input);
-      worstMove = Math.max(worstMove, performance.now() - t0);
-    }
-    console.log(`[laboratory, jsdom] worst arrow-key cursor move: ${worstMove.toFixed(2)} ms`);
-
-    /* These two numbers are REPORTED, and gated only against catastrophe.
-       Wall-clock React work is not a sound gate here: vitest runs test FILES in parallel, so a
-       tight bound turns CPU contention in another file into a red in this one — a failure that
-       says nothing about the palette. The per-keystroke search above IS gated at the design
-       brief's 50 ms, because at ~1.5 ms it has thirty times the headroom contention can eat.
-       What this loose bound still catches is the regression that matters: rebuilding the search
-       index on open, or re-rendering every row on every cursor move. Both are orders of
-       magnitude, not percentages. jsdom also has no compositor: this is React work only, and it
-       is never to be quoted as INP. */
-    expect(worst).toBeLessThan(400);
-    expect(worstMove).toBeLessThan(400);
+    const before = input.getAttribute("aria-activedescendant");
+    renderProbe.paletteRows = 0;
+    press("ArrowDown", {}, input);
+    expect(input.getAttribute("aria-activedescendant"), "precondition: the cursor moved").not.toBe(before);
+    const rendered = renderProbe.paletteRows;
+    console.log(`[jsdom] one cursor move rendered ${rendered} of ${rows} palette rows`);
+    expect(rendered, `one cursor move rendered ${rendered} of ${rows} rows`).toBeLessThanOrEqual(2);
+    expect(rendered, "the probe saw the two rows that did change (a count of 0 would prove nothing)").toBeGreaterThan(0);
   });
 });

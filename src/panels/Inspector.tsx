@@ -42,7 +42,7 @@ import { recordReturn, returnFocus, type ReturnRecord } from "../app/focus-retur
 import { aclUndecidability } from "../core/acl-coverage";
 import { bandObserved } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
-import { missingInventoryFields, notApplicableReason } from "../core/claims";
+import { isRouteRecord, missingInventoryFields, notApplicableReason } from "../core/claims";
 import { placeholderZero } from "../core/placeholders";
 import { useInvestigation } from "../core/store";
 import type { Cite } from "../core/types";
@@ -60,6 +60,7 @@ import {
   type TabItem,
 } from "../ui/primitives";
 import { JsonView, useCopyToClipboard } from "./JsonView";
+import { RouteFieldValue } from "./HopList";
 import { lineEvaluability } from "../forwarding/engine";
 import { producerFieldNotEmitted } from "./producer-emission";
 import type { AclLine } from "../core/types";
@@ -296,6 +297,18 @@ function FieldValue({
      nor a bare boolean can present it as the collector's testimony (./producer-emission.ts). */
   const notEmitted = producerFieldNotEmitted(path, record, name);
   if (notEmitted !== null) return <NotObserved what={name} why={notEmitted} />;
+  /* A route record's route fields read as their ONE owner reads them (`claims.ts ::
+     routeFieldReading`), through the same renderer the Path panel and the Routing tab use — so a
+     connected route's null AD cannot read one way here and another there (B1, failed twice). */
+  if ((name === "adminDistance" || name === "nextHop") && isRouteRecord(record)) {
+    return (
+      <RouteFieldValue
+        route={record}
+        field={name}
+        classes={{ notApplicable: "insp-val insp-val--meta", value: name === "adminDistance" ? "insp-val insp-val--num" : "insp-val" }}
+      />
+    );
+  }
   if (value === null) {
     /* A structural null (no port constraint on an `ip` line, no next hop on a connected route) is
        not missing evidence; saying "not observed" there would dilute the marker where it matters. */
