@@ -5,6 +5,383 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **Repair wave 4 (reconciled 2026-09-23, committed as `8e873d2` and `70bea72`).** Entries R54–R66
+> and the moved O24 below, the status notes added to R44, R49, O10, O12, O15 and O18, and the
+> rewritten O9, O12–O14, O16, O17, O19–O23 and O25–O28 plus the new O29–O34 under Open, and notes on
+> R39 and R51, record two things
+> that had not been written here: the "new" items 1–13 and the status changes of the independent
+> re-grade of `443a05a` (`docs/acceptance-report.md`, committed beside the wave-3 record in
+> `1c829c9`), and what the five wave-4 repair clusters (W4-R1 citations and nulls: B6, B1; W4-R2
+> journey scope and test hygiene: E1, the E harness, F2–F4; W4-R3 queue: A4, D3, O24; W4-R4 motion:
+> C5, C6; W4-R5 forwarding: the B5-adjacent caveat, B4, the engine tripwire, the stale-card lead),
+> the merged-tree gate and the C5 tier-pin commit reported. **Every FIXED below was checked by the
+> reconciler before it was written:** the code named was read at the line given, and the named tests
+> were re-run at `70bea72` in one invocation (32 files, `976` tests, 976 passed, 0 failed, exit 0,
+> with the zero-assertion guard live), plus `src/app/self-removing-focus.test.tsx` and
+> `src/fabric3d/stepdown.test.ts` in a second (2 files, 26 tests, exit 0, 152 s).
+> `src/core/tracked-sources.test.ts` is green (6 of 6): `src/core/route-fields.ts`, the one file the
+> gate left red, is tracked in `8e873d2`. Against `vite preview` of a scratch `vite build` of
+> `70bea72` (its own out-dir, port 4287, stopped afterwards) the reconciler also re-ran
+> `node review/layout-guard.mjs`: `layout-guard: all five invariants hold at every viewport.`, exit 0
+> (O24). `sha256sum src/data/fabric.json` is `a1a599b8…d251` (R54). **Verified by the orchestrator
+> at `70bea72`:** `tsc` (app, scripts `--noImplicitAny`, config) all exit 0; `vitest` 136 files,
+> 2106 tests, exit 0; `npm run build` exit 0; the content and message marker scans clean; no
+> capture-motion threshold changed (consistent with the reconciler's
+> `git diff 443a05a 70bea72 -- review/capture-motion.mjs`, which changes no threshold-constant line).
+> **Not re-run by the reconciler, and cited as "reported" wherever it appears:** `capture.mjs app`,
+> `text`, `reduced` and `twice 5`; `capture-motion.mjs` (the agents' runs, the gate's at `8e873d2`
+> and the independent verifier's at `70bea72`); `measure-inp.mjs`, `measure-fps.mjs` and the E5
+> harnesses; both `audit-d3-focus.mjs` passes; `mutation-check.mjs`; the agents' browser probes and
+> screenshots (orchestrating session's scratchpad); and every wave-4 mutation. A fixed defect does
+> not by itself move its criterion; nothing here is a re-grade.
+>
+> **History since the wave-3 record.** `1c829c9` (docs only: the wave-3 record and the re-grade of
+> `443a05a`) → `2d9712c` (checkpoint of an interrupted wave-4 run: the session process ended about
+> 13 minutes in, before any of the five agents returned; their partial edits were committed as they
+> stood so that the restarted agents could verify them rather than assume them, `tsc` red at that
+> commit on an unused import mid-edit — its message — and a scratch probe the interrupted agent
+> left, `engine.zz-probe-tmp.test.ts`, was deleted, not committed) → `8e873d2` (repair wave 4, 53
+> files) → `70bea72` (the C5 tier pin, 5 files; R60 (d)). `git status` was clean at `70bea72`
+> before this edit.
+
+### R54. B6 — the link inspector's centrality figures had no citation, and 2,064 device and link rows cited nothing — FIXED (re-grade of `443a05a`, new item 3)
+Found by the re-grade of `443a05a` (B6 overturned PASS → FAIL): `?l=L7` showed "Cutting it partitions
+yes / Betweenness 22.0000 / Pairs cut 22 / Centrality rank 4" with no cite control,
+`grep -c link_centrality src/data/fabric.json` gave 0, and the pane's only reference,
+`cable_map.cables[7]`, holds none of those fields. The refuter did not check other rows; W4-R1's class
+walk did, and on the unfixed tree reported 2,064 rows with no citation and no declared derivation
+(Host, Model, Serial, Software, Score, Criticality …).
+
+**Fix, verified in code.** `tools/compile-snapshot.mjs` compiles the source records the figures are
+read from under the paths their citations name — `link_centrality[k]` (`:232–245`),
+`health_scores[switch=…]` (`:218–226`) and `cable_map.nodes[host=…]` — appended at the end of
+`fabric.json`, so earlier model paths are unchanged; each link carries `centralityCite` (`:289`) and
+each device `fieldCites` (`:197`), naming the record each compiled field was READ from.
+`DevicePane.tsx:1943–1947` cites `link.centralityCite` on all four rows, and every Device-pane
+key/value row is typed `EvidenceRow` (cite | derived) (reported). `sha256sum src/data/fabric.json` is
+`a1a599b8…d251` (reconciler); the source digest `9580aa09…3089` is unchanged, and the gate moved
+`acceptance.md` F5's fabric digest (verified: `:200` names `a1a599b8…d251` at the 2026-09-23 recompile
+and keeps `2f558c38…a308` as the 2026-09-22 value). **Pinned by** `src/panels/DevicePane.cite.test.tsx`
+— 6 of 6 re-run green, including "walks every device and every link, and every row it finds is cited
+or declares its derivation" (no list of labels) and "a health figure cites the health_scores record,
+not the inventory record that holds no score". Reported: two mutations (the four cites replaced by a
+derived label; `link_centrality` removed from the compiler output), each 2 red then restored;
+recompiling twice is byte-identical. **Observation, not verified as a defect:** a link with no
+centrality row (`centralityCite` null) falls back to `link.cite` on those four rows, whose values then
+read "not observed". O9 (the raw source record) is unchanged. B6 is not re-graded here.
+
+### R55. B1 — one null administrative distance read three ways across four surfaces — FIXED, with one owner the engine shares and a type-checker guard for the class (re-grade new item 2; closes R44's residual)
+Found by the re-grade of `443a05a` (B1 overturned PASS → FAIL): `routes.core1[6]`
+(`"adminDistance":null`) read "0 — a connected route's administrative distance by definition…" on the
+Path panel and "administrative distance: / not observed" on the Device pane's Routing tab. W4-R1's
+type-checker guard then found two readers the grading had not: the evidence pane's route row
+(`EvidencePane.tsx:654/660`, "not observed" for a connected route's null next hop and AD — a fourth
+surface) and the engine's `adminDistanceOf`, a second, case-sensitive owner of the null-ranks-as-0
+rule that also printed that convention's 0 into the tie-break caveat as though the record carried it.
+
+**Fix, verified in code.** `src/core/route-fields.ts` (new, tracked in `8e873d2`) is the one owner —
+`routeFieldReading` (`:77`), `adminDistanceRank`, `isRouteRecord` — and imports types only;
+`claims.ts:692` re-exports it. The owner cannot live in `claims.ts`: `claims.ts` imports the engine and
+evaluates an engine binding at load, so an engine importing it back hits a TDZ (reported seen live
+during a mutation: "Cannot access 'NOT_OBSERVED_TEXT' before initialization"). Every surface renders
+the one `HopList.tsx:426` `RouteFieldValue`: the hop list, `DevicePane.tsx:1545–1546`,
+`Inspector.tsx:305` and `EvidencePane.tsx:655`/`:661` (the last applied by the gate). `engine.ts:1597`
+is `const adminDistanceOf = adminDistanceRank;`, and the caveat at `:1622` prints
+`routeFieldReading(winner, "adminDistance").text`. **Decision changed** (recorded in the owner's
+header): "0 — … by definition" put a digit in the value slot of a record that carries none; a
+connected or local route's null AD now reads "not recorded — the record carries no value; a connected
+route's administrative distance is zero by platform convention, so nothing collectable is missing",
+and its null next hop "n/a — a connected route has no next hop". **Pinned by**
+`src/panels/HopList.admin-distance.test.tsx` — 11 of 11 re-run green: `routes.core1[6]` "identical on
+all three surfaces, and never a bare 0"; every route record on every Routing tab against the
+Inspector; and the guard — "finds no read of RouteEntry.adminDistance outside the owner", "finds no
+render module (.tsx) reading RouteEntry.nextHop outside the owner", "the owner is a module the
+forwarding engine can import: its runtime imports never reach the engine", and a planted self-test
+(the owner is resolved by the type checker, never a hard-coded path). `claims.test.ts` (41) and
+`Inspector.test.tsx` (50) re-run green. Reported: 2 failed / 9 passed before the gate's EvidencePane
+and engine edits, 11/11 after; mutations of the Device-pane AD column (3 red) and of the owner's text
+(5 red). **Stated residuals:** a function returning the owner-free number can launder the value (the
+limit `band-read.guard` has); the nextHop half covers `.tsx` render modules only, so a `.ts`
+formatter would escape it; the Inspector's dynamic field walk is covered by DOM tests, not the guard.
+
+**The re-grade's cosmetic lead** ("No routing table was collected for AP-floor1 2 of 26 hosts have
+one") was not reproduced in the Device pane, whose text keeps its punctuation (reported). The
+run-together text was `NotObserved`'s accessible text ("not observedno RIB was collected…"): the gate
+added a visually-hidden " — " before the reason (`primitives.tsx:124`, non-compact form). **Pinned
+by** `src/ui/primitives.test.tsx` "separates the words from the visible reason in the accessible text,
+not only by layout" — 38 of 38 re-run green. B1 is not re-graded here.
+
+### R56. A4 — clicking the visible copy of a finding listed under two groups threw the queue to its first copy — FIXED (re-grade new item 1)
+Found by the re-grade of `443a05a` (A4 FAIL): under GROUP "Device health band", F144 is row 92 (Poor)
+and row 167 (Critical); clicking row 167 at scrollTop 7879 jumped to 4655 with focus on row 92. The
+grading ran band grouping only. The interrupted run's edit in `2d9712c` was checked by W4-R3 rather
+than assumed: with `DataGrid.tsx` and `PriorityQueue.tsx` put back to `443a05a`, 9 of 18 a4-scroll
+cases failed under band, host and role grouping (e.g. "scrollTop 3795 -> 94") (reported).
+
+**Fix, verified in code.** A row's identity in the grid is its per-group copy key
+(`DataGrid.tsx:578` `rowKeyOf`: roving cell, reveal, hold, activated copy); a re-aim from another
+surface prefers a copy already on screen, and the queue opens a collapsed group only when every group
+holding the row is collapsed (reported). **Pinned by** `src/panels/PriorityQueue.a4-scroll.test.tsx` —
+18 of 18 re-run green, 9 of them the duplicate-row cases; `PriorityQueue.test.tsx` (37),
+`PriorityQueue.reveal-hold.test.tsx` (6) and `PriorityQueue.folded-columns.test.tsx` (5) also green.
+Reported browser figure (private production build, 1920x1080, band grouping): clicking F144 at row 167
+kept scrollTop 7879 → 7879, with focus and `aria-current` on row 167. R39 (the no-finding path) is
+unaffected. A4 is not re-graded here.
+
+### R57. D3 — a control that removes itself dropped focus to `<body>` — FIXED through one owner, with a class test that presses every tab stop (re-grade new item 4)
+Found by the re-grade of `443a05a` (D3 overturned PASS → FAIL): "Remove the Critical/High severity
+filter", "Clear scope", "Deselect device core1" and "Stop investigating the flow …" each left
+`document.activeElement` on `<body>`, no ring anywhere. W4-R3 wrote the class test first:
+`src/app/self-removing-focus.test.tsx` mounts App with one of every kind of scope token and presses
+every tab stop (103) with Enter and, separately, Space; on the unfixed tree it reported 27 failures per
+key — the grading's five plus Remove access role, Stop restricting, Deselect finding/link, the queue's
+own chips and its empty-state "Clear the filter text".
+
+**Fix, verified in code.** `src/app/focus-return.ts:241` `handOffFocus(control, action, stated)` plans
+a successor structurally before the action runs (the next surviving stop in the control's labelled
+set, else the previous, else the caller's stated successors, else the set's label, else the region
+landmark) and acts only if focus was actually lost. Callers: the Chip primitive's remove control
+(`primitives.tsx:324`, optional `removeSuccessor`), Clear scope (`App.tsx:178`), the URL-notice
+Dismiss (`App.tsx:492`) and the queue's empty-state reset (`PriorityQueue.tsx:2085`). The new pass
+found two more at 390x844, both fixed (reported): "Skip to the fabric" targeted a `display:none`
+`#stage` (it now falls back to the first control of the body through `returnFocus`), and
+`.qbar__tokens` let "Clear scope" paint over the handed-to chip (now `flex: none`; the bar scrolls).
+**Pinned by** `src/app/self-removing-focus.test.tsx` — 2 of 2 re-run green (Enter and Space; per-test
+timeout 1,200,000 ms, `:306`). Reported browser evidence, not re-run by the reconciler:
+`node review/audit-d3-focus.mjs --self-removing` (new mode; real Tab presses at 1440, 768 and 390, one
+page per width and key) — 94 failures on a build with the hand-off disabled, and `154
+self-removing/BODY case(s), 0 failed … 0 not visible`, exit 0, on the fixed build (29 min 47 s); the
+default pass `332 case(s), 0 failed … 666 focus stop(s) … 0 not visible`, exit 0 (21 min 33 s).
+**Runtime note for graders (W4-R3):** run `--self-removing` on its own against a private
+`vite preview`, not inside the default pass; the jsdom class test takes 6–11 min on a loaded host.
+**Not stated as covered:** self-removing controls inside an open Inspector or evidence pane (an area
+the re-grade left unchecked). D3 is not re-graded here.
+
+### O24. The findings queue's chrome starved its rows whenever the path panel shared rail A — FIXED in wave 4 by a fold decided from measured space (moved from Open, 2026-09-23)
+**Original entry (wave 3).** Found by the R2 cluster at session start and re-found by the merged-tree
+gate; verified by the reconciler's `layout-guard.mjs` run on the `443a05a` build ("1280x800 / with
+trace: only 2 of 146 finding rows are hit-testable (need >= 4). Clicks land on BUTTON.sb__cov
+instead."; 4 of 146 at 1440x900). Pre-existing at `d3e2a1c`. Cause, measured by the gate: at the
+280 px rail the queue's chrome above its grid was 330 px (corpus switch 64, query 34,
+Group/Order/Display 145, count/scope lines 70). The wave-3 gate refused the proposed fold as the
+queue owner's design decision.
+
+**Fix (W4-R3), verified in code.** `PriorityQueue.tsx:613` `MIN_UNFOLDED_ROWS = 6`: when fewer than
+six finding rows are in view at rest, Group, Order and Display fold behind one "View" disclosure
+beside the filter field (`:859`), decided from measured space (the data rows whose laid-out centres
+fall in the grid's port, clipped by every clipping ancestor), not from a width, and kept only while it
+actually adds rows: at 1440 and 1920 with a trace folding showed the same 4 rows, because the path
+track absorbs the freed space, so it is undone there (reported). Group/Order state and the Display
+popover stay mounted. `layout-guard.mjs` gained invariant 2c: the disclosure must be a labelled,
+described tab stop with `aria-expanded=false` and `aria-controls` naming the hidden block, and Enter
+must show every control it hid. **Verified by the reconciler's layout-guard run** on a scratch build
+of `70bea72` (:4287): "1280x800 / with trace: view controls folded under "View" (3 controls,
+disclosure tab-reachable)", "1280x800 / with trace: doc 800/800, 4/146 rows hit-testable, path panel
+present", 1440x900 with trace 4/146, and "layout-guard: all five invariants hold at every viewport.",
+exit 0. There is no unit test of the fold; the guard is the evidence. Reported: with
+`MIN_UNFOLDED_ROWS = 0` the guard returns the original violation (2 of 146); a keyboard probe (Tab
+reaches View, Enter expands, the next Tab lands on Group, Space closes); D2 in the browser
+`role:grid, tabStops:1` folded and unfolded. **Stated limits:** 4 rows at 1440x900 and 1280x800 with a
+trace is exactly the invariant's floor, and at 1440x900 on `?s=path` the rows still start below rail
+A's fold (R46); the fold was verified in headless Playwright, not in the Browser pane, whose hidden
+tab fires no ResizeObserver callbacks (W4-R3).
+
+### R58. B5-adjacent — the not-applied-list caveat said a TCP-only line "matches" a udp or icmp flow — FIXED (re-grade new item 5)
+Found by the re-grade of `443a05a` (B5 upheld, with this adjacent defect): the caveat matched candidate
+lines by address only, 50 of 3,968 traces. The interrupted run's fix in `2d9712c` was checked by W4-R5
+and kept. **Fix, verified in code.** `notAppliedCaveat` (`engine.ts:867`) asks every candidate line of
+the engine's one matcher, `matchTri`: "matches" for yes, "could match" for maybe, excluded lines
+omitted, and a list whose every addressed line is excluded is described with its first exclusion and
+its implicit deny. The audit covers every sentence form that says a cited line (could) match a flow —
+the not-applied and catch-all parentheticals, an applied list's undecidable-line caveat, not-applied
+undecidable-line hop evidence and suggested-flow rationales — and every protocol in `FLOW_PROTOCOLS`
+(the old coverage assertion was tautological). **Pinned by**
+`src/forwarding/engine.not-applied-caveat.test.ts` — 6 of 6 re-run green. Reported: with the fix
+removed, 5 of 6 red ("3269 traces; protocol-excluded "matches" citations: expected 78 to be +0").
+**Latent, not proven:** the guard W4-R5 added to `buildSuggestions` survives its own removal (O33).
+
+### R59. B4 — the "lies in no subnet this collection observed" sentence was unpinned — FIXED (re-grade new item 6)
+Found by the re-grade of `443a05a` (mutating the sentence left 430/430 green). **Pinned by**
+`src/forwarding/engine.off-subnet.test.ts` (from `2d9712c`, checked and kept by W4-R5): 14 sources
+decided off-subnet independently of the engine (SVI addresses, connected routes, endpoint records) ×
+every suggested and SVI-subnet destination × every protocol must each be out-of-scope with 0 hops,
+refusal kind `outside-observed-subnets`, and the full sentence (`engine.ts:1507`, verified). 2 of 2
+re-run green. Reported: mutating the sentence to "is outside the collection" turns it red.
+
+### R60. C5 — a history-blend pop, a step-down that froze a moving view, a harness blind to the tier it graded, and a caller's tier pin that did not pin — FIXED; every C5 motion item PASS in one independent laboratory run at `70bea72` (reported)
+Found by the re-grade of `443a05a` (C5 FAIL, new item 7): (a) dark "high" reset-fly frame 59 changed
+46,569 px with the camera still — `historyWeightFor` dropped 0.75 → 0 in one frame after a slow frame;
+(b) an automatic step-down mid-orbit held a frozen overlay for about 1,000 ms (light/high orbit frame
+407, a 6.08× change); (c) `capture-motion.mjs` recorded `tiersSeen` but no verdict used it.
+
+**(a), verified in code.** `postfx.ts:220` `nextHistoryWeight` moves the weight at most
+`HISTORY_AA.maxStepPerFrame = 0.125` (`:198`) per presented frame, in and out; a still-frame drain
+takes 6 frames and ends before `MOTION_HOLD_MS` (140 ms); a tween's arrival is ramped out over
+max(150 ms, 6 frames) and the landing frame is plain; a content change still gives 0 at once; the
+tier-fade snapshot re-render is weighted the same way. **Pinned by** `render-c5-r4.test.ts` (25,
+including "a 0.465 px creep, a 166.6 ms gap, then a stop: no presented frame moves the weight by
+more than…") and `scene.test.ts`'s source tripwires (44) — re-run green. Reported: live probe, largest
+one-frame weight change 0.75 at `2d9712c`, 0.125 after, 0 on every still frame.
+
+**(b), verified in code.** The automatic step-down lands only with the camera at rest: `scene.ts`
+`landHeldStepDown` checks it before the gesture gate (`:3183`), so the gate's 6 s backstop cannot land
+it mid-orbit. The tier-fade hold ends on the first frame after the new tier presents if the camera
+moved or the content changed (`stepdown.ts:670` `createTierFadeHold`); the calm wait applies only to a
+still view, bounded by `TIER_FADE_HOLD_DEFAULTS.maxHoldMs = 1200` (`:659`). **Pinned by**
+`stepdown.fadehold.test.ts` (4) and the `scene.test.ts` tripwire "a held step-down lands only with the
+camera at rest — before the gate…" — re-run green.
+
+**(c), verified in code.** `capture-motion.mjs:881` `tierHeldBy` and `:908` `declaredTierFails`: a
+sequence with any frame off its leg's declared tier — or, since `70bea72`, any frame whose
+`stats().qualityAuto` is not false — is a leg problem (every other item UNPROVEN) and FAILS "every
+recorded motion frame rendered at its leg's declared tier" (exit 3); a missing record fails closed.
+**Pinned by** `render-c5-repairs.test.ts` (22, its "capture-motion: a sequence is graded only at the
+tier its leg declares" block) — re-run green.
+
+**(d) A product defect found while closing C5 — FIXED in `70bea72`, verified in code.**
+`scene.setQuality` returned early when the requested tier equalled the tier in force
+(`if (q === decision.tier) return;`), so asking for the auto-selected tier left it adaptive and the
+step-down could still move it — contradicting `scene.ts`'s documented promise that a caller-pinned
+tier is never moved. The gate's `capture-motion` run at `8e873d2` showed it (reported): the harness
+pinned its HIGH legs that way and both stepped down to balanced after their orbit sequences (exit 3 on
+the declared-tier item, four items UNPROVEN with no pop, flicker or blink measured, cross-fade PASS
+24/24). `quality.ts` `pinQuality` now always yields `auto: false` and rebuilds only on a real tier
+change; `tierIsAdaptive` is the one predicate both step-down sites gate on; `stats().qualityAuto`
+(`scene.ts:3595`) exposes the pin; `capture-motion` pins each render-quality leg at rest before its
+first sequence. **Pinned by** `src/fabric3d/quality.pin.test.ts` — 8 of 8 re-run green, including a
+control (an auto-selected high tier IS stepped down by the below-bar series), "pinning the tier
+already in force makes it a pin: not auto, no rebuild…" and "a pinned high tier holds high on every
+frame of a sustained below-bar series".
+
+**What is measured, and by whom (reported; not re-run by the reconciler).** An independent verifier
+re-ran `capture-motion.mjs` alone on a production preview of `70bea72`: exit 0, all six C5 motion
+items PASS — edge-sparkle share 0.000057 against 0.0002; 0 z-fighting clusters; 0 pops, 0 spikes and 0
+label blinks over 2,666 still pairs; 8 AO restores at 16.6–150 ms; 24 of 24 tier fades at
+266.6–266.8 ms; 24 of 24 sequences held their pinned tier. No threshold changed (see the banner).
+Earlier wave-4 runs are history, on a host 84–100 % busy: W4-R4's run 2 exited 3 (9 high-leg sequences
+rendered at balanced; one cross-fade opacity step of 0.48 during an 83.3 ms host frame; 0 still pops
+and 0 spikes in 24 of 24). **Stated caveats.** The app itself passes no pin, so an ordinary session
+runs on the adaptive tier and can step down; the HIGH-leg evidence is about a pinned high tier.
+`capture-motion` no longer observes an organic mid-motion step-down (it formerly failed such a leg
+rather than passing it); the step-down logic is covered by `stepdown*.test.ts` and the cross-fade
+item. One hold in the gate's run (light r1, high → low) read 1,816.6 ms: the harness's `holdMs` runs
+from the overlay's appearance to the fade's start (`capture-motion.mjs:1082`), which includes the
+re-warm-up that §4.8 counts apart from the 1,200 ms hold, so it does not by itself contradict the
+stated bound; not investigated further. Residuals: O16. C5 is not re-graded here.
+
+### R61. C6 — the `@keyframes` scan was vacuous again, and a timer-started hold had no §4.8 bound — FIXED (re-grade new item 8)
+Found by the re-grade of `443a05a` (C6 PASS upheld, with two notes): `motion-inventory.test.ts:661` was
+`/@keyframess+([w-]+)/g`, which returns `[]` against the planted spinner (it had lost its escapes
+between `1d19e22` and `443a05a`, so R49's and O18's "scanner proven live" did not hold at `443a05a`),
+and the tier step-down hold had no §4.8 bound. **Fix, verified in code.** `keyframeNamesIn`
+(`motion-inventory.test.ts:231`) uses `/@(?:-[a-z]+-)?keyframes\s+([\w-]+)/g`, strips comments and also
+reads root-HTML `<style>` blocks (from `2d9712c`, checked by W4-R4, who reported listing every regex
+literal in the file through the TypeScript AST and finding no other de-escaped one). The script scan
+now finds, as a class, every `setTimeout` whose callback starts inline motion, resolves its delay
+across `src/` and fails an unresolvable one; it finds exactly one, the tier-fade hold, and
+`design-brief.md:832` states its bound (**1200 ms** at most, counted from the new tier's first
+presented frame, only over a still view; no hold under reduced motion). **Pinned by**
+`src/core/motion-inventory.test.ts` — 27 of 27 re-run green, including "the @keyframes scan is live:
+it finds planted names, including the deleted spinner's", "the script scan finds a DELAYED start…"
+and "every hold before script-set motion is BOUNDED, and §4.8 states the bound the code has".
+Reported: the de-escaped regex turns the first red; deleting the §4.8 hold row turns 2 red. C6 is not
+re-graded here.
+
+### R62. E1 — the journey declaration contradicted the harnesses — FIXED (re-grade new item 9)
+Found by the re-grade of `443a05a` (E1 overturned PASS → UNPROVEN): `audit-e5-sweep.mjs` ("drives the
+interactions the journeys do NOT cover") timed "path trace: swap + submit" with J4's own selector, and
+`acceptance.md` listed swap+submit, the palette open and the first finding selection as outside the
+journeys while calling the last "inside J1". **Fix (W4-R2 and the gate), verified.** A declared
+journey is exactly what `measure-inp.mjs` times: `acceptance.md:84–98` lists "Inside the declared
+journeys" as the harness's journey ids (J1 includes the first selection after load; J4 is swap then
+submit; J5 is Ctrl+K open and Escape close) and "Outside" as the sweep's action names;
+`audit-e5-sweep.mjs` is importable (an `IS_MAIN` guard; exported `ACTIONS` with untimed `setup`) and
+no longer times a journey's input; the gate brought `design-brief.md` §8.1/§8.2 into line. **Pinned
+by** `src/core/journey-scope.test.ts` — 14 of 14 re-run green: it executes every journey act and sweep
+action against a recording page and fails on a shared input (its red branch executed), requires
+`acceptance.md`'s two lists to equal the harnesses' ids and action names, and reads §8.1/§8.2 with
+whitespace normalised. Reported: re-adding the old sweep actions turns it red, naming each journey's
+act. **Consequence:** the 2026-09-22 sweep figures for the first selection (93.4 ms), swap+submit
+(52.8 ms) and the palette open (98.3 ms) are now E3 signals against J1, J4 and J5 (O21, O30). The
+refactored sweep has not run headed under acceptance conditions (a headless dev-server smoke
+actuated 13 of 13 actions twice, reported). E1 is not re-graded here.
+
+### R63. E harness defects (re-grade new item 12) — anchor discovery swallowed its errors, a cited pin did not exist, NOT MEASURED counted as a violation, and the sweep could not tell a stalled window from the app — FIXED
+- **`discoverJ2Anchors`** is exported and names every failure on the anchors line and in J2's NOT
+  MEASURED reason (report field `j2AnchorDiscovery`). **Pinned by** `Fabric3D.test.tsx`'s
+  "measure-inp: anchor discovery names its failures…" block — re-run green (66 of 66 in the file).
+- **A nonexistent cited pin.** `measure-inp.mjs` cited `src/fabric3d/measure-inp.harness.test.ts`;
+  it now cites `Fabric3D.test.tsx` and `journey-scope.test.ts`. **Pinned, as a class, by**
+  `src/core/acceptance-gates.test.ts` "every test a tracked review harness cites as its pin exists"
+  (with a non-empty-scan precondition) — 13 of 13 re-run green.
+- **`e3StableVerdict`** counts NOT MEASURED apart ([PASS, PASS, NOT MEASURED, PASS] → STABLE PASS over
+  3 measured; an unmeasured run cannot make up the run count; one E3-FAIL still decides it). Pinned in
+  the same `Fabric3D.test.tsx` block (`:1845`, verified) — green.
+- **Window-not-presenting frames.** The sweep's `judgeFrames`/`frameKind` count a frame with 0
+  blocking time and under half reported script as `not-presenting`, apart from the application's;
+  over the bar it makes its repetition NOT MEASURED, naming the frame. **Pinned by**
+  `journey-scope.test.ts`'s "the E5 sweep separates window-not-presenting frames…" block (4) — green.
+- **The sweep's un-actuatable "path trace: swap + submit"** is removed (it is J4's act, R62).
+
+None of these harness changes has run under acceptance conditions (O25).
+
+### R64. F2 — wall-clock bounds and a 30 s timeout that measured the host (re-grade new item 10; O26's engine and palette halves) — FIXED; `layout.test.ts`'s bound is not
+Found by the re-grade of `443a05a` (F2 overturned PASS → UNPROVEN): under load
+`CommandPalette.test.tsx:717` read 533 ms against 400, two real-data EvidencePane tests hit the 30 s
+timeout while not hung, and `vitest.config.ts`'s "slowest solo: 2 266 ms" was false. No timeout or
+threshold was raised.
+- **CommandPalette.** Wall-clock bounds replaced by counts: 0 dataset reads per keystroke and per warm
+  open (a Proxy over the dataset), at most 2 row renders per cursor move; time is logged "not gated"
+  (`:731–732`, verified). `CommandPalette.test.tsx` 39 of 39 re-run green. Reported killed mutations:
+  an un-memoised row, an un-memoised index, a search on every open.
+- **EvidencePane.** The all-finding loops are one test per finding over the snapshot's own list, with
+  non-empty-denominator and "every per-finding test ran" preconditions; the cost was profiled as
+  React-dev + jsdom per mount, not product code (reported). `EvidencePane.source.test.tsx` (151) and
+  `EvidencePane.targets-cap.test.tsx` (149) re-run green.
+- **The engine tripwires** (`engine.test.ts`, median-of-7 under 50 ms for a trace and a counterexample
+  search — the shape O26 condemns) are structural work bounds: `engineWork()` counts traces, hops and
+  `lineMatches` (`engine.ts:76–78`); `ACL_PASSES_PER_HOP = 5` (`:89`) with its derivation stated;
+  counterexample work is bounded by `COUNTEREXAMPLE_CANDIDATE_CAP` × the ingress count; time goes out
+  through annotations only. **Pinned by** `engine.test.ts` (79) and the new
+  `engine.work-bound.test.ts` (5: 341 sweep flows, 90 counterexample searches, memo-warm tight forms,
+  long-list ACL cases) — re-run green. Reported killed mutations: double-traced candidates, a nested
+  ACL pass (caught only once the long-list case was added), a self-re-tracing trace; not killable on
+  this data: removing the 48-candidate cap (O33).
+- **`vitest.config.ts`'s header** states measured figures and a rule instead of a number ("a unit test
+  asserts no wall-clock time"; large units split one record per test; never raise the limit) and names
+  `measure-inp.mjs` and `audit-e5-sweep.mjs` as the latency instruments (verified, `:16–30`).
+- **`env.test.ts`** no longer presents a gitignored scratch script as re-runnable evidence (5 of 5
+  green); the class is O29.
+- **`mock-classification.test.ts`** went red when two new test files mocked modules; both are declared
+  in F2's list — 3 of 3 re-run green.
+
+**Not closed:** `src/fabric3d/layout.test.ts:952` still asserts a median-of-7 layout time under 50 ms,
+against the header's rule (O26). Reported full runs on a host 84–86 % busy: 1 failed of 2,089, in
+another cluster's file; one earlier run lost four files to Vitest's fixed 60 s worker-start timeout, an
+environment limit the header now records. F2 is not re-graded here.
+
+### R65. F3/F4 documentation drift (re-grade new item 11) — FIXED in the documents
+Verified by the reconciler's reading: `acceptance.md:197` recounts the source-reading test files
+(**45 of 135**, 44 of the 131 tracked, with the grep stated) instead of "roughly a fifth"; `:198`
+records `mutation-check.mjs` at **18 of 18 mutations killed** and marks "16 of 16" superseded, as does
+`refutation.md:351`; `refutation.md` §6 carries a "Not examined" record (`:313`, added 2026-09-23);
+`acceptance.md:199` F4 says mount imports 4 bindings from the entry, 3 of them the theme-preference
+functions. Reported, not re-run: `mutation-check.mjs` exit 0 with 18 of 18 KILLED (three clusters),
+and the F4 re-measure from a `vite build`. Historical red-before-fix for the other engines still rests
+on today's-code mutations (O34). F3 and F4 are not re-graded here.
+
+### R66. The hidden-tab stale PARTIAL card under a refused shared link (re-grade lead, `PathTrace.tsx:1090`) — REPRODUCED and FIXED
+The re-grade of `443a05a` listed it as an unconfirmed lead. W4-R5 reproduced it on the dev server
+(reported): a real `history.back()` in a background tab (rAF not firing) to a refused link left the
+PARTIAL card of the flow just left, and it stayed after the tab drew. The restore effect showed the
+flow from a local `pending` whose store write the next Back cancelled, and nothing released it; `run`'s
+deferred commit was not cancellable either. **Fix, verified in code:** `pending` is only an
+acknowledgement, released when the store's flow or refusal moves elsewhere, and `run` commits through
+`deferPastPaint` with its cancel kept in `runCommit` (`PathTrace.tsx:1139`). **Pinned by**
+`src/panels/PathTrace.test.tsx`'s "history Back while no frame has been painted (hidden tab)" block
+(3 cases) — 66 of 66 in the file re-run green. Reported: all 3 red before the fix; disabling the
+supersede effect reds all 3, removing the run-commit cancel reds 1.
+
 > **Repair wave 3 (reconciled 2026-09-23, committed as `443a05a`).** Entries R39–R53 below, the
 > status notes added to O10, R10, R24, R28 and R29, and the rewritten O16, O17, O20, O21 and O23 plus
 > the new O24–O28 under Open, record two things: the independent re-grade of `1d19e22`
@@ -31,9 +408,10 @@ evidence exists, because an issue asserted without evidence is a rumour.
 > is among those `mutation-check.mjs` executes). A fixed defect does not by itself move its
 > criterion; nothing here is a re-grade.
 >
-> **History.** `50a3dc5` (root) → `254694b` (wave-2 checkpoint, red on purpose) → `1d19e22` (repair
-> wave 2c) → `d3e2a1c` (docs only: the wave-2c record and the re-grade of `1d19e22`) → `443a05a`
-> (repair wave 3, 73 files). `git status` is clean at `443a05a`.
+> **History as of wave 3** (it continues in the wave-4 banner above). `50a3dc5` (root) → `254694b`
+> (wave-2 checkpoint, red on purpose) → `1d19e22` (repair wave 2c) → `d3e2a1c` (docs only: the
+> wave-2c record and the re-grade of `1d19e22`) → `443a05a` (repair wave 3, 73 files). `git status`
+> was clean at `443a05a`.
 
 ### R39. A4 — a device pick with no finding selected reset the queue's scroll — FIXED
 Found by the re-grade of `1d19e22` (A4 FAIL, its new item 2): with no finding selected and the queue at
@@ -53,7 +431,8 @@ when the selection's marks commit…", "focus returning to the grid after the pi
 closing) stays on the answer in view" and the with-finding control. Reported red before: 9 failed
 (`expected +0 to be 975`); reported mutations: three, each red then restored. Reported browser
 figures (1920x1080, `?s=queue`): Fabric list, palette and canvas picks all 3200 → 3200 (was → 0);
-core2 held at 5800. A4 is not re-graded here.
+core2 held at 5800. A4 is not re-graded here. **Status after the re-grade of `443a05a`:** holds for
+the no-finding path; A4 failed there on the duplicate-row path instead, fixed in wave 4 (R56).
 
 ### R40. C4 — a light-OS reader got a dark first paint — FIXED on the release build; one dev-server residual reported
 Found by the re-grade (C4 overturned PASS → FAIL, its new item 5): `index.html` opened
@@ -154,7 +533,7 @@ Reported: 36 failed before; two mutations red then restored; in the browser all 
 the refusal ("The destination port "abc" in the shared link is not a port number…"). B1 is not
 re-graded here.
 
-### R44. B1 minor (re-grade item 14) — the HopList said "not observed" where the Inspector said "0 by definition" — FIXED
+### R44. B1 minor (re-grade item 14) — the HopList said "not observed" where the Inspector said "0 by definition" — FIXED for those two surfaces only; the Device pane still disagreed at the re-grade of `443a05a`, and the "0 — by definition" reading was withdrawn in wave 4 (R55)
 For the same null `adminDistance` on a connected route the two surfaces disagreed. **Fix, verified in
 code:** every route-record field in the hop list (winner and every alternative; `adminDistance` and
 `nextHop`) goes through one `RouteField` (`HopList.tsx:425`) that asks the Inspector's owner,
@@ -163,6 +542,12 @@ the hop list's connected-route next hop now reads the owner's "n/a — a connect
 hop" instead of "directly connected — no next-hop address". **Pinned by**
 `src/panels/HopList.admin-distance.test.tsx` (4, every structural null on every traced hop against
 the Inspector's row for the same cite) — re-run green; reported 3 failed before and a mutation red.
+
+**Status after wave 4.** Partial, per the re-grade of `443a05a`: the Device pane's Routing tab still
+rendered the same null as "not observed" (B1 FAIL), and the evidence pane and the engine's
+`adminDistanceOf` were further readers. All four surfaces and the engine now read one owner,
+`core/route-fields.ts`, and the connected-route AD reads "not recorded — …" rather than "0 — … by
+definition" (R55).
 
 ### R45. A2 / layout — `.hop__host` collapsed to 0 px on the denied flow's hop header — FIXED
 Found by the re-grade (its new item 3: the header overflowed by 174–214 px). **Fix, verified in
@@ -225,7 +610,7 @@ the real config that must fail on a planted zero-assertion test) and by the seve
 run, so no test at `443a05a` completes with zero assertions. Reported: its first run found exactly
 the three. F2 is not re-graded here.
 
-### R49. C6 — the §4.8 motion inventory was false against the code, and its test never read CSS transitions — FIXED
+### R49. C6 — the §4.8 motion inventory was false against the code, and its test never read CSS transitions — FIXED; its `@keyframes` scan was vacuous at `443a05a` (re-grade) and was restored in wave 4 (R61)
 Found by the re-grade (C6 overturned PASS → UNPROVEN, its new item 6): §4.8 promised an 18 ms per-hop
 stagger and a 140 ms palette animation that do not exist and omitted about eight running transitions.
 **Fix (R4).** `motion-inventory.test.ts` now parses every `transition`/`animation` declaration in
@@ -239,6 +624,11 @@ gate with its §4.8 row, and two other claims that the Stage dims were corrected
 `src/core/motion-inventory.test.ts` — 24 of 24 re-run green. Reported: the old brief turns it red
 (5 failed); computed styles in the running app match the rows. The packet loop (1600 ms × 3) is stated
 as unexercisable on the depth-1 snapshot. C6 is not re-graded here.
+
+**Status after wave 4.** The 24 green tests above did not include a live keyframe scan: at `443a05a`
+the regex had lost its escapes (`/@keyframess+([w-]+)/g`) and matched nothing, which the re-grade of
+`443a05a` found. Restored with a known-answer case in wave 4, which also added the delayed-motion
+scan and the §4.8 hold row (R61; `motion-inventory.test.ts` 27 of 27).
 
 ### R50. F1 scope — `vite.config.ts` and `vitest.config.ts` were in no type-checked project — FIXED
 Found by the re-grade (its new item 12): `minWorkers: 1` was silently ignored (TS2769; removed in
@@ -271,7 +661,9 @@ first selection 0 of 21 trials with an on-path task over 50 ms, INP p95 64 ms; t
 `measure-inp` — all 7 journeys E3-clean but on battery with a Teams meeting in the foreground, so
 `host-env.mjs` withheld it; E3's across-runs verdict for that build is INSUFFICIENT RUNS (0 of the 3
 quiet runs needed). E2's warm J2 p95 moved from 40 to 88 ms (the click's presented frame is now the
-canvas's own acknowledgement), still under 200 ms. See O25. E3 is not re-graded here.
+canvas's own acknowledgement), still under 200 ms. See O25. E3 is not re-graded here. **Status after
+the re-grade of `443a05a`:** J2-first was E3-clean in all 3 of its runs, and in the wave-4 gate's run
+(21 of 21 trials, p95 96 ms) — laboratory only, on busy hosts (O25).
 
 ### R52. Harness defects from the re-grade (its item 15) — the headed window larger than the screen, and the popping check's divide-by-zero — FIXED; the palette keystroke race is not
 - **Headed window (class fix, R5 and the gate).** Every headed harness launched at a fixed
@@ -352,7 +744,9 @@ deletion); the new line names "the engine repository root — the parent of atla
 superseded root. History since, from `git log` (re-read at `443a05a`): `254694b` ("wip: checkpoint
 the interrupted wave-2 tree", committed red — 15 of 1465 — so that each failing test is on record
 before its fix), `1d19e22` (repair wave 2c), `d3e2a1c` (docs only: this file's wave-2c record and
-the re-grade of `1d19e22`) and `443a05a` (repair wave 3). Every commit candidate is scanned with the parent repository's own marker
+the re-grade of `1d19e22`) and `443a05a` (repair wave 3); since then `1c829c9` (docs only),
+`2d9712c` (checkpoint of the interrupted wave-4 run), `8e873d2` (repair wave 4) and `70bea72` (the C5
+tier pin), read from `git log` at `70bea72` (the wave-4 banner). Every commit candidate is scanned with the parent repository's own marker
 patterns (`cisco_toolkit/distribution_verify.py` `_client_marker_patterns`) before it is committed.
 
 **The untracked-files half is resolved by commit.** `254694b` tracked the 19 files and `1d19e22`
@@ -370,8 +764,10 @@ module graph in wave 3 (R47); at `443a05a` it is green, 6 of 6 (reconciler), and
 named during the wave, `src/app/theme-preference.ts`, is tracked (`git ls-files`).
 
 **What this does not establish.** No criterion is re-graded here. The re-grade re-ran F1, F2 (unit
-half), F4 and F5 on a clean clone of `1d19e22`; nothing has been re-run on a clean checkout of
-`443a05a` (O23). The source snapshot still lives in the parent repository, so
+half), F4 and F5 on a clean clone of `1d19e22`; the re-grade of `443a05a` reproduced F5 from a real
+`git clone` of `443a05a`, and nothing else has been run from a clone since (O23). At `70bea72`
+`tracked-sources.test.ts` is green, 6 of 6 (reconciler): `src/core/route-fields.ts`, the one file wave
+4's gate left untracked, is tracked in `8e873d2`. The source snapshot still lives in the parent repository, so
 `git show HEAD:<source>` inside `atlas-scope` cannot reach it. `50a3dc5` inherits `857b520`'s
 limitation as a provenance baseline; `254694b` → `1d19e22` is the first pair in this history in which
 failing tests were committed before their fixes (R34).
@@ -394,7 +790,8 @@ LF-normalised.
 `lf-normalised`), which equals `git cat-file blob HEAD:webapp/sample_data/sample_fleet.snapshot.json |
 sha256sum` in the parent repository, and recompiling `fabric.json` is byte-identical. Re-checked by
 the reconciler: the four `meta` blocks read as above; the parent's blob hashes `9580aa09…3089` and is
-3,072,771 bytes; `sha256sum src/data/fabric.json` is `2f558c38…a308`. **Pinned by**
+3,072,771 bytes; `sha256sum src/data/fabric.json` is `2f558c38…a308` (at `1d19e22`; it is
+`a1a599b8…d251` since wave 4's B6 compiler change, with the source digest unchanged — R54). **Pinned by**
 `src/core/provenance.test.ts` (the CRLF-vs-LF binding test and one "writes the same bytes from a CRLF
 checkout as from an LF one" test per compiler), `src/forwarding/bindings-trust.test.ts` ("every
 source-bound sidecar consumer fails closed on any binding mismatch", which finds sidecars
@@ -409,13 +806,16 @@ the snapshot digest" (green) fails on any hex literal of 8+ characters that pref
 working-tree digest. By design, links minted before the change are refused as snapshot mismatches (the
 tag moved from `9cc348bd` to `9580aa09`). **F5 is not re-graded here** (O23).
 
-### O18. Motion-inventory residuals — CLOSED (moved from Open, 2026-09-23)
+### O18. Motion-inventory residuals — CLOSED (moved from Open, 2026-09-23); the keyframe-scanner proof below did not hold at `443a05a` (re-grade) and was restored in wave 4 (R61)
 Both items are done. `src/ui/primitives.tsx:1693` (Skeleton comment) now says "looping animation that
 runs in this product" (verified). The dead `.stage-pending__spinner` / `@keyframes stage-pending-spin`
 CSS was deleted (a comment at `App.css:343` records it) and the §4.8 row with it. **Pinned by**
 `motion-inventory.test.ts` "no stylesheet declares an unbounded loop and nothing renders the deleted
 spinner…" and its first test, which proves the keyframe scanner live on a planted stylesheet — re-run
-green.
+green. **Contradicted at `443a05a`** by the re-grade of that commit: the scan's regex had lost its
+escapes (`/@keyframess+([w-]+)/g`) and returned `[]` against the planted `@keyframes
+stage-pending-spin`; it hid nothing, because `src/` declares no keyframes. Wave 4 restored it with a
+known-answer case that fails on the de-escaped form (R61).
 
 ### R26. D3 — focus fell to `<body>` after the snapshot popover, and on every Inspector close path — FIXED
 Found by the acceptance grading (D3: popover, Tab, Escape → `BODY`; `Header.tsx:479` fell back to
@@ -548,7 +948,7 @@ and gate) and 0 in 36 frozen-build probe sequences, down from 31; one DOM trade 
 dev server did not recur and is not authoritative. Informational, no change: scene label age advances
 per resolver pass while the DOM's advances per rAF.
 
-### R31. C5 — the "z-fighting" clusters were not depth ties; three geometry sources removed — FIXED (what then still failed was edge shimmer, O16 — fixed in code in wave 3, not yet re-measured at `443a05a`)
+### R31. C5 — the "z-fighting" clusters were not depth ties; three geometry sources removed — FIXED (what then still failed was edge shimmer, O16 — fixed in code in wave 3, measured PASS in the re-grade of `443a05a`'s laboratory run, and PASS with every C5 item in one independent run at `70bea72`, R60)
 A per-frame camera replay and a raycast of every flip-flop cluster found no ray crossing two chassis
 surfaces within 0.02 units (reported). Three sources were isolated and removed: the faceplate frame's
 top bar seen from above (a body-painted hood, `chassis.ts`); overlapping `LineMaterial` round caps at
@@ -1383,7 +1783,13 @@ to live outside the suite is a gate nobody runs.
 Moved to Resolved on 2026-09-23: O10, O15 and O18 (closed in wave 2c), and R15, R9, R10, O2 and O3
 (resolved earlier but filed here). New in wave 2c: O21–O23. Wave 3 (`443a05a`): every "new" item of
 the re-grade of `1d19e22` was fixed in code (R39–R53) except the harness's palette keystroke race
-(O28); O16 is FIXED IN CODE but not re-measured at `443a05a`; new O24–O28.
+(O28); O16 is FIXED IN CODE but not re-measured at `443a05a` (the re-grade of `443a05a` then
+measured it, O16); new O24–O28. Wave 4 (`8e873d2`,
+`70bea72`): the re-grade of `443a05a`'s new items 1–12 were fixed in code (R54–R65) and O24 moved to
+Resolved; of its item-13 leads, the stale card is R66, the missing period R55 and the palette over B7
+O32; the C5 motion items all PASS in one reported independent run (R60), leaving O16's residuals; new
+O29–O34. Not examined by the re-grade of `443a05a` and not touched in wave 4: O6, O7, O8, O11 and
+O14.
 
 ### O11. Should an earlier refused hop undercut a denial? — OWNER DECISION
 From R16. The claims-engine lane did not make the rule "every hop before the last must be RESOLVED"
@@ -1406,12 +1812,16 @@ record to open. Pinned by `src/panels/EvidencePane.source.test.tsx` (its first t
 every producer key must reach the compiled finding) and new pins in `EvidencePane.namedconfig.test.ts`
 (33 cited; only F106/F107 land on literal text, through the existing MGMT_IN match) — both re-run
 green. `fabric.json` was then `6c7d78ab…6fa9095` (verified by the reconciler's `sha256sum` in wave 1;
-since O15 it is `2f558c38…a308`). **The grade does not move: still 12 of 146.** Closing A1 needs the
+since O15 it was `2f558c38…a308`, and since wave 4's B6 compiler change it is `a1a599b8…d251`, R54). **The grade does not move: still 12 of 146.** Closing A1 needs the
 engine to publish per-finding record pointers — a producer change in the parent repository's engine,
 not an Atlas Scope change; the data it would need is, per finding, the interface, ACL line or config
 block the finding was derived from. Not re-examined in wave 2c. **Confirmed exactly by the re-grade
 of `1d19e22`** (Ctrl+K census of all 146: 6 reach the named configuration, 6 the matching record, 133
-context only, F142 no button); no wave-3 cluster touched it. Still NOT CLOSABLE IN ATLAS SCOPE.
+context only, F142 no button); no wave-3 cluster touched it. **Confirmed again by the re-grade of
+`443a05a`** (A1 FAIL: `{matched:6, named:6, context:133, none:1}`, typed after a 250 ms settle, O28);
+no wave-4 cluster touched it — W4-R2 kept the A1 census pins (`EvidencePane.namedconfig.test.ts`,
+`EvidencePane.source.test.tsx`) green while splitting the EvidencePane loops (R64). Still NOT
+CLOSABLE IN ATLAS SCOPE.
 
 **B1 residual — FIXED (see R27).** Wave 1 left four surfaces printing the raw band without
 `presentBand` (`CommandPalette.tsx:194`, `query.ts:189`, `query.ts:219` — the `is:healthy` answer — and
@@ -1428,7 +1838,10 @@ snapshot, and should not be made to render by loosening the near-miss rule. NOT 
 this data: it needs a snapshot in which some denied or dropped flow has a nearest flow that behaves
 differently. Not re-examined in wave 2c (R35's pin asserts the one related real flow is offered no
 nearby flow). **Confirmed by the re-grade of `1d19e22`:** 15,606 traces, `definiteDelivery=0`, 0
-counterexamples. Not touched in wave 3.
+counterexamples. Not touched in wave 3. **Confirmed by the re-grade of `443a05a`** (11,988 traces:
+0 decided refusals, 0 definite deliveries, 0 counterexamples; the positive state renders only under
+`vi.mock('./rib-completeness')`). Not touched in wave 4; W4-R5 reported the `engine.counterfactual`
+ratchets green. A2 needs the same kind of data (O34).
 
 ### O14. `failureImpact(h).engine.record` aliases the compiled snapshot — OPEN (owner: `blast.ts` / `core/data.ts`)
 Found by the hollow-test repair (R19): the new `repeatable()` check wrote a junk key into the first
@@ -1438,10 +1851,35 @@ result and it appeared in `engine.record` on the second run. `blast.ts` returns 
 to the result mutates the snapshot for every later caller. Fix: copy the record in
 `compareEngineImpact`, or deep-freeze `fabric` in `core/data.ts`. Until then, `blast.test.ts` skips
 objects that belong to the snapshot, with a comment saying why. Reported by the lane, confirmed in
-code by the reconciler, not independently reproduced. No wave-2c cluster owned or touched it.
+code by the reconciler, not independently reproduced. No wave-2c cluster owned or touched it, nor
+did wave 3 or wave 4; the re-grade of `443a05a` did not examine it.
 
-### O16. C5 — motion render quality: edge shimmer under orbit FIXED IN CODE in wave 3 (a creeping-camera history blend), its PASS reported but not re-measured at `443a05a`; the cluster-rule wording an OWNER DECISION — OPEN (owner: the next C5 re-measurement; the rule: the C5 owner)
-**Status at `443a05a` (wave 3).** The re-grade of `1d19e22` confirmed this FAIL at both tiers (304–739
+### O16. C5 — motion render quality: every C5 motion item PASS in one independent laboratory run at `70bea72` (reported, R60); OPEN: a caller's tier change mid-motion still freezes the view for its re-warm-up (OWNER DECISION: the render owner) and the cluster-rule wording (OWNER DECISION: the C5 owner)
+**Status at `70bea72` (wave 4).** The re-grade of `443a05a` measured edge shimmer and z-fighting PASS
+in a laboratory run (flip px 0–37 against 120, 0 clusters) on a contended host that was not
+tier-held, and failed C5 on popping instead. Wave 4 fixed both pops, the harness's tier blindness and
+the caller-pin defect, and an independent verifier's `capture-motion` run at `70bea72` passed all six
+items with every sequence at its pinned tier (R60; reported, not re-run by the reconciler). What
+remains open:
+- **A caller's tier change mid-motion — OWNER DECISION (the render owner).** A `setQuality` to a
+  DIFFERENT tier (the Quality control) issued while the camera moves still presents no new frame
+  until the new chain's re-warm-up ends — about 400–500 ms, measured on the dev build (W4-R4,
+  reported) — and the overlay then releases within one frame. `70bea72` removed only the same-tier
+  case (no rebuild, no warm-up). Closing it needs `applyQuality` restructured so the old chain keeps
+  presenting while the new one warms; W4-R4 declined it as architectural and the gate refused it for
+  this wave. §4.8 says so ("a caller-made tier change (`setQuality`) is not deferred").
+- **What the C5 evidence does not cover.** The app passes no pin, so an ordinary session runs on the
+  adaptive tier and can step down (only at rest since R60); the HIGH-leg evidence is about a pinned
+  high tier, and `capture-motion` no longer observes an organic step-down, which rests on
+  `stepdown*.test.ts` and the cross-fade item. One host (Intel iGPU, ANGLE D3D11).
+- **Optional, the `camera.ts` owner.** A `tweenRemainingMs(nowMs)` accessor on `CameraRig` would let
+  `scene.ts` stop inferring the tween clock from the `isTweening()` edge plus `CAMERA_TWEEN_MS`; a
+  `moveTo` re-issued mid-tween currently reads its arrival early, which ramps the blend out sooner and
+  never causes a pop (W4-R4, reported). The gate did not apply it: it would have changed the motion
+  code the same gate was judging.
+- **The cluster-rule wording — OWNER DECISION, unchanged** (below).
+
+**Status at `443a05a` (wave 3), superseded above.** The re-grade of `1d19e22` confirmed this FAIL at both tiers (304–739
 px against the 120 px bar on all 8 orbit sequences) and saw the 16 px cluster move to dark/low. The R5
 cluster first classified the flip-flopping pixels (a verdict-neutral diagnostic in
 `capture-motion.mjs`): about 90 % thin strokes, the rest silhouettes, 0 highlight and 0 flat, so
@@ -1467,7 +1905,8 @@ px 11–40 against 120, 0 clusters; same-host A/B `d3e2a1c` 300/699 px against 5
 exit 4 only for build freshness). **The merged-tree gate did not run `capture-motion`** (orchestrator;
 its result lists no such run). `render-decisions.md` §10 nevertheless states a "re-measured on the
 merged wave-3 tree" figure of 9–35 px; those figures match exactly an ignored
-`review/shots/motion/report.json` generated 2026-09-23T06:17:03Z (09:17 +0300) against a fresh build
+`review/shots/motion/report.json` generated 2026-09-23T06:17:03Z (09:17 +0300; later overwritten by
+the re-grade's C grader, whose backup is in that session's scratchpad) against a fresh build
 of this checkout on :4181, every item PASS (orbit flip px 17/35, 17/23, 20/32, 9/34; 0 clusters). By
 file times, `src/app/shell.css` was edited after that run (09:24, the R46 `overflow-y: scroll` rule)
 and the commit is at 10:12, so that report is not a measurement of `443a05a`, and who ran it is not
@@ -1478,9 +1917,11 @@ stepped the auto tier high → low mid-orbit and recorded a 9.8x motion spike at
 product's step-down under a 100 %-busy host, not the blend; with the tier held every item passed.
 
 **Owner decision, unchanged.** The z-fighting rule counts any 4-connected cluster ≥ 16 px while its
-comment calls that "a 4x4 patch" (`capture-motion.mjs:154`, still there). The only cluster ever
+comment calls that "a 4x4 patch" (`capture-motion.mjs:154` at `443a05a`; `:167` at `70bea72`, still
+there; `ZF_CLUSTER` is still 16). The only cluster ever
 recorded was a 16x1 run; with the blend it has not recurred (0 clusters in 4 reported runs and in the
-09:17 report), but the code/comment contradiction stands and narrowing the rule needs sign-off.
+09:17 report, and 0 in every reported wave-4 run including the independent one at `70bea72`), but the
+code/comment contradiction stands and narrowing the rule needs sign-off.
 
 **Status at `1d19e22` (orchestrator's run), superseded above.** `node review/capture-motion.mjs` exits 3 on two items:
 **z-fighting** — one 16 px cluster, dark/high/orbit-drag; and **edge sparkle** — flip share
@@ -1525,7 +1966,12 @@ unexplained: one early run cut a high→low fade across a 517 ms frame gap and d
 fades. The harness forces `preserveDrawingBuffer` and wraps `requestAnimationFrame`; each is justified
 in its header.
 
-### O17. Layout residuals after R25 — OPEN (the single-column overflow FIXED at 800–1000 px in wave 3, R42; 768 px itself and descender clipping still open)
+### O17. Layout residuals after R25 — OPEN (the single-column overflow FIXED at 800–1000 px in wave 3, R42; 768 px itself, descender clipping and compact density still open)
+**Status at `70bea72`.** Unchanged by wave 4. The reconciler's `layout-guard.mjs` run at `70bea72`
+measures invariant 5 at 1000x800, 900x700 and 800x600 only (all three hold), so 768 px itself is still
+unmeasured; descender clipping still has no detector (the re-grade of `443a05a` confirmed both, and
+did not grade compact density). Wave 4's 390 px scope-bar fix (R57) is a different defect.
+
 - **768 px queue overflow — addressed at 800–1000 px, not measured at 768.** At 768 the queue rows
   overflowed their own track and the status bar covered them. Wave 3 found the same fault across the
   single-column band (768–1023 px) at 1000x800, 900x700 and 800x600 and fixed it (`shell.css:643–650`,
@@ -1572,9 +2018,16 @@ C1 stays UNPROVEN. Moving it needs an owner decision: supply references that can
 `acceptance.md` to what can honestly be measured. Re-running more rounds against these images would
 produce more of the same non-evidence. **Confirmed by the re-grade of `1d19e22`** (`KEY.json`: 12
 entries, zero verdicts; 8 of 20 sheets orphans; the `-craft` sheet still shows "Forward AI" and the
-Storylane modal). Still an owner decision; not touched in wave 3.
+Storylane modal). Still an owner decision; not touched in wave 3. **Confirmed again by the re-grade
+of `443a05a`** (same `KEY.json`, same orphans, same `-craft` sheet); not touched in wave 4.
 
-### O20. Minor drift and E5 harness limits carried from acceptance — `--sev-high` drift FIXED (R36); the probe gap FIXED in the harness (R37); the pre-FCP carve-out is an OWNER DECISION; E5 PASSED at the re-grade of `1d19e22`, not re-established at `443a05a`
+### O20. Minor drift and E5 harness limits carried from acceptance — `--sev-high` drift FIXED (R36); the probe gap FIXED in the harness (R37); the sweep's stalled-window blindness FIXED in the harness (R63); the pre-FCP carve-out is an OWNER DECISION; E5 PASSED at the re-grade of `1d19e22`, not re-established since
+- **Status at `70bea72`.** The re-grade of `443a05a` withheld E5 (cold load FAIL, worst 393.1 ms
+  pre-FCP, judged because the carve-out is unsanctioned, at 55 % host load; the sweep NOT MEASURED on
+  swap+submit). Wave 4 fixed the sweep's harness defects (R63: stalled-window frames counted apart;
+  swap+submit removed as J4's act, R62). No E5 run is reported on the merged tree — the gate ran E2/E3
+  and E4 only (O25). The carve-out is still unsanctioned: the reconciler found no
+  `E5 EXEMPTION (owner-sanctioned)` line in `acceptance.md`.
 - **Status at the re-grade of `1d19e22`, superseding the last bullet below.** E5 PASSED on a quiet
   AC host (`acceptanceEvidence=true`, excess 17–21 %; worst frames 105.2/133.2/110.9 ms; the sweep's
   16 actions under 200 ms in 3 of 3 repetitions) without the carve-out (a palette opened during load
@@ -1597,7 +2050,14 @@ Storylane modal). Still an owner decision; not touched in wave 3.
   keystrokes over 200 ms, worst 560 ms, at 81 % busy), which the harness refuses as acceptance
   evidence. It needs a quiet run on AC power.
 
-### O21. E3 — input-handler interactions outside the five journeys cross 50 ms — OPEN (owner: the performance cluster); at the re-grade only navigation seeding and resizes reproduced
+### O21. E3 — input-handler interactions outside the five journeys cross 50 ms — OPEN (owner: the performance cluster) for navigation seeding and resizes; the first selection, swap+submit and the palette open are journey acts since wave 4 (R62)
+**Status at `70bea72`.** The re-grade of `443a05a` found this entry's classification contradicted
+(E1): swap+submit is J4's own act. Wave 4 redrew the line (R62): the first selection after load is
+J1's rep 0, swap+submit is J4 and the palette open is J5, so three of the classes below are now E3
+signals on journeys (J5's is O30), not out-of-journey ones. Navigation seeding and resizes, the two
+that reproduced at the re-grade of `1d19e22`, are still outside E3's claim and still the owner's
+question; nothing since has re-measured them.
+
 **Status at the re-grade of `1d19e22`.** On the quiet host the eight classes below did not reproduce:
 seven read worst LoAF 0 ms in all 3 repetitions, and so did path-trace swap+submit. Only "seed a flow
 by navigation" (87.3–100.6 ms) and resizes (50.1–63 ms) crossed 50 ms, both outside E3's claim. The
@@ -1621,26 +2081,29 @@ which was annotated voluntarily. That is a hand-maintained list standing in for 
 ("a clock-derived value"): the next clock-derived field under a new name reaches a renderer unannounced.
 No failing case exists today; the fix is to follow provenance from the rAF timestamp and `performance`
 reads (as R15 did for bindings) rather than names. Still open at the re-grade of `1d19e22` (F6 passes,
-the shape is unchanged) and not touched in wave 3.
+the shape is unchanged) and not touched in wave 3. The re-grade of `443a05a` found the shape unchanged
+(F6 PASS); not touched in wave 4. `FRAME_TIMING_OWNERS` (`determinism.test.ts:258`) still lists
+field names; wave 4 added a telemetry field, `qualityAuto` (`telemetry.ts:72`), which is a caller's pin
+rather than a frame-time reading, so it is not a failing case — but nothing structural decided that.
 
-### O24. The findings queue's chrome starves its rows whenever the path panel shares rail A — OPEN (owner: `PriorityQueue.tsx`/`.css`, a design decision); pre-existing
-**Found by** the R2 cluster at session start and re-found by the merged-tree gate. **Verified by the
-reconciler** (`layout-guard.mjs` against the `443a05a` build, exit 1 on this one violation only):
-"1280x800 / with trace: only 2 of 146 finding rows are hit-testable (need >= 4). Clicks land on
-BUTTON.sb__cov instead." (1440x900 with trace: 4 of 146, exactly at the floor.) **Pre-existing:** the
-gate extracted `d3e2a1c` with `git archive`, served it, and ran that commit's own layout-guard, which
-gave the identical violation; `PriorityQueue.css` and `DataGrid.css` did not change in wave 3
-(reported; the second half is consistent with the commit's file list). **Cause, measured by the
-gate:** at the 280 px rail the queue's chrome above its grid is 330 px (corpus switch 64, query 34,
-Group/Order/Display controls 145, the count/scope lines 70), so the grid starts at y=598 in a rail
-ending at 774. The same chrome is why, since R46, the queue's rows sit below rail A's fold at 1440x900
-on `?s=path` (reached by scrolling the rail). **Refused by the gate:** the R2 cluster's optional
-proposal to fold Group/Order/Display behind one disclosure while the path panel is open — a design
-change to the queue's controls, with an accessibility and test surface, that belongs to its owner.
-Not closable by a harness change: invariant 2's "≥ 4 rows" is the requirement.
+### O25. E1–E5 have not been re-established as acceptance evidence since `1d19e22` — every run at `443a05a` and at `8e873d2` was on a busy host — OPEN (owner: the next acceptance grading; needs quiet, on-AC runs)
+**Status at `70bea72`.** The re-grade of `443a05a` withheld every E2–E5 run as NOT ACCEPTANCE
+EVIDENCE (host 46–59 % busy against a 25 % bar) and turned E1 UNPROVEN on scope, which wave 4 fixed in
+code (R62). The wave-4 merged-tree gate's runs, on `8e873d2` (reported; `acceptanceEvidence=false`,
+so a lead, not a verdict):
+- **E2/E3** (`measure-inp`, on battery at the start and on AC at the end, host 47 % busy excluding the
+  harness): 7 pass, 0 fail, 0 NOT MEASURED — p95 J1 40, J2 96, J2-first 96 (21 of 21 trials), J3 152,
+  J3b 64, J4 64, J5 80 ms. E3 in that run: 6 clean, 1 violating — J5-open-palette's one 114 ms on-path
+  task (O30). Across runs: INSUFFICIENT RUNS (0 quiet).
+- **E4** (`measure-fps`, on AC, host 36 % busy): FAIL — focus flights median 53.34 fps (worst window
+  51.27), orbit median 55.16 with a worst window of 44.51, below the 45 floor, at tier high; the scene
+  reported the shortfall itself (`belowBar`).
+- **E5, E1:** not run on the merged tree.
+The re-grade runs E alone on AC. Nothing here shows a regression, and nothing re-establishes E1–E5 at
+`70bea72`. The `review/reports/fps.json` the paragraph below cites was overwritten by the re-grade of
+`443a05a`'s E grader.
 
-### O25. E1–E5 were not re-established as acceptance evidence at `443a05a` — the host changed, not the product — OPEN (owner: the next acceptance grading; needs quiet, on-AC runs)
-At the end of wave 3 the host went onto battery with a Teams meeting in the foreground, and
+**Status at `443a05a` (wave 3), superseded above.** At the end of wave 3 the host went onto battery with a Teams meeting in the foreground, and
 `review/host-env.mjs` withheld acceptance evidence from every final run. What exists, all reported:
 - **E4.** The one acceptance-grade run in the gate — on AC, before the host changed, on the build
   before the R46 `overflow-y` rule (which does not apply on `?s=fabric`) — was PASS: median 60 fps
@@ -1661,8 +2124,18 @@ The re-grade's E1/E2/E4/E5 PASS were measured on `1d19e22`; E3 was FAIL there (R
 dependence: nothing in wave 3 is shown to have regressed E1–E5, and nothing re-establishes them at
 `443a05a`.
 
-### O26. Wall-clock tripwires still go red under multi-agent load — OPEN (owner: `engine.test.ts` and `CommandPalette.test.tsx`); contradicts R10's "fixed as a class"
-Reported by the R2 cluster, full-suite runs under four parallel agents: `engine.test.ts` "keeps the
+### O26. Wall-clock tripwires in the unit suite — the engine and palette halves FIXED in wave 4 (R64); `layout.test.ts:952` still asserts a median under 50 ms — OPEN (owner: `src/fabric3d/layout.test.ts`); contradicts R10's "fixed as a class"
+**Status at `70bea72`.** The re-grade of `443a05a` confirmed this entry (F2 overturned:
+`CommandPalette.test.tsx:717` read 533 ms against 400). Wave 4 replaced the palette bounds with
+counts and the engine's median-of-7 tripwires with structural work bounds (R64). Of the test files
+that call `performance.now()` (the reconciler's grep: `CommandPalette`, `determinism`, `layout`,
+`engine`, `engine.work-bound`, `Inspector`, `PathTrace`), only `layout.test.ts` still asserts on the
+elapsed time: "lays out the full 26-node fabric in under 50 ms", median of 7 (`:944–955`). Its
+comment argues it has never flaked; it contradicts `vitest.config.ts`'s rule ("a unit test asserts no
+wall-clock time"). The gate declined both deleting it (that would loosen an assertion) and
+redesigning it (the owner's); a count of the layout's work would replace it.
+
+**Original entry (wave 3).** Reported by the R2 cluster, full-suite runs under four parallel agents: `engine.test.ts` "keeps the
 counterexample search inside the same interaction budget" (`:955`, median of 7 = 54.66 ms against the
 50 ms tripwire; the new flow-validation entry check costs 0.54 µs per trace) and `CommandPalette.test.tsx`
 "opens over an index that already exists, rather than building one" (`:717–718`, `worst` < 400 ms,
@@ -1676,15 +2149,83 @@ Found by the R4 cluster while closing R50: under full strict `checkJs`, 919 diag
 the 17 harnesses (reported). `scripts-typecheck.test.ts` requires every other authored TS/JS file to be
 in a project and names `review/*.mjs` as the one declared class exclusion. The harnesses are the
 acceptance instruments, so a type error in one is a measurement defect; closing this needs the
-annotations in files other lanes own.
+annotations in files other lanes own. **Status at `70bea72`:** unchanged (the re-grade of `443a05a`
+found it so). Wave 4 edited five harnesses — `audit-d3-focus`, `audit-e5-sweep`, `capture-motion`,
+`layout-guard`, `measure-inp` — which stay outside every type-checked project
+(`scripts-typecheck.test.ts:127`, `:200` still name the exclusion). Some of their pure functions are
+now executed by unit tests through import (`journey-scope.test.ts`, `Fabric3D.test.tsx`,
+`render-c5-repairs.test.ts`), which runs them but does not type-check them.
 
 ### O28. The A1 census's palette keystroke race — OPEN, harness (owner: the grading harness)
 From the re-grade's item 15: typing into Ctrl+K with no gap after opening garbled 53 of 146 queries,
 0 with a 150 ms gap. It was not shown that a human would hit it, and no wave-3 cluster addressed it.
-Until it is, an A1 census must type after a settle.
+Until it is, an A1 census must type after a settle. **Status at `70bea72`:** not addressed in wave 4;
+the re-grade of `443a05a` typed its census after a 250 ms settle to avoid it.
 
-### O23. No criterion has been re-graded on a clean checkout of `443a05a`; the re-grade re-ran F1, F2 (unit half), F4 and F5 on a clean clone of `1d19e22` — OPEN for A–E and for `443a05a` (owner: the next acceptance grading)
-**Status at `443a05a`.** The re-grade of `1d19e22` closed this for F1, F2 (unit half), F4 and F5 on a
+### O29. Tracked sources cite gitignored `review/_*.mjs` scratch scripts as their measurement — OPEN, a class (owners: the files named)
+Found by W4-R2 while rewording `env.test.ts` (R64); verified by the reconciler. `.gitignore:50` ignores
+`review/_*` and `git ls-files 'review/_*'` returns nothing, so a clone cannot re-run any of them
+(`review/_audit_cableaa.mjs`, for one, survives only as the untracked
+`review/_scratch/_audit_cableaa.mjs`). The reconciler's grep finds such citations in 10 tracked files
+under `src/`: three tests (`fabric3d/render-audit.test.tsx:6`, `fabric3d/scene.test.ts:572`,
+`fabric3d/geometry/cables.ink.test.ts:11`) and seven product modules' comments (`fabric3d/scene.ts`,
+`fabric3d/geometry/cables.ts`, `fabric3d/lighting.ts`, `fabric3d/Fabric3D.tsx`,
+`panels/PathTrace.tsx`, `panels/DataGrid.tsx`, `ui/primitives.tsx`). A figure cited that way is a
+historical record, not re-runnable evidence, and none of these says so. A guard over the class — like
+the one `acceptance-gates.test.ts` now holds for cited tests (R63) — would go red on these files until
+each is reworded as `env.test.ts` was or its script is tracked.
+
+### O30. E3 — `J5-open-palette` puts a task over 50 ms on its path, run after run — a LEAD, not a verdict (owner: the performance cluster)
+Every measurement is on a busy host, so none is acceptance evidence. The re-grade of `443a05a`: J5
+violated E3 in 3 of 3 runs (worst 94 ms, `#document.onkeydown` in the mount chunk, forced layout
+41 ms) and in 5 of the 6 records for that build in `review/reports/inp-e3-history/`; E3 "leans FAIL"
+there. The wave-4 gate at `8e873d2` (47 % busy, on battery at the start): one 114 ms on-path task
+(`#document.onkeydown`, 33 ms of forced layout). Since R62, Ctrl+K open is J5's own act, so this is a
+journey signal, not an out-of-journey one. No wave-4 cluster worked on it; 3 quiet, on-AC runs decide
+it (the re-grade runs E alone on AC).
+
+### O31. `measure-inp`'s J2 page does not wait for the scene to settle before its loop — OPEN, harness lead (owner: `review/measure-inp.mjs`)
+Reported by W4-R2: in a floor-lane dev-server run on a loaded host all 3 J2 clicks "selected
+nothing". Verified in code: `FIRST_SELECTION.beforeClick` waits for `stats().converged`
+(`measure-inp.mjs:755`), while each journey's page waits only for its ready selector and 2,500 ms
+(`:1100–1101`). The same read-only settle wait before J2's loop would make the two consistent. Not
+reproduced by the reconciler.
+
+### O32. The Ctrl+K palette covers the status bar's coverage group (B7) at 390 px while it is open — OPEN lead, not examined (owner: the palette's)
+From the re-grade of `443a05a`, which upheld B7 and listed this as a lead (a transient modal). No
+wave-4 cluster addressed it, and whether a modal that covers the coverage figures while it is open is
+a defect under B7 has not been decided.
+
+### O33. Two engine guards are bounded but cannot be exercised on this snapshot — NOT CLOSABLE IN CODE on this data
+Reported by W4-R5, consistent with the code read by the reconciler. (1) `buildSuggestions`'
+"unevaluable" suggestion (`engine.ts:2879`) used to map any non-udp/icmp line protocol (gre, esp…) to a
+tcp flow and say the line "could match this flow"; it now picks only a line whose `matchTri` against
+the built flow is not "no", but removing that guard leaves every test green, because no collected
+line reaches the branch with an excluding protocol or port. (2) Removing `COUNTEREXAMPLE_CANDIDATE_CAP`
+(48) also survives: no request on this snapshot has more than 8 candidates. Each becomes provable only
+with producer data: an ACL line of another protocol reaching the unevaluable-suggestion branch, and a
+counterexample search with more than 48 candidates.
+
+### O34. A2 and F3 — UNPROVEN at the re-grade of `443a05a`, and neither can be moved by code in Atlas Scope — NOT CLOSABLE IN CODE
+- **A2** (depth). The shipped snapshot's maximum depth is 1 with 0 resolved next hops (the depth
+  ratchet asserts `toBe(1)`), so the second hop's decider, hop-to-hop navigation, `resolveNextHost`'s
+  cable-map branch, the TTL cut and the loop detector have never run on real data. It needs a snapshot
+  with depth-2 flows — the kind of data O13 needs for B8. See R18 and R45.
+- **F3** (historical red-before-fix). Proven by history only for the O15 provenance tests
+  (`254694b` → `1d19e22`); for the forwarding, blast, layout, query, compiler and claims engines it
+  rests on today's-code mutations (`mutation-check.mjs`, 18 of 18 KILLED, reported). There is no
+  history before `50a3dc5` to show more. The checkpoint commits `254694b` and `2d9712c` put some later
+  tests on record before their fixes; that does not reach the engines' original defects.
+
+### O23. Only F5 has been re-run from a clean clone since `1d19e22` (the re-grade of `443a05a`, a real `git clone`); nothing has been run from a clone of `70bea72` — OPEN for A–E and F1, F2, F4, F6 (owner: the next acceptance grading)
+**Status at `70bea72`.** The re-grade of `443a05a` closed this for F5 at that commit (a real
+`git clone` under `autocrlf=true` reproduced all four compiled outputs byte-identically); F1, F2 and F4
+ran in the working checkout and A–E did not run from a clone. Wave 4 changed 58 files across
+`2d9712c`, `8e873d2` and `70bea72`, and every check since — the agents', the gate's, the
+orchestrator's and this reconciliation's — ran in the working checkout. The structural limit below is
+unchanged.
+
+**Status at `443a05a`, superseded above.** The re-grade of `1d19e22` closed this for F1, F2 (unit half), F4 and F5 on a
 clean clone of `1d19e22`, with the parent blob `1ed99404` placed at `../webapp`; A–E were not re-run
 from a clone. Wave 3 changed 73 files; nobody has cloned `atlas-scope` at `443a05a` and run anything
 from the clone (the orchestrator's `tsc`, `vitest` and build ran in the working checkout, which is
@@ -1735,6 +2276,12 @@ The capability gap is real and is left open here rather than papered over: shipp
 fetched side file of the snapshot subtrees that carry a cite, keyed by cite, would let the Inspector
 show actual snapshot JSON. That is a compiler change (`tools/compile-snapshot.mjs`) and was out of
 scope for this pass.
+
+**Status at `70bea72`.** Unchanged in substance. Wave 4 (R54) compiled the `link_centrality`,
+`health_scores` and `cable_map.nodes` rows under their source paths, so those citations resolve to a
+compiled copy of the source record at the path they name (reported: "This citation resolves directly
+inside the compiled model at link_centrality[3]"). The raw snapshot is still not bundled; the re-grade
+of `443a05a` found this entry consistent with B6's first-pass evidence and B6's FAIL a different gap.
 
 ### O6. At the `high` quality tier, bloom turns honest status rings into halos
 Captured at `review/shots/fabric-auto.png` (auto-selected tier `high` on real Intel D3D11, 80 draw
