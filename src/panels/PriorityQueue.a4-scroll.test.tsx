@@ -253,7 +253,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
     expect(document.activeElement, "focus stays on the cell the reader was on — it already names the device").toBe(cell);
   });
 
-  it("with a finding selected, the with-finding behaviour is unchanged: a device pick does not move the queue", async () => {
+  it("with a finding selected, the with-finding behaviour is unchanged: a device pick does not move the queue (single copy)", async () => {
     /* The half of A4 that passes (PriorityQueue.reveal-hold.test.tsx pins it in depth); restated
        here so this file's change cannot trade one half for the other. */
     const c = mount(<PriorityQueue debounceMs={0} />);
@@ -267,4 +267,96 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
     await settle();
     expect(grid.scrollTop).toBe(47);
   });
+});
+
+/* ── A4: a finding listed under several groups is several ROWS ─────────────────────────────────
+ *
+ * MEASURED (acceptance report, 1920x1080, Group = Device health band): F144 is listed as row 92
+ * (Poor) and row 167 (Critical). Clicking the visible row 167 at scrollTop 7879 threw the queue to
+ * 4655 and put focus on row 92 — the grid knew a row only by its finding id, so every aim (the
+ * roving cell, the reveal, the focus it hands on) went to the FIRST copy. Any multi-valued group
+ * key does it: the band, the host and the role of a finding's devices. Each case below scrolls so
+ * that exactly one copy is on screen and acts on THAT copy. */
+describe("A4: a finding listed under several groups keeps the copy the reader is looking at", () => {
+  const PREF = "atlas-scope.queue.groupKey";
+
+  /** Two copies of one finding, a full port apart, in the grid's DOM order. */
+  function twoCopies(c: HTMLElement): { id: string; first: number; second: number } {
+    const rows = dataRows(c);
+    const at = new Map<string, number[]>();
+    rows.forEach((r, i) => at.set(idOf(r), [...(at.get(idOf(r)) ?? []), i]));
+    for (const [id, list] of at) {
+      for (let a = 0; a < list.length; a += 1) {
+        for (let b = a + 1; b < list.length; b += 1) {
+          if ((list[b]! - list[a]!) * ROW_PX > PORT_BOTTOM * 2) return { id, first: list[a]!, second: list[b]! };
+        }
+      }
+    }
+    throw new Error("precondition: no finding is listed twice a full port apart under this grouping");
+  }
+
+  /** The reader clicks a row's header cell: the pointer focuses the cell, then the click lands. */
+  function readerClicks(row: HTMLElement): HTMLElement {
+    const cell = row.querySelector<HTMLElement>('[role="rowheader"]')!;
+    act(() => {
+      cell.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      cell.focus({ preventScroll: true });
+      cell.click();
+    });
+    return cell;
+  }
+
+  for (const group of ["band", "host", "role"]) {
+    for (const which of ["second", "first"] as const) {
+      it(`${group}: clicking the ${which} copy of a twice-listed finding keeps that copy in view, focused and current`, async () => {
+        localStorage.setItem(PREF, group);
+        const c = mount(<PriorityQueue debounceMs={0} />);
+        const grid = installLayout(c);
+        const { id, first, second } = twoCopies(c);
+        const target = which === "second" ? second : first;
+        const other = which === "second" ? first : second;
+        const start = Math.max(0, target * ROW_PX - 200);
+        readerScrollsTo(grid, start);
+        expect(inView(dataRows(c)[target]!), "precondition: the copy the reader clicks is on screen").toBe(true);
+        expect(inView(dataRows(c)[other]!), "precondition: the other copy is not").toBe(false);
+
+        const cell = readerClicks(dataRows(c)[target]!);
+        await settle();
+
+        expect(useInvestigation.getState().findingId, "the click selected the finding").toBe(id);
+        expect(Math.abs(grid.scrollTop - start), `scrollTop ${start} -> ${grid.scrollTop}`).toBeLessThanOrEqual(ROW_PX);
+        const rows = dataRows(c);
+        expect(document.activeElement, "focus stays on the clicked copy").toBe(cell);
+        expect(rows[target]!.getAttribute("aria-current"), "the clicked copy is the current row").toBe("true");
+        expect(rows[other]!.getAttribute("aria-current"), "the other copy is not a second current row").toBeNull();
+        expect(c.querySelectorAll('[role="grid"] [tabindex="0"]').length, "one tab stop").toBe(1);
+        expect(rows[target]!.querySelector('[tabindex="0"]'), "and it is on the clicked copy").not.toBeNull();
+      });
+    }
+
+    it(`${group}: a re-aim from another surface prefers the copy already in view`, async () => {
+      localStorage.setItem(PREF, group);
+      const c = mount(<PriorityQueue debounceMs={0} />);
+      const grid = installLayout(c);
+      const { id, first, second } = twoCopies(c);
+      for (const [shown, hidden] of [
+        [second, first],
+        [first, second],
+      ] as const) {
+        act(() => useInvestigation.getState().selectFinding(null));
+        await settle();
+        const start = Math.max(0, shown * ROW_PX - 200);
+        readerScrollsTo(grid, start);
+        expect(inView(dataRows(c)[shown]!), "precondition: one copy is on screen").toBe(true);
+        expect(inView(dataRows(c)[hidden]!), "precondition: the other is not").toBe(false);
+
+        act(() => useInvestigation.getState().selectFinding(id));
+        await settle();
+
+        expect(grid.scrollTop, `copy at row ${shown} was on screen: the queue must not move`).toBe(start);
+        expect(dataRows(c)[shown]!.getAttribute("aria-current"), "the copy in view is the current row").toBe("true");
+        expect(dataRows(c)[hidden]!.getAttribute("aria-current")).toBeNull();
+      }
+    });
+  }
 });

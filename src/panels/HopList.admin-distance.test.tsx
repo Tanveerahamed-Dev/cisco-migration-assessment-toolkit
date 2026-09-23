@@ -13,8 +13,12 @@
  * structural — for each such field — and asserts the hop list's words are the Inspector's words.
  * The records are found from the compiled data, never listed.
  */
+import { readdirSync, statSync } from "node:fs";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { notApplicableReason } from "../core/claims";
 import { fabric } from "../core/data";
@@ -22,6 +26,7 @@ import { useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
 import { traceFlow } from "../forwarding/engine";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "../forwarding/ip";
+import { DevicePane } from "./DevicePane";
 import { HopList } from "./HopList";
 import { Inspector, setInspectorCite } from "./Inspector";
 
@@ -114,7 +119,11 @@ describe("a structural null in a route renders the same words in the hop list an
     );
     expect(fact, `no Route row cites ${found!.cite}`).toBeDefined();
     const inspector = inspectorWords(found!.cite, "adminDistance");
-    expect(inspector).toMatch(/^0 — a (connected|local) route's administrative distance by definition/);
+    /* The wording changed on 2026-09-23 (acceptance B1, "allows no inference exemption"): the value
+       slot of a null may not lead with the digit 0 — the record carries no number, so the reading
+       says "not recorded" and names the platform convention as a reason, not as the value. */
+    expect(inspector).toMatch(/^not recorded — the record carries no value; a (connected|local) route's administrative distance is zero by platform convention/);
+    expect(inspector).not.toMatch(/^0\b/);
     expect(squash(fact!.textContent)).toContain(inspector);
     expect(squash(fact!.textContent)).not.toMatch(/administrative distance: not observed/);
   });

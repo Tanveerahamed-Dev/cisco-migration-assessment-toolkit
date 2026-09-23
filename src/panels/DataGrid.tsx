@@ -565,6 +565,18 @@ function firstVisibleRow(
 /** `aimedAt` before the first render has looked at the reveal target. */
 const UNAIMED: unique symbol = Symbol("unaimed");
 
+/**
+ * A data row's identity IN THIS GRID: its caller-qualified `key` when it has one, else its `id`.
+ *
+ * A4, MEASURED (1920x1080, Group = Device health band): F144 is listed as row 92 (Poor) and row 167
+ * (Critical). The grid knew a row only by its item id, so the roving cell, the reveal and the focus
+ * they hand on all resolved "F144" to the FIRST copy: clicking the visible row 167 at scrollTop 7879
+ * threw the list to 4655 and focus to row 92. Every place the grid addresses ONE rendered row — its
+ * element, the roving aim, the reveal, the hold, the current mark — uses this key; the caller's
+ * selection (`activeId`, `revealId`) stays an item id, and which copy answers it is decided here.
+ */
+const rowKeyOf = <T,>(n: Extract<GridNode<T>, { kind: "row" }>): string => n.key ?? n.id;
+
 export function DataGrid<T>({
   label,
   columns,
@@ -700,19 +712,47 @@ export function DataGrid<T>({
      that row, so this is a no-op there. Focus itself is moved by the effects below — now if the
      grid owns focus, or when focus next re-enters it from outside (`aimFocus`). */
   const aimTarget = revealId === undefined ? activeId : revealId;
+  /** Every rendered copy of each item id, in display order (see `rowKeyOf`). */
+  const copies = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const n of nodes) {
+      if (n.kind !== "row") continue;
+      const list = m.get(n.id);
+      if (list) list.push(rowKeyOf(n));
+      else m.set(n.id, [rowKeyOf(n)]);
+    }
+    return m;
+  }, [nodes]);
+  /** The copy of the selected item the reader acted on or was shown last. Only consulted while it
+   *  is still a copy of `activeId`; otherwise the first copy is the current one. */
+  const [chosenCopy, setChosenCopy] = useState<string | null>(null);
+  const activeKey = useMemo((): string | null => {
+    if (activeId === null) return null;
+    const list = copies.get(activeId);
+    if (list === undefined) return null;
+    return chosenCopy !== null && list.includes(chosenCopy) ? chosenCopy : (list[0] ?? null);
+  }, [activeId, copies, chosenCopy]);
   // Starts unaimed, so a selection restored from the URL also carries the tab stop to its row.
   const [aimedAt, setAimedAt] = useState<string | null | undefined | typeof UNAIMED>(UNAIMED);
   if (aimedAt !== aimTarget) {
     setAimedAt(aimTarget);
+    /* A target listed more than once is answered by whichever copy the reader is already on or
+       looking at, and "looking at" needs a measurement only the reveal effect can take. So, like a
+       representative reveal, its aim is left to that effect — which keeps the copy under the roving
+       cell (a click or Enter on it), else a copy in view, else the first. */
+    const multi = aimTarget != null && (copies.get(aimTarget)?.length ?? 0) > 1;
+    const rovingNow = rows[focusCell.row];
+    const onCopy = multi && rovingNow?.kind === "data" && rovingNow.node.id === aimTarget;
+    if (multi) repAim.current = onCopy ? "none" : aimedAt === UNAIMED ? "initial" : "change";
     /* A REPRESENTATIVE reveal (`revealUnlessVisible`) may decide not to scroll at all, and only the
        reveal effect can measure that. Aiming the roving cell here would move FOCUS to the
        representative row — and scroll the list to it — before that decision: MEASURED (A4,
        1920x1080) with focus on F060 at scrollTop 3200, palette -> access13 -> Enter ended at 70 with
        focus on F002. So a representative aim is only recorded here; the reveal effect places the
        roving cell on the row it actually shows (the answer on screen, or the one it scrolled to). */
-    if (revealUnlessVisible !== undefined) repAim.current = aimTarget == null ? "none" : aimedAt === UNAIMED ? "initial" : "change";
+    else if (revealUnlessVisible !== undefined) repAim.current = aimTarget == null ? "none" : aimedAt === UNAIMED ? "initial" : "change";
     const at =
-      aimTarget == null || revealUnlessVisible !== undefined ? -1 : rows.findIndex((r) => r.kind === "data" && r.node.id === aimTarget);
+      aimTarget == null || revealUnlessVisible !== undefined || multi ? -1 : rows.findIndex((r) => r.kind === "data" && r.node.id === aimTarget);
     if (at !== -1 && at !== focusCell.row) {
       userMoved.current = true;
       anchorRow.current = null;
@@ -799,10 +839,10 @@ export function DataGrid<T>({
    * A row the window has not mounted has no element to measure. That case pages to the row's
    * arithmetic position first; mounting it re-runs this effect, which then refines to nearest.
    */
-  /** Move the roving cell to the data row `id` from an effect; `redirect` makes focus that
-   *  re-enters the grid (or already owns it) follow. */
-  const placeRoving = (id: string, redirect: boolean): void => {
-    const at = rows.findIndex((r) => r.kind === "data" && r.node.id === id);
+  /** Move the roving cell to the data row whose `rowKeyOf` is `key` from an effect; `redirect`
+   *  makes focus that re-enters the grid (or already owns it) follow. */
+  const placeRoving = (key: string, redirect: boolean): void => {
+    const at = rows.findIndex((r) => r.kind === "data" && rowKeyOf(r.node) === key);
     if (at === -1 || at === focusCellRef.current.row) return;
     userMoved.current = true;
     anchorRow.current = null;
@@ -811,6 +851,8 @@ export function DataGrid<T>({
   };
   const revealTarget = revealId === undefined ? activeId : revealId;
   const revealedRef = useRef<string | null>(null);
+  /** WHICH copy of `revealedRef` was revealed (its `rowKeyOf`): the row the hold keeps in view. */
+  const revealedKeyRef = useRef<string | null>(null);
   const pagedRef = useRef<string | null>(null);
   /**
    * The data row the reader just activated IN this grid (click, Enter, Space). That row is under
@@ -820,7 +862,7 @@ export function DataGrid<T>({
    * layout of ~20-40 ms inside `DIV#root.onclick` on every finding selection (acceptance E3,
    * journey 1, CPU profile on the release build). Consumed by the next reveal, whatever it is.
    */
-  const activatedRef = useRef<string | null>(null);
+  const activatedRef = useRef<{ id: string; key: string } | null>(null);
   const revealKeyRef = useRef(revealKey);
   /**
    * HOLD. True while the revealed row is inside the scroll port and the reader has not scrolled it
@@ -860,9 +902,11 @@ export function DataGrid<T>({
     if (revealedRef.current === revealTarget) return;
     const activated = activatedRef.current;
     activatedRef.current = null;
-    if (activated === revealTarget && rowRefs.current.has(revealTarget)) {
+    if (activated !== null && activated.id === revealTarget && rowRefs.current.has(activated.key)) {
       revealedRef.current = revealTarget;
+      revealedKeyRef.current = activated.key;
       pagedRef.current = null;
+      repAim.current = "none";
       return;
     }
 
@@ -870,9 +914,16 @@ export function DataGrid<T>({
        reveal would only have scrolled AWAY from. Checked before paging, so a target the window has
        not even mounted cannot move the list either. No hold: nothing was revealed, so a later resize
        has nothing to keep in view, and the reader's own scrolling stays theirs. */
-    const answered = revealUnlessVisible === undefined ? null : firstVisibleRow(scroller, headRef.current, rowRefs.current, revealUnlessVisible);
+    const keysFor = (ids: Iterable<string>): Set<string> => {
+      const out = new Set<string>();
+      for (const id of ids) for (const k of copies.get(id) ?? []) out.add(k);
+      return out;
+    };
+    const answered =
+      revealUnlessVisible === undefined ? null : firstVisibleRow(scroller, headRef.current, rowRefs.current, keysFor(revealUnlessVisible));
     if (answered !== null) {
       revealedRef.current = revealTarget;
+      revealedKeyRef.current = answered;
       pagedRef.current = null;
       heldRef.current = false;
       /* The roving cell follows the answer on screen, not the representative this skip declined to
@@ -884,12 +935,31 @@ export function DataGrid<T>({
       return;
     }
 
-    const el = rowRefs.current.get(revealTarget);
+    /* WHICH copy answers the target (see `rowKeyOf`). With one copy, that one. With several: the
+       copy under the roving cell when it is in view, else the topmost copy in view — the reader is
+       already looking at the selection, and moving the list would throw their place away (A4,
+       R39's rule extended to a finding listed under several groups) — else the copy under the
+       roving cell, where the keyboard is, else the first. */
+    const targetCopies = copies.get(revealTarget) ?? [];
+    let key = targetCopies[0] ?? revealTarget;
+    if (targetCopies.length > 1) {
+      const onRoving = rows[focusCellRef.current.row];
+      const rovingKey = onRoving?.kind === "data" && onRoving.node.id === revealTarget ? rowKeyOf(onRoving.node) : null;
+      const rovingEl = rovingKey === null ? undefined : rowRefs.current.get(rovingKey);
+      const rovingInView =
+        rovingEl !== undefined && rovingEl.getBoundingClientRect().height > 0 && offsetFromView(scroller, headRef.current, rovingEl) === 0;
+      key =
+        (rovingInView ? rovingKey : null) ??
+        firstVisibleRow(scroller, headRef.current, rowRefs.current, new Set(targetCopies)) ??
+        rovingKey ??
+        key;
+    }
+    const el = rowRefs.current.get(key);
     if (!el) {
       // Not in the DOM. Either the window dropped it, or this corpus holds no such row — and a
       // row that does not exist is not a row we can fail to reveal, so both exit quietly.
       if (pagedRef.current === revealTarget || !windowing) return;
-      const index = nodes.findIndex((n) => n.kind === "row" && n.id === revealTarget);
+      const index = nodes.findIndex((n) => n.kind === "row" && rowKeyOf(n) === key);
       if (index === -1) return;
       pagedRef.current = revealTarget;
       scroller.scrollTop = Math.max(0, index * windowing.rowHeightPx);
@@ -897,13 +967,16 @@ export function DataGrid<T>({
     }
 
     revealedRef.current = revealTarget;
+    revealedKeyRef.current = key;
     pagedRef.current = null;
     revealBelowHeader(scroller, headRef.current, el, "centre");
     heldRef.current = true;
+    if (targetCopies.length > 1 && revealTarget === activeId) setChosenCopy(key);
     /* A representative reveal that DID scroll places the roving cell on the row it brought into
-       view — what the render-time aim does for every other reveal (see `repAim`). */
+       view — what the render-time aim does for every other reveal (see `repAim`). A target with
+       several copies is placed the same way, on the copy chosen above. */
     if (repAim.current !== "none") {
-      placeRoving(revealTarget, repAim.current === "change");
+      placeRoving(key, repAim.current === "change");
       repAim.current = "none";
     }
     // A fresh reveal starts a fresh hold: input that preceded it is not a scroll away from it.
@@ -918,7 +991,7 @@ export function DataGrid<T>({
         if (document.activeElement !== cell) focusInView(cell);
       }
     }
-  }, [revealTarget, revealKey, revealUnlessVisible, nodes, windowing, rows, landOn, focusInView]);
+  }, [revealTarget, revealKey, revealUnlessVisible, nodes, windowing, rows, landOn, focusInView, copies, activeId]);
 
   /* The hold itself (see `heldRef`). One re-reveal routine, three triggers: the port or its sticky
      header changing size (ResizeObserver), the rows changing (a commit that reflows what is above
@@ -926,8 +999,9 @@ export function DataGrid<T>({
   const holdReveal = useCallback((): void => {
     const scroller = gridRef.current;
     const id = revealTargetRef.current;
-    if (!scroller || !heldRef.current || id === null || id === undefined || revealedRef.current !== id) return;
-    const el = rowRefs.current.get(id);
+    const key = revealedKeyRef.current;
+    if (!scroller || !heldRef.current || id === null || id === undefined || revealedRef.current !== id || key === null) return;
+    const el = rowRefs.current.get(key);
     if (el) revealBelowHeader(scroller, headRef.current, el, "centre");
   }, []);
 
@@ -952,7 +1026,8 @@ export function DataGrid<T>({
     };
     const onScroll = (): void => {
       const id = revealTargetRef.current;
-      const el = id === null || id === undefined || revealedRef.current !== id ? undefined : rowRefs.current.get(id);
+      const key = revealedKeyRef.current;
+      const el = id === null || id === undefined || revealedRef.current !== id || key === null ? undefined : rowRefs.current.get(key);
       if (heldRef.current && !readerInputRef.current) {
         holdReveal();
         return;
@@ -1094,7 +1169,8 @@ export function DataGrid<T>({
         if (col && hasSortControl(col, onSort)) onSort?.(col.id);
         return;
       }
-      activatedRef.current = row.node.id;
+      activatedRef.current = { id: row.node.id, key: rowKeyOf(row.node) };
+      setChosenCopy(rowKeyOf(row.node));
       onActivate?.(row.node.item, row.node.id);
     },
     [rows, columns, focusCell.col, onActivate, onSort, onToggleGroup],
@@ -1260,9 +1336,9 @@ export function DataGrid<T>({
   });
   const rowHandlers = useMemo<RowHandlers<T>>(
     () => ({
-      rowRef: (id, el) => {
-        if (el) rowRefs.current.set(id, el);
-        else rowRefs.current.delete(id);
+      rowRef: (key, el) => {
+        if (el) rowRefs.current.set(key, el);
+        else rowRefs.current.delete(key);
       },
       cellRef: (r, c) => (el) => {
         if (el) cellRefs.current.set(`${r}:${c}`, el);
@@ -1270,8 +1346,9 @@ export function DataGrid<T>({
       },
       move: (r, c) => latestRow.current.move(r, c),
       moveKeepingColumn: (r) => latestRow.current.move(r, desiredCol.current, true),
-      activate: (item, id) => {
-        activatedRef.current = id;
+      activate: (item, id, key) => {
+        activatedRef.current = { id, key };
+        setChosenCopy(key);
         latestRow.current.onActivate?.(item, id);
       },
     }),
@@ -1517,7 +1594,7 @@ export function DataGrid<T>({
                 columns={columns}
                 layout={layout}
                 batchable={onToggleBatch !== undefined}
-                active={activeId === node.id}
+                active={activeKey !== null && activeKey === rowKeyOf(node)}
                 related={relatedIds?.has(node.id) ? (relatedDescription ?? "") : null}
                 selected={batchIds?.has(node.id) ?? false}
                 selectedCol={selectedCol}
@@ -1549,11 +1626,13 @@ export function DataGrid<T>({
  * grid's CURRENT closures through a ref, so passing it never breaks a row's memoisation.
  */
 interface RowHandlers<T> {
-  rowRef: (id: string, el: HTMLElement | null) => void;
+  /** Keyed by `rowKeyOf`, so every rendered copy of an item keeps its own element. */
+  rowRef: (key: string, el: HTMLElement | null) => void;
   cellRef: (r: number, c: number) => (el: HTMLElement | null) => void;
   move: (r: number, c: number) => void;
   moveKeepingColumn: (r: number) => void;
-  activate: (item: T, id: string) => void;
+  /** `key` is the activated copy's `rowKeyOf`. */
+  activate: (item: T, id: string, key: string) => void;
 }
 
 interface DataRowProps<T> {
@@ -1604,7 +1683,7 @@ function DataRowImpl<T>({
   return (
     <div
       role="row"
-      ref={(el) => handlers.rowRef(node.id, el)}
+      ref={(el) => handlers.rowRef(rowKeyOf(node), el)}
       aria-rowindex={r + 1}
       {...(batchable ? { "aria-selected": selected } : {})}
       /* A11Y AUDIT FIX, 2026-09-21 (D2). `aria-selected` on these rows is spoken for by
@@ -1648,7 +1727,7 @@ function DataRowImpl<T>({
         // A gap click moved no cell: put the roving focus on the row the reader aimed
         // at, keeping the column they were already navigating in.
         if (!inCell) handlers.moveKeepingColumn(r);
-        handlers.activate(node.item, node.id);
+        handlers.activate(node.item, node.id, rowKeyOf(node));
       }}
     >
       {columns.map((col, c) => {
@@ -1706,7 +1785,7 @@ function DataRowImpl<T>({
 function sameRowProps<T>(a: DataRowProps<T>, b: DataRowProps<T>): boolean {
   for (const k of Object.keys(b) as (keyof DataRowProps<T>)[]) {
     if (k === "node") {
-      if (a.node.id !== b.node.id || a.node.item !== b.node.item) return false;
+      if (a.node.id !== b.node.id || a.node.item !== b.node.item || a.node.key !== b.node.key) return false;
     } else if (!Object.is(a[k], b[k])) {
       return false;
     }

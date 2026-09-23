@@ -61,6 +61,24 @@ import {
 /** Hop cap. 16 is far above this fabric's diameter (5 tiers), so hitting it means a routing loop. */
 export const TTL_LIMIT = 16;
 
+/**
+ * The work the engine has done since it loaded, counted in its own units: `traceFlow` calls
+ * (including the memoised alternate-ingress traces a trace judges itself by) and hop-loop
+ * iterations. A COUNT, not a clock — it is the same on a quiet host and a loaded one, which is what
+ * lets a unit test bound the engine's work structurally (see `COUNTEREXAMPLE_CANDIDATE_CAP`). No
+ * trace outcome, claim or surface reads it.
+ */
+export interface EngineWork {
+  traces: number;
+  hops: number;
+}
+const WORK: EngineWork = { traces: 0, hops: 0 };
+
+/** A copy of the running work counters; take two and subtract to measure one call. */
+export function engineWork(): EngineWork {
+  return { ...WORK };
+}
+
 /** Ternary match: `maybe` is the whole point — it is what stops a guess becoming a claim. */
 export type Tri = "yes" | "no" | "maybe";
 
@@ -835,6 +853,7 @@ function notAppliedCaveat(
   host: string,
   named: Record<string, AclLine[]>,
   applied: readonly string[],
+  flow: Flow,
   srcIp: Ipv4,
   dstIp: Ipv4,
   gap: string,
@@ -865,11 +884,29 @@ function notAppliedCaveat(
      * BUSINESS_HOURS`, a /24-specific source naming that flow's own subnet with an exact protocol
      * and port — as irrelevant boilerplate. It is the single most relevant line on the host, and
      * it cannot be evaluated. So the parenthetical is now derived from the matching lines. */
-    const matching = lines.filter(
+    const addressed = lines.filter(
       (l) => addrTri(l.src, srcIp, hostOfAclLine(l)) !== "no" && addrTri(l.dst, dstIp, hostOfAclLine(l)) !== "no",
     );
-    if (matching.length === 0) {
+    if (addressed.length === 0) {
       outscored.push(`${name} (names other address space)`);
+      continue;
+    }
+    /* Address overlap is not a match. This list of candidate lines used to stop at the addresses, so
+       a udp or icmp flow was told INET_RETURN "matches this flow at" its `permit tcp … eq 443` line
+       (2026-09-23 acceptance report, adjacent to B5: 50 of 3,968 traces). Every dimension is now
+       asked of the ONE matcher the verdict itself uses — `matchTri`, which only lets a dimension the
+       text check vouched for say "no" — so a line whose protocol or port excludes this flow is not
+       described as matching it, and a line whose match is undecidable stays "could match". */
+    const triOf = new Map(addressed.map((l) => [l, matchTri(l, flow, srcIp, dstIp)] as const));
+    const matching = addressed.filter((l) => triOf.get(l) !== "no");
+    const verb = (ls: readonly AclLine[]): string => (ls.some((l) => triOf.get(l) === "yes") ? "matches" : "could match");
+    if (matching.length === 0) {
+      // Every line naming these addresses excludes the flow by protocol or port, so applied to this
+      // flow the list would fall through to its implicit deny. The first exclusion is named.
+      const first = addressed[0]!;
+      outscored.push(
+        `${name} (names this flow's addresses but no line of it can match this flow — at ${first.cite} ${excludedBecause(first, flow, srcIp, dstIp) ?? "the line excludes it"} — so, were it applied, this flow would fall to the list's implicit deny)`,
+      );
       continue;
     }
     // The most specific line this flow can reach in the discarded list, undecidable ones first:
@@ -896,17 +933,17 @@ function notAppliedCaveat(
       .map((l) => ({ l, g: resolvedGroupOf(l.src, hostOfAclLine(l)) ?? resolvedGroupOf(l.dst, hostOfAclLine(l)) }))
       .find((x) => x.g !== null);
     if (!topEval.evaluable) {
-      outscored.push(`${name} (matches this flow at ${top.cite}, which cannot be evaluated: ${topEval.reason ?? "no reason recorded"})`);
+      outscored.push(`${name} (${verb([top])} this flow at ${top.cite}, which cannot be evaluated: ${topEval.reason ?? "no reason recorded"})`);
     } else if (everyMatchIsCatchAll) {
-      outscored.push(`${name} (matches this flow only through catch-all lines)`);
+      outscored.push(`${name} (${verb(matching)} this flow only through catch-all lines)`);
     } else if (groupMatch !== undefined && groupMatch.g !== null) {
       outscored.push(
-        `${name} (matches this flow at ${groupMatch.l.cite} through object-group ${groupMatch.g.name}, which resolved in this snapshot to ${groupMatch.g.members} member${groupMatch.g.members === 1 ? "" : "s"} covering this flow's address; the specificity rule scores literal addresses only, so a group reference does not make the list selectable)`,
+        `${name} (${verb([groupMatch.l])} this flow at ${groupMatch.l.cite} through object-group ${groupMatch.g.name}, which resolved in this snapshot to ${groupMatch.g.members} member${groupMatch.g.members === 1 ? "" : "s"} covering this flow's address; the specificity rule scores literal addresses only, so a group reference does not make the list selectable)`,
       );
     } else if (unresolvedMatch !== undefined) {
-      outscored.push(`${name} (matches this flow at ${unresolvedMatch.cite}, whose address space could not be resolved in this snapshot)`);
+      outscored.push(`${name} (${verb([unresolvedMatch])} this flow at ${unresolvedMatch.cite}, whose address space could not be resolved in this snapshot)`);
     } else {
-      outscored.push(`${name} (matches this flow at ${top.cite}, which names its addresses specifically)`);
+      outscored.push(`${name} (${verb([top])} this flow at ${top.cite}, which names its addresses specifically)`);
     }
   }
 
@@ -1184,7 +1221,7 @@ function evaluateBySpecificity(
      badge without ever becoming the thing a verdict says it was decided by. */
   const unappliedUndecidable = undecidableInUnappliedAcls(host, named, names, flow, srcIp, dstIp, gap);
   if (names.length === 0) {
-    const only = notAppliedCaveat(host, named, [], srcIp, dstIp, gap);
+    const only = notAppliedCaveat(host, named, [], flow, srcIp, dstIp, gap);
     const first = unappliedUndecidable[0];
     /* Same rule as the tail of this function: a line on this host that could match and cannot be
        evaluated means no ACL verdict here is decidable, so "not-applicable" (which lets the trace
@@ -1216,7 +1253,7 @@ function evaluateBySpecificity(
     };
   }
   const caveats: string[] = [...notes];
-  const unapplied = notAppliedCaveat(host, named, names, srcIp, dstIp, gap);
+  const unapplied = notAppliedCaveat(host, named, names, flow, srcIp, dstIp, gap);
   if (unapplied !== null) caveats.push(unapplied);
   const run = runLists(host, flow, srcIp, dstIp, named, names, bindingOf);
   const evidence = [...run.evidence];
@@ -1881,6 +1918,7 @@ export function traceFlow(flow: Flow): Trace {
   /* determinism: start of the elapsed-time measurement above; feeds `elapsedMs` and nothing else.
      No branch in this function reads it, so no trace outcome can depend on it. */
   const startedAt = performance.now();
+  WORK.traces += 1;
 
   /* ENTRY CHECK — every field, not only the addresses. The type says `dstPort: number`, and a link
      once delivered `NaN` in it: the walk below then answered "a tcp/NaN flow … is delivered" (2026-09-23
@@ -2041,6 +2079,7 @@ export function traceFlow(flow: Flow): Trace {
   let arrivalIp: Ipv4 | null = srcIp;
 
   for (let index = 0; index < TTL_LIMIT; index += 1) {
+    WORK.hops += 1;
     if (visited.has(host)) {
       hops.push({
         index,
@@ -2688,7 +2727,16 @@ export function blockingHop(trace: Trace): { hop: Hop; evidence: HopEvidence } |
 
 /* ── counterexamples ────────────────────────────────────────────────────────── */
 
-const CANDIDATE_CAP = 48; // keeps the search inside the interaction budget on the worst flow
+/**
+ * How many candidate flows one counterexample request may trace. This is the search's STRUCTURAL
+ * budget: with at most `ingressCandidates(src).length` traces per candidate (the candidate itself
+ * plus one memoised trace per alternate ingress, which cannot recurse — `judgingAlternate`), and at
+ * most `TTL_LIMIT` hops per trace, the work one request can do is bounded by the data, not by the
+ * machine. `engine.work-bound.test.ts` asserts that bound instead of a wall-clock figure, which
+ * under parallel load could not tell a regression from a busy host (acceptance O26).
+ */
+export const COUNTEREXAMPLE_CANDIDATE_CAP = 48;
+const CANDIDATE_CAP = COUNTEREXAMPLE_CANDIDATE_CAP;
 
 /**
  * The nearest flow that WOULD succeed. Candidates are derived from the evidence that blocked this

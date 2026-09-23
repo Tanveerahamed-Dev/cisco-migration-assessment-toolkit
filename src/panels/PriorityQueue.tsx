@@ -1274,10 +1274,15 @@ export function PriorityQueue({
   collapsedRef.current = collapsedRaw;
   useEffect(() => {
     if (activeRowId === null) return;
-    const holder = groups.find((g) => g.items.some((it) => spec.idOf(it) === activeRowId));
+    /* A multi-valued group key (host, band, role) lists the row under EVERY group it belongs to.
+       One open holder already puts it on screen, so a group is expanded only when every holder is
+       collapsed — and then the first one. Opening the first holder regardless re-opened a group the
+       reader had folded while the row they were looking at sat in another (A4). */
+    const holders = groups.filter((g) => g.items.some((it) => spec.idOf(it) === activeRowId));
+    const holder = holders[0];
     if (!holder) return;
+    if (holders.some((g) => !collapsedRef.current.has(collapseKey(g.key)))) return;
     const k = collapseKey(holder.key);
-    if (!collapsedRef.current.has(k)) return;
     const next = new Set(collapsedRef.current);
     next.delete(k);
     setCollapsedRaw(next);

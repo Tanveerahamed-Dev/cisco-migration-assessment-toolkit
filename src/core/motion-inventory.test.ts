@@ -222,6 +222,14 @@ export function cssMotionIn(file: string, css: string, tokens: ReadonlyMap<strin
   return out;
 }
 
+/** Every `@keyframes` name one stylesheet declares (vendor-prefixed spellings included). Its own
+ *  known-answer case below must find planted names, so a regex that loses its escapes (the wave-3
+ *  `/@(?:-[a-z]+-)?keyframess+([w-]+)/g`, which matched nothing) turns the suite red instead of passing vacuously. */
+export function keyframeNamesIn(css: string): string[] {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, " ");
+  return [...text.matchAll(/@(?:-[a-z]+-)?keyframes\s+([\w-]+)/g)].map((k) => k[1]!);
+}
+
 /** The stylesheets the product ships: every .css under src/, plus `<style>` blocks in root pages. */
 const stylesheets = files.filter((f) => f.endsWith(".css"));
 const htmlStyles = readdirSync(PKG)
@@ -380,6 +388,18 @@ describe("the motion scan is live and its denominator is the real tree", () => {
     ]);
     expect(isReducedMotion(planted[3]!.atRules)).toBe(true);
     expect(planted[1]!.atRules).toEqual(["@media (max-width: 10px)"]);
+  });
+
+  it("the @keyframes scan is live: it finds planted names, including the deleted spinner's", () => {
+    const planted = [
+      "/* @keyframes commented-out { to { opacity: 0; } } */",
+      ".stage-pending__spinner { animation: stage-pending-spin 900ms linear infinite; }",
+      "@keyframes stage-pending-spin { to { transform: rotate(1turn); } }",
+      "@keyframes\n  fade_in2 { from { opacity: 0; } }",
+      "@-webkit-keyframes wk-pulse { 50% { opacity: .5; } }",
+    ].join("\n");
+    expect(keyframeNamesIn(planted)).toEqual(["stage-pending-spin", "fade_in2", "wk-pulse"]);
+    expect(keyframeNamesIn(".a { color: red; }")).toEqual([]);
   });
 
   it("the script scan finds progress divisors, inline transitions and damping, and refuses what it cannot resolve", () => {
@@ -658,7 +678,10 @@ describe("the one looping animation", () => {
   it("no stylesheet declares an unbounded loop and nothing renders the deleted spinner", () => {
     expect(cssMotion.filter((m) => m.infinite).map((m) => `${m.file}: ${m.selector}`)).toEqual([]);
     // Every @keyframes a stylesheet declares is played by some inventoried animation (none today).
-    const keyframes = stylesheets.flatMap((f) => [...readFileSync(f, "utf8").matchAll(/@keyframess+([w-]+)/g)].map((k) => k[1]!));
+    const keyframes = [
+      ...stylesheets.flatMap((f) => keyframeNamesIn(readFileSync(f, "utf8"))),
+      ...htmlStyles.flatMap((h) => keyframeNamesIn(h.css)),
+    ];
     const played = new Set(cssMotion.filter((m) => m.kind === "animation").flatMap((m) => m.subjects));
     expect(keyframes.filter((k) => !played.has(k)), "@keyframes no inventoried animation plays").toEqual([]);
     const users = files
