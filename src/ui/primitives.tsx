@@ -1637,11 +1637,18 @@ export function Copyable({
   value,
   label,
   mono = true,
+  digest = false,
 }: {
   value: string;
   /** What is being copied, for the button's accessible name, e.g. "snapshot sha256". */
   label: string;
   mono?: boolean;
+  /**
+   * The value is a DIGEST (a sha256): one token with no boundary to break at, longer than its
+   * column, and read character by character. It is shown whole and wraps inside its box instead of
+   * being cut by an ellipsis (see `.ui-copyable--digest` in primitives.css).
+   */
+  digest?: boolean;
 }): ReactElement {
   const [status, setStatus] = useState("");
   const copy = useCallback(() => {
@@ -1656,7 +1663,7 @@ export function Copyable({
     );
   }, [value, label]);
   return (
-    <span className="ui-copyable">
+    <span className={cx("ui-copyable", digest && "ui-copyable--digest")}>
       <span className={cx("ui-copyable__value", mono && "ui-copyable__value--mono")}>{value}</span>
       <IconButton label={`Copy ${label}`} icon={<IconCopy />} size="sm" onClick={copy} />
       <LiveRegion message={status} />

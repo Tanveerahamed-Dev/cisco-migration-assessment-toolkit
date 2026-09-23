@@ -448,6 +448,50 @@ describe("the Coverage tab is the coverage-honesty guarantee, inspectable", () =
       expect(items > 0 || none !== null).toBe(true);
     }
   });
+
+  it("the compiled coverage record's aclLinesUnevaluable is labelled as the parser's flag, beside the union", () => {
+    /* Review item 13 (2026-09-22): the compiled coverage record read `aclLinesUnevaluable 1` while the
+       status bar said 6 of 12 lines cannot be decided. The field is the collector's parser flag
+       only (core/acl-coverage.ts); read bare, it understates the undecidable surface sixfold. */
+    const u = aclUndecidability();
+    expect(u.count, "this test needs the flag and the union to differ").not.toBe(fabric.coverage.aclLinesUnevaluable);
+    const c = mount(<Inspector cite="coverage" forceOpen />);
+    const data = panel(c, "data")!;
+    const row = [...data.querySelectorAll(".insp-kv__row")].find((r) => text(r.querySelector("dt")) === "aclLinesUnevaluable");
+    expect(row, "the coverage record renders its aclLinesUnevaluable field").toBeTruthy();
+    const said = text(row!.querySelector("dd"));
+    expect(said).toContain(String(fabric.coverage.aclLinesUnevaluable));
+    expect(said).toContain("parser");
+    expect(said).toContain(`${u.count} of ${u.total}`);
+  });
+
+  it("the JSON tab annotates the same field the same way — the whole fabric.json is shown there too", () => {
+    /* The Data tab's note did not reach the JSON tab, which renders all of fabric.json: there the
+       counter still read bare, `aclLinesUnevaluable: 1`, beside a status bar saying 6 of 12. */
+    const u = aclUndecidability();
+    const c = mount(<Inspector cite="coverage" forceOpen />);
+    const json = panel(c, "json")!;
+    const coverageRow = json.querySelector<HTMLElement>('[data-node-id="coverage"]');
+    expect(coverageRow, "the JSON tab renders the coverage record").toBeTruthy();
+    if (coverageRow!.getAttribute("aria-expanded") !== "true") act(() => coverageRow!.click());
+    const row = json.querySelector('[data-node-id="coverage.aclLinesUnevaluable"]');
+    expect(row, "the JSON tab renders coverage.aclLinesUnevaluable").toBeTruthy();
+    const note = text(row!.querySelector(".jsonview__note"));
+    expect(note).toContain("parser flag only");
+    expect(note).toContain("aclUndecidability()");
+    expect(note).toContain(`${u.count} of ${u.total}`);
+  });
+});
+
+describe("JsonView per-path annotations", () => {
+  it("draws a note on exactly the annotated row, and on no other", () => {
+    const c = mount(
+      <JsonView value={{ a: { b: 1, c: 2 } }} rootLabel="doc.json" label="doc" citedPath="a.b" annotations={{ "a.b": "only here" }} />,
+    );
+    const notes = [...c.querySelectorAll(".jsonview__note")];
+    expect(notes.map((n) => n.closest("[data-node-id]")?.getAttribute("data-node-id"))).toEqual(["a.b"]);
+    expect(text(notes[0]!)).toBe("only here");
+  });
 });
 
 describe("the panel is a dock, not a detour", () => {

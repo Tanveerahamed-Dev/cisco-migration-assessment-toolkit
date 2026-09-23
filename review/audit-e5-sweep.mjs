@@ -20,7 +20,7 @@ import os from "node:os";
 import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 import { VISIBLE_AFFORDANCE_JS, affordancePaintedAt } from "./working-affordance.mjs";
-import { NO_OCCLUSION_ARGS, createLoadMeter, describePower, ensurePresenting, gatedBusy, hostPower, idleBaseline, presentationState, rafCadence } from "./host-env.mjs";
+import { createLoadMeter, describePower, ensurePresenting, gatedBusy, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
 
 /* Power, presentation and contention net of the harness — see ./host-env.mjs (perf audit
    2026-09-22). Read before the browser launches so the idle baseline is the machine alone. */
@@ -55,10 +55,16 @@ const INIT = `
   requestAnimationFrame(rafLoop);
 `;
 
-const browser = await chromium.launch({ headless: false, args: ["--window-size=1940,1180", ...NO_OCCLUSION_ARGS] });
+/* The headed window is planned inside the screen's work area (acceptance report item 15; host-env.mjs
+   owns the plan): an off-screen window region is not a measurement environment. */
+const headedPlan = await headedWindow(chromium, { width: 1920, height: 1080 });
+console.log(headedPlan.line);
+const browser = await chromium.launch({ headless: false, args: headedPlan.args });
 const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
 await ctx.addInitScript(INIT);
 const page = await ctx.newPage();
+const windowCheck = await windowBoundsCheck(ctx, page, headedPlan.plan);
+const windowFits = windowFitsOf(headedPlan.plan, windowCheck);
 await page.goto(`${APP}/?s=findings`, { waitUntil: "networkidle", timeout: 30000 });
 await page.waitForTimeout(6000);
 const presentationBefore = await ensurePresenting(ctx, page);
@@ -487,7 +493,7 @@ const freshness = await checkBuildFreshness(APP);
    repetition is not acceptance evidence. Pinning the tier was rejected above (it measures a session
    the product never runs); discarding the credit is the honest alternative. */
 const belowHighActions = byAction.filter((r) => r.repsBelowHigh > 0);
-const acceptanceEvidence = hostQuiet && verdict !== "NOT MEASURED" && freshness.fresh && belowHighActions.length === 0;
+const acceptanceEvidence = hostQuiet && verdict !== "NOT MEASURED" && freshness.fresh && belowHighActions.length === 0 && windowFits;
 
 writeFileSync(
   "review/reports/e5-sweep.json",
@@ -513,6 +519,7 @@ writeFileSync(
       hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, throttled: hostPowerThrottled },
       presentation: { before: presentationBefore, after: presentationAfter, fullRate: presentationFullRate },
       tierCreditWithheld: belowHighActions.map((r) => r.action),
+      window: { screen: headedPlan.screen, plan: headedPlan.plan, check: windowCheck, fits: windowFits },
       acceptanceEvidence,
       buildFreshness: freshness,
       communicated: {

@@ -122,7 +122,7 @@ import {
   type ProceduralMaps,
   type TokenPalette,
 } from "./materials";
-import { createPostChain, type PostChain } from "./postfx";
+import { createPostChain, historyWeightFor, type PostChain } from "./postfx";
 import { createPanelInputGate, isFabricTarget } from "./panelInput";
 import {
   createForeignWorkLedger,
@@ -451,6 +451,13 @@ export interface SceneStatsEx extends SceneStats {
    * not been measured yet.
    */
   frameRateBelowBar: boolean;
+  /**
+   * The history weight the last presented frame used (postfx.ts HISTORY_AA) and the camera step that
+   * decided it, in drawing-buffer px. 0 = that frame was the plain chain's output, which every
+   * settled frame is. Reported so a motion capture can say which frames were blended.
+   */
+  historyWeight?: number;
+  historyCameraStepPx?: number | null;
 }
 
 /**
@@ -465,6 +472,64 @@ export type WarmupStage =
   | "post-programs"
   | "linking"
   | "passes";
+
+/** The two properties of a post-chain pass the pass-by-pass warm-up reads and writes. */
+export interface WarmupPassLike {
+  enabled: boolean;
+  readonly renderToScreen: boolean;
+}
+
+/**
+ * One frame of the "passes" warm-up stage: render the chain with passes `0..step` enabled (each
+ * still subject to its own profile flag), then restore every flag. Returns whether this was the
+ * last step.
+ *
+ * WHY EVERY STEP THAT DOES NOT PRESENT DRAWS THE INTERACTION VISUALS (acceptance E3, 2026-09-23).
+ * Compiling a program is not the whole of its first-use cost. MEASURED on the release build
+ * (Intel iGPU, ANGLE D3D11, fresh browser per trial, WebGL entry points wrapped): the FIRST device
+ * selection after load linked NO program — every one of them was created and polled ready by the
+ * compile stages above — yet the scene frame that first drew the selection spent 105 ms inside
+ * `getProgramInfoLog` for `outline-proxy`, then 1.7 / 1.7 / 0.4 / 4 ms for `selection-halo`,
+ * `rim-occluder`, `hover-shell` and the outline's `DepthComparisonMaterial`, in a 135-144 ms
+ * FrameRequestCallback on the click's path (core2 ON-PATH in 15 of 15 fresh-browser trials in the
+ * acceptance audit). That call is a synchronous round trip to the GPU process, so it waits for
+ * everything queued before it, and what was queued was the FIRST DRAW through those programs:
+ * the backend builds its per-draw executables (input layout, output signature) lazily, at draw.
+ * `renderer.compile` and the recorder in `discoverPostPrograms` both stop short of a draw.
+ *
+ * So the warm-up now DRAWS through them: every step whose enabled prefix does not reach the screen
+ * renders into the chain's own buffers with the interaction visuals primed (visible, and in their
+ * outline selections), which pays those first draws here, in warm-up frames that already yield
+ * between steps and while the stage still says it is building. The step that reaches the screen
+ * is never primed, so no primed pixel is ever presented; its render also clears the outline masks
+ * the primed steps left (an outline effect re-runs once after its selection empties).
+ */
+export function runWarmupPassStep(
+  passes: readonly (WarmupPassLike | undefined)[],
+  enabledByProfile: readonly boolean[],
+  step: number,
+  render: () => void,
+  primeInteractionVisuals: (draw: () => void) => void,
+): boolean {
+  let presents = false;
+  for (let i = 0; i < passes.length; i += 1) {
+    const pass = passes[i];
+    if (pass === undefined) continue;
+    pass.enabled = i <= step && enabledByProfile[i] === true;
+    if (pass.enabled && pass.renderToScreen) presents = true;
+  }
+  try {
+    if (presents) render();
+    else primeInteractionVisuals(render);
+  } finally {
+    for (let i = 0; i < passes.length; i += 1) {
+      const pass = passes[i];
+      if (pass === undefined) continue;
+      pass.enabled = enabledByProfile[i] === true;
+    }
+  }
+  return step + 1 >= passes.length;
+}
 
 /* ── scene graph ───────────────────────────────────────────────────────────── */
 
@@ -1397,6 +1462,17 @@ export interface FabricSceneEx extends FabricScene {
    */
   orbitBy(dxPx: number, dyPx: number): void;
   panBy(dxPx: number, dyPx: number): void;
+  /**
+   * `setSelection` for a selection the CANVAS itself just made (a click on the stage), drawn in the
+   * very next frame rather than one frame later.
+   *
+   * `setSelection` yields one frame to the page because its caller is a React commit whose panels
+   * should paint first. A canvas click commits no panel inside its input task (Fabric3D.tsx defers
+   * that write past the acknowledgement, acceptance E3), so there is nothing to paint first, and
+   * yielding would present the click with an unchanged canvas: the acknowledgement IS this render.
+   * Idempotent with the `setSelection` the deferred commit makes later.
+   */
+  acknowledgeSelection(deviceId: string | null, linkId: string | null): void;
 }
 
 const createSceneImpl = (
@@ -1661,7 +1737,27 @@ const createSceneImpl = (
   /** The label resolver has run its history-free pass over the current (idle) frame. */
   let labelsSettledPass = false;
 
+  /**
+   * Bumped by every change to WHAT the fabric shows (anything that calls `markDirty`), and not by a
+   * camera move (`requestFrame`). The post chain's history blend may only mix a frame with a previous
+   * picture of the same content (postfx.ts HISTORY_AA), so a render whose content version differs
+   * from the last presented frame's is drawn plain.
+   */
+  let contentVersion = 0;
+  /** `contentVersion` as of the last presenting render. */
+  let renderedContentVersion = -1;
+  /** The last presenting render mixed in a history; a plain frame is owed before `converged`. */
+  let historyInLastRender = false;
+
   const markDirty = (): void => {
+    dirty = true;
+    stillFrames = 0;
+    labelsSettledPass = false;
+    contentVersion += 1;
+  };
+  /** A render is owed, but nothing the fabric SHOWS changed — only the view of it (or a pointer
+   *  that may yet change a hover). */
+  const requestFrame = (): void => {
     dirty = true;
     stillFrames = 0;
     labelsSettledPass = false;
@@ -1699,7 +1795,7 @@ const createSceneImpl = (
       onPick(result: PickResult | null, modifier: boolean): void {
         cb.onEvent({ type: "pick", result, modifier });
       },
-      onNeedsFrame: markDirty,
+      onNeedsFrame: requestFrame,
     },
   );
 
@@ -1981,7 +2077,52 @@ const createSceneImpl = (
     return stepEmphasis(graph, emphasis, dt, reducedMotion);
   }
 
+  /* ── the camera's step between presented frames (the history blend's gate) ── */
+  const stepViewProj = new Matrix4();
+  const stepPrevViewProj = new Matrix4();
+  const stepNow = new Vector3();
+  const stepPrev = new Vector3();
+  let stepPrevValid = false;
+  let lastCameraStep = Number.POSITIVE_INFINITY;
+  /**
+   * How far, in DRAWING-BUFFER pixels, the camera has moved every device anchor since the last
+   * presenting render: the largest screen displacement of any chassis centre between the two
+   * view-projections. Infinity before the first render, so the first frame is never blended.
+   */
+  function cameraStepSinceRenderPx(): number {
+    const cam = cameraRig.camera;
+    cam.updateMatrixWorld();
+    stepViewProj.copy(cam.matrixWorld).invert().premultiply(cam.projectionMatrix);
+    if (!stepPrevValid) return Number.POSITIVE_INFINITY;
+    const halfW = (width * renderer.getPixelRatio()) / 2;
+    const halfH = (height * renderer.getPixelRatio()) / 2;
+    let max = 0;
+    for (const s of graph.order) {
+      stepNow.set(s.centre[0], s.centre[1], s.centre[2]).applyMatrix4(stepViewProj);
+      stepPrev.set(s.centre[0], s.centre[1], s.centre[2]).applyMatrix4(stepPrevViewProj);
+      const d = Math.max(Math.abs(stepNow.x - stepPrev.x) * halfW, Math.abs(stepNow.y - stepPrev.y) * halfH);
+      if (d > max) max = d;
+    }
+    return max;
+  }
+  /** The view-projection `cameraStepSinceRenderPx` just computed, as the presented frame's. */
+  function rememberRenderedCamera(): void {
+    stepPrevViewProj.copy(stepViewProj);
+    stepPrevValid = true;
+  }
+
   /* ── selection / hover visuals ─────────────────────────────────────────── */
+  /** Make (deviceId, linkId) the selection. Returns false, changing nothing, when it already is. */
+  function applySelection(deviceId: string | null, linkId: string | null): boolean {
+    if (deviceId === selectedDevice && linkId === selectedLink) return false;
+    selectedDevice = deviceId;
+    selectedLink = linkId;
+    applySelectionVisuals();
+    recomputeEmphasis();
+    markEmphasisDirty(emphasis);
+    return true;
+  }
+
   function applySelectionVisuals(): void {
     const slot = selectedDevice === null ? undefined : graph.slots.get(selectedDevice);
     if (slot === undefined) {
@@ -2821,19 +2962,15 @@ const createSceneImpl = (
       passEnabled.length = 0;
       for (const pass of passes) passEnabled.push(pass.enabled);
     }
-    for (let i = 0; i < passes.length; i += 1) {
-      const pass = passes[i];
-      if (pass === undefined) continue;
-      pass.enabled = i <= warmupPass && passEnabled[i] === true;
-    }
-    mark("atlas:warmup-pass", () => post.render(0));
-    for (let i = 0; i < passes.length; i += 1) {
-      const pass = passes[i];
-      if (pass === undefined) continue;
-      pass.enabled = passEnabled[i] === true;
-    }
+    const done = runWarmupPassStep(
+      passes,
+      passEnabled,
+      warmupPass,
+      () => mark("atlas:warmup-pass", () => post.render(0)),
+      withInteractionVisualsPrimed,
+    );
     warmupPass += 1;
-    return warmupPass >= passes.length;
+    return done;
   }
 
   /** One warm-up stage per call. Returns true when the loop may render. */
@@ -3133,12 +3270,17 @@ const createSceneImpl = (
     /* "Moving" for the labels spans the damping tail: a pose change within MOTION_HOLD_MS, the
        same window the occlusion suspension uses, so a creeping orbit does not read as still. */
     labelsCameraMoving = now - lastCameraMotionAt < MOTION_HOLD_MS;
-    let moved = cameraMoved;
-    moved = animateEmphasis(dt) || moved;
-    moved = animateFades(dt) || moved;
-    moved = flow.update(now, cameraRig.camera) || moved;
+    /* Every animator runs every frame (no short-circuit). What they moved decides HOW the owed
+       render is requested: an animated change is a change of content, a camera move only of view. */
+    const emphasisMoved = animateEmphasis(dt);
+    const fadesMoved = animateFades(dt);
+    const flowMoved = flow.update(now, cameraRig.camera);
 
-    if (moved) markDirty();
+    if (emphasisMoved || fadesMoved || flowMoved) markDirty();
+    else if (cameraMoved) requestFrame();
+    /* The last presented frame mixed in a history (postfx.ts HISTORY_AA): a plain frame is owed the
+       moment the camera stops, so the frame a still view settles on is the plain chain's output. */
+    if (historyInLastRender && !cameraMoved) requestFrame();
     /* The last render was taken with occlusion suspended for motion (see PostChain.setMotion): the
        still frame is owed as soon as the camera has held still for MOTION_HOLD_MS. */
     if (motionReducedRender && now - lastCameraMotionAt >= MOTION_HOLD_MS) markDirty();
@@ -3272,6 +3414,11 @@ const createSceneImpl = (
     if (motionReducedRender && now - lastCameraMotionAt >= MOTION_HOLD_MS) motionReducedRender = false;
 
     refreshRims();
+    /* The history blend (postfx.ts HISTORY_AA): only for a frame whose content is the last presented
+       frame's, weighted by how far the camera moved since that frame. */
+    const cameraStep = cameraStepSinceRenderPx();
+    lastCameraStep = cameraStep;
+    post.setHistoryWeight(contentVersion === renderedContentVersion ? historyWeightFor(cameraStep) : 0);
     renderer.info.reset();
     if (!firstRendered) {
       firstRendered = true;
@@ -3279,6 +3426,10 @@ const createSceneImpl = (
     } else {
       post.render(dt / 1000);
     }
+    post.captureHistory();
+    historyInLastRender = post.historyWeightUsed() > 0;
+    renderedContentVersion = contentVersion;
+    rememberRenderedCamera();
     releaseTierFade();
 
     /* A rebuild frame costs about 50 extra calls once (see DRAW_CALL_BUDGET); a REGRESSION costs
@@ -3363,7 +3514,7 @@ const createSceneImpl = (
       compiled,
       // A frame rendered with occlusion suspended for motion is not the frame the scene settles on.
       // Nor is one whose DOM label set is about to change (reportLabelsConverging).
-      dirty: dirty || motionReducedRender || domLabelsConverging,
+      dirty: dirty || motionReducedRender || domLabelsConverging || historyInLastRender,
       stillFrames,
       cameraTweening: cameraRig.isTweening(),
     });
@@ -3405,6 +3556,8 @@ const createSceneImpl = (
       warmupTimedOut,
       framesTimed,
       frameRateBelowBar: rateBar.below(),
+      historyWeight: post.historyWeightUsed(),
+      historyCameraStepPx: Number.isFinite(lastCameraStep) ? Math.round(lastCameraStep * 10000) / 10000 : null,
     };
   }
 
@@ -3444,8 +3597,9 @@ const createSceneImpl = (
     document.addEventListener("visibilitychange", onVisibility);
   }
 
+  /* A camera change changes the view, not the content (see `contentVersion`). */
   const onCameraChange = (): void => {
-    markDirty();
+    requestFrame();
   };
   const onCameraEnd = (): void => cb.onEvent({ type: "camera", settled: true });
   cameraRig.controls.addEventListener("change", onCameraChange);
@@ -3495,13 +3649,12 @@ const createSceneImpl = (
     },
 
     setSelection(deviceId: string | null, linkId: string | null): void {
-      if (deviceId === selectedDevice && linkId === selectedLink) return;
-      selectedDevice = deviceId;
-      selectedLink = linkId;
-      applySelectionVisuals();
-      recomputeEmphasis();
-      markEmphasisDirty(emphasis);
-      yieldToPage = true;
+      if (applySelection(deviceId, linkId)) yieldToPage = true;
+    },
+
+    acknowledgeSelection(deviceId: string | null, linkId: string | null): void {
+      /* No yield: see FabricSceneEx.acknowledgeSelection. */
+      applySelection(deviceId, linkId);
     },
 
     setHover(deviceId: string | null, linkId: string | null): void {

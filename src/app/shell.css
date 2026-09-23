@@ -409,14 +409,6 @@ a {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
-/* A transient overlay must leave its origin visible behind it. The Stage stays readable at
-   reduced contrast rather than being hidden or blurred — you cannot check a picture you cannot
-   see, and a blur is decoration. */
-.stage-dim {
-  opacity: 0.6;
-  transition: opacity var(--dur-medium) var(--ease-out);
-}
-
 /* ── rail A: path over queue, with a draggable splitter ──────────────────────
    Defaults to 60/40 when a trace exists. --rail-a-split is written by the rail's own component
    as the user drags; the 30%/80% clamp lives with the drag handler because CSS cannot express
@@ -483,6 +475,30 @@ a {
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+
+  /* On the PATH surface (the one the reader chose), the path panel's floor is its flow form's
+     MEASURED height (--rail-a-path-need, written by RailA in surfaces.tsx), not 10rem: at 1440x900
+     the 10rem floor was a 170 px port with Destination, Protocol, Port and "Trace this flow" below
+     it, and at 1920x1080 it cut the submit in half (2026-09-23, C2). The queue keeps its min-content
+     floor; when both do not fit, the rail scrolls internally, exactly as the short rungs already do.
+     On any other surface the attribute is absent and the rule above applies unchanged. The split
+     still sets the path's share above the floor; it may not be below it. */
+  .rail--a[data-split="true"][data-path-lead="form"] {
+    grid-template-rows:
+      minmax(min(max(10rem, var(--rail-a-path-need, 10rem)), 100%), max(var(--rail-a-split, 60%), var(--rail-a-path-need, 10rem)))
+      auto
+      minmax(min-content, 1fr);
+    /* The scrollbar is PERMANENT in this state, not `auto`. The form's floor makes the rail overflow
+       at 1440x900 and 1920x1080 by design, and an overflowing `overflow-y: auto` rail made every
+       full-page layout about three times dearer — MEASURED 2026-09-23 (release build, Chrome trace of
+       J4's swap+submit, same dirty set of 72-88 objects in a 5.7-5.9k-object tree): the forced layout
+       the explicit-run landing takes inside the submit handler (PathTrace.tsx, landOnAnswer) was
+       2.5-4.9 ms at d3e2a1c and 9.0-22.3 ms with this floor, and measure-inp's J4 then showed 12-16
+       on-path tasks over 50 ms (E3). With `overflow-y: scroll` (or `hidden`) and the same floor it is
+       2.7-4.4 ms again; `scrollbar-gutter: stable` alone did not help (8.4-12.2 ms). Where the rail
+       overflows the scrollbar was already on screen, so nothing moves there. */
+    overflow-y: scroll;
+  }
 }
 
 /* The POINTER TARGET is 24px tall (SC 2.5.8 Target Size (Minimum), on its own size rather than
@@ -538,8 +554,9 @@ a {
   }
 }
 
-/* 1024–1279px — Rail B becomes a right-anchored overlay drawer over the Stage. The Stage is
-   dimmed, not hidden, and keeps >= 360px. The drawer is toggled by `E` and by any evidence
+/* 1024–1279px — Rail B becomes a right-anchored overlay drawer over the Stage. The Stage stays
+   visible (not hidden, not dimmed — the never-applied `.stage-dim` rule was deleted as dead CSS,
+   2026-09-23) and keeps >= 360px. The drawer is toggled by `E` and by any evidence
    affordance; its open state is `data-drawer="open"` on .app. */
 @media (max-width: 79.9375rem) {
   :root {
@@ -610,6 +627,27 @@ a {
   .app[data-pane="queue"] .rail--b,
   .app[data-pane="evidence"] .rail--a {
     display: none;
+  }
+}
+
+/* 768–1023px with NO trace open: rail A is a flex column, and the rule above that lets the rail
+   scroll internally applies only to the split (trace) grid. Measured 2026-09-23 (repair wave 3):
+   the findings grid keeps its own 19rem floor (DataGrid.css) and is size-contained at >=48rem
+   (PriorityQueue.css), so with the rail's overflow visible it ran past its rail, under the status
+   bar and off screen — 1000x800 grid 698-1002 vs rail 494-774 (status bar 774-800), 900x700
+   652-956 vs 448-674, 800x600 650-954 vs 446-574 — and at 800x600 focusing the first cell scrolled
+   the overflow-hidden `.app` frame itself (status bar top 574 -> 220, header scrolled away). So
+   the rail scrolls here too, and the queue slot keeps its min-content (the chrome plus the grid's
+   floor) instead of being squeezed into a port the grid then overflows. Guarded in a real browser
+   by review/layout-guard.mjs invariant 5. */
+@media (min-width: 48rem) and (max-width: 63.9375rem) {
+  .rail--a {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .rail--a:not([data-split="true"]) > .rail__slot {
+    min-block-size: min-content;
   }
 }
 

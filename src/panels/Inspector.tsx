@@ -637,6 +637,22 @@ function reconcileCoverage(): Reconciliation[] {
 type InspectorTab = "data" | "provenance" | "coverage" | "json";
 
 const TAB_IDS: readonly InspectorTab[] = ["data", "provenance", "coverage", "json"];
+/**
+ * Notes the JSON tab draws beside fields whose bare value would be misread. The JSON tab renders all
+ * of fabric.json, so the Data tab's review-item-13 note on `aclLinesUnevaluable` has to reach it as
+ * well: read bare there, the counter still contradicted the status bar's undecidable count. Same
+ * owner as the status bar and the Data tab: core/acl-coverage.ts.
+ */
+function jsonAnnotations(): Readonly<Record<string, string>> {
+  const u = aclUndecidability();
+  return {
+    /* Most important first: a tree row is one fixed-height line, so if the note ever has to give way
+       it is the owner's path at the end that is cut, not the count (measured 2026-09-23: the rail is
+       ~464-479 px for the note at 1024 and 1440). */
+    "coverage.aclLinesUnevaluable": `parser flag only; undecidable: ${u.count} of ${u.total} ACL lines — aclUndecidability() (core/acl-coverage.ts)`,
+  };
+}
+
 const isTab = (v: string): v is InspectorTab => (TAB_IDS as readonly string[]).includes(v);
 
 export interface InspectorProps {
@@ -985,6 +1001,25 @@ export function Inspector({
                               : `This model cannot evaluate this line: ${aclVerdict.reason ?? "no reason recorded"}. ${producerFieldNotEmitted(resolution.modelPath, record, k) === null ? "The collector’s flag is narrower than the model’s check, so the" : "The"} line is treated as undecidable wherever it could match.`}
                           </p>
                         ) : null}
+                        {resolution.modelPath === "coverage" && k === "aclLinesUnevaluable"
+                          ? (() => {
+                              /* Review item 13: read bare, this counter (the collector's parser flag)
+                                 contradicted the status bar's "N of M lines cannot be decided". Same
+                                 owner as the status bar and CoverageBar: core/acl-coverage.ts. */
+                              const u = aclUndecidability();
+                              return (
+                                <p className="insp-kv__model" data-model-evaluable={false}>
+                                  The collector’s parser flag only — not the undecidable set.{" "}
+                                  {u.count} of {u.total} ACL lines cannot be decided: the union of the
+                                  lines this model refuses to evaluate ({u.bySource.engine}), the lines
+                                  the collector’s parser could not model ({u.bySource.producer}) and
+                                  the lines the snapshot’s own reachability analysis returned
+                                  indeterminate ({u.bySource.snapshot}). The status bar states that
+                                  union.
+                                </p>
+                              );
+                            })()
+                          : null}
                       </dd>
                     </div>
                   ))}
@@ -1222,6 +1257,7 @@ export function Inspector({
             label="Compiled evidence document"
             citedPath={resolution.modelPath !== null && documentOf(resolution.modelPath) === "fabric.json" ? resolution.modelPath : null}
             visible={tab === "json"}
+            annotations={jsonAnnotations()}
           />
         </TabPanel>
       </div>

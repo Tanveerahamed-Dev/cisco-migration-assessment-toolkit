@@ -763,10 +763,21 @@ describe("no hop reads as success inside a result that is not one", () => {
   });
 
   it("never lets an uncollected RIB or unevaluable line read as a clean path", () => {
+    /* Every probe is judged (the implication, stated per flow), and the antecedent's population is
+       pinned: the first version asserted only inside `if (unmodelledHosts.length > 0)`, which on
+       this snapshot held for 1 probe of 11, so a change that emptied it would have left a test that
+       runs, passes and checks nothing. */
+    let exercised = 0;
     for (const f of probes) {
       const t = traceFlow(f);
-      if (t.unmodelledHosts.length > 0) expect(t.outcome).toBe("indeterminate");
+      if (t.unmodelledHosts.length > 0) exercised += 1;
+      expect(
+        t.unmodelledHosts.length === 0 || t.outcome === "indeterminate",
+        `${JSON.stringify(f)}: unmodelled ${t.unmodelledHosts.join(", ")} but outcome ${t.outcome}`,
+      ).toBe(true);
     }
+    expect(probes.length, "the probe set").toBeGreaterThan(5);
+    expect(exercised, "probes whose trace crosses an unmodelled host (the case this test is about)").toBeGreaterThan(0);
   });
 });
 
@@ -840,10 +851,19 @@ describe("the not-applied caveat MEASURES its claim about each discarded list", 
   it("says 'only through catch-all lines' ONLY where every matching line really is any/any", () => {
     // VOICE_FILTER's only line reachable by this flow is `deny ip any any`; MGMT_IN's is the same.
     // The phrase is allowed there and nowhere else, so every emission of it is re-derived.
+    /* Both places a reader meets the phrase are read: the whole trace, AND the fallback seam
+       (`evaluateAcls` with no binding — what a hop with an unknown binding runs), which is where it
+       is emitted on this snapshot. The first version read `traceFlow` alone; with the bindings now
+       observed on core1 the trace never takes the fallback, so the loop over emissions was empty and
+       the test ran, passed and made ZERO assertions (found by the runtime assertion guard,
+       src/test-setup.ts). The emissions are now counted and the lists that earn the phrase pinned. */
+    const named = new Set<string>();
     for (const flow of [tcp("10.0.10.50", "10.0.30.10", 443), tcp("10.0.10.50", "10.0.30.10", 22), tcp("10.0.10.50", "10.0.30.10", 3389)]) {
-      const caveats = traceFlow(flow).caveats.join(" ");
+      const fallback = evaluateAcls("core1", flow, parseIpv4(flow.srcIp)!, parseIpv4(flow.dstIp)!).caveats;
+      const caveats = [...traceFlow(flow).caveats, ...fallback].join(" ");
       for (const m of caveats.matchAll(/(\w+) \(matches this flow only through catch-all lines\)/g)) {
         const name = m[1]!;
+        named.add(name);
         const lines = fabric.acls["core1"]?.[name] ?? [];
         const src = parseIpv4(flow.srcIp)!;
         const dst = parseIpv4(flow.dstIp)!;
@@ -852,6 +872,8 @@ describe("the not-applied caveat MEASURES its claim about each discarded list", 
         for (const l of matching) expect(l.raw).toMatch(/\bany\s+any\b/);
       }
     }
+    // Known answer: the two lists the comment above names, and only lists that really are catch-all.
+    expect([...named].sort(), "lists the phrase was emitted for").toEqual(["MGMT_IN", "VOICE_FILTER"]);
   });
 });
 

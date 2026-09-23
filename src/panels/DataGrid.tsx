@@ -162,6 +162,18 @@ export interface DataGridProps<T> {
    */
   revealKey?: string;
   /**
+   * Rows ANY ONE of which already answers the reveal. When one of them is fully inside the visible
+   * band of the scroll port (below the sticky header, inside every clip) the reveal does nothing:
+   * the reader is already looking at an answer, and moving the list would throw their place away.
+   *
+   * For a reveal whose target is a representative of a set rather than the selection itself — the
+   * queue with no finding selected reveals the FIRST row naming the picked device, but every row
+   * naming it answers "what names this box". Measured without it (A4, 1920x1080, `?s=queue`): the
+   * reader at scrollTop 3200 with F060 and F069 (both naming access13) on screen picked access13
+   * and was thrown to 0, where F002 is. Omit it for a reveal of the selection itself.
+   */
+  revealUnlessVisible?: ReadonlySet<string>;
+  /**
    * Rows related to a selection this corpus cannot hold as a row of its own — the findings that
    * name the selected device or the endpoints of the selected cable.
    *
@@ -442,10 +454,54 @@ function visibleBand(scroller: HTMLElement, head: HTMLElement | null): { top: nu
       top = Math.max(top, 0);
       bottom = Math.min(bottom, view.innerHeight);
     }
+    ({ top, bottom } = trimOverlays(scroller, doc, box, top, bottom));
   }
   /* Nothing visible at all (a rail scrolled away from the grid): fall back to the layout box, so a
      reveal still moves the row to where the grid WILL show it rather than thrashing. */
   return bottom > top ? { top, bottom } : { top: head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top, bottom: box.bottom };
+}
+
+/**
+ * Shrink the band past anything that PAINTS OVER its edges — a sticky or fixed bar that is not part
+ * of the grid. Clips say where the grid can be drawn; they say nothing about a sibling layered on
+ * top of it. MEASURED (D3, 390x844, 2026-09-23): the page scrolls the grid there, and the status
+ * bar (`position: sticky; bottom: 0`, wrapped to 85 px) covered the viewport's bottom edge, so
+ * ArrowDown left every focused row from the 17th on fully UNDER it — rows 788-844 against a bar
+ * from 759 — while this band called them visible (WCAG 2.4.11).
+ *
+ * The browser's own hit test is the only generic answer to "what covers this point", so each edge
+ * is probed just inside the band: a hit outside the grid that is not one of its ancestors is an
+ * overlay, and the band moves past its box. Repeated a few times because the first hit can be a
+ * child of the overlay whose box starts inside the overlay's padding. Where hit testing is not
+ * available (jsdom), the band is unchanged.
+ */
+function trimOverlays(
+  scroller: HTMLElement,
+  doc: Document,
+  box: DOMRect,
+  top: number,
+  bottom: number,
+): { top: number; bottom: number } {
+  if (typeof doc.elementFromPoint !== "function" || bottom <= top) return { top, bottom };
+  const view = doc.defaultView;
+  const maxX = view && view.innerWidth > 0 ? view.innerWidth - 1 : box.right;
+  const x = Math.min(Math.max((Math.max(box.left, 0) + Math.min(box.right, maxX)) / 2, 0), maxX);
+  const overlayAt = (y: number): DOMRect | null => {
+    const hit = doc.elementFromPoint(x, y);
+    if (hit === null || scroller.contains(hit) || hit.contains(scroller)) return null;
+    return hit.getBoundingClientRect();
+  };
+  for (let i = 0; i < 4 && bottom > top; i += 1) {
+    const r = overlayAt(bottom - 1);
+    if (r === null || r.top >= bottom || r.top <= top) break;
+    bottom = r.top;
+  }
+  for (let i = 0; i < 4 && bottom > top; i += 1) {
+    const r = overlayAt(top + 1);
+    if (r === null || r.bottom <= top || r.bottom >= bottom) break;
+    top = r.bottom;
+  }
+  return { top, bottom };
 }
 
 /**
@@ -454,7 +510,13 @@ function visibleBand(scroller: HTMLElement, head: HTMLElement | null): { top: nu
  * it is below. The single visibility predicate shared by the reveal and by the hold that keeps a
  * revealed row in view.
  */
-function offsetFromView(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): number {
+function offsetFromView(
+  scroller: HTMLElement,
+  head: HTMLElement | null,
+  el: HTMLElement,
+  /** The band for `head`, when the caller already measured it for several rows. */
+  rowBand?: { top: number; bottom: number },
+): number {
   if (head?.contains(el)) {
     /* The header is sticky inside the grid's OWN scroll port, so there it is always visible. When
        the grid is not its own port (narrow layouts — the page scrolls it) the header scrolls away
@@ -465,11 +527,39 @@ function offsetFromView(scroller: HTMLElement, head: HTMLElement | null, el: HTM
     if (r.top >= band.top && r.bottom <= band.bottom) return 0;
     return r.top < band.top ? r.top - band.top : r.bottom - band.bottom;
   }
-  const { top, bottom } = visibleBand(scroller, head);
+  const { top, bottom } = rowBand ?? visibleBand(scroller, head);
   const target = el.closest<HTMLElement>('[role="row"]') ?? el;
   const row = target.getBoundingClientRect();
   if (row.top >= top && row.bottom <= bottom) return 0;
   return row.top < top ? row.top - top : row.bottom - bottom;
+}
+
+/**
+ * The TOPMOST mounted row whose id is in `ids` and which is fully inside the visible band, or null.
+ * The same predicate as the reveal and the hold (`offsetFromView`), so "already visible" cannot mean
+ * something different here from what a reveal would have produced.
+ *
+ * Fails toward revealing: a row with no laid-out height (jsdom, a display:none ancestor, a frame
+ * before layout) proves nothing about what the reader sees, so it never counts as visible — skipping
+ * a reveal on no evidence is exactly the silent failure this product refuses.
+ */
+function firstVisibleRow(
+  scroller: HTMLElement,
+  head: HTMLElement | null,
+  rowEls: ReadonlyMap<string, HTMLElement>,
+  ids: ReadonlySet<string>,
+): string | null {
+  if (ids.size === 0) return null;
+  let band: { top: number; bottom: number } | undefined;
+  let best: { id: string; top: number } | null = null;
+  for (const [id, el] of rowEls) {
+    if (!ids.has(id) || head?.contains(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.height <= 0) continue;
+    band ??= visibleBand(scroller, head); // measured once, and only when a candidate exists
+    if (offsetFromView(scroller, head, el, band) === 0 && (best === null || r.top < best.top)) best = { id, top: r.top };
+  }
+  return best?.id ?? null;
 }
 
 /** `aimedAt` before the first render has looked at the reveal target. */
@@ -483,6 +573,7 @@ export function DataGrid<T>({
   activeId = null,
   revealId,
   revealKey,
+  revealUnlessVisible,
   relatedIds,
   relatedDescription,
   batchIds,
@@ -590,6 +681,11 @@ export function DataGrid<T>({
   const aimFocus = useRef(false);
   /** Set while a re-entry redirect is paging the window to the roving row (see onFocus). */
   const aimEntry = useRef(false);
+  /** A representative reveal's roving aim, left for the reveal effect to place (see `aimedAt`):
+   *  "initial" places only a tab stop (mount), "change" also redirects focus that re-enters. */
+  const repAim = useRef<"none" | "initial" | "change">("none");
+  /** Set by a pointerdown on the grid and consumed by the focus it causes (see onFocus). */
+  const pointerFocus = useRef(false);
 
   /* The roving cell follows the reveal target (D3). Revealing a row while the keyboard's position
      stays on the row that WAS selected leaves two defects at once: focus restored to that old cell
@@ -608,7 +704,15 @@ export function DataGrid<T>({
   const [aimedAt, setAimedAt] = useState<string | null | undefined | typeof UNAIMED>(UNAIMED);
   if (aimedAt !== aimTarget) {
     setAimedAt(aimTarget);
-    const at = aimTarget == null ? -1 : rows.findIndex((r) => r.kind === "data" && r.node.id === aimTarget);
+    /* A REPRESENTATIVE reveal (`revealUnlessVisible`) may decide not to scroll at all, and only the
+       reveal effect can measure that. Aiming the roving cell here would move FOCUS to the
+       representative row — and scroll the list to it — before that decision: MEASURED (A4,
+       1920x1080) with focus on F060 at scrollTop 3200, palette -> access13 -> Enter ended at 70 with
+       focus on F002. So a representative aim is only recorded here; the reveal effect places the
+       roving cell on the row it actually shows (the answer on screen, or the one it scrolled to). */
+    if (revealUnlessVisible !== undefined) repAim.current = aimTarget == null ? "none" : aimedAt === UNAIMED ? "initial" : "change";
+    const at =
+      aimTarget == null || revealUnlessVisible !== undefined ? -1 : rows.findIndex((r) => r.kind === "data" && r.node.id === aimTarget);
     if (at !== -1 && at !== focusCell.row) {
       userMoved.current = true;
       anchorRow.current = null;
@@ -695,6 +799,16 @@ export function DataGrid<T>({
    * A row the window has not mounted has no element to measure. That case pages to the row's
    * arithmetic position first; mounting it re-runs this effect, which then refines to nearest.
    */
+  /** Move the roving cell to the data row `id` from an effect; `redirect` makes focus that
+   *  re-enters the grid (or already owns it) follow. */
+  const placeRoving = (id: string, redirect: boolean): void => {
+    const at = rows.findIndex((r) => r.kind === "data" && r.node.id === id);
+    if (at === -1 || at === focusCellRef.current.row) return;
+    userMoved.current = true;
+    anchorRow.current = null;
+    if (redirect) aimFocus.current = true;
+    setFocusCell({ row: at, col: landOn(at, focusCellRef.current.col, 1) });
+  };
   const revealTarget = revealId === undefined ? activeId : revealId;
   const revealedRef = useRef<string | null>(null);
   const pagedRef = useRef<string | null>(null);
@@ -752,6 +866,24 @@ export function DataGrid<T>({
       return;
     }
 
+    /* Already answered (see `revealUnlessVisible`): a row the reader can see right now is one the
+       reveal would only have scrolled AWAY from. Checked before paging, so a target the window has
+       not even mounted cannot move the list either. No hold: nothing was revealed, so a later resize
+       has nothing to keep in view, and the reader's own scrolling stays theirs. */
+    const answered = revealUnlessVisible === undefined ? null : firstVisibleRow(scroller, headRef.current, rowRefs.current, revealUnlessVisible);
+    if (answered !== null) {
+      revealedRef.current = revealTarget;
+      pagedRef.current = null;
+      heldRef.current = false;
+      /* The roving cell follows the answer on screen, not the representative this skip declined to
+         scroll to: focus re-entering the grid lands on the roving cell, so a dialog returning focus
+         would otherwise page the list away (see `repAim`). No focus redirect: the reader's focus,
+         if it is in the grid, is already on screen. */
+      repAim.current = "none";
+      placeRoving(answered, false);
+      return;
+    }
+
     const el = rowRefs.current.get(revealTarget);
     if (!el) {
       // Not in the DOM. Either the window dropped it, or this corpus holds no such row — and a
@@ -768,6 +900,12 @@ export function DataGrid<T>({
     pagedRef.current = null;
     revealBelowHeader(scroller, headRef.current, el, "centre");
     heldRef.current = true;
+    /* A representative reveal that DID scroll places the roving cell on the row it brought into
+       view — what the render-time aim does for every other reveal (see `repAim`). */
+    if (repAim.current !== "none") {
+      placeRoving(revealTarget, repAim.current === "change");
+      repAim.current = "none";
+    }
     // A fresh reveal starts a fresh hold: input that preceded it is not a scroll away from it.
     readerInputRef.current = false;
     /* A row that had to be paged in has only just mounted, so the focus-follows-roving effect
@@ -780,7 +918,7 @@ export function DataGrid<T>({
         if (document.activeElement !== cell) focusInView(cell);
       }
     }
-  }, [revealTarget, revealKey, nodes, windowing, rows, landOn, focusInView]);
+  }, [revealTarget, revealKey, revealUnlessVisible, nodes, windowing, rows, landOn, focusInView]);
 
   /* The hold itself (see `heldRef`). One re-reveal routine, three triggers: the port or its sticky
      header changing size (ResizeObserver), the rows changing (a commit that reflows what is above
@@ -1251,9 +1389,29 @@ export function DataGrid<T>({
         onPointerDown={() => {
           aimFocus.current = false;
           aimEntry.current = false;
+          pointerFocus.current = true;
+          /* The focus a press causes is dispatched in the same task; a press on an already focused
+             cell causes none, and must not mark a LATER keyboard arrival as the pointer's. */
+          setTimeout(() => {
+            pointerFocus.current = false;
+          }, 0);
         }}
         onFocus={(e) => {
           hasFocus.current = true;
+          /* Focus ARRIVING from outside the grid by keyboard or script — Tab, a dialog restoring focus
+             to its invoker — gets the same band-aware reveal as focus the grid moves itself. The
+             browser's own focus scroll knows nothing of a bar painted over the grid: MEASURED (D3,
+             1000x800, audit-d3-focus compact/idle) the roving cell restored by the palette's Escape
+             sat at 763-780 under the status bar (774-800), its ring 38 px of indicator against a
+             41 px floor. Nearest semantics, so a cell already in view does not move; a pointer's own
+             focus is left alone, so a click never nudges the list under the pointer. */
+          const fromPointer = pointerFocus.current;
+          pointerFocus.current = false;
+          if (!fromPointer && !e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            const scroller = gridRef.current;
+            const target = e.target as HTMLElement;
+            if (scroller && target !== scroller) revealBelowHeader(scroller, headRef.current, target);
+          }
           /* Focus coming back from OUTSIDE the grid after an external selection moved the roving
              cell — a dialog restoring focus to the cell that opened it is the common case — lands
              on the roving cell, which is on the revealed row and therefore in view. Adopting the

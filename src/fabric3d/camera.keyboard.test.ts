@@ -115,8 +115,12 @@ describe("keyboard orbit and pan drive the pointer's own camera path (D1)", () =
 
   it("reduced motion: a key orbit lands whole — no inertial tail after the press", () => {
     const { rig } = makeRig(true);
+    const start = pose(rig);
     rig.orbitBy(60, 0);
     const after = pose(rig);
+    /* The press must MOVE the camera before "nothing moves afterwards" means anything: an orbitBy
+       that did nothing at all would also show no tail (independent refuter, wave 3). */
+    expect(after.some((v, i) => Math.abs(v - start[i]!) > 1e-3), "the key orbit did not move the camera").toBe(true);
     settle(rig);
     expectSamePose(pose(rig), after);
   });

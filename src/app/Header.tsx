@@ -215,7 +215,7 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
           <div className="snapdetail__row">
             <dt>sha256</dt>
             <dd>
-              <Copyable value={m.sourceSha256} label="the snapshot sha256" />
+              <Copyable value={m.sourceSha256} label="the snapshot sha256" digest />
             </dd>
           </div>
           <div className="snapdetail__row">

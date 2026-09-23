@@ -111,16 +111,19 @@
   height: 0.75em;
 }
 
-/* The reason's floor is the LARGER of a readable measure and its own longest token. The basis
-   (16ch) is the measure: a wrapping flex line takes the reason beside the words only when 16ch fits
-   there. The minimum is left `auto`, which for a flex item is its min-content width — the longest
-   unbreakable token in the reason. It used to be `min(16ch, 100%)`, a floor BELOW that token: at
-   1440 the device pane's "(num_power_supplies)" (110px) sat in a 105px reason column beside "not
-   observed" and ran 4.9px over the dashed rim, because an identifier no longer splits between two
-   letters (see "wrapping" above) and nothing else made room for it. With the minimum at the token,
-   a reason that cannot fit beside the words moves under them and takes the whole box. */
+/* The reason ALWAYS takes a line of its own, under the words: its basis is the whole box (100%), so
+   a wrapping flex line can never hold it beside them. WHERE the reason goes is decided by the box's
+   structure, never by the reason's text.
+   It used to be `flex: 1 1 16ch` with the minimum at the reason's longest token, which placed a
+   reason BESIDE the words when that token fitted there and UNDER them when it did not — so two
+   adjacent rows of the same kind laid out two different ways (acceptance C2, 2026-09-23: on
+   `?d=core1` at 1440 "Power supplies" stacked, 76px tall, and "Modules" beside, 106px, because
+   "(num_power_supplies)" did not fit beside "not observed" and "(num_modules)" did). The minimum is
+   still `auto` — the longest unbreakable token — which is what keeps an identifier from running past
+   the dashed rim: an identifier no longer splits between two letters (see "wrapping" above), so the
+   line it sits on must be at least as wide as it is. */
 .ui-notobs__why {
-  flex: 1 1 16ch;
+  flex: 1 1 100%;
   color: var(--text-muted);
   font-weight: var(--fw-regular);
   white-space: normal;
@@ -712,6 +715,27 @@ button.ui-chip__body:hover {
   min-height: 0;
 }
 
+/* A FOCUS RING INSIDE A CLIP IS DRAWN INSIDE ITS ELEMENT (acceptance D3, "focus is always
+   visible"; measured 2026-09-23 by review/audit-d3-focus.mjs, which photographs every focus stop it
+   reaches against the same pixels unfocused).
+   The app-wide ring (shell.css) sits 2px OUTSIDE its element. Three primitives put a focusable
+   where the outside is cut off, and the ring went with it:
+   - a TAB PANEL is a tab stop (APG) and fills the box that holds it edge to edge — the device
+     pane's `.dp__body` scroller, the Inspector's body — and a scroller clips whatever paints past
+     its padding box: "0 pixels at >=3:1" on five of the device pane's six panels, focus on screen
+     and invisible;
+   - a TAB fills its strip's height, and the strip scrolls (`overflow-x: auto` above, which clips
+     both axes): the Inspector's first tab kept 64 ring pixels of the 97 the audit asks for;
+   - a CHIP clips its segments to its rounded edge (`overflow: hidden` above), so the remove
+     button's ring lost everything past the chip.
+   Each ring is drawn wholly inside its own box instead (offset = minus its width), where no
+   ancestor can cut it. The ring's colour, width and contrast are the global token's, unchanged. */
+.ui-tabpanel:focus-visible,
+.ui-tabs :focus-visible,
+.ui-chip :focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-w));
+}
+
 /* ══ disclosure ═══════════════════════════════════════════════════════════ */
 
 .ui-disclosure__trigger {
@@ -971,19 +995,45 @@ button.ui-chip__body:hover {
 
 /* ══ misc ═════════════════════════════════════════════════════════════════ */
 
+/* A Copyable is BOUNDED BY ITS CONTAINER (acceptance D3, measured 2026-09-23 at 1440 and 1920). It
+   is an inline flex box, and an inline box sizes to its content: with no bound, a no-wrap 64-digit
+   sha made it 422px wide inside a 300px row, so it overflowed the row and the snapshot popover's
+   scroll box and carried its copy button to x=641–668, past a popover ending at x=554. That button
+   is where the popover puts focus as it opens, so focus landed on a control nobody could see
+   (`elementFromPoint` at its centre: the 3-D canvas). The value is the part that gives way — it
+   may shrink below its content (`min-inline-size: 0`) and the button may not (`flex: none`) — so
+   the button stays inside whatever the value's length. */
 .ui-copyable {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
   min-width: 0;
+  max-inline-size: 100%;
+}
+
+.ui-copyable > .ui-btn {
+  flex: none;
 }
 
 .ui-copyable__value {
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--fs-0);
   color: var(--text-muted);
+}
+
+/* UNBREAKABLE-TOKEN CONTAINER (see "wrapping" at the top of this file). A DIGEST is one token with
+   no `_ . / -` boundary a reader could accept — the sha256 is the case the wrapping doctrine names —
+   and it is longer than any column it is shown in. An ellipsis would hide a third of it, and a
+   digest is compared character by character, so it is shown WHOLE and takes the last-resort break
+   instead. The copy button beside it copies the unbroken value. */
+.ui-copyable--digest .ui-copyable__value {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .ui-copyable__value--mono {

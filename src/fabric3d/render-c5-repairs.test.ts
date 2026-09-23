@@ -19,6 +19,8 @@
  *     tier swap diff, AP close-up, torus shading and label placement were each checked on a real
  *     GPU in the running app.
  */
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
 import fabricJson from "../data/fabric.json";
@@ -161,5 +163,83 @@ describe("the camera rig", () => {
     expect(phantom).toBe(0);
     rig.dispose();
     canvas.remove();
+  });
+});
+
+/* ── capture-motion's motion-spike rule: a neighbourhood that did not change is not a reference ──
+ *
+ * Acceptance report 2026-09-23 (C5, item 15): the popping FAIL at light/high dolly frame 59 read
+ * "Infinityx" — `review/capture-motion.mjs` divided a frame's change rate by the median rate of its
+ * moving neighbours, and that median was 0 (sub-pixel damping-tail frames change no pixel). Every
+ * frame with any change at all then became an infinite spike, so the item could fail on ordinary
+ * motion. The rule is pinned here on synthetic sequences with known answers, both ways: the
+ * artefact must not fail, and a real pop must still fail, whether its neighbours moved or not. */
+describe("capture-motion: the motion-spike rule has a floor under its reference rate", () => {
+  interface Spike { frame: number; ratio: number | null }
+  interface MotionModule {
+    T: Record<string, number>;
+    analyseMotion(
+      seq: { id: string; what: string },
+      meta: unknown[],
+      L: Uint8Array[],
+      w: number,
+      h: number,
+      tier: string,
+    ): { motionSpikes: Spike[] };
+  }
+  const load = async (): Promise<MotionModule> =>
+    (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "capture-motion.mjs")).href)) as MotionModule;
+
+  const W = 10;
+  const H = 10;
+  /** Frames whose camera anchor moves `cam[t]` px on frame t and whose luma changes by 10 levels
+   *  on `changed[t]` pixels — so frame t's mean change is changed[t] * 10 / 100 levels. */
+  const sequence = (cam: number[], changed: number[]): { meta: unknown[]; L: Uint8Array[] } => {
+    const meta: unknown[] = [];
+    const L: Uint8Array[] = [];
+    let x = 100;
+    let prev = new Uint8Array(W * H).fill(100);
+    for (let t = 0; t < cam.length; t += 1) {
+      x += cam[t] ?? 0;
+      const cur = new Uint8Array(prev);
+      for (let p = 0; p < (changed[t] ?? 0); p += 1) cur[p] = cur[p] === 100 ? 110 : 100;
+      L.push(cur);
+      prev = cur;
+      meta.push({ i: t, ts: t * 16.7, cam: [x, 50], vis: "", hover: null, fade: null, aoSuspended: false, quality: "high", framesTimed: t, w: W, h: H });
+    }
+    return { meta, L };
+  };
+  const spikesOf = async (cam: number[], changed: number[]): Promise<Spike[]> => {
+    const { analyseMotion } = await load();
+    const { meta, L } = sequence(cam, changed);
+    return analyseMotion({ id: "known-answer", what: "synthetic" }, meta, L, W, H, "high").motionSpikes;
+  };
+  const at = (n: number, t: number, v: number, rest: number): number[] => Array.from({ length: n }, (_, k) => (k === t ? v : rest));
+
+  it("states the floor, as a rate a smooth move does not reach", async () => {
+    const { T } = await load();
+    expect(T.SPIKE_NORM_FLOOR, "the reference rate needs a stated floor").toBeGreaterThan(0);
+    expect(Number.isFinite(T.SPIKE_NORM_FLOOR)).toBe(true);
+  });
+
+  it("an ordinary camera step among sub-pixel frames that changed nothing is NOT a pop (the Infinityx artefact)", async () => {
+    /* Frame 7 moves 1 px and changes 3.0 levels on average: 3 levels per px, inside the smooth range.
+       Its eight neighbours crept 0.01 px and changed no pixel, so their median rate is exactly 0. */
+    const spikes = await spikesOf(at(14, 7, 1, 0.01), at(14, 7, 30, 0));
+    expect(spikes, JSON.stringify(spikes)).toEqual([]);
+  });
+
+  it("a real pop among ordinary motion still fails", async () => {
+    /* Every frame moves 0.5 px and changes 0.5 levels (1 level/px); frame 7 changes 6 levels. */
+    const spikes = await spikesOf(at(14, 7, 0.5, 0.5), at(14, 7, 60, 5));
+    expect(spikes.map((s) => s.frame)).toEqual([7]);
+  });
+
+  it("a real pop among near-still frames still fails, and its ratio is finite", async () => {
+    /* The neighbourhood that made the old rule divide by zero, with a genuine pop in it: frame 7
+       moves 0.02 px and changes 5 levels. */
+    const spikes = await spikesOf(at(14, 7, 0.02, 0.01), at(14, 7, 50, 0));
+    expect(spikes.map((s) => s.frame)).toEqual([7]);
+    expect(Number.isFinite(spikes[0]?.ratio ?? Number.NaN), "the reported ratio is against the floored reference").toBe(true);
   });
 });

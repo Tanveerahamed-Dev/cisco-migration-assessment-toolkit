@@ -195,3 +195,55 @@ describe("the path surface is reachable before a flow exists", () => {
     }
   });
 });
+
+/* ── a shared link carrying an invalid flow is refused in words, never traced (B1) ─────────────── */
+
+describe("a shared link with an invalid flow", () => {
+  /* Measured 2026-09-23 on the dev server: each of these restored and TRACED, rendering
+     "tcp 10.0.10.50 → 10.0.20.10:NaN" and "delivered". The whole shell is mounted from the URL — the
+     decoder, the rail's mount rule and the panel — because the defect lived in the seam between them. */
+  const LINKS: readonly [string, RegExp][] = [
+    ["10.0.10.50>10.0.20.10>tcp>abc", /destination port "abc" in the shared link is not a port number/],
+    ["10.0.10.50>10.0.20.10>tcp>70000", /destination port "70000" in the shared link is outside the port range/],
+    ["10.0.10.50>10.0.20.10>bogus>443", /protocol "bogus" in the shared link is not a protocol/],
+  ];
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 6; i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+  };
+
+  for (const [flow, named] of LINKS) {
+    for (const withSurface of [true, false]) {
+      it(`${flow}${withSurface ? "" : " (no s=path)"}: names the bad field and shows no verdict`, { timeout: 15000 }, async () => {
+        const restore = setViewport(1440);
+        try {
+          window.history.replaceState(null, "", `/?${withSurface ? "s=path&" : ""}flow=${encodeURIComponent(flow)}`);
+          const c = mount(<App />);
+          await settle();
+          const panel = c.querySelector("#rail-path");
+          expect(panel, "a link that carried a flow must open the path panel, even to refuse it").not.toBeNull();
+          /* The presets under the form are the snapshot's own example questions and legitimately carry
+             verdict words ("denied by list text"); everything else in the panel — the form, its errors,
+             any result, the live announcement — must carry none. */
+          const rest = panel!.cloneNode(true) as HTMLElement;
+          for (const p of rest.querySelectorAll(".pt-presets")) p.remove();
+          const text = (rest.textContent ?? "").replace(/\s+/g, " ");
+          expect(panel?.querySelector(".pt-result"), "a refused link must not render a result").toBeNull();
+          expect(panel?.querySelector(".hop")).toBeNull();
+          expect(text).not.toContain("NaN");
+          expect(text).not.toMatch(/\bdelivered\b|\bdenied\b/);
+          expect(text).toMatch(named);
+          expect(text).toContain("The flow in the shared link was not run");
+          expect(useInvestigation.getState().trace).toBeNull();
+          expect(useInvestigation.getState().flow).toBeNull();
+        } finally {
+          restore();
+          window.history.replaceState(null, "", "/");
+        }
+      });
+    }
+  }
+});

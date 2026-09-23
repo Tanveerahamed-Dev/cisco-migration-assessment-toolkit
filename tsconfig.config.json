@@ -1,0 +1,34 @@
+{
+  /* The two runner/bundler configs, type-checked for real (acceptance F1 scope, wave 3).
+   *
+   * `vite.config.ts` and `vitest.config.ts` were in NO type-checked project: `tsconfig.json`
+   * includes `src` and `tools`, `tsconfig.scripts.json` includes `tools/**\/*.mjs`. The cost was
+   * measured, not hypothetical: `vitest.config.ts` set `minWorkers: 1`, an option Vitest 4 removed
+   * (TS2769 under this project) and silently ignored, and `vite.config.ts` ended in `as any` to
+   * smuggle a dead `test` block past the Vite types.
+   *
+   * `src/core/scripts-typecheck.test.ts` builds this program (and every other `tsconfig*.json` at
+   * the package root) from inside the suite, and requires every authored TypeScript/JavaScript file
+   * in the tree to belong to one of them, so a new config or script cannot fall outside all of them.
+   * `review/*.mjs` is the one declared exclusion; the reason is in `tsconfig.scripts.json`.
+   */
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    /* vitest.config.ts imports "./vite.config.ts" WITH its extension (Vite's native config loader
+       asks for it); allowed only because nothing is emitted. */
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts", "vitest.config.ts"]
+}

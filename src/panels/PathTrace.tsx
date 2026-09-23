@@ -48,13 +48,19 @@ import { bandOfTrace, isDecidedOutcome, outcomeUndecidingGaps, undecidedOutcomeW
 import { blockingHop, counterexample, refusalOf, suggestedFlows, traceFlow, unobservedPolicyInputs, type SuggestedFlow } from "../forwarding/engine";
 import { ribIncompletenessSentence } from "../forwarding/rib-completeness";
 import {
+  FLOW_PROTOCOLS,
+  flowProblemSentence,
   formatIpv4,
   formatPrefix,
   hostAddressIn,
   parseInterfaceAddress,
   parseIpv4,
   prefixContains,
+  protocolCarriesPorts,
+  readFlow,
   wildcardSpecificity,
+  type FlowField,
+  type FlowProblem,
   type Prefix,
 } from "../forwarding/ip";
 import { IconSearch, IconSortNone } from "../ui/icons";
@@ -85,62 +91,57 @@ export interface FlowFormState {
 export interface FlowFormErrors {
   srcIp?: string;
   dstIp?: string;
+  protocol?: string;
   dstPort?: string;
 }
 
-const PORTED = (p: Flow["protocol"]): boolean => p === "tcp" || p === "udp";
+const PORTED = (p: Flow["protocol"]): boolean => protocolCarriesPorts(p);
+
+/** Which error slot a problem belongs in. A problem with the link's SHAPE is shown with the protocol. */
+const ERROR_SLOT: Readonly<Record<FlowField, keyof FlowFormErrors>> = {
+  srcIp: "srcIp",
+  dstIp: "dstIp",
+  protocol: "protocol",
+  dstPort: "dstPort",
+  srcPort: "dstPort",
+  flow: "protocol",
+};
 
 /**
- * Validate one address field and say precisely what is wrong with it.
+ * Turn the shared validator's problems into one message per field.
  *
- * "Invalid input" is not a message, it is a shrug. Each branch below names the thing that is wrong
- * and shows a real address from this snapshot, because the most common failure is not a typo — it
- * is a reader who does not yet know which addresses this collection can answer questions about.
+ * "Invalid input" is not a message, it is a shrug. Each message names the thing that is wrong and,
+ * for an address, shows a real address from this snapshot, because the most common failure is not
+ * a typo — it is a reader who does not yet know which addresses this collection can answer
+ * questions about. The WORDS are `describeFlowProblem`'s (src/forwarding/ip.ts), the one owner the
+ * engine's own refusal uses too; this only chooses the reader (`form` or `link`) and the example.
  */
-function addressError(label: "source" | "destination", raw: string): string | undefined {
-  const example = EXAMPLE_ADDRESSES[label];
-  const v = raw.trim();
-  if (v === "") return `Enter a ${label} IPv4 address, for example ${example}.`;
-  if (v.includes("/")) {
-    return `${v} names a subnet. This traces one flow, so enter a single address inside it — for example ${example}.`;
+function errorsOf(problems: readonly FlowProblem[], where: "form" | "link", protocol: string): FlowFormErrors {
+  const errors: FlowFormErrors = {};
+  for (const p of problems) {
+    const example =
+      p.field === "srcIp" ? EXAMPLE_ADDRESSES.source : p.field === "dstIp" ? EXAMPLE_ADDRESSES.destination : undefined;
+    const slot = ERROR_SLOT[p.field];
+    const words = flowProblemSentence(p, { where, protocol, ...(example === undefined ? {} : { example }) });
+    errors[slot] = errors[slot] === undefined ? words : `${errors[slot]} ${words}`;
   }
-  if (parseIpv4(v) === null) {
-    return `${v} is not an IPv4 address. Use four dot-separated numbers, each 0 to 255, for example ${example}.`;
-  }
-  return undefined;
+  return errors;
 }
 
+/**
+ * Validate the form through the ONE flow validator (`readFlow`, src/forwarding/ip.ts) that a shared
+ * link and the engine's entry check also go through — the form used to carry its own copy of the
+ * port rule, and the link carried none (2026-09-23 acceptance report, B1). The port field is hidden
+ * for a protocol with no ports, so what it still holds is not part of the reader's question.
+ */
 export function validateFlowForm(state: FlowFormState): { errors: FlowFormErrors; flow: Flow | null } {
-  const errors: FlowFormErrors = {};
-  const src = addressError("source", state.srcIp);
-  if (src) errors.srcIp = src;
-  const dst = addressError("destination", state.dstIp);
-  if (dst) errors.dstIp = dst;
-
-  const portText = state.dstPort.trim();
-  let dstPort: number | null = null;
-  if (PORTED(state.protocol) && portText !== "") {
-    const n = Number(portText);
-    if (!/^\d+$/.test(portText) || !Number.isInteger(n)) {
-      errors.dstPort = `${portText} is not a port number. Enter a whole number between 1 and 65535, or leave it empty.`;
-    } else if (n < 1 || n > 65535) {
-      errors.dstPort = `${n} is outside the port range. Enter a number between 1 and 65535.`;
-    } else {
-      dstPort = n;
-    }
-  }
-
-  if (Object.keys(errors).length > 0) return { errors, flow: null };
-  return {
-    errors,
-    flow: {
-      srcIp: state.srcIp.trim(),
-      dstIp: state.dstIp.trim(),
-      protocol: state.protocol,
-      dstPort: PORTED(state.protocol) ? dstPort : null,
-      srcPort: null,
-    },
-  };
+  const read = readFlow({
+    srcIp: state.srcIp,
+    dstIp: state.dstIp,
+    protocol: state.protocol,
+    dstPort: PORTED(state.protocol) ? state.dstPort : "",
+  });
+  return { errors: errorsOf(read.problems, "form", state.protocol), flow: read.flow };
 }
 
 /* ══ evidence derived once, at module load ═════════════════════════════════
@@ -954,6 +955,7 @@ export interface PathTraceProps {
 
 export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): ReactElement {
   const flow = useInvestigation((s) => s.flow);
+  const flowRefused = useInvestigation((s) => s.flowRefused);
   const trace = useInvestigation((s) => s.trace);
   const hopIndex = useInvestigation((s) => s.hopIndex);
   const setFlow = useInvestigation((s) => s.setFlow);
@@ -970,6 +972,8 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
     dstPort: "",
   });
   const [errors, setErrors] = useState<FlowFormErrors>({});
+  /** Whose question the errors are about: the reader's own typing, or a link they were sent. */
+  const [errorSource, setErrorSource] = useState<"form" | "link">("form");
   const [announce, setAnnounce] = useState("");
   const srcRef = useRef<HTMLInputElement>(null);
   const dstRef = useRef<HTMLInputElement>(null);
@@ -1030,7 +1034,24 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
       dstPort: flow.dstPort === null ? "" : String(flow.dstPort),
     });
     setErrors({});
+    setErrorSource("form");
   }, [flow]);
+
+  /* A link whose flow the validator refused (store.ts :: decodeInvestigation). It is shown back in
+     the form, field by field, with the refusal in words — the same place and shape the form's own
+     refusal takes — and NOTHING is traced: tracing it answered `tcp>abc` with "a tcp/NaN flow … is
+     delivered" (2026-09-23 acceptance report, B1). A protocol the select cannot hold is left at the
+     select's default; the error names the one the link carried. */
+  useEffect(() => {
+    if (flowRefused === null) return;
+    const f = flowRefused.fields;
+    const protocol = (FLOW_PROTOCOLS as readonly string[]).includes(f.protocol) ? (f.protocol as Flow["protocol"]) : "tcp";
+    setForm({ srcIp: f.srcIp, dstIp: f.dstIp, protocol, dstPort: f.dstPort });
+    const found = errorsOf(flowRefused.problems, "link", f.protocol);
+    setErrors(found);
+    setErrorSource("link");
+    setAnnounce(`The flow in the shared link was not run. ${Object.values(found).join(" ")}`);
+  }, [flowRefused]);
 
 
   /* ══ the re-aim commit is SPLIT — acceptance E2/E3 ═══════════════════════════════════════
@@ -1116,13 +1137,14 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
       e.preventDefault();
       const { errors: found, flow: built } = validateFlowForm(form);
       setErrors(found);
+      setErrorSource("form");
       if (built === null) {
         /* Focus the first field that is wrong. An error message the reader has to hunt for is an
            error message they will not read. */
         const target = found.srcIp ? srcRef.current : found.dstIp ? dstRef.current : portRef.current;
         target?.focus();
         setAnnounce(
-          `The flow was not run. ${[found.srcIp, found.dstIp, found.dstPort].filter(Boolean).join(" ")}`,
+          `The flow was not run. ${[found.srcIp, found.dstIp, found.protocol, found.dstPort].filter(Boolean).join(" ")}`,
         );
         return;
       }
@@ -1313,7 +1335,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
     return deferPastPaint(landOnAnswer);
   }, [shownKey, blockingIndex, runSeq]);
 
-  const errorSummary = [errors.srcIp, errors.dstIp, errors.dstPort].filter(Boolean);
+  const errorSummary = [errors.srcIp, errors.dstIp, errors.protocol, errors.dstPort].filter(Boolean);
 
   return (
     <section
@@ -1404,7 +1426,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
           {errorSummary.length > 0 ? (
             <div className="pt-form__errors" role="alert">
               <p>
-                {`The flow was not run. ${errorSummary.length} field${errorSummary.length === 1 ? "" : "s"} need${errorSummary.length === 1 ? "s" : ""} attention:`}
+                {`${errorSource === "link" ? "The flow in the shared link was not run" : "The flow was not run"}. ${errorSummary.length} field${errorSummary.length === 1 ? "" : "s"} need${errorSummary.length === 1 ? "s" : ""} attention:`}
               </p>
               <ul>
                 {errorSummary.map((m) => (

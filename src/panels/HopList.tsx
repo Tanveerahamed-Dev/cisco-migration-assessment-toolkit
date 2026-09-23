@@ -30,6 +30,7 @@ import {
   bandOfHopIn,
   hopUndecided,
   hopUndecidedGaps,
+  notApplicableReason,
   outcomeUndecidingGaps,
   type ClaimBand,
   type HopUndecided,
@@ -410,6 +411,49 @@ function Fact({
   );
 }
 
+/**
+ * One field of a route RECORD, rendered through the owner of "is this null structural?"
+ * (`claims.ts :: notApplicableReason`) before the not-observed treatment is allowed to claim it.
+ *
+ * The Inspector read that owner and this list did not, so the same connected route's null AD was
+ * "0 — a connected route's administrative distance by definition" in one and "not observed" in the
+ * other (2026-09-23 acceptance report, B1 item 14). Every route-record field this list renders goes
+ * through here — the winner's and every beaten alternative's — so the two surfaces cannot disagree
+ * about any field, not only the one that was reported. `data-route-field` / `data-route-cite` name
+ * the record and field, which is what lets a test compare this cell to the Inspector's.
+ */
+function RouteField<K extends "nextHop" | "adminDistance">({
+  route,
+  field,
+  what,
+  why,
+  mono = false,
+}: {
+  route: RouteEntry;
+  field: K;
+  what: string;
+  why?: string;
+  mono?: boolean;
+}): ReactElement {
+  const value = route[field];
+  const na = value === null ? notApplicableReason(route, field) : null;
+  return (
+    <span className="hop__route-field" data-route-field={field} data-route-cite={route.cite}>
+      {na !== null ? (
+        <span className="hop__note" data-not-applicable="true">
+          {na}
+        </span>
+      ) : (
+        orNotObserved(value, (v) => <span className={mono ? "hop__mono" : undefined}>{String(v)}</span>, {
+          what,
+          ...(why === undefined ? {} : { why }),
+          compact: true,
+        })
+      )}
+    </span>
+  );
+}
+
 function RouteFact({
   route,
   decided,
@@ -424,29 +468,21 @@ function RouteFact({
       <span className="hop__mono">{route.prefix}</span>
       {/* A connected or local route HAS no next hop — the prefix is on an interface. Rendering
           "not observed" there would manufacture a gap in evidence that is not missing, which is
-          the mirror image of rendering absence as health and just as wrong. Every other route
-          source is expected to name one, so a null there is a real absence. */}
-      {route.source === "connected" || route.source === "local" ? (
-        <span className="hop__note">directly connected — no next-hop address</span>
-      ) : (
-        <>
-          <span className="hop__sep">via</span>
-          {orNotObserved(route.nextHop, (v) => <span className="hop__mono">{v}</span>, {
-            what: "next-hop address",
-            why: "the collected route names no next-hop address",
-            compact: true,
-          })}
-        </>
-      )}
+          the mirror image of rendering absence as health and just as wrong. That judgement belongs
+          to `notApplicableReason`, which RouteField consults; every other route source is expected
+          to name a next hop, so a null there is a real absence. */}
+      {route.nextHop === null && notApplicableReason(route, "nextHop") !== null ? null : <span className="hop__sep">via</span>}
+      <RouteField route={route} field="nextHop" what="next-hop address" why="the collected route names no next-hop address" mono />
       <span className="hop__meta">
         {orNotObserved(route.source, (v) => <span>{v}</span>, { what: "route source", compact: true })}
         <span className="hop__sep">·</span>
         <span className="hop__key-inline">AD</span>
-        {orNotObserved(route.adminDistance, (v) => <span>{v}</span>, {
-          what: "administrative distance",
-          why: "the collected routing table did not record a distance for this entry",
-          compact: true,
-        })}
+        <RouteField
+          route={route}
+          field="adminDistance"
+          what="administrative distance"
+          why="the collected routing table did not record a distance for this entry"
+        />
       </span>
       <CiteLink cite={route.cite} onOpen={onOpenCite} />
     </Fact>
@@ -562,11 +598,7 @@ function Alternatives({
             <td className="hop__mono" role="cell" data-col="Prefix">{r.prefix}</td>
             <td role="cell" data-col="Source">{orNotObserved(r.source, undefined, { what: "route source", compact: true })}</td>
             <td className="hop__mono" role="cell" data-col="Next hop">
-              {r.source === "connected" || r.source === "local" ? (
-                <span className="hop__note">on-link</span>
-              ) : (
-                orNotObserved(r.nextHop, undefined, { what: "next-hop address", compact: true })
-              )}
+              <RouteField route={r} field="nextHop" what="next-hop address" />
             </td>
             <td className="hop__mono" role="cell" data-col="Out">
               {(() => {
@@ -597,7 +629,7 @@ function Alternatives({
               })()}
             </td>
             <td role="cell" data-col="AD">
-              {orNotObserved(r.adminDistance, undefined, { what: "administrative distance", compact: true })}
+              <RouteField route={r} field="adminDistance" what="administrative distance" />
             </td>
             <td role="cell" data-col="Evidence">
               <CiteLink cite={r.cite} onOpen={onOpenCite} />

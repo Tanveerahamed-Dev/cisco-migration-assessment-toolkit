@@ -83,6 +83,9 @@ describe("the compiled ACL model preserves the producer's own verdicts", () => {
   });
 
   it("every line that the producer marked unevaluable says WHY", () => {
+    /* The loop below asserts only inside the `unevaluable` branch, so the branch's population is
+       pinned first: a snapshot with no unevaluable line would otherwise pass having checked nothing. */
+    expect(allLines().filter(({ l }) => l.unevaluable === true).length, "unevaluable lines in the snapshot").toBeGreaterThan(0);
     for (const { host, acl, l } of allLines()) {
       if (l.unevaluable === true) {
         const why = [
@@ -104,20 +107,34 @@ describe("the compiled ACL model preserves the producer's own verdicts", () => {
        line silently stops firing and the flow falls through to a deny — a definite "denied" for a
        flow the configuration explicitly permits. Whatever else is true, a null port value must be
        visible in the model rather than erased. */
+    /* EVERY port match is judged, not only the null ones: the first version asserted inside
+       `if (hasNull)` alone, and this snapshot carries no null port value, so it ran, passed and made
+       ZERO assertions (the runtime assertion guard, src/test-setup.ts, found it). Each port now
+       either carries a readable value or is marked unevaluable — the property itself, stated for
+       the whole population — and the population is pinned so an empty one cannot pass. */
+    let ports = 0;
+    let nullPorts = 0;
     for (const { host, acl, l } of allLines()) {
       for (const [side, p] of [
         ["sport", l.sport],
         ["dport", l.dport],
       ] as const) {
         if (p === null) continue;
+        ports += 1;
         const hasNull = p.val === null || p.val === undefined || ("val2" in p && p.val2 === null);
-        if (hasNull) {
-          expect(
-            l.unevaluable,
-            `${host}.${acl}[${l.index}] ${side} has a null port value but is not marked unevaluable`,
-          ).toBe(true);
-        }
+        if (hasNull) nullPorts += 1;
+        expect(
+          hasNull ? l.unevaluable === true : p.val !== null && p.val !== undefined,
+          hasNull
+            ? `${host}.${acl}[${l.index}] ${side} has a null port value but is not marked unevaluable`
+            : `${host}.${acl}[${l.index}] ${side} has no port value`,
+        ).toBe(true);
       }
     }
+    /* Known answer for this snapshot (fabric.json is byte-pinned by provenance.test.ts): six port
+       matches, none with a null value. So on THIS data the null branch is empty, and that is now a
+       stated, checked fact instead of a silent pass; a recompiled snapshot that changes it fails
+       here and has to be looked at. */
+    expect({ ports, nullPorts }, "port matches in the compiled snapshot").toEqual({ ports: 6, nullPorts: 0 });
   });
 });

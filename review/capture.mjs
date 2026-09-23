@@ -24,7 +24,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SHOTS = resolve(HERE, "shots");
+/* `ATLAS_SHOTS` moves the output root. Two concurrent `twice` runs sharing review/shots/_twice each
+   `rmSync` the other's frames mid-run (measured 2026-09-23: run4 vanished, then the compare died on
+   ENOENT for run2), so a run that must not be disturbed takes a root of its own. */
+const SHOTS = process.env.ATLAS_SHOTS ? resolve(process.env.ATLAS_SHOTS) : resolve(HERE, "shots");
 /* The default is the PREVIEW build (`npm run preview`, :4181), not the dev server (:4180). The two
    render the same state differently — 27 of 32 frames differed in bytes between them (audit F6,
    2026-09-21) — so a frame taken from the dev server does not show what ships. Whatever server is
@@ -696,6 +699,85 @@ function readTabOverflow() {
   return out;
 }
 const READ_TAB_OVERFLOW = `(${readTabOverflow.toString()})()`;
+
+/**
+ * C2: a form that begins on screen ends on screen. Measured 2026-09-23 (acceptance report, C2): at
+ * 1440x900 on `?s=path` the path panel's scroll port was 170 px (84-254) while Destination IP,
+ * Protocol, Port and "Trace this flow" (463-491) all lay below it, and at 1920 the port ended at 466
+ * with the submit spanning 449-477 — cut in half. `readTextFidelity` passed every state, correctly by
+ * its own rule: a control below a scroll port is scrolled-away content, which it deliberately does
+ * not call clipped. That rule is right for a list and wrong for a form.
+ *
+ * A form is ONE task. So, per form a reader can see (`<form>`, `[role=form]`, `[role=search]`):
+ * each rendered control's rect is intersected with the window it can be seen through — the viewport
+ * and EVERY ancestor that hides overflow, scroll containers included (here, scrolled-away IS the
+ * defect). If any control of the form is (even partly) in that window, every control must be wholly
+ * in it. A form scrolled entirely away (a trace result landed below it) is not a finding: nothing of
+ * the task is on screen to be half-done. Self-contained; serialised into the page.
+ */
+function readFormReach() {
+  const out = [];
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const seen = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) return false;
+      if (/inset\(50%\)/.test(cs.clipPath) || cs.clip === "rect(0px, 0px, 0px, 0px)") return false;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1;
+  };
+  const windowOf = (el) => {
+    let l = 0;
+    let r = vw;
+    let t = 0;
+    let b = vh;
+    let by = "the viewport";
+    for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+      const cs = getComputedStyle(a);
+      if (cs.display === "inline" || cs.display === "contents") continue;
+      const hx = cs.overflowX !== "visible";
+      const hy = cs.overflowY !== "visible";
+      if (!hx && !hy) continue;
+      const ab = a.getBoundingClientRect();
+      if (hx) {
+        l = Math.max(l, ab.left + a.clientLeft);
+        r = Math.min(r, ab.left + a.clientLeft + a.clientWidth);
+      }
+      if (hy) {
+        const nt = ab.top + a.clientTop;
+        const nb = ab.top + a.clientTop + a.clientHeight;
+        if (nt > t || nb < b) by = `${a.tagName.toLowerCase()}${a.id ? "#" + a.id : ""}${a.classList.length ? "." + [...a.classList].slice(0, 2).join(".") : ""}`;
+        t = Math.max(t, nt);
+        b = Math.min(b, nb);
+      }
+    }
+    return { l, r, t, b, by };
+  };
+  const nameOf = (c) =>
+    (c.getAttribute("aria-label") || (c.labels && c.labels[0] ? c.labels[0].textContent : "") || c.textContent || c.getAttribute("placeholder") || c.tagName)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 32);
+  for (const form of document.querySelectorAll('form, [role="form"], [role="search"]')) {
+    if (!seen(form)) continue;
+    const controls = [...form.querySelectorAll('input:not([type="hidden"]), select, textarea, button, [role="button"], [role="combobox"]')].filter(seen);
+    if (controls.length === 0) continue;
+    const placed = controls.map((c) => ({ c, box: c.getBoundingClientRect(), win: windowOf(c) }));
+    const touches = (p) => Math.min(p.box.right, p.win.r) - Math.max(p.box.left, p.win.l) > 1 && Math.min(p.box.bottom, p.win.b) - Math.max(p.box.top, p.win.t) > 1;
+    if (!placed.some(touches)) continue;
+    const outside = placed.filter((p) => p.box.left < p.win.l - 0.5 || p.box.right > p.win.r + 0.5 || p.box.top < p.win.t - 0.5 || p.box.bottom > p.win.b + 0.5);
+    if (outside.length === 0) continue;
+    const label = form.getAttribute("aria-label") || form.className || form.id || form.tagName.toLowerCase();
+    out.push(
+      `form "${String(label).slice(0, 40)}" is split by its scroll port: ${outside.length} of ${placed.length} controls lie outside the window they are seen through — ` +
+        outside.map((p) => `"${nameOf(p.c)}" y${Math.round(p.box.top)}-${Math.round(p.box.bottom)} vs ${p.win.by} y${Math.round(p.win.t)}-${Math.round(p.win.b)}`).join(", "),
+    );
+  }
+  return out;
+}
+const READ_FORM_REACH = `(${readFormReach.toString()})()`;
 
 /**
  * C2: a licence to break a token between two letters is granted in ONE kind of place only.
@@ -1542,6 +1624,7 @@ async function checkText() {
         let coverage = [];
         let contrast = [];
         let tabOverflow = [];
+        let formReach = [];
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             await page.goto(url, { waitUntil: "networkidle" });
@@ -1567,6 +1650,7 @@ async function checkText() {
             findings = await page.evaluate(READ_TEXT_FIDELITY);
             coverage = await page.evaluate(READ_COVERAGE_VISIBILITY);
             tabOverflow = await page.evaluate(READ_TAB_OVERFLOW);
+            formReach = await page.evaluate(READ_FORM_REACH);
             if (st.contrastOf) {
               contrast = await page.evaluate(`(${readContrast.toString()})(${JSON.stringify(st.contrastOf)})`);
             }
@@ -1576,7 +1660,7 @@ async function checkText() {
           }
         }
         checked++;
-        const problems = [...describeTextFindings(findings), ...coverage.map((c) => `coverage "${c.label}" ${c.problem}`), ...tabOverflow];
+        const problems = [...describeTextFindings(findings), ...coverage.map((c) => `coverage "${c.label}" ${c.problem}`), ...tabOverflow, ...formReach];
         for (const c of contrast) {
           if (c.error) problems.push(`contrast ${c.selector}: ${c.error}`);
           else if (c.backgroundImage) problems.push(`contrast "${c.text}" not measured: background image on ${c.backgroundImage}`);
@@ -1606,7 +1690,7 @@ async function checkText() {
   const live = await selfTest();
   const verdict = checked === 0 ? "NOT ESTABLISHED" : failures.length || !licences ? "FAIL" : !live ? "NOT ESTABLISHED" : "PASS";
   console.log(
-    `${verdict}  text  ${checked - failures.length} of ${checked} states free of clipped/broken text, with coverage wholly visible and no tab hidden off its strip` +
+    `${verdict}  text  ${checked - failures.length} of ${checked} states free of clipped/broken text, with coverage wholly visible, no tab hidden off its strip and no form split by its scroll port` +
       `; wrap licences ${licences ? "all justified" : "UNJUSTIFIED (above)"}; detectors ${live ? "live on every known case" : "NOT LIVE (above)"}`,
   );
   if (verdict !== "PASS") process.exitCode = 3;
@@ -1721,6 +1805,45 @@ const SELFTEST_TAB_CASES = [
   },
 ];
 
+/* Forms in scroll ports, with a known answer each. The first is the 2026-09-23 path panel in
+   miniature (a 120px port over a form whose later fields and submit lie below it); the second is the
+   1920 case (the submit cut in half by the port's edge); the third, a form clipped by a non-scrolling
+   pane. The negatives: a form wholly inside its port, a form scrolled ENTIRELY out of view (nothing of
+   the task on screen), and a long list whose rows run past the port (a list, not a form). */
+const FIELD = "<label style='display:block;height:40px'>F <input style='height:24px'></label>";
+const SELFTEST_FORM_CASES = [
+  {
+    name: "a form whose later fields and submit lie below its scroll port is split",
+    html: `<div style="height:120px;overflow-y:auto"><form aria-label="Fixture">${FIELD.repeat(5)}<button>Trace this flow</button></form></div>`,
+    want: /form "Fixture" is split by its scroll port: 3 of 6 controls .*"Trace this flow"/,
+  },
+  {
+    name: "a submit cut in half by the port's edge is split",
+    html: `<div style="height:100px;overflow-y:auto"><form aria-label="Fixture">${FIELD.repeat(2)}<button style="height:30px">Go</button></form></div>`,
+    want: /form "Fixture" is split by its scroll port: 1 of 3 controls lie outside the window they are seen through — "Go"/,
+  },
+  {
+    name: "a form clipped by a pane that does not scroll is split",
+    html: `<div style="height:100px;overflow:hidden"><form aria-label="Fixture">${FIELD.repeat(4)}<button>Go</button></form></div>`,
+    want: /form "Fixture" is split/,
+  },
+  {
+    name: "a form wholly inside its scroll port is not a finding",
+    html: `<div style="height:400px;overflow-y:auto"><form aria-label="Fixture">${FIELD.repeat(5)}<button>Go</button></form></div>`,
+    want: null,
+  },
+  {
+    name: "a form scrolled wholly out of view is not a finding (nothing of the task is on screen)",
+    html: `<div style="height:100px;overflow-y:auto"><div style="height:300px"></div><form aria-label="Fixture">${FIELD.repeat(3)}<button>Go</button></form></div>`,
+    want: null,
+  },
+  {
+    name: "a list of buttons running past its port is a list, not a form",
+    html: `<div style="height:100px;overflow-y:auto"><ul>${"<li><button>Row</button></li>".repeat(20)}</ul></div>`,
+    want: null,
+  },
+];
+
 /* Stylesheets and modules with a known set of licences. Each BAD marker is a line the scan must
    name; everything else must pass. */
 const SELFTEST_WRAP_FIXTURES = {
@@ -1776,6 +1899,15 @@ async function selfTest() {
       problems.push(`${c.name}: expected ${c.want === null ? "no tab finding" : c.want}, got ${said}`);
     }
   }
+  for (const c of SELFTEST_FORM_CASES) {
+    await page.setContent(shell(c.html));
+    const findings = await page.evaluate(READ_FORM_REACH);
+    ran++;
+    const said = findings.join(" | ") || "nothing";
+    if (c.want === null ? findings.length > 0 : !findings.some((f) => c.want.test(f))) {
+      problems.push(`${c.name}: expected ${c.want === null ? "no form finding" : c.want}, got ${said}`);
+    }
+  }
   await browser.close();
 
   const dir = mkdtempSync(join(tmpdir(), "atlas-wrap-selftest-"));
@@ -1802,7 +1934,7 @@ async function selfTest() {
 
   for (const p of problems) console.log(`  BAD  ${p}`);
   const verdict = ran === 0 ? "NOT ESTABLISHED" : problems.length ? "FAIL" : "PASS";
-  console.log(`${verdict}  selftest  ${ran - problems.length} of ${ran} detector cases gave their known answer (text breaks, tab overflow, wrap licences)`);
+  console.log(`${verdict}  selftest  ${ran - problems.length} of ${ran} detector cases gave their known answer (text breaks, tab overflow, split forms, wrap licences)`);
   return verdict === "PASS";
 }
 

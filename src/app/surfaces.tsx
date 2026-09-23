@@ -291,7 +291,65 @@ export function RailA({ hidden = false, onOpenCite }: RailAProps): ReactElement 
     writeSplit(v);
   }, []);
 
-  const hasPath = flow !== null || surface === "path";
+  /* A link whose flow was REFUSED still asked a path question; its refusal is the answer, and it can
+     only be read if the panel is there (2026-09-23, B1). */
+  const flowRefused = useInvestigation((s) => s.flowRefused);
+  const hasPath = flow !== null || flowRefused !== null || surface === "path";
+
+  /* ON THE PATH SURFACE, THE PATH PANEL GETS ITS FORM'S HEIGHT — acceptance C2, 2026-09-23. The
+     shell gave the panel only its 10rem floor (the queue's min-content floor is resolved first),
+     which at 1440x900 was a 170 px port with Destination, Protocol, Port and "Trace this flow" all
+     below it, and at 1920x1080 cut the submit in half. So while the reader is ON the path surface —
+     the one they chose — the path track's floor is its flow form's own height: tab row, fields and
+     submit, whole. MEASURED here, from the rendered form, because it rewraps with the rail's width
+     and grows with the errors it shows; a restated length is the constant that drifts (see the
+     queue-floor history in shell.css). The same floor stays once a trace answers, so the answer is
+     not then squeezed into 10rem either. The queue keeps its own floor, and the rail scrolls
+     internally when both do not fit — which it already did on the short rungs — so every queue row
+     stays reachable. On any OTHER surface with a flow open, the queue is what the reader is working
+     in, and the path panel keeps the 10rem floor (review/layout-guard.mjs invariant 2 holds that).
+     The splitter is untouched: its value is still the path's share above the floor. Guarded by
+     `node review/capture.mjs text`, which fails on any form split by its scroll port. */
+  const pathSlotRef = useRef<HTMLDivElement | null>(null);
+  const pathLead = hasPath && surface === "path";
+  const [formNeed, setFormNeed] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!pathLead) {
+      setFormNeed(null);
+      return;
+    }
+    const slot = pathSlotRef.current;
+    const form = slot?.querySelector<HTMLElement>("form");
+    if (!slot || !form) return;
+    const measure = (): void => {
+      const box = form.getBoundingClientRect();
+      /* A hidden tab panel (the intent mode) lays the form out at zero. The floor it last measured
+         is kept, so switching tabs does not resize the rail under the reader. */
+      if (box.height <= 0) return;
+      /* Everything between the form's bottom edge and the slot's: the form's own scroller's end
+         padding and the slot's (the cut-row scrim's run-out), so the submit is not flush with a cut. */
+      const panel = form.closest<HTMLElement>(".pt-panel");
+      const scrolled = panel?.scrollTop ?? 0;
+      const padOf = (el: HTMLElement | null): number => (el === null ? 0 : Number.parseFloat(getComputedStyle(el).paddingBottom) || 0);
+      setFormNeed(Math.ceil(box.bottom - slot.getBoundingClientRect().top + scrolled + padOf(panel) + padOf(slot)));
+    };
+    measure();
+    if (typeof ResizeObserver !== "function") return;
+    /* The form (its own height: errors, the port field appearing) and the slot (its width, which
+       rewraps the form). Setting the floor changes the slot's HEIGHT only, which moves neither the
+       form nor the slot's top, so a measurement never feeds itself. */
+    const ro = new ResizeObserver(measure);
+    ro.observe(form);
+    ro.observe(slot);
+    return () => ro.disconnect();
+  }, [pathLead]);
+
+  const railStyle: CSSProperties | undefined = hasPath
+    ? ({
+        ["--rail-a-split" as string]: `${split}%`,
+        ...(pathLead && formNeed !== null ? { ["--rail-a-path-need" as string]: `${formNeed}px` } : {}),
+      } as CSSProperties)
+    : undefined;
 
   return (
     <nav
@@ -299,12 +357,13 @@ export function RailA({ hidden = false, onOpenCite }: RailAProps): ReactElement 
       className="rail rail--a"
       aria-label="Investigation queue and path"
       data-split={hasPath ? "true" : undefined}
-      style={hasPath ? ({ ["--rail-a-split" as string]: `${split}%` } as CSSProperties) : undefined}
+      data-path-lead={pathLead && formNeed !== null ? "form" : undefined}
+      style={railStyle}
       hidden={hidden}
     >
       {hasPath ? (
         <>
-          <div className="rail__slot scroll-y">
+          <div className="rail__slot scroll-y" ref={pathSlotRef}>
             <ErrorBoundary surface="The path panel">
               <PathTrace onOpenCite={onOpenCite} />
             </ErrorBoundary>

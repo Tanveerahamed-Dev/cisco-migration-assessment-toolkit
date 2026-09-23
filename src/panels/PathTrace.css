@@ -314,10 +314,17 @@
   background-color: var(--surface-1);
 }
 
+/* The header WRAPS rather than squeezing. The verdict badge carries a sentence-length word on an
+   undecided hop ("denied by ACL PROTECT_SERVERS — reached by routing from an incomplete table"), and
+   as a `flex: none; nowrap` item it took the whole row: `.hop__host` was squeezed to 0 px — a verdict
+   with no place attached — and the row overflowed by 174-214 px (2026-09-23, A2). Now the host keeps
+   its name, and a badge that does not fit beside it moves to its own line and wraps at its spaces
+   there. Guarded by review/layout-guard.mjs invariant 4. */
 .hop__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-1) var(--sp-2);
   width: 100%;
   min-height: var(--row-hop);
   padding: var(--sp-1) var(--sp-2);
@@ -359,10 +366,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Its own width first; it shrinks (and ellipsises) only when the host name alone is wider than
+     the whole header, never to make room for the badge — the badge wraps instead. */
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .hop__head .verdict {
   margin-left: auto;
+  /* May shrink to the row and wrap its word at spaces on a line of its own; never wider than the
+     header. `white-space: normal` breaks at spaces only — an identifier inside the word is not split. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
 }
 
 /* ── the verdict badge: glyph + word + colour, three channels ─────────────── */

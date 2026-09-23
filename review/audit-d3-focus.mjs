@@ -38,11 +38,46 @@
  * driven at all — "0 inspector tabs" once printed as an INFO line under an exit 0, which proved
  * nothing about the path it was written to examine.
  *
+ * FOCUS MUST ALSO BE SEEN (acceptance D3, "focus is always visible"; WCAG 2.2 SC 2.4.7). Until
+ * 2026-09-23 this script checked only where focus RETURNED, and passed 210 of 210 while two focus
+ * stops it drove every run were invisible: the device pane's tab panel, whose 2 px outline sat
+ * outside the `.dp__body` scroll box and was clipped whole ("0 pixels at >=3:1"), and the snapshot
+ * popover's first control, "Copy the snapshot sha256", which the unwrapped 64-digit sha pushed to
+ * x=641–668 outside a popover ending at x=554 — `elementFromPoint` at its centre was the 3-D canvas.
+ * So EVERY focus stop the script reaches — the control a surface moves focus to as it opens, the
+ * next control after Tab, a tab after an arrow, a tab panel entered with Tab (APG: the panel is a
+ * tab stop), a field, a grid cell, and the element focus returns to — is now also checked for
+ * VISIBILITY, in two independent ways:
+ *   - HIT TEST: `elementFromPoint` at the centre of the element's VISIBLE part (its box intersected
+ *     with the viewport and with every ancestor that clips it) must be the element or a descendant.
+ *     An element with no visible part fails outright.
+ *   - INDICATOR PIXELS: the region around the element (and around any ancestor that draws the ring
+ *     for it, the `:focus-within` query-bar pattern) is photographed focused, then again with the
+ *     outline removed from the element and those ancestors (and the element's own box-shadow), all
+ *     by inline `!important` style so no stylesheet can override it. A pixel counts as indicator
+ *     only when its two colours differ by at least 3:1 — the non-text contrast floor this project
+ *     applies (D4), measured as the change of contrast SC 2.4.13 defines. Only what is PAINTED can
+ *     differ, so an outline clipped by a scroller, or painted off screen, or covered by another
+ *     layer, counts for nothing. The floor is HALF the perimeter of the element's visible box, in
+ *     CSS pixels: a 1 px line along at least half of what the reader can see. Why half and not the
+ *     whole perimeter, MEASURED 2026-09-23: the findings grid's focused 24x17 severity cell draws
+ *     a plainly visible 2 px inset ring, yet only 66 of its pixels change by >=3:1 against a full
+ *     perimeter of 82 — the box sits at y=421.19, so each horizontal edge keeps one full-strength
+ *     row and one antialiased row, the rounded corners lose more, and an inset ring is shorter
+ *     than the box it is inside. A painted 2 px ring gives ~0.8 of the perimeter; a ring clipped
+ *     whole gives 0; one clipped on three sides of four gives well under half. It is a floor for
+ *     "visible" (SC 2.4.7), not a grade against the 2 px area SC 2.4.13 asks for.
+ *   - KEYBOARD MODALITY: a stop the script reaches with `focus()` after a mouse click would not
+ *     match `:focus-visible` — but a keyboard reader reaches it with Tab, and Chromium re-evaluates
+ *     on the next key. Shift (which nothing in the app binds on its own) is pressed before measuring.
+ * A stop that is not visible fails the run exactly as a return to <body> does.
+ *
  *   node review/audit-d3-focus.mjs                       # the production preview on :4181
  *   ATLAS_URL=http://localhost:4180 node review/audit-d3-focus.mjs
  *
- * Exit 0: every case driven and none on BODY. Exit 1: a case landed on BODY or did not run, or a
- * required kind was never driven. Exit 2: nothing was driven at all.
+ * Exit 0: every case driven, none on BODY, and every focus stop visible. Exit 1: a case landed on
+ * BODY or did not run, a focus stop was not visible, or a required kind was never driven or never
+ * checked for visibility. Exit 2: nothing was driven at all.
  */
 import { chromium } from "@playwright/test";
 
@@ -50,6 +85,7 @@ const APP = process.env["ATLAS_URL"] ?? "http://localhost:4181";
 const SETTLE_MS = 1000;
 const VIEWPORTS = [
   [1920, 1080, "wide"],
+  [1440, 900, "desktop"], // the acceptance review's 1440 measurement of the snapshot popover
   [1000, 800, "compact"], // below the header's 1024px breakpoint: the "More" popover exists
 ];
 
@@ -69,6 +105,11 @@ const notDriven = (surface, scenario, why) => {
   results.push({ surface, scenario, ok: false, why: `NOT DRIVEN: ${why}` });
   console.log(`FAIL  ${surface} :: ${scenario} -> NOT DRIVEN (${why})`);
 };
+
+/** @type {{stop: string, surface: string, scenario: string, ok: boolean, why: string}[]} */
+const visResults = [];
+/** stop kind -> number of focus stops checked for visibility. */
+const visChecked = new Map();
 
 /* ── in-page helpers (serialised into the browser) ─────────────────────────── */
 
@@ -131,11 +172,198 @@ const visibleDialogs = () =>
     (el) => el.getClientRects().length > 0,
   ).length;
 
+/* ── focus visibility (serialised into the browser) ────────────────────────── */
+
+/**
+ * Where the focused element can be seen. Its box is intersected with the viewport and with the
+ * padding box of every ancestor that CLIPS it — an ancestor whose overflow is not `visible`, taken
+ * along the containing-block chain, so a `position: fixed` popover portalled under <body> is not
+ * "clipped" by a scroller it merely follows in the DOM. Returns the visible rect, the hit test at
+ * its centre, and the region the indicator can occupy (the element's box and that of any ancestor
+ * drawing an outline for it, grown by the outline's reach), clamped to the viewport.
+ */
+const focusGeometry = () => {
+  const a = document.activeElement;
+  if (a === null || a === document.body || a === document.documentElement) return null;
+  const name = (a.getAttribute("aria-label") ?? (a.textContent ?? "")).trim().replace(/\s+/g, " ").slice(0, 40);
+  const cls = typeof a.className === "string" ? a.className.split(" ")[0] : "";
+  const desc = `${a.tagName}${a.id ? `#${a.id}` : ""}${cls ? `.${cls}` : ""} "${name}"`;
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  const meet = (p, q) => ({ l: Math.max(p.l, q.l), t: Math.max(p.t, q.t), r: Math.min(p.r, q.r), b: Math.min(p.b, q.b) });
+  const box = (r) => ({ l: r.left, t: r.top, r: r.right, b: r.bottom });
+  let clip = { l: 0, t: 0, r: vw, b: vh };
+  const clippers = [];
+  /* The containing-block walk: a fixed box escapes every ancestor that does not establish a
+     containing block for it; an absolute box escapes every static ancestor. */
+  const containsFixed = (cs) =>
+    cs.transform !== "none" || cs.filter !== "none" || cs.perspective !== "none" || /paint|layout|strict|content/.test(cs.contain);
+  let pos = getComputedStyle(a).position;
+  for (let el = a.parentElement; el !== null && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    const applies = pos === "fixed" ? containsFixed(cs) : pos === "absolute" ? cs.position !== "static" || containsFixed(cs) : true;
+    if (!applies) continue;
+    if (cs.overflowX !== "visible" || cs.overflowY !== "visible") {
+      const r = el.getBoundingClientRect();
+      const l = r.left + el.clientLeft;
+      const t = r.top + el.clientTop;
+      clip = meet(clip, { l, t, r: l + el.clientWidth, b: t + el.clientHeight });
+      const c = typeof el.className === "string" ? el.className.split(" ")[0] : "";
+      clippers.push(`${el.tagName.toLowerCase()}${c ? `.${c}` : ""}`);
+    }
+    pos = cs.position;
+  }
+  const vis = meet(box(a.getBoundingClientRect()), clip);
+  const w = vis.r - vis.l;
+  const h = vis.b - vis.t;
+  if (w < 1 || h < 1) return { desc, visible: false, clippers, perimeter: 0 };
+  const cx = (vis.l + vis.r) / 2;
+  const cy = (vis.t + vis.b) / 2;
+  const hit = document.elementFromPoint(cx, cy);
+  const hitOk = hit !== null && (hit === a || a.contains(hit));
+  const hitCls = hit && typeof hit.className === "string" ? hit.className.split(" ")[0] : "";
+  /* The indicator region: the element and every ancestor painting an outline (the ring-on-the-form
+     pattern of the query bars), each grown by how far its outline reaches. */
+  let zone = null;
+  for (let el = a; el !== null && el !== document.body; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    const ow = cs.outlineStyle === "none" ? 0 : parseFloat(cs.outlineWidth) || 0;
+    if (el !== a && ow === 0) continue;
+    const reach = Math.max(0, parseFloat(cs.outlineOffset) || 0) + ow + 3;
+    const r = el.getBoundingClientRect();
+    const z = { l: r.left - reach, t: r.top - reach, r: r.right + reach, b: r.bottom + reach };
+    zone = zone === null ? z : { l: Math.min(zone.l, z.l), t: Math.min(zone.t, z.t), r: Math.max(zone.r, z.r), b: Math.max(zone.b, z.b) };
+  }
+  zone = meet(zone, { l: 0, t: 0, r: vw, b: vh });
+  const x = Math.floor(zone.l);
+  const y = Math.floor(zone.t);
+  return {
+    desc,
+    visible: true,
+    clippers,
+    vis: [Math.round(vis.l), Math.round(vis.t), Math.round(vis.r), Math.round(vis.b)],
+    perimeter: Math.round(2 * (w + h)),
+    hitOk,
+    hitDesc: hit === null ? "nothing" : `${hit.tagName}${hitCls ? `.${hitCls}` : ""}`,
+    zone: { x, y, width: Math.ceil(zone.r) - x, height: Math.ceil(zone.b) - y },
+  };
+};
+
+/** Remove (on=true) or restore (on=false) the focus indicator, by inline `!important` style. */
+const suppressIndicator = (on) => {
+  const KEY = "__d3Suppressed";
+  if (!on) {
+    for (const [el, prop, value, prio] of window[KEY] ?? []) {
+      if (value === "") el.style.removeProperty(prop);
+      else el.style.setProperty(prop, value, prio);
+    }
+    window[KEY] = [];
+    return;
+  }
+  const a = document.activeElement;
+  const saved = [];
+  const set = (el, prop, value) => {
+    saved.push([el, prop, el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)]);
+    el.style.setProperty(prop, value, "important");
+  };
+  for (let el = a; el !== null && el !== document.body; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    if (el === a) {
+      set(el, "transition", "none");
+      set(el, "box-shadow", "none");
+    }
+    if (cs.outlineStyle !== "none") {
+      set(el, "transition", "none");
+      set(el, "outline-style", "none");
+    }
+  }
+  window[KEY] = saved;
+};
+
+/** Count the pixels whose colour changes by at least `floor`:1 between two same-size PNGs. */
+const indicatorPixels = async ([focused, bare, floor]) => {
+  const load = async (b64) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(img, 0, 0);
+    return g.getImageData(0, 0, c.width, c.height).data;
+  };
+  const A = await load(focused);
+  const B = await load(bare);
+  const lin = (v) => {
+    const s = v / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = (d, k) => 0.2126 * lin(d[k]) + 0.7152 * lin(d[k + 1]) + 0.0722 * lin(d[k + 2]);
+  let n = 0;
+  let best = 1;
+  for (let k = 0; k < Math.min(A.length, B.length); k += 4) {
+    if (A[k] === B[k] && A[k + 1] === B[k + 1] && A[k + 2] === B[k + 2]) continue;
+    const la = lum(A, k);
+    const lb = lum(B, k);
+    const ratio = (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    if (ratio > best) best = ratio;
+    if (ratio >= floor) n += 1;
+  }
+  return { n, best: Math.round(best * 100) / 100 };
+};
+
 /* ── node-side plumbing ─────────────────────────────────────────────────────── */
+
+const INDICATOR_CONTRAST = 3;
+
+/**
+ * Is the focused element SEEN? Hit test at the centre of its visible part, then count indicator
+ * pixels at >= 3:1 against the same pixels unfocused. Records one visibility result for `stop`.
+ */
+async function checkVisible(page, stop, surface, scenario) {
+  await page.keyboard.press("Shift");
+  await page.waitForTimeout(50);
+  const geo = await page.evaluate(focusGeometry);
+  if (geo === null) return; /* nothing focused: the return check already records that */
+  visChecked.set(stop, (visChecked.get(stop) ?? 0) + 1);
+  const fail = (why) => {
+    visResults.push({ stop, surface, scenario, ok: false, why: `${geo.desc}: ${why}` });
+    console.log(`FAIL  ${surface} :: ${scenario} -> NOT VISIBLE [${stop}] ${geo.desc}: ${why}`);
+  };
+  if (!geo.visible) return fail(`no part of it is on screen (clipped by ${geo.clippers.join(" > ") || "the viewport"})`);
+  if (!geo.hitOk) return fail(`elementFromPoint at the centre of its visible box ${JSON.stringify(geo.vis)} is ${geo.hitDesc}`);
+  if (geo.zone.width < 1 || geo.zone.height < 1) return fail("its indicator region is off screen");
+  const focused = await page.screenshot({ clip: geo.zone, animations: "disabled", caret: "hide" });
+  await page.evaluate(suppressIndicator, true);
+  let bare;
+  try {
+    bare = await page.screenshot({ clip: geo.zone, animations: "disabled", caret: "hide" });
+  } finally {
+    await page.evaluate(suppressIndicator, false);
+  }
+  const px = await page.evaluate(indicatorPixels, [focused.toString("base64"), bare.toString("base64"), INDICATOR_CONTRAST]);
+  const floor = Math.ceil(geo.perimeter / 2);
+  if (px.n < floor) {
+    return fail(
+      `${px.n} indicator pixel(s) at >=${INDICATOR_CONTRAST}:1 (floor ${floor}, half the perimeter of its visible box; ` +
+        `strongest change ${px.best}:1; clipped by ${geo.clippers.join(" > ") || "nothing"})`,
+    );
+  }
+  visResults.push({ stop, surface, scenario, ok: true, why: "" });
+  console.log(`PASS  ${surface} :: ${scenario} -> VISIBLE [${stop}] ${geo.desc}: ${px.n} px at >=${INDICATOR_CONTRAST}:1 (floor ${floor})`);
+}
 
 async function settled(page) {
   await page.waitForTimeout(SETTLE_MS);
   return page.evaluate(describeActive);
+}
+
+/** Settle, record where focus returned, and check that the element it returned to is visible. */
+async function landed(page, kind, surface, scenario) {
+  const active = await settled(page);
+  record(kind, surface, scenario, active);
+  if (active.tag !== "BODY" && active.tag !== "NONE") await checkVisible(page, "returned", surface, scenario);
 }
 
 /** Close whatever was left open. The next case sets its own focus explicitly. */
@@ -264,7 +492,13 @@ async function auditPopovers(page, where, enter) {
         notDriven(name, scenario, "Enter did not open it");
         continue;
       }
-      if (scenario === "open → Tab → Escape") await page.keyboard.press("Tab");
+      /* Where the popover put focus as it opened: its first control, or the panel itself. */
+      if (scenario === "open → Escape") await checkVisible(page, "popover initial focus", name, scenario);
+      if (scenario === "open → Tab → Escape") {
+        await page.keyboard.press("Tab");
+        await page.waitForTimeout(100);
+        await checkVisible(page, "popover after Tab", name, scenario);
+      }
       if (scenario === "open → Tab out of the panel → Escape") {
         for (let i = 0; i < 40; i += 1) {
           if ((await t.getAttribute("aria-expanded").catch(() => null)) !== "true") break;
@@ -273,7 +507,7 @@ async function auditPopovers(page, where, enter) {
         }
       }
       await page.keyboard.press("Escape");
-      record("popover", name, scenario, await settled(page));
+      await landed(page, "popover", name, scenario);
     }
   });
 }
@@ -299,8 +533,10 @@ async function auditDialogs(page, where) {
         continue;
       }
       if (scenario.includes("Tab")) await page.keyboard.press("Tab");
+      await page.waitForTimeout(100);
+      await checkVisible(page, scenario.includes("Tab") ? "dialog after Tab" : "dialog initial focus", name, scenario);
       await page.keyboard.press("Escape");
-      record("dialog", name, scenario, await settled(page));
+      await landed(page, "dialog", name, scenario);
     }
   }
 }
@@ -312,16 +548,44 @@ async function auditTabs(page, where, enter) {
     let tab = await fresh();
     if (tab === null) return notDriven(name, "tab → ArrowRight → Escape", "tab not found");
     await tab.focus();
+    await checkVisible(page, "tab", name, "tab → ArrowRight → Escape");
     await page.keyboard.press("ArrowRight");
+    await page.waitForTimeout(150);
+    await checkVisible(page, "tab after arrow", name, "tab → ArrowRight → Escape");
     await page.keyboard.press("Escape");
-    record("tab", name, "tab → ArrowRight → Escape", await settled(page));
+    await landed(page, "tab", name, "tab → ArrowRight → Escape");
+
+    /* The tab's PANEL, entered with Tab from its selected tab (APG: the panel is itself a tab stop,
+       so the reader lands on the panel before anything in it). This is the stop the device pane's
+       `.dp__body` scroller clipped whole. Every tab's panel is entered, not only the first. */
+    tab = await fresh();
+    if (tab === null) return notDriven(name, "tab → Tab into its panel", "tab not found");
+    await tab.click();
+    await page.waitForTimeout(250);
+    const panelId = await tab.getAttribute("aria-controls");
+    await tab.focus();
+    await page.keyboard.press("Tab");
+    await page.waitForTimeout(150);
+    const intoPanel = panelId
+      ? await page.evaluate((id) => {
+          const p = document.getElementById(id);
+          return p !== null && document.activeElement !== null && p.contains(document.activeElement);
+        }, panelId)
+      : false;
+    if (intoPanel) await checkVisible(page, "tab panel", name, "tab → Tab into its panel");
+    else if (panelId) {
+      const panelFocusable = await page.evaluate((id) => document.getElementById(id)?.tabIndex === 0, panelId);
+      if (panelFocusable) {
+        visResults.push({ stop: "tab panel", surface: name, scenario: "tab → Tab into its panel", ok: false, why: "Tab from the selected tab did not enter its focusable panel" });
+        console.log(`FAIL  ${name} :: tab → Tab into its panel -> NOT DRIVEN (Tab did not enter the panel)`);
+      }
+    }
 
     /* Focus INSIDE the tab's panel, then Escape: whatever Escape closes takes that panel with it. */
     tab = await fresh();
     if (tab === null) return notDriven(name, "panel control → Escape", "tab not found");
     await tab.click();
     await page.waitForTimeout(250);
-    const panelId = await tab.getAttribute("aria-controls");
     const inner = panelId
       ? page.locator(`[id="${panelId}"]`).locator("button:visible, input:visible, [tabindex='0']:visible, a[href]:visible").first()
       : null;
@@ -330,8 +594,9 @@ async function auditTabs(page, where, enter) {
       return;
     }
     await inner.focus();
+    await checkVisible(page, "panel control", name, "panel control → Escape");
     await page.keyboard.press("Escape");
-    record("tab", name, "panel control → Escape", await settled(page));
+    await landed(page, "tab", name, "panel control → Escape");
 
     /* Every find bar the panel holds (the Inspector's JSON "Search this document" among them). */
     const fieldSel = 'input:not([type]), input[type="text"], input[type="search"], textarea';
@@ -361,8 +626,10 @@ async function auditTabs(page, where, enter) {
         await page.keyboard.type("up");
         await page.keyboard.press("Enter");
         if (scenario.includes("Tab")) await page.keyboard.press("Tab");
+        await page.waitForTimeout(150);
+        await checkVisible(page, scenario.includes("Tab") ? "find bar after Tab" : "find bar", `${name} find bar "${label}"`, scenario);
         await page.keyboard.press("Escape");
-        record("find bar", `${name} find bar "${label}"`, scenario, await settled(page));
+        await landed(page, "find bar", `${name} find bar "${label}"`, scenario);
       }
     }
   });
@@ -384,8 +651,10 @@ async function auditFields(page, where, enter) {
       await page.keyboard.type("up");
       await page.keyboard.press("Enter");
       if (scenario.includes("Tab")) await page.keyboard.press("Tab");
+      await page.waitForTimeout(150);
+      await checkVisible(page, scenario.includes("Tab") ? "field after Tab" : "field", name, scenario);
       await page.keyboard.press("Escape");
-      record(kind, name, scenario, await settled(page));
+      await landed(page, kind, name, scenario);
       /* Leave no filter behind for the next case. */
       const again = await fresh();
       if (again !== null) await again.fill("").catch(() => {});
@@ -405,8 +674,10 @@ async function auditGrids(page, where, enter) {
       }
       await cell.focus();
       if (scenario.includes("ArrowDown")) await page.keyboard.press("ArrowDown");
+      await page.waitForTimeout(150);
+      await checkVisible(page, "grid cell", name, scenario);
       await page.keyboard.press("Escape");
-      record("grid", name, scenario, await settled(page));
+      await landed(page, "grid", name, scenario);
     }
   });
 }
@@ -417,6 +688,7 @@ async function auditInspectorClose(page, where, enter) {
   const cases = [
     ["close button → Enter", async () => {
       await page.locator('#inspector button[aria-label="Close the inspector"]').focus();
+      await checkVisible(page, "inspector control", name, "close button → Enter");
       await page.keyboard.press("Enter");
     }],
     ["tab → i (toggles it closed from inside)", async () => {
@@ -436,7 +708,7 @@ async function auditInspectorClose(page, where, enter) {
     }
     await act();
     const gone = (await page.locator("#inspector").count()) === 0;
-    record("inspector", `${name}${gone ? "" : " [still open]"}`, scenario, await settled(page));
+    await landed(page, "inspector", `${name}${gone ? "" : " [still open]"}`, scenario);
   }
 }
 
@@ -458,15 +730,17 @@ async function auditToasts(page, where) {
     return;
   }
   await copy.focus();
+  await checkVisible(page, "copy action", `${where} copy action`, "copy → wait");
   await page.keyboard.press("Enter");
-  record("copy", `${where} copy action`, "copy → wait", await settled(page));
+  await landed(page, "copy", `${where} copy action`, "copy → wait");
   const fresh = (await page.evaluate(toasts)).filter((t) => !before.has(t));
   console.log(`INFO  ${where} toasts: ${fresh.length} visible notice(s) appeared after a copy action`);
   for (const text of fresh) {
     const loc = page.getByText(text, { exact: false }).first();
     await loc.focus().catch(() => {});
+    await checkVisible(page, "toast", `${where} toast "${text}"`, "focus → Escape");
     await page.keyboard.press("Escape");
-    record("toast", `${where} toast "${text}"`, "focus → Escape", await settled(page));
+    await landed(page, "toast", `${where} toast "${text}"`, "focus → Escape");
   }
 }
 
@@ -515,8 +789,19 @@ for (const f of failed) console.log(`  FAIL ${f.surface} :: ${f.scenario} (${f.w
 const REQUIRED = ["popover", "dialog", "tab", "find bar", "inspector"];
 const missing = REQUIRED.filter((k) => (driven.get(k) ?? 0) === 0);
 if (missing.length > 0) console.log(`NOT DRIVEN AT ALL: ${missing.join(", ")}`);
+
+/* Visibility: its own denominator, and the stops the acceptance review found invisible must have
+   been checked at all — a visibility pass over zero tab panels would say nothing about them. */
+const visFailed = visResults.filter((r) => !r.ok);
+console.log(`\n${visResults.length} focus stop(s) checked for visibility, ${visFailed.length} not visible.`);
+console.log(`Checked, by stop: ${[...visChecked].map(([k, n]) => `${k}=${n}`).join(" ")}`);
+for (const f of visFailed) console.log(`  NOT VISIBLE [${f.stop}] ${f.surface} :: ${f.scenario} (${f.why})`);
+const REQUIRED_VIS = ["popover initial focus", "tab panel", "tab", "returned"];
+const visMissing = REQUIRED_VIS.filter((k) => (visChecked.get(k) ?? 0) === 0);
+if (visMissing.length > 0) console.log(`NEVER CHECKED FOR VISIBILITY: ${visMissing.join(", ")}`);
+
 if (results.length === 0) {
   console.log("No surface was driven: the audit proved nothing.");
   process.exit(2);
 }
-process.exit(failed.length === 0 && missing.length === 0 ? 0 : 1);
+process.exit(failed.length === 0 && missing.length === 0 && visFailed.length === 0 && visMissing.length === 0 ? 0 : 1);

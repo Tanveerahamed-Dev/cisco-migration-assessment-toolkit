@@ -29,9 +29,9 @@ export default defineConfig({
       },
     },
   },
-  test: {
-    environment: "jsdom",
-    globals: true,
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-  },
-} as any);
+  /* No `test` block here, and no `as any`. This file used to carry a copy of the runner's
+     settings and cast the whole config to `any` to get it past the Vite types. The copy was dead:
+     Vitest loads vitest.config.ts INSTEAD of this file (which merges this one), and the cast hid
+     every other type error in the build config too. vitest.config.ts owns the runner; both files
+     are type-checked by tsconfig.config.json. */
+});

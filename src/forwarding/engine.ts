@@ -41,6 +41,9 @@ import type {
 } from "../core/types";
 import {
   addressRoleIn,
+  describeFlowProblem,
+  flowFieldName,
+  flowProblems,
   formatIpv4,
   formatPrefix,
   hostAddressIn,
@@ -1660,7 +1663,20 @@ export const REFUSAL_UNDECIDING_KINDS: ReadonlySet<PolicyGap["kind"]> = new Set<
  * zero-hop return, so the classification is the engine's own decision rather than a reader's
  * reconstruction from the claim prose. `refusalOf` is null for every trace that consulted a device.
  */
-export type RefusalKind = "invalid-address" | "not-a-host-address" | "intra-subnet" | "router-originated" | "outside-observed-subnets";
+export type RefusalKind =
+  | "invalid-address"
+  | "invalid-flow"
+  | "not-a-host-address"
+  | "intra-subnet"
+  | "router-originated"
+  | "outside-observed-subnets";
+
+/**
+ * The refusals that say "this was not a valid question" rather than anything about the network: a
+ * malformed address, or a port/protocol field that is not one (`flowProblems`, ./ip.ts). One set,
+ * read by `claims.ts :: isInvalidInput`, so a new malformed-input kind cannot wear OUT OF SCOPE.
+ */
+export const INVALID_INPUT_REFUSALS: ReadonlySet<RefusalKind> = new Set<RefusalKind>(["invalid-address", "invalid-flow"]);
 
 export interface Refusal {
   kind: RefusalKind;
@@ -1865,15 +1881,19 @@ export function traceFlow(flow: Flow): Trace {
   /* determinism: start of the elapsed-time measurement above; feeds `elapsedMs` and nothing else.
      No branch in this function reads it, so no trace outcome can depend on it. */
   const startedAt = performance.now();
-  const srcIp = parseIpv4(flow.srcIp);
-  const dstIp = parseIpv4(flow.dstIp);
 
-  if (srcIp === null || dstIp === null) {
-    const bad = srcIp === null ? flow.srcIp : flow.dstIp;
+  /* ENTRY CHECK — every field, not only the addresses. The type says `dstPort: number`, and a link
+     once delivered `NaN` in it: the walk below then answered "a tcp/NaN flow … is delivered" (2026-09-23
+     acceptance report, B1). `flowProblems` is the one validator the form and the link also use, so
+     the engine refuses exactly what they refuse, and names the field. */
+  const problems = flowProblems(flow);
+  if (problems.length > 0) {
+    const addressOnly = problems.every((p) => p.field === "srcIp" || p.field === "dstIp");
+    const fields = [...new Set(problems.map((p) => flowFieldName(p.field)))];
     return refuse({
-      kind: "invalid-address",
-      key: "invalid-address",
-      reason: "the flow names an address that is not a valid IPv4 address, so nothing was simulated",
+      kind: addressOnly ? "invalid-address" : "invalid-flow",
+      key: addressOnly ? "invalid-address" : "invalid-flow",
+      reason: `the flow's ${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} not valid${addressOnly ? " (not an IPv4 address)" : ""}, so nothing was simulated`,
       cite: fabric.coverage.cite,
     }, finish(
       flow,
@@ -1884,12 +1904,17 @@ export function traceFlow(flow: Flow): Trace {
          out-of-scope claims omitted the 2-of-26 RIB denominator that all 294 other claims carried
          inline, leaving a reader who reads the verdict and the badge but not the eight caveats
          with no idea how narrow the collection is. */
-      `${SCOPE_PHRASE}, "${bad}" is not a valid IPv4 address, so nothing was simulated.`,
+      `${SCOPE_PHRASE}, the question is not a valid flow: ${problems
+        .map((p) => describeFlowProblem(p, { where: "question", protocol: String(flow.protocol) }).problem)
+        .join(" ")} Nothing was simulated.`,
       ["The flow was rejected before any evidence was consulted; this says nothing about the network."],
       [],
       startedAt,
     ));
   }
+  /* Valid by the check above; re-read as numbers for the walk. */
+  const srcIp = parseIpv4(flow.srcIp)!;
+  const dstIp = parseIpv4(flow.dstIp)!;
 
   // A packet cannot originate from the network or directed-broadcast address of a subnet, so a
   // trace from one is not a narrower answer — it is a question about a host that does not exist.

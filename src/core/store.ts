@@ -11,9 +11,25 @@
 import { useSyncExternalStore } from "react";
 import { create } from "zustand";
 import type { Flow, Severity, SurfaceId, Trace } from "./types";
+import { readFlow, type FlowProblem } from "../forwarding/ip";
 
 export type BandFilter = "all" | "degraded";
 export type EvidenceTab = "summary" | "ports" | "routing" | "acl" | "findings" | "raw";
+
+/**
+ * A flow a shared link carried that is not a valid question. It is REFUSED, not repaired and not
+ * dropped: the path panel says which fields are wrong, in words, and nothing is traced. Dropping it
+ * silently would show the reader an empty form under a link that plainly names a flow; tracing it
+ * answered `tcp>abc` with "a tcp/NaN flow … is delivered" (2026-09-23 acceptance report, B1).
+ */
+export interface RefusedFlow {
+  /** The link's flow parameter, verbatim — re-encoded unchanged, so a reload shows the same refusal. */
+  text: string;
+  /** The fields as the link wrote them, for the form to show back. */
+  fields: { srcIp: string; dstIp: string; protocol: string; dstPort: string };
+  /** Every problem, each naming its field. Never empty. */
+  problems: FlowProblem[];
+}
 
 export interface InvestigationState {
   /* ── selection: what the user is looking at ── */
@@ -31,6 +47,8 @@ export interface InvestigationState {
   /* ── path investigation ── */
   flow: Flow | null;
   trace: Trace | null;
+  /** Set only by a link whose flow failed validation; any real flow clears it. */
+  flowRefused: RefusedFlow | null;
 
   /* ── view state ── */
   surface: SurfaceId;
@@ -72,6 +90,7 @@ export const useInvestigation = create<InvestigationState>((set) => ({
   onlyUncollected: false,
   flow: null,
   trace: null,
+  flowRefused: null,
   surface: "fabric",
   evidenceTab: "summary",
   paletteOpen: false,
@@ -102,7 +121,9 @@ export const useInvestigation = create<InvestigationState>((set) => ({
       return { roles: next };
     }),
   setOnlyUncollected: (v) => set({ onlyUncollected: v }),
-  setFlow: (f) => set({ flow: f }),
+  /* A flow set from anywhere supersedes whatever a link refused: the refusal described a question
+     the reader has now replaced. */
+  setFlow: (f) => set({ flow: f, flowRefused: null }),
   setTrace: (t) => set({ trace: t, hopIndex: t && t.hops.length > 0 ? 0 : null }),
   setSurface: (s) => set({ surface: s }),
   setEvidenceTab: (t) => set({ evidenceTab: t }),
@@ -121,6 +142,7 @@ export const useInvestigation = create<InvestigationState>((set) => ({
       onlyUncollected: false,
       flow: null,
       trace: null,
+      flowRefused: null,
     }),
   hydrate: (patch) => set(patch),
 }));
@@ -150,6 +172,8 @@ export function encodeInvestigation(s: InvestigationState): string {
   if (s.flow) {
     const f = s.flow;
     p.set("flow", [f.srcIp, f.dstIp, f.protocol, f.dstPort ?? ""].join(">"));
+  } else if (s.flowRefused) {
+    p.set("flow", s.flowRefused.text);
   }
   if (s.hopIndex !== null) p.set("hop", String(s.hopIndex));
   return p.toString();
@@ -180,19 +204,31 @@ export function decodeInvestigation(search: string): Partial<InvestigationState>
     out.evidenceTab = tab as EvidenceTab;
   const flow = p.get("flow");
   if (flow) {
-    const [srcIp, dstIp, protocol, dstPort] = flow.split(">");
-    if (srcIp && dstIp)
-      out.flow = {
-        srcIp,
-        dstIp,
-        protocol: (protocol as Flow["protocol"]) || "ip",
-        dstPort: dstPort ? Number(dstPort) : null,
-        srcPort: null,
-      };
+    const read = readFlowParam(flow);
+    if (read.flow !== null) out.flow = read.flow;
+    else out.flowRefused = read.refused;
   }
   const hop = p.get("hop");
-  if (hop !== null && hop !== "" && Number.isInteger(Number(hop))) out.hopIndex = Number(hop);
+  /* A hop names a hop OF A TRACE. A refused flow has none, so no hop is restored against it. */
+  if (out.flowRefused === undefined && hop !== null && hop !== "" && Number.isInteger(Number(hop))) out.hopIndex = Number(hop);
   return out;
+}
+
+/**
+ * The link grammar for a flow: `src>dst>protocol>port`, the port possibly empty. The FIELDS are
+ * judged by `readFlow` (src/forwarding/ip.ts) — the same validator the form uses — so a link can
+ * restore exactly the flows the form could have produced and no others. Only the SHAPE is this
+ * grammar's own: more than four fields is not a flow.
+ */
+function readFlowParam(text: string): { flow: Flow; refused: null } | { flow: null; refused: RefusedFlow } {
+  const parts = text.split(">");
+  const fields = { srcIp: parts[0] ?? "", dstIp: parts[1] ?? "", protocol: parts[2] ?? "", dstPort: parts[3] ?? "" };
+  if (parts.length > 4) {
+    return { flow: null, refused: { text, fields, problems: [{ field: "flow", kind: "malformed", value: text }] } };
+  }
+  const read = readFlow(fields);
+  if (read.flow !== null) return { flow: read.flow, refused: null };
+  return { flow: null, refused: { text, fields, problems: read.problems } };
 }
 
 /* ── reduced motion, read live so a mid-session OS change is honoured ─────── */

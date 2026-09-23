@@ -194,7 +194,12 @@ describe("the permanent line is a function of the DATA, not of this machine (acc
        rendered path, and naming the one element that carried it would leave the class open. */
     for (const fps of [60, 52, 41, 7, 143]) {
       await publishAndSettle(reading({ fps, quality: "high", converged: true }));
-      const line = container.querySelector(".sb__scene")?.textContent ?? "";
+      /* The readout must be THERE and say something: "no digit" in an element that vanished, or
+         that renders empty, is a pass that proves nothing (independent refuter, wave 3). */
+      const el = container.querySelector(".sb__scene");
+      expect(el, `the scene readout is not rendered at ${fps} fps`).not.toBeNull();
+      const line = el!.textContent ?? "";
+      expect(line.trim().length, `the scene readout is empty at ${fps} fps`).toBeGreaterThan(0);
       expect(line, `the scene readout drew a digit at ${fps} fps: "${line}"`).not.toMatch(/\d/);
     }
   });

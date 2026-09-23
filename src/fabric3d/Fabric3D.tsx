@@ -36,6 +36,7 @@ import { setStageOcclusion, type StageOcclusionPx } from "./camera";
 import { prepareProceduralMaps, proceduralMapsReady } from "./materials";
 import { ALL_CHASSIS_KINDS, chassisPrepared, prepareChassis, type ChassisBuildOptions } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
+import { deferPastPresentation } from "../panels/deferPastPaint";
 
 import "./Fabric3D.css";
 
@@ -663,11 +664,58 @@ export function Fabric3D({
       press.moved = false;
     };
 
+    /* ── a canvas click: acknowledged on the canvas now, committed everywhere after it is shown ──
+     *
+     * RESPONSIVENESS FIX (acceptance E3, 2026-09-23). The click used to write the store inside its
+     * own input task, and a `useSyncExternalStore` write is urgent: React rendered and committed
+     * every surface subscribed to the selection — the label layer, the findings grid, the device
+     * pane — before the handler returned, and the frame that presented the click then paid their
+     * style, layout and paint. MEASURED on the release build, fresh browser per trial (Intel iGPU,
+     * ANGLE D3D11): the first click on core2 put 51-100 ms on its own interaction path in every
+     * trial — `CANVAS.onpointerup` 13-37 ms of script, then 30-56 ms of rendering in that frame.
+     *
+     * Design brief 8.3 rule 3, exactly as PriorityQueue applies it to a finding click: the surface
+     * the reader acted on acknowledges from its own state inside the input task — here the scene's
+     * selection treatment, drawn in the very next frame (`acknowledgeSelection`) — and the shared
+     * write that re-aims every other surface runs in a task of its own once the browser reports that
+     * acknowledgement PRESENTED (`deferPastPresentation`: the click's own Event Timing entry, with a
+     * frame-count fallback). A fixed two-frame wait was measured too short on the reference iGPU,
+     * which presented the click 56-80 ms on: no task over 50 ms touched the path, but the commit's
+     * 52-72 ms frame overlapped the click's window in 21 of 21 fresh-browser trials. The one pending write is
+     * superseded by the next canvas click, and cancelled by ANY other change to the selection made
+     * before it lands (a key, a grid row, the palette), after which the canvas is put back in step
+     * with the choice that won — a stale click must never overwrite a newer choice. */
+    let pendingCommit: { cancel: () => void } | null = null;
+    const cancelPendingCommit = (): void => {
+      pendingCommit?.cancel();
+      pendingCommit = null;
+    };
+    const commitCanvasPick = (r: PickResult | null, e: PointerEvent): void => {
+      cancelPendingCommit();
+      const ack = scene as Partial<Pick<FabricSceneEx, "acknowledgeSelection">>;
+      const deviceSel = r !== null && r.kind === "device" ? r.id : null;
+      const linkSel = r !== null && r.kind === "link" ? r.id : null;
+      if (typeof ack.acknowledgeSelection === "function") ack.acknowledgeSelection(deviceSel, linkSel);
+      else scene.setSelection(deviceSel, linkSel);
+      const entry = { cancel: (): void => undefined };
+      pendingCommit = entry;
+      entry.cancel = deferPastPresentation(e.type, e.currentTarget, () => {
+        if (pendingCommit === entry) pendingCommit = null;
+        applyPick(r);
+      });
+    };
+    const stopWatchingSelection = useInvestigation.subscribe((next, prev) => {
+      if (pendingCommit === null) return;
+      if (next.deviceId === prev.deviceId && next.linkId === prev.linkId) return;
+      cancelPendingCommit();
+      scene.setSelection(next.deviceId, next.linkId);
+    });
+
     const onPointerUp = (e: PointerEvent) => {
       const wasClick = press.down && !press.moved;
       endPress();
       if (!wasClick || !isDrawn(scene)) return;
-      applyPick(pickAt(e.clientX, e.clientY));
+      commitCanvasPick(pickAt(e.clientX, e.clientY), e);
     };
 
     const onPointerLeave = () => {
@@ -789,6 +837,8 @@ export function Fabric3D({
       canvas.removeEventListener("pointerleave", onPointerLeave);
       canvas.removeEventListener("dblclick", onDoubleClick);
       canvas.removeEventListener("keydown", onKeyDown);
+      stopWatchingSelection();
+      cancelPendingCommit();
       if (hoverFrame !== 0) cancelAnimationFrame(hoverFrame);
       releaseHandle();
       /* "Not observed" has to mean it: a released scene must not leave its last reading on screen

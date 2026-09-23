@@ -16,7 +16,12 @@
    * `document` and the harness globals (`__atlasScene`, `__ev`, `__long`) that a Node type
    * environment has never heard of, and Playwright's option unions reject the plain strings those
    * scripts build viewports from. Fixing that is annotation work in files another review lane is
-   * actively editing, so it is named here instead of being silently implied.
+   * actively editing, so it is named here instead of being silently implied. Re-measured 2026-09-23
+   * under THIS project's full settings (strict incl. noImplicitAny, noUncheckedIndexedAccess, checkJs):
+   * 919 diagnostics across 14 of the 17 tracked harnesses. `src/core/scripts-typecheck.test.ts`
+   * requires every other authored .ts/.tsx/.mjs/.js in the tree to be in some root tsconfig*.json;
+   * `review/*.mjs` is the one declared exclusion. The runner/bundler configs are in
+   * tsconfig.config.json.
    *
    * THIS PROJECT IS FULLY `strict`, noImplicitAny included (since 2026-09-22). Until then it ran
    * strict minus noImplicitAny: measured 2026-09-21 with `--noImplicitAny`, 18 diagnostics, all in

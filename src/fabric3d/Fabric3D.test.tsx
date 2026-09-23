@@ -7,6 +7,8 @@
  * and never disposed, which costs a context per mount and shows up as a black canvas on the fourth
  * navigation, long after the change that caused it.
  */
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { act, StrictMode, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -137,6 +139,9 @@ vi.mock("./scene", () => ({
     Object.assign(scene, { chassisScreenBox: (id: string) => mock.chassisBoxes.get(id) ?? null });
     /* The keyboard orbit/pan verbs (FabricSceneEx, scene.ts) — logged like the contract's verbs. */
     Object.assign(scene, { orbitBy: log("orbitBy"), panBy: log("panBy") });
+    /* The canvas-click acknowledgement (FabricSceneEx, scene.ts) — see "a canvas click acknowledges
+       on the canvas first" below. */
+    Object.assign(scene, { acknowledgeSelection: log("acknowledgeSelection") });
     rec.scene = scene;
     mock.scenes.push(rec);
     return scene;
@@ -187,6 +192,23 @@ const press = (el: Element, key: string): void => {
   act(() => {
     el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
   });
+};
+
+/**
+ * Run a deferred canvas selection commit to completion: the frames it waits out, then its task.
+ *
+ * A canvas click writes the store in a task AFTER the frame that presents the canvas's own
+ * acknowledgement (see "a canvas click acknowledges on the canvas first"). Every assertion about
+ * what a click did — or did NOT do — to the store must come after this, or a "the click selected
+ * nothing" assertion would pass merely because the write had not landed yet.
+ */
+const settleCanvasCommit = async (): Promise<void> => {
+  for (let i = 0; i < 4; i += 1) {
+    act(() => flushFrames(1));
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
 };
 
 const lastScene = (): SceneRecord => {
@@ -1393,7 +1415,7 @@ describe("pointer picks during warm-up", () => {
     (mock.stats as Record<string, unknown>).warmupStage = stage;
   };
 
-  it("an empty-ground click while warming leaves a URL-restored device selection alone", () => {
+  it("an empty-ground click while warming leaves a URL-restored device selection alone", async () => {
     act(() => useInvestigation.getState().selectDevice("access1"));
     setWarmup("linking");
     mock.pickResult = null;
@@ -1401,6 +1423,7 @@ describe("pointer picks during warm-up", () => {
     const canvas = m.canvas()!;
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
+    await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBe("access1");
 
     /* The scene's own pick event is the second pointer path; it is gated the same way. */
@@ -1411,13 +1434,14 @@ describe("pointer picks during warm-up", () => {
     setWarmup(null);
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
+    await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBeNull();
     m.unmount();
   });
 
   /* A4 audit: a re-warm-up AFTER the first paint (an adaptive tier step, a theme change) leaves the
      previous frame on screen, and a click on a device in it used to be silently discarded. */
-  it("a click during a RE-warm-up, after the fabric has been drawn, still selects", () => {
+  it("a click during a RE-warm-up, after the fabric has been drawn, still selects", async () => {
     act(() => useInvestigation.getState().selectDevice("access1"));
     setWarmup(null);
     const m = mount(<Fabric3D />);
@@ -1429,11 +1453,12 @@ describe("pointer picks during warm-up", () => {
     setWarmup("linking");
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
+    await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBe(target);
     m.unmount();
   });
 
-  it("a topology rebuild re-arms the gate: the frame on screen is of the old graph", () => {
+  it("a topology rebuild re-arms the gate: the frame on screen is of the old graph", async () => {
     act(() => useInvestigation.getState().selectDevice("access1"));
     setWarmup(null);
     const m = mount(<Fabric3D devices={fabric.devices} links={fabric.links} />);
@@ -1447,11 +1472,12 @@ describe("pointer picks during warm-up", () => {
     });
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
+    await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBe("access1");
     m.unmount();
   });
 
-  it("a double-click while warming neither clears a link nor selects an unseen device", () => {
+  it("a double-click while warming neither clears a link nor selects an unseen device", async () => {
     const link = fabric.links[0]!;
     act(() => useInvestigation.getState().selectLink(link.id));
     setWarmup("environment");
@@ -1461,6 +1487,7 @@ describe("pointer picks during warm-up", () => {
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
     pointer(canvas, "dblclick");
+    await settleCanvasCommit();
     expect(useInvestigation.getState().linkId).toBe(link.id);
     expect(useInvestigation.getState().deviceId).toBeNull();
     m.unmount();
@@ -1481,13 +1508,14 @@ describe("a canvas click selects through exactly one path", () => {
     });
   };
 
-  it("the scene's pick event does not write the store, even once the fabric is drawn", () => {
+  it("the scene's pick event does not write the store, even once the fabric is drawn", async () => {
     act(() => useInvestigation.getState().selectDevice(null));
     (mock.stats as Record<string, unknown>).warmupStage = null;
     const m = mount(<Fabric3D />);
     act(() => lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() }));
     const target = fabric.devices[0]!.id;
     act(() => lastScene().cb.onEvent({ type: "pick", result: { kind: "device", id: target, screen: { x: 10, y: 10 } }, modifier: false }));
+    await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBeNull();
 
     /* The stage's own pointerup is the path that selects. */
@@ -1495,7 +1523,409 @@ describe("a canvas click selects through exactly one path", () => {
     const canvas = m.canvas()!;
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
+    await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBe(target);
     m.unmount();
+  });
+});
+
+/* ── E3: the first device selection after load ────────────────────────────────
+ *
+ * MEASURED (acceptance report 2026-09-23, item 9, and re-measured for this change on the release
+ * build, fresh browser per trial, Intel iGPU / ANGLE D3D11): the first canvas click on core2 put a
+ * 51-100 ms task on its own interaction path in every trial. The click's input task ran the pick,
+ * the store write, and — because a `useSyncExternalStore` update is urgent — React's render and
+ * commit of every surface subscribed to the selection (FabricLabels, the findings grid, the device
+ * pane); the frame that presented it then paid the style, layout and paint of all of it
+ * (LoAF: `CANVAS.onpointerup` 13-37 ms, then 30-56 ms of rendering in the same frame).
+ *
+ * Design brief 8.3 rule 3, as PriorityQueue already applies it to a finding click: the surface the
+ * reader acted on acknowledges from its own state inside the input task, and the shared write that
+ * re-aims every other surface runs in a task of its own AFTER the acknowledgement has been
+ * presented. On the canvas the acknowledgement is the scene's own selection treatment (halo, rim,
+ * outline), set straight on the scene. */
+describe("a canvas click acknowledges on the canvas first and re-aims the other surfaces after it is presented", () => {
+  const pointer = (el: Element, type: string): void => {
+    act(() => {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10, button: 0 }));
+    });
+  };
+  const drawn = (): void => {
+    (mock.stats as Record<string, unknown>).warmupStage = null;
+    act(() => lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() }));
+  };
+  const click = (canvas: Element): void => {
+    pointer(canvas, "pointerdown");
+    pointer(canvas, "pointerup");
+  };
+  const tick = (): Promise<void> =>
+    act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+  it("the input task writes only the scene; the store write lands in a task after the acknowledgement frame", async () => {
+    const m = mount(<Fabric3D />);
+    drawn();
+    const canvas = m.canvas()!;
+    const rec = lastScene();
+    const acksBefore = callsOf(rec, "acknowledgeSelection").length;
+    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+
+    click(canvas);
+    expect(callsOf(rec, "acknowledgeSelection").slice(acksBefore), "the canvas acknowledges the click inside its own input task").toEqual([
+      ["acknowledgeSelection", "core2", null],
+    ]);
+    expect(
+      useInvestigation.getState().deviceId,
+      "the cross-surface store write (and with it React's commit of every subscribed surface) must not run inside the input task",
+    ).toBeNull();
+
+    /* Not in the frame that presents the acknowledgement either: a task queued from that frame's
+       callback can start before the frame is on screen, i.e. still inside the interaction. */
+    act(() => flushFrames(1));
+    await tick();
+    expect(useInvestigation.getState().deviceId, "the store write waited out the acknowledgement frame").toBeNull();
+
+    await settleCanvasCommit();
+    expect(useInvestigation.getState().deviceId, "the selection reaches every surface once the acknowledgement is presented").toBe("core2");
+    expect(useInvestigation.getState().surface).toBe("fabric");
+    m.unmount();
+  });
+
+  it("a ground click acknowledges 'nothing selected' at once and clears the investigation's selection after it", async () => {
+    act(() => useInvestigation.getState().selectDevice("core1"));
+    const m = mount(<Fabric3D />);
+    drawn();
+    const canvas = m.canvas()!;
+    const rec = lastScene();
+    mock.pickResult = null;
+
+    click(canvas);
+    expect(callsOf(rec, "acknowledgeSelection").at(-1)).toEqual(["acknowledgeSelection", null, null]);
+    expect(useInvestigation.getState().deviceId).toBe("core1");
+    await settleCanvasCommit();
+    expect(useInvestigation.getState().deviceId).toBeNull();
+    expect(useInvestigation.getState().linkId).toBeNull();
+    m.unmount();
+  });
+
+  it("a link click acknowledges the link, not a device", async () => {
+    const link = fabric.links[0]!;
+    const m = mount(<Fabric3D />);
+    drawn();
+    const rec = lastScene();
+    mock.pickResult = { kind: "link", id: link.id, screen: { x: 10, y: 10 } };
+    click(m.canvas()!);
+    expect(callsOf(rec, "acknowledgeSelection").at(-1)).toEqual(["acknowledgeSelection", null, link.id]);
+    await settleCanvasCommit();
+    expect(useInvestigation.getState().linkId).toBe(link.id);
+    m.unmount();
+  });
+
+  it("a newer selection made before the commit lands wins, and the canvas is put back in step with it", async () => {
+    const m = mount(<Fabric3D />);
+    drawn();
+    const rec = lastScene();
+    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    click(m.canvas()!);
+    /* Another surface (a grid row, a keystroke, the palette) selects something else first. */
+    act(() => useInvestigation.getState().selectDevice("dist1"));
+    await settleCanvasCommit();
+    expect(useInvestigation.getState().deviceId, "a stale canvas commit must never overwrite a newer choice").toBe("dist1");
+    const lastSelectionCall = rec.calls.filter((c) => c[0] === "setSelection" || c[0] === "acknowledgeSelection").at(-1);
+    expect(lastSelectionCall?.slice(1), "the canvas shows the choice that won").toEqual(["dist1", null]);
+    m.unmount();
+  });
+
+  it("a second click before the first commit lands supersedes it", async () => {
+    const m = mount(<Fabric3D />);
+    drawn();
+    const canvas = m.canvas()!;
+    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    click(canvas);
+    mock.pickResult = { kind: "device", id: "core1", screen: { x: 10, y: 10 } };
+    click(canvas);
+    await settleCanvasCommit();
+    expect(useInvestigation.getState().deviceId).toBe("core1");
+    m.unmount();
+  });
+
+  it("unmounting the stage cancels a commit that has not landed", async () => {
+    const m = mount(<Fabric3D />);
+    drawn();
+    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    click(m.canvas()!);
+    m.unmount();
+    await settleCanvasCommit();
+    expect(useInvestigation.getState().deviceId).toBeNull();
+  });
+});
+
+/* ── E3: the harness must measure that first selection, not spend it ──────────
+ *
+ * The acceptance report (2026-09-23, E3 overturned) found the instrument hiding the defect above:
+ * `review/measure-inp.mjs` found J2's canvas anchors in its `prime` by CLICKING the canvas until the
+ * application reported a device selected, so the first selection after load — the one with the
+ * 55-79 ms task — was always spent before the measured loop, and J2 ran warm. The rule is pinned for
+ * EVERY journey, not for J2 by name: each journey's pre-loop hooks are executed against a recording
+ * page, and none may perform the kind of input its measured act performs. */
+describe("measure-inp: no journey spends its first interaction before the measured loop", () => {
+  type Hook = (page: unknown, i?: number) => Promise<unknown>;
+  interface Journey {
+    id: string;
+    verify?: Hook;
+    verifyAfter?: boolean;
+    verifyInteracts?: boolean;
+    prime?: Hook;
+    act: Hook;
+  }
+  interface HarnessModule {
+    JOURNEYS: Journey[];
+    firstInteractionConsumedBeforeLoop(j: Journey): string | null;
+    /** J2's canvas anchors, which the real run discovers in a throwaway browser before any journey. */
+    J2_HITS?: { id: string; x: number; y: number }[];
+    FIRST_SELECTION?: { beforeClick: Hook; act: (page: unknown, anchor: { x: number; y: number }) => Promise<unknown> };
+  }
+  const load = async (): Promise<HarnessModule> => {
+    const path = pathToFileURL(resolve(process.cwd(), "review", "measure-inp.mjs")).href;
+    return (await import(/* @vite-ignore */ path)) as HarnessModule;
+  };
+
+  /** A page that performs nothing and records every INPUT it is asked to perform, by kind. */
+  const recordingPage = (inputs: string[]): unknown => {
+    const INPUT_VERBS = new Set(["click", "dblclick", "press", "type", "fill", "check", "tap", "dispatchEvent", "pressSequentially", "selectOption"]);
+    const locator = (sel: string): unknown =>
+      new Proxy(
+        {},
+        {
+          get: (_t, prop) => {
+            const name = String(prop);
+            if (name === "then") return undefined;
+            if (name === "first" || name === "last") return () => locator(sel);
+            if (name === "nth" || name === "locator") return () => locator(sel);
+            if (INPUT_VERBS.has(name)) return async () => void inputs.push(name === "press" || name === "type" || name === "fill" || name === "pressSequentially" ? "keyboard" : `pointer ${sel}`);
+            if (name === "count") return async () => 5;
+            if (name === "inputValue" || name === "textContent") return async () => "";
+            if (name === "boundingBox") return async () => ({ x: 0, y: 0, width: 400, height: 300 });
+            if (name === "isVisible") return async () => false;
+            return async () => null;
+          },
+        },
+      );
+    return {
+      locator,
+      mouse: {
+        click: async () => void inputs.push("pointer canvas"),
+        dblclick: async () => void inputs.push("pointer canvas"),
+        down: async () => void inputs.push("pointer canvas"),
+        up: async () => undefined,
+        move: async () => undefined /* a hover is not an interaction */,
+        wheel: async () => void inputs.push("wheel"),
+      },
+      keyboard: {
+        press: async () => void inputs.push("keyboard"),
+        type: async () => void inputs.push("keyboard"),
+        down: async () => void inputs.push("keyboard"),
+        up: async () => undefined,
+        insertText: async () => void inputs.push("keyboard"),
+      },
+      evaluate: async () => [],
+      waitForTimeout: async () => undefined,
+      waitForFunction: async () => ({}),
+      waitForSelector: async () => null,
+    };
+  };
+
+  it("names the journeys it checks (a guard over an empty list pins nothing)", async () => {
+    const { JOURNEYS } = await load();
+    expect(JOURNEYS.map((j) => j.id)).toEqual(expect.arrayContaining(["J1-select-finding", "J2-select-device-3d", "J3-type-query", "J4-run-path-trace", "J5-open-palette"]));
+  });
+
+  it("every journey's pre-loop hooks perform none of the input its measured act performs", async () => {
+    const { JOURNEYS, firstInteractionConsumedBeforeLoop, J2_HITS } = await load();
+    /* Stand in for the run's anchor discovery, so J2's act has somewhere to click. */
+    if (J2_HITS !== undefined && J2_HITS.length === 0) for (const id of ["core2", "core1", "dist1"]) J2_HITS.push({ id, x: 10, y: 10 });
+    for (const j of JOURNEYS) {
+      const before: string[] = [];
+      const page = recordingPage(before);
+      if (typeof j.verify === "function" && !j.verifyAfter) await j.verify(page).catch(() => null);
+      if (typeof j.prime === "function") await j.prime(page).catch(() => null);
+      const measured: string[] = [];
+      await j.act(recordingPage(measured), 0).catch(() => null);
+      expect(measured.length, `${j.id}: its act must perform an input, or this check proves nothing`).toBeGreaterThan(0);
+      const spent = [...new Set(before)].filter((k) => measured.includes(k));
+      expect(spent, `${j.id} performs "${spent.join(", ")}" before its measured loop — the first such interaction after load is then never measured`).toEqual([]);
+      expect(firstInteractionConsumedBeforeLoop(j), `${j.id} declares that it spends its first interaction`).toBeNull();
+    }
+  });
+
+  it("the first-selection trial does nothing to the page before its one measured click", async () => {
+    const { FIRST_SELECTION } = await load();
+    expect(FIRST_SELECTION, "measure-inp must measure the first device selection after load in a fresh browser").toBeDefined();
+    const before: string[] = [];
+    await FIRST_SELECTION!.beforeClick(recordingPage(before));
+    expect(before).toEqual([]);
+    const measured: string[] = [];
+    await FIRST_SELECTION!.act(recordingPage(measured), { x: 10, y: 10 });
+    expect(measured).toEqual(["pointer canvas"]);
+  });
+});
+
+/* ── measure-inp item 15: the headed window must fit the screen it is measured on ── */
+describe("measure-inp: the headed window is planned inside the screen's work area", () => {
+  interface Plan {
+    scale: number;
+    forced: boolean;
+    fits: boolean;
+    window: { left: number; top: number; width: number; height: number };
+    workAreaAtScale: { left: number; top: number; width: number; height: number };
+    args: string[];
+  }
+  interface Screen {
+    availWidth: number;
+    availHeight: number;
+    availLeft: number;
+    availTop: number;
+    dpr: number;
+    insetW: number;
+    insetH: number;
+  }
+  /* planWindow is owned by review/host-env.mjs (every headed harness plans its window there —
+     src/core/headed-window.test.ts); VIEWPORT is measure-inp's render target. */
+  const load = async (): Promise<{ planWindow(s: Screen, v?: { width: number; height: number }): Plan; VIEWPORT: { width: number; height: number } }> => {
+    const env = (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "host-env.mjs")).href)) as { planWindow: never };
+    const inp = (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "measure-inp.mjs")).href)) as { VIEWPORT: never };
+    return { planWindow: env.planWindow, VIEWPORT: inp.VIEWPORT };
+  };
+  /* The reference host, as the OS reports it: 1920x1200 physical at 150 %, a 72 px taskbar. */
+  const REFERENCE: Screen = { availWidth: 1280, availHeight: 752, availLeft: 0, availTop: 0, dpr: 1.5, insetW: 16, insetH: 87 };
+
+  it("the old fixed 1940x1180 window was larger than the reference host's work area (the defect)", () => {
+    expect(1940 > REFERENCE.availWidth || 1180 > REFERENCE.availHeight).toBe(true);
+  });
+
+  it("on the reference host, a 1920x1080 viewport gets a window that fits, by scaling the browser, not the page", async () => {
+    const { planWindow, VIEWPORT } = await load();
+    expect(VIEWPORT).toEqual({ width: 1920, height: 1080 });
+    const p = planWindow(REFERENCE);
+    expect(p.forced).toBe(true);
+    expect(p.scale).toBeLessThan(1);
+    expect(p.window.width).toBe(1920 + 16);
+    expect(p.window.height).toBe(1080 + 87);
+    expect(p.fits).toBe(true);
+    expect(p.window.left + p.window.width).toBeLessThanOrEqual(p.workAreaAtScale.left + p.workAreaAtScale.width);
+    expect(p.window.top + p.window.height).toBeLessThanOrEqual(p.workAreaAtScale.top + p.workAreaAtScale.height);
+    /* ...and in PHYSICAL pixels the window really is inside the 1920x1128 work area. */
+    expect(p.window.width * p.scale).toBeLessThanOrEqual(1920);
+    expect(p.window.height * p.scale).toBeLessThanOrEqual(1128);
+    expect(p.args).toContain(`--force-device-scale-factor=${p.scale}`);
+  });
+
+  it("a screen that already holds the window is left at its own scale", async () => {
+    const { planWindow } = await load();
+    const p = planWindow({ availWidth: 2560, availHeight: 1400, availLeft: 0, availTop: 0, dpr: 1, insetW: 16, insetH: 87 });
+    expect(p.forced).toBe(false);
+    expect(p.scale).toBe(1);
+    expect(p.fits).toBe(true);
+    expect(p.args.some((a) => a.startsWith("--force-device-scale-factor"))).toBe(false);
+  });
+});
+
+/* ── E3: "after the acknowledgement is presented" is read from the browser, not guessed ──────────
+ *
+ * MEASURED (release build, fresh browser per trial, 21 trials): with the cross-surface commit two
+ * frames after the click, no TASK over 50 ms touched the click's path, but the frame that carried the
+ * commit (its script 14-22 ms, React's passive effects 5-13 ms, then the style/layout/paint of every
+ * re-aimed surface: a 52-72 ms Long Animation Frame) still OVERLAPPED the click's Event Timing window
+ * in 21 of 21 trials: the iGPU presented the acknowledgement 56-80 ms after the click, three to four
+ * frames on. A frame count is a guess about the GPU. The browser's own statement that the click has
+ * been presented is its Event Timing entry — delivered only after that presentation — so the commit
+ * waits for it, with a frame-count fallback for a browser without Event Timing or a click presented
+ * too fast to be reported. */
+describe("deferPastPresentation: the commit waits for the browser to report the interaction presented", () => {
+  type Listener = (list: { getEntries(): { name: string; target: unknown }[] }) => void;
+  let observers: { cb: Listener; disconnected: boolean }[] = [];
+  const install = (supported: boolean): void => {
+    observers = [];
+    class FakeObserver {
+      static supportedEntryTypes = supported ? ["event", "first-input"] : ["mark"];
+      private rec: { cb: Listener; disconnected: boolean };
+      constructor(cb: Listener) {
+        this.rec = { cb, disconnected: false };
+        observers.push(this.rec);
+      }
+      observe(): void {}
+      disconnect(): void {
+        this.rec.disconnected = true;
+      }
+    }
+    vi.stubGlobal("PerformanceObserver", FakeObserver);
+  };
+  const canvas = { id: "canvas" };
+  const other = { id: "grid-cell" };
+  const deliver = (name: string, target: unknown): void => {
+    for (const o of observers) if (!o.disconnected) o.cb({ getEntries: () => [{ name, target }] });
+  };
+  const tick = (): Promise<void> => new Promise<void>((r) => setTimeout(r, 0));
+
+  it("runs only once the entry for THIS event has arrived, then in a task of its own", async () => {
+    install(true);
+    const { deferPastPresentation } = await import("../panels/deferPastPaint");
+    let ran = 0;
+    deferPastPresentation("pointerup", canvas as unknown as EventTarget, () => (ran += 1));
+    flushFrames(3);
+    await tick();
+    expect(ran, "three frames without the entry: not yet presented, not yet run").toBe(0);
+    deliver("pointerdown", canvas);
+    deliver("pointerup", other);
+    await tick();
+    expect(ran, "another event's entry, or a pointerup on another element, is not this one").toBe(0);
+    deliver("pointerup", canvas);
+    expect(ran, "not inside the observer callback").toBe(0);
+    await tick();
+    expect(ran).toBe(1);
+    expect(observers.every((o) => o.disconnected), "the observer is released").toBe(true);
+  });
+
+  it("falls back to a frame count when no entry comes, and runs exactly once", async () => {
+    install(true);
+    const { deferPastPresentation, PRESENTATION_FALLBACK_FRAMES } = await import("../panels/deferPastPaint");
+    let ran = 0;
+    deferPastPresentation("pointerup", canvas as unknown as EventTarget, () => (ran += 1));
+    for (let i = 0; i < PRESENTATION_FALLBACK_FRAMES; i += 1) {
+      flushFrames(1);
+      await tick();
+    }
+    expect(ran).toBe(1);
+    deliver("pointerup", canvas);
+    await tick();
+    expect(ran).toBe(1);
+  });
+
+  it("without Event Timing it is deferPastPaint over two frames", async () => {
+    install(false);
+    const { deferPastPresentation } = await import("../panels/deferPastPaint");
+    let ran = 0;
+    deferPastPresentation("pointerup", canvas as unknown as EventTarget, () => (ran += 1));
+    flushFrames(1);
+    await tick();
+    expect(ran).toBe(0);
+    flushFrames(1);
+    await tick();
+    expect(ran).toBe(1);
+  });
+
+  it("cancel stops it on every path", async () => {
+    install(true);
+    const { deferPastPresentation } = await import("../panels/deferPastPaint");
+    let ran = 0;
+    const cancel = deferPastPresentation("pointerup", canvas as unknown as EventTarget, () => (ran += 1));
+    cancel();
+    deliver("pointerup", canvas);
+    for (let i = 0; i < 12; i += 1) {
+      flushFrames(1);
+      await tick();
+    }
+    expect(ran).toBe(0);
   });
 });

@@ -58,15 +58,17 @@ import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 import {
   FULL_RATE_MAX_RAF_MS,
-  NO_OCCLUSION_ARGS,
   createLoadMeter,
   describePower,
   ensurePresenting,
   gatedBusy,
+  headedWindow,
   hostPower,
   idleBaseline,
   presentationState,
   rafCadence,
+  windowBoundsCheck,
+  windowFitsOf,
 } from "./host-env.mjs";
 
 /**
@@ -171,7 +173,12 @@ const INSTRUMENT = `
   })();
 `;
 
-const browser = await chromium.launch(HEADED ? { headless: false, args: ["--window-size=1940,1180", ...NO_OCCLUSION_ARGS] } : {});
+/* The headed window is planned inside the screen's work area (acceptance report item 15; host-env.mjs
+   owns the plan). A fixed 1940x1180 window was larger than the reference host's 1280x752 DIP work
+   area, and an off-screen window region is not a measurement environment. */
+const headedPlan = HEADED ? await headedWindow(chromium, { width: 1920, height: 1080 }) : null;
+if (headedPlan) console.log(headedPlan.line);
+const browser = await chromium.launch(HEADED ? { headless: false, args: headedPlan.args } : {});
 const ctx = await browser.newContext({
   viewport: { width: 1920, height: 1080 },
   deviceScaleFactor: 1,
@@ -179,6 +186,8 @@ const ctx = await browser.newContext({
 });
 await ctx.addInitScript(INSTRUMENT);
 const page = await ctx.newPage();
+const windowCheck = HEADED ? await windowBoundsCheck(ctx, page, headedPlan.plan) : { checked: false, skipped: "headless" };
+const windowFits = !HEADED || windowFitsOf(headedPlan.plan, windowCheck);
 await page.goto(PAGE_URL, { waitUntil: "load", timeout: 30000 });
 await page.waitForSelector("canvas", { timeout: 25000 });
 /* Let the cold load finish. The warm-up (scene.ts) deliberately spends several frames linking
@@ -472,7 +481,7 @@ const why =
    (review finding, E2 — see build-freshness.mjs). */
 const freshness = await checkBuildFreshness(APP);
 const acceptanceEvidence =
-  verdict === "PASS" && hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION && !hostPowerThrottled && presentationFault === null && freshness.fresh;
+  verdict === "PASS" && hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION && !hostPowerThrottled && presentationFault === null && freshness.fresh && windowFits;
 
 const report = {
   criterion: "E4 — the fabric holds >= 55 fps on the reference machine, degradation explicit.",
@@ -503,6 +512,8 @@ const report = {
     perWindow: orbitReplicates,
   },
   buildFreshness: freshness,
+  /* A headed window that is not inside the screen is not a measurement environment (host-env.mjs). */
+  window: { screen: headedPlan?.screen ?? null, plan: headedPlan?.plan ?? null, check: windowCheck, fits: windowFits },
   hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, throttled: hostPowerThrottled },
   presentation: { before: presentationBefore, after: presentationAfter, fault: presentationFault, fullRateMaxRafMs: FULL_RATE_MAX_RAF_MS },
   hostQuiescence: {
@@ -596,7 +607,8 @@ console.log(
   `  host: ${hostBusy === null ? "load NOT MEASURED" : Math.round(hostBusy * 100) + "% busy across the run excluding this harness"} ` +
     `(gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}); ` +
     `power ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " THROTTLED" : ""}; presentation ${presentationBefore.rafMedianMs ?? "-"}/${presentationAfter.rafMedianMs ?? "-"} ms rAF; ` +
-    `over ${cpus().length} cores; build ${freshness.fresh ? "fresh" : "NOT FRESH (" + freshness.why + ")"} -> acceptanceEvidence=${acceptanceEvidence}`,
+    `over ${cpus().length} cores; build ${freshness.fresh ? "fresh" : "NOT FRESH (" + freshness.why + ")"}; ` +
+    `window ${windowFits ? "inside the screen" : `NOT inside the screen (${JSON.stringify(windowCheck.bounds ?? windowCheck.error ?? null)})`} -> acceptanceEvidence=${acceptanceEvidence}`,
 );
 console.log(
   `  mean=${sample.meanFps}fps p50=${sample.frameMs.p50}ms p95=${sample.frameMs.p95}ms p99=${sample.frameMs.p99}ms ` +

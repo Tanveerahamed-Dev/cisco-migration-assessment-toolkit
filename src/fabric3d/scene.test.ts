@@ -29,7 +29,7 @@ import { Color, InstancedMesh } from "three";
 import fabricJson from "../data/fabric.json";
 import type { Device, Link } from "../core/types";
 import { computeLayout } from "./layout";
-import { buildFabricGraph, createScene } from "./scene";
+import { buildFabricGraph, createScene, runWarmupPassStep } from "./scene";
 import { classifyLink, createCableMaterial, routeCable, surfaceAnchor } from "./geometry/cables";
 import { buildStudioRig, disposeScene } from "./env";
 import { checkAuthoringBands, readTokens, RECEDE_ATTRIBUTE } from "./materials";
@@ -694,5 +694,60 @@ describe("the DOM label report and hover urgency are honoured by the scene (trip
       const ids = idents(t.expression);
       expect(ids.has("labelsCameraMoving") || ids.has("labelUrgent"), t.expression.getText(sf)).toBe(true);
     }
+  });
+});
+
+/* ══ E3: the warm-up DRAWS through the interaction visuals' programs, off screen ═══════════════
+
+   MEASURED (release build, Intel iGPU / ANGLE D3D11, fresh browser per trial, WebGL entry points
+   wrapped): the first device selection after load linked no program, yet the frame that first drew
+   the selection spent 105 ms in `getProgramInfoLog` for `outline-proxy` — the first DRAW through a
+   program the warm-up had only compiled. After this, 3 of 3 trials showed no program call in that
+   frame and no task over 50 ms on the click's path. The schedule is a pure function, so it is
+   executed here with stand-in passes: every step whose enabled prefix does not reach the screen
+   renders inside the priming wrapper, the one that reaches the screen never does, and every flag is
+   restored afterwards — even when a render throws. */
+describe("the pass-by-pass warm-up primes the interaction visuals on every step it does not present", () => {
+  const passes = (): { enabled: boolean; renderToScreen: boolean }[] => [
+    { enabled: true, renderToScreen: false },
+    { enabled: true, renderToScreen: false },
+    { enabled: false, renderToScreen: false } /* turned off by the quality profile */,
+    { enabled: true, renderToScreen: false },
+    { enabled: true, renderToScreen: true },
+  ];
+
+  it("primes every step before the presenting one, and never the presenting one", () => {
+    const ps = passes();
+    const profile = ps.map((p) => p.enabled);
+    const log: { step: number; primed: boolean; enabled: boolean[] }[] = [];
+    let priming = false;
+    const prime = (draw: () => void): void => {
+      priming = true;
+      try {
+        draw();
+      } finally {
+        priming = false;
+      }
+    };
+    let done = false;
+    for (let step = 0; !done; step += 1) {
+      done = runWarmupPassStep(ps, profile, step, () => log.push({ step, primed: priming, enabled: ps.map((p) => p.enabled) }), prime);
+    }
+    expect(log.map((l) => l.primed)).toEqual([true, true, true, true, false]);
+    /* The prefix grows one pass per step, and a pass the profile turned off stays off. */
+    expect(log[1]?.enabled).toEqual([true, true, false, false, false]);
+    expect(log[4]?.enabled).toEqual([true, true, false, true, true]);
+    expect(ps.map((p) => p.enabled), "every flag restored").toEqual(profile);
+  });
+
+  it("restores every pass flag even when the render throws", () => {
+    const ps = passes();
+    const profile = ps.map((p) => p.enabled);
+    expect(() =>
+      runWarmupPassStep(ps, profile, 1, () => {
+        throw new Error("lost context");
+      }, (draw) => draw()),
+    ).toThrow("lost context");
+    expect(ps.map((p) => p.enabled)).toEqual(profile);
   });
 });

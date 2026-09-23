@@ -23,7 +23,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 import { VISIBLE_AFFORDANCE_JS, affordancePaintedAt } from "./working-affordance.mjs";
-import { FULL_RATE_MAX_RAF_MS, NO_OCCLUSION_ARGS, createLoadMeter, describePower, gatedBusy, hostPower, idleBaseline, presentationState, rafCadence } from "./host-env.mjs";
+import { FULL_RATE_MAX_RAF_MS, createLoadMeter, describePower, gatedBusy, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
 
 const APP = process.env.ATLAS_URL || "http://localhost:4181";
 const PAGE_URL = `${APP}/?s=findings`;
@@ -165,9 +165,14 @@ const probeTargets = [];
 const blockingFramesAfterPaint = (loaf, fcp) =>
   typeof fcp === "number" ? loaf.filter((e) => e.duration > PROBE_FRAME_MIN_MS && (e.blockingDuration ?? 0) > 0 && e.startTime >= fcp) : [];
 
+/* The headed window is planned inside the screen's work area once, before the runs (acceptance report
+   item 15; host-env.mjs owns the plan), and every run's window is checked against it: an off-screen
+   window region is not a measurement environment. */
+const headedPlan = await headedWindow(chromium, { width: 1920, height: 1080 });
+console.log(headedPlan.line);
 const runs = [];
 for (let r = 0; r < RUNS; r++) {
-  const browser = await chromium.launch({ headless: false, args: ["--window-size=1940,1180", ...NO_OCCLUSION_ARGS] });
+  const browser = await chromium.launch({ headless: false, args: headedPlan.args });
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
   await ctx.addInitScript(`window.__atlasExposeScene = true;`);
   await ctx.addInitScript(INIT);
@@ -222,6 +227,8 @@ for (let r = 0; r < RUNS; r++) {
   }));
   /* Was the window presenting (at full rate) during this cold load? Read after the load, before close. */
   const presentation = presentationState(await rafCadence(page).catch(() => null));
+  /* ...and was it inside the screen? Read after the load, so the CDP session is not part of it. */
+  const windowCheck = await windowBoundsCheck(ctx, page, headedPlan.plan);
   hostLoadMeter.sample();
   await browser.close();
 
@@ -243,6 +250,7 @@ for (let r = 0; r < RUNS; r++) {
     run: r + 1,
     loafError: data.loafError,
     presentation,
+    window: windowCheck,
     bundle: data.bundle,
     paint: data.affPaint,
     over200ms: data.loaf.filter((e) => e.duration > 200).sort((a, b) => b.duration - a.duration),
@@ -339,6 +347,8 @@ for (let r = 0; r < RUNS; r++) {
  * not a passing one. */
 const FRAME_BAR_MS = 200;
 const KEYSTROKE_BAR_MS = 200;
+/* Every run's window must have been inside the screen (see headedPlan above). */
+const windowFits = runs.length > 0 && runs.every((x) => windowFitsOf(headedPlan.plan, x.window));
 
 const unannounced = runs.flatMap((r) => r.unannouncedFramesOver200ms.map((f) => ({ run: r.run, ...f })));
 const slowKeys = runs.flatMap((r) => r.keystrokes.filter((e) => e.duration > KEYSTROKE_BAR_MS).map((e) => ({ run: r.run, ...e })));
@@ -377,7 +387,8 @@ writeFileSync(
       why,
       /* TRUE only when this verdict may be quoted as E5 evidence: a quiet host AND a served build
          that is this checkout's current dist/ (see build-freshness.mjs). */
-      acceptanceEvidence: verdict !== "NOT MEASURED" && hostQuiet && freshness.fresh,
+      acceptanceEvidence: verdict !== "NOT MEASURED" && hostQuiet && freshness.fresh && windowFits,
+      window: { screen: headedPlan.screen, plan: headedPlan.plan, fits: windowFits, runsOutside: runs.filter((x) => !x.window.inside).map((x) => x.run) },
       hostQuiescence: {
         busyFractionOfRun: hostBusy,
         basis: hostLoad.excess !== null ? "excess over the harness's own process tree" : "gross",

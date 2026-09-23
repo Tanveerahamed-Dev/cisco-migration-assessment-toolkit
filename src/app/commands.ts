@@ -40,6 +40,7 @@ import {
   type Shortcut,
 } from "./keyboard";
 import { useEffect, useSyncExternalStore } from "react";
+import { applyTheme, writeThemePreference } from "./theme-preference";
 
 /* ══ capabilities: verbs that need a surface to be mounted ═════════════════ */
 
@@ -185,8 +186,6 @@ export function openPalette(focusReturn?: HTMLElement | null): void {
 
 /* ══ theme ═════════════════════════════════════════════════════════════════ */
 
-const THEME_KEY = "atlas-scope.theme";
-
 export type Theme = "dark" | "light";
 
 /** The theme in force: an explicit choice wins, otherwise the OS preference decides. */
@@ -200,12 +199,10 @@ export function effectiveTheme(): Theme {
 }
 
 export function setTheme(theme: Theme): void {
-  document.documentElement.setAttribute("data-theme", theme);
-  try {
-    window.localStorage.setItem(THEME_KEY, theme);
-  } catch {
-    /* Storage is a convenience: a private window costs the user one click next session. */
-  }
+  applyTheme(theme);
+  // The key and the refused-write policy belong to theme-preference.ts. A refused write (a private
+  // window, blocked site data) is a convenience lost: the reader clicks once more next session.
+  writeThemePreference(theme);
   // The 3-D scene reads the attribute through a MutationObserver; a header toggle listens for
   // this event so the two controls cannot disagree about which theme is showing.
   window.dispatchEvent(new CustomEvent("atlas-scope:theme", { detail: theme }));

@@ -43,10 +43,11 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
-import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/* Executed (`node review/capture-motion.mjs`), not imported: see `main` at the bottom. */
+const IS_MAIN = typeof process.argv[1] === "string" && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 const OUT = resolve(HERE, "shots", "motion");
 const APP = process.env.ATLAS_URL || "http://localhost:4181";
 const WRITE_PNG = !process.argv.includes("--no-png");
@@ -93,7 +94,7 @@ const FRAME_60_MS = 1000 / 60;
  * Luma is Rec.709 over 8-bit sRGB values (0-255). "Still" means the camera did not change between
  * two frames: no device anchor moved by more than STILL_PX.
  */
-const T = {
+export const T = {
   /* EXACTLY zero. The first draft used 0.02 px, reasoning that no pixel can change for a smaller
      move; the first run refuted it: OrbitControls' damping tail keeps moving the camera by 0.01 ->
      0.0001 px per frame for ~1 s after a release, and those frames still changed hundreds of pixels
@@ -126,6 +127,22 @@ const T = {
      1.0/255 floor stops a near-still tail frame (mean change ~0.01) from reading as a spike. */
   SPIKE_RATIO: 3,
   SPIKE_MIN_EXCESS: 1.0,
+  /* THE REFERENCE RATE HAS A FLOOR (acceptance report 2026-09-23, item 15). The reference is the
+     median rate of the moving neighbours, and that median can be exactly 0: damping-tail frames move
+     the anchors by 0.0001-0.01 px and change no pixel (in the 2026-09-22 run, 20-30 % of the moving
+     frames of every orbit sequence). Divided by 0, every frame with any change became an infinite
+     spike — the "Infinityx" FAIL at light/high dolly frame 59 — so the item could fail on ordinary
+     motion. A neighbourhood that changed (almost) nothing says nothing about how much a frame at
+     THIS camera speed should change, so the reference is floored at a rate that ordinary motion
+     does not exceed a SPIKE_RATIO multiple of: across all 24 motion sequences of that run (2941
+     moving frames) the largest change rate a smooth frame produced was 4.53 levels per px of anchor
+     motion (p99 3.81), and 3 x 1.6 = 4.8 is above it. So a frame is a spike only when it changes
+     more than SPIKE_RATIO times max(neighbour median, 1.6) levels per px, AND by SPIKE_MIN_EXCESS
+     over its neighbours — a real pop among near-still frames still fails (src/fabric3d/
+     render-c5-repairs.test.ts, known-answer cases both ways). Stated cost: where the neighbours'
+     median is below 1.6 (dolly sequences run at ~0.7) the bar rises from 3x their rate to 4.8
+     levels/px; the printed ratio is taken against the floored reference, so it stays finite. */
+  SPIKE_NORM_FLOOR: 1.6,
   /* Z-FIGHTING. On frames where the camera moves slowly (every anchor moved <= SLOW_PX this frame
      AND last frame), real geometry cannot make a pixel go up-down-up: at <= 0.25 px/frame an edge,
      a 2 px cable or a periodic pattern of period >= 3 px (dashes, lid louvers) needs >= 6 frames per
@@ -560,14 +577,14 @@ async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba =
 }
 
 /* ── analysis ─────────────────────────────────────────────────────────────────────────────────── */
-const median = (a) => {
+export const median = (a) => {
   if (!a.length) return null;
   const s = [...a].sort((x, y) => x - y);
   return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 };
 const r2 = (x) => (x === null || x === undefined || Number.isNaN(x) ? null : Math.round(x * 100) / 100);
 
-function camDeltaSeries(meta) {
+export function camDeltaSeries(meta) {
   const d = [0];
   for (let t = 1; t < meta.length; t++) {
     let m = 0;
@@ -584,7 +601,7 @@ function camDeltaSeries(meta) {
   return d;
 }
 
-function frameDiff(A, B, delta) {
+export function frameDiff(A, B, delta) {
   let sum = 0;
   let over = 0;
   let strong = 0;
@@ -632,7 +649,7 @@ function density(meta) {
   };
 }
 
-function analyseMotion(seq, meta, L, w, h, tier) {
+export function analyseMotion(seq, meta, L, w, h, tier) {
   const n = w * h;
   const cd = camDeltaSeries(meta);
   const diffs = [null];
@@ -675,14 +692,17 @@ function analyseMotion(seq, meta, L, w, h, tier) {
     const nb = [];
     for (let k = t - 4; k <= t + 4; k++) if (k !== t && k > 0 && k < meta.length && norm[k] !== null) nb.push(norm[k]);
     if (nb.length < 4) continue;
-    const m = median(nb);
+    /* The reference rate, floored (T.SPIKE_NORM_FLOOR): a neighbourhood that changed nothing is not
+       a rate this frame can be compared with. */
+    const nbRate = median(nb);
+    const m = Math.max(nbRate, T.SPIKE_NORM_FLOOR);
     const nbMean = [];
     for (let k = t - 4; k <= t + 4; k++) if (k !== t && k > 0 && k < meta.length && diffs[k] && cd[k] > T.STILL_PX) nbMean.push(diffs[k].mean);
     const excess = diffs[t].mean - median(nbMean);
-    if (m > 0) ratios.push(norm[t] / m);
+    ratios.push(norm[t] / m);
     const aoEdge = meta[t - 1].aoSuspended !== meta[t].aoSuspended;
     if (norm[t] > T.SPIKE_RATIO * m && excess >= T.SPIKE_MIN_EXCESS) {
-      spikes.push({ frame: t, ratio: r2(norm[t] / m), meanDiff: r2(diffs[t].mean), neighbourMedian: r2(median(nbMean)), camPx: r2(cd[t]), aoEdge, hoverNear: nearHover(meta[t].ts) });
+      spikes.push({ frame: t, ratio: r2(norm[t] / m), rate: r2(norm[t]), neighbourRate: r2(nbRate), meanDiff: r2(diffs[t].mean), neighbourMedian: r2(median(nbMean)), camPx: r2(cd[t]), aoEdge, hoverNear: nearHover(meta[t].ts) });
     }
   }
 
@@ -816,7 +836,7 @@ function analyseMotion(seq, meta, L, w, h, tier) {
     /* The observed spread of the spike statistic, so the margin under SPIKE_RATIO is visible. */
     spikeRatioP99: r2(ratios.length ? [...ratios].sort((x, y) => x - y)[Math.floor(ratios.length * 0.99)] : null),
     spikeRatioMax: r2(ratios.length ? Math.max(...ratios) : null),
-    zfight: { slowStepsJudged: slowSteps, flipPixels, flipShare: Number((flipPixels / n).toFixed(6)), clusters: clusters.slice(0, 10), clusterCount: clusters.length },
+    zfight: { slowStepsJudged: slowSteps, flipPixels, flipShare: Number((flipPixels / n).toFixed(6)), clusters: clusters.slice(0, 10), clusterCount: clusters.length, flipClasses: flipPixels > 0 ? classifyFlipPixels(flipCount, lastFlagFrame, L, w, h) : null },
     labels: { toggles: labelToggles, maxDropsInOneFrame: maxDropsPerFrame, blinks },
     ao,
     aoSuspendedAtEnd: suspendedAtEnd,
@@ -828,7 +848,79 @@ function analyseMotion(seq, meta, L, w, h, tier) {
   };
 }
 
-function clustersOf(mask, w, h) {
+/**
+ * WHAT KIND OF PIXEL is flip-flopping — a DIAGNOSTIC, never a verdict (repair wave 3, 2026-09-23).
+ *
+ * Each class of flipping pixel has a different remedy (a thin stroke wants a width floor or its own
+ * anti-aliasing, a silhouette wants stable edge anti-aliasing, a highlight wants specular
+ * anti-aliasing, a flat-region flip is shading noise), so the count alone could not say what to fix.
+ * Every flagged pixel is classified on the luma frame in which it was LAST flagged (the camera then
+ * moved <= SLOW_PX per frame, so the neighbourhood is the one that flipped), by the shape of the
+ * image around it along the four principal directions, with CONTRAST (12 levels, FLIP_DELTA) as the
+ * only threshold:
+ *   thin-stroke  a ridge or valley at most 3 px wide: both samples 3 px away on one line lie on the
+ *                same side of the pixel's +-1 extremum by >= CONTRAST (a cable, a curb, a strip).
+ *   silhouette   a step: the samples 3 px away on some line differ from each other by >= 2 x
+ *                CONTRAST, and it is not a stroke (a chassis outline, a deck edge).
+ *   highlight    a local peak at least 2 x CONTRAST above the median of its 5x5 neighbourhood that is
+ *                not a stroke or a step (a specular glint, an LED).
+ *   flat         the 5x5 neighbourhood spans < CONTRAST: shading noise (AO, dither, lighting).
+ *   other        none of the above (textures, the port grille, mixed neighbourhoods).
+ */
+export function classifyFlipPixels(flipMap, lastFlagFrame, L, w, h, contrast = T.FLIP_DELTA) {
+  const out = { "thin-stroke": 0, silhouette: 0, highlight: 0, flat: 0, other: 0 };
+  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  for (let p = 0; p < flipMap.length; p++) {
+    if (!flipMap[p]) continue;
+    const t = lastFlagFrame[p];
+    const F = L[t] ?? L[L.length - 1];
+    const x = p % w;
+    const y = (p / w) | 0;
+    if (x < 3 || y < 3 || x >= w - 3 || y >= h - 3) {
+      out.other++;
+      continue;
+    }
+    const at = (dx, dy) => F[(y + dy) * w + (x + dx)];
+    let lo = 255;
+    let hi = 0;
+    const win = [];
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const v = at(dx, dy);
+        win.push(v);
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    if (hi - lo < contrast) {
+      out.flat++;
+      continue;
+    }
+    let stroke = false;
+    let step = false;
+    for (const [dx, dy] of dirs) {
+      const a = at(-3 * dx, -3 * dy);
+      const b = at(3 * dx, 3 * dy);
+      const ridgeMax = Math.max(at(-dx, -dy), at(0, 0), at(dx, dy));
+      const ridgeMin = Math.min(at(-dx, -dy), at(0, 0), at(dx, dy));
+      if ((ridgeMax - a >= contrast && ridgeMax - b >= contrast) || (a - ridgeMin >= contrast && b - ridgeMin >= contrast)) stroke = true;
+      if (Math.abs(a - b) >= 2 * contrast) step = true;
+    }
+    if (stroke) {
+      out["thin-stroke"]++;
+      continue;
+    }
+    if (step) {
+      out.silhouette++;
+      continue;
+    }
+    win.sort((m, n) => m - n);
+    if (at(0, 0) - win[12] >= 2 * contrast || hi - win[12] >= 2 * contrast) out.highlight++;
+    else out.other++;
+  }
+  return out;
+}
+
+export function clustersOf(mask, w, h) {
   const seen = new Uint8Array(mask.length);
   const out = [];
   const stack = [];
@@ -973,205 +1065,213 @@ function writeMask(file, mask, w, h, base) {
   writeFileSync(file, encodePng(w, h, rgb, 3));
 }
 
-/* ── main ─────────────────────────────────────────────────────────────────────────────────────── */
-const server = await serverIdentity();
-const freshness = await checkBuildFreshness(APP);
-console.log(`server: ${server.url} (${server.mode}); build fresh: ${freshness.fresh} — ${freshness.why}`);
-rmSync(OUT, { recursive: true, force: true });
-mkdirSync(OUT, { recursive: true });
+/* ── main ─────────────────────────────────────────────────────────────────────────────────────────
+   Runs only when this file is EXECUTED. Imported (src/fabric3d/render-c5-repairs.test.ts), it is a
+   module of thresholds and pure analysis functions, so the rules a verdict depends on can be pinned
+   by a known-answer test rather than trusted. */
+async function main() {
+  const { chromium } = await import("@playwright/test");
+  const server = await serverIdentity();
+  const freshness = await checkBuildFreshness(APP);
+  console.log(`server: ${server.url} (${server.mode}); build fresh: ${freshness.fresh} — ${freshness.why}`);
+  rmSync(OUT, { recursive: true, force: true });
+  mkdirSync(OUT, { recursive: true });
 
-const browser = await chromium.launch({ args: GPU_ARGS });
-const legs = [];
-for (const theme of THEMES) {
-  for (const tier of TIERS) {
-    /* ATLAS_MOTION_LEGS=dark/high,light/low restricts a run while iterating; a restricted run can
-       never PASS (the verdicts below require all four legs). */
-    if (process.env.ATLAS_MOTION_LEGS && !process.env.ATLAS_MOTION_LEGS.split(",").includes(`${theme}/${tier}`)) continue;
-    const leg = { theme, tier, problems: [], sequences: [], fades: [] };
-    legs.push(leg);
-    const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DSF, colorScheme: theme, reducedMotion: "no-preference" });
-    await ctx.addInitScript(instrument);
-    const page = await ctx.newPage();
-    const errors = [];
-    page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
-    page.on("console", (m) => m.type() === "error" && errors.push(m.text().slice(0, 200)));
-    await page.goto(`${APP}/`, { waitUntil: "networkidle" });
-    await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
-    await page.mouse.move(5, VIEWPORT.height - 5);
-    await awaitSettled(page);
-    const env = await page.evaluate(() => {
-      const c = document.querySelector(".fabric3d canvas, canvas");
-      const gl = document.createElement("canvas").getContext("webgl2");
-      const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
-      return {
-        quality: window.__atlasScene.stats().quality,
-        renderer: gl && dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
-        canvas: { w: c.width, h: c.height, cssW: c.clientWidth, cssH: c.clientHeight },
-        dpr: window.devicePixelRatio,
-        ids: [...document.querySelectorAll(".fabric3d-label[data-device]")].map((e) => e.dataset.device),
-      };
-    });
-    leg.env = env;
-    if (env.quality !== "high") leg.problems.push(`auto-selected tier was "${env.quality}", not high — the high tier is not established on this host`);
-    if (tier === "low") {
-      await page.evaluate(() => window.__atlasScene.setQuality("low"));
+  const browser = await chromium.launch({ args: GPU_ARGS });
+  const legs = [];
+  for (const theme of THEMES) {
+    for (const tier of TIERS) {
+      /* ATLAS_MOTION_LEGS=dark/high,light/low restricts a run while iterating; a restricted run can
+         never PASS (the verdicts below require all four legs). */
+      if (process.env.ATLAS_MOTION_LEGS && !process.env.ATLAS_MOTION_LEGS.split(",").includes(`${theme}/${tier}`)) continue;
+      const leg = { theme, tier, problems: [], sequences: [], fades: [] };
+      legs.push(leg);
+      const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DSF, colorScheme: theme, reducedMotion: "no-preference" });
+      await ctx.addInitScript(instrument);
+      const page = await ctx.newPage();
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+      page.on("console", (m) => m.type() === "error" && errors.push(m.text().slice(0, 200)));
+      await page.goto(`${APP}/`, { waitUntil: "networkidle" });
+      await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.mouse.move(5, VIEWPORT.height - 5);
       await awaitSettled(page);
-    }
-    const box = await page.locator(".fabric3d canvas, canvas").first().boundingBox();
-    const ids = env.ids;
-    console.log(`leg ${theme}/${tier}: tier ${await page.evaluate(() => window.__atlasScene.stats().quality)}, canvas ${env.canvas.w}x${env.canvas.h}, ${ids.length} anchors, ${env.renderer}`);
-
-    for (const seq of SEQUENCES) {
-      await awaitSettled(page);
-      const dir = resolve(OUT, theme, tier, seq.id);
-      const { meta, frames, rgbaFrames, hookErrors } = await record(page, ids, seq.id, seq.run, box, dir, { keepRgba: true });
-      const w = meta[0]?.w, h = meta[0]?.h;
-      const a = analyseMotion(seq, meta, frames, w, h, tier);
-      a.hookErrors = hookErrors;
-      a.dir = dir;
-      a.labelIds = ids;
-      for (const b of a.labels.blinks) b.device = ids[b.idx];
-      /* evidence images */
-      const ev = resolve(OUT, "_evidence", theme, tier, seq.id);
-      mkdirSync(ev, { recursive: true });
-      for (const [k, c] of a.zfight.clusters.slice(0, 3).entries()) {
-        const t = c.lastFlipFrame;
-        writeStrip(resolve(ev, `flipflop-cluster${k + 1}-frames${t - 5}-${t}.png`), rgbaFrames, [t - 5, t - 4, t - 3, t - 2, t - 1, t], c.bbox, w, h);
-      }
-      for (const [k, sp] of a.stillPops.slice(0, 2).entries()) if (sp.bbox) writeStrip(resolve(ev, `still-pop${k + 1}-frames${sp.frame - 1}-${sp.frame}.png`), rgbaFrames, [sp.frame - 1, sp.frame], sp.bbox, w, h, 12, 2);
-      for (const e of a.ao) if (e.jump?.bbox) writeStrip(resolve(ev, `ao-${e.kind}-frames${e.frame - 1}-${e.frame}.png`), rgbaFrames, [e.frame - 1, e.frame], e.jump.bbox, w, h, 8, 2);
-      if (a.zfight.flipPixels > 0) writeMask(resolve(ev, "flipflop-map.png"), a._flipMap, w, h, frames[frames.length - 1]);
-      const worstStill = [...a.stillPops].sort((x, y) => y.pixelsOver - x.pixelsOver)[0];
-      if (worstStill) writeHeat(resolve(ev, `still-pop-${worstStill.frame}-heat.png`), frames[worstStill.frame - 1], frames[worstStill.frame], w, h);
-      for (const r of a.ao) writeHeat(resolve(ev, `ao-${r.kind}-${r.frame}-heat.png`), frames[r.frame - 1], frames[r.frame], w, h);
-      for (const s of a.motionSpikes.slice(0, 3)) writeHeat(resolve(ev, `spike-${s.frame}-heat.png`), frames[s.frame - 1], frames[s.frame], w, h, 4);
-      writeFileSync(resolve(ev, "series.json"), JSON.stringify({ camPx: a._cd, diff: a._diffs, meta: meta.map(({ cam, ...m }) => m) }));
-      delete a._flipMap;
-      delete a._diffs;
-      delete a._cd;
-      leg.sequences.push(a);
-      console.log(
-        `  ${seq.id}: ${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
-          `still pops ${a.stillPops.length}/${a.stillPairsJudged}, spikes ${a.motionSpikes.length}, flip px ${a.zfight.flipPixels} (clusters>=${T.ZF_CLUSTER}: ${a.zfight.clusterCount}), ` +
-          `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map((x) => x.kind + "@" + x.frame + (x.jump ? ` ${x.msAfterLastCameraChange}ms ${x.jump.shareOver8}` : "")))}`,
-      );
-    }
-
-    if (tier === "high") {
-      /* REPLICATED, and with a CONTROL. A single fade is one sample of a timing property, and the first
-         runs disagreed (one high->low fade ran 300 ms in 18 frames, the next was cut by a 517 ms stall).
-         Each direction is therefore recorded FADE_REPEATS times with the pixel copy ON (composite
-         evidence) and FADE_REPEATS times with it OFF (opacity trace only): a stall that appears with
-         the copy off is the product's, not the harness's. */
-      for (let rep = 0; rep < FADE_REPEATS; rep++) for (const copy of [true, false]) for (const seq of FADE_SEQUENCES) {
+      const env = await page.evaluate(() => {
+        const c = document.querySelector(".fabric3d canvas, canvas");
+        const gl = document.createElement("canvas").getContext("webgl2");
+        const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
+        return {
+          quality: window.__atlasScene.stats().quality,
+          renderer: gl && dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
+          canvas: { w: c.width, h: c.height, cssW: c.clientWidth, cssH: c.clientHeight },
+          dpr: window.devicePixelRatio,
+          ids: [...document.querySelectorAll(".fabric3d-label[data-device]")].map((e) => e.dataset.device),
+        };
+      });
+      leg.env = env;
+      if (env.quality !== "high") leg.problems.push(`auto-selected tier was "${env.quality}", not high — the high tier is not established on this host`);
+      if (tier === "low") {
+        await page.evaluate(() => window.__atlasScene.setQuality("low"));
         await awaitSettled(page);
-        const tag = `${seq.id}-r${rep + 1}-${copy ? "copy" : "nocopy"}`;
-        const dir = resolve(OUT, theme, "fade", tag);
-        const { meta, frames } = await record(page, ids, seq.id, seq.run, box, dir, { copy });
-        const f = analyseFade(seq, meta, frames, meta[0].w, meta[0].h);
-        f.dir = copy ? dir : null;
-        f.copy = copy;
-        f.rep = rep + 1;
-        f.tag = tag;
-        f.worstSceneFrameMs = r2(Math.max(...meta.map((m) => m.sceneFrameMs ?? 0)));
-        f.maxHookMs = r2(Math.max(...meta.map((m) => m.hookMs ?? 0)));
-        leg.fades.push(f);
-        console.log(`  ${tag}: max dt ${f.density.maxDtMs} ms, worst scene frame ${f.worstSceneFrameMs} ms, hook <= ${f.maxHookMs} ms; ${f.established ? `hold ${f.holdMs} ms, fade ${f.fadeMs} ms over ${f.framesInFade} frames, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame}, max composite share ${f.compositeMaxOneFrameShare}` : "NOT ESTABLISHED: " + f.why}`);
+      }
+      const box = await page.locator(".fabric3d canvas, canvas").first().boundingBox();
+      const ids = env.ids;
+      console.log(`leg ${theme}/${tier}: tier ${await page.evaluate(() => window.__atlasScene.stats().quality)}, canvas ${env.canvas.w}x${env.canvas.h}, ${ids.length} anchors, ${env.renderer}`);
+
+      for (const seq of SEQUENCES) {
+        await awaitSettled(page);
+        const dir = resolve(OUT, theme, tier, seq.id);
+        const { meta, frames, rgbaFrames, hookErrors } = await record(page, ids, seq.id, seq.run, box, dir, { keepRgba: true });
+        const w = meta[0]?.w, h = meta[0]?.h;
+        const a = analyseMotion(seq, meta, frames, w, h, tier);
+        a.hookErrors = hookErrors;
+        a.dir = dir;
+        a.labelIds = ids;
+        for (const b of a.labels.blinks) b.device = ids[b.idx];
+        /* evidence images */
+        const ev = resolve(OUT, "_evidence", theme, tier, seq.id);
+        mkdirSync(ev, { recursive: true });
+        for (const [k, c] of a.zfight.clusters.slice(0, 3).entries()) {
+          const t = c.lastFlipFrame;
+          writeStrip(resolve(ev, `flipflop-cluster${k + 1}-frames${t - 5}-${t}.png`), rgbaFrames, [t - 5, t - 4, t - 3, t - 2, t - 1, t], c.bbox, w, h);
+        }
+        for (const [k, sp] of a.stillPops.slice(0, 2).entries()) if (sp.bbox) writeStrip(resolve(ev, `still-pop${k + 1}-frames${sp.frame - 1}-${sp.frame}.png`), rgbaFrames, [sp.frame - 1, sp.frame], sp.bbox, w, h, 12, 2);
+        for (const e of a.ao) if (e.jump?.bbox) writeStrip(resolve(ev, `ao-${e.kind}-frames${e.frame - 1}-${e.frame}.png`), rgbaFrames, [e.frame - 1, e.frame], e.jump.bbox, w, h, 8, 2);
+        if (a.zfight.flipPixels > 0) writeMask(resolve(ev, "flipflop-map.png"), a._flipMap, w, h, frames[frames.length - 1]);
+        const worstStill = [...a.stillPops].sort((x, y) => y.pixelsOver - x.pixelsOver)[0];
+        if (worstStill) writeHeat(resolve(ev, `still-pop-${worstStill.frame}-heat.png`), frames[worstStill.frame - 1], frames[worstStill.frame], w, h);
+        for (const r of a.ao) writeHeat(resolve(ev, `ao-${r.kind}-${r.frame}-heat.png`), frames[r.frame - 1], frames[r.frame], w, h);
+        for (const s of a.motionSpikes.slice(0, 3)) writeHeat(resolve(ev, `spike-${s.frame}-heat.png`), frames[s.frame - 1], frames[s.frame], w, h, 4);
+        writeFileSync(resolve(ev, "series.json"), JSON.stringify({ camPx: a._cd, diff: a._diffs, meta: meta.map(({ cam, ...m }) => m) }));
+        delete a._flipMap;
+        delete a._diffs;
+        delete a._cd;
+        leg.sequences.push(a);
+        console.log(
+          `  ${seq.id}: ${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
+            `still pops ${a.stillPops.length}/${a.stillPairsJudged}, spikes ${a.motionSpikes.length}, flip px ${a.zfight.flipPixels}${a.zfight.flipClasses ? " " + JSON.stringify(a.zfight.flipClasses) : ""} (clusters>=${T.ZF_CLUSTER}: ${a.zfight.clusterCount}), ` +
+            `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map((x) => x.kind + "@" + x.frame + (x.jump ? ` ${x.msAfterLastCameraChange}ms ${x.jump.shareOver8}` : "")))}`,
+        );
+      }
+
+      if (tier === "high") {
+        /* REPLICATED, and with a CONTROL. A single fade is one sample of a timing property, and the first
+           runs disagreed (one high->low fade ran 300 ms in 18 frames, the next was cut by a 517 ms stall).
+           Each direction is therefore recorded FADE_REPEATS times with the pixel copy ON (composite
+           evidence) and FADE_REPEATS times with it OFF (opacity trace only): a stall that appears with
+           the copy off is the product's, not the harness's. */
+        for (let rep = 0; rep < FADE_REPEATS; rep++) for (const copy of [true, false]) for (const seq of FADE_SEQUENCES) {
+          await awaitSettled(page);
+          const tag = `${seq.id}-r${rep + 1}-${copy ? "copy" : "nocopy"}`;
+          const dir = resolve(OUT, theme, "fade", tag);
+          const { meta, frames } = await record(page, ids, seq.id, seq.run, box, dir, { copy });
+          const f = analyseFade(seq, meta, frames, meta[0].w, meta[0].h);
+          f.dir = copy ? dir : null;
+          f.copy = copy;
+          f.rep = rep + 1;
+          f.tag = tag;
+          f.worstSceneFrameMs = r2(Math.max(...meta.map((m) => m.sceneFrameMs ?? 0)));
+          f.maxHookMs = r2(Math.max(...meta.map((m) => m.hookMs ?? 0)));
+          leg.fades.push(f);
+          console.log(`  ${tag}: max dt ${f.density.maxDtMs} ms, worst scene frame ${f.worstSceneFrameMs} ms, hook <= ${f.maxHookMs} ms; ${f.established ? `hold ${f.holdMs} ms, fade ${f.fadeMs} ms over ${f.framesInFade} frames, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame}, max composite share ${f.compositeMaxOneFrameShare}` : "NOT ESTABLISHED: " + f.why}`);
+        }
+      }
+      leg.pageErrors = errors.slice(0, 5);
+      await ctx.close();
+    }
+  }
+  await browser.close();
+
+  /* ── verdicts per C5 motion item ──────────────────────────────────────────────────────────────── */
+  const all = legs.flatMap((l) => l.sequences.map((s) => ({ leg: `${l.theme}/${l.tier}`, ...s })));
+  const dense = all.filter((s) => s.density.ok);
+  const notDense = all.filter((s) => !s.density.ok).map((s) => `${s.leg}/${s.sequence} (${s.density.fps} fps, ${s.density.gapsOver50ms} gaps)`);
+  const legProblems = legs.flatMap((l) => l.problems.map((p) => `${l.theme}/${l.tier}: ${p}`));
+
+  function verdict(fails, established, why) {
+    return { verdict: fails.length ? "FAIL" : established ? "PASS" : "UNPROVEN", fails, why };
+  }
+
+  const zf = all.flatMap((s) =>
+    s.zfight.clusterCount > 0 ? [`${s.leg}/${s.sequence}: ${s.zfight.clusterCount} flip-flop clusters >= ${T.ZF_CLUSTER} px (largest ${s.zfight.clusters[0]?.size ?? 0} px at ${JSON.stringify(s.zfight.clusters[0]?.bbox ?? null)}), ${s.zfight.flipPixels} flip px (${s.zfight.flipShare})`] : [],
+  );
+  const sparkle = all.flatMap((s) =>
+    s.zfight.flipShare > T.ZF_MAX_SHARE ? [`${s.leg}/${s.sequence}: ${s.zfight.flipPixels} flip-flopping px, ${s.zfight.flipShare} of the canvas (bar ${T.ZF_MAX_SHARE}); ${s.zfight.clusterCount} clusters >= ${T.ZF_CLUSTER} px`] : [],
+  );
+  const zfSlowSteps = dense.reduce((a, s) => a + s.zfight.slowStepsJudged, 0);
+  const popFails = [
+    ...all.flatMap((s) => s.stillPops.map((p) => `${s.leg}/${s.sequence} still frame ${p.frame}: ${p.pixelsOver} px changed >= ${T.POP_DELTA}/255 (max ${p.maxDelta}) with the camera still, bbox ${JSON.stringify(p.bbox)}`)),
+    ...all.flatMap((s) => s.motionSpikes.map((p) => `${s.leg}/${s.sequence} motion frame ${p.frame}: change ${p.ratio}x its neighbours at the same camera speed (mean ${p.meanDiff} vs ${p.neighbourMedian}, cam ${p.camPx} px${p.aoEdge ? ", AO edge" : ""}${p.hoverNear ? ", hover change nearby" : ""})`)),
+    ...all.flatMap((s) => s.labels.blinks.map((b) => `${s.leg}/${s.sequence} label ${b.device} ${b.state} for only ${b.frames} frame(s) from frame ${b.fromFrame}`)),
+  ];
+  const popStill = dense.reduce((a, s) => a + s.stillPairsJudged, 0);
+  const aoFails = [];
+  const aoUnjudged = [];
+  let aoRestores = 0;
+  for (const s of all.filter((x) => x.tier === "high")) {
+    for (const e of s.ao) {
+      if (e.kind === "drop" && !e.maskedByMotion && (e.jump.shareOver8 > T.AO_MAX_SHARE || e.jump.shareOver32 > T.AO_MAX_STRONG_SHARE))
+        aoFails.push(`${s.leg}/${s.sequence}: AO drop frame ${e.frame} (camera moved ${e.camPx} px: not masked) jumps ${e.jump.shareOver8} of the canvas >= ${T.AO_DELTA}/255 and ${e.jump.shareOver32} >= ${T.AO_STRONG_DELTA}/255`);
+      if (e.kind === "restore") {
+        aoRestores++;
+        if (e.msAfterLastCameraChange > T.AO_RESTORE_MAX_MS) aoFails.push(`${s.leg}/${s.sequence}: AO restored ${e.msAfterLastCameraChange} ms after the camera stopped (> ${T.AO_RESTORE_MAX_MS})`);
+        if (e.jump.shareOver8 > T.AO_MAX_SHARE || e.jump.shareOver32 > T.AO_MAX_STRONG_SHARE)
+          aoFails.push(`${s.leg}/${s.sequence}: AO restore frame ${e.frame} jumps ${e.jump.shareOver8} of the canvas >= ${T.AO_DELTA}/255 and ${e.jump.shareOver32} >= ${T.AO_STRONG_DELTA}/255 (bars ${T.AO_MAX_SHARE} / ${T.AO_MAX_STRONG_SHARE})`);
       }
     }
-    leg.pageErrors = errors.slice(0, 5);
-    await ctx.close();
-  }
-}
-await browser.close();
-
-/* ── verdicts per C5 motion item ──────────────────────────────────────────────────────────────── */
-const all = legs.flatMap((l) => l.sequences.map((s) => ({ leg: `${l.theme}/${l.tier}`, ...s })));
-const dense = all.filter((s) => s.density.ok);
-const notDense = all.filter((s) => !s.density.ok).map((s) => `${s.leg}/${s.sequence} (${s.density.fps} fps, ${s.density.gapsOver50ms} gaps)`);
-const legProblems = legs.flatMap((l) => l.problems.map((p) => `${l.theme}/${l.tier}: ${p}`));
-
-function verdict(fails, established, why) {
-  return { verdict: fails.length ? "FAIL" : established ? "PASS" : "UNPROVEN", fails, why };
-}
-
-const zf = all.flatMap((s) =>
-  s.zfight.clusterCount > 0 ? [`${s.leg}/${s.sequence}: ${s.zfight.clusterCount} flip-flop clusters >= ${T.ZF_CLUSTER} px (largest ${s.zfight.clusters[0]?.size ?? 0} px at ${JSON.stringify(s.zfight.clusters[0]?.bbox ?? null)}), ${s.zfight.flipPixels} flip px (${s.zfight.flipShare})`] : [],
-);
-const sparkle = all.flatMap((s) =>
-  s.zfight.flipShare > T.ZF_MAX_SHARE ? [`${s.leg}/${s.sequence}: ${s.zfight.flipPixels} flip-flopping px, ${s.zfight.flipShare} of the canvas (bar ${T.ZF_MAX_SHARE}); ${s.zfight.clusterCount} clusters >= ${T.ZF_CLUSTER} px`] : [],
-);
-const zfSlowSteps = dense.reduce((a, s) => a + s.zfight.slowStepsJudged, 0);
-const popFails = [
-  ...all.flatMap((s) => s.stillPops.map((p) => `${s.leg}/${s.sequence} still frame ${p.frame}: ${p.pixelsOver} px changed >= ${T.POP_DELTA}/255 (max ${p.maxDelta}) with the camera still, bbox ${JSON.stringify(p.bbox)}`)),
-  ...all.flatMap((s) => s.motionSpikes.map((p) => `${s.leg}/${s.sequence} motion frame ${p.frame}: change ${p.ratio}x its neighbours at the same camera speed (mean ${p.meanDiff} vs ${p.neighbourMedian}, cam ${p.camPx} px${p.aoEdge ? ", AO edge" : ""}${p.hoverNear ? ", hover change nearby" : ""})`)),
-  ...all.flatMap((s) => s.labels.blinks.map((b) => `${s.leg}/${s.sequence} label ${b.device} ${b.state} for only ${b.frames} frame(s) from frame ${b.fromFrame}`)),
-];
-const popStill = dense.reduce((a, s) => a + s.stillPairsJudged, 0);
-const aoFails = [];
-const aoUnjudged = [];
-let aoRestores = 0;
-for (const s of all.filter((x) => x.tier === "high")) {
-  for (const e of s.ao) {
-    if (e.kind === "drop" && !e.maskedByMotion && (e.jump.shareOver8 > T.AO_MAX_SHARE || e.jump.shareOver32 > T.AO_MAX_STRONG_SHARE))
-      aoFails.push(`${s.leg}/${s.sequence}: AO drop frame ${e.frame} (camera moved ${e.camPx} px: not masked) jumps ${e.jump.shareOver8} of the canvas >= ${T.AO_DELTA}/255 and ${e.jump.shareOver32} >= ${T.AO_STRONG_DELTA}/255`);
-    if (e.kind === "restore") {
-      aoRestores++;
-      if (e.msAfterLastCameraChange > T.AO_RESTORE_MAX_MS) aoFails.push(`${s.leg}/${s.sequence}: AO restored ${e.msAfterLastCameraChange} ms after the camera stopped (> ${T.AO_RESTORE_MAX_MS})`);
-      if (e.jump.shareOver8 > T.AO_MAX_SHARE || e.jump.shareOver32 > T.AO_MAX_STRONG_SHARE)
-        aoFails.push(`${s.leg}/${s.sequence}: AO restore frame ${e.frame} jumps ${e.jump.shareOver8} of the canvas >= ${T.AO_DELTA}/255 and ${e.jump.shareOver32} >= ${T.AO_STRONG_DELTA}/255 (bars ${T.AO_MAX_SHARE} / ${T.AO_MAX_STRONG_SHARE})`);
+    /* Ending suspended is a FAIL only when the camera had been still for longer than the restore bar
+       before the recording ended; otherwise the window was too short to judge (recorded, not passed). */
+    if (s.aoSuspendedAtEnd) {
+      if (s.msStillAtEnd !== null && s.msStillAtEnd > T.AO_RESTORE_MAX_MS) aoFails.push(`${s.leg}/${s.sequence}: camera still for ${s.msStillAtEnd} ms at the end and AO never restored`);
+      else aoUnjudged.push(`${s.leg}/${s.sequence}: recording ended ${s.msStillAtEnd} ms after the last camera change, AO still suspended`);
     }
   }
-  /* Ending suspended is a FAIL only when the camera had been still for longer than the restore bar
-     before the recording ended; otherwise the window was too short to judge (recorded, not passed). */
-  if (s.aoSuspendedAtEnd) {
-    if (s.msStillAtEnd !== null && s.msStillAtEnd > T.AO_RESTORE_MAX_MS) aoFails.push(`${s.leg}/${s.sequence}: camera still for ${s.msStillAtEnd} ms at the end and AO never restored`);
-    else aoUnjudged.push(`${s.leg}/${s.sequence}: recording ended ${s.msStillAtEnd} ms after the last camera change, AO still suspended`);
+  const fadeFails = [];
+  let fadesEstablished = 0;
+  for (const l of legs) {
+    for (const f of l.fades) {
+      if (!f.established) continue;
+      fadesEstablished++;
+      if (f.fadeMs < T.FADE_MIN_MS || f.fadeMs >= T.FADE_MAX_MS) fadeFails.push(`${l.theme}/${f.tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS})`);
+      if (f.maxOpacityStep > T.FADE_MAX_STEP) fadeFails.push(`${l.theme}/${f.tag}: opacity fell ${f.maxOpacityStep} in one frame (frame ${f.maxOpacityStepFrame}; bar ${T.FADE_MAX_STEP})`);
+      if (f.compositeJudged && f.compositeMaxOneFrameShare > T.FADE_MAX_PIXEL_SHARE) fadeFails.push(`${l.theme}/${f.tag}: one frame carried ${f.compositeMaxOneFrameShare} of the composited change (frame ${f.compositeMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+    }
   }
-}
-const fadeFails = [];
-let fadesEstablished = 0;
-for (const l of legs) {
-  for (const f of l.fades) {
-    if (!f.established) continue;
-    fadesEstablished++;
-    if (f.fadeMs < T.FADE_MIN_MS || f.fadeMs >= T.FADE_MAX_MS) fadeFails.push(`${l.theme}/${f.tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS})`);
-    if (f.maxOpacityStep > T.FADE_MAX_STEP) fadeFails.push(`${l.theme}/${f.tag}: opacity fell ${f.maxOpacityStep} in one frame (frame ${f.maxOpacityStepFrame}; bar ${T.FADE_MAX_STEP})`);
-    if (f.compositeJudged && f.compositeMaxOneFrameShare > T.FADE_MAX_PIXEL_SHARE) fadeFails.push(`${l.theme}/${f.tag}: one frame carried ${f.compositeMaxOneFrameShare} of the composited change (frame ${f.compositeMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+  const fadeNotEst = legs.flatMap((l) => l.fades.filter((f) => !f.established).map((f) => `${l.theme}/${f.tag}: ${f.why}`));
+
+  const items = {
+    "z-fighting (flip-flop PATCHES >= ZF_CLUSTER px during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
+    "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
+    "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),
+    "AO drop and restore at camera stop (high tier)": verdict(aoFails, aoRestores >= 4 && aoUnjudged.length === 0 && notDense.length === 0 && legProblems.length === 0, `${aoRestores} restores observed at the high tier${aoUnjudged.length ? "; not judged: " + aoUnjudged.join("; ") : ""}`),
+    [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
+  };
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    server,
+    freshness,
+    viewport: VIEWPORT,
+    deviceScaleFactor: DSF,
+    thresholds: T,
+    notDense,
+    legProblems,
+    items,
+    legs,
+  };
+  writeFileSync(resolve(OUT, "report.json"), JSON.stringify(report, null, 1));
+  console.log("\nC5 motion items:");
+  for (const [k, v] of Object.entries(items)) {
+    console.log(`  ${v.verdict.padEnd(8)} ${k} — ${v.why}`);
+    for (const f of v.fails.slice(0, 12)) console.log(`           ${f}`);
+    if (v.fails.length > 12) console.log(`           ... ${v.fails.length - 12} more in report.json`);
   }
+  if (notDense.length) console.log(`  sequences below the density bar: ${notDense.join("; ")}`);
+  if (legProblems.length) console.log(`  leg problems: ${legProblems.join("; ")}`);
+  if (!freshness.fresh || server.mode !== "build") console.log(`  WARNING: not evidence of what ships (server ${server.mode}, fresh ${freshness.fresh}).`);
+  console.log(`report: ${resolve(OUT, "report.json")}`);
+  const verdicts = Object.values(items).map((v) => v.verdict);
+  process.exitCode = verdicts.includes("FAIL") ? 3 : verdicts.includes("UNPROVEN") || !freshness.fresh ? 4 : 0;
 }
-const fadeNotEst = legs.flatMap((l) => l.fades.filter((f) => !f.established).map((f) => `${l.theme}/${f.tag}: ${f.why}`));
 
-const items = {
-  "z-fighting (flip-flop PATCHES >= ZF_CLUSTER px during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
-  "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
-  "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),
-  "AO drop and restore at camera stop (high tier)": verdict(aoFails, aoRestores >= 4 && aoUnjudged.length === 0 && notDense.length === 0 && legProblems.length === 0, `${aoRestores} restores observed at the high tier${aoUnjudged.length ? "; not judged: " + aoUnjudged.join("; ") : ""}`),
-  [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
-};
-
-const report = {
-  generatedAt: new Date().toISOString(),
-  server,
-  freshness,
-  viewport: VIEWPORT,
-  deviceScaleFactor: DSF,
-  thresholds: T,
-  notDense,
-  legProblems,
-  items,
-  legs,
-};
-writeFileSync(resolve(OUT, "report.json"), JSON.stringify(report, null, 1));
-console.log("\nC5 motion items:");
-for (const [k, v] of Object.entries(items)) {
-  console.log(`  ${v.verdict.padEnd(8)} ${k} — ${v.why}`);
-  for (const f of v.fails.slice(0, 12)) console.log(`           ${f}`);
-  if (v.fails.length > 12) console.log(`           ... ${v.fails.length - 12} more in report.json`);
-}
-if (notDense.length) console.log(`  sequences below the density bar: ${notDense.join("; ")}`);
-if (legProblems.length) console.log(`  leg problems: ${legProblems.join("; ")}`);
-if (!freshness.fresh || server.mode !== "build") console.log(`  WARNING: not evidence of what ships (server ${server.mode}, fresh ${freshness.fresh}).`);
-console.log(`report: ${resolve(OUT, "report.json")}`);
-const verdicts = Object.values(items).map((v) => v.verdict);
-process.exitCode = verdicts.includes("FAIL") ? 3 : verdicts.includes("UNPROVEN") || !freshness.fresh ? 4 : 0;
+if (IS_MAIN) await main();

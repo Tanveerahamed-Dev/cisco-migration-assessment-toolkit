@@ -1,5 +1,22 @@
 import "./core/tokens.css";
 import "./app/shell.css";
+import { applyTheme, readThemePreference } from "./app/theme-preference";
+
+/* ── The reader's theme, before ANYTHING can paint in the wrong one (acceptance C4) ─────────────
+ *
+ * No page ships a `data-theme` (a hard-coded `data-theme="dark"` painted the boot line dark for a
+ * light-OS reader for ~190-330 ms: the attribute survived until the application chunk's ThemeToggle
+ * removed it, and since 254694b that chunk loads only AFTER the boot line has painted). With no
+ * attribute, tokens.css follows the OS — which is exactly "system". An EXPLICIT stored choice is
+ * applied here, synchronously, as this entry's first statement: before its wait for the boot line's
+ * paint and before `import("./mount")`. One localStorage read, no import beyond a module with no
+ * dependencies, so it adds nothing measurable to the boot path E5 guards.
+ *
+ * This is the owner, not the only line of defence: a module runs after parsing, so index.html's
+ * inline <head> script applies the same choice during parsing, ahead of every paint (measured with
+ * a slow entry fetch on the release build). theme-boot.test.ts executes both and requires agreement.
+ */
+applyTheme(readThemePreference());
 
 const el = document.getElementById("root");
 if (!el) throw new Error("#root missing from index.html");

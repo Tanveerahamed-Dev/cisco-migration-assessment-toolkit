@@ -15,7 +15,11 @@
  *   C5  labels flickered while the camera moved; appearances now wait for a still frame and a
  *       verdict dwells before it reverses.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { HISTORY_AA, historyWeightFor } from "./postfx";
 import { PerspectiveCamera, Vector3 } from "three";
 import {
   createPresentationCadence,
@@ -206,5 +210,78 @@ describe("C5: labels do not pop while the camera moves", () => {
     let gone = false;
     for (let i = 0; i < 4; i += 1) if (run(s, overlapping, true)[1] === 0) gone = true;
     expect(gone).toBe(true);
+  });
+});
+
+/* ── C5 edge sparkle: the chain's output is temporally stable while the camera creeps ──────────
+ *
+ * `review/capture-motion.mjs` classifies the flip-flopping pixels (repair wave 3, 2026-09-23): 90 %
+ * thin strokes and the rest silhouettes, none specular or flat — SMAA's per-frame decisions toggling
+ * while a damped orbit creeps (see postfx.ts HISTORY_AA). The remedy blends the presented frame with
+ * the previous one, only while the camera creeps. What can be pinned without a GPU is the gate that
+ * decides WHEN, and that it keeps the settled frame plain; the pixels are the harness's evidence. */
+describe("C5: a creeping camera's frames are blended with the last, and a still one's never", () => {
+  it("a still camera, and a fast one, draw the plain chain (F6: every settled frame is unchanged)", () => {
+    expect(historyWeightFor(0)).toBe(0);
+    expect(historyWeightFor(-1)).toBe(0);
+    expect(historyWeightFor(Number.NaN)).toBe(0);
+    expect(historyWeightFor(HISTORY_AA.offAtPx)).toBe(0);
+    expect(historyWeightFor(40)).toBe(0);
+    expect(historyWeightFor(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it("a creeping camera — the speeds the flip rule judges, up to 0.25 px a frame — gets the full weight", () => {
+    for (const s of [HISTORY_AA.fullFromPx, 0.05, 0.1, 0.25, HISTORY_AA.fullToPx]) expect(historyWeightFor(s)).toBe(HISTORY_AA.weight);
+  });
+
+  it("ramps in and out instead of switching, so turning it on or off is never itself a visible step", () => {
+    const steps: number[] = [];
+    let prev = historyWeightFor(0);
+    for (let s = 0; s <= HISTORY_AA.offAtPx + 0.2; s += 0.001) {
+      const w = historyWeightFor(s);
+      steps.push(Math.abs(w - prev));
+      prev = w;
+    }
+    expect(Math.max(...steps)).toBeLessThan(0.05);
+  });
+
+  it("at full weight, a pixel SMAA toggles by 80 levels every frame steps by less than the flip rule's 12", async () => {
+    const { T } = (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "capture-motion.mjs")).href)) as { T: { FLIP_DELTA: number } };
+    const w = HISTORY_AA.weight;
+    let y = 0;
+    let maxStep = 0;
+    for (let n = 0; n < 200; n += 1) {
+      const x = n % 2 === 0 ? 80 : 0;
+      const next = (1 - w) * x + w * y;
+      if (n > 50) maxStep = Math.max(maxStep, Math.abs(next - y));
+      y = next;
+    }
+    expect(maxStep).toBeLessThan(T.FLIP_DELTA);
+  });
+});
+
+/* (tripwire: source text) The blend is gated on "nothing but the camera changed since the last
+   presented frame" (scene.ts `contentVersion`). MEASURED while building it: the OrbitControls
+   `change` listener called `markDirty`, which bumps the content version, so every camera frame read
+   as a content change and the blend never ran — 0.00 weight on every frame of a keyboard orbit,
+   flip counts unchanged. A camera change must request a frame without claiming new content. */
+describe("C5: a camera move is not a content change (tripwire: source text)", () => {
+  const source = readFileSync(resolve(process.cwd(), "src/fabric3d/scene.ts"), "utf8");
+  const body = (head: string): string => {
+    const start = source.indexOf(head);
+    expect(start, head).toBeGreaterThan(-1);
+    return source.slice(start, source.indexOf("\n  };", start));
+  };
+  it("the controls' change listener requests a frame and does not bump the content version", () => {
+    const b = body("const onCameraChange = (): void => {");
+    expect(b).toContain("requestFrame()");
+    expect(b).not.toContain("markDirty()");
+  });
+  it("the pointer's frame request does not bump it either", () => {
+    expect(source).toContain("onNeedsFrame: requestFrame,");
+  });
+  it("only markDirty bumps it", () => {
+    expect(body("const markDirty = (): void => {")).toContain("contentVersion += 1;");
+    expect(body("const requestFrame = (): void => {")).not.toContain("contentVersion");
   });
 });

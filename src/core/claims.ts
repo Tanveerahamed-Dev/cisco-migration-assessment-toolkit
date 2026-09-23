@@ -22,7 +22,7 @@
  */
 import { fabric } from "./data";
 import type { Cite, Device, Hop, Trace, TraceOutcome } from "./types";
-import { isDefiniteDelivery, portOperatorsInText, REFUSAL_UNDECIDING_KINDS, refusalOf, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
+import { INVALID_INPUT_REFUSALS, isDefiniteDelivery, portOperatorsInText, REFUSAL_UNDECIDING_KINDS, refusalOf, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
 
 /* ── §6.2 reserved-word grammar ────────────────────────────────────────────── */
 
@@ -397,7 +397,12 @@ export type ClaimBadge = "SCOPED" | "PARTIAL" | "INDETERMINATE" | "OUT OF SCOPE"
  * enum is a frozen contract, so the distinction is read from the engine's own refusal record
  * (`refusalOf`), never from the claim prose.
  */
-export const isInvalidInput = (trace: Trace): boolean => refusalOf(trace)?.kind === "invalid-address";
+export const isInvalidInput = (trace: Trace): boolean => {
+  const kind = refusalOf(trace)?.kind;
+  /* Read through the engine's own set, not a restated kind: a malformed port or protocol (added
+     2026-09-23, B1) is as much "not a valid question" as a malformed address. */
+  return kind !== undefined && INVALID_INPUT_REFUSALS.has(kind);
+};
 
 export interface ScopeTuple {
   hops: number;

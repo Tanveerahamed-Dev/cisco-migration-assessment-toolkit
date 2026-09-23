@@ -46,11 +46,16 @@ import {
 } from "postprocessing";
 import {
   DataTexture,
+  FramebufferTexture,
   HalfFloatType,
+  NearestFilter,
+  NoColorSpace,
   RGBAFormat,
   RepeatWrapping,
   SRGBColorSpace,
+  Uniform,
   UnsignedByteType,
+  Vector2,
   type Camera,
   type Object3D,
   type Scene,
@@ -118,8 +123,128 @@ export interface PostChain {
   retint(tokens: TokenPalette): void;
   /** The invariant a unit test pins: pass classes in order, with the effects inside each pass. */
   describe(): string[];
+  /**
+   * The history weight the NEXT render may use (see `historyWeightFor`), 0..HISTORY_AA.weight. It
+   * is used only when the chain holds a valid previous frame; anything the chain itself changes (a
+   * size, the motion-suspended occlusion stage, a retint) invalidates that frame, and the render
+   * after it is plain. Consumed by one render: an unset weight is 0.
+   */
+  setHistoryWeight(weight: number): void;
+  /** The weight the LAST render actually used — 0 means that frame was the plain chain's output. */
+  historyWeightUsed(): number;
+  /**
+   * Keep the frame just presented as the history for the next render. Called by the scene after
+   * its presenting render ONLY (never after a warm-up or recording render, which do not reach the
+   * canvas), so the history is always a frame the reader saw.
+   */
+  captureHistory(): void;
   render(deltaSeconds: number): void;
   dispose(): void;
+}
+
+/* ── TEMPORAL STABILITY UNDER A CREEPING CAMERA (acceptance C5 "edge sparkle", 2026-09-23) ────────
+ *
+ * WHAT FLICKERS, CLASSIFIED rather than assumed. `review/capture-motion.mjs` now classifies every
+ * flip-flopping pixel by the image around it. Release build, Intel iGPU / ANGLE D3D11, 760x790, the
+ * two orbit sequences at dark/high and light/low: 293/37, 651/16, 329/111 and 696/39
+ * (thin-stroke / silhouette) of 330, 667, 440 and 735 flipping pixels — 90 % of them thin strokes
+ * (cables, curbs, faceplate strips), the rest silhouettes; ZERO specular highlights and ZERO flat
+ * (shading or ambient-occlusion) pixels. So it is not a shading problem (specular anti-aliasing or a
+ * stable SSAO would change nothing), and the independent attribution already in the harness holds:
+ * with SMAA's blend weights cleared the same sequences flip 7-65 px. SMAA decides per frame, from
+ * the frame alone, where a 1-3 px feature's edges are and how to blend them; while the damped orbit
+ * creeps the feature a fraction of a pixel per frame, those decisions toggle, and a pixel goes
+ * up-down-up by 12-100+ levels.
+ *
+ * WHAT DID NOT CLOSE IT, measured by earlier waves (docs/render-decisions.md): 4x MSAA through the
+ * composer (worse for these strokes, and off for that reason — see `multisampling` above); every
+ * SMAA preset (347/350 px); diagonal detection off (259 px); diagonal off plus a stroke mask
+ * (107-194 px); 2x supersampling (75-125 px, at four times the fill).
+ *
+ * WHAT DOES: the chain's final output is blended with the frame the reader saw last, ONLY while the
+ * camera creeps (the reprojection-free half of a temporal anti-aliaser — at under a pixel per frame
+ * the previous frame is already aligned to within that pixel, so no motion vectors are needed). An
+ * exponential history of weight w turns a pixel that toggles by D every frame into one that moves
+ * by D(1-w)/(1+w): at w = 0.75, a seventh. It is OFF — the output is the plain chain's, bit for bit
+ * — whenever the camera is still (so every settled frame, and therefore every F6 capture, is
+ * unchanged), whenever the camera moves faster than a pixel a frame (where a history would trail),
+ * and on any frame where something other than the camera changed (a selection, an ease, a tier, a
+ * size, the occlusion stage switching for motion): a history is only ever a previous picture of the
+ * SAME content. Near both ends of its range the weight ramps rather than switching, so turning it on
+ * or off is never itself a visible step; and a frame drawn with a history is always followed by a
+ * plain one before the scene reports `converged` (scene.ts). */
+export const HISTORY_AA = Object.freeze({
+  /** Weight of the previous frame at full strength. */
+  weight: 0.75,
+  /** Camera step (drawing-buffer px per rendered frame) at which the weight reaches full strength. */
+  fullFromPx: 0.02,
+  /** ...holds it up to here... */
+  fullToPx: 0.5,
+  /** ...and is back to zero here and above: a history of a frame this far away would trail. */
+  offAtPx: 1,
+});
+
+/** The history weight for a camera that moved `stepPx` drawing-buffer pixels since the last render. */
+export function historyWeightFor(stepPx: number): number {
+  const h = HISTORY_AA;
+  if (!(stepPx > 0) || stepPx >= h.offAtPx) return 0;
+  if (stepPx < h.fullFromPx) return h.weight * (stepPx / h.fullFromPx);
+  if (stepPx <= h.fullToPx) return h.weight;
+  return h.weight * ((h.offAtPx - stepPx) / (h.offAtPx - h.fullToPx));
+}
+
+/**
+ * The blend with the previous frame, as the LAST effect before the output dither in the final pass.
+ * The history is a copy of the canvas, i.e. DISPLAY-encoded 8-bit values, so it is decoded to linear
+ * here before it is mixed with this frame's linear colour; the pass's own encode then writes the
+ * result. At weight 0 the effect returns its input untouched, so the plain chain's output is
+ * reproduced exactly.
+ */
+class HistoryEffect extends Effect {
+  readonly history: Uniform<FramebufferTexture>;
+  readonly weight: Uniform<number>;
+  constructor(texture: FramebufferTexture, historyIsEncoded: boolean) {
+    const history = new Uniform(texture);
+    const weight = new Uniform(0);
+    super(
+      "HistoryEffect",
+      `uniform sampler2D atlasHistory;
+      uniform float atlasHistoryWeight;
+      vec3 atlasHistoryDecode(const in vec3 c) {
+        vec3 v = max(c, vec3(0.0));
+        return mix(v / 12.92, pow((v + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), v));
+      }
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        if (atlasHistoryWeight <= 0.0) {
+          outputColor = inputColor;
+          return;
+        }
+        vec3 previous = texture2D(atlasHistory, uv).rgb;
+        ${historyIsEncoded ? "previous = atlasHistoryDecode(previous);" : ""}
+        outputColor = vec4(mix(inputColor.rgb, previous, atlasHistoryWeight), inputColor.a);
+      }`,
+      {
+        blendFunction: BlendFunction.NORMAL,
+        uniforms: new Map<string, Uniform>([
+          ["atlasHistory", history],
+          ["atlasHistoryWeight", weight],
+        ]),
+      },
+    );
+    this.history = history;
+    this.weight = weight;
+  }
+}
+
+function createHistoryTexture(width: number, height: number): FramebufferTexture {
+  const t = new FramebufferTexture(Math.max(1, width), Math.max(1, height));
+  t.minFilter = NearestFilter;
+  t.magFilter = NearestFilter;
+  /* The bytes are display values and are decoded in the shader; a colour-managed texture would be
+     decoded a second time on sampling. */
+  t.colorSpace = NoColorSpace;
+  t.generateMipmaps = false;
+  return t;
 }
 
 /**
@@ -490,6 +615,13 @@ export function createPostChain(opts: PostChainOptions): PostChain {
   /* Read off the renderer, not assumed: the round trip above is only correct when the encode it
      undoes actually happens downstream. `SRGBColorSpace` is three's string constant "srgb". */
   const dither = new DitherEffect(renderer.outputColorSpace === SRGBColorSpace);
+  /* The previous presented frame (see HISTORY_AA). Sized to the drawing buffer on first capture. */
+  let historyTexture = createHistoryTexture(1, 1);
+  const history = new HistoryEffect(historyTexture, renderer.outputColorSpace === SRGBColorSpace);
+  let historyValid = false;
+  let historyRequested = 0;
+  let historyUsed = 0;
+  const drawingBuffer = new Vector2();
 
   /* Tone mapping gets its OWN EffectPass, and that is the whole fix for the cable aliasing.
    *
@@ -517,12 +649,14 @@ export function createPostChain(opts: PostChainOptions): PostChain {
     passEffects.set(pass, effects.map((e) => e.constructor.name));
     composer.addPass(pass);
   };
+  /* The history blend sits after SMAA (it stabilises SMAA's own per-frame decisions) and before the
+     dither (so the output is still dithered exactly once, at the quantiser). */
   if (profile.smaa) {
     addPass(tone);
-    addPass(smaa, dither);
+    addPass(smaa, history, dither);
   } else {
     // Nothing for the split to buy on a tier with no SMAA: keep it to one pass.
-    addPass(tone, dither);
+    addPass(tone, history, dither);
   }
 
   const bloomSelection = new Set<Object3D>();
@@ -568,6 +702,8 @@ export function createPostChain(opts: PostChainOptions): PostChain {
         normalPass.enabled = on;
         depthDown.enabled = on;
         ssaoPass.enabled = on;
+        /* The picture changes for a reason other than the camera: the last frame is no history. */
+        historyValid = false;
       }
       return true;
     },
@@ -581,6 +717,7 @@ export function createPostChain(opts: PostChainOptions): PostChain {
       // starts being sized by whatever we last measured. The failure is self-reinforcing and
       // silent: measure 1px at construction, write style="width:1px", measure 1px forever.
       composer.setSize(width, height, false);
+      historyValid = false;
     },
 
     /**
@@ -616,6 +753,7 @@ export function createPostChain(opts: PostChainOptions): PostChain {
     },
 
     retint(tokens: TokenPalette): void {
+      historyValid = false;
       selectionOutline.visibleEdgeColor.set(tokens.color("--accent").getHex());
       selectionOutline.hiddenEdgeColor.set(tokens.color("--accent").getHex());
       blockedOutline.visibleEdgeColor.set(tokens.color("--sev-critical").getHex());
@@ -634,7 +772,34 @@ export function createPostChain(opts: PostChainOptions): PostChain {
       });
     },
 
+    setHistoryWeight(weight: number): void {
+      historyRequested = Number.isFinite(weight) ? Math.min(HISTORY_AA.weight, Math.max(0, weight)) : 0;
+    },
+
+    historyWeightUsed(): number {
+      return historyUsed;
+    },
+
+    captureHistory(): void {
+      renderer.getDrawingBufferSize(drawingBuffer);
+      const w = Math.max(1, Math.floor(drawingBuffer.x));
+      const h = Math.max(1, Math.floor(drawingBuffer.y));
+      if (historyTexture.image.width !== w || historyTexture.image.height !== h) {
+        historyTexture.dispose();
+        historyTexture = createHistoryTexture(w, h);
+        history.history.value = historyTexture;
+      }
+      /* The canvas, straight after the presenting render and before the browser composites it:
+         the default framebuffer (antialias off, so single-sampled) still holds the frame. */
+      renderer.setRenderTarget(null);
+      renderer.copyFramebufferToTexture(historyTexture);
+      historyValid = true;
+    },
+
     render(deltaSeconds: number): void {
+      historyUsed = historyValid ? historyRequested : 0;
+      historyRequested = 0;
+      history.weight.value = historyUsed;
       composer.render(deltaSeconds);
     },
 
@@ -657,6 +822,7 @@ export function createPostChain(opts: PostChainOptions): PostChain {
         blockedOutline.dispose();
       }
       if (ssaoNoise !== null) ssaoNoise.dispose();
+      historyTexture.dispose();
       bloomSelection.clear();
     },
   };

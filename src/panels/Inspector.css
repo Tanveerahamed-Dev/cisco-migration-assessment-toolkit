@@ -31,16 +31,22 @@
 }
 
 /* ── the resize divider ────────────────────────────────────────────────────
-   A drag target with a keyboard twin (WCAG 2.5.7). 8px of height plus the header above it clears
-   the 24px target minimum in the vertical axis along the panel's full width. */
+   A drag target with a keyboard twin (WCAG 2.5.7), and a 24px POINTER TARGET in its own right
+   (WCAG 2.5.8, on its size — not on the spacing exception, which is not enumerated anywhere).
+   This used to be `block-size: var(--sp-2)` under a comment claiming "8px plus the header above it
+   clears the 24px minimum"; the header is BELOW it and is not part of the target, and measured in
+   the browser the handle was 760x8 at 1440 and 1160x8 at 1920 (acceptance D5, 2026-09-22). Same
+   pattern as the rail splitter (`.splitter`, shell.css): the extra height is transparent, so what
+   is DRAWN is still the hairline under the handle and the grab pill; the handle simply stops being
+   a strip only a steady hand can catch. src/ui/target-size.test.ts scans this rule. */
 .inspector__divider {
   flex: none;
-  block-size: var(--sp-2);
+  block-size: var(--sp-5); /* 24px */
   cursor: row-resize;
   touch-action: none;
   display: grid;
   place-items: center;
-  background: var(--surface-1);
+  background: transparent;
   border-bottom: var(--hairline) solid var(--border);
 }
 
@@ -524,6 +530,21 @@
   font-family: var(--font-ui);
   font-size: var(--fs-0);
   font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+}
+
+/* A reader-facing note beside a field whose bare value would be misread (JsonView `annotations`).
+   Muted ink at the working size. A tree row is one fixed-height line, so the note cannot wrap: it
+   gives way before the key and value do, and its whole text is also the row's `title`. */
+.jsonview__note {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  margin-inline-start: var(--sp-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-0);
   letter-spacing: var(--ls-0);
 }
 

@@ -1,9 +1,18 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
+    <!-- The reader's EXPLICIT theme, before anything paints (acceptance C4). No theme is written on
+         <html> above: "system" means no attribute, and tokens.css then follows the OS. A stored
+         light/dark choice must be on <html> before the boot line's first paint, and the entry module
+         (src/main.tsx) runs only after parsing — measured on the release build with a slow entry
+         fetch, the boot line painted in the OS theme first. This classic script runs during parsing.
+         It restates src/app/theme-preference.ts (storage key, and only "light"/"dark" set anything);
+         src/app/theme-boot.test.ts executes both over the same storage states and requires the same
+         attribute, so the two cannot drift. -->
+    <script>try{var p=localStorage.getItem("atlas-scope.theme");if(p==="light"||p==="dark")document.documentElement.setAttribute("data-theme",p)}catch(e){}</script>
     <title>Atlas Scope</title>
     <meta
       name="description"

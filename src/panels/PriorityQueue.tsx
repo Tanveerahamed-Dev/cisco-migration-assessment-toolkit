@@ -1931,6 +1931,14 @@ export function PriorityQueue({
             ? `f|${activeRowId}`
             : `d|${deviceId ?? ""}|${linkId ?? ""}|${hopIndex ?? ""}`
         }
+        /* With no finding selected, the first naming row is only a REPRESENTATIVE: every marked row
+           answers "what names this box". So a pick whose answer is already on screen does not move
+           the list. MEASURED before this (1920x1080, ?s=queue, no finding): the reader at scrollTop
+           3200 with F060 and F069 (both naming access13) in view picked access13 on the canvas, the
+           Fabric list or the palette and was thrown to 0 once the marks committed; core2 went 3200
+           -> 2681, dist1 the same. With a finding selected the reveal is of the selection itself and
+           this does not apply (the with-finding half of A4 is unchanged). */
+        {...(activeRowId === null ? { revealUnlessVisible: related.ids } : {})}
         relatedIds={related.ids}
         /* Worded from the SAME deferred selection as the marks, so a row's description can never
            name a different host from the mark drawn on it. */

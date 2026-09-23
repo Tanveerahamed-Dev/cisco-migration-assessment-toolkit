@@ -263,3 +263,35 @@ deepened 40 % toward the ink at opacity 0.92, and the lid hatch deepens with it 
 measured the fill back down to 2.4-2.8:1). Measured after: AP-floor1 4.14:1, AP-floor3-01 4.08:1,
 wan-edge-rtr1.lab 5.06:1 (`materials.ts :: LIGHT_GHOST_DEEPEN`, `LIGHT_GHOST_OPACITY`). Dark theme was
 already 4.54-5.78:1 and is unchanged.
+
+## 10. Edge sparkle under a creeping camera (C5) — a reprojection-free history blend while the camera creeps
+
+**What flickers, classified.** `review/capture-motion.mjs` classifies every flip-flopping pixel by
+the image around it. Release build, Intel iGPU / ANGLE D3D11, 760x790, the two orbit sequences at
+dark/high and light/low: about **90 % thin strokes** (cables, curbs, faceplate strips), the rest
+**silhouettes**, and **zero** specular-highlight or flat (shading / ambient-occlusion) pixels. It is
+therefore not a shading problem: specular anti-aliasing or a steadier SSAO would change nothing. With
+SMAA's blend weights cleared the same sequences flip 7-65 px, so the flicker is SMAA re-deciding a
+1-3 px feature's edges every frame while the damped orbit creeps it by a fraction of a pixel.
+
+**What did not close it**, beside the measurements above: 4x composer MSAA (§3, worse for these
+strokes); every SMAA preset (347/350 px); diagonal detection off (259 px); diagonal off plus a
+stroke mask (107-194 px); 2x supersampling (75-125 px, at four times the fill).
+
+**Decision.** The chain's final output is blended with the previous presented frame **only while
+the camera creeps** — the reprojection-free half of a temporal anti-aliaser: under a pixel per frame
+the previous frame is already aligned to within that pixel, so no motion vectors are needed.
+`postfx.ts :: HISTORY_AA` owns the numbers: weight **0.75** at full strength (a pixel toggling by D
+per frame then moves by D(1-w)/(1+w), a seventh), full strength for camera steps of **0.02-0.5 px**
+per frame, ramping to **off at 1 px** and above (a history of a frame that far away would trail),
+and **plain** — the chain's output bit for bit — whenever the camera is still, and on any frame
+where something other than the camera changed. Every settled frame, and so every F6 capture, is
+unchanged; a frame drawn with a history is always followed by a plain one before the scene reports
+`converged`.
+
+**A/B, same host** (repair wave 3, R5): flip-flopping pixels over the orbit sequences were
+**300 / 699 px** at `d3e2a1c` and **5-40 px** after. Re-measured on the merged wave-3 tree
+(2026-09-23, release preview, same host): **9-35 px** per orbit sequence across the four legs
+(dark/high 17 and 35, dark/low 17 and 23, light/high 20 and 32, light/low 9 and 34), all but five of
+them thin strokes, no cluster of 16 px or more, and every C5 motion item PASS.
+`review/capture-motion.mjs` is the gate.

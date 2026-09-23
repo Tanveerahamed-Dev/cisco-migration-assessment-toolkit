@@ -27,6 +27,7 @@
  * rules all have to survive that. The `test` block below is the only thing that overrides.
  */
 import { cpus } from "node:os";
+import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig, mergeConfig } from "vitest/config";
 
 /* Extension included deliberately: Vite's native config loader warns about a bare specifier here
@@ -54,8 +55,14 @@ export default mergeConfig(
       exclude: [...configDefaults.exclude, "src/**/_*/**", "src/**/_*"],
       testTimeout: 30_000,
       hookTimeout: 30_000,
+      /* Only a ceiling. `minWorkers: 1` stood here and did nothing: Vitest 4 removed the option, so
+         it was silently ignored (TS2769 once this file was type-checked by tsconfig.config.json). */
       maxWorkers: WORKERS,
-      minWorkers: 1,
+      /* Every test must make at least one assertion WHEN IT RUNS — see src/test-setup.ts. A source
+         scan cannot see an expect() inside a loop over an empty list; the runner can. Absolute, so
+         the guard's own proof (src/core/scripts-typecheck.test.ts) can run THIS config over a
+         planted test in another root and still get this file. */
+      setupFiles: [fileURLToPath(new URL("./src/test-setup.ts", import.meta.url))],
       /* No `retry`. A test that passes on the second attempt is a test whose result is noise, and
          hiding that is the defect this file was written to remove, not a workaround for it. */
       retry: 0,

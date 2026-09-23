@@ -11,6 +11,8 @@
  * 2^24, so the two spellings get separate parsers that each reject the other's shape.
  */
 
+import type { Flow } from "../core/types";
+
 /** Host-order unsigned 32-bit IPv4 address. */
 export type Ipv4 = number;
 
@@ -215,4 +217,190 @@ export function rankPrefixMatches<T>(
   });
   out.sort((a, b) => b.prefix.bits - a.prefix.bits || a.seq - b.seq);
   return out.map(({ item, prefix }) => ({ item, prefix }));
+}
+
+/* ── the flow question: ONE validator for every door ─────────────────────────────────────────────
+ *
+ * A flow reaches the engine through four doors: the form, a shared link, the engine's own presets
+ * and counterexamples, and a direct `traceFlow` call. Only the form used to check it (1–65535, whole
+ * number), so a link carrying `tcp>abc` restored `dstPort: NaN` and the trace came back "a tcp/NaN
+ * flow … is delivered" (2026-09-23 acceptance report, B1). The check lives HERE, once, and every door
+ * goes through it: the form and the link hand it the fields as text (`readFlow`), and the engine
+ * hands it the typed value it was given (`flowProblems`), which is judged by the SAME text rules —
+ * a `Flow` whose `dstPort` holds NaN is a flow whose port reads "NaN", and "NaN" is not a port.
+ *
+ * Nothing is coerced. A value that is not exactly one of the accepted spellings is a PROBLEM naming
+ * its field and quoting its raw value; the caller decides how to say it (`describeFlowProblem`). */
+
+/** The protocols this model traces. Anything else is not a narrower question — it is not a question. */
+export const FLOW_PROTOCOLS: readonly Flow["protocol"][] = ["tcp", "udp", "icmp", "ip"];
+
+const isFlowProtocol = (p: string): p is Flow["protocol"] => (FLOW_PROTOCOLS as readonly string[]).includes(p);
+
+/** Only these carry ports; a port on any other protocol names something that does not exist. */
+export const protocolCarriesPorts = (p: string): boolean => p === "tcp" || p === "udp";
+
+/** `flow` is the shared link's whole flow parameter, for a problem with its SHAPE rather than a field. */
+export type FlowField = "srcIp" | "dstIp" | "protocol" | "dstPort" | "srcPort" | "flow";
+
+export type FlowProblemKind =
+  | "missing"
+  | "subnet"
+  | "not-ipv4"
+  | "unknown-protocol"
+  | "not-a-port-number"
+  | "port-out-of-range"
+  | "port-without-ports"
+  | "malformed";
+
+export interface FlowProblem {
+  field: FlowField;
+  kind: FlowProblemKind;
+  /** The raw text of the field, verbatim (trimmed). Quoted back to the reader, never repaired. */
+  value: string;
+}
+
+/** A flow as text, field by field — what a form holds and what a link carries. */
+export interface FlowText {
+  srcIp: string;
+  dstIp: string;
+  protocol: string;
+  /** Empty means "any port" (and is the only legal value for a protocol with no ports). */
+  dstPort: string;
+  srcPort?: string;
+}
+
+const PORT_TEXT = /^\d+$/;
+
+function addressProblem(field: "srcIp" | "dstIp", raw: string): FlowProblem | null {
+  const v = raw.trim();
+  if (v === "") return { field, kind: "missing", value: v };
+  if (v.includes("/")) return { field, kind: "subnet", value: v };
+  if (parseIpv4(v) === null) return { field, kind: "not-ipv4", value: v };
+  return null;
+}
+
+function portProblem(field: "dstPort" | "srcPort", raw: string, protocol: string): { problem: FlowProblem | null; port: number | null } {
+  const v = raw.trim();
+  if (v === "") return { problem: null, port: null };
+  if (!PORT_TEXT.test(v)) return { problem: { field, kind: "not-a-port-number", value: v }, port: null };
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return { problem: { field, kind: "port-out-of-range", value: v }, port: null };
+  /* A port on a protocol that has none is judged only once the protocol itself is known-good: "bogus
+     with port 443" is a protocol problem, not a second, derivative port problem. */
+  if (isFlowProtocol(protocol) && !protocolCarriesPorts(protocol)) {
+    return { problem: { field, kind: "port-without-ports", value: v }, port: null };
+  }
+  return { problem: null, port: n };
+}
+
+/**
+ * Read a flow from its fields as text. Returns the flow when every field is exactly valid, and
+ * otherwise no flow and EVERY problem — a reader fixing one field at a time, only to be told about
+ * the next, is being made to do the validator's work.
+ */
+export function readFlow(text: FlowText): { flow: Flow | null; problems: FlowProblem[] } {
+  const problems: FlowProblem[] = [];
+  const src = addressProblem("srcIp", text.srcIp);
+  if (src) problems.push(src);
+  const dst = addressProblem("dstIp", text.dstIp);
+  if (dst) problems.push(dst);
+  const protocol = text.protocol.trim();
+  if (protocol === "") problems.push({ field: "protocol", kind: "missing", value: protocol });
+  else if (!isFlowProtocol(protocol)) problems.push({ field: "protocol", kind: "unknown-protocol", value: protocol });
+  const dport = portProblem("dstPort", text.dstPort, protocol);
+  if (dport.problem) problems.push(dport.problem);
+  const sport = portProblem("srcPort", text.srcPort ?? "", protocol);
+  if (sport.problem) problems.push(sport.problem);
+  if (problems.length > 0 || !isFlowProtocol(protocol)) return { flow: null, problems };
+  return {
+    flow: { srcIp: text.srcIp.trim(), dstIp: text.dstIp.trim(), protocol, dstPort: dport.port, srcPort: sport.port },
+    problems,
+  };
+}
+
+/** A typed value's text, exactly as it would be written: `NaN` stays "NaN", `1.5` stays "1.5". */
+const asText = (v: unknown): string => (v === null || v === undefined ? "" : String(v));
+
+/**
+ * The problems with a flow that arrived already typed — the engine's entry check. The same rules as
+ * `readFlow`, applied to the value's own text, so a `Flow` is valid exactly when the form would have
+ * produced it.
+ */
+export function flowProblems(flow: Flow): FlowProblem[] {
+  return readFlow({
+    srcIp: asText(flow.srcIp),
+    dstIp: asText(flow.dstIp),
+    protocol: asText(flow.protocol),
+    dstPort: asText(flow.dstPort),
+    srcPort: asText(flow.srcPort),
+  }).problems;
+}
+
+const FIELD_NAME: Readonly<Record<FlowField, string>> = {
+  srcIp: "source address",
+  dstIp: "destination address",
+  protocol: "protocol",
+  dstPort: "destination port",
+  srcPort: "source port",
+  flow: "flow",
+};
+
+export const flowFieldName = (f: FlowField): string => FIELD_NAME[f];
+
+export interface FlowProblemWords {
+  /** What is wrong, naming the field and quoting its value. A complete sentence. */
+  problem: string;
+  /** What to do about it. A complete sentence, or "" when there is nothing to add. */
+  advice: string;
+}
+
+export interface DescribeFlowOptions {
+  /**
+   * Who is being told:
+   *   - `form`     the reader typed it: the value is the subject ("abc is not a port number");
+   *   - `link`     a shared link carried it: the field and the link are named ("The destination
+   *                port "abc" in the shared link is not a port number");
+   *   - `question` the engine was asked it: the field is named, and there is nothing to type.
+   */
+  where: "form" | "link" | "question";
+  /** A real address from the snapshot to suggest, when the caller has one. */
+  example?: string;
+  /** The flow's protocol text, so a port on a portless protocol can name it. */
+  protocol?: string;
+}
+
+/** The words for a problem. The ONE place a flow problem is phrased, for every surface. */
+export function describeFlowProblem(p: FlowProblem, opts: DescribeFlowOptions): FlowProblemWords {
+  const name = FIELD_NAME[p.field];
+  const subject = opts.where === "form" ? p.value : `The ${name} "${p.value}"${opts.where === "link" ? " in the shared link" : ""}`;
+  const holder = opts.where === "link" ? "The shared link names" : "The flow names";
+  const forExample = opts.example ? `, for example ${opts.example}` : "";
+  const protocols = `Use one of ${FLOW_PROTOCOLS.slice(0, -1).join(", ")} or ${FLOW_PROTOCOLS[FLOW_PROTOCOLS.length - 1] ?? ""}.`;
+  switch (p.kind) {
+    case "missing":
+      if (p.field === "protocol") return { problem: opts.where === "form" ? "No protocol is chosen." : `${holder} no protocol.`, advice: protocols };
+      if (opts.where === "form") return { problem: `Enter a ${p.field === "srcIp" ? "source" : "destination"} IPv4 address${forExample}.`, advice: "" };
+      return { problem: `${holder} no ${name}.`, advice: opts.where === "link" && opts.example ? `Enter one${forExample}.` : "" };
+    case "subnet":
+      return { problem: `${subject} names a subnet.`, advice: `This traces one flow, so enter a single address inside it${opts.example ? ` — for example ${opts.example}` : ""}.` };
+    case "not-ipv4":
+      return { problem: `${subject} is not an IPv4 address.`, advice: `Use four dot-separated numbers, each 0 to 255${forExample}.` };
+    case "unknown-protocol":
+      return { problem: `${subject} is not a protocol this model traces.`, advice: protocols };
+    case "not-a-port-number":
+      return { problem: `${subject} is not a port number.`, advice: "Enter a whole number between 1 and 65535, or leave it empty." };
+    case "port-out-of-range":
+      return { problem: `${subject} is outside the port range.`, advice: "Enter a number between 1 and 65535." };
+    case "port-without-ports":
+      return { problem: `${subject} is a port, but ${opts.protocol ?? "this protocol"} carries no ports.`, advice: "Leave the port empty, or choose tcp or udp." };
+    case "malformed":
+      return { problem: `${subject} is not a flow: it has more than four ">"-separated fields.`, advice: "A flow is written source>destination>protocol>port." };
+  }
+}
+
+/** Problem then advice, as one string — what most surfaces render. */
+export function flowProblemSentence(p: FlowProblem, opts: DescribeFlowOptions): string {
+  const w = describeFlowProblem(p, opts);
+  return w.advice === "" ? w.problem : `${w.problem} ${w.advice}`;
 }

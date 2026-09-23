@@ -236,3 +236,117 @@ describe("A4: a revealed row stays revealed across path-surface selections and r
     expect(inView(activeRow(c)), "and the hold survives the next resize").toBe(true);
   });
 });
+
+describe("D3/D5 lead: the focused row is never left under an overlay painted over the port's edge", () => {
+  it("keyboard focus moving down stops ABOVE a sticky status bar, not under it (measured 390x844)", () => {
+    /* MEASURED (2026-09-23, 390x844, ?s=findings, the page scrolls the grid): the status bar wraps to
+       85 px (top 759) and is `position: sticky; bottom: 0` over the document. ArrowDown from the first
+       row left EVERY focused row from the 17th on at top 788-812, bottom 844 — fully under the bar
+       (elementFromPoint at the row's bottom returned the status bar). The reveal's visible band was
+       the viewport and every clip, but nothing that PAINTS over it. Here the bar covers the port's
+       bottom 85 px, and the hit test answers the way the browser's does. */
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    const grid = installLayout(c);
+    const BAR_PX = 85;
+    const barTop = PORT_BOTTOM - BAR_PX;
+    const bar = document.createElement("footer");
+    bar.className = "app__status";
+    document.body.appendChild(bar);
+    const inner = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (this === bar) return rect(barTop, PORT_BOTTOM);
+      return inner.call(this) as DOMRect;
+    };
+    const doc = document as Document & { elementFromPoint?: (x: number, y: number) => Element | null };
+    const hadEfp = Object.prototype.hasOwnProperty.call(doc, "elementFromPoint");
+    const efp = doc.elementFromPoint;
+    doc.elementFromPoint = (_x: number, y: number): Element | null => {
+      if (y >= barTop && y < PORT_BOTTOM) return bar;
+      if (y < portTop || y >= PORT_BOTTOM) return null;
+      if (y < portTop + HEAD_PX) return grid.querySelector(".ag__head");
+      const rows = dataRows(c);
+      return rows.find((r) => {
+        const b = r.getBoundingClientRect();
+        return y >= b.top && y < b.bottom;
+      }) ?? grid;
+    };
+    try {
+      const cell = dataRows(c)[0]!.querySelector<HTMLElement>('[role="rowheader"]')!;
+      act(() => cell.focus());
+      const offenders: string[] = [];
+      let checked = 0;
+      for (let i = 1; i <= 16; i += 1) {
+        act(() => {
+          document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+        });
+        const row = (document.activeElement as HTMLElement).closest<HTMLElement>('[role="row"]')!;
+        // This layout stub positions DATA rows; a group header row has no box here to judge.
+        if (!row.classList.contains('ag__row--data')) continue;
+        checked += 1;
+        const r = row.getBoundingClientRect();
+        if (r.bottom > barTop + 1 || r.top < portTop + HEAD_PX - 1) {
+          offenders.push(`ArrowDown ${i}: row ${Math.round(r.top)}-${Math.round(r.bottom)} vs bar top ${barTop}`);
+        }
+      }
+      expect(checked, "most steps must land on data rows").toBeGreaterThan(12);
+      expect(grid.scrollTop, "the grid must have scrolled for this to test anything").toBeGreaterThan(0);
+      expect(offenders, "a focused row must sit above the status bar (WCAG 2.4.11)").toEqual([]);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = inner;
+      if (hadEfp) doc.elementFromPoint = efp;
+      else delete (doc as { elementFromPoint?: unknown }).elementFromPoint;
+      bar.remove();
+    }
+  });
+});
+
+describe("D3: focus ARRIVING from outside the grid is brought fully into view", () => {
+  it("a cell focused from outside (a dialog returning focus, Tab) that sits under an overlay is revealed above it", () => {
+    /* MEASURED (2026-09-23, 1000x800, `node review/audit-d3-focus.mjs`, compact/idle): the grid's
+       box ran to y=1002 in an 800 px frame and the status bar (774-800) covered its bottom; the
+       roving cell focused by Tab or restored by the palette's Escape sat at 763-780, its ring 38 px
+       of indicator against a 41 px floor ("clipped by div.ag__grid > div.app"). The browser's own
+       focus scroll knows nothing about a bar painted over the grid, and the grid only ran its
+       band-aware reveal for focus IT moved. Focus arriving from outside now gets the same reveal. */
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    const grid = installLayout(c);
+    const BAR_PX = 26;
+    const barTop = PORT_BOTTOM - BAR_PX;
+    const bar = document.createElement("footer");
+    bar.className = "app__status";
+    document.body.appendChild(bar);
+    const inner = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (this === bar) return rect(barTop, PORT_BOTTOM);
+      return inner.call(this) as DOMRect;
+    };
+    const doc = document as Document & { elementFromPoint?: (x: number, y: number) => Element | null };
+    const hadEfp = Object.prototype.hasOwnProperty.call(doc, "elementFromPoint");
+    const efp = doc.elementFromPoint;
+    doc.elementFromPoint = (_x: number, y: number): Element | null => (y >= barTop && y < PORT_BOTTOM ? bar : y >= portTop && y < PORT_BOTTOM ? grid : null);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      /* The row whose box straddles the bar's top edge. */
+      const rows = dataRows(c);
+      const straddler = rows.find((r) => {
+        const b = r.getBoundingClientRect();
+        return b.top < barTop && b.bottom > barTop;
+      })!;
+      expect(straddler, "precondition: a row straddles the bar").toBeTruthy();
+      act(() => outside.focus());
+      const cell = straddler.querySelector<HTMLElement>('[role="rowheader"]')!;
+      act(() => cell.focus());
+      expect(document.activeElement).toBe(cell);
+      const b = straddler.getBoundingClientRect();
+      expect(b.bottom, `the focused row must end above the bar (row ${Math.round(b.top)}-${Math.round(b.bottom)}, bar ${barTop})`).toBeLessThanOrEqual(barTop + 1);
+      expect(b.top).toBeGreaterThanOrEqual(portTop + HEAD_PX - 1);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = inner;
+      if (hadEfp) doc.elementFromPoint = efp;
+      else delete (doc as { elementFromPoint?: unknown }).elementFromPoint;
+      bar.remove();
+      outside.remove();
+    }
+  });
+});

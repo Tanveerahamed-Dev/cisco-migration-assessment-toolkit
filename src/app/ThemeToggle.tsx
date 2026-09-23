@@ -27,61 +27,31 @@ import {
   type ReactElement,
 } from "react";
 import { IconMoon, IconSun, type IconProps } from "../ui/icons";
+import { applyTheme, readThemePreference, writeThemePreference, type ThemePreference } from "./theme-preference";
 import "./chrome.css";
 
-export type ThemePreference = "light" | "dark" | "system";
+/* The preference's storage and its "system = no attribute" rule live in ./theme-preference, which
+   the entry (src/main.tsx) also reads before the boot line paints. Re-exported so existing callers
+   keep their import. */
+export { applyTheme, type ThemePreference };
 export type ResolvedTheme = "light" | "dark";
 
-const STORAGE_KEY = "atlas-scope.theme";
 const DARK_QUERY = "(prefers-color-scheme: dark)";
-
-const isPreference = (v: unknown): v is ThemePreference =>
-  v === "light" || v === "dark" || v === "system";
-
-/**
- * Reading `localStorage` can THROW, not merely return null: a browser set to block site data
- * raises a SecurityError on access. Falling back to "system" is the honest default — it is what
- * the user already told their operating system.
- */
-function readPreference(): ThemePreference {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return isPreference(raw) ? raw : "system";
-  } catch {
-    return "system";
-  }
-}
-
-function writePreference(p: ThemePreference): boolean {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function applyTheme(p: ThemePreference): void {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  if (p === "system") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", p);
-}
 
 /* ── the preference store ──────────────────────────────────────────────────── */
 
-let preference: ThemePreference = typeof window === "undefined" ? "system" : readPreference();
+let preference: ThemePreference = typeof window === "undefined" ? "system" : readThemePreference();
 let persisted = true;
 const listeners = new Set<() => void>();
 
-/* Applied at module load, before the first React render, so an explicit override does not paint
-   one frame of the OS theme first. `index.html` is frozen, so an inline pre-paint script is not
-   available to us; this is the earliest point we own. */
+/* Applied again at module load. The entry already applied the STORED preference before the boot
+   line painted (src/main.tsx — acceptance C4); this keeps the control's store and the attribute in
+   agreement if anything touched the attribute in between. */
 applyTheme(preference);
 
 export function setThemePreference(next: ThemePreference): void {
   preference = next;
-  persisted = writePreference(next);
+  persisted = writeThemePreference(next);
   applyTheme(next);
   for (const l of listeners) l();
 }

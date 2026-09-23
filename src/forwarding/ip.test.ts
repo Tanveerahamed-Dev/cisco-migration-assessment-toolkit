@@ -267,11 +267,21 @@ describe("every address string in the real fabric.json parses", () => {
   });
 
   it("agrees with the engine's own primarySubnet wherever the engine stated one", () => {
+    /* The comparison runs only where BOTH fields are present, so how many rows it ran on is pinned:
+       an l3 table that stopped stating primarySubnet would otherwise pass having compared nothing.
+       Known answer for this snapshot (fabric.json is byte-pinned by provenance.test.ts): 9 l3 rows,
+       5 of them carrying both an SVI address and the engine's primarySubnet. */
+    let compared = 0;
     for (const r of fabric.l3) {
       if (r.sviIp === null || r.primarySubnet === null) continue;
+      compared += 1;
       const derived = parseInterfaceAddress(r.sviIp);
       expect(derived, r.cite).not.toBeNull();
       expect(formatPrefix(derived!.prefix), r.cite).toBe(formatPrefix(parsePrefix(r.primarySubnet)!));
     }
+    expect({ rows: fabric.l3.length, compared }, "l3 rows, and rows carrying both an SVI address and a primarySubnet").toEqual({
+      rows: 9,
+      compared: 5,
+    });
   });
 });

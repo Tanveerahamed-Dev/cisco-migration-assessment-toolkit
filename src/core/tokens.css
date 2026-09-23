@@ -263,6 +263,16 @@
   --z-skiplink: 70;
 }
 
+/* An explicit theme also pins the UA colour scheme. `light dark` above lets the browser paint its
+   own parts (scrollbars, form controls, the Canvas colour the boot line falls back to before these
+   tokens load in `vite` dev) by the OS preference; with a chosen theme opposite to the OS they would
+   keep following the OS. The dark half is the first declaration of the explicit dark block below
+   (one block per selector: contrast.test.ts reads each theme from its single block). Same
+   specificity as `:root`, so the print block at the end still wins. */
+[data-theme="light"] {
+  color-scheme: light;
+}
+
 /* ── dark theme ─────────────────────────────────────────────────────────────
    Emitted twice with identical bodies. The OS preference applies only when the user has not
    chosen; an explicit [data-theme] wins in both directions. Keep the two blocks in sync — a
@@ -325,6 +335,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg: #080a0e;
   --surface-1: #0d1117;
   --surface-2: #131923;

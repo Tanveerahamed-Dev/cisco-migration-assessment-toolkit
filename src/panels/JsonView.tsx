@@ -327,6 +327,12 @@ export interface JsonViewProps {
    * the tab's visibility and the reveal happens the moment the reader arrives.
    */
   visible?: boolean;
+  /**
+   * A reader-facing note per path, drawn beside that row's value — for a field whose bare value
+   * would be misread. The Inspector annotates `coverage.aclLinesUnevaluable`, the collector's parser
+   * flag, which read bare contradicts the status bar's undecidable count (review item 13).
+   */
+  annotations?: Readonly<Record<string, string>>;
   className?: string;
 }
 
@@ -336,6 +342,7 @@ export function JsonView({
   label,
   citedPath = null,
   visible = true,
+  annotations,
   className,
 }: JsonViewProps): ReactElement {
   const initialExpanded = useMemo(() => {
@@ -677,6 +684,7 @@ export function JsonView({
               {row.depth > 0 ? <span className="jsonview__colon">:</span> : null}
               <ValueCell row={row} needle={needle} expanded={open} />
               {isCited ? <span className="jsonview__citedmark">cited here</span> : null}
+              {annotations?.[row.id] !== undefined ? <span className="jsonview__note" title={annotations[row.id]}>{annotations[row.id]}</span> : null}
               <IconButton
                 label={`Copy path ${row.id === "" ? rootLabel : row.id}`}
                 icon={<IconCopy />}

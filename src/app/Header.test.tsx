@@ -113,6 +113,25 @@ describe("the header names the snapshot it is showing", () => {
     expect(text).toContain(String(fabric.meta.sourceBytes).replace(/\B(?=(\d{3})+(?!\d))/g, " "));
   });
 
+  /* D3 visibility, 2026-09-23: the popover opens with focus on "Copy the snapshot sha256", and the
+     unwrapped 64-digit sha pushed that button outside the popover (x=641–668 against a panel ending
+     at x=554, measured at 1440 and 1920). The sha is a DIGEST: it wraps inside its box (the
+     primitive's UNBREAKABLE-TOKEN CONTAINER variant) and is shown whole, and the Copyable is bounded
+     by its row, so the button stays inside. The layout itself is measured by
+     review/audit-d3-focus.mjs; this pins that the header asks for it. */
+  it("renders the sha as a digest that wraps inside the popover, with its copy button first to focus", () => {
+    const c = mount(<Header />);
+    const trigger = c.querySelector<HTMLButtonElement>(".hdr-snap")!;
+    act(() => trigger.focus());
+    click(trigger);
+    const panel = document.querySelector('[role="dialog"][aria-label="Snapshot provenance"]')!;
+    const copyable = panel.querySelector(".ui-copyable");
+    expect(copyable?.classList.contains("ui-copyable--digest"), "the sha256 is not rendered as a wrapping digest").toBe(true);
+    expect(copyable?.querySelector(".ui-copyable__value")?.textContent).toBe(fabric.meta.sourceSha256);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Copy the snapshot sha256");
+    expect(copyable?.contains(document.activeElement)).toBe(true);
+  });
+
   it("names the byte form the digest and the byte count are taken over (O15)", () => {
     const c = mount(<Header />);
     const trigger = c.querySelector<HTMLButtonElement>(".hdr-snap")!;
