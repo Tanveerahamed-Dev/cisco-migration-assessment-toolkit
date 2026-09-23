@@ -212,6 +212,42 @@ export function probeReasonsAt(probe: QualityDecision, tier: QualityTier): strin
 }
 
 /**
+ * Whether the adaptive step-down may still move this tier: it was chosen by the session for itself
+ * (`auto`) and is not already the floor. The scene's step-down judge and its held step-down both
+ * gate on this one predicate, so a caller-pinned tier is outside the step-down at both sites at
+ * once. (The hidden-page step-up gates on `auto` alone, since `low` may step back up.)
+ */
+export function tierIsAdaptive(d: QualityDecision): boolean {
+  return d.auto && d.tier !== "low";
+}
+
+/** What a caller's `setQuality(q)` does to the decision in force. */
+export interface QualityPin {
+  /** The decision in force afterwards. Always `auto: false` — a caller's tier is a pin. */
+  decision: QualityDecision;
+  /** True when the tier CHANGES, so the post chain (and perhaps the graph) must be rebuilt. */
+  rebuild: boolean;
+}
+
+/**
+ * A caller's tier is a PIN, including the tier already in force.
+ *
+ * `setQuality(q)` used to return early when `q` was the current tier, so asking for the tier the
+ * probe had auto-selected left the decision `auto` — and the adaptive step-down then moved it. The
+ * C5 motion harness pinned its HIGH legs that way and, on a contended Intel iGPU (2026-09-23), both
+ * were stepped down to balanced mid-orbit and four C5 items graded on the wrong tier. Asking for the
+ * tier you already have is asking to keep it. The same-tier pin changes nothing drawn, so it needs
+ * no rebuild and no warm-up (the tier-change path, which re-warms the chain, is not entered) — it is
+ * safe to call mid-motion. Re-pinning the tier already pinned is a no-op: the decision in force is
+ * returned as it is (same object), with its caller's reason intact.
+ */
+export function pinQuality(current: QualityDecision, q: QualityTier): QualityPin {
+  if (q === current.tier && !current.auto) return { decision: current, rebuild: false };
+  const decision: QualityDecision = { tier: q, reasons: [`quality tier "${q}" set by the caller`], auto: false };
+  return { decision, rebuild: q !== current.tier };
+}
+
+/**
  * THE SHADOW MAP IS OFF AT EVERY TIER, and that is a decision, not a degradation.
  *
  * Render audit #6 asked for one of two things: make the directional shadow measurable, or stop

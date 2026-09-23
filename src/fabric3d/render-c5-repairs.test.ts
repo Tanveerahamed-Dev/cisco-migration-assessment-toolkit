@@ -253,7 +253,15 @@ describe("capture-motion: the motion-spike rule has a floor under its reference 
  * at the leg's declared tier is now a FAIL of its own, and a leg problem, so no item is graded on
  * evidence about a tier it does not name. Known answers both ways. */
 describe("capture-motion: a sequence is graded only at the tier its leg declares", () => {
-  interface TierHeld { declared: string; tiersSeen: string[]; frames: number; framesOffTier: number; firstOffTierFrame: number | null }
+  interface TierHeld {
+    declared: string;
+    tiersSeen: string[];
+    frames: number;
+    framesOffTier: number;
+    firstOffTierFrame: number | null;
+    framesUnpinned: number;
+    firstUnpinnedFrame: number | null;
+  }
   interface TierModule {
     analyseMotion(seq: { id: string; what: string }, meta: unknown[], L: Uint8Array[], w: number, h: number, tier: string): { tiersSeen: string[]; tierHeld: TierHeld };
     declaredTierFails(leg: string, analysed: readonly { sequence: string; tierHeld: TierHeld }[]): string[];
@@ -262,9 +270,11 @@ describe("capture-motion: a sequence is graded only at the tier its leg declares
     (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "capture-motion.mjs")).href)) as TierModule;
   const W = 4;
   const H = 4;
-  const run = async (declared: string, tiers: string[]) => {
+  /* `auto` is each frame's `stats().qualityAuto`: false = the leg's tier was PINNED (scene.setQuality),
+     so the adaptive step-down could not move it. Omitted, every frame is pinned. */
+  const run = async (declared: string, tiers: string[], auto: (boolean | undefined)[] = tiers.map(() => false)) => {
     const m = await load();
-    const meta = tiers.map((quality, t) => ({ i: t, ts: t * 16.7, cam: [t * 0.1, 0], vis: "", hover: null, fade: null, aoSuspended: false, quality, framesTimed: t, w: W, h: H }));
+    const meta = tiers.map((quality, t) => ({ i: t, ts: t * 16.7, cam: [t * 0.1, 0], vis: "", hover: null, fade: null, aoSuspended: false, quality, qualityAuto: auto[t], framesTimed: t, w: W, h: H }));
     const L = tiers.map(() => new Uint8Array(W * H).fill(90));
     const a = { sequence: "known-answer", ...m.analyseMotion({ id: "known-answer", what: "synthetic" }, meta, L, W, H, declared) };
     return { a, fails: m.declaredTierFails(`dark/${declared}`, [a]) };
@@ -273,7 +283,7 @@ describe("capture-motion: a sequence is graded only at the tier its leg declares
   it("a leg declared high whose frames went high -> low FAILS, naming the first off-tier frame", async () => {
     const { a, fails } = await run("high", ["high", "high", "high", "low", "low", "low"]);
     expect(a.tiersSeen).toEqual(["high", "low"]);
-    expect(a.tierHeld).toEqual({ declared: "high", tiersSeen: ["high", "low"], frames: 6, framesOffTier: 3, firstOffTierFrame: 3 });
+    expect(a.tierHeld).toEqual({ declared: "high", tiersSeen: ["high", "low"], frames: 6, framesOffTier: 3, firstOffTierFrame: 3, framesUnpinned: 0, firstUnpinnedFrame: null });
     expect(fails).toHaveLength(1);
     expect(fails[0]).toMatch(/dark\/high\/known-answer: 3 of 6 frames rendered at low, not the declared high \(first at frame 3\)/);
   });
@@ -293,6 +303,26 @@ describe("capture-motion: a sequence is graded only at the tier its leg declares
     const { fails } = await run("low", ["low", "", "low"]);
     expect(fails).toHaveLength(1);
     expect(fails[0]).toMatch(/1 of 3 frames rendered at \(none\)/);
+  });
+
+  /* C5 at 8e873d2: both HIGH legs rendered at the auto-selected high tier and were stepped down
+     mid-orbit. A leg is now PINNED at its declared tier, and the check asserts the pin held on every
+     frame: a frame at the right tier but still auto is one the adaptive rule was free to move. */
+  it("a frame at the declared tier that was NOT pinned (qualityAuto true) FAILS, naming the first one", async () => {
+    const { a, fails } = await run("high", ["high", "high", "high", "high"], [true, true, false, false]);
+    expect(a.tierHeld).toMatchObject({ framesOffTier: 0, framesUnpinned: 2, firstUnpinnedFrame: 0 });
+    expect(fails).toEqual([expect.stringMatching(/dark\/high\/known-answer: 2 of 4 frames rendered with the tier not pinned \(stats\(\)\.qualityAuto was not false; first at frame 0\)/)]);
+  });
+
+  it("a frame with no pin record is not evidence of a pin (fails closed)", async () => {
+    const { fails } = await run("low", ["low", "low"], [false, undefined]);
+    expect(fails).toEqual([expect.stringMatching(/1 of 2 frames rendered with the tier not pinned/)]);
+  });
+
+  it("an off-tier AND unpinned sequence reports both, in one FAIL line", async () => {
+    const { fails } = await run("high", ["high", "balanced"], [true, true]);
+    expect(fails).toHaveLength(1);
+    expect(fails[0]).toMatch(/1 of 2 frames rendered at balanced, not the declared high \(first at frame 1\); 2 of 2 frames rendered with the tier not pinned/);
   });
 
   it("a sequence whose tier record is missing fails closed rather than passing", async () => {

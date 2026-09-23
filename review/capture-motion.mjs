@@ -39,10 +39,18 @@
  * imported: importing capture.mjs runs its CLI). Exit code: 0 only when every check PASSES; 3 on any
  * FAIL; 4 when a check could not be established (UNPROVEN) and nothing failed.
  *
- * A leg is graded only at the tier it declares: every recorded motion frame's `stats().quality` is
- * compared with the leg's tier, and a sequence with any frame at another tier (an automatic
- * step-down mid-leg, say) FAILS the "declared tier" item and is a leg problem, which leaves every
- * other item UNPROVEN rather than graded on evidence about the wrong tier (`declaredTierFails`).
+ * A leg is graded only at the tier it declares, and it HOLDS that tier: at the start of every leg,
+ * at rest, the tier is PINNED through the product's own mechanism, `scene.setQuality(tier)` — a
+ * caller's tier is not auto and the adaptive step-down never moves it (src/fabric3d/quality.ts
+ * `pinQuality`; the pin reads as `stats().qualityAuto === false`). At 8e873d2 the HIGH legs took the
+ * auto-selected tier unpinned, and on a contended Intel iGPU both were stepped down to balanced
+ * mid-orbit — correct product behaviour, but evidence about a tier the leg did not name. The
+ * adaptive step-down itself is judged where it belongs, by the tier cross-fade item (the same
+ * rebuild path, driven explicitly). Every recorded motion frame's `stats().quality` AND
+ * `stats().qualityAuto` are then compared with the leg's pin, and a sequence with any frame at
+ * another tier, or not pinned, FAILS the "declared tier" item and is a leg problem, which leaves
+ * every other item UNPROVEN rather than graded on evidence about the wrong tier
+ * (`declaredTierFails`).
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -298,6 +306,7 @@ function instrument() {
         i,
         ts,
         quality: s.quality,
+        qualityAuto: s.qualityAuto,
         converged: s.converged,
         aoSuspended: (s.qualityReasons || []).some((r) => /ambient occlusion is suspended/.test(r)),
         framesTimed: s.framesTimed,
@@ -863,27 +872,53 @@ export function analyseMotion(seq, meta, L, w, h, tier) {
  * (including a frame that reported none) is evidence about another tier. It is counted here, and
  * `declaredTierFails` turns any such sequence into a FAIL and a leg problem, so no item is graded on
  * evidence about a tier it does not name.
+ *
+ * ...and at the PINNED tier (C5 at 8e873d2: both HIGH legs stepped down mid-orbit, because the leg's
+ * tier was the auto-selected one and the adaptive rule was free to move it). Each leg now pins its
+ * tier with `setQuality`, and a frame whose `stats().qualityAuto` is not `false` (true, or not
+ * reported) is a frame the adaptive rule could have moved: counted in `framesUnpinned`.
  */
 export function tierHeldBy(meta, declared) {
   const q = meta.map((f) => (typeof f.quality === "string" && f.quality !== "" ? f.quality : "(none)"));
   let off = 0;
   let first = null;
+  let unpinned = 0;
+  let firstUnpinned = null;
   q.forEach((x, t) => {
+    if (meta[t].qualityAuto !== false) {
+      unpinned++;
+      if (firstUnpinned === null) firstUnpinned = t;
+    }
     if (x === declared) return;
     off++;
     if (first === null) first = t;
   });
-  return { declared, tiersSeen: [...new Set(q)], frames: q.length, framesOffTier: off, firstOffTierFrame: first };
+  return {
+    declared,
+    tiersSeen: [...new Set(q)],
+    frames: q.length,
+    framesOffTier: off,
+    firstOffTierFrame: first,
+    framesUnpinned: unpinned,
+    firstUnpinnedFrame: firstUnpinned,
+  };
 }
 
-/** One FAIL line per analysed sequence that was not rendered wholly at its leg's declared tier. */
+/** One FAIL line per analysed sequence that was not rendered wholly at its leg's declared, pinned tier. */
 export function declaredTierFails(leg, analysed) {
   return analysed.flatMap((s) => {
     const t = s.tierHeld;
     if (!t || typeof t.framesOffTier !== "number") return [`${leg}/${s.sequence}: no per-frame tier record — the tier this sequence was rendered at is not established`];
-    if (t.framesOffTier === 0) return [];
-    const others = t.tiersSeen.filter((x) => x !== t.declared);
-    return [`${leg}/${s.sequence}: ${t.framesOffTier} of ${t.frames} frames rendered at ${others.join(", ")}, not the declared ${t.declared} (first at frame ${t.firstOffTierFrame})`];
+    if (typeof t.framesUnpinned !== "number") return [`${leg}/${s.sequence}: no per-frame pin record — whether the adaptive step-down could move this sequence's tier is not established`];
+    const why = [];
+    if (t.framesOffTier > 0) {
+      const others = t.tiersSeen.filter((x) => x !== t.declared);
+      why.push(`${t.framesOffTier} of ${t.frames} frames rendered at ${others.join(", ")}, not the declared ${t.declared} (first at frame ${t.firstOffTierFrame})`);
+    }
+    if (t.framesUnpinned > 0) {
+      why.push(`${t.framesUnpinned} of ${t.frames} frames rendered with the tier not pinned (stats().qualityAuto was not false; first at frame ${t.firstUnpinnedFrame})`);
+    }
+    return why.length ? [`${leg}/${s.sequence}: ${why.join("; ")}`] : [];
   });
 }
 
@@ -1149,13 +1184,21 @@ async function main() {
       });
       leg.env = env;
       if (env.quality !== "high") leg.problems.push(`auto-selected tier was "${env.quality}", not high — the high tier is not established on this host`);
-      if (tier === "low") {
-        await page.evaluate(() => window.__atlasScene.setQuality("low"));
-        await awaitSettled(page);
+      /* PIN the leg's tier, at rest, before the first sequence — for HIGH as well as LOW. A caller's
+         tier is outside the adaptive step-down (quality.ts `pinQuality`); at the tier already in force
+         the pin changes nothing drawn and re-warms nothing, so no rebuild lands in this leg's motion. */
+      await page.evaluate((t) => window.__atlasScene.setQuality(t), tier);
+      await awaitSettled(page);
+      leg.pin = await page.evaluate(() => {
+        const s = window.__atlasScene.stats();
+        return { quality: s.quality, qualityAuto: s.qualityAuto };
+      });
+      if (leg.pin.quality !== tier || leg.pin.qualityAuto !== false) {
+        leg.problems.push(`the leg's tier did not pin: stats() reads quality "${leg.pin.quality}", qualityAuto ${leg.pin.qualityAuto} after setQuality("${tier}")`);
       }
       const box = await page.locator(".fabric3d canvas, canvas").first().boundingBox();
       const ids = env.ids;
-      console.log(`leg ${theme}/${tier}: tier ${await page.evaluate(() => window.__atlasScene.stats().quality)}, canvas ${env.canvas.w}x${env.canvas.h}, ${ids.length} anchors, ${env.renderer}`);
+      console.log(`leg ${theme}/${tier}: tier ${leg.pin.quality} (pinned: ${leg.pin.qualityAuto === false}), canvas ${env.canvas.w}x${env.canvas.h}, ${ids.length} anchors, ${env.renderer}`);
 
       for (const seq of SEQUENCES) {
         await awaitSettled(page);
@@ -1190,7 +1233,7 @@ async function main() {
            leg problem (so no other item is established on it) and a FAIL of its own (below). */
         for (const p of declaredTierFails(`${theme}/${tier}`, [a])) leg.problems.push(p);
         console.log(
-          `  ${seq.id}: tiers ${JSON.stringify(a.tierHeld.tiersSeen)}${a.tierHeld.framesOffTier ? ` (${a.tierHeld.framesOffTier} frames off the declared ${tier}, first at ${a.tierHeld.firstOffTierFrame})` : ""}, ` +
+          `  ${seq.id}: tiers ${JSON.stringify(a.tierHeld.tiersSeen)}${a.tierHeld.framesOffTier ? ` (${a.tierHeld.framesOffTier} frames off the declared ${tier}, first at ${a.tierHeld.firstOffTierFrame})` : ""}, pinned ${a.tierHeld.frames - a.tierHeld.framesUnpinned}/${a.tierHeld.frames}, ` +
             `${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
             `still pops ${a.stillPops.length}/${a.stillPairsJudged}, spikes ${a.motionSpikes.length}, flip px ${a.zfight.flipPixels}${a.zfight.flipClasses ? " " + JSON.stringify(a.zfight.flipClasses) : ""} (clusters>=${T.ZF_CLUSTER}: ${a.zfight.clusterCount}), ` +
             `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map((x) => x.kind + "@" + x.frame + (x.jump ? ` ${x.msAfterLastCameraChange}ms ${x.jump.shareOver8}` : "")))}`,
@@ -1285,7 +1328,7 @@ async function main() {
   const allLegsRan = legs.length === THEMES.length * TIERS.length && legs.every((l) => l.sequences.length === SEQUENCES.length);
 
   const items = {
-    "every recorded motion frame rendered at its leg's declared tier": verdict(tierFails, allLegsRan, `${all.length} sequences across ${legs.length} of ${THEMES.length * TIERS.length} legs, tier read from stats().quality on every recorded frame`),
+    "every recorded motion frame rendered at its leg's declared tier": verdict(tierFails, allLegsRan, `${all.length} sequences across ${legs.length} of ${THEMES.length * TIERS.length} legs, tier and pin read from stats().quality and stats().qualityAuto on every recorded frame; each leg pinned by setQuality(tier) at rest before its first sequence`),
     "z-fighting (flip-flop PATCHES >= ZF_CLUSTER px during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
     "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
     "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),

@@ -143,10 +143,12 @@ import {
   chooseQuality,
   effectivePixelRatio,
   probeCapabilities,
+  pinQuality,
   probeReasonsAt,
   profileFor,
   SHADOW_MAP_IN_USE,
   SHADOW_MAP_REASON,
+  tierIsAdaptive,
   type QualityDecision,
   type QualityProfile,
 } from "./quality";
@@ -3174,7 +3176,7 @@ const createSceneImpl = (
   /** Land a held step-down if the page is quiet. Returns true when it landed (the frame is over). */
   function landHeldStepDown(now: number): boolean {
     if (heldStepDown === null) return false;
-    if (!decision.auto || decision.tier === "low") {
+    if (!tierIsAdaptive(decision)) {
       heldStepDown = null;
       return false;
     }
@@ -3514,7 +3516,7 @@ const createSceneImpl = (
 
     /* Adaptive step-down. Counted over RENDERED frames only: idle frames cost nothing and would
        otherwise dilute the average into never tripping. The step is announced, not silent. */
-    if (decision.auto && decision.tier !== "low" && heldStepDown === null) {
+    if (tierIsAdaptive(decision) && heldStepDown === null) {
       // Judged on the TRUE delta, and announced with it: a clamped 64 in this sentence would tell
       // the reader the step-down happened over a 64 ms frame when it happened over an 800 ms one.
       /* Judged ATTRIBUTION_LAG_MS late, and only on frames the page's own long work did not
@@ -3810,9 +3812,23 @@ const createSceneImpl = (
     },
 
     setQuality(q: QualityTier): void {
-      if (q === decision.tier) return;
+      /* A caller's tier is a PIN, including the tier already in force (quality.ts `pinQuality`):
+         a pinned tier is outside the adaptive step-down, and `stats().qualityAuto` reads false. */
+      const pin = pinQuality(decision, q);
+      if (pin.decision === decision) return; /* already pinned at q */
       tierLog = [];
-      applyQuality({ tier: q, reasons: [`quality tier "${q}" set by the caller`], auto: false });
+      if (pin.rebuild) {
+        applyQuality(pin.decision);
+        return;
+      }
+      /* Same tier: pin it in place. Nothing drawn changes, so there is no rebuild and no warm-up —
+         the path that freezes the view if a tier change lands mid-motion is not entered. Whatever
+         the adaptive rule had in flight is dropped with the auto flag. */
+      decision = pin.decision;
+      heldStepDown = null;
+      pendingStepUp = null;
+      judgeQueue.length = 0;
+      stepDown.reset();
     },
 
     resize(w: number, h: number): void {
