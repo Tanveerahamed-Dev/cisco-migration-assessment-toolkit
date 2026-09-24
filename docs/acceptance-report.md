@@ -1,414 +1,430 @@
 # Atlas Scope — Acceptance Report
 
-Graded 2026-09-23/24 against `docs/acceptance.md`, at HEAD `70bea72`
-(`70bea7250af46ed530e98478157b0ca7a095de6b`, "fix: pin a caller-requested quality tier even when it is
-already in force (C5)"). Every grader found the same tree: `git status --short` showed only
-` M docs/open-issues.md`, an uncommitted edit by a parallel session, and
-`git ls-files --others --exclude-standard` printed nothing, so the build imports no untracked file.
-Six first-pass graders covered groups A–F. Independent refuters then attacked every PASS.
+Graded 2026-09-24 against `docs/acceptance.md`, at HEAD `78bdba5` ("fix: close acceptance repair wave 5
+(A6, B2, C5, D1, D3, F4) and the dev-watch load"). Every grader found the same tree. `git status --short`
+showed only ` M docs/open-issues.md`, an uncommitted documentation edit. `git ls-files --others
+--exclude-standard` printed nothing, so the build imports no untracked file.
 
-**Where the first pass and the refutation disagree, this report applies the refutation.** Four PASS
-verdicts were overturned: A6 → FAIL, D1 → FAIL, E2 → UNPROVEN and F4 → UNPROVEN. Each overturn came
-with a reproducible proof (scripts, commands and their output), so none was set aside. The other 25
-PASS verdicts were attacked and upheld, so no verdict here is "PASS, unrefuted". Every group returned
-a grade; no group is marked "grader did not run".
+Six first-pass graders covered groups A–F. Independent refuters then attacked the PASS verdicts. Every
+group returned a grade, so no group is marked "grader did not run".
 
-Where each group was graded:
+**Where the first pass and the refutation disagree, this report applies the refutation.** Five PASS
+verdicts were overturned to FAIL: A4, A5, B6, D1 and D5. Each overturn came with a reproducible proof
+(a named script, its printed output and a screenshot), so none was set aside. One PASS, D2, was never
+attacked because its refuter did not return. It is listed below as "PASS, unrefuted", not under "What
+is proven".
 
-- **A:** the Vite dev server on :4180 (Browser pane for A1–A3), then an isolated headless Chromium for
-  A4–A6, because the shared Browser pane tab was taken over by another agent mid-probe.
-- **B:** the dev server on :4180, plus engine sweeps under a scratch vitest config.
-- **C:** a private `vite build --outDir <scratch>/dist-c` served by `vite preview` on :4293.
-- **D:** a scratch `vite build` served on :4297; early grid probes on :4180.
-- **E:** `npm run build` served by `vite preview --port 4181 --strictPort`; every harness reported
-  "build: fresh".
-- **F:** the working checkout (byte-identical to `70bea72` under `src/`, `tools/`, `review/`),
-  `git archive` sandboxes, and private previews on :4183 and :4190.
+This report replaces the grade of `70bea72` at this path. Figures from that report appear here only
+where they are labelled as history.
 
-None of it was run from a fresh `git clone` of `70bea72` (O23).
+**Where each group was graded:**
 
-**The tracked-sources gate (a precondition, not a criterion).** Every group ran
-`src/core/tracked-sources.test.ts` and it passed: 6 of 6 in groups A, B and F (F: "no file the build
-loads or the compilers import is missing from HEAD"), and inside green multi-file runs in C
-("Test Files 2 passed (2) / Tests 33 passed (33)"), D (5 files, 82 tests, exit 0) and E
-("Test Files 2 passed (2) Tests 20 passed (20)"). The F grader also parsed every `dist/assets/*.map`:
-70 repo-local sources, all under `src/`, 0 untracked. No refuter attacked the gate, so it is recorded
-here and not under "What is proven".
+| Group | Server and tree |
+|---|---|
+| A | Dev server on :4180. A1 used the shared Browser pane. A4–A6 used an isolated headless Chromium, because another agent was driving the shared pane. |
+| B | Dev server on :4180. Engine modules were imported live in the page with `import('/src/...')`. |
+| C | Release build served from `dist/` on :4181. A scratch rebuild's `dist/index.html` sha256 was `bca154bb…`, byte-identical to the served one. `capture-motion` reported "build fresh: true". |
+| D | :4181 production preview. `checkBuildFreshness` returned `fresh:true, servesLocalDist:true`. The D2 key walk used the :4180 dev server. |
+| E | `npm run build`, served by `vite preview --port 4181 --strictPort`. The harness reported "build: fresh". **The host was on battery for the whole session.** |
+| F | Working tree, plus a fresh `git clone` of `78bdba5` in the scratchpad for F1, F2, F4 and F5. |
+| Refuters | The :4180 dev server (the :4181 preview was down for some of them) and a private scratch build on :4191. |
 
-This report replaces the re-grade of `443a05a` at this path. Figures in that report are history, not
-evidence for `70bea72`.
+**The tracked-sources gate is a precondition, not a criterion.** `src/core/tracked-sources.test.ts`
+passed 6 of 6 in groups A, B, D and F. It also passed inside green multi-file runs in C ("Test Files 2
+passed, Tests 33 passed") and E. One exception: in F's loaded fresh-clone suite, 2 of its tests timed out
+(35.5 s and 31.4 s). They passed in the targeted re-run. F rebuilt the entry pages with a
+module-recording plugin: "92 application modules, 0 are untracked and 0 differ from HEAD".
 
 ## Verdict
 
-**Atlas Scope is not ready for acceptance.** Seven of the 39 criteria FAIL and seven are UNPROVEN. An
-UNPROVEN criterion is not a pass. The failures: a finding reaches its configuration evidence in only
-12 of 146 cases (A1); with a trace active, the fabric does not show a selected device's blast radius
-(A6, overturned); the Ctrl+K palette states forwarding verdicts with no scope claim or caveat, and
-calls an undecided denial "the blocking-hop answer" (B2); a sub-2 px dashed hairline is drawn in the
-link bundle at both tiers and in both themes (C5); the Path surface's Queue/Evidence switch at 768 px
-cannot be reached by keyboard (D1, overturned); at 390 px the focused status-bar buttons are painted
-over by the side rail, so focus is not visible (D3); and in the first acceptance-grade cold-load run
-since `1d19e22`, keystrokes during load took 240–400 ms against a 200 ms bar (E5). Four UNPROVEN
-criteria cannot be moved with this snapshot or this reference set: A2 and B8 need depth-2 flows and a
-decided refusal, C1 has no valid blind verdict, and F3 has no history before `50a3dc5`. E2 and E3 each
-lack acceptance-grade evidence for the declared journey `J2-first-select-device-3d`, partly because of
-a newly found load-meter defect in `review/measure-inp.mjs`. F4 is proven only below 768 px. What
-survived attack is substantial: the forwarding engine's honesty (B3–B5), citations and provenance
-(B6, F5), stated coverage (B7), null handling (B1), blocked-flow attribution (A3), re-aiming (A4), the
-settled render and themes (C2–C4, C6), most of accessibility (D2, D4–D8), frame rate (E4), and the
-type-check, suite and determinism gates (F1, F2, F6).
+**Atlas Scope is not ready for acceptance at `78bdba5`.** Seven criteria FAIL:
 
-Totals, without compression: **25 PASS, 7 FAIL, 7 UNPROVEN.** This is a count, not a score.
+- **A1:** configuration evidence is reachable for only 12 of 146 findings.
+- **A4:** a finding selected from another surface is not revealed in a filtered queue.
+- **A5:** Reset view does not reset while the orbit is still coasting.
+- **B6:** the Path surface shows a RIB-incompleteness claim with its citations dropped.
+- **D1:** a mouse-operable off-view pointer can never receive keyboard focus.
+- **D5:** that same pointer is a 16.84 px target.
+- **F2:** `npx vitest run` went red on a fresh clone: 12 timeouts under host load.
+
+Eight more are UNPROVEN, and UNPROVEN is not a pass:
+
+- A2 and B8 need producer data this snapshot does not have.
+- C1 needs an owner decision.
+- E2, E3, E4 and E5 have no acceptance-grade run, because the host never left battery power.
+- F3 lacks executable red-before-fix history for four engines.
+
+The other 24 criteria PASS: 23 survived an attack, and D2 was never attacked. The engine's honesty
+under the collected data is strong. B1–B5 and B7 held against sweeps of up to 10,374 traces with zero
+counterexamples. Craft, contrast, reduced motion and determinism also held. The failures are
+concentrated in two places: one off-view pointer control (it causes both D1 and D5), and the edges of
+camera and selection behaviour that the first pass did not probe.
 
 ## Scorecard
 
-Overturns applied: A6, D1 (PASS → FAIL); E2, F4 (PASS → UNPROVEN). All other verdicts are the first
-pass's, upheld under attack where PASS.
+Verdicts are final, with every overturn applied. "Upheld" means a refuter attacked the PASS and it
+survived. "Overturned" means the refutation's proof was applied in place of the first pass.
 
 | Criterion | Verdict | Evidence | Note |
 |---|---|---|---|
-| A1 | **FAIL** | F099 took 3 interactions (Ctrl+K, type + Enter, click "Show the record that matches this finding: access13 Gi0/11 (err-disabled)"); camera unmoved. F088: "No configuration evidence route: the finding names no configuration line and nothing we hold matches its words." `EvidencePane.namedconfig.test.ts` 12/12 re-measures the census 6/146 named, 2/143/1 literal, noTarget=[F142]. | 134 of 146 have no configuration-evidence route. O12: not closable in Atlas Scope. |
-| A2 | **UNPROVEN** | Depth-1 trace of tcp 10.0.10.50→10.0.30.10:3389 names host, egress `Vlan30`, next hop, route `routes.core1[6]` and ACL `acls.core1.PROTECT_SERVERS[3]`. Hop-depth ratchet: 4 tests passed, asserts maximum depth 1. | The multi-hop half never ran on real data (O34). |
-| A3 | PASS | "denied at core1 by ACL PROTECT_SERVERS line 4 of 4 (acls.core1.PROTECT_SERVERS[3]: \"deny ip any any\")". Refuter: 346 denied traces in a 4,800-flow SSR sweep, every one with ACL decider, raw text and cite. | Verdict is labelled "? UNDECIDED"; no truly decided block exists in this snapshot. |
-| A4 | PASS | Six selection sources (fabric device, fabric link, path hop, queue finding, evidence-pane finding, palette device) each re-aimed the other surfaces with camera, flow and queue context preserved; restored links keep `d` and `hop`. | Refuter: queue `aria-current` lagged the URL by 0.5–3 s under load; always converged. |
-| A5 | PASS | Hover sets `data-hovering='true'`; clicks select; double-click frames access13; "Reset view" returns to the load pose (`equalsLoad: true`); on-fabric ring marker and "core1 C ? UNDECIDED". | On-fabric trace is a one-node marker; `flow.ts` path geometry never ran on real data. |
-| A6 | **FAIL** (overturned) | First pass: 9 stranded on core1, 8 on core2, pixel diffs, disagreement text. Refuter: `?d=core2&flow=…3389&hop=0` marks 5 of 8 (access3, access5, access17 off-canvas, `visible:false`), no count or off-screen notice; core1 marks 0 of 9 until an extra button is pressed. | Refutation applied: proof present (ui7–ui9.mjs). |
-| B1 | PASS | 26-device, 5-tab sweep; uncollected devices, no-RIB hosts, links, `is:healthy` and unmodelled hops all read "not observed" or undetermined; every flagged 0 is a real 0 in the source (sha `9580aa09…`). | Latent: `tools/compile-snapshot.mjs:332/:350` compile a null severity to `"Info"`; no null reaches it today. |
-| B2 | **FAIL** | `traceFlow` for all 5 `suggestedFlows()` entries: every claim starts "Under the collected RIBs of core1 and core2 only (2 of 26 hosts …)", caveats 8–13; 4,160-flow sweep, 0 unscoped. But the palette reads "10.0.10.50 -> 10.0.30.10:3389 \| trace a path — this one ends denied" and "…the blocking-hop answer with its exact configuration line." | The palette (`commands.ts:404-409`, `:734-739`) carries no scope or caveat, and contradicts the trace's "That denial is not decided". |
-| B3 | PASS | `engine.test.ts …` 112/112, exit 0; 400 of 4,160 traces touch a no-RIB host, all indeterminate. Refuter re-ran 81/81 and swept 4,800: 0 delivered through a non-RIB host. | — |
-| B4 | PASS | `engine.off-subnet.test.ts` green; 1,456/1,456 out-of-scope traces carry "lies in no subnet". Refuter: 2,440 random off-collection sources, all out-of-scope. | — |
-| B5 | PASS | Unit tests against real `PROTECT_SERVERS[2]` and `INET_RETURN[0]`; refuter re-ran "Tests 10 passed \| 69 skipped" and a 630-flow sweep with 0 violations. | Established-line test is weak alone (the flow is indeterminate for other reasons); `evaluateAcls` tests isolate it. Object-group only synthetic. |
-| B6 | PASS | 10 random + 5 targeted citations clicked, 0 unresolved; 796/796 model citations resolve; 770 identity cross-checks, 0 mismatches. Refuter: 589 field comparisons against source, 0 mismatches. | O9: the Inspector shows the compiled record, not raw source bytes, and says so. |
-| B7 | PASS | "23/26 collected", "RIBs 2/26 (both shown incomplete)", "ACLs 1/26", "centrality 25/44" visible; refuter: 72 state × viewport combinations, all four visible and hit-testable. | Transient modals cover it (O32; help dialog at 320x568). |
-| B8 | **UNPROVEN** | Only the negative state renders: "None of the 8 nearby variations … so no counterexample is offered." 924 denied/dropped traces, 0 counterexamples. Positive state only under `vi.mock`. | O13. Heading "Nearby flow with a different outcome" sits over a body saying none was offered. |
-| C1 | **UNPROVEN** | `review/blind/KEY.json`: 12 entries, no verdict/winner field; 8 orphan sheets; the "-craft" sheet still shows "Forward AI" and the Storylane modal. | No valid blind verdict exists or can exist against these references (O19). |
-| C2 | PASS | `capture.mjs app`: "PASS capture app 32 of 32 frames rendered, settled on screen and at tier high"; `capture.mjs text`: "PASS text 72 of 72 states free of clipped/broken text"; 34,030-node sweep, only real finding titles matched. Refuter's wider sweep: only legitimate hits. | Descender clipping has no detector (O17). |
-| C3 | PASS | 1920: 10 rows, 0 clamped. 1440: 6 rows, 1 clamped (F002 loses "gateway"). | Compact density not graded (O17). |
-| C4 | PASS | All 8 states × both themes; 0 of 35 tokens within 8/255 of an inversion; refuter found no dark-only surface in light. | First paint not re-measured (R40). |
-| C5 | **FAIL** | Static items 1, 2, 3, 5, 6 pass at high and low; motion: "PASS every recorded motion frame rendered at its leg's declared tier (24 sequences, 4 of 4 legs)", 0 z-fight clusters, 0 pops, 24/24 fades 266.6–266.8 ms. Item 8 fails: a 1-device-px dashed stroke about 450 device px long in the core2→access9/access3 bundle, identical at dark/high and dark/low. | Drawing object not identified. Harness exit 4 was an mtime freshness flag; content matched HEAD. |
-| C6 | PASS | 54 transition events, max `transitionend` 140 ms; `getAnimations()` `[]` after idle; constants match §4.8; motion-inventory test green. | Refuter: two rAF loops (`scene.ts:2768`, `FabricLabels.tsx:320`) run at idle with no visible change. |
-| D1 | **FAIL** (overturned) | A1 and A2 completed with real keys at 1440 and 390; canvas orbit by keys. Refuter: at 768 on `?s=path` both `Queue`/`Evidence` radios are `tabindex="-1"`; "paneswitch focused during 60 Tabs: 0"; a mouse click still operates it. | Refutation applied: proof present (d1scan, pane, pane2, pane3.mjs). |
-| D2 | PASS | Key-by-key on "Findings, ranked": arrows, Home/End, Ctrl+Home/End, PageUp/Down, sort, collapse, selection, one tab stop. Refuter also passed "Cross-layer records, ranked". | — |
-| D3 | **FAIL** | Focus return correct for every dialog and popover tested; intentional modal traps 20/20 Tabs. At 390x844 `?d=core1&s=fabric`, focused status-bar buttons are under `.rail--b`: `elementFromPoint` returns `LI.dp-list__row` at 9 of 9 points; "'23/26 collected' 0/4400 pixels changed". | Not O32. Also at 600x900 and states 06/09. |
-| D4 | PASS | Text minimum 4.60 light / 4.71 dark, pixel-verified; non-text at least 3.24. Refuter extended to 390 and 768: 0 text under 4.5. | 1440 pixel pass only; hover state not tested. |
-| D5 | PASS | 929 targets at 1440/01, minimum 24.0x24.0 outside grid sub-cells (exempt: the row is the target). Refuter found only clipped 1x1 tree items. | — |
-| D6 | PASS | `pick()` sweep: 26 devices, 44 links; 114/114 tree rows selected by keyboard. | Tree names do not carry trace/stranded marks. No real screen reader. |
-| D7 | PASS | "PASS  D7: camera lands in one frame under reduce, 23 poses without it." (reproduced by the refuter). | Packet half fixture-only. |
-| D8 | PASS | Greyscale 03/06: letters on 114/151 chips, band letters, "? UNDECIDED", dash patterns. | — |
-| E1 | PASS | `journey-scope.test.ts` + `tracked-sources.test.ts`: "Test Files 2 passed (2) Tests 20 passed (20)"; "acts with a verified effect 25 of 25". Refuter: 26/26 palette opens by probe. | §8.1 wording is looser than the harness ids. |
-| E2 | **UNPROVEN** (overturned) | Quiet runs: "ACCEPTANCE EVIDENCE: release build, hardware renderer, quiet host." p95 J1 32–48, J2 88–96, J3 32, J3b 32, J4 48, J5 32 ms. J2-first p95 64 ms only in refused runs: "NOT ACCEPTANCE EVIDENCE … host was 35% busy". | Refutation applied: a declared E2 subject has no accepted run. |
-| E3 | **UNPROVEN** | "E3 across runs … PASS — J1 … J2 … J3 … J3b … J4 … J5 … STABLE PASS (3/3)". J2-first: "INSUFFICIENT RUNS (0/0 measured runs clean)". | Load-meter defect: `hostLoadMeter.sample()` only at `:1556`. |
-| E4 | PASS | `measure-fps.mjs` ×3: "focus flights: PASS — median 60 fps … worst window 58.89 fps (floor 45) … Orbit drag: PASS — orbit median 59.05 fps". Refuter: CPU throttle ×6 gave explicit "below frame-rate bar", then step-down to balanced. | AO is suspended while the camera moves under "tier high"; disclosed in `qualityReasons`, not in the report. Canvas 1161x962. |
-| E5 | **FAIL** | `audit-e5-coldload.mjs` ×2, `acceptanceEvidence=true`: "FAIL E5 … 8 keystroke(s) over 200 ms (worst 400 ms)" and "5 keystroke(s) over 200 ms (worst 280 ms)", all after FCP. Sweep: "PASS E5 sweep all 13 actions stayed under 200 ms in every one of 3 repetitions". | Keystroke failure does not depend on the O20 pre-FCP carve-out. |
-| F1 | PASS | `tsc` main, scripts (`--noImplicitAny`) and config: EXIT 0 each; 214 files listed; 0 `@ts-*` suppressions. Refuter reproduced. | `review/*.mjs` declared excluded (O27). |
-| F2 | PASS | "Test Files 136 passed (136) / Tests 2106 passed (2106)", EXIT 0; refuter reproduced under load. `capture.mjs app` exit 0 twice. | `acceptance.md` "Timing is not asserted" is false (O26); "45 of 135" is stale (46 of 136). |
-| F3 | **UNPROVEN** | `mutation-check.mjs`: 18 KILLED, "not pre-fix history". Real red-before-fix only for claims (`Tests 2 failed \| 37 passed`) and provenance (`Tests 8 failed \| 10 passed`). | About 10 confirmed defects have no executable red check of any kind (O34). |
-| F4 | **UNPROVEN** (overturned) | Build: `three-Dyx6ntnn.js 828.00 kB (gzip 239.65 kB)`, imported only by Fabric3D; entry has no static import. Refuter: at 768/1024/1920 three is fetched unprompted (1,013,596 of 1,970,906 decoded JS bytes); at 767 and 375 it is not. | Refutation applied: proven only below 768 px. |
-| F5 | PASS | `compile-snapshot.mjs` → `sha256(source, lf-normalised) = 9580aa09…3089 (3072771 bytes)`, `fabric.json` byte-identical `a1a599b8…d251`. Refuter: all four compilers in a `git archive` sandbox byte-identical. App shows `9580aa09`. | Not from a fresh clone of `70bea72` (O23). |
-| F6 | PASS | "verdict: F6 PASS: 32 of 32 frames byte-identical across 5 runs." Refuter reproduced on :4190, plus 375x812 DPR 2: 0 of 16 frames varied over 3 launches. | One host, CPU raster; O22 not re-probed. |
+| A1 | **FAIL** | Census of all 146 findings: named 6, matched 6, context only 133, no button 1. For F001 the pane printed "No configuration evidence route: the finding names no configuration line and nothing held matches its words". The F099 route took 3 interactions, and the camera stayed put: core1 at (474.4, 82.2) before and after. | `acceptance.md` itself says "NOT MET for the other 134". O12. |
+| A2 | **UNPROVEN** | Depth 1 works: "Hop 1 of 1: core1", "ACL — THIS IS WHAT DECIDED THE HOP: PROTECT_SERVERS line 4 of 4". The depth ratchet asserts max depth `toBe(1)` (`engine.test.ts:1051`). | Multi-hop has never run on real data. O34. |
+| A3 | PASS (upheld) | "denied at core1 by ACL PROTECT_SERVERS line 4 of 4 (acls.core1.PROTECT_SERVERS[3]: \"deny ip any any\")". The refuter swept 810 flows: only PROTECT_SERVERS[3] and INET_RETURN[2] ever block, and both are named with their literal text. | |
+| A4 | **FAIL (overturned from PASS)** | Refuter: `?q=severity%3ACritical`, then Ctrl+K "F120" Enter. The URL read `?f=F120&q=…` and the status bar "selection F120". Queue rows: `[header, 'Critical3', F001, F002, F003, 'High0', …]`. Grid elements with aria-current, data-active or aria-selected: `[]`. The left rail contains "F120": `false`. | The first pass tested only an unfiltered queue. Its other A4 claims reproduced. |
+| A5 | **FAIL (overturned from PASS)** | Refuter: an orbit-drag of 240 px, a 300 ms wait, then Reset view. core1 settled at (410.7, 91.7) against a home pose of (474.4, 82.2), about 64 px off, and stayed there for 40 s. The control (a 20 s wait before Reset) returned (474.0, 82.3). The Home key drifted "11→22 px". | `camera.ts` `moveTo()` never clears the damped delta of OrbitControls. This was already an O37 lead and is now confirmed at `78bdba5`. The refuter ran on SwiftShader at 3–9 fps; the error grows as the frame rate falls. |
+| A6 | PASS (upheld) | Selecting core1 reads "core1 strands 9 … · all 9 marked" and shows the "⚠ CUT POINT" mark in purple rgb(99,72,140), not `--state-down`. Canvas pixel diff: 5.08–5.40% for the cut point against 1.29–1.40% between non-partitioning devices. The refuter confirmed the "≠ IMPACT DISPUTED" mark (`data-disputed=yes`). | |
+| B1 | PASS (upheld) | Sweep across 26 devices × 6 tabs, 44 links × 3 tabs and all 146 findings, covering innerText and the title, aria-label, aria-description, aria-valuetext, placeholder and alt attributes: "zero hits" for null, undefined, NaN, Infinity or `[object Object]`. AP-floor1 reads "Not assessed — this device was never reached". | Residuals: O36 is wider than recorded, and `scene.test.ts:122` pins nothing (see Known issues). |
+| B2 | PASS (upheld) | 3,968 traces gave `noScope=0`, `emptyCaveats=0` and 0 claims missing "2 of 26". The refuter's 5,488 edge-address traces agreed. | |
+| B3 | PASS (upheld) | 800 of 800 traces through dist1 were indeterminate, and 0 of 10,374 traces were `isDefiniteDelivery`. The UI reads "INDETERMINATE — THE MODEL COULD NOT DECIDE THIS FLOW" and "dist1 not modelled — undetermined". The refuter found 1,920 of 1,920 indeterminate. | dist1 is the only no-RIB host any trace can reach. |
+| B4 | PASS (upheld) | 1,300 out-of-scope traces, each with 0 hops and `oosNoWords=[]`. The UI reads "198.51.100.7 lies in no subnet this collection observed". The refuter's 13 edge sources (0.0.0.0, 255.255.255.255, 127.0.0.1, 224.0.0.5 and others) agreed. | |
+| B5 | PASS (upheld) | `evaluateAcls` isolated on INET_RETURN: tcp/443 to 203.0.113.9 gives `indeterminate`, decidedBy `acls.core1.INET_RETURN[0]`. On PROTECT_SERVERS, icmp is `indeterminate` on `[2]` for icmp_type. | The object-group branch holds only on a synthetic group. |
+| B6 | **FAIL (overturned from PASS)** | Refuter, on the first pass's own flow `…tcp>3389&hop=0`: the text "FULL/DR, yet the table" appears 5 times in the DOM (the headline `P.claim__sentence`, the Filtering row, a caveat LI and `hop__note`). The citations that back it, `routing_neighbors.core1.ospf[0]` and `protocol_assessability.rows[123]`/`[124]`, appear 0 times each. The icmp flow shows the same pattern: "240 received prefixes" 5 times, and its citations 0 times, with `nearbyCites=[]`. | `rib-completeness.ts` `ribIncompletenessSentence()` joins `x.label` and drops `x.cite`. The first pass counted citations, not claims. |
+| B7 | PASS (upheld) | "coverage 23/26 collected · RIBs 2/26 (both shown incomplete) · ACLs 1/26 · centrality 25/44 · snapshot 9580aa09 2026-08-07". `elementFromPoint` places all three figures in the viewport at 390 px, and the refuter found the same at 320×640 and 568×320. | O32 (palette open) was not examined. |
+| B8 | **UNPROVEN** | 10,374 traces, of which 2,290 were denied or dropped. `counterexample() found=true: 0`, and `isDefiniteDelivery` was true for 0 traces. The UI shows the honest negative: "NEARBY FLOW WITH A DIFFERENT OUTCOME — NONE OFFERED". | The positive state never renders on real data; it is covered by fixtures only. O13. |
+| C1 | **UNPROVEN** | `review/blind/KEY.json` has 12 entries with no verdict, winner, critic or reasons field. 8 of the 20 sheet PNGs are not in KEY.json. The "craft" sheet still shows "Forward AI" and a Storylane "Start" button. | No blind verdict exists, and the reference captures cannot be blinded. O19 (an owner decision). |
+| C2 | PASS (upheld) | `capture.mjs app`: "32 of 32 frames rendered, settled on screen and at tier high", all byte-identical to the recorded frames. `capture.mjs text`: "PASS text 72 of 72 states free of clipped/broken text", "PASS wrap 0 unjustified token-break licence(s)". The selftest passed 23 of 23. | Observations are listed under Known issues. |
+| C3 | PASS (upheld) | At the 03 state, 1920: every title is whole. At 1440 one title is clamped and loses only "gateway". | Comfortable density only. The refuter found 80 of 107 titles clamped live on the dev server at 1440 without the Inter font, so the result is fragile at nearby widths. O17. |
+| C4 | PASS (upheld) | Hue histogram of the saturated pixels: 0° dominant in both themes (01: 85% dark, 60% light), with no shift towards 180°. The refuter scanned light-theme overlays and found no dark panels. | |
+| C5 | PASS (upheld, one item attacked) | `capture-motion`: "PASS z-fighting — 1082 slow-motion frame steps", "PASS LOD/effect/label popping — 2641 still frame pairs", "PASS AO drop and restore (high tier) — 8 restores", "PASS 280 ms tier cross-fade — 24 of 24". `probe-fabric.mjs --hairline` found 0 chains. There are 0 pure-black pixels. | The refuter attacked only the 0x000000 item (0 of 1,115,920 canvas pixels were black). Aliasing, lighting, banding, z-fighting, popping, AO and hairline stand on the first pass alone. |
+| C6 | PASS (upheld, code attack only) | Runtime durations are only 0.08, 0.14 and 0.24 s. At idle: 0 DOM mutations in 4 s, 0 `getAnimations()`, and 3 screenshots 1 s apart were byte-identical. The refuter's code attack found no undeclared long motion. | The packet loop's 3-loop bound is established by code, not observed. |
+| D1 | **FAIL (overturned from PASS)** | Refuter (`ptr3.mjs`): the off-view pointer `.fabric3d-pointer` for access5 is visible and unoccluded, with 5 of 5 probes landing on it. The output read "Tab walk 250 stops, pointer reached: false". Its attributes are `tabindex:-1` and `ariaHiddenAncestor:true`, and it has an `onClick`. In dark theme it sat under the HUD, and a click there did nothing. | Mitigation: the same framing can be reached with canvas arrow keys and Enter, or through the fabric tree. The verdict follows the criterion's literal wording, "every interactive control". The first pass's census never showed this pointer. |
+| D2 | PASS, **unrefuted** | Grid with `aria-rowcount=152` and exactly 1 `tabindex=0`. A full APG key trace (arrows, Home and End, Ctrl+Home and Ctrl+End, PageUp and PageDown, Enter to sort and select, Tab out and Shift+Tab back) behaved as specified. The `DataGrid.test.tsx` contract tests are green. | The refuter did not return; the only check was a code read. Walked on "Findings, ranked" only, not "Cross-layer records". |
+| D3 | PASS (upheld, narrow) | `audit-d3-focus.mjs --vp=1440,1000,768,390`: "416 case(s), 0 failed", "823 focus stop(s) checked for visibility, 0 not visible", "SWEEP: 129 composite widget(s), 1156 tab stop(s), 1471 nine-point hit test(s) … 0 failure(s)". | The acceptance run was split across two invocations, and the second was narrowed with `--vp`. The refuter tested one self-removing control. |
+| D4 | PASS (upheld) | 44 state, viewport and theme combinations and about 40,800 text elements: "0 computed failures". Minimum 4.60:1 light and 4.71:1 dark. The refuter added 768 and 1920 and found 0 below 4.5. | Contrast of the WebGL chassis and link colours was not measured. |
+| D5 | **FAIL (overturned from PASS)** | Refuter: `settled [{"for":"access5","w":141.23,"h":16.84,…,"hits":5}]`. A click at its centre re-framed the camera on access5, so it is a working target, 16.84 CSS px tall. There is no exemption for it in docs/, review/ or src/. | The first pass's census left out clickable elements that have no role and no tabindex. `target-size.test.ts` passes because the rule declares no size. |
+| D6 | PASS (upheld) | Picking every 3 px found 26 devices and 44 links. The fabric tree reached 119 items: `missingDev=[]`, `missingLink=[]`, `extraLink=[]`. Space on an item writes the same selection as the canvas. | No real screen reader was used. Tree names carry no trace or stranded marks (O37). |
+| D7 | PASS (upheld) | `capture.mjs reduced`: "PASS  D7: camera lands in one frame under reduce, 23 poses without it." Transitions over 10 ms under reduce: 0, against 325–508 in the control. | The packet half is fixture-only. |
+| D8 | PASS (upheld) | In greyscale: severity letters C, H, M, L, I; band letters P, C, G*, E*, ?; dashed cables for uncollected devices; the glyph and word marks ✕, ?, ✓, ⚠, ⊘ and ≠. The refuter found no information carried by colour alone. | Forced-colors mode was not tested. |
+| E1 | PASS (upheld) | `journey-scope.test.ts`: "Tests 14 passed (14)". J1–J4: "acts with a verified effect 25 of 25". J2-first: 21/21. The refuter watched J5's dialog open and close in 6 of 6 reps. | |
+| E2 | **UNPROVEN** | Laboratory only: 3 runs, each "7 pass, 0 fail, 0 NOT MEASURED". Worst p95 was 64 ms (J4), and J2-first p95 was 80 ms. Every run printed "NOT ACCEPTANCE EVIDENCE — … host on battery". | No on-AC run. O25. |
+| E3 | **UNPROVEN** | Laboratory run: "PASS — 7 clean, 0 violating". Gated verdict: "E3 across runs of build bca154bb1e58367d (0 run(s), need 3): INSUFFICIENT RUNS". | A 51.7 ms LoAF overlapped a first selection, but the harness does not count frames as tasks. |
+| E4 | **UNPROVEN** | `measure-fps`: "median 60 fps across 10 windows, worst window 59.99 fps (floor 45)", then "acceptanceEvidence=false" (THROTTLED). A synthetic 5-hop trace ran at 60 fps mean. | Battery power. No product-reachable flow animates a packet (`tracePacket=false`). |
+| E5 | **UNPROVEN** | Laboratory run: "PASS E5 3 cold loads … [NOT ACCEPTANCE EVIDENCE]". Worst keystroke 192 ms, 8 ms under the bar. Sweep: "all 13 actions stayed under 200 ms". | The recorded acceptance-grade FAIL at `70bea72` (O35) stands, because a laboratory run cannot overturn it. |
+| F1 | PASS (upheld) | `tsc` exited 0 for all three projects, on both the working tree and a fresh clone. There is no `@ts-nocheck`, `@ts-ignore` or `@ts-expect-error` in src or tools. | `review/*.mjs` is outside every project (O27). |
+| F2 | **FAIL** | Working tree: "147 files, 2235 passed", exit 0. **Fresh clone of `78bdba5`: exit 1, 2223 passed, 12 failed**, all timeouts (31–62 s against a 30 s limit), 8 of them in `composite-tabstop.test.tsx`. A targeted re-run of those 4 files: "94 passed and 2 failed", still timeouts. | The suite's verdict depends on host load. `layout.test.ts:953` asserts timing (O26). |
+| F3 | **UNPROVEN** | `mutation-check.mjs`: 18 of 18 KILLED. The history reproduced real red-before-fix for claims C2/C3 ("2 failed and 37 passed" against `254694b`) and for forwarding R17 ("5 failed and 1 passed" against `50a3dc5`). | There is no pre-fix history for blast, layout, query, the compiler or forwarding §1.1. O34. |
+| F4 | PASS (upheld) | `three-Dyx6ntnn.js` is the only chunk with WebGLRenderer, and there is no modulepreload. The probe (a static import in `mount.tsx`) turned the gate red. Refuter: at 767, 390 and 320 px, three.js was never requested in 21 loads. At 1920 and 768 px, first paint came before the three request in 10 of 10 loads. | The first pass's part-(c) run was on a busy host. |
+| F5 | PASS (upheld) | All four compilers are byte-identical before and after, on the working tree and the fresh clone. `sha256 9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089`, "3 072 771 bytes (LF-normalised)". | Needs `../webapp` from the parent repository (O23). |
+| F6 | PASS (upheld) | "verdict: F6 PASS: 32 of 32 frames byte-identical across 5 runs". Refuter on :4191: "32 of 32 frames byte-identical across 3 runs". | 1920 and 1440 only. O22 is still open. |
+
+Totals, stated so that no FAIL is hidden: **7 FAIL, 8 UNPROVEN, 24 PASS** (23 upheld under attack, 1
+unrefuted) out of 39 criteria.
 
 ## What is proven
 
-Each of these 25 criteria passed the first pass and then survived an independent refuter whose job
-was to overturn it.
+These PASS verdicts survived an independent attack. Each entry lists what established it, and marks
+where the attack covered only part of the criterion.
 
-- **A3.** The engine's `traceFlow` for tcp 10.0.10.50→10.0.30.10:3389 returns outcome `denied`,
-  decidedBy acl, raw `deny ip any any`, cite `acls.core1.PROTECT_SERVERS[3]`, which matches the source
-  snapshot's raw text. A 4,800-flow sweep found 346 denied traces, every one with an ACL decider, its
-  raw text and cite (328 on `PROTECT_SERVERS[3]`, 18 on `INET_RETURN[2]`). The UI names device, list,
-  "line 4 of 4", the cite and the literal text, and the INET_RETURN case says "line 3 of 3".
-- **A4.** Six selection sources were measured in isolated headless Chromium with URL, queue scroll,
-  tab, flow, path scroll and camera read after each. The refuter added palette selections of F140,
-  F120 and AP-floor1 during a trace, and Back/Forward restoring `d=core1` with flow and hop.
-- **A5.** Hover, click selection, double-click focus and exact reset were measured by camera
-  projection; the refuter reproduced each, with reset within 0.3 px after a settled orbit.
-- **B1.** A sweep of all 26 devices across five tabs, plus links, queue and path, found no
-  null-as-healthy; every rendered 0 was checked against the source. The refuter spot-checked links,
-  the palette and blast fields and found nothing beyond the disclosed latent compile site.
-- **B3.** `npx vitest run src/forwarding/engine.test.ts …` 112/112 (refuter: 81/81), including
-  "unmodelled forwarding is never delivery > stops at the host whose forwarding table we do not hold ✓".
-  400 of 4,160 traces touch a no-RIB host, all indeterminate; the refuter's 4,800-flow sweep found
-  0 deliveries through one.
-- **B4.** `engine.off-subnet.test.ts` green; all 1,456 out-of-scope traces carry "lies in no subnet";
-  the refuter's 2,480 random sources confirmed it, except sources that really are in observed subnets.
-- **B5.** Unit tests against the real `PROTECT_SERVERS` and `INET_RETURN` data; the refuter re-ran
-  them ("Tests 10 passed | 69 skipped") and swept 630 flows with 0 violations and 0 unnamed blockers.
-- **B6.** 796 of 796 distinct model citations resolve; 770 identity cross-checks and the refuter's
-  589 field comparisons against the source show 0 mismatches. The Provenance tab names the source file
-  and its LF-normalised sha.
-- **B7.** The four coverage buttons are permanent and visible at 1920, 1440 and 390; the refuter
-  checked 72 state × viewport combinations and found all four visible and hit-testable.
-- **C2.** `capture.mjs app` "PASS capture app 32 of 32 frames rendered, settled on screen and at tier
-  high"; `capture.mjs text` "PASS text 72 of 72 states free of clipped/broken text"; two independent
-  DOM sweeps found only real data.
-- **C3.** Measured row visibility at 1920 and 1440; viewed by both first pass and refuter.
-- **C4.** All 8 states in both themes; token analysis shows no inversion; the refuter's scan found no
-  dark-only surface in light.
-- **C6.** Runtime transition events (maximum 140 ms), `getAnimations()` `[]` at idle, source constants
-  matching §4.8, and the motion-inventory test; the refuter's idle screenshot hashes were identical.
-- **D2.** The APG grid contract on the findings grid, key by key at 1440 and 390; the refuter also
-  passed the Cross-layer grid.
-- **D4.** Computed and pixel-verified contrast at 1440 in both themes; the refuter added 390 and 768.
-- **D5.** `getBoundingClientRect` over 929+ targets and a cursor-based scan, confirmed by the refuter
-  across 13 states and 3 widths.
-- **D6.** A 66,539-sample `pick()` sweep equals the fabric's 26 devices and 44 links, and all 114 tree
-  rows selected the right object by keyboard.
-- **D7.** `capture.mjs reduced`: "PASS  D7: camera lands in one frame under reduce, 23 poses without
-  it.", reproduced by the refuter; 0 transitions over 1.5 ms under reduce.
-- **D8.** Greyscale captures of 03 and 06 in both themes; the refuter found no colour-only channel.
-- **E1.** `journey-scope.test.ts` ties `acceptance.md` to the harness ids; every journey actuated with
-  a verified effect ("25 of 25"); the refuter probed J5's act directly (26/26).
-- **E4.** Three `measure-fps.mjs` runs with `acceptanceEvidence=true` on a quiet, on-AC host; the
-  refuter reproduced it (orbit median 59.03 fps, worst window 58.07) and drove the degradation path
-  under CPU throttling, which read "below frame-rate bar" and stepped down to balanced explicitly.
-- **F1.** All three `tsc` projects exit 0 under `strict` + `noUncheckedIndexedAccess` (scripts with
-  `noImplicitAny`); reproduced by the refuter.
-- **F2.** "Test Files 136 passed (136) / Tests 2106 passed (2106)", EXIT 0, reproduced by the refuter
-  under load; exactly the 10 declared mock files; the zero-assertion guard active.
-- **F5.** The compiler reproduces `fabric.json` byte-for-byte; the refuter ran all four compilers in a
-  `git archive` sandbox against the parent blob `1ed99404` and matched every output.
-- **F6.** `capture.mjs twice 5`: "F6 PASS: 32 of 32 frames byte-identical across 5 runs.", reproduced
-  by the refuter, who also added 375x812 at DPR 2 (0 of 16 frames varied).
+- **A3.** The first pass showed the device, ACL, line and literal text on the tcp/3389 flow. The
+  refuter's 810-flow sweep found exactly two blocking lines, and both render all four elements. The
+  literal text matches the source snapshot's raw field.
+- **A6.** The first pass showed the HUD, stranded and cut-point marks, and a pixel diff (cut point
+  5.08–5.40% against 1.29–1.40% for non-partitioning devices). The refuter confirmed the cut-point
+  colour is purple, not `--state-down`. It confirmed "≠ IMPACT DISPUTED" for access13, access1 and
+  access9. Link blast radius showed 23 agreeing rows and 21 engine-silent rows.
+- **B1.** The first pass swept devices, links, 4 findings, and the uncollected and no-RIB panes. The
+  refuter swept 26×6 device tabs, 44×3 link tabs, all 146 findings and six attribute kinds, with zero
+  hits.
+- **B2.** The first pass ran 3,968 traces and the refuter 5,488 edge-address traces. Every trace had a
+  scope clause, caveats and "2 of 26".
+- **B3.** The first pass found 800 of 800 no-RIB crossings indeterminate, and the refuter 1,920 of 1,920.
+  The refuter re-ran `engine.test.ts`, `reaim-tab-and-restore.test.tsx` and
+  `verdict-scope.b2.test.tsx`: 95 of 95.
+- **B4.** The first pass ran 1,300 out-of-scope traces. The refuter ran the vitest files (90 of 90) and 13
+  edge sources, then every IPv4 literal in `fabric.json` used as a source. No in-scope source was
+  wrongly refused.
+- **B5.** The first pass ran `evaluateAcls` isolated on the real lines. The refuter could not find a flow
+  where an unevaluable, possibly matching line was stepped over into a decided verdict.
+- **B7.** The first pass checked 1440 and 390 px. The refuter added 320×640 with a device selected and
+  with the Inspector open, and 568×320. The footer stayed sticky through a scroll to 4000.
+- **C2.** The first pass re-captured 32 frames byte-identical and ran the text detector (72 of 72) and
+  the selftest (23 of 23). The refuter's grep and frame review found no placeholder content.
+- **C3.** Proven at the criterion's 03 capture and comfortable density only. The refuter confirmed the
+  capture but showed the result is fragile at nearby widths (80 of 107 titles clamped live at 1440
+  without the Inter font).
+- **C4.** The first pass's hue histogram and side-by-side views showed separately authored themes. The
+  refuter's dark-panel scan of light-theme overlays found none.
+- **C5.** Only the 0x000000-background item was attacked, and it held. The remaining items (z-fighting,
+  popping, AO, cross-fade, hairline, aliasing, lighting, banding) rest on the first pass's
+  `capture-motion` run and static captures on one contended Intel iGPU host.
+- **C6.** The first pass measured runtime durations and idle stillness. The refuter's attack was
+  code-only: no smooth scroll, no `element.animate()`, and every constant ≤300 ms except the declared
+  exemptions.
+- **D3.** The first pass's harness reported 0 failures across 416 cases. The refuter checked one
+  self-removing control ("Clear scope") at 1440 and 390; focus landed visibly on the header query. The
+  attack was narrow.
+- **D4.** The first pass measured about 40,800 elements. The refuter added 768 and 1920 in 5 states: 0
+  below 4.5:1. A sanity rerun reproduced the first pass's minima of 4.60 and 4.71.
+- **D6.** The first pass's pick census matched the tree census. The refuter attacked at five widths and
+  in the selected-device state; the stranded marks are readable in the accessibility tree. No screen
+  reader was used.
+- **D7.** The first pass ran `capture.mjs reduced` and a computed-style census. The refuter reproduced
+  it on its own build ("cameraPoses=1" against "cameraPoses=24") and extended the census to the legend,
+  provenance dialog, hover and 390 px: 0 transitions over 10 ms.
+- **D8.** The first pass used greyscale captures. The refuter made its own greyscale captures of 02, 03,
+  06 and 08 in both themes and checked `classifyLink`'s double-encoding of cable state.
+- **E1.** The first pass had actuation verified in 3 runs. The refuter re-ran the harness with the same
+  actuation figures and watched J5's palette open and close under a MutationObserver in 6 of 6 reps.
+- **F1.** The first pass ran `tsc` on the working tree and a fresh clone. The refuter re-ran all four
+  `tsc` invocations and grepped for suppressions: none.
+- **F4.** The first pass checked chunk structure and a red probe. The refuter rebuilt with identical
+  chunk hashes and ran 21 narrow cold loads with no three.js request, and 10 of 10 wide loads with first
+  paint before three.js.
+- **F5.** The first pass showed byte-identical compiler output on the working tree and a fresh clone. The
+  refuter recomputed the LF-normalised digest (`9580aa09…3089`, 3,072,771 bytes) against the raw CRLF
+  digest (`9cc348bd…`), and ran `provenance.test.ts` (23 of 23).
+- **F6.** The first pass reported "32 of 32 frames byte-identical across 5 runs". The refuter reported
+  "32 of 32 frames byte-identical across 3 runs" on an unshared build, and traced every `Math.random` in
+  the bundle to three.js paths the product never takes.
+
+**PASS, unrefuted (not proven by attack):** D2. The first pass's key trace is detailed and the
+`DataGrid.test.tsx` contract is green, but the refuter only read the code and ran no key trace.
 
 ## What is not
 
-### FAIL (7)
+### FAIL
 
-- **A1 — evidence behind a finding.** 134 of 146 findings (133 context-only landings plus F142) have
-  no configuration-evidence route. For F088 the pane says "No configuration evidence route: the
-  finding names no configuration line and nothing we hold matches its words." Where a route exists it
-  takes 3 interactions and lands on parsed fields. None of the 6 findings that name configuration
-  reaches literal configuration text; F099's record says "Its surrounding configuration block was not
-  kept, so there is no literal text". Not closable in Atlas Scope: the producer publishes no
-  per-finding record pointers (O12).
-- **A6 — blast radius on the fabric (overturned from PASS; refutation applied).** With a trace active,
-  which A4 requires to survive a device selection, the camera stays framed on the trace. Selecting
-  core2 then marks 5 of its 8 stranded hosts (`access11, access13, access15, access7, access9`);
-  access3, access5 and access17 are off-canvas (`visible:false`) with no mark. Nothing on the fabric
-  gives a count or says marks are out of view. The toolbar reads only "Stranded marks are uncertain;
-  0 under the all-nodes projection", and the fabric list shows "access3 | Poor" with no mark. For core1
-  in the same state, `data-stranded=yes` count is 0 of 26 until the button "Blast radius: core1
-  strands 9 (uncertain; 0 under the all-nodes projection)" is pressed (`Fabric3D.tsx:916-952`). The
-  refuter reproduced this through a real palette interaction (ui9.mjs).
-- **B2 — scope claim and caveats on every verdict.** The engine meets it. The Ctrl+K palette does not:
-  it renders "10.0.10.50 -> 10.0.30.10:3389 | trace a path — this one ends denied" and "…— denied.
-  … which is the blocking-hop answer with its exact configuration line", with no 2-of-26 scope and no
-  caveat. That flow's own trace says "That denial is not decided". Cause: the `suggestedFlows()`
-  "denied" rationale in `engine.ts` `buildSuggestions`, rendered by `commands.ts:404-409` and
-  `:734-739`. The palette's no-route row does say "so the drop is not decided" (`engine.ts:3056`).
-- **C5 — cheap-render tells, item 8 (1 px hairline links).** A dashed stroke 1 device px wide
-  (0.5 CSS px at DSF 2) runs about 450 device px down the access9/access3 bundle from core2, at both
-  tiers and in both themes (dark +15/+69/+37 luma at (806,400)/(808,450)/(812,500); light −8/−42/−31).
-  design-brief §4.5 sets 2 CSS px as the minimum painted stroke. `scene.pick` at those pixels returns
-  L33, but selecting L33 leaves the stroke unchanged, and no dashed core2→access link exists in
-  `fabric.json`. The owner must identify what draws it. Every other C5 item passed, the motion items
-  included.
-- **D1 — keyboard reachability (overturned from PASS; refutation applied).** At 768 px on the Path
-  surface the visible "Which panel to show" radiogroup renders
-  `<button role="radio" aria-checked="false" tabindex="-1">Queue</button><button role="radio"
-  aria-checked="false" tabindex="-1">Evidence</button>`. The refuter's output: "paneswitch focused
-  during 60 Tabs: 0" and "after 60 Shift+Tabs, paneswitch hits: 0". A mouse click on Queue works.
-  Cause: `src/app/surfaces.tsx` PaneSwitch gives `tabIndex={value === p.id ? 0 : -1}`, the value is
-  `path`, and the pane list omits `path` because `pathAvailable` is false. The state is reached by an
-  ordinary keyboard journey (More → Path), not only by deep link.
-- **D3 — focus visible.** At 390x844 with `?d=core1&s=fabric`, Tabbing to "23/26 collected", "RIBs
-  2/26 (both shown incomplete)", "ACLs 1/26", "centrality 25/44" and "claim strength" leaves each box
-  inside the viewport, but `elementFromPoint` returns `LI.dp-list__row` / `SPAN.dp-list__main` /
-  `DIV.dp-panel` at all 9 sample points, and pixel diffs show "'23/26 collected' 0/4400", "'claim
-  strength' 0/2112", "'centrality 25/44' 0/4440": no focus ring is painted. Measured cause: the status
-  bar is `position:sticky` with z-index 5, and `.rail--b` (z-index 30) paints over it once the document
-  scrolls far enough (10537; not at 2000 or 6000). Reproduced at 390 in states 06 and 09 in both themes
-  and at 600x900 state 09. Focus return and modal trapping passed. The recorded
-  `audit-d3-focus.mjs` reported "0 not visible" for this; it was not re-run.
-- **E5 — responsive during load.** Two acceptance-grade invocations (`acceptanceEvidence=true`, busy
-  0.241 and 0.24 against 0.25, on AC). Invocation 1: "FAIL E5 5 animation frame(s) over 200 ms with
-  NOTHING on screen … (worst 277.9 ms at 224.1 ms, run 1); 8 keystroke(s) over 200 ms (worst 400 ms)".
-  Invocation 2: "FAIL E5 5 animation frame(s) over 200 ms … (worst 316.4 ms at 224.1 ms); 5
-  keystroke(s) over 200 ms (worst 280 ms)". The keystrokes landed after first paint (FCP 652–800 ms),
-  about 1.1–1.3 s into the load: keydown 400 ms at 1114.8 ms (input delay 87 ms), keydown 280 ms at
-  1192.5 ms. `acceptance.md` fails E5 "on any keystroke over 200 ms during the load", so this does not
-  depend on the owner's pre-FCP carve-out decision (O20). The out-of-load sweep passed.
+- **A1: configuration evidence for any finding.** Only 12 of 146 findings reach configuration
+  evidence: 6 named and 6 matched. 133 land on "Browse <host>'s collected records (context, not this
+  finding's evidence)", and F142 has no button. None of the 6 named findings reaches literal
+  configuration text; all six land on a table of parsed fields. (The matched F106 does reach the literal
+  line "permit tcp object-group MGMT_HOSTS any eq 22", per D1's keyboard walk.) This cannot be closed
+  inside Atlas Scope: it needs per-finding record pointers from the producer (O12).
+- **A4: selection from another surface is revealed in the queue.** With a filter active, a finding
+  selected from the palette has no row, no mark and no mention in the queue or rail. Meanwhile the URL,
+  status bar, scope bar, Inspector and fabric label all say it is selected. `PriorityQueue.tsx` about
+  line 1459 records this symptom as an A4 defect, but its fix covers only collapsed groups, not a
+  filter that hides the row.
+- **A5: Reset view resets the camera.** A Reset pressed while the orbit is still coasting lands about
+  64 px from home and stays there. The Home key drifts the same way. `camera.ts` `moveTo()` tweens
+  position and target but leaves OrbitControls' damped delta, which `controls.update()` applies after
+  the tween. The first pass tested only Reset after a double-click focus, when the camera had no
+  momentum.
+- **B6: every displayed claim resolves to a citation.** The Path surface's RIB-incompleteness claim
+  is shown in four places with no citation button and no parenthesised citation. The citations exist in
+  the model (`ribIncompleteness()` returns them, and `resolveCitation` gives `bearer`), but
+  `ribIncompletenessSentence()` drops them. The caveat "No ACLs were collected for core2; filtering
+  there is unobserved, not absent." is also shown uncited on that surface. The citations appear only
+  after navigating to Device, then the Routing tab.
+- **D1: every interactive control is reachable by keyboard.** The off-view finding pointer
+  (`FabricLabels.tsx` about line 1066) has an `onClick`, `tabIndex -1` and an `aria-hidden` container,
+  and no key handler. A 250-stop Tab walk never reached it. In dark theme it can also sit under the
+  blast-radius HUD, where a click does nothing. The outcome it offers (framing the device) is reachable
+  by keyboard another way, so a WCAG 2.1.1 functionality reading could pass. The criterion's wording,
+  "every interactive control", does not.
+- **D5: pointer targets ≥24×24.** The same pointer measures 141.23×16.84 CSS px in both themes and is a
+  working click target. No exemption for it is declared anywhere. It sits on the canvas, itself a click
+  target, so the spacing exception does not apply.
+- **F2: `npx vitest run` green.** Green on the working tree (2,235 passed), but red on a fresh clone of
+  the same commit: 12 timeouts, then 2 more in a targeted re-run, all at about 85% host load. The
+  clone's result is the one the criterion asks for, and it is red. `composite-tabstop.test.tsx` (added
+  in wave 5) is a new instance of the load-dependent timeout class, and `docs/open-issues.md` does not
+  record it. `acceptance.md` F2 says "Timing is not asserted in the unit suite", which
+  `layout.test.ts:953` contradicts (O26). Its "45 of 135" count is stale; the count is now 51 of 147. A
+  quiet-host run of the clean clone is still owed.
 
-### UNPROVEN (7)
+### UNPROVEN
 
-- **A2 — hop-by-hop result.** Only depth 1 ran. The ratchet asserts maximum observed depth `toBe(1)`,
-  so the second hop's decider, hop-to-hop navigation, the cable-map branch, the TTL cut and the loop
-  detector never executed on real data. The criterion itself forbids grading a depth-1 capture PASS.
-  Needs a snapshot with depth-2 flows (O34).
-- **B8 — counterexample.** Only the negative state renders on this snapshot: 924 denied or dropped
-  traces, 0 counterexamples, `isDefiniteDelivery` 0 of 4,160. The positive state runs only under
-  `vi.mock('./rib-completeness')` and `vi.mock('./bindings')`. Needs a snapshot with a decided refusal
-  and a definite delivery (O13).
-- **C1 — blind critic verdicts.** `review/blind/KEY.json` has 12 entries and no verdict, winner, critic
-  or reasons field; 8 sheet PNGs are orphans the key cannot decode; the brand-cropped
-  `sheet-d808251b311c.png` still shows "Forward AI" and the Storylane modal. `review/REFERENCES.md`
-  withdraws the round 1–3 win tables. There is no valid blind verdict, and none can be obtained
-  against these references. Owner decision (O19).
-- **E2 — INP ≤ 200 ms on the declared journeys (overturned from PASS; refutation applied).**
-  `acceptance.md` names `J2-first-select-device-3d` as an E2 subject. Its figures (p95 64 ms,
-  max 80 ms over 21/21 trials) come only from runs the harness refused: "NOT ACCEPTANCE EVIDENCE …
-  host was 35% busy across the run excluding this harness" with "(gross 36%, harness 0%, idle baseline
-  before launch 17%)". The harness itself says J2's rep 0 cannot stand in ("one sample per run is not
-  a distribution"). The latencies are well under the bar, so this is not a FAIL; it needs an accepted
-  J2-first run.
-- **E3 — no long task over 50 ms on a journey's path, stable across runs.** Six of seven ids are
-  "STABLE PASS (3/3 measured runs clean)" on quiet hosts. `J2-first-select-device-3d` reads
-  "INSUFFICIENT RUNS (0/0 measured runs clean)" across all 7 runs, though it was E3-clean in every
-  (busy) one. Newly found cause, not in `open-issues.md`: `review/measure-inp.mjs` calls
-  `hostLoadMeter.sample()` only at `:1556`, not before the 21 `fresh.close()` calls (`:1490`), the
-  scout browser's close (`:940`) or per-journey `ctx.close()`. `host-env.mjs:292–296` says a child
-  that exits "takes its CPU counters with it", so the harness's own browsers are booked as external
-  load. An independent sidecar measured Playwright Chromium at 7.2% (full run, harness reported 1%)
-  and ≥9.3% (J2-first run, harness reported 0%). Even corrected, a J2-first run sits near 28%, above
-  the 25% bar, so its quiet gate is not reachable on this host without a harness fix or an owner
-  decision.
-- **F3 — regression test that failed before each fix.** Real pre-fix red exists only for the R34
-  claims fix (`Tests 2 failed | 37 passed`, `AssertionError: expected 'SCOPED' to be 'INDETERMINATE'`)
-  and the O15 provenance tests (`Tests 8 failed | 10 passed`). History starts at `50a3dc5`; the
-  original forwarding (5), blast (7), layout (4), query (1 class) and compiler (4) defects predate it.
-  `mutation-check.mjs` shows today's tests catch reverted guards, which is not history, and covers
-  forwarding 4 of 5, blast 2 of 7, layout 2 of 4 and compiler 2 of 4, leaving about 10 confirmed
-  defects with no executable red check of any kind. `refutation.md` §7 leaves the compiler's
-  "field survives with changed meaning" attack open (O34).
-- **F4 — three.js not in the initial payload (overturned from PASS; refutation applied).** The split
-  exists and the build facts reproduce. But at 768 px and wider, which includes every viewport the
-  product's captures use, the first load fetches three with no user action: at 1920x1080 `/`, three
-  was requested at 1515 ms (transfer 238,949 B) with jsDecoded 1,970,906, against 957,310 at 767 and
-  375 px. `acceptance.md`'s evidence column narrows the scope to "only below 768 px", but the
-  criterion's wording is broader. Proven: code-split, and absent from the initial payload below 768 px.
+- **A2: multi-hop investigation.** Every reachable flow in the snapshot is 1 hop, and the depth ratchet
+  asserts `toBe(1)`. The second hop's decider, hop-to-hop navigation, `resolveNextHost`'s cable-map
+  branch, the TTL cut and the loop detector have never run on real data. This needs a snapshot with
+  depth-2 flows (O34).
+- **B8: nearest succeeding flow for a denied flow.** Of 10,374 traces, 0 qualifying neighbours exist,
+  because `isDefiniteDelivery` is true for 0 traces. The positive state is covered only by fixture or
+  `vi.mock` tests (`engine.counterfactual.test.ts`). This needs producer data (O13).
+- **C1: blind critique by two independent critics per pairing.** No verdict record exists for any
+  pairing. The reference captures give themselves away ("Forward AI", the Storylane modal). The only
+  verdict figures, in `review/REFERENCES.md`, are withdrawn there as C1 evidence. Closing this needs an
+  owner decision (O19).
+- **E2: INP ≤200 ms.** The laboratory figures are 3–5× under the bar, but every run printed "NOT
+  ACCEPTANCE EVIDENCE". The host was on battery for 13 polls over 60 minutes and every measurement.
+- **E3: no task over 50 ms on the interaction path.** "0 run(s), need 3: INSUFFICIENT RUNS". The E3 axis
+  also does not see a 51.7 ms LoAF that overlapped a first selection.
+- **E4: ≥45 fps during camera motion and trace animation.** 60 fps in the laboratory, but
+  "acceptanceEvidence=false". The trace-animation figure uses a synthetic trace, because no product
+  flow animates a packet.
+- **E5: no frame or keystroke over 200 ms during load.** A laboratory PASS with an 8 ms margin, and only
+  3 of 9 long frames probed by a keystroke. It cannot overturn the recorded acceptance-grade FAIL at
+  `70bea72` (O35).
+- **F3: each engine refuted, with red before the fix.** 18 of 18 mutations KILLED. Real red-before-fix
+  history exists for the claims engine and forwarding R17 only. Blast, layout, query and the compiler
+  have no pre-fix history, because their guards predate the root commit `50a3dc5`. The compiler was
+  refuted only for what it drops, not for fields it transforms. The `layout-nonfinite-option` mutation
+  is killed only by an error-message mismatch.
 
 ## What was not examined
 
-Collected from each grader's and refuter's own statements.
+Collected from every auditor's and refuter's own statements.
 
-**Group A.** None of the 6 named-configuration findings (e.g. F102) or F106/F107's literal MGMT_IN
-landing was opened in the UI; they rest on `EvidencePane.namedconfig.test.ts`. The A1 census was not
-driven through all 146 findings (O28 keystroke race). The queue-row route for rows already in view was
-measured only on F088. A6's "Blast radius" toolbar button during a trace was not pressed by the first
-pass. The evidence-chain "Select <host>" chip was not found by the selector, so that A4 surface is
-untested; the refuter also skipped path-panel hop selection and the evidence-chain chips. The
-Device-pane Findings list as a selection source, and camera preservation after a prior flight, were
-not measured. Nothing below 1920x1080, no dark theme and no production build for A. The refuter did
-not re-sweep B1 across all 26 devices, did not reproduce A6's pixel diffs or FHRP/backup disagreement
-text, and did not execute the latent `?? "Info"` path against a mutated snapshot.
+**Environment and provenance**
 
-**Group B.** The WebGL colour and state of uncollected and partial-band nodes were not pixel-probed.
-The Raw tab, the Evidence pane for all 146 findings, palette coverage of the status bar at 390 px
-(O32), the production build, invalid-flow refusals in the UI (engine code only), and "failed before
-the fix" history were not examined. The refuter replaced the 10 random click-throughs with an offline
-field-identity comparison.
+- **No acceptance-grade E run.** The host was on battery throughout. Every E2–E5 figure, the first
+  pass's and the refuter's, is laboratory data. The refuter's run also had Energy Saver on ("saver=On …
+  charge=19%") at 30 Hz.
+- **Fresh clone.** Groups A–E and F6 were not run from a fresh clone of `78bdba5` (O23). F1, F2, F4 and
+  F5 were, and F2 was red there.
+- **Contended hosts.** C ran at 100% `LoadPercentage` at the start, with 100–1,750 ms frame gaps. F ran at
+  85–89% load from about 08:11, when other graders were active. F4(c) and the fresh-clone F2 run were
+  both taken under load.
+- **Shared Browser pane.** Another agent drove the shared "seed" tab during A and D. A's first census in
+  that tab was discarded. After the first F099 walkthrough, A's evidence comes from an isolated headless
+  Chromium. D moved to a separate tab and headless contexts.
+- **Rendering path.** The headless and SwiftShader GL paths may differ from a headed GPU. Only one Intel
+  iGPU was used for C5 and E4. No HiDPI motion was tested.
+- **Servers.** Several refuters worked on the :4180 dev server because :4181 was down. B6 was graded
+  on the dev server only.
 
-**Group C.** C4 first paint (the probe fired too early, R40) and the dev-server residual. C2 descender
-clipping (no detector, O17) and compact density. C6 per-frame canvas ease timing; the packet loop never
-runs on this snapshot. C5: the object behind the hairline, the "balanced" tier, the dev server,
-`fabric-preview.html`, and an organic mid-motion step-down. The motion run was one run on one contended
-host (Intel iGPU, ANGLE D3D11). The refuter did not rebuild :4293 or rerun `capture.mjs app`/`text`,
-and viewed C3 at 1440 only.
+**Group A**
 
-**Group D.** No real screen reader (NVDA, JAWS, Narrator). Forced-colors / High Contrast, 200–400%
-zoom, text-spacing reflow, touch input and hover-state contrast. D4: severity-chip letters by computed
-style only; text under the palette scrim excluded; pixel pass at 1440 only; the current-hop indicator
-(semibold only, bottom border 1.30 light / 1.46 dark) could not be judged with single-hop data. D3
-traversals covered states 01, 02, 04, 06, 09 at 1440, 390, 768, 1000, 600. D2 first pass covered the
-Findings grid only (the refuter added Cross-layer). `review/audit-d3-focus.mjs` and the E harnesses
-were not re-run by D. The refuter did not re-run the A1/A2 keyboard journeys, the canvas orbit pixel
-test, the 66k pick sweep or the D4 pixel pass; its D1 scan covered 9 URL states, not dialog-open
-states, and ran on the dev server.
+- A1 was not re-run at other viewports or in the dark theme. The 2-click in-view route was not timed. F106
+  and F107 literal-text reach was not checked by A (D1 shows F106 reaching it).
+- A4:
+  - The evidence-chain device chip was not driven in a browser.
+  - The O37 `aria-current` lag was not measured.
+  - Batch preservation across a device selection was not tested.
+  - Hop selection under a filter was not tested.
+- A5: hover was confirmed only by a data attribute and an underline, and no hover tooltip was found. The
+  refuter did not visually check the hover underline or the trace marker.
+- A6: the pixel-diff figures were not recomputed by the refuter.
+- The project's own capture harnesses 01, 02 and 06 were not run for A.
 
-**Group E.** Laboratory figures only; no field INP. The dev server and `fabric-preview.html` were not
-used. The E4 "trace animating" condition was checked for one flow only. A full 1920x1080 render
-target (`ATLAS_FULLBLEED=1`) was not measured (canvas 1161x962). No other machine. The first pass saw
-no explicit degradation fire; the refuter drove it under CPU throttling.
+**Group B**
 
-**Group F.** No F result was re-run from a fresh `git clone` of `70bea72`, especially under
-`core.autocrlf=true` (O23); the refuter used `git archive`, which applies `.gitattributes` but is not
-a clone. The first pass ran only `compile-snapshot.mjs` directly (the refuter ran all four). The
-hollow-test audit read 9 heuristic hits and the mock files, not all 136 files. Historical red-before-
-fix was attempted only for R34 and O15. The faithfulness of each mutation's `find` text was not
-judged. F6 dev-server runs were `app` ×2, not `twice 5`. O22 was not re-probed. `refutation.md` was
-read only in part. No second host or GPU, and no GPU tile raster.
+- B1:
+  - Not swept: 3-D canvas pixels, the Fabric accessibility-tree item names, the timeline, and the full
+    Coverage tab tables.
+  - The dark theme and narrow viewports were not swept, nor was hover-only tooltip text.
+  - The grouped-queue band labels were not re-derived.
+- The O36 compiler latent was confirmed by reading code, not by running the compiler on a mutated
+  snapshot.
+- The B6 Provenance tab sha was not checked for every citation.
+- B7 was not checked with modals open (O32) or at 320 px by the first pass. The refuter covered 320 px.
+- The full `npx vitest run` was not run by B.
+- The historical red-before-fix for the B tests was not examined.
 
-**Environment and side effects.** The shared Browser pane tab "seed" was driven by another agent
-during grading (resized to 390x844, navigated, "F099" typed into its palette); groups A and D took no
-evidence from it after that. The E harnesses overwrote `review/reports/inp.json`, `fps.json`,
-`e5-coldload.json` and `e5-sweep.json` and appended `inp-e3-history` records; C's motion run
-overwrote `review/shots/motion/report.json`. The F grader's `npm run build` rewrote `dist/` with the
-same chunk hashes and removed the untracked `dist/.atlas-source-stamp.json`. The B grader overwrote
-four stale probe files other graders had left in `scratchpad/probe/`. No grader or refuter edited
-product source or made a git write. Probe scripts and captures are in the orchestrating session's
-scratchpad (a per-session temporary directory outside this repository; not preserved).
+**Group C**
 
-**Open issues not examined by anyone this round:** O6, O7, O8, O11, O14, O29, O33.
+- Compact queue density was not graded (O17).
+- C2–C4 were not checked at viewports other than 1920 and 1440, apart from the 72-state text detector
+  covering 390 and 768.
+- Not every one of the 32 frames was viewed individually. The refuter did not view dark/1920 01, 02, 07
+  or 08.
+- A caller's mid-motion `setQuality` was not exercised (O16), nor an organic adaptive step-down.
+- The narrow-layout drawer's 240 ms slide was not triggered.
+- C5: the refuter did not attack z-fighting, popping, AO, the cross-fade, the hairline, aliasing or
+  banding.
+- C6: runtime timings were not re-run by the refuter.
+- The refuter could not re-run `capture.mjs`, because :4181 was down.
+
+**Group D**
+
+- No real screen reader (NVDA, JAWS or VoiceOver) was used, and Windows forced-colors mode was not tested.
+- D2 was not walked on the "Cross-layer records" grid, and its refuter ran no key trace.
+- D4 text was not measured at 1000 px by anyone. WebGL chassis, rim and link colours were not measured
+  against the 3:1 non-text floor. Hover checks covered 8 control kinds, and active or pressed states were
+  not measured. The pointer chip's own text contrast was not measured.
+- D3's acceptance run was split into two invocations, the second narrowed with `--vp` (the harness labels
+  that "not an acceptance run"). The refuter did not re-run the harness.
+- D5 sub-cell exemptions were not click-verified cell by cell.
+- D7's WebGL fades under reduced motion could not be resolved frame by frame, so that evidence is at
+  source level.
+- D8 greyscale was captured only at 1920 by the refuter, and at no 1440, 768 or 390 layout.
+
+**Group E**
+
+- No run with `ATLAS_FULLBLEED=1`, no headless FLOOR-lane run, and only one `audit-e5-coldload`
+  invocation.
+- The single-hop claim was not independently verified.
+- J5 was not instrumented inside all 25 harness reps.
+- The refuter did not re-measure E2–E5.
+
+**Group F**
+
+- No quiet-host run of the clean-clone suite.
+- Test files were not read one by one; grep classes and the runtime zero-assertion guard were used
+  instead.
+- Pre-fix history was not attempted for blast, layout, query or the compiler (none exists). Forwarding R19
+  and §1.2 were not checked against history.
+- `review/*.mjs` is not type-checked (O27).
+- F6 covers 1920 and 1440 only. The refuter used `twice 3`, not `twice 5`, and did no fresh-clone rebuild.
+
+**Side effects recorded by graders**
+
+- `capture-motion` rewrote the gitignored `review/shots/motion/`.
+- The F grader's compiler re-run rewrote four JSON files with identical bytes, which changed their
+  mtimes, so `build-freshness.mjs` reports :4181 "NOT FRESH" until the next `npm run build`.
+- `measure-inp` added throttled records to `review/reports/inp-e3-history/`.
 
 ## Known issues carried forward
 
-Reconciled against `docs/open-issues.md` (the uncommitted working copy at `70bea72`).
+Reconciled against `docs/open-issues.md` (working-tree version).
 
-### Confirmed unchanged
+**New; not yet recorded in `open-issues.md`**
 
-- **O12 (A1).** Confirmed again: still 12 of 146; not closable in Atlas Scope.
-- **O13 (B8)** and **O34 (A2, F3).** Confirmed: depth 1, 0 counterexamples, no pre-`50a3dc5`
-  history. The F3 grader adds the per-engine coverage gap (about 10 confirmed defects with no
-  executable red check).
-- **O19 (C1).** Confirmed: no verdicts; the references identify themselves.
-- **O26.** Confirmed: `layout.test.ts:945` still asserts a `performance.now()` median under 50 ms, so
-  `acceptance.md` F2's "Timing is not asserted in the unit suite" is false, and its "45 of 135" count is
-  stale (now 46 of 136).
-- **O27.** `review/*.mjs` remains outside every type-checked project (declared).
-- **O23.** Still open: nothing was run from a clone of `70bea72`.
-- **O17.** Descender clipping and compact density still unmeasured. The new D1 finding is at 768 px,
-  which O17 says no guard measures.
-- **O20.** The pre-FCP carve-out is still an owner decision; the E5 keystroke FAIL stands without it.
-- **O16.** The C5 motion items passed in this round's independent run; the owner decisions (a caller's
-  tier change mid-motion, the cluster-rule wording) remain open.
+1. **A4:** a filtered queue does not reveal a finding selected elsewhere. Evidence: `_ref_a4d.mjs`,
+   `a4c-filtered.png`. Owner: the queue.
+2. **A5:** Reset view and Home do not cancel the orbit damping tail. This promotes the O37 A5 lead to a
+   confirmed FAIL at `78bdba5`. Owner: `camera.ts`.
+3. **B6:** `ribIncompletenessSentence()` drops the citations `ribIncompleteness()` holds. The uncited
+   core2 no-ACL caveat is shown on the Path surface. Owner: `src/forwarding/rib-completeness.ts` and the
+   Path surface.
+4. **D1 and D5:** the off-view pointer `.fabric3d-pointer` is keyboard-unreachable, `aria-hidden`, 16.84 px
+   tall, and can be occluded by the HUD. Owners: `src/fabric3d/FabricLabels.tsx` and `Fabric3D.css`. The
+   refuter also saw a pointer reading "off view" while access5's label was visible at the canvas edge, and
+   right-rail text "degraded before cutover" drawn over the finding list (`ptr3-light-after.png`). These are
+   leads.
+5. **F2:** `composite-tabstop.test.tsx` joins the load-dependent timeout class; 12 timeouts on the fresh
+   clone. `acceptance.md` F2's "45 of 135" is stale (51 of 147), and its "Timing is not asserted" is false
+   while `layout.test.ts:953` stands (O26).
+6. **B1 test quality:** `src/fabric3d/scene.test.ts:122` loops over collected null-band devices, and there
+   are none, so its colour assertion never runs.
+7. **O36 is wider than recorded:** `val()` also maps "-", "N/A" and NOT OBSERVED markers to null, so any of
+   them would compile to "Info" at `tools/compile-snapshot.mjs:332` and `:350`.
+8. **F3 documentation understates history:** `50a3dc5` holds the forwarding engine from before R17, and
+   the red reproduces from it. `mutation-check.mjs`'s LIMIT line and `refutation.md` §7 ("attested in prose
+   only") need correcting. O34's F3 status should cite this.
+9. **E3 harness:** it judges by long task, not LoAF. A 51.7 ms frame overlapping J2-first was not counted.
+10. **C2 observations:**
+    - In the 06 and 08 captures, the 06 headline is scrolled 596 px out of view in its ~404 px scroll box.
+    - Scroll ports cut a text line in half at their lower edge.
+    - "claim strength" shows as a bare legend key with no value.
+    - The 06 capture's manifest note says "BLOCKED verdict marker" while the frame shows "? UNDECIDED".
+11. **D3 observation:** at 768×1024 in the path-flow state, the bottom edge of the ring on "What the
+    collection gap means" is under the status bar (216 of 1,188 ring pixels).
 
-### Superseded or not reproduced by this round
+**Existing items: status after this grading**
 
-- **O25.** Partly superseded: E1, E2 (six ids), E3 (six ids), E4 and E5 now have acceptance-grade runs
-  at `70bea72`. What remains is J2-first, blocked by the load-meter defect below.
-- **O30.** Not reproduced on a quiet host: J5 was E3-clean in 3 of 3 quiet runs; its one 51 ms
-  on-path task ("style/layout/paint-only; no script over 5 ms") was in a busy run.
-- **O31.** Not reproduced: J2's effect was verified 25/25 in every run.
-- **O21.** Partly reproduces: navigation seeding ("path trace: seed a flow by navigation") measured
-  70.8–82.1 ms; resizes showed 0 ms of the app's own work.
-- **O32.** Extended by the B7 refuter: with the Keyboard-shortcuts dialog open at 320x568 the dialog
-  body fully covers "23/26 collected", "RIBs" and "ACLs". Still treated as a transient modal, not a
-  B7 failure; the owner has not decided.
-- **R32.** Its fix said light-theme links no longer read as ~1 px, with the width figures "reported,
-  not verified". The C5 hairline is a sub-2 px stroke in both themes; whether it is the same class is
-  unestablished.
-
-### New this round, not yet recorded in `docs/open-issues.md`
-
-1. **A6 blast marks with a trace active.** Off-canvas stranded hosts get no mark or count; the trace's
-   own hop withholds marks behind a button (`Fabric3D.tsx:916-952`).
-2. **B2 palette verdicts without scope or caveat.** `buildSuggestions`' "denied" rationale calls an
-   undecided denial "the blocking-hop answer" (`commands.ts:404-409`, `:734-739`).
-3. **C5 0.5 CSS px dashed hairline** in the core2→access9/access3 bundle, both tiers and themes;
-   drawing object unidentified.
-4. **D1 PaneSwitch at 768 px on Path.** No radio matches `value='path'`, so both take `tabindex=-1`
-   (`src/app/surfaces.tsx`).
-5. **D3 status bar under `.rail--b` at narrow widths.** Sticky z-index 5 vs rail z-index 30 once
-   scrolled; also a recorded-audit blind spot (`audit-d3-focus.mjs` reported "0 not visible").
-6. **E5 keystrokes 240–400 ms during load**, after FCP, in two acceptance-grade invocations.
-7. **`measure-inp.mjs` load-meter accounting.** `hostLoadMeter.sample()` only at `:1556`; closed
-   browsers are booked as external contention, contrary to `host-env.mjs`'s own contract.
-8. **F4 scope.** At ≥768 px three.js (1,013,596 of 1,970,906 decoded JS bytes) is fetched on first
-   load; the criterion's wording and its evidence column disagree. Owner decision: narrow the
-   criterion or defer the fabric mount.
-9. **B1 latent laundering.** `tools/compile-snapshot.mjs:332/:350` (`severity: val(...) ?? "Info"`)
-   and `:352` (`title ?? ""`) would render a future null severity as a benign Info finding.
-10. **Observations, not failures:**
-    - The B8 heading "Nearby flow with a different outcome" sits over a body that says none was
-      offered.
-    - The A4 queue `aria-current` lags the URL by 0.5–3 s under load.
-    - A5 reset does not cancel the OrbitControls damping tail (`camera.ts`), so a reset pressed 0.3 s
-      after a drag release landed at 547,54 instead of 474,82.
-    - Two idle rAF loops run continuously (`scene.ts:2768`, `FabricLabels.tsx:320`, 241 calls each in
-      4 s).
-    - E4's "tier high" suspends ambient occlusion while the camera moves (`postfx.ts` `setMotion`),
-      disclosed in `qualityReasons` but not in `acceptance.md` or `measure-fps`'s report.
-    - The B5 established-line test would pass without isolating that line.
-    - The fabric tree's item names do not carry trace or stranded marks (D6).
-    - Status-bar buttons partly overflow at 768, 1000 and 390 px (D3 leads).
-    - The palette search input has no boundary of its own (1.38 on an inner divider).
+- **O12 (A1):** confirmed exactly at {6, 6, 133, 1}. Still not closable in Atlas Scope.
+- **O13 (B8):** confirmed. UNPROVEN.
+- **O34 (A2 and F3):** both confirmed UNPROVEN. See new item 8 for the F3 history correction.
+- **O19 (C1):** confirmed. Owner decision.
+- **O25 (E acceptance evidence):** still open. No on-AC run exists at `78bdba5`, because the host stayed
+  on battery.
+- **O35 (E5):** still open. A laboratory run at `78bdba5` measured a worst keystroke of 192 ms and first
+  paint at 204–228 ms, which contradicts "still failing". It is not acceptance evidence, and a quiet
+  on-AC re-run decides it.
+- **O21 (E3 outside the journeys):** the sweep's worst action was "path trace: seed a flow by navigation"
+  at 89.3 ms LoAF (laboratory). Resizes showed 0 ms.
+- **O30 (J5):** E3-clean in 3 laboratory runs. Still a lead until a quiet run.
+- **O23 (clean clone):** partly advanced. F1, F4 and F5 PASS from a fresh clone of `78bdba5`, and F2 is red
+  there. A–E and F6 have still not been run from a clone. The structural `../webapp` dependency is
+  unchanged.
+- **O37:**
+  - The A5 lead is now a FAIL (new item 2).
+  - The D6 lead is confirmed (tree names carry no trace or stranded marks). It is not counted as a D6
+    failure.
+  - The B5 lead is addressed in grading by an isolated `evaluateAcls` check; the unit test itself is
+    unchanged.
+  - The A4 `aria-current` lag, idle rAF loops, E4 AO suspension, D3 status-bar overflow and palette-input
+    boundary leads were not re-measured.
+- **O36:** confirmed by code reading, and wider (new item 7).
+- **O26:** still open (`layout.test.ts:953`).
+- **O27:** still open. Its 17 review harnesses, including F-evidence tools, are not type-checked.
+- **O22:** still open (the determinism gate is keyed on names and accepts unverifiable annotations).
+- **O16:** a caller's mid-motion tier change is not exercised by the harness. Owner decision.
+- **O17:** compact density was not graded. The C3 fragility finding bears on it.
+- **O32:** not examined.
+- **O9:** "Open source record" opens the compiled record. The Inspector says so in words, and the raw
+  source record is still not viewable.
+- **O6:** bloom halos at the high tier were noted by C5. Still open.
+- **Not examined by this grading:** O7, O8, O11, O14, O28, O29, O31 and O33.
