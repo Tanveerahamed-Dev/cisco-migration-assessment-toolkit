@@ -432,6 +432,7 @@ export function Fabric3D({
   /* Narrow slices only. A change to the evidence tab, the palette or the finding list must not
      re-render the stage at all, let alone touch the scene. */
   const deviceId = useInvestigation((s) => s.deviceId);
+  const deviceOrigin = useInvestigation((s) => s.deviceOrigin);
   const linkId = useInvestigation((s) => s.linkId);
   const findingId = useInvestigation((s) => s.findingId);
   const trace = useInvestigation((s) => s.trace);
@@ -919,10 +920,18 @@ export function Fabric3D({
      "✓ DELIVERED HERE" — a failure hypothesis nobody asked, drawn over the packet's answer. While
      the selection IS the trace's hop, the question on screen is the trace, so no blast radius is
      drawn. Selecting any other device (or a link) is an explicit new question and draws it as
-     before; the Inspector's text is unaffected either way. */
+     before; the Inspector's text is unaffected either way.
+
+     "IS the trace's hop" is WHO made the selection, not WHICH device it names (acceptance A6,
+     overturned at 70bea72). It used to be `deviceId === the hop's host`, which the trace's own
+     re-aim satisfies — and so do a palette selection of that host, a click on it, the fabric list and
+     a restored `d=`: selecting core1 during a trace drew 0 of its 9 stranded hosts until a button was
+     pressed. The shell now says which it was (store.ts SelectionOrigin, set "hop" only by App.tsx's
+     re-aim; `selectDevice` defaults to explicit), and only the trace's own selection is quiet. */
   const activeHopHost = trace === null || hopIndex === null ? null : (trace.hops[hopIndex]?.host ?? null);
   const selectionIsTraceHop =
     activeHopHost !== null &&
+    deviceOrigin === "hop" &&
     linkId === null &&
     deviceId !== null &&
     (deviceId === activeHopHost || deviceById.get(deviceId)?.host === activeHopHost);
@@ -988,6 +997,19 @@ export function Fabric3D({
     for (const d of devices) if (want.has(d.host) || want.has(d.id)) out.add(d.id);
     return out;
   }, [blast, devices]);
+
+  /* EVERY STRANDED HOST IS ACCOUNTED FOR ON THE FABRIC (acceptance A6, refuted at 70bea72). A
+     selection never moves the camera (A4), so with the view framed on a trace, core2's blast radius
+     marked 5 of its 8 stranded hosts and the other 3 projected off the canvas with no mark, no count
+     and nothing saying so. The label layer reports which stranded hosts it could NOT draw this frame
+     (off the canvas, behind a chassis, or dropped) — only when that set changes — and the stage
+     states the count and names them. */
+  const [strandedUnseen, setStrandedUnseen] = useState<readonly string[]>([]);
+  const onStrandedUnseen = useCallback((ids: readonly string[]) => setStrandedUnseen(ids), []);
+  const unseenHosts = useMemo(
+    () => (blast.stranded.length === 0 ? [] : strandedUnseen.filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id)),
+    [blast, strandedUnseen, strandedIds],
+  );
 
   /** The traced packet's ending, decided once and shared by the canvas channel and the label layer
    *  so the two cannot tell different stories about one trace. */
@@ -1229,6 +1251,7 @@ export function Fabric3D({
         cutPointId={cutPointId}
         strandedIds={strandedIds}
         strandedQualifier={blast.qualifier}
+        onStrandedUnseen={onStrandedUnseen}
         finding={labelFinding}
         coordinateSpace="canvas"
       />
@@ -1294,9 +1317,27 @@ export function Fabric3D({
           <span className="fabric3d__quality" role="note" data-blast="not-determinable" title={blast.undetermined.why}>
             {`Blast radius not determinable: ${blast.undetermined.subject} ${blast.undetermined.short}`}
           </span>
-        ) : blast.stranded.length > 0 && blast.qualifier !== "" ? (
-          <span className="fabric3d__quality" role="note" data-blast={blast.certainty ?? ""}>
-            {`Stranded marks are ${blast.qualifier}`}
+        ) : blast.stranded.length > 0 ? (
+          /* The count, on the fabric, whenever a blast radius is drawn — and every stranded host the
+             label layer could not draw, named (A6). Marked + out of view = the whole set, so the
+             stage always accounts for all of it. The certainty clause stays attached to the count it
+             qualifies. */
+          <span
+            className="fabric3d__quality"
+            role="note"
+            data-blast={blast.certainty ?? ""}
+            data-stranded-total={strandedIds.size}
+            data-stranded-unseen={unseenHosts.length}
+            title={
+              unseenHosts.length === 0
+                ? `Every host that ${blast.host ?? blast.link ?? "the selection"} strands carries a stranded mark on the fabric.`
+                : `Not in view, so their stranded marks are not drawn: ${unseenHosts.join(", ")}. The camera is not moved by a selection; Reset view or the Fabric list reaches them.`
+            }
+          >
+            {`${blast.host ?? blast.link ?? "Selection"} strands ${strandedIds.size}${blast.qualifier === "" ? "" : ` (${blast.qualifier})`}`}
+            {unseenHosts.length === 0
+              ? ` · all ${strandedIds.size} marked`
+              : ` · ${unseenHosts.length} out of view: ${unseenHosts.join(", ")}`}
           </span>
         ) : null}
         <button

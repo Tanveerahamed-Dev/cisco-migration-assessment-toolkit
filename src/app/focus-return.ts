@@ -55,6 +55,13 @@
 export interface ReturnRecord {
   readonly target: HTMLElement;
   readonly opener: HTMLElement | null;
+  /**
+   * The named landmark the target sat in (or its labelling heading), captured while the target
+   * still exists: the last place that still means "where you were" once the target, its opener and
+   * every stated fallback are gone. See `src/app/focus-return.region.test.ts` (a phone-width
+   * Inspector close whose citation had re-rendered, and whose stage fallback was display:none).
+   */
+  readonly region: HTMLElement | null;
 }
 
 type Candidate = HTMLElement | null | undefined;
@@ -104,7 +111,7 @@ function openerOf(el: HTMLElement): HTMLElement | null {
 export function recordReturn(from: EventTarget | null | undefined, self?: Element | null): ReturnRecord | null {
   if (typeof HTMLElement === "undefined" || !(from instanceof HTMLElement)) return null;
   if (from === self || from === document.body) return null;
-  return { target: from, opener: openerOf(from) };
+  return { target: from, opener: openerOf(from), region: landmarkOf(from) };
 }
 
 const takesFocus = (el: HTMLElement): boolean =>
@@ -147,7 +154,9 @@ function focusLandmark(el: HTMLElement): boolean {
 /**
  * Return focus. `record` is what `recordReturn` captured (or a plain element); `context` is the
  * element giving focus up, used to find the region landmark; `fallbacks` are the caller's explicit
- * next choices. Returns the element that now holds focus, or null when focus was left in place.
+ * next choices. Order: the target, its opener, the fallbacks, the landmark around `context`, and
+ * last the landmark the target sat in when it was recorded (`ReturnRecord.region`). Returns the
+ * element that now holds focus, or null when focus was left in place.
  */
 export function returnFocus(
   record: ReturnRecord | HTMLElement | null | undefined,
@@ -160,6 +169,17 @@ export function returnFocus(
   for (const c of [target, opener, ...fallbacks]) if (c && tryFocus(c)) return c;
   const mark = landmarkOf(context);
   if (mark !== null && focusLandmark(mark)) return mark;
+  const region = record instanceof HTMLElement ? null : (record?.region ?? null);
+  if (region !== null && region !== mark) {
+    /* The region's first heading that can take focus names the same place and is small enough for
+       its ring to be seen whole; a ring round a tall, rail-clipped region measured under half its
+       perimeter (focus-return.region.test.ts). Headings in a hidden sub-pane refuse focus and are
+       passed over; the region itself is the last resort. */
+    if (!/^H[1-6]$/.test(region.tagName)) {
+      for (const h of region.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) if (focusLandmark(h)) return h;
+    }
+    if (focusLandmark(region)) return region;
+  }
   return null;
 }
 

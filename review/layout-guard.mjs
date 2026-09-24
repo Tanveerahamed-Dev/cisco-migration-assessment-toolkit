@@ -302,7 +302,8 @@ const bandProbe = () => {
     focusBottom: fr ? Math.round(fr.bottom) : null,
   };
 };
-for (const [w, h] of ONLY === "hop" ? [] : [[1000, 800], [900, 700], [800, 600]]) {
+/* 768x1024 added 2026-09-24: the single-column rung's bottom edge, where the D1 pane switch finding lives. */
+for (const [w, h] of ONLY === "hop" ? [] : [[1000, 800], [900, 700], [800, 600], [768, 1024]]) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h } });
   const page = await ctx.newPage();
   await page.goto(`${APP}/`, { waitUntil: "load" });

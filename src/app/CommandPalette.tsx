@@ -72,6 +72,12 @@ interface Row {
   meta?: ReactNode;
   /** Second line: evidence, rationale, or the reason this row cannot act. */
   detail?: ReactNode;
+  /**
+   * The band of the forwarding verdict `detail` states, when it states one (ClaimCard
+   * `verdictStatement`). Such a detail is drawn WHOLE: the two-line clamp every other hint gets
+   * would cut a verdict after its word and before its scope and caveat count (acceptance B2).
+   */
+  verdictBand?: string;
   /** The citation of the record behind the row. Commands are verbs and carry none. */
   cite?: string;
   /** A string makes the row `aria-disabled` and states why. */
@@ -172,6 +178,7 @@ function commandRow(c: Command, close: Close): Row {
     /* The reason REPLACES the detail when the command cannot act, so the second line always
        answers the question the user is about to ask. */
     ...(a.ok ? (c.detail ? { detail: c.detail } : {}) : { detail: a.reason }),
+    ...(a.ok && c.detail && c.verdict ? { verdictBand: c.verdict.band } : {}),
     disabledReason: a.ok ? null : a.reason,
     run: () => {
       if (!a.ok) {
@@ -400,7 +407,9 @@ const PaletteRow = memo(function PaletteRow({
       <span className="palette__row-main">
         <span className="palette__row-label">{row.label}</span>
         {row.detail === undefined || row.detail === null ? null : (
-          <span className="palette__row-detail">{row.detail}</span>
+          <span className="palette__row-detail" {...(row.verdictBand === undefined ? {} : { "data-verdict-band": row.verdictBand })}>
+            {row.detail}
+          </span>
         )}
       </span>
       <span className="palette__row-side">
@@ -498,6 +507,7 @@ export function CommandPalette(): ReactNode {
           label: <span className="palette__mono palette__example">{ex.query}</span>,
           text: `${ex.query}. ${ex.detail}`,
           detail: ex.detail,
+          ...(ex.verdict === undefined ? {} : { verdictBand: ex.verdict.band }),
           meta: <span className="palette__matched">fills the search box</span>,
           run: () => {
             setInput(ex.query);

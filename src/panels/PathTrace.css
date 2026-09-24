@@ -204,6 +204,7 @@
 
 .pt-preset__head > *,
 .pt-preset__flow,
+.pt-preset__bounds,
 .pt-preset__why,
 .pt-preset__prov {
   min-width: 0;
@@ -245,6 +246,15 @@
   font-family: var(--font-mono);
   font-size: var(--fs-1);
   color: var(--text-muted);
+}
+
+/* The bounds of the preset's verdict — the trace's own scope clause, badge and caveat count
+   (ClaimCard `verdictStatement`). Drawn directly under the word it bounds and never truncated: a
+   verdict stated without them is a stronger claim than the one the engine made (acceptance B2). */
+.pt-preset__bounds {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text);
 }
 
 .pt-preset__why {

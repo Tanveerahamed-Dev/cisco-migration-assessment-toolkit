@@ -195,6 +195,29 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
     panelRef.current?.focus();
   }, [open]);
 
+  /* WCAG 2.4.11 (Focus Not Obscured), 2026-09-24. Below 768px this bar is `position: sticky` at the
+     viewport's bottom edge, and it WRAPS (85 px tall at 390, not the 26 px token). Measured with real
+     Tab presses (review/audit-d3-focus.mjs --sweep, 390x844, a traced flow): the browser scrolled
+     each newly focused control only as far as the viewport's edge, which is under this bar — "Open
+     source record collection_completeness / coverage_matrix" landed with 0 of 9 hit-test points on
+     itself, a path preset with 3 of 9. The document's scroll padding (shell.css, <= 767px) is what a
+     focus scroll respects, so the bar publishes its REAL block size for it, live, rather than the
+     stylesheet restating a height that changes with the width and the figures. */
+  useEffect(() => {
+    const bar = barRef.current;
+    const root = document.documentElement;
+    if (bar === null) return;
+    const publish = (): void => root.style.setProperty("--statusbar-block", `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+    publish();
+    if (typeof ResizeObserver !== "function") return () => root.style.removeProperty("--statusbar-block");
+    const ro = new ResizeObserver(publish);
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--statusbar-block");
+    };
+  }, []);
+
   const denominator = (rowId: string, text: string, description: string): ReactElement => (
     <button
       type="button"

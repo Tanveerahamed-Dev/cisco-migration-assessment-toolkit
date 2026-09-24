@@ -14,7 +14,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Flow } from "../core/types";
-import { counterexample, traceFlow } from "../forwarding/engine";
+import { counterexample, suggestedFlows, traceFlow } from "../forwarding/engine";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 
@@ -101,5 +101,28 @@ describe("the counterexample block says what actually differs", () => {
     expect(titles.some((t) => /the nearest flow that behaves differently/.test(t))).toBe(false);
     expect(titles.some((t) => /relative to an UNDECIDED result/.test(t))).toBe(true);
     expect(c.querySelector(".claim__pair")).toBeNull();
+  });
+});
+
+describe("the counterexample heading does not promise a flow the body does not offer (B8 negative state)", () => {
+  /* Acceptance report, B8 observation: "Nearby flow with a different outcome" sat over a body reading
+     "None of the 8 nearby variations … so no counterexample is offered". A heading that names a flow
+     over a body that offers none is a claim the card then retracts. Class-wide over every flow whose
+     card offers nothing: every suggested flow, plus the undecided udp denial pinned above. */
+  it("every card whose search offered nothing says so in its heading", () => {
+    const flows: Flow[] = [...suggestedFlows().map((s) => s.flow), flow("10.0.10.50", "8.8.8.8", "udp", 53)];
+    let negative = 0;
+    for (const f of flows) {
+      const c = render(f);
+      const none = c.querySelector(".claim__counter-none");
+      if (none === null) continue;
+      negative += 1;
+      const title = none.closest(".claim__section")?.querySelector(".claim__section-title")?.textContent ?? "";
+      expect(title, `${f.protocol} ${f.srcIp} -> ${f.dstIp}:${f.dstPort ?? "-"}`).toMatch(/\bnone\b/i);
+      expect(title).not.toMatch(/the nearest flow that behaves differently/);
+      document.body.innerHTML = "";
+    }
+    // Non-vacuity: this snapshot's negative state is the one the report saw.
+    expect(negative).toBeGreaterThan(0);
   });
 });

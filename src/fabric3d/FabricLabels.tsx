@@ -131,6 +131,13 @@ export interface FabricLabelsProps {
    *  mark drawn from an uncertain radius says so on the mark itself (2026-09-22 critic, B1). */
   strandedQualifier?: string;
   /**
+   * Told which stranded hosts this layer could NOT draw — their anchor is off the canvas or hidden,
+   * or the declutter dropped them — as device ids in placement order, whenever that set changes
+   * (acceptance A6: with the camera on a trace, 3 of core2's 8 stranded hosts were off the canvas
+   * and nothing on the fabric said so). Never called per frame with an unchanged answer.
+   */
+  onStrandedUnseen?: (ids: readonly string[]) => void;
+  /**
    * The selected finding and the hosts it names (acceptance A4). A finding is a THIRD kind of
    * subject, distinct from the device selection: selecting F030 used to call setHighlight with
    * access15 and change nothing on screen for it — its label stayed as it was (and at the default
@@ -185,6 +192,7 @@ export function FabricLabels({
   cutPointId = null,
   strandedIds,
   strandedQualifier = "",
+  onStrandedUnseen,
   finding = null,
   coordinateSpace = "canvas",
 }: FabricLabelsProps) {
@@ -231,6 +239,8 @@ export function FabricLabels({
   cutRef.current = cutPoint;
   const strandedRef = useRef(stranded);
   strandedRef.current = stranded;
+  const unseenCbRef = useRef(onStrandedUnseen);
+  unseenCbRef.current = onStrandedUnseen;
 
   /** The finding's hosts resolved to device ids, by id OR host (the two are separate fields). */
   const findingHosts = useMemo((): ReadonlySet<string> => {
@@ -364,6 +374,8 @@ export function FabricLabels({
        and the stage width folded in, so a change of priority or of stage reads as movement. */
     const pose: number[] = [];
     let prevPose: number[] = [];
+    /** The unseen-stranded answer last reported (A6), so an unchanged one is never re-sent. */
+    let unseenKey: string | null = null;
     let prevSeq = "";
     let settledNow = false;
     /* THE DWELL (acceptance C5, label popping). Whether a name may appear or leave THIS pass, given
@@ -543,16 +555,14 @@ export function FabricLabels({
 
         const p = scene.project(id);
         projected[i] = p;
-        // An anchor behind the camera or occluded by a chassis reports invisible. Drawing its label
-        // anyway would attach a hostname to a device the viewer cannot see.
-        if (!p || !p.visible) {
-          // Left the view (or the scene's own resolver dropped it): gone at once, never held —
-          // the gate's rule for an anchor that is not on screen, as in resolveLabels.
-          pendingIds.delete(id);
-          hide(id, el);
-          continue;
-        }
+        const onScreen = p !== null && p.visible;
 
+        /* The marks are the LABEL's state, written whether or not the label is drawn this pass. They
+           used to be written only for an on-screen anchor, so a label that left the view kept the
+           marks of the selection it left under — stale state on a hidden element — and a stranded
+           host off the canvas carried no mark at all (A6, refuted at 70bea72: 5 of core2's 8). A
+           hidden label's mark draws nothing (visibility: hidden); the stage's count names it as out
+           of view (Fabric3D, onStrandedUnseen). */
         const wantAlarm = id === blk && alm !== null ? alm.kind : "";
         const wantCut = id === cut ? "yes" : "";
         const wantStranded = str.has(id) ? "yes" : "";
@@ -572,7 +582,18 @@ export function FabricLabels({
           el.dataset.disputed = wantDisputed;
           sizes.delete(id);
           written.delete(id);
-          wroteMarks = true;
+          // Only a label about to be placed needs its new box measured before placement.
+          if (onScreen) wroteMarks = true;
+        }
+
+        // An anchor behind the camera or occluded by a chassis reports invisible. Drawing its label
+        // anyway would attach a hostname to a device the viewer cannot see.
+        if (!onScreen) {
+          // Left the view (or the scene's own resolver dropped it): gone at once, never held —
+          // the gate's rule for an anchor that is not on screen, as in resolveLabels.
+          pendingIds.delete(id);
+          hide(id, el);
+          continue;
         }
         if (!sizes.has(id)) needsMeasure = true;
       }
@@ -963,6 +984,19 @@ export function FabricLabels({
          back to the scene's telemetry. Duck-typed: the frozen contract has no such method, and a
          scene without it simply keeps its resolver's count. */
       (scene as FabricScene & { reportLabelsShown?: (n: number) => void }).reportLabelsShown?.(placed.length);
+
+      /* A6: the stranded hosts this pass could not draw — read off what the pass actually drew
+         (`data-visible`), not re-derived, so the count the stage states is the picture's own. */
+      const report = unseenCbRef.current;
+      if (report !== undefined) {
+        const unseen: string[] = [];
+        for (const id of seq) if (str.has(id) && els.get(id)?.dataset.visible !== "true") unseen.push(id);
+        const key = unseen.join("|");
+        if (key !== unseenKey) {
+          unseenKey = key;
+          report(unseen);
+        }
+      }
 
       /* STILL CONVERGING (acceptance C5, the settle's half of the dwell — labelResolve
          `labelSettleMayReverse`). The settled pass above is history-free (F6) and so has no dwell:

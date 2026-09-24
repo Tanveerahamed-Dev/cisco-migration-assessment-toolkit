@@ -581,7 +581,7 @@ quality chip in **every** build, dev and production alike.
 | Instance colour (`setColorAt`) | `Device.band` | `--band-*`, read from the live token via `Color.setStyle` |
 | Chassis height | **nothing** | Fixed per kind. Height must never encode a metric — it reads as a bar chart and invites a comparison the data does not support. |
 | Front-bezel extruded glyph (0.08 units) | `Device.role` | `access` = three stacked bars · `distribution` = a chevron · `null` = an outlined dash. `role === null` on **17 of 26** devices, and that is the truth of this data. |
-| Surface treatment | `Device.collected` | `true` → solid PBR chassis. `false` → **the same silhouette as a 1.4 px wireframe outline over a 22 %-opacity fill, with a 45° hatch on the top face.** Never green, never grey-as-disabled, never absent. |
+| Surface treatment | `Device.collected` | `true` → solid PBR chassis. `false` → **the same silhouette as a 2 px (`MIN_STROKE_PX`) wireframe outline over a 22 %-opacity fill, with a 45° hatch on the top face.** Never green, never grey-as-disabled, never absent. |
 
 **As shipped — where the band is actually legible (recorded 2026-09-21, C5 audit).** The instance
 colour reaches two surfaces. On the chassis BODY it is a wash that the tone curve compresses on the

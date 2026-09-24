@@ -47,9 +47,11 @@ import { checkBuildFreshness } from "./build-freshness.mjs";
 import {
   FULL_RATE_MAX_RAF_MS,
   PRESENTING_MAX_RAF_MS,
+  closeMeasured,
   createLoadMeter,
   describePower,
   gatedBusy,
+  harnessBasis,
   headedWindow,
   hostPower,
   idleBaseline,
@@ -910,10 +912,10 @@ export const J2_ANCHOR_REASONS = [];
  * precondition named rather than assumed.
  *
  * @param {() => Promise<any>} launch  starts the throwaway browser
- * @param {{ app: string, context: object, initScript: string, log?: (line: string) => void }} opts
+ * @param {{ app: string, context: object, initScript: string, log?: (line: string) => void, meter?: { sample(): void } | null }} opts
  * @returns {Promise<{ hits: { id: string, x: number, y: number }[], reasons: string[] }>}
  */
-export async function discoverJ2Anchors(launch, { app, context, initScript, log = console.log }) {
+export async function discoverJ2Anchors(launch, { app, context, initScript, log = console.log, meter = null }) {
   const reasons = [];
   let hits = [];
   let scout = null;
@@ -937,7 +939,8 @@ export async function discoverJ2Anchors(launch, { app, context, initScript, log 
   } catch (e) {
     reasons.push(`anchor discovery threw: ${String(e).split("\n")[0].slice(0, 160)}`);
   } finally {
-    if (scout !== null) await scout.close().catch(() => null);
+    /* Through the run's meter (host-env.mjs :: closeMeasured); a unit test's fake browser has none. */
+    if (scout !== null) await closeMeasured(meter, scout).catch(() => null);
   }
   J2_HITS.length = 0;
   J2_HITS.push(...hits);
@@ -1008,7 +1011,7 @@ async function main() {
      emulation, so outer - inner is the browser chrome), and the window plan made from it — see
      planWindow. A probe that fails leaves the plan null: the old fixed size is used, and the window
      check below then withholds acceptanceEvidence rather than guessing. */
-  const headedPlan = HEADED ? await headedWindow(chromium, VIEWPORT) : null;
+  const headedPlan = HEADED ? await headedWindow(chromium, VIEWPORT, hostLoadMeter) : null;
   const screenProbe = headedPlan?.screen ?? null;
   const windowPlan = headedPlan?.plan ?? null;
   /* Occlusion flags (perf audit, 2026-09-22): Chromium on Windows stops presenting a window the OS
@@ -1075,6 +1078,7 @@ async function main() {
       app: APP,
       context: CONTEXT,
       initScript: EXPOSE_SCENE,
+      meter: hostLoadMeter,
     });
   }
 
@@ -1092,7 +1096,7 @@ async function main() {
         rec.reason = `transport: ${rec.transportFailure}`;
         rec.verdict = "TRANSPORT";
         rec.e3Verdict = "NOT MEASURED";
-        await ctx.close();
+        await hostLoadMeter.close(ctx);
         results.push(rec);
         console.log(`${"TRANSPORT".padEnd(12)} ${rec.id.padEnd(22)} [server did not serve the page twice: ${rec.transportFailure}]`);
         continue;
@@ -1107,7 +1111,7 @@ async function main() {
         rec.reason = `window not presenting (median rAF ${rec.presenting.rafMedianMs ?? "none in 4 s"} ms after restore, bar < ${PRESENTING_MAX_RAF_MS} ms) — harness environment, not the app`;
         rec.verdict = "NOT MEASURED";
         rec.e3Verdict = "NOT MEASURED";
-        await ctx.close();
+        await hostLoadMeter.close(ctx);
         results.push(rec);
         console.log(`${"NOT MEASURED".padEnd(12)} ${rec.id.padEnd(22)} [${rec.reason}]`);
         continue;
@@ -1133,7 +1137,7 @@ async function main() {
           const cad = HEADED ? await rafCadence(page).catch(() => null) : 0;
           rec.reason = cad !== null && cad < PRESENTING_MAX_RAF_MS ? why : `${why} — BUT the window was not presenting (rAF median ${cad ?? "none in 4 s"}); harness environment, not the app`;
           rec.verdict = "NOT MEASURED";
-          await ctx.close();
+          await hostLoadMeter.close(ctx);
           results.push(rec);
           console.log(`${"NOT MEASURED".padEnd(12)} ${rec.id.padEnd(22)} [${rec.reason}]`);
           continue;
@@ -1409,7 +1413,7 @@ async function main() {
       rec.reason = String(e).slice(0, 300);
       rec.verdict = "NOT MEASURED";
     }
-    await ctx.close();
+    await hostLoadMeter.close(ctx);
     results.push(rec);
     console.log(
       `${rec.verdict.padEnd(12)} ${(rec.e3Verdict ?? "-").padEnd(9)} ${rec.id.padEnd(22)} worstPerRep p95=${rec.worstPerRep?.p95 ?? "-"}ms p50=${rec.worstPerRep?.p50 ?? "-"}ms max=${rec.worstPerRep?.max ?? "-"}ms | pooled p95=${rec.inp?.p95 ?? "-"}ms  samples=${rec.samples ?? 0}  longTasks>50ms=${rec.longTasks?.over50ms ?? "-"} (max ${rec.longTasks?.maxMs ?? "-"}ms, ON-PATH ${rec.longTasksOver50OnPath ?? "-"}${rec.onPathByPhase ? ` = input-delay ${rec.onPathByPhase["input-delay"]} / in-handler ${rec.onPathByPhase["in-handler"]} / post-handler ${rec.onPathByPhase["post-handler-pre-present"]}` : ""})${rec.reason ? "  [" + rec.reason + "]" : ""}`,
@@ -1487,7 +1491,7 @@ async function main() {
         } catch (e) {
           trial.why = `trial threw: ${String(e).slice(0, 160)}`;
         } finally {
-          await fresh.close();
+          await hostLoadMeter.close(fresh);
         }
         const onPathMs = (trial.onPath ?? []).map((x) => x.durationMs);
         console.log(
@@ -1553,8 +1557,8 @@ async function main() {
       );
   }
 
-  hostLoadMeter.sample();
-  await browser.close();
+  /* Every close in this file goes through the meter (host-env.mjs :: closeMeasured). */
+  await hostLoadMeter.close(browser);
 
   const softwareRasteriser = /swiftshader|llvmpipe|software|microsoft basic render/i.test(
     environment?.renderer ?? "",
@@ -1634,7 +1638,10 @@ async function main() {
     window: { screen: screenProbe, plan: windowPlan, check: windowCheck, fits: windowFits },
     hostQuiescence: {
       busyFractionOfRun: hostBusy,
-      basis: hostLoad.excess !== null ? "excess over the harness's own process tree" : "gross (harness tree unreadable on this platform)",
+      basis: harnessBasis(hostLoad),
+      harnessMethod: hostLoad.method,
+      harnessCpuMs: hostLoad.harnessCpuMs,
+      harnessJobError: hostLoad.jobError,
       grossBusyFraction: hostLoad.gross ?? hostBusyGross,
       harnessFraction: hostLoad.harness,
       idleBaselineBeforeLaunch: hostIdleBaseline,
@@ -1837,7 +1844,7 @@ async function main() {
       : `NOT ACCEPTANCE EVIDENCE — do not quote these against the 200 ms bar. ${out.acceptanceEvidenceWhy}`,
   );
   console.log(`build: ${freshness.fresh ? "fresh" : "NOT FRESH"} — ${freshness.why}`);
-  console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy across the run excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"}, idle baseline before launch ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) over ${cpus().length} cores (acceptance bar ${MAX_HOST_BUSY_FRACTION * 100}%)`);
+  console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy across the run excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"} read from its ${hostLoad.method ?? "(unreadable)"}${hostLoad.jobError ? ` [job: ${hostLoad.jobError}]` : ""}, idle baseline before launch ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) over ${cpus().length} cores (acceptance bar ${MAX_HOST_BUSY_FRACTION * 100}%)`);
   console.log(`presentation: slowest journey rAF median ${slowestCadenceMs ?? "unknown"} ms${presentationBelowFullRate ? ` — BELOW 50 Hz: not acceptance evidence` : ""}`);
   console.log(`power: ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " — THROTTLED: not acceptance evidence" : ""}`);
   console.log(`presentation cadence, median rAF ms at journey start/end: ${results.map((r) => `${r.id.split("-")[0]} ${r.presenting?.rafMedianMs ?? "-"}/${r.presentation?.rafIntervalMedianMs ?? "-"}`).join(", ")} (16.7 = 60 Hz, 33.3 = 30 Hz throttled)`);

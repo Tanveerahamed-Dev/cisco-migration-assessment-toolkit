@@ -44,7 +44,7 @@ import {
 import { deviceById, fabric, linksByHost } from "../core/data";
 import { useInvestigation } from "../core/store";
 import type { Cite, Flow, Trace, TraceOutcome } from "../core/types";
-import { bandOfTrace, isDecidedOutcome, outcomeUndecidingGaps, undecidedOutcomeWord } from "../core/claims";
+import { isDecidedOutcome, outcomeUndecidingGaps } from "../core/claims";
 import { blockingHop, counterexample, refusalOf, suggestedFlows, traceFlow, unobservedPolicyInputs, type SuggestedFlow } from "../forwarding/engine";
 import { ribIncompletenessSentence } from "../forwarding/rib-completeness";
 import {
@@ -74,7 +74,7 @@ import {
   TabPanel,
   Tabs,
 } from "../ui/primitives";
-import { ClaimCard, IntentClaimCard, outcomeWordOf } from "./ClaimCard";
+import { ClaimCard, IntentClaimCard, outcomeTallyWord, outcomeWordOf, verdictStatement } from "./ClaimCard";
 import { HopList } from "./HopList";
 import { deferPastPaint } from "./deferPastPaint";
 import "./PathTrace.css";
@@ -692,15 +692,8 @@ export function stepIntentSearch(s: IntentSearch, budget: number): void {
 
 const byCountDesc = (a: ReasonRow, b: ReasonRow): number => b.count - a.count || a.reason.localeCompare(b.reason);
 
-/** The tally word for an outcome the engine returned but did not decide — the lead of
- *  `claims.ts :: undecidedOutcomeWord`, which the single-trace headline uses. */
-const UNDECIDED_TALLY_WORD: Readonly<Record<TraceOutcome, string>> = {
-  delivered: "delivered by routing — not decided",
-  denied: "denied by list text — not decided",
-  dropped: "dropped for want of a collected route — not decided",
-  indeterminate: "indeterminate — not decided",
-  "out-of-scope": "outside the collected evidence — not decided",
-};
+/* The tally words (decided, and the lead of `claims.ts :: undecidedOutcomeWord` for returned-but-not-
+   decided) are `ClaimCard.tsx :: outcomeTallyWord` — the one outcome→word table, beside the card's. */
 
 export function finishIntentSearch(s: IntentSearch): IntentVerdict {
   const c = fabric.coverage;
@@ -738,7 +731,7 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
     outcome === "counterexample-found" && first !== undefined
       ? `A counterexample was found: ${first.flow.protocol} ${first.flow.srcIp} to ${first.flow.dstIp}${
           first.flow.dstPort === null ? "" : `:${first.flow.dstPort}`
-        } is ${first.trace.outcome}, which contradicts the intent. ${s.counterexamples.length} of the ${searched} flows searched contradict it, ${under}.${
+        } is ${outcomeWordOf(first.trace)}, which contradicts the intent. ${s.counterexamples.length} of the ${searched} flows searched contradict it, ${under}.${
           dropped > 0
             ? ` ${dropped} of the ${enumerated} flows this intent implies were never traced because the enumeration was capped at ${cap}, so the contradicting count is a lower bound.`
             : ""
@@ -780,8 +773,8 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
       const n = s.outcomeCounts[k];
       const d = s.decidedOutcomeCounts[k];
       const parts: string[] = [];
-      if (d > 0) parts.push(`${d} ${k} (decided)`);
-      if (n - d > 0) parts.push(`${n - d} ${UNDECIDED_TALLY_WORD[k]}`);
+      if (d > 0) parts.push(`${d} ${outcomeTallyWord(k, true)}`);
+      if (n - d > 0) parts.push(`${n - d} ${outcomeTallyWord(k, false)}`);
       return parts;
     })
     .join(", ");
@@ -893,14 +886,6 @@ const PROTOCOL_OPTIONS = [
   { value: "ip", label: "IP (any protocol)" },
 ] as const;
 
-const PRESET_OUTCOME_WORD: Readonly<Record<TraceOutcome, string>> = {
-  delivered: "delivered",
-  dropped: "dropped",
-  denied: "denied",
-  indeterminate: "indeterminate",
-  "out-of-scope": "outside the evidence",
-};
-
 function Presets({ onPick, title }: { onPick: (f: Flow) => void; title: string }): ReactElement {
   /* Derived from the snapshot and TRACED by the engine at module load, so each one advertises the
      outcome it actually produced. A form with no starting point is a dead end for anyone who does
@@ -910,30 +895,28 @@ function Presets({ onPick, title }: { onPick: (f: Flow) => void; title: string }
      green "delivered" and a red "denied" for two flows whose own cards read "the simulation ran and
      declined to decide this flow" (2026-09-21 critic, B1). The trace is the engine's (memoised
      per module, sub-millisecond), so the preset and the card cannot disagree. */
-  const flows = useMemo(
-    () =>
-      suggestedFlows().map((s: SuggestedFlow) => {
-        const t = traceFlow(s.flow);
-        return { s, band: bandOfTrace(t), word: undecidedOutcomeWord(t) ?? PRESET_OUTCOME_WORD[s.expectedOutcome] };
-      }),
-    [],
-  );
+  /* And each preset carries the BOUNDS of that word — the trace's own scope clause, badge and caveat
+     count (ClaimCard `verdictStatement`). A preset that stated its outcome bare, over a rationale
+     calling an undecided denial "the blocking-hop answer", was a verdict with no claim attached
+     (acceptance B2). The rationale now names the question; the trace states the answer. */
+  const flows = useMemo(() => suggestedFlows().map((s: SuggestedFlow) => ({ s, verdict: verdictStatement(traceFlow(s.flow)) })), []);
   return (
     <div className="pt-presets">
       <h3 className="pt-presets__title">{title}</h3>
       <ul className="pt-presets__list">
-        {flows.map(({ s, band, word }) => (
+        {flows.map(({ s, verdict }) => (
           <li key={s.id} className="pt-preset">
             <button type="button" className="pt-preset__btn" onClick={() => onPick(s.flow)}>
               <span className="pt-preset__head">
                 <span className="pt-preset__title">{s.title}</span>
-                <span className="pt-preset__outcome" data-outcome={s.expectedOutcome} data-band={band}>
-                  {word}
+                <span className="pt-preset__outcome" data-outcome={s.expectedOutcome} data-band={verdict.band}>
+                  {verdict.word}
                 </span>
               </span>
               <span className="pt-preset__flow">
                 {`${s.flow.protocol} ${s.flow.srcIp} → ${s.flow.dstIp}${s.flow.dstPort === null ? "" : `:${s.flow.dstPort}`}`}
               </span>
+              <span className="pt-preset__bounds">{verdict.bounds}</span>
               <span className="pt-preset__why">{s.rationale}</span>
               <span className="pt-preset__prov" data-kind={s.srcProvenance.kind}>
                 {s.srcProvenance.note}

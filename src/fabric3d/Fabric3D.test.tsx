@@ -1108,9 +1108,15 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     projectAll();
     const m = mount(<Fabric3D />);
 
+    /* The selection here is the one the TRACE makes: App.tsx re-aims the device to the landing
+       hop's host with origin "hop" (and marks a matching earlier selection the same way). It used
+       to be a bare `selectDevice` before the trace, because the fabric inferred "this is the trace's
+       selection" from `deviceId === hop host` alone — the inference the A6 refutation (acceptance
+       report at 70bea72) showed cannot tell the re-aim from a reader's explicit choice of the same
+       host. The origin is now stated, so the setup states it; the explicit case is the next test. */
     act(() => {
-      useInvestigation.getState().selectDevice(cutPoint!);
       useInvestigation.getState().setTrace(delivered);
+      useInvestigation.getState().selectDevice(cutPoint!, { origin: "hop" });
     });
     flushFrames(2);
 
@@ -1166,6 +1172,113 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     flushFrames(2);
     expect(m.container.querySelector(`[data-device="${cutPoint!}"]`)?.getAttribute("data-cut")).toBe("yes");
     expect(m.container.querySelectorAll('[data-stranded="yes"]').length).toBe(strandedBy(cutPoint!).length);
+    m.unmount();
+  });
+
+  /** A single-hop delivered trace whose hop is `host` — the shape of every real trace here. */
+  const traceAt = (host: string): Trace => ({
+    flow: { srcIp: DECIDED_SRC, dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null },
+    outcome: "delivered",
+    hops: [
+      {
+        index: 0,
+        host,
+        outIntf: "Vlan30",
+        nextHost: null,
+        nextHop: null,
+        verdict: "delivered",
+        decidedBy: null,
+        evidence: [],
+        alternatives: [],
+      },
+    ],
+    claim: "test",
+    caveats: ["test"],
+    unmodelledHosts: [],
+    elapsedMs: 1,
+  });
+
+  it("draws the blast radius at once when the reader EXPLICITLY selects the trace's own hop host (A6)", () => {
+    /* MEASURED (acceptance report at 70bea72, A6, overturned to FAIL): with a trace on core1's hop,
+       `data-stranded=yes` read 0 of 26 for core1 — reached through a real palette selection and a
+       restored `d=core1&flow=…` — until a toolbar button was pressed. The fabric decided "this
+       selection is the trace's" from `deviceId === hop host` alone, which the palette, a click, the
+       fabric list and a restored `d=` all satisfy exactly as the automatic hop re-aim does. */
+    expect(cutPoint).toBeDefined();
+    const stranded = strandedBy(cutPoint!);
+    projectAll();
+    const m = mount(<Fabric3D />);
+
+    // The trace lands and re-aims the selection to its hop (App.tsx): A5's one question per picture.
+    act(() => {
+      useInvestigation.getState().setTrace(traceAt(cutPoint!));
+      useInvestigation.getState().selectDevice(cutPoint!, { origin: "hop" });
+    });
+    act(() => flushFrames(3));
+    expect(m.container.querySelectorAll('[data-stranded="yes"]'), "the trace's own re-aim draws no hypothesis").toHaveLength(0);
+
+    // The reader then chooses that same host (palette, click, list): an explicit new question.
+    act(() => useInvestigation.getState().selectDevice(cutPoint!));
+    act(() => flushFrames(3));
+    expect(m.container.querySelector(`[data-device="${cutPoint!}"]`)?.getAttribute("data-cut")).toBe("yes");
+    for (const host of stranded) {
+      const d = fabric.devices.find((x) => x.host === host)!;
+      expect(m.container.querySelector(`[data-device="${d.id}"]`)?.getAttribute("data-stranded"), `${host}, no button press`).toBe("yes");
+    }
+    // Drawn without asking: the one-press control exists only for the trace's own selection.
+    expect(m.container.querySelector("[data-hop-blast]")).toBeNull();
+    const highlight = callsOf(lastScene(), "setHighlight").at(-1)?.[1] as { hosts: string[] } | null;
+    for (const host of stranded) expect(highlight?.hosts ?? []).toContain(fabric.devices.find((x) => x.host === host)!.id);
+    m.unmount();
+  });
+
+  it("accounts for EVERY stranded host on the fabric: marked, or counted and named as out of view (A6)", () => {
+    /* MEASURED (acceptance report at 70bea72, A6): with the camera framed on a trace, selecting core2
+       marked 5 of its 8 stranded hosts; access3, access5 and access17 projected off the canvas
+       (`visible: false`) and nothing on the fabric gave a count or said marks were out of view. The
+       camera is deliberately not moved by a selection (A4), so the fabric has to say it. */
+    expect(cutPoint).toBeDefined();
+    const stranded = strandedBy(cutPoint!);
+    expect(stranded.length).toBeGreaterThan(3);
+    projectAll();
+    const idOf = (host: string): string => fabric.devices.find((x) => x.host === host)!.id;
+    const off = stranded.slice(0, 3);
+    for (const host of off) mock.projections.set(idOf(host), { x: 520, y: 1240, visible: false });
+    const m = mount(<Fabric3D />);
+    act(() => useInvestigation.getState().selectDevice(cutPoint!));
+    act(() => flushFrames(4));
+
+    const note = m.container.querySelector<HTMLElement>("[data-stranded-total]");
+    expect(note, "a stranded count must be on the fabric whenever a blast radius is drawn").not.toBeNull();
+    const marked = [...m.container.querySelectorAll<HTMLElement>('[data-stranded="yes"]')].filter(
+      (el) => el.dataset["visible"] === "true",
+    );
+    expect(Number(note!.dataset["strandedTotal"])).toBe(stranded.length);
+    expect(Number(note!.dataset["strandedUnseen"])).toBe(off.length);
+    expect(marked.length + off.length, "every stranded host is marked or counted as out of view").toBe(stranded.length);
+    expect(note!.textContent).toContain(`${off.length} out of view`);
+    for (const host of off) expect(note!.textContent, `${host} is named, not just counted`).toContain(host);
+    // The mark is the LABEL's state even while it is not drawn: every stranded host's label says so.
+    for (const host of stranded) {
+      expect(m.container.querySelector(`[data-device="${idOf(host)}"]`)?.getAttribute("data-stranded"), host).toBe("yes");
+    }
+    for (const host of off) expect(m.container.querySelector(`[data-device="${idOf(host)}"]`)?.getAttribute("data-visible")).toBe("false");
+
+    // ...and it is never left behind: clearing the selection clears the hidden labels' marks too.
+    act(() => useInvestigation.getState().selectDevice(null));
+    act(() => flushFrames(4));
+    expect(m.container.querySelectorAll('[data-stranded="yes"]'), "no stale mark on a label out of view").toHaveLength(0);
+    expect(m.container.querySelector("[data-stranded-total]")).toBeNull();
+    act(() => useInvestigation.getState().selectDevice(cutPoint!));
+    act(() => flushFrames(4));
+
+    // Brought back into view, it is marked and the out-of-view clause goes.
+    for (const host of off) mock.projections.set(idOf(host), { x: 900, y: 700 - off.indexOf(host) * 60, visible: true });
+    act(() => flushFrames(4));
+    const back = m.container.querySelector<HTMLElement>("[data-stranded-total]");
+    expect(Number(back!.dataset["strandedUnseen"])).toBe(0);
+    expect(back!.textContent).not.toContain("out of view");
+    expect(back!.textContent).toContain(`all ${stranded.length} marked`);
     m.unmount();
   });
 

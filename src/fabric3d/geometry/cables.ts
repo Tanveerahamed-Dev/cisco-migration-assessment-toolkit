@@ -706,16 +706,36 @@ export function createCableMaterial(
   const params = DASH_PARAMS[dash];
   const rails = Math.max(1, Math.round(opts.rails ?? 1));
   const gapPx = rails > 1 ? Math.max(STRAND_RAIL_GAP_PX, opts.railGapPx ?? STRAND_RAIL_GAP_PX) : 0;
-  const nominalPx = rails * widthPx + (rails - 1) * gapPx;
+  /* THE STROKE FLOOR, held HERE because this is the one constructor of every stroke the fabric
+     draws — cables, the uncollected outline, the trace path, its blocked segment and its tether
+     (stroke-floor.test.ts walks the built scene and the source to keep it the only one). The
+     callers used to ask for 1.4 (the uncollected outline) and 1.5 (the tether), under
+     design-brief §4.5's "Minimum painted stroke is 2 CSS px". A request below the floor gets the
+     floor; a caller cannot opt a stroke out of it. */
+  const railPx = Math.max(MIN_STROKE_PX, widthPx);
+  const nominalPx = rails * railPx + (rails - 1) * gapPx;
   const mat = new LineMaterial({
     color: 0xffffff,
     // + CABLE_EDGE_AA_PX so the coverage ramp is added outside the encoded width, not taken
-    // out of it. See the constant: the ink this carries is exactly widthPx per rail.
+    // out of it. See the constant: the ink this carries is exactly railPx per rail.
     linewidth: nominalPx + CABLE_EDGE_AA_PX,
     worldUnits: false,
     vertexColors: opts.vertexColors !== false,
     transparent: true,
-    depthWrite: true,
+    /* NO DEPTH WRITE — the C5 "1 px dashed hairline" (acceptance report at 70bea72, item 8).
+       A stroke's quad is wider than its ink: it carries the anti-alias margin and, on a multi-rail
+       cable, the gaps between rails, and those fragments paint nothing (coverage 0) or next to
+       nothing. A depth write is not coverage-weighted, so with it on they still stamped the depth
+       buffer, and a parallel cable of the same bundle drawn later and a hair farther away failed
+       the depth test everywhere its neighbour's quad lay. IDENTIFIED on the core2 bundle (overview,
+       1440x900 DSF 2): a 2 px rail of an unobserved-speed bridge (`cables:solid|2|1|2x3`) was cut
+       to ONE device pixel by its neighbour's rail gap, and because which of the two is nearer
+       flips segment by segment the survivor read as a dashed hairline. Discarding the zero-
+       coverage fragments alone was tried and left a dark dashed seam wherever a partially covered
+       edge pixel occluded the neighbour behind it. The deck planes had the same disease
+       (materials.ts, "A depth write is not alpha-weighted") and the same cure. The depth TEST
+       stays on, so the opaque chassis still hide every stroke behind them. */
+    depthWrite: false,
     dashed: dash !== "solid",
     dashScale: 1,
     dashSize: params.dashSize,
@@ -740,7 +760,7 @@ export function createCableMaterial(
   /* Display-linear edge coverage (see coverageGamma). 1 until the owner of the palette sets it:
      buildCables does, for every batch, and re-fits it in retint. */
   mat.uniforms.coverageGamma = { value: 1 };
-  patchRecession(mat, nominalPx, rails > 1 ? { rails, railPx: widthPx, gapPx } : null);
+  patchRecession(mat, nominalPx, rails > 1 ? { rails, railPx, gapPx } : null);
   return mat;
 }
 

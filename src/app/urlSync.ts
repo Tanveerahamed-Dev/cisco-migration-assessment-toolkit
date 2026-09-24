@@ -57,7 +57,10 @@ const NAVIGATION_FIELDS = ["deviceId", "linkId", "findingId", "hopIndex", "surfa
 const navigationSignature = (s: InvestigationState): string => {
   const f = s.flow;
   const flow = f === null ? "" : `${f.srcIp}>${f.dstIp}>${f.protocol}>${f.dstPort ?? ""}`;
-  return [...NAVIGATION_FIELDS.map((k) => (s[k] === null ? "" : String(s[k]))), flow].join("|");
+  /* WHO made the device selection is part of the step (store.ts SelectionOrigin): choosing the
+     trace's own hop host from the palette changes the question on the fabric (its blast radius is
+     drawn) and adds `d=` to the link, so Back must be able to return to the trace's picture. */
+  return [...NAVIGATION_FIELDS.map((k) => (s[k] === null ? "" : String(s[k]))), s.deviceOrigin, flow].join("|");
 };
 
 /** The query string this state serialises to, envelope included. */
@@ -234,9 +237,16 @@ export function useUrlSync(opts: SyncOptions = {}): UrlProblem | null {
       cancel = null;
       const s = store.getState();
       const search = encodeUrl(s);
-      if (search === lastSearch.current) return;
-
       const nav = navigationSignature(s);
+      /* Nothing to write — but a step can still have happened: the trace's own re-aim lands a device
+         WITHOUT adding `d=` (store.ts encodeInvestigation), so the signature moves while the link does
+         not. Record it, or the next in-progress edit is compared with the pre-landing signature and
+         pushed as a history entry of its own. */
+      if (search === lastSearch.current) {
+        lastNav.current = nav;
+        return;
+      }
+
       const isNavigation = nav !== lastNav.current;
       lastNav.current = nav;
       lastSearch.current = search;

@@ -162,6 +162,95 @@ describe("every test a tracked review harness cites as its pin exists", () => {
   });
 });
 
+/**
+ * F4, THE BUILD-OUTPUT HALF (acceptance repair wave 5). The criterion says three.js is absent from the
+ * entry chunk and from every modulepreload, is requested only after first paint at 768 px and wider,
+ * and is never requested by a load below 768 px until the reader opens the 3-D fabric. The request
+ * timing belongs to a browser (review/audit-e5-coldload.mjs: `threeRequest`, `f4NarrowLoad`); the
+ * first two are facts about the build, and they are checked here on the build this checkout produces
+ * NOW — not on a `dist/` left over from some earlier source, and not on chunk sizes, which move.
+ *
+ * The app is built in a child process with the project's own vite.config.ts (`write: false`, nothing
+ * touches `dist/`), and each chunk is reported with the three.js / postprocessing modules it carries
+ * and the other chunk files its code names. A chunk that names a file can fetch it: Vite's preload
+ * helper lists an `import()`'s dependencies by file name, so "names no three chunk" covers the
+ * preloads the entry issues when it imports `mount`.
+ */
+interface BuiltChunk {
+  fileName: string;
+  isEntry: boolean;
+  imports: string[];
+  threeModules: number;
+  names: string[];
+}
+function buildOutput(): { chunks: BuiltChunk[]; html: string } {
+  const script = `
+    import { build } from "vite";
+    import { basename } from "node:path";
+    const res = await build({ root: process.cwd(), configFile: "vite.config.ts", logLevel: "silent", build: { write: false, sourcemap: false } });
+    const out = (Array.isArray(res) ? res : [res]).flatMap((r) => r.output);
+    const chunks = out.filter((o) => o.type === "chunk");
+    const THREE = /[\\\\/]node_modules[\\\\/](three|postprocessing)[\\\\/]/;
+    const html = out.find((o) => o.type === "asset" && o.fileName === "index.html");
+    process.stdout.write(JSON.stringify({
+      html: String(html ? html.source : ""),
+      chunks: chunks.map((c) => ({
+        fileName: c.fileName,
+        isEntry: c.isEntry,
+        imports: c.imports,
+        threeModules: c.moduleIds.filter((id) => THREE.test(id)).length,
+        names: chunks.filter((o) => o !== c && c.code.includes(basename(o.fileName))).map((o) => o.fileName),
+      })),
+    }));
+  `;
+  const stdout = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 170_000 });
+  return JSON.parse(stdout) as { chunks: BuiltChunk[]; html: string };
+}
+
+describe("F4: three.js is absent from the entry chunk and from every modulepreload (build output)", () => {
+  it("holds on the build this checkout produces", () => {
+    const { chunks, html } = buildOutput();
+    const byFile = new Map(chunks.map((c) => [c.fileName, c]));
+    const carriers = chunks.filter((c) => c.threeModules > 0).map((c) => c.fileName);
+    /* The positive control: the renderer IS in the build. A build with no three.js at all would pass
+       every check below and say nothing about the split. */
+    expect(carriers.length, "some chunk carries three.js — otherwise this checks nothing").toBeGreaterThan(0);
+
+    const entries = chunks.filter((c) => c.isEntry);
+    expect(entries.length, "the build has an entry chunk").toBeGreaterThan(0);
+    const scriptSrc = [...html.matchAll(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/?([^"]+)"/g)].map((m) => m[1]!);
+    expect(scriptSrc.sort(), "index.html loads exactly the entry chunks").toEqual(entries.map((c) => c.fileName).sort());
+
+    for (const e of entries) {
+      expect(e.threeModules, `${e.fileName}: the entry chunk carries no three.js module`).toBe(0);
+      expect(
+        e.names.filter((n) => carriers.includes(n)),
+        `${e.fileName} names a three.js chunk, so it (or the preload list of one of its import()s) can fetch it`,
+      ).toEqual([]);
+    }
+
+    /* Everything the page fetches before any import() runs: the entry chunks, their static-import
+       closure, and each <link rel="modulepreload"> in index.html. */
+    /* Every <link> whose rel names modulepreload, whatever the attribute order or quoting: a
+       preload this parse cannot read is a failure, not a link the check silently skips. */
+    const preloadTags = [...html.matchAll(/<link\b[^>]*>/gi)].map((m) => m[0]).filter((t) => /\brel\s*=\s*["']?[^"'>]*\bmodulepreload\b/i.test(t));
+    const preloads = preloadTags.map((t) => /\bhref\s*=\s*["']?\/?([^"'\s>]+)/i.exec(t)?.[1] ?? `(unreadable: ${t})`);
+    const initial = new Set<string>();
+    const walk = (f: string): void => {
+      if (initial.has(f)) return;
+      initial.add(f);
+      for (const i of byFile.get(f)?.imports ?? []) walk(i);
+    };
+    for (const e of entries) walk(e.fileName);
+    for (const p of preloads) {
+      expect(byFile.has(p), `modulepreload ${p} is a chunk of this build`).toBe(true);
+      walk(p);
+    }
+    expect([...initial].filter((f) => carriers.includes(f)), "no three.js chunk is in the initial payload or preloaded by index.html").toEqual([]);
+    expect([...initial].filter((f) => (byFile.get(f)?.threeModules ?? 0) > 0)).toEqual([]);
+  }, 180_000);
+});
+
 describe("the exit-path check can fail — its red branch, executed", () => {
   it("rejects a script whose only non-zero exit is the usage branch", () => {
     const usageOnly = [

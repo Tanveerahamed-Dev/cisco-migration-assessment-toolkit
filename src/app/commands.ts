@@ -30,6 +30,7 @@ import { useInvestigation, encodeInvestigation } from "../core/store";
 import { valueDomain } from "../core/query";
 import { SEVERITY_ORDER, type Flow, type Severity, type SurfaceId } from "../core/types";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
+import { verdictStatement, type VerdictStatement } from "../panels/ClaimCard";
 import { parseIpv4 } from "../forwarding/ip";
 import {
   characterKeyShortcutsEnabled,
@@ -333,8 +334,11 @@ export function runFlow(flow: Flow): void {
      between two runs of the same investigation, and it told a screen-reader user nothing they
      could act on. How long the search took is a MEASUREMENT of this machine, not part of the
      verdict; `review/measure-inp.mjs` is where that belongs. */
+  /* The verdict is spoken with its bounds, in the card's own words (B2): "Trace …: denied, 2 hops."
+     told a screen-reader user a decided refusal over a trace whose card says "not decided", with no
+     scope and no caveat. */
   announce(
-    `Trace ${formatFlow(flow)}: ${trace.outcome}, ${trace.hops.length} hop${trace.hops.length === 1 ? "" : "s"}.`,
+    `Trace ${formatFlow(flow)}: ${verdictStatement(trace).sentence} ${trace.hops.length} hop${trace.hops.length === 1 ? "" : "s"}.`,
   );
 }
 
@@ -345,6 +349,8 @@ export interface GrammarExample {
   query: string;
   /** What it does, and the count it will return — measured, not promised. */
   detail: string;
+  /** Present when the detail states a forwarding verdict: the bounds it carries (ClaimCard `verdictStatement`). */
+  verdict?: VerdictStatement;
 }
 
 const memo = <T>(fn: () => T): (() => T) => {
@@ -401,12 +407,18 @@ export const grammarExamples = memo((): GrammarExample[] => {
   const role = roles[0];
   if (role) out.push({ query: `role:${role.value}`, detail: `${role.count ?? 0} devices with role ${role.value}` });
 
+  /* The example names a flow and states what ITS trace says, bounded as the trace bounds it. It used
+     to read "trace a path — this one ends denied" over a denial whose own claim says "That denial is
+     not decided" (acceptance B2): the outcome enum, re-worded here, with no scope and no caveat. */
   const flow = suggestedFlows()[0];
-  if (flow)
+  if (flow) {
+    const verdict = verdictStatement(traceFlow(flow.flow));
     out.push({
       query: `${flow.flow.srcIp} -> ${flow.flow.dstIp}${flow.flow.dstPort === null ? "" : `:${flow.flow.dstPort}`}`,
-      detail: `trace a path — this one ends ${flow.expectedOutcome}`,
+      detail: `trace a path — its trace reads: ${verdict.sentence}`,
+      verdict,
     });
+  }
 
   return out;
 });
@@ -446,6 +458,12 @@ export interface Command {
   run: () => void;
   /** Evaluated at render time, so a stale availability is impossible. */
   availability?: () => Availability;
+  /**
+   * Present exactly when `detail` states a forwarding verdict: the bounds it was stated with
+   * (ClaimCard `verdictStatement`). The palette draws such a detail whole — a verdict clipped after
+   * its word and before its scope is the unbounded verdict again, one CSS rule later.
+   */
+  verdict?: VerdictStatement;
 }
 
 const st = () => useInvestigation.getState();
@@ -729,16 +747,26 @@ const severityCommands = memo((): Command[] =>
   })),
 );
 
-/** One command per flow the engine could actually trace, labelled with the outcome it produced. */
+/**
+ * One command per flow the engine could actually trace, stating the outcome its trace produced in the
+ * claims owner's words and with the trace's own scope clause and caveat count (ClaimCard
+ * `verdictStatement`). The detail used to be `${formatFlow} — ${expectedOutcome}. ${rationale}`:
+ * the bare enum ("denied") beside a rationale that called the same undecided denial "the
+ * blocking-hop answer with its exact configuration line" — no scope, no caveat (acceptance B2).
+ */
 const flowCommands = memo((): Command[] =>
-  suggestedFlows().map((s) => ({
-    id: `path.flow.${s.id}`,
-    title: `Trace ${s.title}`,
-    keywords: ["trace", "path", "flow", s.flow.srcIp, s.flow.dstIp, s.expectedOutcome],
-    group: "Path" as const,
-    detail: `${formatFlow(s.flow)} — ${s.expectedOutcome}. ${s.rationale}`,
-    run: () => runFlow(s.flow),
-  })),
+  suggestedFlows().map((s) => {
+    const verdict = verdictStatement(traceFlow(s.flow));
+    return {
+      id: `path.flow.${s.id}`,
+      title: `Trace ${s.title}`,
+      keywords: ["trace", "path", "flow", s.flow.srcIp, s.flow.dstIp, s.expectedOutcome],
+      group: "Path" as const,
+      detail: `${formatFlow(s.flow)} — ${verdict.sentence} ${s.rationale}`,
+      verdict,
+      run: () => runFlow(s.flow),
+    };
+  }),
 );
 
 const uncollectedCommand = memo((): Command[] => {

@@ -17,6 +17,21 @@ export type BandFilter = "all" | "degraded";
 export type EvidenceTab = "summary" | "ports" | "routing" | "acl" | "findings" | "raw";
 
 /**
+ * Who made the device selection (acceptance A6 over A5, 2026-09-24).
+ *
+ * `"hop"` — the trace put it there: the shell re-aims the selection to the active hop's host
+ * (App.tsx), and that selection IS the trace's question, so the fabric draws no failure hypothesis
+ * over the packet's answer (A5, one question per picture). `"explicit"` — anything else: the
+ * palette, a fabric click, the fabric list, an evidence chip, a restored `d=`. The fabric used to
+ * infer the difference from `deviceId === the hop's host`, which every one of those satisfies too,
+ * so selecting core1 during a trace drew nothing (the A6 refutation at 70bea72).
+ *
+ * `selectDevice` DEFAULTS to explicit, so a caller cannot forget to say it; only the trace's own
+ * re-aim says "hop".
+ */
+export type SelectionOrigin = "explicit" | "hop";
+
+/**
  * A flow a shared link carried that is not a valid question. It is REFUSED, not repaired and not
  * dropped: the path panel says which fields are wrong, in words, and nothing is traced. Dropping it
  * silently would show the reader an empty form under a link that plainly names a flow; tracing it
@@ -34,6 +49,8 @@ export interface RefusedFlow {
 export interface InvestigationState {
   /* ── selection: what the user is looking at ── */
   deviceId: string | null;
+  /** Who made `deviceId` — see SelectionOrigin. Meaningless (and ignored) while there is no trace. */
+  deviceOrigin: SelectionOrigin;
   linkId: string | null;
   findingId: string | null;
   hopIndex: number | null;
@@ -59,7 +76,7 @@ export interface InvestigationState {
   focusReturn: HTMLElement | null;
 
   /* ── actions ── */
-  selectDevice: (id: string | null, opts?: { surface?: SurfaceId }) => void;
+  selectDevice: (id: string | null, opts?: { surface?: SurfaceId; origin?: SelectionOrigin }) => void;
   selectLink: (id: string | null) => void;
   selectFinding: (id: string | null) => void;
   selectHop: (i: number | null) => void;
@@ -81,6 +98,7 @@ const EMPTY_SEV = new Set<Severity>();
 
 export const useInvestigation = create<InvestigationState>((set) => ({
   deviceId: null,
+  deviceOrigin: "explicit",
   linkId: null,
   findingId: null,
   hopIndex: null,
@@ -101,7 +119,7 @@ export const useInvestigation = create<InvestigationState>((set) => ({
      the evidence pane can still show "you got here from F013". Only the link is cleared, because a
      link selection is strictly narrower than the device it now belongs to. */
   selectDevice: (id, opts) =>
-    set((s) => ({ deviceId: id, linkId: null, surface: opts?.surface ?? s.surface })),
+    set((s) => ({ deviceId: id, deviceOrigin: opts?.origin ?? "explicit", linkId: null, surface: opts?.surface ?? s.surface })),
   selectLink: (id) => set({ linkId: id }),
   selectFinding: (id) => set({ findingId: id }),
   selectHop: (i) => set({ hopIndex: i }),
@@ -133,6 +151,7 @@ export const useInvestigation = create<InvestigationState>((set) => ({
   reset: () =>
     set({
       deviceId: null,
+      deviceOrigin: "explicit",
       linkId: null,
       findingId: null,
       hopIndex: null,
@@ -144,7 +163,10 @@ export const useInvestigation = create<InvestigationState>((set) => ({
       trace: null,
       flowRefused: null,
     }),
-  hydrate: (patch) => set(patch),
+  /* A restored `d=` is the reader's choice (A4: "the reader's device choice IS part of the
+     investigation"), so a patch naming a device makes the selection explicit unless it says
+     otherwise. A patch naming no device leaves the origin alone. */
+  hydrate: (patch) => set("deviceId" in patch && patch.deviceOrigin === undefined ? { ...patch, deviceOrigin: "explicit" } : patch),
 }));
 
 /* ── URL serialization: an investigation is its link ───────────────────────── */
@@ -161,7 +183,17 @@ const CODE_OF = Object.fromEntries(Object.entries(SEV_CODES).map(([k, v]) => [v,
 export function encodeInvestigation(s: InvestigationState): string {
   const p = new URLSearchParams();
   if (s.surface !== "fabric") p.set("s", s.surface);
-  if (s.deviceId) p.set("d", s.deviceId);
+  /* The trace's own selection is written WITHOUT `d=`. The grammar already reads "a flow and no
+     `d=`" as "select the hop's host" (A4), so this link restores the same picture — and a `d=` then
+     always means a device the reader chose, which is how a restored link tells the two apart
+     (SelectionOrigin; acceptance A6). Every link this grammar ever wrote still decodes as before. */
+  const traceOwnsDevice =
+    s.deviceOrigin === "hop" &&
+    s.flow !== null &&
+    s.trace !== null &&
+    s.hopIndex !== null &&
+    s.trace.hops[s.hopIndex]?.host === s.deviceId;
+  if (s.deviceId && !traceOwnsDevice) p.set("d", s.deviceId);
   if (s.linkId) p.set("l", s.linkId);
   if (s.findingId) p.set("f", s.findingId);
   if (s.query) p.set("q", s.query);

@@ -20,11 +20,15 @@
  *      reference host the idle baseline alone is 15-33 % (a security-virtualisation process holds
  *      about one core), so a 25 % bar on the gross figure was unattainable and could not separate
  *      contention from measurement load. The gate now reads the EXCESS: busy core-time minus the
- *      harness's own process tree (Node + the launched browser and its children). The gross figure
+ *      harness's own CPU (Node + the launched browsers and all their children, INCLUDING the ones
+ *      that have exited — read from a Windows job object since wave 5; see 3a). The gross figure
  *      and a pre-run idle baseline are recorded beside it.
  */
 import { spawnSync } from "node:child_process";
-import { cpus } from "node:os";
+import { createHash } from "node:crypto";
+import { existsSync, renameSync } from "node:fs";
+import { cpus, tmpdir } from "node:os";
+import { join } from "node:path";
 
 /* ── 1. power ────────────────────────────────────────────────────────────────────────────────── */
 
@@ -158,8 +162,10 @@ export function windowInside(bounds, plan) {
  * flags); `plan` is null when the probe failed, in which case the window is launched with only a
  * position hint and NO size of its own (Chromium's default, which is inside the screen), and every
  * verdict built on `windowFits` withholds acceptance evidence rather than guessing.
+ * `meter` is the run's load meter when one is running: the probe browser is harness load too, and it
+ * is closed through the meter (closeMeasured).
  */
-export async function headedWindow(chromium, viewport = { width: 1920, height: 1080 }) {
+export async function headedWindow(chromium, viewport = { width: 1920, height: 1080 }, meter = null) {
   let screen;
   const probe = await chromium.launch({ headless: false, args: [...NO_OCCLUSION_ARGS] });
   try {
@@ -179,7 +185,8 @@ export async function headedWindow(chromium, viewport = { width: 1920, height: 1
   } catch (e) {
     screen = { error: String(e).slice(0, 160) };
   } finally {
-    await probe.close().catch(() => {});
+    /* Through the run's load meter when there is one (see closeMeasured). */
+    await closeMeasured(meter, probe).catch(() => {});
   }
   const plan = screen && !screen.error ? planWindow(screen, viewport) : null;
   const line = plan
@@ -240,9 +247,147 @@ const cpuTicks = () => {
   }
 };
 
+/* ── 3a. the harness as a Windows JOB OBJECT (acceptance E2/E3, wave 5) ────────────────────────
+ *
+ * THE DEFECT THIS REPLACES. The harness used to be read as a process TREE (3b below) at start(), at
+ * each sample() and at finish(). A process that is not alive at a read is not in the tree, so every
+ * CPU millisecond a child spent after the last read before it exited was LOST — and a lost harness
+ * millisecond is not dropped, it is moved: excess = gross - harness, so it was booked as other load on
+ * the machine, the figure the 25 % gate reads. The contract "sample() BEFORE each browser.close()" was
+ * a rule every caller had to remember, and measure-inp sampled once while closing a scout browser, 21
+ * fresh first-selection browsers and a context per journey unsampled: its reports said "harness 0-1 %"
+ * where an independent sidecar measured Playwright Chromium at 7.2-9.3 % of the host. Renderer and
+ * utility processes that Chromium itself retires mid-run were lost the same way, with no close to hang
+ * a sample on at all.
+ *
+ * THE FIX, for the class rather than the call sites. At start() the harness process is placed in a
+ * fresh job object. Every process it creates from then on — the browsers, their GPU, renderer and
+ * utility children, anything they spawn — is created inside that job (Chromium's own sandbox jobs nest
+ * under it), and the job's basic accounting (TotalUserTime + TotalKernelTime) is kept for processes
+ * that have EXITED as well as those still running. The harness figure is the job's growth from
+ * start() to finish(); no call site can lose a child.
+ *
+ * The mechanics, each measured on the reference host (2026-09-24):
+ *   - the job is created, the Node process assigned and the start reading taken by a PowerShell that
+ *     Node spawns BEFORE it joins, so that helper is not itself in the job; it duplicates the job
+ *     handle into the Node process, so the job's name stays openable until Node exits;
+ *   - the finish reading is taken by a PowerShell that IS in the job (Node's child); it reads its own
+ *     CPU time immediately before the query and the meter subtracts it, and it runs AFTER the run's
+ *     closing CPU-counter read, so its cost is in neither the gross nor the harness window;
+ *   - the helper type is compiled once into a DLL cached under the OS temp directory, and loaded by
+ *     path afterwards: compiling in the finish probe would start csc.exe inside the job;
+ *   - a process in a job cannot leave it, and nothing else is changed: no limit is set on the job.
+ * Where any step fails (not Windows, a policy that refuses nesting) the meter says so (`method:
+ * "tree"`, `jobError`) and falls back to the tree, whose rule closeMeasured below enforces. */
+const JOB_ACCOUNTING_CS = `
+using System;
+using System.Runtime.InteropServices;
+public static class AtlasHarnessJob {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct BASIC { public long TotalUserTime; public long TotalKernelTime; public long ThisPeriodTotalUserTime; public long ThisPeriodTotalKernelTime; public uint TotalPageFaultCount; public uint TotalProcesses; public uint ActiveProcesses; public uint TotalTerminatedProcesses; }
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObjectW(IntPtr attrs, string name);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr OpenJobObjectW(uint access, bool inherit, string name);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr proc);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool DuplicateHandle(IntPtr srcProc, IntPtr src, IntPtr dstProc, out IntPtr dst, uint access, bool inherit, uint options);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr job, int cls, out BASIC info, int len, IntPtr ret);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  static string Row(BASIC b) { return "ok|" + (b.TotalUserTime + b.TotalKernelTime) + "|" + b.TotalProcesses + "|" + b.ActiveProcesses; }
+  static string Err(string step) { return "err|" + step + "|" + Marshal.GetLastWin32Error(); }
+  public static string Adopt(int pid, string name) {
+    IntPtr job = CreateJobObjectW(IntPtr.Zero, name);
+    if (job == IntPtr.Zero) return Err("create");
+    IntPtr proc = OpenProcess(0x0001 | 0x0100 | 0x0040 | 0x0400, false, pid);
+    if (proc == IntPtr.Zero) return Err("open-process");
+    if (!AssignProcessToJobObject(job, proc)) return Err("assign");
+    IntPtr kept;
+    if (!DuplicateHandle(GetCurrentProcess(), job, proc, out kept, 0, false, 2)) return Err("keep-handle");
+    BASIC b;
+    if (!QueryInformationJobObject(job, 1, out b, Marshal.SizeOf(typeof(BASIC)), IntPtr.Zero)) return Err("query");
+    return Row(b);
+  }
+  public static string Query(string name) {
+    IntPtr job = OpenJobObjectW(0x0004, false, name);
+    if (job == IntPtr.Zero) return Err("open-job");
+    BASIC b;
+    bool ok = QueryInformationJobObject(job, 1, out b, Marshal.SizeOf(typeof(BASIC)), IntPtr.Zero);
+    CloseHandle(job);
+    return ok ? Row(b) : Err("query");
+  }
+}
+`;
+const JOB_DLL = join(tmpdir(), `atlas-harness-job-${createHash("sha256").update(JOB_ACCOUNTING_CS).digest("hex").slice(0, 16)}.dll`);
+
+const powershell = (script, timeout = 60000) => {
+  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout, windowsHide: true });
+  return { out: String(r.stdout || "").trim(), err: String(r.stderr || r.error || "").trim().slice(0, 200) };
+};
+const parseRow = (s) => {
+  const [tag, a, b, c] = String(s).split("|");
+  if (tag !== "ok") return { error: `${a ?? "no output"} (win32 error ${b ?? "?"})` };
+  return { cpuMs: Number(a) / 1e4, processes: Number(b), active: Number(c) };
+};
+
+/**
+ * Put THIS process in a new job object and read the job's accounting. Returns `{ name, cpuMs, dll }`
+ * or `{ error }`. Must be called before the harness spawns anything it means to count.
+ */
+const adoptIntoJob = () => {
+  if (process.platform !== "win32") return { error: `platform ${process.platform}` };
+  try {
+    const name = `AtlasScopeHarness-${process.pid}-${Date.now()}`;
+    let dll = JOB_DLL;
+    let compile = "";
+    if (!existsSync(JOB_DLL)) {
+      /* Compiled to a private path, then moved into place, so two harnesses starting together
+         cannot load a half-written DLL. */
+      dll = JOB_DLL.replace(/\.dll$/, `.${process.pid}.dll`);
+      const b64 = Buffer.from(JOB_ACCOUNTING_CS, "utf16le").toString("base64");
+      compile = `$cs=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${b64}')); Add-Type -TypeDefinition $cs -OutputAssembly '${dll}' -OutputType Library; `;
+    }
+    const r = powershell(`${compile}Add-Type -Path '${dll}'; [AtlasHarnessJob]::Adopt(${process.pid}, '${name}')`);
+    if (dll !== JOB_DLL) {
+      try {
+        renameSync(dll, JOB_DLL);
+        dll = JOB_DLL;
+      } catch {
+        /* another harness put it there first, or it is locked: keep using the private copy */
+      }
+    }
+    const row = parseRow(r.out.split(/\r?\n/).pop());
+    return row.error ? { error: `${row.error}${r.err ? `; ${r.err}` : ""}` } : { name, dll, cpuMs: row.cpuMs };
+  } catch (e) {
+    return { error: String(e).slice(0, 160) };
+  }
+};
+
+/**
+ * The job's accounting now, net of the reading process's own CPU (that PowerShell is a child of this
+ * process, so it is in the job). `{ cpuMs }` or `{ error }`.
+ */
+const readJob = (job) => {
+  try {
+    const r = powershell(
+      `Add-Type -Path '${job.dll}'; $self=[Diagnostics.Process]::GetCurrentProcess().TotalProcessorTime.Ticks; ` +
+        `$row=[AtlasHarnessJob]::Query('${job.name}'); Write-Output ($row + '|' + $self)`,
+    );
+    const line = r.out.split(/\r?\n/).pop() ?? "";
+    const row = parseRow(line);
+    if (row.error) return { error: `${row.error}${r.err ? `; ${r.err}` : ""}` };
+    const selfMs = Number(line.split("|")[4]) / 1e4;
+    return { cpuMs: row.cpuMs - (Number.isFinite(selfMs) ? selfMs : 0), processes: row.processes };
+  } catch (e) {
+    return { error: String(e).slice(0, 160) };
+  }
+};
+
+/* ── 3b. the harness as a process TREE — the fallback where no job can be created ──────────────── */
+
 /**
  * CPU milliseconds consumed so far by the process tree rooted at `rootPid` (Windows only: CIM
  * Win32_Process, KernelModeTime + UserModeTime in 100 ns units). Map pid -> ms. null when unknown.
+ * A process that has exited is not in the tree: see 3a for why this is only the fallback.
  */
 const treeCpuMs = (rootPid) => {
   if (process.platform !== "win32" || !rootPid) return null;
@@ -290,57 +435,115 @@ export async function idleBaseline(ms = 3000) {
 }
 
 /**
+ * THE close for every Playwright browser, context or page a metered harness opens: sample the meter,
+ * then close. Under the job (3a) the sample costs nothing and changes nothing — an exited process's CPU
+ * is kept by the job. Under the tree fallback (3b) it is the only way that CPU is counted, because a
+ * child that exits takes its counters out of the tree. `meter` may be null only where no run is being
+ * metered (a unit test's fake browser). src/core/host-load-meter.test.ts holds every metered harness in
+ * review/ to this: no `.close(` except through its meter, and this is the one bare close.
+ */
+export async function closeMeasured(meter, target) {
+  if (meter) meter.sample();
+  await target.close();
+}
+
+/**
  * A load meter for one run. Playwright launches Chromium as a CHILD of this Node process, so the
- * harness is the process tree rooted at `process.pid` (Node, the browser and its GPU/renderer
- * children; this module's own short-lived PowerShell probes are not counted — see treeCpuMs). `start()` once, `sample()`
- * BEFORE each browser.close() (a child that exits takes its CPU counters with it), `finish()` at
- * the end. A pid first seen after start() counts from zero.
+ * harness is this process and everything it spawns. `start()` once, BEFORE the harness launches
+ * anything it means to count; close every browser/context/page with `meter.close(x)` (closeMeasured);
+ * `finish()` at the end.
+ *
+ * How the harness is read (`method` in the result): "job" — the Windows job object of 3a, which keeps
+ * the CPU of processes that have exited; "tree" — the process tree of 3b, sampled at start, at every
+ * close and at finish (a pid first seen after start() counts from zero), which loses whatever a child
+ * spent after its last sample; null — unreadable on this platform. This module's own tree probes
+ * (PowerShell) are not counted as harness, and neither are the job's start and finish probes: the
+ * start helper runs outside the job, and the finish probe's own CPU is subtracted and falls after the
+ * run's closing counter read. Both err toward a HIGHER excess — the conservative direction.
  *
  * Returned figures (fractions of all core-time over the run):
  *   gross    — every process, the old figure;
- *   harness  — this Node process and everything it spawned;
+ *   harness  — this Node process and everything it spawned, exited or not;
  *   excess   — gross - harness: what the REST of the machine did. The acceptance gate reads this.
- * On a platform where the tree cannot be read, excess is null and the gate falls back to gross.
+ * plus `harnessCpuMs` and `windowCoreMs` (the raw milliseconds behind `harness`), `method`, and
+ * `jobError` when a job could not be used. Where the harness cannot be read, excess is null and the
+ * gate falls back to gross.
  */
 export function createLoadMeter() {
   const cores = cpus().length;
   let t0 = null;
   let base = null;
+  let job = null;
+  let jobError = null;
   const last = new Map();
   let treeReads = 0;
   const read = () => {
+    if (job) return; /* the job keeps every process's CPU; nothing to catch before a close */
     const now = treeCpuMs(process.pid);
     if (!now) return;
     treeReads += 1;
     for (const [pid, ms] of now) last.set(pid, Math.max(last.get(pid) ?? 0, ms));
   };
-  return {
+  const meter = {
     start() {
+      /* The job first, and the counters after it: the helper that makes the job (and, on a first run,
+         compiles its type) runs before the window opens, so its cost lands in neither figure. */
+      const adopted = adoptIntoJob();
+      if (adopted.error) jobError = adopted.error;
+      else job = adopted;
       t0 = cpuTicks();
-      base = treeCpuMs(process.pid);
-      if (base) treeReads += 1;
+      if (!job) {
+        base = treeCpuMs(process.pid);
+        if (base) treeReads += 1;
+      }
     },
     sample: read,
+    close: (target) => closeMeasured(meter, target),
     finish() {
-      read();
+      const empty = { gross: null, harness: null, excess: null, cores, harnessMeasured: false, method: null, harnessCpuMs: null, windowCoreMs: null, jobError };
+      if (!job) read();
       const t1 = cpuTicks();
-      if (!t0 || !t1 || t1.total - t0.total <= 0) return { gross: null, harness: null, excess: null, cores, harnessMeasured: false };
+      if (!t0 || !t1 || t1.total - t0.total <= 0) return empty;
       const totalMs = t1.total - t0.total; // os.cpus() times are ms, summed over cores
       const gross = 1 - (t1.idle - t0.idle) / totalMs;
-      const harnessMeasured = base !== null && treeReads >= 2;
-      let harnessMs = 0;
-      if (harnessMeasured) for (const [pid, ms] of last) harnessMs += Math.max(0, ms - (base.get(pid) ?? 0));
-      const harness = harnessMeasured ? harnessMs / totalMs : null;
+      let harnessMs = null;
+      let method = null;
+      if (job) {
+        const end = readJob(job);
+        if (end.error) jobError = `finish: ${end.error}`;
+        else {
+          harnessMs = Math.max(0, end.cpuMs - job.cpuMs);
+          method = "job";
+        }
+      } else if (base !== null && treeReads >= 2) {
+        harnessMs = 0;
+        for (const [pid, ms] of last) harnessMs += Math.max(0, ms - (base.get(pid) ?? 0));
+        method = "tree";
+      }
+      const harness = harnessMs === null ? null : harnessMs / totalMs;
       return {
         gross: Number(gross.toFixed(3)),
         harness: harness === null ? null : Number(harness.toFixed(3)),
         excess: harness === null ? null : Number(Math.max(0, gross - harness).toFixed(3)),
         cores,
-        harnessMeasured,
+        harnessMeasured: harness !== null,
+        method,
+        harnessCpuMs: harnessMs === null ? null : Math.round(harnessMs),
+        windowCoreMs: Math.round(totalMs),
+        jobError,
       };
     },
   };
+  return meter;
 }
+
+/** What `excess` was taken over, in words, for a report's `hostQuiescence.basis`. */
+export const harnessBasis = (load) =>
+  load.excess === null
+    ? "gross (the harness could not be read on this host)"
+    : load.method === "job"
+      ? "excess over the harness's job object (every process it spawned, exited or not)"
+      : "excess over the harness's process tree (sampled; CPU a child spent after its last sample is lost, and booked as excess)";
 
 /** The busyness the acceptance gate reads: the excess when the harness was measured, else gross. */
 export const gatedBusy = (load) => (load.excess !== null ? load.excess : load.gross);

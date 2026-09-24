@@ -37,7 +37,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 import { VISIBLE_AFFORDANCE_JS, affordancePaintedAt } from "./working-affordance.mjs";
-import { createLoadMeter, describePower, ensurePresenting, gatedBusy, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
+import { createLoadMeter, describePower, ensurePresenting, gatedBusy, harnessBasis, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
 
 const IS_MAIN = typeof process.argv[1] === "string" && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
@@ -338,7 +338,7 @@ async function main() {
 
   /* The headed window is planned inside the screen's work area (acceptance report item 15; host-env.mjs
      owns the plan): an off-screen window region is not a measurement environment. */
-  const headedPlan = await headedWindow(chromium, { width: 1920, height: 1080 });
+  const headedPlan = await headedWindow(chromium, { width: 1920, height: 1080 }, hostLoadMeter);
   console.log(headedPlan.line);
   const browser = await chromium.launch({ headless: false, args: headedPlan.args });
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
@@ -516,8 +516,8 @@ async function main() {
   );
 
   const presentationAfter = presentationState(await rafCadence(page, 5000).catch(() => null));
-  hostLoadMeter.sample();
-  await browser.close();
+  /* Through the meter: see closeMeasured in host-env.mjs. */
+  await hostLoadMeter.close(browser);
 
   const median = (xs) => {
     const s = [...xs].sort((a, b) => a - b);
@@ -610,7 +610,10 @@ async function main() {
         capturedAt: new Date().toISOString(),
         host: {
           busyPct: hostBusyPct,
-          basis: hostLoad.excess !== null ? "excess over the harness's own process tree" : "gross",
+          basis: harnessBasis(hostLoad),
+          harnessMethod: hostLoad.method,
+          harnessCpuMs: hostLoad.harnessCpuMs,
+          harnessJobError: hostLoad.jobError,
           grossBusyPct: hostBusyGrossPct,
           harnessFraction: hostLoad.harness,
           idleBaselineBeforeLaunch: hostIdleBaseline,

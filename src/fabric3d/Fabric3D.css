@@ -123,13 +123,16 @@
 
 /* A label the stage edge pushed off its anchor draws a leader from its bottom edge down to the
    device it names (FabricLabels.tsx). Without it a displaced name reads as naming whatever
-   device it now happens to sit over. */
+   device it now happens to sit over. 2 px across, centred on the anchor's x: it is a line drawn on
+   the stage, held to design-brief §4.5's 2 CSS px stroke floor like every cable (C5 item 8,
+   stroke-floor.test.ts), and it is the 2 px box the declutter already reserves for it
+   (FabricLabels `leaderFor`). */
 .fabric3d-label[data-leader="yes"]::after {
   content: "";
   position: absolute;
   inset-block-start: 100%;
-  inset-inline-start: var(--leader-x, 50%);
-  inline-size: 1px;
+  inset-inline-start: calc(var(--leader-x, 50%) - 1px);
+  inline-size: 2px;
   block-size: var(--leader-len, var(--sp-2));
   background: var(--text-muted);
   pointer-events: none;
@@ -140,8 +143,8 @@
   content: "";
   position: absolute;
   inset-block-end: 100%;
-  inset-inline-start: var(--leader-x, 50%);
-  inline-size: 1px;
+  inset-inline-start: calc(var(--leader-x, 50%) - 1px);
+  inline-size: 2px;
   block-size: var(--leader-len, var(--sp-2));
   background: var(--text-muted);
   pointer-events: none;
@@ -364,6 +367,24 @@
   display: flex;
   align-items: center;
   gap: var(--sp-1);
+  /* Never wider than the stage: the blast count below names every stranded host out of view, and
+     a long list must wrap inside the stage rather than run under the rail beside it. When a row
+     cannot hold it, the HUD takes a second row instead of squeezing its controls. */
+  max-inline-size: calc(100% - 2 * var(--sp-2));
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.fabric3d__hud > * {
+  flex-shrink: 0;
+}
+
+/* A6: the stranded count and the hosts out of view. The one HUD note whose length depends on the
+   data, so the one allowed to wrap — as a readable measure (never a column narrower than 20rem, or
+   the stage), not squeezed into whatever a row leaves over. */
+.fabric3d__hud > .fabric3d__quality[data-stranded-total] {
+  flex: 0 1 auto;
+  min-inline-size: min(20rem, 100%);
+  white-space: normal;
 }
 
 .fabric3d__btn {

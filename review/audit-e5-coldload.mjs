@@ -23,7 +23,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
 import { VISIBLE_AFFORDANCE_JS, affordancePaintedAt } from "./working-affordance.mjs";
-import { FULL_RATE_MAX_RAF_MS, createLoadMeter, describePower, gatedBusy, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
+import { FULL_RATE_MAX_RAF_MS, createLoadMeter, describePower, gatedBusy, harnessBasis, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
 
 const APP = process.env.ATLAS_URL || "http://localhost:4181";
 const PAGE_URL = `${APP}/?s=findings`;
@@ -168,7 +168,7 @@ const blockingFramesAfterPaint = (loaf, fcp) =>
 /* The headed window is planned inside the screen's work area once, before the runs (acceptance report
    item 15; host-env.mjs owns the plan), and every run's window is checked against it: an off-screen
    window region is not a measurement environment. */
-const headedPlan = await headedWindow(chromium, { width: 1920, height: 1080 });
+const headedPlan = await headedWindow(chromium, { width: 1920, height: 1080 }, hostLoadMeter);
 console.log(headedPlan.line);
 const runs = [];
 for (let r = 0; r < RUNS; r++) {
@@ -222,15 +222,15 @@ for (let r = 0; r < RUNS; r++) {
     bundle: performance
       .getEntriesByType("resource")
       .filter((r) => /\.(js|css)(\?|$)/.test(r.name))
-      .map((r) => ({ url: r.name.split("/").pop(), bytes: r.encodedBodySize }))
+      .map((r) => ({ url: r.name.split("/").pop(), bytes: r.encodedBodySize, requestedAtMs: +r.startTime.toFixed(1) }))
       .sort((a, b) => a.url.localeCompare(b.url)),
   }));
   /* Was the window presenting (at full rate) during this cold load? Read after the load, before close. */
   const presentation = presentationState(await rafCadence(page).catch(() => null));
   /* ...and was it inside the screen? Read after the load, so the CDP session is not part of it. */
   const windowCheck = await windowBoundsCheck(ctx, page, headedPlan.plan);
-  hostLoadMeter.sample();
-  await browser.close();
+  /* Through the meter: see closeMeasured in host-env.mjs. */
+  await hostLoadMeter.close(browser);
 
   const worstLoaf = data.loaf.length ? data.loaf.reduce((a, b) => (b.duration > a.duration ? b : a)) : null;
   /* The same sample the verdict below uses: the last one at or before the frame began (see there).
@@ -252,6 +252,14 @@ for (let r = 0; r < RUNS; r++) {
     presentation,
     window: windowCheck,
     bundle: data.bundle,
+    /* Acceptance F4, part (c) at 1920 px (docs/acceptance.md): the 3-D stage is the main view here,
+       so three.js IS fetched on every load — but only after first paint. Reported, never judged: the
+       E5 verdict below does not read it. */
+    threeRequest: (() => {
+      const t = data.bundle.find((b) => /^three-[^/]*\.js$/.test(b.url));
+      const fcp = data.affPaint.fcp;
+      return { requestedAtMs: t ? t.requestedAtMs : null, firstPaintMs: fcp, afterFirstPaint: t && typeof fcp === "number" ? t.requestedAtMs > fcp : null };
+    })(),
     paint: data.affPaint,
     over200ms: data.loaf.filter((e) => e.duration > 200).sort((a, b) => b.duration - a.duration),
     longTasksOver200ms: data.lt.filter((e) => e.duration > 200).sort((a, b) => b.duration - a.duration),
@@ -310,6 +318,7 @@ for (let r = 0; r < RUNS; r++) {
   }
   console.log(`run ${r + 1}: worst animation frame ${worstLoaf ? worstLoaf.duration : "-"}ms (blocking ${worstLoaf ? worstLoaf.blockingDuration : "-"}ms) at ${worstLoaf ? worstLoaf.startTime : "-"}ms`);
   console.log(`         frames over 200ms: ${runs[r].over200ms.map((e) => e.duration + "ms@" + e.startTime).join(", ") || "none"}`);
+  console.log(`         F4: three.js requested at ${runs[r].threeRequest.requestedAtMs ?? "never"} ms, first paint ${runs[r].threeRequest.firstPaintMs ?? "never"} ms — ${runs[r].threeRequest.afterFirstPaint === null ? "not determinable" : runs[r].threeRequest.afterFirstPaint ? "after first paint" : "BEFORE first paint"}`);
   console.log(`         presentation: rAF median ${presentation.rafMedianMs ?? "none"} ms${presentation.fullRate ? "" : " — NOT FULL RATE"}; first paint ${data.affPaint.fcp ?? "never"} ms`);
   console.log(`         pre-first-paint frames (no page script, blocking 0, began before FCP) — ${CARVE_OUT_SANCTIONED ? "carve-out SANCTIONED by docs/acceptance.md, not counted" : "carve-out NOT sanctioned by docs/acceptance.md, COUNTED against the bar"}: ${runs[r].browserOnlyFramesOver200ms.map((e) => e.durationMs + "ms@" + e.atMs).join(", ") || "none"}`);
   console.log(`         .stage-pending visible ${runs[r].stagePendingWindowMs ? runs[r].stagePendingWindowMs.join("..") + "ms" : "NEVER"}; during worst frame: ${JSON.stringify(runs[r].domDuringWorstFrame)}`);
@@ -377,6 +386,48 @@ const why = !measured
       `; ${slowKeys.length} keystroke(s) over ${KEYSTROKE_BAR_MS} ms` +
       `${slowKeys.length ? ` (worst ${Math.max(...slowKeys.map((k) => k.duration))} ms)` : ""}`;
 
+/* ── Acceptance F4, part (c) below 768 px: REPORTED, NEVER JUDGED ─────────────────────────────────
+ *
+ * docs/acceptance.md F4: below 768 px the 3-D stage starts collapsed (design brief 2.5), so a load
+ * that the reader does not turn into a fabric view never requests three.js. The 1920 px runs above
+ * report when it is requested against first paint (`threeRequest`); this one cold load at 767 px
+ * reports whether it is requested at all. It runs AFTER the E5 window has closed (the load meter has
+ * finished and the verdict above is fixed), so it can change neither the E5 verdict, the exit code nor
+ * the host-load figures. The positive control is the application chunk itself: a load that never
+ * requested `mount-*.js` did not load the app, and "three.js was not requested" would then be vacuous.
+ */
+const F4_NARROW_WIDTH_PX = 767;
+const f4NarrowLoad = await (async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const ctx = await browser.newContext({ viewport: { width: F4_NARROW_WIDTH_PX, height: 1000 }, deviceScaleFactor: 1 });
+    const page = await ctx.newPage();
+    /** @type {string[]} */
+    const scripts = [];
+    page.on("request", (req) => {
+      const name = (req.url().split("?")[0] ?? "").split("/").pop() ?? "";
+      if (/\.js$/.test(name)) scripts.push(name);
+    });
+    await page.goto(PAGE_URL, { waitUntil: "networkidle" });
+    /* The renderer import is deferred to input-idle at wide widths; wait well past that here too. */
+    await sleep(3000);
+    const appLoaded = scripts.some((n) => /^mount-[^/]*\.js$/.test(n));
+    const three = scripts.filter((n) => /^three-[^/]*\.js$/.test(n));
+    return {
+      widthPx: F4_NARROW_WIDTH_PX,
+      url: PAGE_URL,
+      scriptsRequested: scripts,
+      appLoaded,
+      threeRequested: three,
+      result: !appLoaded ? "NOT MEASURED — the application chunk was never requested" : three.length === 0 ? "three.js never requested" : "three.js REQUESTED",
+    };
+  } catch (e) {
+    return { widthPx: F4_NARROW_WIDTH_PX, url: PAGE_URL, error: String(e).slice(0, 160), result: "NOT MEASURED — the load failed" };
+  } finally {
+    await hostLoadMeter.close(browser).catch(() => {});
+  }
+})();
+
 writeFileSync(
   "review/reports/e5-coldload.json",
   JSON.stringify(
@@ -391,7 +442,10 @@ writeFileSync(
       window: { screen: headedPlan.screen, plan: headedPlan.plan, fits: windowFits, runsOutside: runs.filter((x) => !x.window.inside).map((x) => x.run) },
       hostQuiescence: {
         busyFractionOfRun: hostBusy,
-        basis: hostLoad.excess !== null ? "excess over the harness's own process tree" : "gross",
+        basis: harnessBasis(hostLoad),
+        harnessMethod: hostLoad.method,
+        harnessCpuMs: hostLoad.harnessCpuMs,
+        harnessJobError: hostLoad.jobError,
         grossBusyFraction: hostLoad.gross ?? hostBusyGross,
         harnessFraction: hostLoad.harness,
         idleBaselineBeforeLaunch: hostIdleBaseline,
@@ -407,6 +461,8 @@ writeFileSync(
       keystrokeCoverage: { perRun: runs.map((r) => ({ run: r.run, probed: r.keystrokeCoverage.probed, total: r.keystrokeCoverage.total })), targetsAimedAt: probeTargets },
       keystrokesOverBar: slowKeys,
       url: PAGE_URL,
+      /* F4 (c) below 768 px — reported, never judged: see where it is measured. */
+      f4NarrowLoad,
       runs,
     },
     null,
@@ -423,7 +479,8 @@ console.log(`carve-out: ${CARVE_OUT} — ${CARVE_OUT_SANCTIONED ? "SANCTIONED by
       `${total > probed ? " — the keystroke bar says nothing about the unprobed ones" : ""}`,
   );
 }
+console.log(`F4 at ${F4_NARROW_WIDTH_PX} px (reported, not judged): ${f4NarrowLoad.result}${f4NarrowLoad.error ? ` (${f4NarrowLoad.error})` : ""}`);
 console.log(`power: ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " — THROTTLED" : ""}; presentation below full rate in run(s): ${notFullRate.join(", ") || "none"}`);
-console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) (bar ${MAX_HOST_BUSY_FRACTION * 100}%); build: ${freshness.fresh ? "fresh" : "NOT FRESH — " + freshness.why}`);
+console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"} read from its ${hostLoad.method ?? "(unreadable)"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) (bar ${MAX_HOST_BUSY_FRACTION * 100}%); build: ${freshness.fresh ? "fresh" : "NOT FRESH — " + freshness.why}`);
 console.log(`${verdict}  E5  ${why}${hostQuiet && freshness.fresh ? "" : "  [NOT ACCEPTANCE EVIDENCE]"}`);
 process.exit(verdict === "PASS" ? 0 : 1);

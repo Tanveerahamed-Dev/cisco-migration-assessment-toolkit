@@ -613,6 +613,23 @@ function ClauseRow({ outcome, noun }: { outcome: ClauseOutcome; noun: string }):
 const MIN_UNFOLDED_ROWS = 6;
 
 /**
+ * Does `a` clip the queue's rows into a port of its own? Any ancestor whose overflow is not
+ * `visible` — EXCEPT the document's own scroller: the root, or <body> when its `auto`/`scroll`
+ * overflow belongs to the viewport (below 768 px the page itself scrolls, shell.css). There every
+ * row can be scrolled into view, so the viewport is not the queue's port; counting it made the fold
+ * follow page scroll and whatever sat above the queue (the phone Inspector sheet folded the view
+ * controls part-way through a session — PriorityQueue.fold-port.test.ts). A fixed frame's
+ * `overflow: hidden` body (768 px and up) is a real port and still counts. One predicate for the
+ * count, the geometry key and the observers, so the three cannot disagree about what the port is.
+ */
+function clipsRows(a: Element): boolean {
+  const overflowY = getComputedStyle(a).overflowY;
+  if (overflowY === "visible") return false;
+  const documentScroller = a === document.documentElement || a === document.body || a === document.scrollingElement;
+  return !(documentScroller && (overflowY === "auto" || overflowY === "scroll"));
+}
+
+/**
  * How many finding rows are in view AT REST with `shrink` px less port — the question the fold
  * asks with `shrink` = 0 while the controls are shown, and = their height while they are folded
  * (unfolding them would push the grid down by exactly that much). The port is the grid's box
@@ -623,7 +640,7 @@ const MIN_UNFOLDED_ROWS = 6;
  * and MEASURED at 1440x900 with a trace the first row was 40 px and the next 56, so a height-based
  * estimate read 6 rows where 4 were on screen. Null before layout (jsdom, a hidden rail).
  */
-function restingRowsInView(root: HTMLElement, shrink: number): number | null {
+export function restingRowsInView(root: HTMLElement, shrink: number): number | null {
   const grid = root.querySelector<HTMLElement>(".ag__grid");
   const rows = grid?.querySelectorAll<HTMLElement>(".ag__row--data") ?? [];
   if (!grid || rows.length === 0) return null;
@@ -633,7 +650,7 @@ function restingRowsInView(root: HTMLElement, shrink: number): number | null {
   let offset = 0;
   const clips: number[] = [];
   for (let a = grid.parentElement; a !== null; a = a.parentElement) {
-    if (getComputedStyle(a).overflowY === "visible") continue;
+    if (!clipsRows(a)) continue;
     offset += a.scrollTop;
     const r = a.getBoundingClientRect();
     clips.push(r.top + a.clientTop + a.clientHeight);
@@ -815,7 +832,7 @@ export function PriorityQueue({
     const geometryOf = (): string => {
       const parts = [String(root.clientWidth)];
       for (let a = root.parentElement; a !== null; a = a.parentElement) {
-        if (getComputedStyle(a).overflowY !== "visible") parts.push(`${a.clientWidth}x${a.clientHeight}/${a.childElementCount}`);
+        if (clipsRows(a)) parts.push(`${a.clientWidth}x${a.clientHeight}/${a.childElementCount}`);
       }
       return parts.join("|");
     };
@@ -884,7 +901,7 @@ export function PriorityQueue({
       decide();
     });
     for (let a = root.parentElement; a !== null; a = a.parentElement) {
-      if (getComputedStyle(a).overflowY === "visible") continue;
+      if (!clipsRows(a)) continue;
       ro.observe(a);
       for (const child of a.children) ro.observe(child);
       mo?.observe(a, { childList: true });

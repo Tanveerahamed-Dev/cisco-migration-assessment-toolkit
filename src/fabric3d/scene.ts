@@ -107,7 +107,7 @@ import {
   type RoleGlyph,
   type StateRingShape,
 } from "./geometry/chassis";
-import { buildCables, coverageGamma, createCableMaterial, setCoverageGamma, type CableSet } from "./geometry/cables";
+import { buildCables, coverageGamma, createCableMaterial, MIN_STROKE_PX, setCoverageGamma, type CableSet } from "./geometry/cables";
 import { DECK_DROP, Y_HALO, Y_STATE_RING, buildGround, type GroundSet } from "./geometry/ground";
 import { createInteraction, PICK_LAYER, type Interaction } from "./interaction";
 import { resolveLabels } from "./labelResolve";
@@ -1404,9 +1404,11 @@ function invisibleMaterial(): MeshBasicMaterial {
   return m;
 }
 
-/** 1.4 px per design-brief.md §4.4: reads as an outline, survives SMAA and a 1x pixel ratio. */
+/** The stroke floor (MIN_STROKE_PX), not design-brief §4.4's 1.4 px: §4.5 sets 2 CSS px as the
+ *  minimum painted stroke anywhere on the fabric, and 1.4 was the one outline under it (C5 item 8;
+ *  the factory now floors every stroke, so asking for less would be a request it silently raises). */
 function buildGhostLineMaterial(tokens: TokenPalette): LineMaterial {
-  const mat = createCableMaterial("solid", 1.4, 0.95, { vertexColors: false });
+  const mat = createCableMaterial("solid", MIN_STROKE_PX, 0.95, { vertexColors: false });
   mat.color.copy(tokens.color("--claim-indeterminate"));
   // Display-linear edge coverage, as every cable stroke (geometry/cables.ts coverageGamma).
   setCoverageGamma(mat, coverageGamma(tokens));

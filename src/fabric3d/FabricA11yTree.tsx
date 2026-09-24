@@ -439,7 +439,9 @@ export function FabricA11yTree({
 
   const uncollected = devices.filter((d) => !d.collected).length;
   const unmeasured = links.filter((l) => l.isBridge === null).length;
-  const rovingKey = activeKey ?? visibleRows[0]?.key ?? null;
+  /* Decided against the rows actually rendered: an active key that is stale or hidden under a
+     collapsed ancestor must not leave the tree with no tab stop (FabricA11yTree.tabstop.test.tsx). */
+  const rovingKey = visibleRows.some((r) => r.key === activeKey) ? activeKey : (visibleRows[0]?.key ?? null);
 
   return (
     <section

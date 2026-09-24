@@ -29,6 +29,7 @@ import {
   sharePayload,
   undecidedOutcomeWord,
   type ClaimBadge,
+  type ClaimBand,
 } from "../core/claims";
 import {
   aclUndecidability,
@@ -38,7 +39,7 @@ import {
 } from "../core/acl-coverage";
 import { fabric } from "../core/data";
 import type { Cite, Flow, Trace, TraceOutcome } from "../core/types";
-import type { CounterexampleResult } from "../forwarding/engine";
+import { scopeClauseOf, type CounterexampleResult } from "../forwarding/engine";
 import {
   IconCopy,
   IconNoRoute,
@@ -113,6 +114,65 @@ function flowDifferences(a: Flow, b: Flow): string[] {
  *  word the card draws — it once announced the raw outcome ("Result: dropped") under a headline
  *  reading "dropped for want of a collected route — not decided" (2026-09-22 critic, B2). */
 export const outcomeWordOf = (t: Trace): string => (isInvalidInput(t) ? "invalid input" : (undecidedOutcomeWord(t) ?? OUTCOME_WORD[t.outcome]));
+
+/**
+ * A verdict stated AWAY from this card — a palette row, a Path preset, a live-region announcement —
+ * and the bounds it must travel with. The one owner of those words (acceptance B2).
+ *
+ * Every part is read from an owner, never restated: the word and band from the claims owner (via
+ * `outcomeWordOf` / `bandOfTrace`), the badge from `claimBadge`, the scope clause from the trace's OWN
+ * claim (`scopeClauseOf`), the caveat count from the trace's own caveat list. So a surface cannot
+ * state a verdict more strongly than this card does, and cannot state it without the scope the
+ * engine attached: the palette once read "trace a path — this one ends denied" and "…the
+ * blocking-hop answer with its exact configuration line" for a denial whose own claim says "That
+ * denial is not decided", with no scope and no caveat anywhere on the row.
+ *
+ * `src/forwarding/verdict-wording.guard.test.ts` finds any outcome turned into text outside the
+ * owners, so a new surface cannot bypass this function; `src/app/verdict-scope.b2.test.tsx` proves
+ * the surfaces that exist carry what it returns.
+ */
+export interface VerdictStatement {
+  /** The headline word this card draws — undecided wording included. */
+  word: string;
+  band: ClaimBand;
+  badge: ClaimBadge;
+  decided: boolean;
+  /** The scope clause the trace's claim opens with; null when the claim carries none (a finding). */
+  scope: string | null;
+  caveats: number;
+  /** Scope, badge and caveat count as one clause: what any restatement of the verdict must carry. */
+  bounds: string;
+  /** The word followed by its bounds. What a surface prints when it states the verdict. */
+  sentence: string;
+}
+
+const NO_SCOPE =
+  "This trace's claim opens with no scope clause, so this verdict is unbounded as stated — read the claim on its card before relying on it";
+
+export function verdictStatement(t: Trace): VerdictStatement {
+  const word = outcomeWordOf(t);
+  const band = bandOfTrace(t);
+  const badge = claimBadge(t);
+  const scope = scopeClauseOf(t);
+  const caveats = t.caveats.length;
+  const bounds = `${scope ?? NO_SCOPE} · ${badge} · ${caveats} ${caveats === 1 ? "caveat" : "caveats"} on its card.`;
+  return { word, band, badge, decided: isDecidedOutcome(t), scope, caveats, bounds, sentence: `${word}. ${bounds}` };
+}
+
+/* The intent search's tally reads each outcome in the same words the single-trace headline uses: the
+   decided word, or the lead of `claims.ts :: undecidedOutcomeWord` for one returned but not decided.
+   Kept beside `OUTCOME_WORD` so there is one outcome→word table in the product, not three. */
+const UNDECIDED_TALLY_WORD: Readonly<Record<TraceOutcome, string>> = {
+  delivered: "delivered by routing — not decided",
+  denied: "denied by list text — not decided",
+  dropped: "dropped for want of a collected route — not decided",
+  indeterminate: "indeterminate — not decided",
+  "out-of-scope": "outside the collected evidence — not decided",
+};
+
+/** The word for a COUNT of traces with one outcome, split by whether they were decided. */
+export const outcomeTallyWord = (outcome: TraceOutcome, decided: boolean): string =>
+  decided ? `${OUTCOME_WORD[outcome]} (decided)` : UNDECIDED_TALLY_WORD[outcome];
 
 const flowText = (f: Flow): string =>
   `${f.protocol} ${f.srcIp} → ${f.dstIp}${f.protocol === "tcp" || f.protocol === "udp" ? `:${f.dstPort ?? "any port"}` : ""}`;
@@ -324,11 +384,18 @@ function CounterBlock({
     <>
       <Section
         title={
-          decided && (!result.found || counterDecided)
-            ? "Counterexample — the nearest flow that behaves differently"
-            : decided
-              ? "Nearby flow with a different outcome — its own outcome is UNDECIDED, so not a counterexample"
-              : "Nearby flow with a different outcome — relative to an UNDECIDED result, so not a counterexample"
+          /* A search that offered nothing is headed as one. "Nearby flow with a different outcome"
+             over a body reading "…so no counterexample is offered" named a flow the card then
+             retracted (acceptance report, B8 observation). */
+          !result.found
+            ? decided
+              ? "Counterexample — none offered by the bounded search"
+              : "Nearby flow with a different outcome — none offered; relative to an UNDECIDED result, one would not be a counterexample"
+            : decided && counterDecided
+              ? "Counterexample — the nearest flow that behaves differently"
+              : decided
+                ? "Nearby flow with a different outcome — its own outcome is UNDECIDED, so not a counterexample"
+                : "Nearby flow with a different outcome — relative to an UNDECIDED result, so not a counterexample"
         }
         tone="counter"
       >
@@ -359,14 +426,14 @@ function CounterBlock({
           <dl className="claim__pair">
             <dt>Intended</dt>
             <dd>
-              {`${flowText(trace.flow)} is ${OUTCOME_WORD[trace.outcome]} at ${blocked.host}: ${blocked.decidedBy.label}.`}
+              {`${flowText(trace.flow)} is ${outcomeWordOf(trace)} at ${blocked.host}: ${blocked.decidedBy.label}.`}
               <CiteLink cite={blocked.decidedBy.cite} onOpen={onOpenCite} />
             </dd>
             <dt>Not established</dt>
             <dd>
               {`that ${diffs.length === 0 ? "a neighbouring flow" : `a flow differing in ${diffs.join(" and ")}`} is treated the same way — ${flowText(
                 result.flow,
-              )} is ${OUTCOME_WORD[result.trace.outcome]}. The two statements rest on different lines of evidence and neither one closes the other.`}
+              )} is ${outcomeWordOf(result.trace)}. The two statements rest on different lines of evidence and neither one closes the other.`}
             </dd>
           </dl>
         </Section>
@@ -408,7 +475,7 @@ export function ClaimCard({ trace, counterexample, onRunFlow, onOpenCite }: Clai
         </span>
         <h3 className="claim__outcome" id={titleId}>
           <Glyph className="claim__outcome-glyph" />
-          <span className="claim__outcome-word">{isInvalidInput(trace) ? "invalid input" : (undecidedWord ?? OUTCOME_WORD[trace.outcome])}</span>
+          <span className="claim__outcome-word">{outcomeWordOf(trace)}</span>
         </h3>
         <span className="claim__flow claim__mono">{flowText(trace.flow)}</span>
         <CopyClaim payload={sharePayload(trace)} what="verdict" />

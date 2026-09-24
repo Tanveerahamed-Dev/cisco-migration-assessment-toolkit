@@ -143,6 +143,15 @@ export interface SuggestedFlow {
   id: string;
   title: string;
   flow: Flow;
+  /**
+   * Why this flow is worth posing — the evidence it was derived from. It NAMES the question and never
+   * states the answer: the outcome is the trace's, and a surface states it through the claims owner
+   * (`ClaimCard.tsx :: verdictStatement`) with the trace's scope clause and caveats. A rationale that
+   * pre-announced the answer ("…to the explicit deny, which is the blocking-hop answer with its
+   * exact configuration line") was printed by the palette and the Path presets over a denial whose
+   * own trace says "That denial is not decided" (acceptance B2). Pinned by
+   * `src/app/verdict-scope.b2.test.tsx`.
+   */
   rationale: string;
   /** The outcome this flow ACTUALLY produced when traced at module load — not an intention. */
   expectedOutcome: TraceOutcome;
@@ -1658,6 +1667,17 @@ function denialPhrase(acl: AclEval): string {
 
 const SCOPE_PHRASE = `Under the collected RIBs of ${ROUTABLE.join(" and ")} only (${ROUTABLE.length} of ${HOST_COUNT} hosts in this topology)`;
 
+/**
+ * The scope clause THIS trace's claim opens with, read from the claim itself — or null when the claim
+ * does not open with it. A surface that re-states a verdict away from its card (a palette row, a
+ * preset, an announcement) carries this clause, so the words it prints are bounded by the same
+ * sentence the engine wrote, not by a restatement of the denominator (acceptance B2). Null is a
+ * finding, never an empty string: a claim without its scope must be visible as one.
+ */
+export function scopeClauseOf(trace: Trace): string | null {
+  return trace.claim.startsWith(SCOPE_PHRASE) ? SCOPE_PHRASE : null;
+}
+
 function baseCaveats(): string[] {
   return [
     `Forwarding is modelled only from the RIBs collected for ${ROUTABLE.join(", ")}; ${UNROUTABLE_COUNT} of ${HOST_COUNT} hosts in this topology have no collected routing table, so nothing can be proven about forwarding on them.`,
@@ -2969,7 +2989,8 @@ function buildSuggestions(): SuggestedFlow[] {
           observedAt(src),
         );
 
-        // The same pair on a port nothing permits: the blocking-hop demonstration.
+        // The same pair on a port no permit line names: posed to ask what the rest of the list does.
+        // Whether that is a decided refusal is the TRACE's to say, not this rationale's (B2).
         const permittedPorts = new Set(
           lines
             .filter((l) => (l.action ?? "").toLowerCase() === "permit" && l.dport?.op.toLowerCase() === "eq")
@@ -2982,7 +3003,7 @@ function buildSuggestions(): SuggestedFlow[] {
             "denied",
             `${proto.toUpperCase()}/${blockedPort} into ${formatPrefix(dstPrefix)}`,
             { ...permitted, dstPort: blockedPort },
-            `The same pair on a port no line permits — it falls through ${name} to the explicit deny, which is the blocking-hop answer with its exact configuration line.`,
+            `The same pair on ${proto.toUpperCase()}/${blockedPort}, a port no permit line of ${host} ACL ${name} names — posed to ask what the rest of that list does with it.`,
             "denied",
             observedAt(src),
           );
@@ -3007,7 +3028,7 @@ function buildSuggestions(): SuggestedFlow[] {
             "unevaluable",
             `${unevaluable.p.toUpperCase()} into ${formatPrefix(dstPrefix)}`,
             unevaluable.flow,
-            `${unevaluable.l.cite} ("${unevaluable.l.raw ?? "text not collected"}") could match this flow and cannot be evaluated, so the engine refuses to decide it rather than guessing.`,
+            `${unevaluable.l.cite} ("${unevaluable.l.raw ?? "text not collected"}") could match this flow and cannot be evaluated — posed to show what the engine does with a line it cannot evaluate.`,
             "indeterminate",
             observedAt(src),
           );
@@ -3027,7 +3048,7 @@ function buildSuggestions(): SuggestedFlow[] {
         "unmodelled",
         `From ${s.host} Vlan${s.record.vlan ?? "?"} — no RIB collected`,
         { ...delivered, srcIp: formatIpv4(src) },
-        `${s.host} gateways ${formatPrefix(s.prefix)} (${s.record.cite}) but no routing table was collected for it, so the honest answer is "unmodelled" — never "delivered".`,
+        `${s.host} gateways ${formatPrefix(s.prefix)} (${s.record.cite}) but no routing table was collected for it — posed to show what the engine says about a source it holds no table for.`,
         "indeterminate",
         derivedFrom(src, s.prefix, s.record.cite, `which ${s.host} gateways on Vlan${s.record.vlan ?? "?"}`),
       )
@@ -3052,9 +3073,10 @@ function buildSuggestions(): SuggestedFlow[] {
           "no-route",
           `${s.host} Vlan${s.record.vlan ?? "?"} to the internet`,
           { srcIp: formatIpv4(src), dstIp: offFabric, protocol: "tcp", dstPort: 443, srcPort: null },
-          `${s.host} is the observed active gateway for ${formatPrefix(s.prefix)} (${s.record.cite}) and its collected RIB holds no default route, so this address is unreachable from there under ${s.host}'s RIB as collected — a route learned after collection, or a VRF not collected, would change that.${
-            ribIncompletenessSentence(s.host) === null ? "" : ` ${ribIncompletenessSentence(s.host)}, so the drop is not decided.`
-          }`,
+          /* The question only. This used to answer it too — "…so this address is unreachable from
+             there…, so the drop is not decided" — a second, hand-written verdict beside the trace's
+             own claim, which already says both and says them with its scope (B2). */
+          `${s.host} is the observed active gateway for ${formatPrefix(s.prefix)} (${s.record.cite}) and its collected RIB holds no default route — posed to ask what that table does with an address outside every prefix it holds.`,
           "dropped",
           derivedFrom(src, s.prefix, s.record.cite, `for which ${s.host} is the observed active gateway`),
         )
@@ -3069,7 +3091,7 @@ function buildSuggestions(): SuggestedFlow[] {
         "out-of-scope",
         `An address the collection never saw`,
         { srcIp: offFabric, dstIp: insideDst, protocol: "tcp", dstPort: 443, srcPort: null },
-        `${offFabric} is in no SVI subnet, connected route or endpoint record, so naming an ingress device would be a guess; the engine says out-of-scope instead.`,
+        `${offFabric} is in no SVI subnet, connected route or endpoint record — posed to show what the engine says about a source address it cannot place.`,
         "out-of-scope",
         {
           kind: "outside-every-observed-subnet",

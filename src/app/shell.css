@@ -615,6 +615,13 @@ a {
 
   .rail--b {
     position: static;
+    /* D3, 2026-09-24: not an overlay at this rung, so it carries no overlay layer. The drawer rung's
+       `z-index: var(--z-overlay)` above used to leak down here, and because the rail is a flex item
+       of the body (App.css), a z-index makes it a stacking context EVEN WHEN STATIC — at 30, over
+       the sticky status bar's 5. Measured at 390x844 `?d=core1`, Tab to "23/26 collected" at
+       y=10537: elementFromPoint gave `LI.dp-list__row` at 9 of 9 points, 0 of 4,400 ring pixels.
+       `src/core/sticky-layer.test.ts` holds "the status bar paints above every rail" per rung. */
+    z-index: auto;
     width: auto;
     transform: none;
     visibility: visible;
@@ -664,6 +671,15 @@ a {
     overflow: auto;
   }
 
+  /* WCAG 2.4.11. The status bar below is sticky at the viewport's bottom edge, so a control the
+     browser scrolls into view for focus must stop ABOVE it, not at the edge under it. Scroll padding
+     on the root is what focus scrolling honours (body's `overflow` propagates to the viewport, whose
+     scroll padding is read from html). `--statusbar-block` is the bar's live, wrapped height,
+     published by StatusBar.tsx; the token is only the first-paint fallback. */
+  html {
+    scroll-padding-block-end: calc(var(--statusbar-block, var(--statusbar-h)) + var(--sp-2));
+  }
+
   .app {
     grid-template-rows: var(--header-h) auto auto auto;
     height: auto;
@@ -706,6 +722,25 @@ a {
   .app[data-fabric3d="on"] .app__stage {
     display: grid;
     min-height: 20rem;
+  }
+
+  /* The Inspector is docked inside the stage, so collapsing the stage used to collapse it too: at
+     390-767 px the `i` shortcut and every evidence citation opened an Inspector that was in the DOM
+     and never on screen, focus left on the invoker (merged-tree gate, 2026-09-24; held by
+     src/app/stage-inspector-narrow.test.ts). An open Inspector re-opens the stage; with the fabric
+     still collapsed it shows the Inspector alone, at its own height — the reader asked for a record,
+     not for the fabric. */
+  .app__stage.app__stage--with-inspector {
+    display: grid;
+  }
+
+  .app[data-fabric3d="off"] .app__stage.app__stage--with-inspector {
+    grid-template-rows: auto;
+    block-size: auto;
+  }
+
+  .app[data-fabric3d="off"] .app__stage--with-inspector > :not(#inspector) {
+    display: none;
   }
 
   .rail--a,

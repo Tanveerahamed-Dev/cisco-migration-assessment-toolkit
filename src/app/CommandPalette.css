@@ -196,6 +196,14 @@
   overflow: hidden;
 }
 
+/* A detail that states a forwarding verdict is not a hint: it is the verdict, and its scope clause and
+   caveat count are part of it. Clamped like a hint it was cut after the word — the unbounded verdict
+   again, one rule later (acceptance B2). It wraps whole; the list scrolls. */
+.palette__row-detail[data-verdict-band] {
+  max-height: none;
+  overflow: visible;
+}
+
 .palette__title {
   display: flex;
   align-items: center;

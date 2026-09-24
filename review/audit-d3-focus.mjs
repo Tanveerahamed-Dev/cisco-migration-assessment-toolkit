@@ -76,6 +76,17 @@
  *   ATLAS_URL=http://localhost:4180 node review/audit-d3-focus.mjs
  *   node review/audit-d3-focus.mjs --self-removing       # ONLY the self-removing-control pass, at
  *                                                        # 1440, 768 and 390 (see that section)
+ *   node review/audit-d3-focus.mjs --sweep               # ONLY the sweep (see that section): at 390,
+ *                                                        # 768, 1000, 1440 and 1920, every composite
+ *                                                        # widget's tab stops, the whole tab order
+ *                                                        # hit-tested at nine points, More -> Path
+ *
+ *   node review/audit-d3-focus.mjs --vp=390              # any mode, narrowed to the listed widths —
+ *                                                        # diagnostic only, never the acceptance run
+ *
+ * The default run is the sweep, then the surface passes below at all five of those widths. The
+ * visibility hit test samples NINE points of the focused element's visible part (focusGeometry);
+ * until 2026-09-24 it sampled the centre only, and the surface passes never drove 768 or 390.
  *
  * Exit 0: every case driven, none on BODY, and every focus stop visible. Exit 1: a case landed on
  * BODY or did not run, a focus stop was not visible, or a required kind was never driven or never
@@ -90,6 +101,10 @@ const VIEWPORTS = [
   [1920, 1080, "wide"],
   [1440, 900, "desktop"], // the acceptance review's 1440 measurement of the snapshot popover
   [1000, 800, "compact"], // below the header's 1024px breakpoint: the "More" popover exists
+  /* 2026-09-24: the two narrow rungs were never driven here, and both acceptance findings of that
+     date live there — D1's pane switch at 768 and D3's covered status bar at 390. */
+  [768, 1024, "tablet"],
+  [390, 844, "phone"],
 ];
 
 /** @type {{surface: string, scenario: string, ok: boolean, why: string}[]} */
@@ -220,11 +235,23 @@ const focusGeometry = () => {
   const w = vis.r - vis.l;
   const h = vis.b - vis.t;
   if (w < 1 || h < 1) return { desc, visible: false, clippers, perimeter: 0 };
-  const cx = (vis.l + vis.r) / 2;
-  const cy = (vis.t + vis.b) / 2;
-  const hit = document.elementFromPoint(cx, cy);
-  const hitOk = hit !== null && (hit === a || a.contains(hit));
-  const hitCls = hit && typeof hit.className === "string" ? hit.className.split(" ")[0] : "";
+  /* NINE points, not the centre. MEASURED 2026-09-24 (acceptance report D3): at 390x844 the status
+     bar's "23/26 collected" was painted over whole by `.rail--b` once the page had scrolled to 10537,
+     and this file reported "0 not visible" — it never visited 390, and a single centre sample
+     cannot tell a covered corner from a covered control. Every point of a 3x3 lattice inset 15% into
+     the visible part must hit the element or a descendant: a focused control another layer paints
+     over, in whole or in part, is a focused control the reader cannot fully see. */
+  const hits = [];
+  for (const fy of [0.15, 0.5, 0.85]) {
+    for (const fx of [0.15, 0.5, 0.85]) {
+      const el = document.elementFromPoint(vis.l + fx * w, vis.t + fy * h);
+      if (el !== null && (el === a || a.contains(el))) continue;
+      const c = el && typeof el.className === "string" ? el.className.split(" ")[0] : "";
+      hits.push(el === null ? "nothing" : `${el.tagName}${c ? `.${c}` : ""}`);
+    }
+  }
+  const hitOk = hits.length === 0;
+  const hitDesc = hitOk ? "the element" : `${9 - hits.length}/9 points on the element; the rest on ${[...new Set(hits)].join(", ")}`;
   /* The indicator region: the element and every ancestor painting an outline (the ring-on-the-form
      pattern of the query bars), each grown by how far its outline reaches. */
   let zone = null;
@@ -247,7 +274,7 @@ const focusGeometry = () => {
     vis: [Math.round(vis.l), Math.round(vis.t), Math.round(vis.r), Math.round(vis.b)],
     perimeter: Math.round(2 * (w + h)),
     hitOk,
-    hitDesc: hit === null ? "nothing" : `${hit.tagName}${hitCls ? `.${hitCls}` : ""}`,
+    hitDesc,
     zone: { x, y, width: Math.ceil(zone.r) - x, height: Math.ceil(zone.b) - y },
   };
 };
@@ -335,7 +362,7 @@ async function checkVisible(page, stop, surface, scenario) {
     console.log(`FAIL  ${surface} :: ${scenario} -> NOT VISIBLE [${stop}] ${geo.desc}: ${why}`);
   };
   if (!geo.visible) return fail(`no part of it is on screen (clipped by ${geo.clippers.join(" > ") || "the viewport"})`);
-  if (!geo.hitOk) return fail(`elementFromPoint at the centre of its visible box ${JSON.stringify(geo.vis)} is ${geo.hitDesc}`);
+  if (!geo.hitOk) return fail(`elementFromPoint over its visible box ${JSON.stringify(geo.vis)}: ${geo.hitDesc}`);
   if (geo.zone.width < 1 || geo.zone.height < 1) return fail("its indicator region is off screen");
   const focused = await page.screenshot({ clip: geo.zone, animations: "disabled", caret: "hide" });
   await page.evaluate(suppressIndicator, true);
@@ -429,27 +456,37 @@ async function ensureDeviceView(page) {
   return false;
 }
 
+/* The Inspector counts as open only when it is ON SCREEN. Until 2026-09-24 this read "is #inspector in
+   the DOM", and at 390 px with the fabric collapsed the Inspector mounts inside the display:none
+   stage: in the DOM, never seen — measured, a citation's Enter left getClientRects() 0 and focus on
+   the citation, and every "inspector" case there passed as "[still open]". */
+const inspectorShown = (page) =>
+  page.evaluate(() => {
+    const i = document.getElementById("inspector");
+    return i !== null && i.getClientRects().length > 0;
+  });
+
 async function ensureInspector(page) {
-  if ((await page.locator("#inspector").count()) > 0) return true;
+  if (await inspectorShown(page)) return true;
   if (!(await ensureFinding(page))) return false;
   const cell = page.locator('#rail-queue [role="grid"] [tabindex="0"]').first();
   if ((await cell.count()) === 0) return false;
   await cell.focus();
   await page.keyboard.press("i");
   await page.waitForTimeout(400);
-  return (await page.locator("#inspector").count()) > 0;
+  return inspectorShown(page);
 }
 
 /** The Inspector opened from a citation affordance — the path `openInspector` records an origin for. */
 async function ensureInspectorFromCite(page) {
-  if ((await page.locator("#inspector").count()) > 0) return true;
+  if (await inspectorShown(page)) return true;
   if (!(await ensureFinding(page))) return false;
   const cite = page.locator("#rail-evidence button.ui-cite:visible").first();
   if ((await cite.count()) === 0) return (await page.locator("#rail-evidence").isVisible()) ? false : "n/a";
   await cite.focus();
   await page.keyboard.press("Enter");
   await page.waitForTimeout(400);
-  return (await page.locator("#inspector").count()) > 0;
+  return inspectorShown(page);
 }
 
 const STATES = [
@@ -938,11 +975,248 @@ async function runSelfRemoving() {
 
 if (process.argv.includes("--self-removing")) await runSelfRemoving();
 
+/* ── the sweep (`--sweep` alone; also the first phase of the default run) ───────
+ * TWO CLASSES the passes above could not see, both measured by the acceptance review 2026-09-24:
+ *
+ *  1. A COMPOSITE WIDGET WITH NO TAB STOP (D1, overturned PASS -> FAIL). At 768 px on the Path
+ *     surface the "Which panel to show" radiogroup held Queue and Evidence, both `tabindex="-1"`:
+ *     "paneswitch focused during 60 Tabs: 0". So at every width in SWEEP_VIEWPORTS and in every
+ *     state in sweepStates(), EVERY rendered element whose role is a composite widget — whatever
+ *     component drew it — is enumerated, and must hold exactly one sequential-focus stop (zero when a
+ *     combobox drives it through aria-activedescendant). And the keyboard journey the review named,
+ *     More -> Path, is driven with real keys, after which Tab (and Shift+Tab) must reach the radios.
+ *
+ *  2. A FOCUSED ELEMENT ANOTHER LAYER PAINTS OVER (D3). At 390x844 `?d=core1&s=fabric` the status
+ *     bar's coverage buttons, reached by Tab, sat inside the viewport while `.rail--b` painted over
+ *     them: elementFromPoint gave `LI.dp-list__row` at 9 of 9 points, 0 of 4,400 ring pixels changed.
+ *     This file said "0 not visible": it never drove 390, sampled one point, and never scrolled. So
+ *     the WHOLE tab order is walked with real Tab presses, and every stop is hit-tested at nine
+ *     points (focusGeometry) where Tab left the page, then with the document scrolled to its END and
+ *     to its TOP (a sticky layer is only covered at some scroll offsets: the review's case appears at
+ *     10537 and not at 2000, 6000 or the end). A stop scrolled out of view is not judged at that offset.
+ *
+ * The hit test is the class check here; the >=3:1 ring-pixel measurement stays with the surface
+ * passes above, which run it on every stop they reach.
+ */
+const SWEEP_VIEWPORTS = [
+  [390, 844, "phone"],
+  [768, 1024, "tablet"],
+  [1000, 800, "compact"],
+  [1440, 900, "desktop"],
+  [1920, 1080, "wide"],
+];
+
+const sweepStates = () => {
+  const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
+  const flow = encodeURIComponent("10.0.10.50>10.0.30.10>tcp>3389");
+  return [
+    ["idle", ""],
+    ["path surface, no flow", "s=path"],
+    ["findings surface", "s=findings"],
+    ["evidence surface", "s=evidence"],
+    ["a device selected", "d=core1&s=fabric"],
+    ["a finding selected", `f=${encodeURIComponent(fabricJson.findings[0].id)}&s=findings`],
+    ["a traced flow", `s=path&flow=${flow}`],
+  ];
+};
+
+/** In-page: every rendered composite widget and its sequential-focus stops. */
+const compositeCensus = () => {
+  const ROLES = ["radiogroup", "tablist", "toolbar", "grid", "treegrid", "tree", "listbox", "menu", "menubar"];
+  const shown = (el) =>
+    el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden" && el.closest("[inert], [aria-hidden='true']") === null;
+  const out = [];
+  for (const w of document.querySelectorAll(ROLES.map((r) => `[role="${r}"]`).join(","))) {
+    if (!shown(w)) continue;
+    const stops = [w, ...w.querySelectorAll("*")].filter((el) => el.tabIndex >= 0 && !el.disabled && shown(el));
+    const owned =
+      w.id !== "" &&
+      [...document.querySelectorAll("[aria-controls]")].some(
+        (el) => (el.getAttribute("aria-controls") ?? "").split(/\s+/).includes(w.id) && (el.getAttribute("role") === "combobox" || el.hasAttribute("aria-activedescendant")),
+      );
+    out.push({
+      name: `${w.getAttribute("role")} "${w.getAttribute("aria-label") ?? w.id ?? ""}"`,
+      want: owned ? 0 : 1,
+      stops: stops.map((s) => `${s.tagName}${s.getAttribute("role") ? `[${s.getAttribute("role")}]` : ""} "${(s.getAttribute("aria-label") ?? s.textContent ?? "").trim().slice(0, 24)}"`),
+      items: w.querySelectorAll("*").length,
+    });
+  }
+  return out;
+};
+
+/** In-page: let every FINITE animation and transition finish (a skip link sliding away is judged
+ *  where it comes to rest, not mid-flight), then two frames. Infinite ones (a progress shimmer)
+ *  are not waited for. Capped at 1.5 s. */
+const settleAnimations = async () => {
+  const finite = document.getAnimations().filter((a) => {
+    const end = a.effect?.getComputedTiming().endTime;
+    return typeof end === "number" && Number.isFinite(end);
+  });
+  await Promise.race([Promise.all(finite.map((a) => a.finished.catch(() => {}))), new Promise((r) => setTimeout(r, 1500))]);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+};
+
+/** In-page: is the focused element inside a layer that stays on screen while the document scrolls? */
+const focusInPinnedLayer = () => {
+  for (let el = document.activeElement; el !== null && el !== document.documentElement; el = el.parentElement) {
+    const p = getComputedStyle(el).position;
+    if (p === "sticky" || p === "fixed") return true;
+  }
+  return false;
+};
+
+/** In-page: scroll the document to `y` and let sticky layout and scroll listeners settle. */
+const scrollDocTo = async (y) => {
+  window.scrollTo(0, y);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return Math.round(window.scrollY);
+};
+
+/** @type {{where: string, what: string}[]} */
+const sweepFails = [];
+const sweepCount = { widgets: 0, stops: 0, hitTests: 0, journeys: 0 };
+const sweepFail = (where, what) => {
+  sweepFails.push({ where, what });
+  console.log(`FAIL  ${where} :: ${what}`);
+};
+
+async function sweepState(page, vp, state, query) {
+  const where = `${vp}/${state}`;
+  await page.goto(`${APP}/${query === "" ? "" : `?${query}`}`, { waitUntil: "load" });
+  await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+
+  for (const w of await page.evaluate(compositeCensus)) {
+    sweepCount.widgets += 1;
+    if (w.stops.length !== w.want) sweepFail(where, `${w.name}: ${w.stops.length} tab stop(s), expected ${w.want}${w.stops.length ? ` — ${w.stops.join(", ")}` : ""}`);
+  }
+
+  await page.evaluate(srToTop);
+  const seenStops = new Set();
+  for (let i = 0; i < 400; i += 1) {
+    await page.keyboard.press("Tab");
+    const id = await page.evaluate(srIdentify);
+    if (id === null) continue; /* focus left the document for the browser chrome; the next Tab re-enters */
+    if (seenStops.has(id.path)) break;
+    seenStops.add(id.path);
+    sweepCount.stops += 1;
+    await page.evaluate(settleAnimations);
+    /* Where Tab left the page: the state SC 2.4.11 is about ("when a component receives focus"). */
+    const natural = await page.evaluate(() => Math.round(window.scrollY));
+    const offsets = [["as Tab left it", natural]];
+    /* A stop in a sticky or fixed layer stays on screen while the document moves under it, so it is
+       judged across the whole scroll range too: the review's case is covered at 10537 and clear at
+       the very end. Nine offsets (0, 1/8 ... 8/8 of the range); the reader's position is restored
+       after, so the next Tab starts where the last one really left the page. */
+    if (await page.evaluate(focusInPinnedLayer)) {
+      const max = await page.evaluate(() => document.documentElement.scrollHeight - document.documentElement.clientHeight);
+      if (max > 0) for (let k = 0; k <= 8; k += 1) offsets.push([`${k}/8 of the scroll range`, Math.round((max * k) / 8)]);
+    }
+    for (const [at, target] of offsets) {
+      const y = at === "as Tab left it" ? natural : await page.evaluate(scrollDocTo, target);
+      const geo = await page.evaluate(focusGeometry);
+      if (geo === null || !geo.visible) continue; /* scrolled out of view at this offset: not judged here */
+      sweepCount.hitTests += 1;
+      if (!geo.hitOk) sweepFail(where, `${id.label} (stop ${seenStops.size}) painted over, document at y=${y} (${at}): ${geo.hitDesc}`);
+    }
+    if (offsets.length > 1) await page.evaluate(scrollDocTo, natural);
+  }
+}
+
+/** More -> Path with real keys, then Tab / Shift+Tab must reach the pane switch's radios. */
+async function sweepJourney(page, vp) {
+  const where = `${vp}/journey More -> Path`;
+  await page.goto(`${APP}/`, { waitUntil: "load" });
+  await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  const more = page.locator("button.hdr-more");
+  if ((await more.count()) === 0 || !(await more.isVisible())) return; /* no More control at this width */
+  const radiosShown = async () => page.locator('[role="radiogroup"][aria-label="Which panel to show"]').isVisible().catch(() => false);
+  sweepCount.journeys += 1;
+  await page.evaluate(srToTop);
+  let onMore = false;
+  for (let i = 0; i < 40 && !onMore; i += 1) {
+    await page.keyboard.press("Tab");
+    onMore = await page.evaluate(() => document.activeElement?.classList.contains("hdr-more") === true);
+  }
+  if (!onMore) return sweepFail(where, "Tab never reached the More control");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  const isPath = () => page.evaluate(() => (document.activeElement?.textContent ?? "").trim().startsWith("Path"));
+  /* Inside the popover the surface controls are a toolbar (one tab stop, arrows inside): Tab until
+     focus is in it, then arrow along it, as a keyboard reader does. */
+  for (let i = 0; i < 16 && !(await isPath()); i += 1) {
+    const inToolbar = await page.evaluate(() => document.activeElement?.closest('[role="toolbar"]') != null);
+    await page.keyboard.press(inToolbar ? "ArrowRight" : "Tab");
+    await page.waitForTimeout(60);
+  }
+  if (!(await isPath())) return sweepFail(where, "the Path control was not reached with Tab/arrows inside More");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(600);
+  if (!/[?&]s=path\b/.test(page.url())) return sweepFail(where, `Enter on Path did not select the path surface (url ${page.url()})`);
+  if (!(await radiosShown())) return; /* stacked rung: every rail is on screen and there is no switch to reach */
+  for (const [key, label] of [["Tab", "Tab"], ["Shift+Tab", "Shift+Tab"]]) {
+    let hits = 0;
+    for (let i = 0; i < 60; i += 1) {
+      await page.keyboard.press(key);
+      if (await page.evaluate(() => document.activeElement?.closest(".paneswitch__group") != null)) hits += 1;
+    }
+    console.log(`${hits > 0 ? "PASS" : "FAIL"}  ${where} :: pane switch focused during 60 ${label}s: ${hits}`);
+    if (hits === 0) sweepFail(where, `pane switch focused during 60 ${label}s: 0`);
+  }
+}
+
+async function runSweep(browser) {
+  /* `--vp=390,768` narrows a diagnostic run; a run so narrowed says so, and is not the acceptance run. */
+  const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
+  if (only) console.log(`INFO  sweep narrowed to ${only.join(", ")} px by --vp: NOT an acceptance run`);
+  for (const [w, h, vp] of SWEEP_VIEWPORTS.filter(([w]) => !only || only.includes(w))) {
+    const ctx = await browser.newContext({ viewport: { width: w, height: h } });
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.clear();
+        sessionStorage.clear();
+      } catch {
+        /* storage blocked: nothing persists anyway */
+      }
+    });
+    const page = await ctx.newPage();
+    for (const [state, query] of sweepStates()) await sweepState(page, `${vp} ${w}x${h}`, state, query);
+    await sweepJourney(page, `${vp} ${w}x${h}`);
+    await ctx.close();
+  }
+  console.log(
+    `\nSWEEP: ${sweepCount.widgets} composite widget(s) counted, ${sweepCount.stops} tab stop(s) walked, ` +
+      `${sweepCount.hitTests} nine-point hit test(s), ${sweepCount.journeys} More -> Path journey(s); ${sweepFails.length} failure(s).`,
+  );
+  for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
+  /* Zero of a denominator is a sweep that proved nothing about it. */
+  const empty = Object.entries(sweepCount).filter(([, n]) => n === 0).map(([k]) => k);
+  if (empty.length > 0) console.log(`SWEEP NEVER EXERCISED: ${empty.join(", ")}`);
+  return sweepFails.length === 0 && empty.length === 0;
+}
+
+if (process.argv.includes("--sweep")) {
+  const b = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+  let ok = false;
+  try {
+    ok = await runSweep(b);
+  } finally {
+    await b.close();
+  }
+  process.exit(ok ? 0 : 1);
+}
+
 /* ── run ───────────────────────────────────────────────────────────────────── */
 
 const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+/* The sweep runs first, at all five widths: the composite-widget census and the whole tab order
+   hit-tested at nine points. Its verdict is part of this run's exit code. */
+let sweepOk = false;
 try {
-  for (const [w, h, vp] of VIEWPORTS) {
+  sweepOk = await runSweep(browser);
+  const onlyVp = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
+  for (const [w, h, vp] of VIEWPORTS.filter(([vw]) => !onlyVp || onlyVp.includes(Number(vw)))) {
     const ctx = await browser.newContext({ viewport: { width: Number(w), height: Number(h) } });
     await ctx.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
     const page = await ctx.newPage();
@@ -998,4 +1272,5 @@ if (results.length === 0) {
   console.log("No surface was driven: the audit proved nothing.");
   process.exit(2);
 }
-process.exit(failed.length === 0 && missing.length === 0 && visFailed.length === 0 && visMissing.length === 0 ? 0 : 1);
+if (!sweepOk) console.log("SWEEP FAILED: see the SWEEP block above (composite tab stops, painted-over focus, More -> Path).");
+process.exit(sweepOk && failed.length === 0 && missing.length === 0 && visFailed.length === 0 && visMissing.length === 0 ? 0 : 1);

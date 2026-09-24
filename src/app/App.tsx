@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { SEVERITY_ORDER } from "../core/types";
+import { verdictStatement } from "../panels/ClaimCard";
 import { OPEN_CITE_EVENT } from "../panels/DevicePane";
 import { openInspector, setInspectorCite } from "../panels/Inspector";
 import { flowKey } from "../panels/PathTrace";
@@ -277,7 +278,7 @@ export function App(): ReactElement {
   useEffect(() => {
     if (trace === null) return;
     const hops = trace.hops.length;
-    appendLog(`Trace ${trace.outcome}: ${hops} hop${hops === 1 ? "" : "s"}.`);
+    appendLog(`Trace: ${verdictStatement(trace).sentence} ${hops} hop${hops === 1 ? "" : "s"}.`);
   }, [trace, appendLog]);
 
   /* Design brief 2.5, and the WCAG 1.4.10 answer for the canvas: below 768px the stage defaults to
@@ -321,8 +322,17 @@ export function App(): ReactElement {
       restoredAim.current = null;
       if (restored) return;
     }
-    if (useInvestigation.getState().deviceId === hop.host) return;
-    useInvestigation.getState().selectDevice(hop.host);
+    /* The re-aim says WHO made it (store.ts SelectionOrigin, acceptance A6 over A5): this selection
+       is the trace's question, and the fabric draws no blast radius over it — until the reader
+       chooses a device, the same host included, which `selectDevice` records as explicit. A landing
+       on a host that is already selected claims it the same way: a new trace re-asks the question.
+       A selected cable is kept in that case (no selectDevice clears it), exactly as before. */
+    const st = useInvestigation.getState();
+    if (st.deviceId === hop.host) {
+      if (st.deviceOrigin !== "hop") st.hydrate({ deviceOrigin: "hop" });
+      return;
+    }
+    st.selectDevice(hop.host, { origin: "hop" });
   }, [hopIndex, trace]);
 
   /* A refused link is an error, not a status: it says the state on screen is NOT the state that

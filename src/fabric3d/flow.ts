@@ -39,7 +39,7 @@ import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { bandOfTrace } from "../core/claims";
 import type { Trace } from "../core/types";
-import { coverageGamma, createCableMaterial, setCoverageGamma } from "./geometry/cables";
+import { coverageGamma, createCableMaterial, MIN_STROKE_PX, setCoverageGamma } from "./geometry/cables";
 import type { TokenPalette } from "./materials";
 
 export const DRAW_ON_MS = 240;
@@ -345,7 +345,9 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
   undecided.visible = false;
   group.add(undecided);
 
-  const tetherMaterial = createCableMaterial("solid", 1.5, 1, { vertexColors: false });
+  /* The stroke floor (MIN_STROKE_PX): it was 1.5, under design-brief §4.5's 2 CSS px minimum
+     (C5 item 8 — every stroke the fabric paints is held to it; stroke-floor.test.ts). */
+  const tetherMaterial = createCableMaterial("solid", MIN_STROKE_PX, 1, { vertexColors: false });
   tetherMaterial.depthTest = true;
   const tetherPositions = new Float32Array(6);
   const tetherGeometry = new LineGeometry();

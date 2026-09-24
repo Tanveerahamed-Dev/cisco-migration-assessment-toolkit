@@ -62,6 +62,7 @@ import {
   describePower,
   ensurePresenting,
   gatedBusy,
+  harnessBasis,
   headedWindow,
   hostPower,
   idleBaseline,
@@ -176,7 +177,7 @@ const INSTRUMENT = `
 /* The headed window is planned inside the screen's work area (acceptance report item 15; host-env.mjs
    owns the plan). A fixed 1940x1180 window was larger than the reference host's 1280x752 DIP work
    area, and an off-screen window region is not a measurement environment. */
-const headedPlan = HEADED ? await headedWindow(chromium, { width: 1920, height: 1080 }) : null;
+const headedPlan = HEADED ? await headedWindow(chromium, { width: 1920, height: 1080 }, hostLoadMeter) : null;
 if (headedPlan) console.log(headedPlan.line);
 const browser = await chromium.launch(HEADED ? { headless: false, args: headedPlan.args } : {});
 const ctx = await browser.newContext({
@@ -303,8 +304,8 @@ const bundle = await page.evaluate(() =>
     .map((r) => ({ url: r.name.split("/").pop(), bytes: r.encodedBodySize }))
     .sort((a, b) => a.url.localeCompare(b.url)),
 );
-hostLoadMeter.sample();
-await browser.close();
+/* Through the meter: see closeMeasured in host-env.mjs. */
+await hostLoadMeter.close(browser);
 
 /* Contiguous intervals in which the scene reported itself NOT converged: the intervals it drew in. */
 const spans = [];
@@ -521,7 +522,10 @@ const report = {
        recorded the renderer and the canvas size but nothing about what else the machine was doing. */
     measured: hostBusy !== null,
     busyFractionOfRun: hostBusy,
-    basis: hostLoad.excess !== null ? "excess over the harness's own process tree" : "gross (harness tree unreadable on this platform)",
+    basis: harnessBasis(hostLoad),
+    harnessMethod: hostLoad.method,
+    harnessCpuMs: hostLoad.harnessCpuMs,
+    harnessJobError: hostLoad.jobError,
     grossBusyFraction: hostLoad.gross ?? hostBusyGross,
     harnessFraction: hostLoad.harness,
     idleBaselineBeforeLaunch: hostIdleBaseline,
@@ -605,7 +609,7 @@ console.log(
 );
 console.log(
   `  host: ${hostBusy === null ? "load NOT MEASURED" : Math.round(hostBusy * 100) + "% busy across the run excluding this harness"} ` +
-    `(gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}); ` +
+    `(gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"} read from its ${hostLoad.method ?? "(unreadable)"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}); ` +
     `power ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " THROTTLED" : ""}; presentation ${presentationBefore.rafMedianMs ?? "-"}/${presentationAfter.rafMedianMs ?? "-"} ms rAF; ` +
     `over ${cpus().length} cores; build ${freshness.fresh ? "fresh" : "NOT FRESH (" + freshness.why + ")"}; ` +
     `window ${windowFits ? "inside the screen" : `NOT inside the screen (${JSON.stringify(windowCheck.bounds ?? windowCheck.error ?? null)})`} -> acceptanceEvidence=${acceptanceEvidence}`,

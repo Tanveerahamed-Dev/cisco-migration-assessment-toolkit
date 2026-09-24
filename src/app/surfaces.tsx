@@ -389,6 +389,7 @@ const VIEWS: readonly { id: EvidenceView; label: string }[] = [
   { id: "finding", label: "Finding" },
   { id: "device", label: "Device" },
 ];
+const VIEW_IDS: readonly EvidenceView[] = VIEWS.map((v) => v.id);
 
 export interface RailBProps {
   hidden?: boolean;
@@ -476,7 +477,7 @@ export function RailB({ hidden = false, onOpenCite, view, onView }: RailBProps):
             role="radio"
             id={`${groupId}-${v.id}`}
             aria-checked={view === v.id}
-            tabIndex={view === v.id ? 0 : -1}
+            tabIndex={rovingStop(VIEW_IDS, view) === v.id ? 0 : -1}
             className="railb__switch-btn"
             onClick={() => setView(v.id)}
             onKeyDown={(e) => {
@@ -734,6 +735,32 @@ export interface PaneSwitchProps {
   fabricOptional: boolean;
 }
 
+/**
+ * The roving tab stop of a single-select group: the checked item, or — when the value names no
+ * rendered item — the FIRST item, so the group is never left without a way in (APG radio group:
+ * "if no radio button is checked, focus moves to the first radio button in the group").
+ *
+ * D1 REGRESSION, 2026-09-24. `tabIndex={value === id ? 0 : -1}` has no tab stop at all when the
+ * value is not one of the items, and nothing about that shape says so: at 768 px on the Path surface
+ * with no flow, the pane switch's value was `path`, the Path radio was not rendered, and Queue and
+ * Evidence were both -1 — "paneswitch focused during 60 Tabs: 0". Every roving group in this file
+ * takes its stop from here; `composite-tabstop.test.tsx` holds the rule over every composite widget
+ * the app renders, whoever wrote it.
+ */
+export function rovingStop<T>(ids: readonly T[], value: T): T | undefined {
+  return ids.includes(value) ? value : ids[0];
+}
+
+/** APG radio-group arrows: Right/Down next, Left/Up previous, wrapping; Home/End the ends. */
+function arrowTarget<T>(ids: readonly T[], from: T, key: string): T | undefined {
+  const i = Math.max(0, ids.indexOf(from));
+  if (key === "ArrowRight" || key === "ArrowDown") return ids[(i + 1) % ids.length];
+  if (key === "ArrowLeft" || key === "ArrowUp") return ids[(i - 1 + ids.length) % ids.length];
+  if (key === "Home") return ids[0];
+  if (key === "End") return ids[ids.length - 1];
+  return undefined;
+}
+
 export function PaneSwitch({
   value,
   onChange,
@@ -743,25 +770,44 @@ export function PaneSwitch({
   onToggleFabric,
   fabricOptional,
 }: PaneSwitchProps): ReactElement {
+  /* The Path pane is offered when a flow exists OR when it is the pane on screen. RailA mounts the
+     path panel on `surface === "path"` alone (the flow form is the answer to "trace a flow"), so a
+     switch that left Path out while the column was showing it described a column that did not exist
+     and checked nothing. */
   const panes: { id: PaneId; label: string }[] = [
     { id: "queue", label: "Queue" },
-    ...(pathAvailable ? [{ id: "path" as const, label: "Path" }] : []),
+    ...(pathAvailable || value === "path" ? [{ id: "path" as const, label: "Path" }] : []),
     { id: "evidence", label: "Evidence" },
   ];
+  const ids = panes.map((p) => p.id);
+  const stop = rovingStop(ids, value);
+  const groupRef = useRef<HTMLDivElement | null>(null);
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>, from: PaneId): void => {
+    const next = arrowTarget(ids, from, e.key);
+    if (next === undefined) return;
+    e.preventDefault();
+    onChange(next);
+    /* The target radio is already rendered (the list only ever LOSES Path once the value leaves it),
+       so focus follows the selection in the same task. */
+    groupRef.current?.querySelector<HTMLElement>(`[data-pane-id="${next}"]`)?.focus();
+  };
 
   return (
     <div className="paneswitch">
       {showPanes ? (
-        <div className="paneswitch__group" role="radiogroup" aria-label="Which panel to show">
+        <div className="paneswitch__group" role="radiogroup" aria-label="Which panel to show" ref={groupRef}>
           {panes.map((p) => (
             <button
               key={p.id}
               type="button"
               role="radio"
+              data-pane-id={p.id}
               aria-checked={value === p.id}
-              tabIndex={value === p.id ? 0 : -1}
+              tabIndex={stop === p.id ? 0 : -1}
               className="paneswitch__btn"
               onClick={() => onChange(p.id)}
+              onKeyDown={(e) => onKeyDown(e, p.id)}
             >
               {p.label}
             </button>
