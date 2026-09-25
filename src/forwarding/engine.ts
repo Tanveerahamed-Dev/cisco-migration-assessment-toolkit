@@ -12,7 +12,7 @@
  * An ACL line we cannot evaluate poisons the lines below it, because we cannot prove our match is
  * the one that fires. Absence is absence.
  */
-import { aclsOf, fabric, hasRib, linksByHost, routesOf } from "../core/data";
+import { aclsOf, fabric, hasRib, linksByHost, resolveCite, routesOf } from "../core/data";
 import { adminDistanceRank, routeFieldReading } from "../core/route-fields";
 import { aclLineName } from "./acl-line";
 import { ribIncompleteness, ribIncompletenessSentence } from "./rib-completeness";
@@ -974,7 +974,7 @@ function notAppliedCaveat(
   const parts: string[] = [];
   if (outscored.length > 0) {
     parts.push(
-      `${host} also defines ${outscored.join(", ")}; ${outscored.length === 1 ? "it was" : "they were"} not applied to this flow because ${applied.length === 0 ? "no ACL on this host names its addresses specifically" : `${applied.join(", ")} names its addresses more specifically`}.`,
+      `${host} also defines ${outscored.join(", ")} (acls.${host}); ${outscored.length === 1 ? "it was" : "they were"} not applied to this flow because ${applied.length === 0 ? "no ACL on this host names its addresses specifically" : `${applied.join(", ")} names its addresses more specifically`}.`,
     );
   }
   if (unscoreable.length > 0) {
@@ -1122,9 +1122,16 @@ function runLists(
  * "no access-group binding was collected" now says WHICH binding was not observed and why — the
  * old sentence was false for this snapshot, which binds two lists on core1.
  */
+/** The interface records a binding statement rests on, as citations; the host's interface table when
+ *  neither interface resolved to a record. */
+function interfaceCites(host: string, intfs: readonly (string | null)[]): string {
+  const cites = intfs.flatMap((i) => (i === null ? [] : [`interfaces.${host}.${i}`])).filter((c) => resolveCite(c) !== undefined);
+  return cites.length === 0 ? `interfaces.${host}` : [...new Set(cites)].join(", ");
+}
+
 function bindingGapClause(pb: PathBindings | null): string {
   if (pb === null) return "no interface binding was consulted for this evaluation";
-  const parts = pb.unknown.map((u) => `${u.intf ?? "an unresolved interface"} ${u.dir} (${u.reason})`);
+  const parts = pb.unknown.map((u) => `${u.intf ?? "an unresolved interface"} ${u.dir} (${u.reason}; ${u.cite ?? `interfaces.${u.host}`})`);
   return `the ACL binding at ${parts.join("; ")} was not observed`;
 }
 
@@ -1178,11 +1185,14 @@ function evaluateObservedBindings(
   const incomplete = pb.unknown.length > 0;
   if (incomplete) {
     caveats.push(
-      `At ${host}, ${pb.unknown.map((u) => `the ${u.dir === "in" ? "inbound" : "outbound"} binding on ${u.intf ?? "an unresolved interface"} (${u.reason})`).join("; ")} was not observed; a filter there can only drop more traffic, so it cannot undo the denial below.`,
+      `At ${host}, ${pb.unknown.map((u) => `the ${u.dir === "in" ? "inbound" : "outbound"} binding on ${u.intf ?? "an unresolved interface"} (${u.reason}; ${u.cite ?? `interfaces.${host}`})`).join("; ")} was not observed; a filter there can only drop more traffic, so it cannot undo the denial below.`,
     );
   } else if (unbound.length > 0) {
+    /* The interface records that say which lists are bound here, and the lists themselves, cited in
+       the sentence that draws the conclusion from them (acceptance B6: a claim with its citation). */
+    const stateCites = [...new Set(pb.states.flatMap((st) => (st.cite === null ? [] : [st.cite])))];
     caveats.push(
-      `${host} also defines ${unbound.join(", ")}, bound to none of the interfaces this flow crosses at ${host} (${where}; observed running configuration), so ${unbound.length === 1 ? "it does" : "they do"} not filter this flow here.`,
+      `${host} also defines ${unbound.join(", ")}, bound to none of the interfaces this flow crosses at ${host} (${where}; observed running configuration, ${[...stateCites, `acls.${host}`].join(", ")}), so ${unbound.length === 1 ? "it does" : "they do"} not filter this flow here.`,
     );
   }
   if (pb.bound.length === 0) {
@@ -1338,7 +1348,7 @@ function attachmentEvidence(ip: Ipv4): { evidence: HopEvidence[]; caveats: strin
   ];
   const caveats = [
     sorted.length > 1
-      ? `${formatIpv4(ip)} is reported as an endpoint on ${sorted.length} hosts (${sorted.map((s) => s.host).join(", ")}); the attachment point is ambiguous in the collected evidence, and the L2 path from it to the gateway is not simulated.`
+      ? `${formatIpv4(ip)} is reported as an endpoint on ${sorted.length} hosts (${sorted.map((s) => `${s.host}: ${s.cite}`).join(", ")}); the attachment point is ambiguous in the collected evidence, and the L2 path from it to the gateway is not simulated.`
       : `${formatIpv4(ip)} attaches at ${first.host} ${first.port ?? "(no port)"} (${first.cite}); the L2 path from that port to the gateway is not simulated.`,
   ];
   return { evidence, caveats };
@@ -1445,10 +1455,10 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
     if (others.length > 0) {
       const describe = (h: string): string => {
         const o = sorted.find((s) => s.host === h)!;
-        return `${h} (${o.fhrpRole === null ? "no FHRP role observed" : `${o.fhrp ?? "FHRP"} ${o.fhrpRole}`})`;
+        return `${h} (${o.fhrpRole === null ? "no FHRP role observed" : `${o.fhrp ?? "FHRP"} ${o.fhrpRole}`}, ${o.cite})`;
       };
       caveats.push(
-        `${formatIpv4(ip)} is an address of ${others.length + 1} collected hosts (${[chosen.host, ...others].join(", ")}) — an FHRP group shares its virtual address. ${chosen.host} was taken as ingress because ${chosen.cite} records it as ${chosen.fhrpRole === null ? "the first candidate holding a collected RIB" : `${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}; that is a point-in-time observation, and the flow may instead enter via ${others.map(describe).join(", ")}, whose forwarding may differ.`,
+        `${formatIpv4(ip)} is an address of ${others.length + 1} collected hosts (${[chosen.host, ...others].join(", ")}; ${[...new Set(sorted.map((o) => o.cite))].join(", ")}) — an FHRP group shares its virtual address. ${chosen.host} was taken as ingress because ${chosen.cite} records it as ${chosen.fhrpRole === null ? "the first candidate holding a collected RIB" : `${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}; that is a point-in-time observation, and the flow may instead enter via ${others.map(describe).join(", ")}, whose forwarding may differ.`,
       );
     }
     return {
@@ -1465,11 +1475,12 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
     const chosen = sorted[0]!;
     const caveats = [...attach.caveats];
     if (sorted.length > 1) {
-      const others = sorted.slice(1).map((s) => `${s.host} (${s.record.fhrpRole ?? "no FHRP role observed"})`).join(", ");
+      const others = sorted.slice(1).map((s) => `${s.host} (${s.record.fhrpRole ?? "no FHRP role observed"}, ${s.record.cite})`).join(", ");
+      const gateways = sorted.map((s) => s.record.cite).join(", ");
       caveats.push(
         isActive(chosen.fhrpRole)
-          ? `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs; ${chosen.host} was taken as ingress because ${chosen.record.cite} records it as ${chosen.record.fhrp ?? "FHRP"} ${chosen.fhrpRole}. That role is a point-in-time observation, not a guarantee — traffic may enter via ${others}.`
-          : `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs and no active FHRP role was observed; ${chosen.host} was taken as ingress by deterministic ordering. Traffic may enter via ${others}.`,
+          ? `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs (${gateways}); ${chosen.host} was taken as ingress because ${chosen.record.cite} records it as ${chosen.record.fhrp ?? "FHRP"} ${chosen.fhrpRole}. That role is a point-in-time observation, not a guarantee — traffic may enter via ${others}.`
+          : `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs (${gateways}) and no active FHRP role was observed; ${chosen.host} was taken as ingress by deterministic ordering (${chosen.record.cite}). Traffic may enter via ${others}.`,
       );
     }
     return {
@@ -1569,7 +1580,7 @@ export function resolveNextHost(fromHost: string, route: RouteEntry, links = lin
           evidence: { kind: "topology", label: `next hop ${route.nextHop} is ${chosen.label}`, raw: null, cite: chosen.cite },
           caveat:
             hosts.length > 1
-              ? `Next hop ${route.nextHop} is an address of ${hosts.length} collected hosts (${hosts.join(", ")}); ${chosen.host} was followed because ${chosen.fhrpRole === null ? "it is the first candidate holding a collected RIB" : `${chosen.cite} records it as ${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}. The others were not explored.`
+              ? `Next hop ${route.nextHop} is an address of ${hosts.length} collected hosts (${hosts.join(", ")}; ${[...new Set(sorted.map((o) => o.cite))].join(", ")}); ${chosen.host} was followed because ${chosen.fhrpRole === null ? "it is the first candidate holding a collected RIB" : `${chosen.cite} records it as ${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}. The others were not explored.`
               : null,
         };
       }
@@ -1628,7 +1639,7 @@ export function chooseRoute(host: string, dstIp: Ipv4, routes: readonly RouteEnt
     const withAd = tied.filter((t) => adminDistanceOf(t.item) !== null);
     if (withAd.length === tied.length) {
       winner = [...tied].sort((a, b) => adminDistanceOf(a.item)! - adminDistanceOf(b.item)!)[0]!.item;
-      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)}; the lowest administrative distance (${routeFieldReading(winner, "adminDistance").text}) was followed and equal-cost paths were not explored.`;
+      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} (${tied.map((t) => t.item.cite).join(", ")}); the lowest administrative distance (${routeFieldReading(winner, "adminDistance").text}) was followed and equal-cost paths were not explored.`;
     } else {
       caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} and administrative distance was not observed for all of them (${tied.filter((t) => adminDistanceOf(t.item) === null).map((t) => t.item.cite).join(", ")}); the first in RIB order was followed. Which one the device actually prefers is unproven.`;
     }
@@ -1680,7 +1691,7 @@ export function scopeClauseOf(trace: Trace): string | null {
 
 function baseCaveats(): string[] {
   return [
-    `Forwarding is modelled only from the RIBs collected for ${ROUTABLE.join(", ")}; ${UNROUTABLE_COUNT} of ${HOST_COUNT} hosts in this topology have no collected routing table, so nothing can be proven about forwarding on them.`,
+    `Forwarding is modelled only from the RIBs collected for ${ROUTABLE.join(", ")} (${fabric.coverage.cite}); ${UNROUTABLE_COUNT} of ${HOST_COUNT} hosts in this topology have no collected routing table, so nothing can be proven about forwarding on them.`,
     ...bindingCoverageSentences(),
     "Stateful inspection, NAT, policy-based routing and any firewall in the path are not modelled: this walks stateless ACL text and the collected RIB only.",
     "Only the forward direction was simulated; the return path may be filtered or routed differently.",
@@ -1804,13 +1815,13 @@ function notePartialRouteBasis(hop: Hop, host: string, win: RouteEntry, dstIp: I
     if (parsePrefix(win.prefix)?.bits === 32) return;
     PARTIAL_ROUTE_BASIS.set(hop, { route: win, sentence });
     caveats.push(
-      `${host} reached this destination on its ${win.source ?? "unlabelled"} ${win.prefix} (${win.cite}), a route chosen from a table the snapshot shows to be incomplete: ${sentence}. Under longest-prefix match a more specific route the table does not hold would outrank this subnet, so the outcome at ${host} is not decided.`,
+      `${host} reached this destination on its ${win.source ?? "unlabelled"} ${win.prefix} (${win.cite}), a route chosen from a table the snapshot shows to be incomplete: ${sentence}. Under longest-prefix match a more specific route the table does not hold (routes.${host}) would outrank this subnet, so the outcome at ${host} is not decided.`,
     );
     return;
   }
   PARTIAL_ROUTE_BASIS.set(hop, { route: win, sentence });
   caveats.push(
-    `The route ${host} followed (${win.source ?? "unlabelled"} ${win.prefix}, ${win.cite}) was chosen from a table the snapshot shows to be incomplete: ${sentence}. A route the table does not hold may carry this flow by another interface, so the outcome at ${host} is not decided.`,
+    `The route ${host} followed (${win.source ?? "unlabelled"} ${win.prefix}, ${win.cite}) was chosen from a table the snapshot shows to be incomplete: ${sentence}. A route the table does not hold (routes.${host}) may carry this flow by another interface, so the outcome at ${host} is not decided.`,
   );
 }
 
@@ -1892,9 +1903,9 @@ function receivedAtOwner(
 
   const inboundState =
     pb === null
-      ? `no ACLs were collected for ${host}, so its inbound filtering on ${where} is unobserved, not absent`
+      ? `no ACLs were collected for ${host} (${fabric.coverage.cite}), so its inbound filtering on ${where} is unobserved, not absent`
       : pb.unknown.length > 0
-        ? `the inbound binding on ${where} was not observed (${pb.unknown.map((u) => u.reason).join("; ")})`
+        ? `the inbound binding on ${where} was not observed (${pb.unknown.map((u) => `${u.reason}; ${u.cite ?? `interfaces.${host}`}`).join("; ")})`
         : inbound === null
           ? `no inbound list is bound on ${where} in the observed running configuration`
           : inbound.verdict === "permit"
@@ -1920,7 +1931,7 @@ function receivedAtOwner(
     claim: `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${received}. An outbound interface ACL does not filter traffic addressed to the router, so none was applied; ${inboundState}; and ${CONTROL_PLANE_UNMODELLED}, so no forwarding or filtering outcome is claimed.`,
     caveats: [
       ...(inbound?.caveats ?? pb?.notes ?? []),
-      `Traffic addressed to ${host} itself is outside this model beyond its inbound interface ACL: ${CONTROL_PLANE_UNMODELLED}. Re-run toward a host behind ${host} to ask about transit traffic.`,
+      `Traffic addressed to ${host} itself (${owner.cite}) is outside this model beyond its inbound interface ACL: ${CONTROL_PLANE_UNMODELLED}. Re-run toward a host behind that device to ask about transit traffic.`,
     ],
   };
 }
@@ -1942,7 +1953,7 @@ function receivedElsewhereEvidence(dstIp: Ipv4): { decidedBy: HopEvidence; owner
       cite: first.cite,
     },
     owner: ownerEvidence(first),
-    caveat: `Traffic addressed to ${who} itself is outside this model once it leaves the delivering interface: ${CONTROL_PLANE_UNMODELLED}.`,
+    caveat: `Traffic addressed to ${who} itself (${first.cite}) is outside this model once it leaves the delivering interface: ${CONTROL_PLANE_UNMODELLED}.`,
   };
 }
 
@@ -2002,7 +2013,7 @@ export function traceFlow(flow: Flow): Trace {
       [],
       `${SCOPE_PHRASE}, ${flow.srcIp} is the ${srcRole === "network" ? "network" : "directed-broadcast"} address of ${formatPrefix(srcSubnet.prefix)} (${srcSubnet.label}, ${srcSubnet.cite}), not a host address, so no flow was simulated from it.`,
       [
-        `A source address must be a host address; ${flow.srcIp} identifies the subnet itself. Re-run with an address inside ${formatPrefix(srcSubnet.prefix)} to get a forwarding answer.`,
+        `A source address must be a host address; ${flow.srcIp} identifies the subnet itself (${srcSubnet.cite}). Re-run with an address inside ${formatPrefix(srcSubnet.prefix)} (${srcSubnet.cite}) to get a forwarding answer.`,
         ...baseCaveats(),
       ],
       [],
@@ -2031,7 +2042,7 @@ export function traceFlow(flow: Flow): Trace {
       [],
       `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${flow.srcIp} and ${flow.dstIp} both lie in ${where}, so the flow stays inside one subnet — it is bridged at L2, or addressed to a device on that subnet, and never crosses the routed interface where interface ACLs are evaluated. L2 forwarding, VLAN ACLs and port ACLs are not simulated, so no forwarding or filtering outcome is claimed.`,
       [
-        `Traffic within ${formatPrefix(srcSubnet.prefix)} is outside this model: it walks collected RIBs and routed-interface ACLs, and a flow that never leaves its subnet meets neither. Its fate turns on L2 forwarding, VACLs and port ACLs, none of which is simulated.`,
+        `Traffic within ${formatPrefix(srcSubnet.prefix)} (${srcSubnet.cite}) is outside this model: it walks collected RIBs and routed-interface ACLs, and a flow that never leaves its subnet meets neither. Its fate turns on L2 forwarding, VACLs and port ACLs, none of which is simulated.`,
         ...baseCaveats(),
       ],
       [],
@@ -2067,7 +2078,7 @@ export function traceFlow(flow: Flow): Trace {
       [],
       `${SCOPE_PHRASE}, ${flowPhrase(flow)} is not decided: ${flow.srcIp} is ${owner.label} (${owner.cite}), an address of ${who} itself, so this traffic would be originated by ${device} rather than arrive at it. Locally-originated traffic is not filtered by the inbound access-group of the interface that owns its address, and how a device filters and routes its own traffic is not modelled, so no forwarding or filtering outcome is claimed.`,
       [
-        `Traffic sourced by ${who} itself is outside this model: it walks packets that enter a router and applies that router's interface ACLs, and a self-originated packet enters none. Re-run with a host address in the same subnet to ask about transit traffic.`,
+        `Traffic sourced by ${who} itself (${owner.cite}) is outside this model: it walks packets that enter a router and applies that router's interface ACLs, and a self-originated packet enters none. Re-run with a host address in the same subnet to ask about transit traffic.`,
         ...baseCaveats(),
       ],
       [],
@@ -2086,9 +2097,9 @@ export function traceFlow(flow: Flow): Trace {
       flow,
       "out-of-scope",
       [],
-      `${SCOPE_PHRASE}, ${ingress.none}, so no ingress device can be named and no forwarding claim is made about ${flowPhrase(flow)}.`,
+      `${SCOPE_PHRASE}, ${ingress.none} (${fabric.coverage.cite}), so no ingress device can be named and no forwarding claim is made about ${flowPhrase(flow)}.`,
       [
-        `${flow.srcIp} is outside every subnet in the collected evidence. That is a limit of the collection, not proof that the address does not exist on this network.`,
+        `${flow.srcIp} is outside every subnet in the collected evidence (${fabric.coverage.cite}). That is a limit of the collection, not proof that the address does not exist on this network.`,
         ...baseCaveats(),
       ],
       [],
@@ -2125,7 +2136,7 @@ export function traceFlow(flow: Flow): Trace {
         alternatives: [],
       });
       outcome = "dropped";
-      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} loops: ${host} is reached twice, so the packet is dropped by TTL expiry rather than delivered.`;
+      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} loops: ${host} is reached twice (routes.${host}), so the packet is dropped by TTL expiry rather than delivered.`;
       caveats.push("A forwarding loop was detected in the collected routes; on real hardware the packet dies at TTL 0, which this model reports as a drop.");
       break;
     }
@@ -2150,12 +2161,12 @@ export function traceFlow(flow: Flow): Trace {
         alternatives: [],
       });
       outcome = "indeterminate";
-      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} cannot be decided: it reaches ${host}, for which no routing table was collected, so forwarding past ${host} is unmodelled — not clear, and not blocked.`;
+      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} cannot be decided: it reaches ${host}, for which no routing table was collected (${fabric.coverage.cite}), so forwarding past ${host} is unmodelled — not clear, and not blocked.`;
       caveats.push(
-        `${host} was traversed with no collected RIB (${fabric.coverage.cite}); every statement about what happens at or beyond ${host} is unproven.`,
+        `${host} was traversed with no collected RIB (${fabric.coverage.cite}), so every statement about what happens at or beyond ${host} is unproven.`,
       );
       if (Object.keys(aclsOf(host)).length === 0) {
-        caveats.push(`No ACLs were collected for ${host}; filtering there is unobserved, not absent.`);
+        caveats.push(`No ACLs were collected for ${host} (${fabric.coverage.cite}); filtering there is unobserved, not absent.`);
       }
       break;
     }
@@ -2198,12 +2209,12 @@ export function traceFlow(flow: Flow): Trace {
     if (acl.verdict === "indeterminate") aclIndeterminateSeen = true;
     caveats.push(...acl.caveats);
     if (Object.keys(aclsOf(host)).length === 0) {
-      caveats.push(`No ACLs were collected for ${host}; filtering there is unobserved, not absent.`);
+      caveats.push(`No ACLs were collected for ${host} (${fabric.coverage.cite}); filtering there is unobserved, not absent.`);
     } else if (acl.verdict === "not-applicable") {
       caveats.push(
         acl.bindingMode === "observed"
-          ? `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host}, and none is bound to the interfaces this flow enters (${ingressIntf ?? "unresolved"}) or leaves (${egress?.intf ?? "unresolved"}) by in the observed running configuration, so none was applied here.`
-          : `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host} but none names this flow's addresses specifically, so none was applied. Because a binding this hop depends on was not observed, that is an absence of evidence, not evidence of an unfiltered path.`,
+          ? `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host} (acls.${host}), and none is bound to the interfaces this flow enters (${ingressIntf ?? "unresolved"}) or leaves (${egress?.intf ?? "unresolved"}) by in the observed running configuration (${interfaceCites(host, [ingressIntf, egress?.intf ?? null])}), so none was applied here.`
+          : `${Object.keys(aclsOf(host)).length} ACL(s) are defined on ${host} (acls.${host}) but none names this flow's addresses specifically, so none was applied. Because a binding this hop depends on was not observed, that is an absence of evidence, not evidence of an unfiltered path.`,
       );
     }
 
@@ -2257,7 +2268,7 @@ export function traceFlow(flow: Flow): Trace {
         alternatives: [],
       });
       outcome = "dropped";
-      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is dropped at ${host}: no prefix in its collected RIB matches ${flow.dstIp} and it carries no default route.`;
+      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is dropped at ${host}: no prefix in its collected RIB (routes.${host}) matches ${flow.dstIp} and it carries no default route.`;
       caveats.push(
         `The drop at ${host} rests on the RIB as collected (routes.${host}); a route learned after collection, or a VRF not collected, would change it.`,
       );
@@ -2369,13 +2380,13 @@ export function traceFlow(flow: Flow): Trace {
     }
     if (acl.verdict === "indeterminate") {
       // Carry on routing, but the flow can no longer be claimed either way.
-      caveats.push(`The ACL result at ${host} is indeterminate, so no outcome downstream of ${host} can be claimed as proven.`);
+      caveats.push(`The ACL result at ${host} is indeterminate (${acl.decidedBy?.cite ?? `acls.${host}`}), so no outcome downstream of ${host} can be claimed as proven.`);
     }
     host = next.host;
 
     if (index === TTL_LIMIT - 1) {
       outcome = "dropped";
-      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} exceeded the ${TTL_LIMIT}-hop simulation cap without reaching its destination; on real hardware this is a TTL drop.`;
+      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} exceeded the ${TTL_LIMIT}-hop simulation cap without reaching its destination (routes.${hops[hops.length - 1]?.host ?? host}); on real hardware this is a TTL drop.`;
       const last = hops[hops.length - 1]!;
       hops[hops.length - 1] = { ...last, verdict: "ttl-exceeded" };
       const basis = PARTIAL_ROUTE_BASIS.get(last);
@@ -2430,8 +2441,8 @@ export function undecidedDeliverySentence(t: Trace): string {
   };
   for (const g of unobservedPolicyInputs(t)) add(g.label);
   for (const h of t.hops) {
-    if (h.verdict === "unmodeled") add(`${h.host} is not modelled`);
-    for (const e of h.evidence) if (e.kind === "absence") add(e.label);
+    if (h.verdict === "unmodeled") add(`${h.host} is not modelled (${h.decidedBy?.cite ?? fabric.coverage.cite})`);
+    for (const e of h.evidence) if (e.kind === "absence") add(e.label.includes(e.cite) ? e.label : `${e.label} (${e.cite})`);
   }
   return `That is a routing result, not a decided pass — filtering on this path was not decided: ${reasons.join("; ")}.`;
 }
@@ -2576,15 +2587,15 @@ export interface PolicyGap {
 function altGapPhrase(g: PolicyGap): string {
   switch (g.kind) {
     case "acl-uncollected":
-      return `${g.host} has no collected ACLs`;
+      return `${g.host} has no collected ACLs (${g.cite})`;
     case "acl-unbound-denial":
-      return `the denying list at ${g.host} has no observed binding`;
+      return `the denying list at ${g.host} has no observed binding (${g.cite})`;
     case "ingress-alternate":
-      return `the ingress at ${g.host} is itself not modelled equivalently`;
+      return `the ingress at ${g.host} is itself not modelled equivalently (${g.cite})`;
     case "ingress-port-unobserved":
-      return `the ingress port filtering at ${g.host} is unobserved`;
+      return `the ingress port filtering at ${g.host} is unobserved (${g.cite})`;
     case "rib-partial":
-      return `the routing decision at ${g.host} rests on a table the snapshot shows to be incomplete`;
+      return `the routing decision at ${g.host} rests on a table the snapshot shows to be incomplete (${g.cite})`;
   }
   const exhaustive: never = g.kind;
   return exhaustive;
@@ -2635,13 +2646,18 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
       const altUndecided = at.hops.some((h) => h.verdict === "unmodeled" || h.evidence.some((e) => e.kind === "absence"));
       if (at.outcome === t.outcome && altGaps.length === 0 && !altUndecided) continue; // modelled equivalently
       const why: string[] = [];
-      if (at.outcome !== t.outcome) why.push(`traced from ${alt.host} this flow is ${at.outcome}, not ${t.outcome}`);
+      /* Each reason names the record it rests on: the alternate trace's own deciding evidence, and
+         the absence it recorded (acceptance B6 — a claim is displayed with its citation). */
+      const altLast = at.hops[at.hops.length - 1];
+      const altDecider = altLast?.decidedBy?.cite ?? (altLast === undefined ? alt.cite : `routes.${altLast.host}`);
+      const altAbsence = at.hops.flatMap((h) => h.evidence.filter((e) => e.kind === "absence").map((e) => e.cite))[0] ?? altDecider;
+      if (at.outcome !== t.outcome) why.push(`traced from ${alt.host} this flow is ${at.outcome}, not ${t.outcome} (${altDecider})`);
       for (const g of altGaps) why.push(altGapPhrase(g));
-      if (altUndecided) why.push(`the trace from ${alt.host} rests on evidence recorded as absent`);
+      if (altUndecided) why.push(`the trace from ${alt.host} rests on evidence recorded as absent (${altAbsence})`);
       out.push({
         host: alt.host,
         kind: "ingress-alternate",
-        label: `${first.host} was taken as ingress on a point-in-time role (${chosen.role}); the flow may instead enter via ${alt.host} (${alt.role}), which is not modelled equivalently: ${why.join("; ")}`,
+        label: `${first.host} was taken as ingress on a point-in-time role (${chosen.role}), recorded at ${chosen.cite}; the flow may instead enter via ${alt.host} (${alt.role}), recorded at ${alt.cite}, which is not modelled equivalently: ${why.join("; ")}`,
         cite: alt.cite,
       });
     }
@@ -2660,7 +2676,7 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
         out.push({
           host: first.host,
           kind: "ingress-port-unobserved",
-          label: `${formatIpv4(src)}'s frames could reach ${first.host} Vlan${vlan} by ${open.length} physical ${open.length === 1 ? "port" : "ports"} whose inbound filtering was not observed (${shown.join(", ")}${open.length > 4 ? ` and ${open.length - 4} more` : ""}) — the attachment path is not simulated, so which port it is, and what it filters, is unobserved`,
+          label: `${formatIpv4(src)}'s frames could reach ${first.host} Vlan${vlan} by ${open.length} physical ${open.length === 1 ? "port" : "ports"} whose inbound filtering was not observed (${shown.join(", ")}${open.length > 4 ? ` and ${open.length - 4} more` : ""}; ${open[0]!.cite ?? `interfaces.${first.host}`}) — the attachment path is not simulated, so which port it is, and what it filters, is unobserved`,
           cite: open[0]!.cite ?? `interfaces.${first.host}`,
         });
       }
@@ -2702,7 +2718,7 @@ function pathPolicyGaps(t: Trace): PolicyGap[] {
       out.push({
         host: h.host,
         kind: "acl-uncollected",
-        label: `${h.host} ${holds}, ${effect} — unobserved, not absent`,
+        label: `${h.host} ${holds} (${fabric.coverage.cite}), ${effect} — unobserved, not absent`,
         cite: fabric.coverage.cite,
       });
     }
@@ -2737,7 +2753,7 @@ function pathPolicyGaps(t: Trace): PolicyGap[] {
       out.push({
         host: h.host,
         kind: "acl-unbound-denial",
-        label: `the denying list at ${h.host} was chosen by the address-specificity rule because a binding on this hop was not observed, so that it is applied on this flow's path is not observed`,
+        label: `the denying list at ${h.host} (${d.cite}) was chosen by the address-specificity rule because a binding on this hop was not observed, so that it is applied on this flow's path is not observed`,
         cite: d.cite,
       });
     }
@@ -2865,13 +2881,13 @@ export function counterexample(flow: Flow, trace: Trace): CounterexampleResult {
       trace: t,
       rationale:
         (decided === null
-          ? `${stated}. No ACL line was consulted on its path, so nothing here claims which rule permitted it.`
+          ? `${stated} (${t.hops[t.hops.length - 1]?.decidedBy?.cite ?? `routes.${host}`}). No ACL line was consulted on its path, so nothing here claims which rule permitted it.`
           : `${stated}: ${decided.label} (${decided.cite}).`) + shared,
     };
   }
   return {
     found: false,
-    reason: `None of the ${Math.min(candidates.length, CANDIDATE_CAP)} nearby variations derived from the evidence at ${host} traced as a delivery with nothing on its path left undecided, so no counterexample is offered. That is not proof that none exists — only the collected ACLs and RIBs were searched.`,
+    reason: `None of the ${Math.min(candidates.length, CANDIDATE_CAP)} nearby variations derived from the evidence at ${host} (${blocked.evidence.cite}) traced as a delivery with nothing on its path left undecided, so no counterexample is offered. That is not proof that none exists — only the collected ACLs and RIBs were searched.`,
   };
 }
 

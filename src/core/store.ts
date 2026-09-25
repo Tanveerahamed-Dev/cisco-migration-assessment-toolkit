@@ -14,7 +14,10 @@ import type { Flow, Severity, SurfaceId, Trace } from "./types";
 import { readFlow, type FlowProblem } from "../forwarding/ip";
 
 export type BandFilter = "all" | "degraded";
-export type EvidenceTab = "summary" | "ports" | "routing" | "acl" | "findings" | "raw";
+/** Every Device-evidence tab, as a runtime value: the URL parser accepts exactly these and the
+ *  composite-widget census visits each one, so neither can drift from the type into a hand list. */
+export const EVIDENCE_TABS = ["summary", "ports", "routing", "acl", "findings", "raw"] as const;
+export type EvidenceTab = (typeof EVIDENCE_TABS)[number];
 
 /**
  * Who made the device selection (acceptance A6 over A5, 2026-09-24).
@@ -232,7 +235,7 @@ export function decodeInvestigation(search: string): Partial<InvestigationState>
   if (p.has("role")) out.roles = new Set((p.get("role") ?? "").split(",").filter(Boolean));
   if (p.get("unc") === "1") out.onlyUncollected = true;
   const tab = p.get("tab");
-  if (tab && ["summary", "ports", "routing", "acl", "findings", "raw"].includes(tab))
+  if (tab && (EVIDENCE_TABS as readonly string[]).includes(tab))
     out.evidenceTab = tab as EvidenceTab;
   const flow = p.get("flow");
   if (flow) {

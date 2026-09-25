@@ -489,6 +489,27 @@
   color: var(--text-faint);
 }
 
+/* A selection the filter hides (acceptance A4). It is a statement about what the reader is looking
+   at, not a coverage footnote, so it takes the full text ink and a rule on its leading edge — the
+   same treatment as a clause in the per-clause accounting — rather than the faint note ink. The
+   control sits under the sentence so the sentence is never squeezed beside it in a 280 px rail. */
+.pq-pinned {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  margin-block-start: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-inline-start: 2px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.pq-pinned__text {
+  margin: 0;
+}
+
 .pq-clauses {
   display: flex;
   flex-direction: column;

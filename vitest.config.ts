@@ -22,8 +22,14 @@
  *     over 10 s, and several tests left on this default read 30-74 s. No quiet-host (solo) figure has
  *     been re-taken since, so this file quotes none. What holds instead is a RULE, not a number:
  *     a unit test asserts no wall-clock time (a count of the work replaces it — see the "per-keystroke
- *     work" block in `CommandPalette.test.tsx`), and a test whose unit of work is large is split one
- *     record per test (the EvidencePane per-finding tests) rather than given a bigger limit. Raising
+ *     work" block in `CommandPalette.test.tsx` and the primitive-operation budget in `layout.test.ts`,
+ *     which replaced the last wall-clock median, O26), and a test whose unit of work is large is
+ *     split one record per test (the EvidencePane per-finding tests; since 2026-09-24 also the
+ *     per-flow cases of `HopList.decider-header.test.tsx` and the per-file cases of
+ *     `determinism.test.ts`) rather than given a bigger limit. Expensive setup is shared and its
+ *     repetition COUNTED, not timed: `tracked-sources.test.ts` builds the compilers' program once,
+ *     `determinism.test.ts` parses each file once, `composite-tabstop.test.tsx` pins the presses its
+ *     keyboard walk makes. Raising
  *     this number to make a loaded run green would only move the flake. The suite asserts
  *     CORRECTNESS; the latency budget is measured against the running application by
  *     `review/measure-inp.mjs` and `review/audit-e5-sweep.mjs`, which label themselves LABORATORY and

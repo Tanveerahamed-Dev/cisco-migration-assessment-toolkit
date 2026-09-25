@@ -522,6 +522,13 @@
   font-size: var(--fs-1);
 }
 
+/* A citation written INTO a claim, caveat or note (cited-text.tsx): the same control every surface
+   uses, set on the line of the clause it backs (acceptance B6). It keeps the primitive's hit-area
+   floor and wrapping; it only sits on the text's line instead of on its own. */
+.cited-text__cite {
+  vertical-align: middle;
+}
+
 /* The literal configuration line. It is the thing an engineer pastes into a change request, so it
    is rendered verbatim, monospaced, wrapping rather than truncating. */
 .hop__raw {

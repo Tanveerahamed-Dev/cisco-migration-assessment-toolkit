@@ -173,8 +173,25 @@ export function findVerdictWording(program: ts.Program, consider: (fileName: str
  */
 const PENDING_OUTSIDE_OWNER: readonly { file: string; source: string; owner: string }[] = [];
 
+/* THE TREE'S PROGRAM, BUILT ONCE AND COUNTED (acceptance F2, W6 gate 2026-09-25). The whole-tree check
+   was ONE test: build a type-checked program over every authored module, then walk all of them. It
+   took ~6 s on a quiet host and 230-288 s on a saturated clone, where it failed — one unit of work
+   the size of the tree, judged against a per-test limit. The program is now built once per file
+   (lazily, so a single case run with -t still builds it) and the build is COUNTED, as
+   tracked-sources.test.ts counts its own; the walk is split one source file per case, so each case
+   is one file's checker work. Same denominator, same predicate, same verdict. */
+let programsBuilt = 0;
+let treeProgram: ts.Program | undefined;
+
 describe("a forwarding verdict is put into words only by its owners (B2 structural guard)", () => {
   const files = walk(SRC);
+  const program = (): ts.Program => {
+    if (treeProgram === undefined) {
+      programsBuilt += 1;
+      treeProgram = ts.createProgram(files, compilerOptions());
+    }
+    return treeProgram;
+  };
 
   it("walks the whole authored tree, and the owners are in it", () => {
     const r = files.map(rel);
@@ -183,20 +200,39 @@ describe("a forwarding verdict is put into words only by its owners (B2 structur
     expect(files.length).toBeGreaterThan(60);
   });
 
-  it("finds no verdict put into words outside the owners", () => {
-    const program = ts.createProgram(files, compilerOptions());
-    const inTree = new Set(files.map(norm));
-    const found = findVerdictWording(program, (f) => inTree.has(norm(f)));
-    // The owners do word verdicts — which also proves the resolver resolves on the real tree.
-    expect(found.some((w) => OWNER_SET.has(norm(w.file)))).toBe(true);
-    const outside = found.filter((w) => !OWNER_SET.has(norm(w.file)));
-    const pending = outside.filter((w) => PENDING_OUTSIDE_OWNER.some((p) => p.file === rel(w.file) && p.source === w.source));
-    const offenders = outside.filter((w) => !pending.includes(w)).map((w) => `${rel(w.file)}:${w.line} [${w.kind}] ${w.text}  ::  ${w.source}`);
-    expect(offenders).toEqual([]);
-    // The ledger expires: an entry that matches nothing has been fixed (or moved) and must go.
-    const stale = PENDING_OUTSIDE_OWNER.filter((p) => !pending.some((w) => rel(w.file) === p.file && w.source === p.source));
-    expect(stale.map((p) => `${p.file}: ${p.source}`), "a pending-fix entry no longer matches its line: delete it").toEqual([]);
+  /** One file's verdict wordings, from the shared program. */
+  const wordingIn = (file: string): VerdictWording[] => findVerdictWording(program(), (f) => norm(f) === norm(file));
+  const isPending = (w: VerdictWording): boolean => PENDING_OUTSIDE_OWNER.some((p) => p.file === rel(w.file) && p.source === w.source);
+
+  it("builds the tree's program (once: every per-file case below shares it)", () => {
+    expect(program().getSourceFiles().filter((sf) => !sf.isDeclarationFile).length).toBeGreaterThanOrEqual(files.length);
   }, 120_000);
+
+  for (const file of files) {
+    if (OWNER_SET.has(norm(file))) {
+      // The owners do word verdicts — which also proves the resolver resolves on the real tree.
+      it(`${rel(file)} (an owner): words verdicts, so the resolver resolves on the real tree`, () => {
+        expect(wordingIn(file).length).toBeGreaterThan(0);
+      });
+    } else {
+      it(`${rel(file)}: puts no verdict into words`, () => {
+        const offenders = wordingIn(file)
+          .filter((w) => !isPending(w))
+          .map((w) => `${rel(w.file)}:${w.line} [${w.kind}] ${w.text}  ::  ${w.source}`);
+        expect(offenders).toEqual([]);
+      });
+    }
+  }
+
+  it("every pending-fix entry still matches its line (the ledger expires)", () => {
+    // An entry that matches nothing has been fixed (or moved) and must go.
+    const stale = PENDING_OUTSIDE_OWNER.filter((p) => !wordingIn(join(SRC, p.file)).some((w) => w.source === p.source));
+    expect(stale.map((p) => `${p.file}: ${p.source}`), "a pending-fix entry no longer matches its line: delete it").toEqual([]);
+  });
+
+  it("built the tree's program at most once for all of the cases above", () => {
+    expect(programsBuilt, "the program was built more than once").toBeLessThanOrEqual(1);
+  });
 
   it("is live: a planted module re-wording a verdict seven ways is flagged on exactly those lines", () => {
     const planted = join(SRC, "app", "__planted_verdict_wording.tsx").split(sep).join("/");

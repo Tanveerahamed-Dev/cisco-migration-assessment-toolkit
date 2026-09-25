@@ -701,6 +701,32 @@ describe("a selection from another surface is revealed, not merely marked", () =
     expect(inView(revealed), "the active row must be inside the scroll port").toBe(true);
   });
 
+  it("reveals it under a FILTER that hides its row: pinned, current, in view, and said in words", () => {
+    /* The refuter's case (A4 overturned at 78bdba5): `?q=severity:Critical`, then the palette picks
+       F120. Every test above ran over an unfiltered queue, and under a filter the selected row did
+       not exist in the grid at all — no aria-current, no data-active, no "F120" anywhere in the rail.
+       The full contract (every clause key, text, chips, the cross-layer table, the widening control)
+       is in PriorityQueue.filtered-reveal.test.tsx; this is the named regression's own witness. */
+    const hidden = fabric.findings.find((f) => f.id === "F120");
+    expect(hidden, "the refuter's finding must exist").toBeDefined();
+    expect(String(hidden!.severity), "F120 must be one the filter hides, or this proves nothing").not.toBe("Critical");
+    setQuery("severity:Critical");
+    const c = mount(<PriorityQueue debounceMs={0} />);
+    installLayout(c);
+    expect(textOf(c)).not.toContain("F120");
+
+    act(() => useInvestigation.getState().selectFinding("F120"));
+
+    const current = [...c.querySelectorAll<HTMLElement>('[role="grid"] [aria-current]')];
+    expect(current.map((r) => r.querySelector('[role="rowheader"]')?.textContent?.trim())).toEqual(["F120"]);
+    expect(current[0]!.getAttribute("data-active")).toBe("yes");
+    expect(inView(current[0]!), "the selected row must be inside the scroll port").toBe(true);
+    const said = textOf(c.querySelector(".pq-pinned")!);
+    expect(said).toContain("F120");
+    expect(said).toContain("severity:Critical");
+    expect(useInvestigation.getState().query, "the reader's filter is not discarded").toBe("severity:Critical");
+  });
+
   it("leaves the scroll position alone when the active row is already visible", () => {
     /* The other half of A4: re-aiming must not throw away the reader's place. A row inside the
        port is already the answer, so the correct amount of scrolling is none. */

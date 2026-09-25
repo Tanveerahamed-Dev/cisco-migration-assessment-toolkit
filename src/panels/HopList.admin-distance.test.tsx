@@ -221,10 +221,14 @@ describe("B1: a route field reads the same on the Routing tab, the Path panel an
     }
   });
 
-  it("every route record on every Routing tab reads each route field exactly as the Inspector reads it", () => {
-    let compared = 0;
-    const fields = { AD: "adminDistance", "Next hop": "nextHop" } as const;
-    for (const host of fabric.coverage.routableHosts) {
+  /* One Routing tab per case (acceptance F2, W6 gate 2026-09-25): the loop over every routable host
+     was one test whose unit of work was every host's grid, and the load-sensitive class split its
+     like one record per test. The denominator check that the hosts cover every route record is its
+     own case below, so no record can fall between the per-host cases. */
+  const fields = { AD: "adminDistance", "Next hop": "nextHop" } as const;
+  for (const host of fabric.coverage.routableHosts) {
+    it(`every route record on ${host}'s Routing tab reads each route field exactly as the Inspector reads it`, () => {
+      let compared = 0;
       const cells = routingCells(routingTab(host), host);
       expect(cells.size, `${host}: the grid shows every route record`).toBe(fabric.routes[host]!.length);
       for (const [cite, row] of cells) {
@@ -233,12 +237,14 @@ describe("B1: a route field reads the same on the Routing tab, the Path panel an
           compared += 1;
         }
       }
-      for (const m of mounted.splice(0)) {
-        act(() => m.root.unmount());
-        m.container.remove();
-      }
-    }
-    expect(compared).toBe(Object.values(fabric.routes).flat().length * 2);
+      expect(compared).toBe(fabric.routes[host]!.length * 2);
+    });
+  }
+
+  it("the routable hosts compared above hold every route record in the snapshot", () => {
+    const covered = fabric.coverage.routableHosts.reduce((n, h) => n + (fabric.routes[h]?.length ?? 0), 0);
+    expect(covered).toBe(Object.values(fabric.routes).flat().length);
+    expect(covered).toBeGreaterThan(0);
   });
 });
 
@@ -399,10 +405,22 @@ function runtimeImportClosure(program: ts.Program, file: string): Set<string> {
   return seen;
 }
 
+let programsBuilt = 0;
+
 describe("B1 structural guard: Route.adminDistance is read only by its owner, the module declaring routeFieldReading", () => {
   const files = walkSources(SRC);
+  /* Built once per file and COUNTED, as tracked-sources.test.ts counts its own; the two whole-tree
+     reads below are split one source file per case (acceptance F2, W6 gate 2026-09-25: this file
+     took 131 s on a saturated clone, the whole-tree scans ~4 s on a quiet host). */
   let memo: ts.Program | null = null;
-  const program = (): ts.Program => (memo ??= ts.createProgram(files, compilerOptions()));
+  const program = (): ts.Program => {
+    if (memo === null) {
+      programsBuilt += 1;
+      memo = ts.createProgram(files, compilerOptions());
+    }
+    return memo;
+  };
+  const relOf = (f: string): string => relative(SRC, f).split(sep).join("/");
 
   it("walks the whole denominator vitest collects over", () => {
     const cfg = readFileSync(join(ROOT, "vitest.config.ts"), "utf8");
@@ -415,17 +433,21 @@ describe("B1 structural guard: Route.adminDistance is read only by its owner, th
     expect(files.length).toBeGreaterThan(60);
   });
 
-  it("finds no read of RouteEntry.adminDistance outside the owner", () => {
-    const owner = ownerOf(program());
-    const inTree = new Set(files.map(normPath));
-    const reads = findAdminDistanceReads(program(), (f) => inTree.has(normPath(f)));
-    // The owner does read it — which also proves the resolver resolves on the real tree.
-    expect(reads.some((r) => normPath(r.file) === normPath(owner)), "the owner reads RouteEntry.adminDistance").toBe(true);
-    const outside = reads
-      .filter((r) => normPath(r.file) !== normPath(owner))
-      .map((r) => `${relative(SRC, r.file).split(sep).join("/")}:${r.line}  ${r.text}`);
-    expect(outside).toEqual([]);
+  it("builds the tree's program (once: every per-file case below shares it)", () => {
+    expect(program().getSourceFiles().filter((sf) => !sf.isDeclarationFile).length).toBeGreaterThanOrEqual(files.length);
   }, 90_000);
+
+  it("the owner reads RouteEntry.adminDistance — which also proves the resolver resolves on the real tree", () => {
+    const owner = ownerOf(program());
+    expect(findAdminDistanceReads(program(), (f) => normPath(f) === normPath(owner)).length).toBeGreaterThan(0);
+  });
+
+  for (const file of files) {
+    it(`${relOf(file)}: reads RouteEntry.adminDistance only if it is the owner`, () => {
+      const reads = normPath(file) === normPath(ownerOf(program())) ? [] : findAdminDistanceReads(program(), (f) => normPath(f) === normPath(file));
+      expect(reads.map((r) => `${relOf(r.file)}:${r.line}  ${r.text}`)).toEqual([]);
+    });
+  }
 
   /* `nextHop` is the owner's other field, and the same B1 class (a connected route's null next hop
      rendered "not observed" — the 2026-09-21 finding). Unlike the distance, the engine must read a
@@ -433,15 +455,20 @@ describe("B1 structural guard: Route.adminDistance is read only by its owner, th
      module (every `.tsx` under src, found by walking, not listed) reads `RouteEntry.nextHop` outside
      the owner; each prints it through `RouteFieldValue`. Residual: a `.ts` helper that formats the
      field for a surface is not caught by this half of the guard. */
-  it("finds no render module (.tsx) reading RouteEntry.nextHop outside the owner", () => {
+  const surfaces = files.filter((f) => f.endsWith(".tsx"));
+  it("the walk found the React surfaces, and the owner reads RouteEntry.nextHop (the check is live on the real tree)", () => {
+    expect(surfaces.length, "the walk found the React surfaces").toBeGreaterThan(20);
+    // The owner is a .ts module, so it is checked here directly.
     const owner = ownerOf(program());
-    const surfaces = new Set(files.filter((f) => f.endsWith(".tsx")).map(normPath));
-    expect(surfaces.size, "the walk found the React surfaces").toBeGreaterThan(20);
-    const reads = findAdminDistanceReads(program(), (f) => surfaces.has(normPath(f)), "nextHop");
-    // Live on the real tree: the owner itself reads the field (it is a .ts module, so it is checked here directly).
     expect(findAdminDistanceReads(program(), (f) => normPath(f) === normPath(owner), "nextHop").length).toBeGreaterThan(0);
-    expect(reads.map((r) => `${relative(SRC, r.file).split(sep).join("/")}:${r.line}  ${r.text}`)).toEqual([]);
-  }, 90_000);
+  });
+
+  for (const file of surfaces) {
+    it(`${relOf(file)}: a render module reading no RouteEntry.nextHop outside the owner`, () => {
+      const reads = findAdminDistanceReads(program(), (f) => normPath(f) === normPath(file), "nextHop");
+      expect(reads.map((r) => `${relOf(r.file)}:${r.line}  ${r.text}`)).toEqual([]);
+    });
+  }
 
   /* The engine ranks tied routes by administrative distance, and "a null ranks as 0" is the same
      judgement the rendering makes, so the engine must ask the owner too. It can only do that if the
@@ -459,6 +486,10 @@ describe("B1 structural guard: Route.adminDistance is read only by its owner, th
     // The walk is live: from claims.ts it DOES reach the engine.
     expect(runtimeImportClosure(program(), CLAIMS).has(normPath(ENGINE))).toBe(true);
   }, 90_000);
+
+  it("built the tree's program at most once for all of the cases above", () => {
+    expect(programsBuilt, "the program was built more than once").toBeLessThanOrEqual(1);
+  });
 
   it("is live: a planted module reading the field under any name, by key or by destructuring, is flagged", () => {
     const planted = join(SRC, "core", "__planted_ad_reader.ts").split(sep).join("/");

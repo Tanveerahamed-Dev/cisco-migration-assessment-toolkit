@@ -748,6 +748,20 @@
   box-shadow: none;
 }
 
+/* The fabric list and the legend open TOGETHER share the left edge: the list anchored at the top, the
+   legend at the bottom, each at most half the stage, so neither covers the other. MEASURED (W6 gate,
+   2026-09-25, `audit-d3-focus.mjs --self-removing` and a direct probe at 768, 1440 and 1920 px): with
+   the list open, pressing Legend opened it UNDER the list (z-index 4 over 3; both ran to the full
+   stage height from the same inline start), and the focus the Legend button handed on landed on the
+   legend's close button with 0 of 9 hit-test points on it — the whole legend hidden, and the focused
+   control obscured (WCAG 2.4.11). Each still scrolls its own content. Only this pairing is affected:
+   either one alone keeps its full height. The list counts as open when it is shown or when keyboard
+   focus has un-clipped it (the :focus-within rule above). */
+.fabric3d:has(> .fabric3d-legend) > .fabric3d__tree:is(:not([data-hidden="true"]), :focus-within),
+.fabric3d:has(> .fabric3d__tree:is(:not([data-hidden="true"]), :focus-within)) > .fabric3d-legend {
+  max-block-size: calc(50% - var(--sp-2) * 1.5);
+}
+
 .fabric3d__tree-head {
   display: flex;
   align-items: center;
@@ -923,7 +937,21 @@
 
 /* A4 — a device named by the selected finding that projects OUTSIDE the canvas gets a pointer
    pinned to the stage edge (FabricLabels.tsx placePointers). The arrow turns towards the device;
-   a click frames it. Outlined in the finding's severity, like the finding mark on a visible label. */
+   activating it frames it. Outlined in the finding's severity, like the finding mark on a visible
+   label.
+
+   A CONTROL (acceptance D1/D5, repair wave 6). It is a <button> in this layer of its own, NOT in the
+   aria-hidden label layer, and a 24 x 24 target: MEASURED before, 141.23 x 16.84 CSS px — one line of
+   11 px text and 1 px of padding, with no size declared at all. The layer sits above the labels and
+   below every other stage layer (HUD 3, Legend 3, tree 4); the pointer is placed clear of those
+   (FabricLabels pointerObstacles) instead of stacked over them, so neither covers the other. */
+.fabric3d__pointers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
 .fabric3d-pointer {
   position: absolute;
   inset-block-start: 0;
@@ -931,8 +959,13 @@
   display: none;
   align-items: center;
   gap: var(--sp-1);
-  padding: 1px var(--sp-1);
+  min-block-size: var(--target-min);
+  min-inline-size: var(--target-min);
+  margin: 0;
+  padding: 0 var(--sp-2);
+  border: 0;
   border-radius: var(--radius-sm);
+  font: inherit;
   font-size: var(--fs-0);
   font-weight: var(--fw-semibold);
   line-height: 1.35;
@@ -943,13 +976,21 @@
   outline: 2px solid var(--sev-info);
   pointer-events: auto;
   cursor: pointer;
-  z-index: 2;
 }
-.fabric3d-pointer[data-visible="true"] { display: inline-flex; }
+.fabric3d-pointer[data-visible="true"]:not([hidden]) { display: inline-flex; }
 .fabric3d-pointer[data-sev="critical"] { outline-color: var(--sev-critical); }
 .fabric3d-pointer[data-sev="high"] { outline-color: var(--sev-high); }
 .fabric3d-pointer[data-sev="medium"] { outline-color: var(--sev-medium); }
 .fabric3d-pointer[data-sev="low"] { outline-color: var(--sev-low); }
+/* The focus ring replaces the severity outline while focused, in the app's focus token and at the
+   same offset as every other stage control (.fabric3d__btn). After the severity rules and one
+   attribute heavier than them: MEASURED, at equal weight the severity colour won and the "ring" was
+   the High outline moved 2 px out. */
+.fabric3d-pointer:focus-visible,
+.fabric3d-pointer[data-sev]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .fabric3d-pointer__arrow {
   display: inline-block;
   transform: rotate(var(--pointer-deg, 0deg));

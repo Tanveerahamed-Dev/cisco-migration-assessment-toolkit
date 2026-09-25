@@ -31,6 +31,9 @@ import type { Flow } from "../core/types";
 import { traceFlow } from "../forwarding/engine";
 
 import { App } from "../app/App";
+/* The stage's lazy chunk, loaded while this file is COLLECTED (as composite-tabstop.test.tsx does),
+   so the first App mount never waits on transforming the fabric3d module graph (acceptance F2). */
+import "./Fabric3D";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -60,10 +63,18 @@ const tick = async (n = 4): Promise<void> => {
   }
 };
 
-/** Until the trace has landed and the shell's hop effect has committed after it. */
+/** Until the trace has landed and the shell's hop effect has committed after it.
+ *
+ *  COUNTED, not timed (acceptance F2, W6 gate 2026-09-25): a `Date.now() + 8000` deadline failed on
+ *  a loaded clone (16-30 s, or "expected null to be core1") because the stage's cold lazy chunk
+ *  landed inside the first mount. The chunk is now loaded at collection time (the import above), the
+ *  restore needs a fixed number of flush turns (one frame and one task), and running out of the
+ *  bounded count is a stated failure rather than a fall-through to a later assertion. */
+const SETTLE_TURNS = 50;
 const settle = async (): Promise<void> => {
-  const deadline = Date.now() + 8000;
-  while (useInvestigation.getState().trace === null && Date.now() < deadline) await tick(1);
+  let turns = 0;
+  for (; useInvestigation.getState().trace === null && turns < SETTLE_TURNS; turns += 1) await tick(1);
+  expect(useInvestigation.getState().trace, `the restored trace had not landed after ${SETTLE_TURNS} flush turns`).not.toBeNull();
   await tick(4);
 };
 

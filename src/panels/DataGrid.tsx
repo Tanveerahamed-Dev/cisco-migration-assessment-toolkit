@@ -400,20 +400,69 @@ export function revealBelowHeader(
  * the page (measured 577x630, 400x800) — `scroller.scrollTop +=` moves nothing, and the focused
  * row stayed thousands of px off-screen. The leftover distance is handed to the nearest scrolling
  * ancestors, innermost first, then the document: the least movement that puts the row in view.
+ *
+ * Those ancestors also carry whatever ELSE the reader is looking at, so this half of a reveal yields
+ * to the reader's focus: a scroll that leaves less of the focused element (outside the grid) on
+ * screen than before is undone, and the walk stops there. MEASURED (390x844, 2026-09-25): Enter on
+ * the Evidence pane's "F002 …" button moved focus to the pane's new title, on screen at scrollY
+ * 14 080; the queue's selection reveal then scrolled the document by -5 017 px to show the F002
+ * row and left the focused title at top 5 383 — off screen (`audit-d3-focus.mjs --self-removing`,
+ * 24 phone FAILs). Measured rather than predicted, so a focused element the scroll does not move
+ * (a fixed or sticky bar) does not block the reveal. Focus inside the grid is the row being
+ * revealed or its neighbour, and focus on <body> has nothing to lose, so neither restrains it.
  */
 function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): void {
   let rest = offsetFromView(scroller, head, el);
   if (rest === 0) return;
-  const view = scroller.ownerDocument.defaultView;
+  const doc = scroller.ownerDocument;
+  const view = doc.defaultView;
   if (!view) return;
+  const active = doc.activeElement;
+  const guarded =
+    active instanceof view.HTMLElement && active !== doc.body && active !== doc.documentElement && !scroller.contains(active) ? active : null;
+  const seen = guarded === null ? 0 : onScreenExtent(guarded);
+  /** False when the scroll just made cost the reader some of their focused element. */
+  const keepsFocus = (): boolean => guarded === null || seen <= 0 || onScreenExtent(guarded) >= seen - 0.5;
   for (let a = scroller.parentElement; a !== null && rest !== 0; a = a.parentElement) {
     const oy = view.getComputedStyle(a).overflowY;
     if ((oy !== "auto" && oy !== "scroll") || a.scrollHeight <= a.clientHeight) continue;
     const before = a.scrollTop;
     a.scrollTop = before + rest;
+    if (!keepsFocus()) {
+      a.scrollTop = before;
+      return;
+    }
     rest -= a.scrollTop - before;
   }
-  if (rest !== 0) view.scrollBy(0, rest);
+  if (rest === 0) return;
+  const y0 = view.scrollY;
+  view.scrollBy(0, rest);
+  if (!keepsFocus()) view.scrollBy(0, y0 - view.scrollY);
+}
+
+/**
+ * How many px of `el`'s height the reader can see: its box intersected with the viewport and every
+ * clipping ancestor (the same clip rules as `visibleBand`). 0 in jsdom, which lays nothing out.
+ */
+function onScreenExtent(el: HTMLElement): number {
+  const doc = el.ownerDocument;
+  const view = doc.defaultView;
+  const r = el.getBoundingClientRect();
+  if (!view || r.height <= 0 || view.innerHeight <= 0) return 0;
+  let top = Math.max(r.top, 0);
+  let bottom = Math.min(r.bottom, view.innerHeight);
+  const rootOy = view.getComputedStyle(doc.documentElement).overflowY;
+  for (let a = el.parentElement; a !== null && bottom > top; a = a.parentElement) {
+    if (a === doc.documentElement) continue;
+    if (a === doc.body && (rootOy === "visible" || rootOy === "")) continue;
+    const oy = view.getComputedStyle(a).overflowY;
+    if (oy === "visible" || oy === "") continue;
+    const c = a.getBoundingClientRect();
+    if (c.height <= 0) continue;
+    top = Math.max(top, c.top);
+    bottom = Math.min(bottom, c.bottom);
+  }
+  return Math.max(0, bottom - top);
 }
 
 /**
@@ -734,6 +783,9 @@ export function DataGrid<T>({
   }, [activeId, copies, chosenCopy]);
   // Starts unaimed, so a selection restored from the URL also carries the tab stop to its row.
   const [aimedAt, setAimedAt] = useState<string | null | undefined | typeof UNAIMED>(UNAIMED);
+  /** The row set the last plain aim saw and the row index it left the roving cell on (null: it
+   *  placed nothing, or the reader has since moved the roving cell). See the re-order branch. */
+  const aimedRow = useRef<{ rows: typeof rows; row: number | null } | null>(null);
   if (aimedAt !== aimTarget) {
     setAimedAt(aimTarget);
     /* A target listed more than once is answered by whichever copy the reader is already on or
@@ -760,6 +812,19 @@ export function DataGrid<T>({
       if (aimedAt !== UNAIMED) aimFocus.current = true;
       setFocusCell({ row: at, col: landOn(at, focusCell.col, 1) });
     }
+    aimedRow.current = { rows, row: at === -1 ? null : at };
+  } else if (aimedRow.current !== null && aimedRow.current.rows !== rows) {
+    /* The same target, a different row set. A filter edit or a re-sort that keeps the selection but
+       moves it to another index used to leave the tab stop on whatever row now stood at the old
+       index, so Tab entered the grid on a stranger (W6-a4 — PriorityQueue withdrew `revealId` for one
+       commit to force this for its own widen control). The aim follows the row as long as the roving
+       cell is still where the aim put it: once the reader has moved it, their place is theirs, and
+       the clamp effect below keeps its index as before. Only the plain aim above is followed; a
+       representative or multi-copy aim is placed by the reveal effect, which measures. */
+    const was = aimedRow.current.row;
+    const at = was === null || focusCell.row !== was ? -1 : rows.findIndex((r) => r.kind === "data" && r.node.id === aimTarget);
+    aimedRow.current = { rows, row: was === null || focusCell.row !== was ? null : at === -1 ? was : at };
+    if (at !== -1 && at !== focusCell.row) setFocusCell({ row: at, col: landOn(at, focusCell.col, 1) });
   }
   const [cellMode, setCellMode] = useState(false);
   const [selectedCol, setSelectedCol] = useState<number | null>(null);

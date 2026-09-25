@@ -79,6 +79,30 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/** How many times each distinct text has been parsed — counted, so the scan's cost is asserted rather than timed. */
+const parsesOf = new Map<string, number>();
+const parsedByText = new Map<string, ts.SourceFile>();
+
+/**
+ * One TSX parse of `text`, shared by every rule that reads it. Both detectors below read source
+ * only through this.
+ *
+ * Keyed by the TEXT, not the name: the clock rule is handed an absolute path and the frame-timing
+ * rule a `src/`-relative one for the same file, and a parse depends on the text and the script kind
+ * alone (the kind is fixed here). Nothing either detector reports comes from `sf.fileName` — lines
+ * come from the text, owners from the `rel` argument — so a shared tree cannot change a verdict. It
+ * can only stop the tree being parsed three times per run, which is what took one of these rules
+ * past the 30 s limit on a loaded host (acceptance F2, 2026-09-24).
+ */
+function parse(fileName: string, text: string): ts.SourceFile {
+  const hit = parsedByText.get(text);
+  if (hit !== undefined) return hit;
+  parsesOf.set(text, (parsesOf.get(text) ?? 0) + 1);
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.ES2023, true, ts.ScriptKind.TSX);
+  parsedByText.set(text, sf);
+  return sf;
+}
+
 /** A justification a human wrote at the call site. Deliberately the only escape hatch. */
 const JUSTIFICATION = /determinism\s*:/;
 
@@ -140,7 +164,7 @@ export interface Nondeterministic {
  * proofs below run the REAL function over planted source instead of re-implementing it.
  */
 export function nondeterministic(fileName: string, text: string): Nondeterministic[] {
-  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.ES2023, true, ts.ScriptKind.TSX);
+  const sf = parse(fileName, text);
   const hits: Nondeterministic[] = [];
   /* A rAF callback named once and scheduled from three places is ONE clock binding, not three. */
   const seen = new Set<number>();
@@ -286,7 +310,7 @@ export interface FrameTimingRead {
  * gate get deleted. `rel` is the file's path relative to `src/`, in POSIX form.
  */
 export function frameTiming(rel: string, text: string): FrameTimingRead[] {
-  const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.ES2023, true, ts.ScriptKind.TSX);
+  const sf = parse(rel, text);
   const out: FrameTimingRead[] = [];
   const visit = (node: ts.Node): void => {
     const field = ts.isPropertyAccessExpression(node)
@@ -312,6 +336,38 @@ export function frameTiming(rel: string, text: string): FrameTimingRead[] {
 }
 
 const files = sourceFiles(SRC);
+/** Each file's text, read once for every rule below. */
+const textOf = (() => {
+  const texts = new Map<string, string>();
+  return (f: string): string => {
+    let t = texts.get(f);
+    if (t === undefined) {
+      t = readFileSync(f, "utf8");
+      texts.set(f, t);
+    }
+    return t;
+  };
+})();
+const relOf = (f: string): string => relative(SRC, f).split("\\").join("/");
+
+/** `fn` per source file, computed on first use and shared by every later reader. */
+function perFile<T>(fn: (f: string) => T): (f: string) => T {
+  const memo = new Map<string, T>();
+  return (f) => {
+    if (!memo.has(f)) memo.set(f, fn(f));
+    return memo.get(f) as T;
+  };
+}
+/**
+ * The two rules, one source file at a time (acceptance F2, 2026-09-24). Each rule used to be ONE test
+ * that parsed and walked all ~2.4 MB of the tree — three times per run, once per test — and the
+ * frame-timing one took 31.5 s on a loaded host against the 30 s limit. Now each file is parsed once
+ * (`parse`, above), each rule walks it once (these memos), and each rule is one test PER FILE, the
+ * policy vitest.config.ts states for a large unit of work. The ratchet below reads the same memo, so
+ * it still counts the whole tree whether or not the per-file cases ran first.
+ */
+const clockHitsOf = perFile((f) => nondeterministic(f, textOf(f)));
+const timingReadsOf = perFile((f) => frameTiming(relOf(f), textOf(f)));
 
 describe("what is drawn is a pure function of the data", () => {
   it("scans the whole source tree — an empty or narrow scan is not a pass", () => {
@@ -322,21 +378,20 @@ describe("what is drawn is a pure function of the data", () => {
     expect(files.some((f) => f.endsWith("engine.ts"))).toBe(true);
   });
 
-  it("reads no clock and no random source without a justification at the call site", () => {
-    const offenders: string[] = [];
+  describe("reads no clock and no random source without a justification at the call site", () => {
     for (const f of files) {
-      for (const hit of nondeterministic(f, readFileSync(f, "utf8"))) {
-        if (!hit.justified) {
-          offenders.push(`${relative(SRC, f).split("\\").join("/")}:${hit.line} — ${hit.call}`);
-        }
-      }
+      it(relOf(f), () => {
+        const offenders = clockHitsOf(f)
+          .filter((hit) => !hit.justified)
+          .map((hit) => `${relOf(f)}:${hit.line} — ${hit.call}`);
+        expect(
+          offenders,
+          "these read a clock or a random source with no `determinism:` note saying why the value\n" +
+            "cannot reach what is rendered. Either remove the call, or justify it where it is written:\n" +
+            offenders.join("\n"),
+        ).toEqual([]);
+      });
     }
-    expect(
-      offenders,
-      "these read a clock or a random source with no `determinism:` note saying why the value\n" +
-        "cannot reach what is rendered. Either remove the call, or justify it where it is written:\n" +
-        offenders.join("\n"),
-    ).toEqual([]);
   });
 
   it("keeps the justified population small enough to read", () => {
@@ -353,28 +408,44 @@ describe("what is drawn is a pure function of the data", () => {
        already visible to this gate became exempt. */
     const justified: string[] = [];
     for (const f of files) {
-      for (const hit of nondeterministic(f, readFileSync(f, "utf8"))) {
-        if (hit.justified) justified.push(`${relative(SRC, f).split("\\").join("/")}:${hit.line} — ${hit.call}`);
+      for (const hit of clockHitsOf(f)) {
+        if (hit.justified) justified.push(`${relOf(f)}:${hit.line} — ${hit.call}`);
       }
     }
     expect(justified.length, `justified nondeterministic calls:\n${justified.join("\n")}`).toBeLessThanOrEqual(8);
     expect(justified.length, "the annotation path itself is never exercised").toBeGreaterThan(0);
   });
 
-  it("lets no frame-timing measurement reach a consumer unannounced", () => {
-    const leaks: string[] = [];
+  describe("lets no frame-timing measurement reach a consumer unannounced", () => {
     for (const f of files) {
-      const rel = relative(SRC, f).split("\\").join("/");
-      for (const leak of frameTiming(rel, readFileSync(f, "utf8"))) {
-        if (!leak.justified) leaks.push(`${rel}:${leak.line} — ${leak.read}`);
-      }
+      it(relOf(f), () => {
+        const leaks = timingReadsOf(f)
+          .filter((leak) => !leak.justified)
+          .map((leak) => `${relOf(f)}:${leak.line} — ${leak.read}`);
+        expect(
+          leaks,
+          "a frame-timing measurement is read outside the files that own it, with no `determinism:`\n" +
+            "note saying why it cannot make what is drawn depend on this machine:\n" +
+            leaks.join("\n"),
+        ).toEqual([]);
+      });
     }
-    expect(
-      leaks,
-      "a frame-timing measurement is read outside the files that own it, with no `determinism:`\n" +
-        "note saying why it cannot make what is drawn depend on this machine:\n" +
-        leaks.join("\n"),
-    ).toEqual([]);
+  });
+});
+
+describe("the tree is parsed once, however many rules read it", () => {
+  /* ACCEPTANCE F2, 2026-09-24: "lets no frame-timing measurement reach a consumer unannounced" took
+     31.5 s on a loaded host against the 30 s limit, and the two clock rules above 13 s and 10 s. Each
+     of the three re-read, re-parsed and re-walked all ~2.4 MB of the tree. The cost is pinned as a
+     COUNT: once both rules have run over the tree, no source file has been parsed more than once —
+     whichever tests ran before this one, and in whatever order. */
+  it("both rules over the whole tree together parse each source file once", () => {
+    for (const f of files) {
+      clockHitsOf(f);
+      timingReadsOf(f);
+    }
+    const reparsed = files.filter((f) => (parsesOf.get(textOf(f)) ?? 0) !== 1).map((f) => `${relOf(f)}: ${parsesOf.get(textOf(f)) ?? 0} parses`);
+    expect(reparsed).toEqual([]);
   });
 });
 

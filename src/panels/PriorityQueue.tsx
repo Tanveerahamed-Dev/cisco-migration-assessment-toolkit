@@ -89,6 +89,46 @@ import "./PriorityQueue.css";
    on every keystroke. */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
+/* ── a selection the filter hides (acceptance A4; see `pinned` in the component) ─────────── */
+
+/** A scope clause the store carries, and the store action that takes it off. */
+interface ScopePart {
+  text: string;
+  clear: () => void;
+}
+
+/** One part of the effective filter that keeps the selected row out, as the reader sees it. */
+interface HidingPart {
+  /** The clause or term exactly as it stands in the filter (a chip's clause for a scope chip). */
+  text: string;
+  /** true = the part decided AGAINST the row; false = it could not decide, so it held the row out. */
+  decided: boolean;
+  /** A free-text term rather than a key:value clause — only changes how it is worded. */
+  isText: boolean;
+  /** Where it came from: a range of the typed filter text, or the index of a scope chip. */
+  origin: { kind: "text"; start: number; end: number } | { kind: "scope"; index: number };
+}
+
+interface PinnedSelection<T> {
+  /** The row id the grid addresses (a cross-layer row id in that corpus). */
+  id: string;
+  item: T;
+  /** Empty only if no single part hides it — then the filter as a whole is named. */
+  parts: HidingPart[];
+  /** How the row is named in sentences. */
+  label: string;
+  /** The identifier the row itself shows (a finding id, or a cross-layer rule id). */
+  short: string;
+}
+
+/** The group the pinned row sits under. Not a value any grouping key can produce. */
+const OUTSIDE_FILTER_GROUP = "\u0000selected-outside-filter";
+
+const describePart = (p: HidingPart): string => {
+  const name = p.isText ? `the text ${p.text}` : p.text;
+  return p.decided ? `${name} excludes it` : `${name} could not decide it`;
+};
+
 /* ── preferences: furniture, so localStorage and never the URL (design-brief §5.4) ─────────── */
 
 /** One press of "Narrower" / "Wider" in the Display dialog. Coarser than the 8 px Shift+Arrow step
@@ -1098,15 +1138,23 @@ export function PriorityQueue({
      Folding the store's scope into the SAME grammar means the per-clause accounting covers it
      too, instead of a second filtering path with no explanation attached. */
 
-  const scopeClauses = useMemo(() => {
-    const out: string[] = [];
+  /* Each scope clause carries how to take it off again, so a control that widens the filter (the
+     "outside your filter" reveal below) removes a chip through the same store action its own ×
+     does, rather than through a second, parallel idea of what the scope is. */
+  const scopeParts = useMemo((): ScopePart[] => {
+    const out: ScopePart[] = [];
     if (severities.size > 0) {
-      out.push(`severity:${SEVERITY_ORDER.filter((s) => severities.has(s)).map(quoteValue).join(",")}`);
+      const on = SEVERITY_ORDER.filter((s) => severities.has(s));
+      out.push({ text: `severity:${on.map(quoteValue).join(",")}`, clear: () => on.forEach((s) => toggleSeverity(s)) });
     }
-    if (roles.size > 0) out.push(`role:${[...roles].sort(cmpStr).map(quoteValue).join(",")}`);
-    if (onlyUncollected) out.push("is:uncollected");
+    if (roles.size > 0) {
+      const on = [...roles].sort(cmpStr);
+      out.push({ text: `role:${on.map(quoteValue).join(",")}`, clear: () => on.forEach((r) => toggleRole(r)) });
+    }
+    if (onlyUncollected) out.push({ text: "is:uncollected", clear: () => setOnlyUncollected(false) });
     return out;
-  }, [severities, roles, onlyUncollected]);
+  }, [severities, roles, onlyUncollected, toggleSeverity, toggleRole, setOnlyUncollected]);
+  const scopeClauses = useMemo(() => scopeParts.map((p) => p.text), [scopeParts]);
 
   /* The FILTER reads a deferred copy of the text; the field's echo (and its token ink) reads
      `draft` itself. RESPONSIVENESS FIX, 2026-09-21 (E2/E3, J3b): a query typed in the header
@@ -1124,6 +1172,132 @@ export function PriorityQueue({
 
   const parsedDraft = useMemo(() => parseQuery(draft), [draft]);
   const result = useMemo(() => spec.filter(spec.rows, parseQuery(effective)), [spec, effective]);
+
+  /* The shared store addresses a selection by punchlist id only, so in the cross-layer view the
+     highlighted row is whichever record bridges to the selected finding — not a second, parallel
+     selection state that could disagree with the rest of the application. */
+  const activeRowId = useMemo((): string | null => {
+    if (corpus === "findings") return shownFindingId;
+    if (shownFindingId === null) return null;
+    for (const [rowId, target] of crossLayerBridge) if (target === shownFindingId) return rowId;
+    return null;
+  }, [corpus, shownFindingId]);
+
+  /* ── a selection the filter hides (acceptance A4) ────────────────────────────
+   *
+   * THE DEFECT (refuter, 2026-09-24): `?q=severity:Critical`, then Ctrl+K "F120" Enter. The URL,
+   * the status bar, the scope bar, the Inspector and the fabric label all said F120 was selected;
+   * the queue showed Critical 3 / F001 / F002 / F003 / High 0 …, no row carried aria-current, and
+   * the rail did not contain "F120" at all. The reveal below pointed at a row the filter had
+   * removed, so nothing was revealed and nothing was said. Present since the queue was first
+   * committed (50a3dc5): every A4 check before then ran over an unfiltered queue.
+   *
+   * WHAT THE QUEUE DOES. The selected row is PINNED above the rows the filter shows, under its own
+   * group, "Outside your filter", and revealed and marked current like any selection.
+   * The accounting says so in words and names every part of the filter that hides it — each clause
+   * or term as typed, or the scope chip it came from — and that the filter is unchanged. One
+   * control widens the filter by exactly those parts and says what it removed; the row is then in
+   * place. Nothing is discarded silently: the reader's filter changes only when they press it.
+   *
+   * WHICH PARTS HIDE IT is computed from the grammar, not from a list of keys: every clause and
+   * every free-text term the parser produced is re-run ALONE over the whole corpus (a term's fuzzy
+   * widening is decided over the corpus, so running it over one row would answer a different
+   * question), and a part hides the row when the row is not in that part's result. Decided against
+   * versus undecided is read off the part's own `excludedTotal` with and without the row. Every
+   * clause key, its negation, free text, excluded text and all three scope chips take this one path.
+   */
+  const pinned = useMemo((): PinnedSelection<Finding | CrossLayerFinding> | null => {
+    if (activeRowId === null) return null;
+    if (result.items.some((it) => spec.idOf(it) === activeRowId)) return null;
+    const item = spec.rows.find((it) => spec.idOf(it) === activeRowId);
+    if (item === undefined) return null;
+    /* Where each scope chip and the typed text sit inside `effective` (they are joined by one space). */
+    const spans: { start: number; end: number; scope: number | null }[] = [];
+    let at = 0;
+    scopeParts.forEach((p, i) => {
+      spans.push({ start: at, end: at + p.text.length, scope: i });
+      at += p.text.length + 1;
+    });
+    const typed = filterText.trim();
+    const lead = filterText.length - filterText.trimStart().length;
+    if (typed.length > 0) spans.push({ start: at, end: at + typed.length, scope: null });
+    const parsed = parseQuery(effective);
+    const ranges = [...parsed.clauses.map((c) => c.range), ...parsed.textTerms.map((t) => t.range)].sort(
+      (a, b) => a.start - b.start,
+    );
+    const others = spec.rows.filter((it) => it !== item);
+    const parts: HidingPart[] = [];
+    for (const range of ranges) {
+      const text = effective.slice(range.start, range.end);
+      const alone = parseQuery(text);
+      const all = spec.filter(spec.rows, alone);
+      if (all.items.includes(item)) continue;
+      const decided = all.excludedTotal - spec.filter(others, alone).excludedTotal === 1;
+      const span = spans.find((s) => range.start >= s.start && range.start < s.end);
+      const origin: HidingPart["origin"] =
+        span === undefined || span.scope === null
+          ? { kind: "text", start: range.start - (span?.start ?? at) + lead, end: range.end - (span?.start ?? at) + lead }
+          : { kind: "scope", index: span.scope };
+      parts.push({ text, decided, isText: parsed.textTerms.some((t) => t.range.start === range.start), origin });
+    }
+    const label =
+      corpus === "findings" || shownFindingId === null
+        ? activeRowId
+        : `${item.id} (the cross-layer record for ${shownFindingId})`;
+    return { id: activeRowId, item, parts, label, short: item.id };
+  }, [activeRowId, result.items, spec, scopeParts, filterText, effective, corpus, shownFindingId]);
+  const hasPinned = pinned !== null;
+  const pinnedId = pinned?.id ?? null;
+
+  /* The control: widen the filter by exactly the parts that hide the row, and say what it removed.
+     A typed part is cut out of the text (highest offset first, so earlier offsets stay valid); a
+     scope chip is taken off through the store action its own × uses. The statement it leaves
+     ("Removed … from the filter") stays while the same row is selected. */
+  const [widened, setWidened] = useState<{ id: string; label: string; removed: string[]; draftAfter: string } | null>(null);
+  const widenFilter = useCallback((): void => {
+    if (pinned === null) return;
+    const parts =
+      pinned.parts.length > 0
+        ? pinned.parts
+        : /* No single part hides it: the filter as a whole does, so the whole filter is what widens. */
+          [
+            ...scopeParts.map((p, index): HidingPart => ({ text: p.text, decided: true, isText: false, origin: { kind: "scope", index } })),
+            ...(filterText.trim() === ""
+              ? []
+              : [{ text: filterText.trim(), decided: true, isText: true, origin: { kind: "text", start: 0, end: filterText.length } } satisfies HidingPart]),
+          ];
+    let text = filterText;
+    const typed = parts
+      .map((p) => p.origin)
+      .filter((o): o is { kind: "text"; start: number; end: number } => o.kind === "text")
+      .sort((a, b) => b.start - a.start);
+    for (const o of typed) text = `${text.slice(0, o.start).trimEnd()} ${text.slice(o.end).trimStart()}`.trim();
+    for (const p of parts) if (p.origin.kind === "scope") scopeParts[p.origin.index]?.clear();
+    if (typed.length > 0) setDraft(text);
+    setWidened({ id: pinned.id, label: pinned.label, removed: parts.map((p) => p.text), draftAfter: typed.length > 0 ? text : draft });
+  }, [pinned, scopeParts, filterText, draft]);
+  /* The pinned statement and its control go in the SAME commit as the press, not when the filter
+     catches up. The typed text reaches the rows through a deferred value, and MEASURED in the
+     running app (1920x1080, headless) the deferred re-render landed ~2 s after the press: the
+     control stood, focused, for that long, so the focus hand-off (which looks for a removed control
+     for 200 ms) found it still standing, gave up, and focus fell to <body> when it finally went.
+     A scope chip comes off at once but typed text does not, so a press that removed both left the
+     statement standing on the part still in flight: MEASURED by review/audit-d3-focus.mjs
+     --self-removing (seeded q=gateway, sev, role, unc, f=F001): "Show F001 in place" → BODY at 390
+     and 768 px, Enter and Space alike. So while the text the reader widened TO is in the field and
+     the rows have not caught up with it, the statement is replaced by the "Removed …" sentence; a
+     filter that hides the row again afterwards is a new filter, and is stated again. */
+  const widening = widened !== null && draft === widened.draftAfter && filterText !== draft;
+  const showPinned = pinned !== null && !(widening && widened !== null && widened.id === pinned.id);
+  /* The "Removed …" sentence belongs to the selection it was made for; a new selection drops it, so
+     coming back to the same row later does not replay an old action as if it were current. */
+  useEffect(() => {
+    if (widened !== null && widened.id !== activeRowId) setWidened(null);
+  }, [widened, activeRowId]);
+  const widenedSentence =
+    widened !== null && widened.id === activeRowId
+      ? `Removed ${widened.removed.join(", ")} from the filter, so ${widened.label} shows in place.`
+      : "";
 
   /* ── grouping, ordering, node list ── */
 
@@ -1175,7 +1349,37 @@ export function PriorityQueue({
 
   const nodes = useMemo<GridNode<Finding | CrossLayerFinding>[]>(() => {
     const out: GridNode<Finding | CrossLayerFinding>[] = [];
-    const single = groups.length === 1 && groups[0]?.key === "all";
+    /* With a pinned selection the rows the filter shows get their header too, even ungrouped:
+       otherwise they would read as more rows of the "outside your filter" group above them. */
+    const single = groups.length === 1 && groups[0]?.key === "all" && pinned === null;
+    if (pinned !== null) {
+      const isCollapsed = collapsedRaw.has(collapseKey(OUTSIDE_FILTER_GROUP));
+      out.push({
+        kind: "group",
+        id: OUTSIDE_FILTER_GROUP,
+        label: "Outside your filter",
+        count: 1,
+        observed: true,
+        collapsed: isCollapsed,
+        detail: <span>{pinned.parts.length === 0 ? "hidden by the filter as a whole" : `hidden by ${pinned.parts.map((p) => p.text).join(", ")}`}</span>,
+      });
+      /* The pinned row carries the React identity its copy will have IN PLACE (the first group it
+         belongs to under this grouping, or its bare id ungrouped). No row with that identity exists
+         while it is pinned — the filter has removed it — so nothing collides, and when "Show … in
+         place" lands React MOVES this element rather than unmounting it: a reader whose focus is on
+         the pinned row keeps it through the move. With a key of its own the element was destroyed
+         and focus fell to <body> between the press and the filter catching up (MEASURED by
+         review/audit-d3-focus.mjs --self-removing, 768 px). */
+      const gk = spec.groupKeys.some((g) => g.value === groupKey) ? groupKey : "severity";
+      const home = gk === "none" ? undefined : spec.group([pinned.item], gk)[0]?.key;
+      if (!isCollapsed) {
+        out.push(
+          home === undefined
+            ? { kind: "row", id: pinned.id, item: pinned.item }
+            : { kind: "row", id: pinned.id, item: pinned.item, key: JSON.stringify([home, pinned.id]) },
+        );
+      }
+    }
     for (const g of groups) {
       const items = spec.order(g.items, ordering);
       if (!single) {
@@ -1203,7 +1407,7 @@ export function PriorityQueue({
     return out;
     // `collapseKey` closes over corpus + groupKey, both already listed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, spec, ordering, collapsedRaw, groupKey, corpus]);
+  }, [groups, spec, ordering, collapsedRaw, groupKey, corpus, pinned]);
 
   const toggleGroup = useCallback(
     (id: string): void => {
@@ -1360,16 +1564,6 @@ export function PriorityQueue({
 
   /* ── row counts and announcements ── */
 
-  /* The shared store addresses a selection by punchlist id only, so in the cross-layer view the
-     highlighted row is whichever record bridges to the selected finding — not a second, parallel
-     selection state that could disagree with the rest of the application. */
-  const activeRowId = useMemo((): string | null => {
-    if (corpus === "findings") return shownFindingId;
-    if (shownFindingId === null) return null;
-    for (const [rowId, target] of crossLayerBridge) if (target === shownFindingId) return rowId;
-    return null;
-  }, [corpus, shownFindingId]);
-
   /* A finding selected from ANOTHER surface (the palette, the Evidence rail, the URL) while the
      cross-layer table is showing must still land on a row. Only the findings with a cross-layer
      record that joins to them uniquely have a row there, so for the rest the selected row was not
@@ -1431,7 +1625,8 @@ export function PriorityQueue({
     const want = new Set(hosts);
     const ids = new Set<string>();
     const folded: { label: string; count: number }[] = [];
-    const single = groups.length === 1 && groups[0]?.key === "all";
+    // The same rule as `nodes`: with a pinned row the ungrouped list has a (foldable) header.
+    const single = groups.length === 1 && groups[0]?.key === "all" && !hasPinned;
     for (const g of groups) {
       const isCollapsed = !single && collapsedRaw.has(collapseKey(g.key));
       let inGroup = 0;
@@ -1446,7 +1641,7 @@ export function PriorityQueue({
     return { ids, hosts, folded };
     // `collapseKey` closes over corpus + groupKey, both already listed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, collapsedRaw, spec, corpus, groupKey]);
+  }, [groups, collapsedRaw, spec, corpus, groupKey, hasPinned]);
   /* The ROW MARKS follow the deferred selection (E3, above). The STATEMENT does not: it is one
      O(findings) count, and reading it deferred left "N of 146 shown findings name core1" on screen
      for 7-8 s after core2 was clicked on a loaded host (2026-09-21 critic, A4) — a sentence about
@@ -1466,6 +1661,17 @@ export function PriorityQueue({
   collapsedRef.current = collapsedRaw;
   useEffect(() => {
     if (activeRowId === null) return;
+    /* A selection the filter hides lands in the "outside your filter" group, which obeys the same
+       rule: it is opened when the selection (or its pinning) changes, never re-opened behind a
+       reader who folds it afterwards. */
+    if (pinnedId === activeRowId) {
+      const k = collapseKey(OUTSIDE_FILTER_GROUP);
+      if (!collapsedRef.current.has(k)) return;
+      const next = new Set(collapsedRef.current);
+      next.delete(k);
+      setCollapsedRaw(next);
+      return;
+    }
     /* A multi-valued group key (host, band, role) lists the row under EVERY group it belongs to.
        One open holder already puts it on screen, so a group is expanded only when every holder is
        collapsed — and then the first one. Opening the first holder regardless re-opened a group the
@@ -1481,7 +1687,7 @@ export function PriorityQueue({
     // Keyed on the selection and the grouping, deliberately not on `groups` identity or the
     // collapsed set, so filtering or folding never re-opens a group behind the reader's back.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRowId, corpus, groupKey]);
+  }, [activeRowId, corpus, groupKey, pinnedId]);
 
   /* What the grid should put in front of the reader. A selected finding wins: it is the stronger
      statement of what is being read. With no finding, the first row naming the selected box is
@@ -1491,6 +1697,73 @@ export function PriorityQueue({
     for (const n of nodes) if (n.kind === "row" && related.ids.has(n.id)) return n.id;
     return null;
   }, [activeRowId, nodes, related]);
+
+  /* ── landing the widened row: re-aim the grid, then hand the reader to the row ──────────────
+   *
+   * When "Show … in place" lands, the SAME item moves from the pinned slot to its place in the list.
+   * The grid aims its roving cell (the one Tab enters on) only when the reveal target CHANGES, and
+   * here it does not: MEASURED (1920x1080) Tab into the grid after the widening landed on F001 —
+   * the row now standing where the pinned F120 had been — thousands of px from the revealed F120.
+   * So for exactly one commit the reveal target is withdrawn and then restored, which is the grid's
+   * own contract for "aim again": its roving cell and its reveal both follow the row to its place.
+   *
+   * Focus follows the row. The control hands it to the pinned row, which moves into place with it
+   * (see `nodes`); a grid that owns focus moves focus with its re-aimed roving cell. Should focus
+   * have fallen back to the "Removed …" sentence or to <body> instead, it is moved to the landed row
+   * here: MEASURED at 390x844 (review/audit-d3-focus.mjs --self-removing) the filter landing grew the
+   * page above the queue by ~2,300 px and left a focused sentence 30 px below the viewport.
+   */
+  const [reaimGrid, setReaimGrid] = useState(false);
+  const landing = useRef<{ pinned: string | null; focusRow: boolean }>({ pinned: null, focusRow: false });
+  useLayoutEffect(() => {
+    const was = landing.current.pinned;
+    landing.current.pinned = pinnedId;
+    if (was !== null && pinnedId === null && was === activeRowId && widened !== null && widened.id === activeRowId) {
+      landing.current.focusRow = true;
+      setReaimGrid(true);
+    }
+  }, [pinnedId, activeRowId, widened]);
+  useLayoutEffect(() => {
+    if (reaimGrid) setReaimGrid(false);
+  }, [reaimGrid]);
+  useEffect(() => {
+    if (reaimGrid || !landing.current.focusRow) return;
+    landing.current.focusRow = false;
+    const root = rootRef.current;
+    const row = root?.querySelector<HTMLElement>('[role="grid"] [aria-current]') ?? null;
+    if (root === null || row === null) return;
+    const active = document.activeElement;
+    const sentence = root.querySelector(".pq-widened");
+    /* Only from where the control left the reader: never out of a field or a cell they moved to. */
+    if (active === null || active === document.body || active === sentence) {
+      (row.querySelector<HTMLElement>('[tabindex="0"]') ?? row.querySelector<HTMLElement>('[role="rowheader"]'))?.focus();
+    }
+    if (!row.contains(document.activeElement) || typeof ResizeObserver === "undefined") return;
+    /* Keep the focused row on screen while the rest of the page catches up with the wider filter.
+       The other surfaces re-filter in commits of their own, after this one: MEASURED at 390x844 the
+       page above the queue grew by ~2,300 px about 0.3 s after the row had been revealed and
+       focused, and scroll anchoring left the focused row 136 px below the viewport. So until the
+       reader does anything (a key, a pointer, a wheel, a touch) or 5 s pass, a layout change that
+       pushes the focused row out of the viewport brings it back by the least movement. */
+    const inputs = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+    let done = false;
+    const stop = (): void => {
+      if (done) return;
+      done = true;
+      ro.disconnect();
+      for (const t of inputs) window.removeEventListener(t, stop, true);
+      clearTimeout(timer);
+    };
+    const ro = new ResizeObserver(() => {
+      if (!row.isConnected || !row.contains(document.activeElement)) return stop();
+      const r = row.getBoundingClientRect();
+      if (r.top < 0 || r.bottom > window.innerHeight) row.scrollIntoView({ block: "nearest" });
+    });
+    ro.observe(document.body);
+    for (const t of inputs) window.addEventListener(t, stop, true);
+    const timer = setTimeout(stop, 5000);
+    return stop;
+  }, [reaimGrid]);
 
   /* ── the batch ──────────────────────────────────────────────────────────────
      Focus, selection and the batch are three separate states (design-brief §7.2). The batch has
@@ -1534,7 +1807,8 @@ export function PriorityQueue({
         : `${batch.size} selected`;
 
   const copyBatch = useCallback((): void => {
-    const rows = result.items.filter((r) => batch.has(spec.idOf(r)));
+    // The pinned "outside your filter" row is a shown row too (Ctrl+A takes it), so it copies too.
+    const rows = [...(pinned === null ? [] : [pinned.item]), ...result.items].filter((r) => batch.has(spec.idOf(r)));
     const text = rows.map((r) => spec.lineOf(r)).join("\n");
     const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
     if (!write) {
@@ -1547,7 +1821,7 @@ export function PriorityQueue({
       () => setCopied(`${rows.length} row(s) copied with their citations.`),
       () => setCopied("The clipboard write was refused, so nothing was copied."),
     );
-  }, [result.items, batch, spec]);
+  }, [result.items, batch, spec, pinned]);
 
   const shown = result.items.length;
   const total = result.total;
@@ -2023,6 +2297,53 @@ export function PriorityQueue({
           </p>
         ) : null}
 
+        {/* A selection the filter hides (A4). Its own named group, so the control that removes
+            itself hands focus to its stated successor rather than to whatever tab stop happens to
+            follow it in the queue. */}
+        {showPinned && pinned !== null ? (
+          <div className="pq-pinned" role="group" aria-label={`${pinned.label} is outside your filter`}>
+            <p className="pq-pinned__text">
+              {`${pinned.label} is selected, but your filter hides it: ${
+                pinned.parts.length === 0 ? "the filter as a whole keeps it out" : pinned.parts.map(describePart).join("; ")
+              }. It is pinned above the rows your filter shows, outside the filter; your filter is unchanged.`}
+            </p>
+            <Button
+              size="sm"
+              aria-label={`Show ${pinned.label} in place by removing ${
+                pinned.parts.length === 0 ? "the whole filter" : pinned.parts.map((p) => p.text).join(", ")
+              } from the filter`}
+              /* The control removes itself, so focus is handed on — to the selected row itself, the
+                 thing the reader asked to see. At the press that row is still the pinned copy (the
+                 typed text reaches the rows through a deferred value); it carries its in-place
+                 identity (see `nodes`), so React moves the focused element into place rather than
+                 destroying it, and the landing effect below re-aims the grid onto it. MEASURED before
+                 this, handing focus to the "Removed …" sentence instead: at 768 px the landing then
+                 moved focus a second time, and at 390 px the page growing above the queue left the
+                 focused sentence off screen (review/audit-d3-focus.mjs --self-removing). The sentence,
+                 then the filter field, remain as fallbacks. */
+              onClick={(e) =>
+                handOffFocus(e.currentTarget, widenFilter, [
+                  /* The row's own tab stop when the grid's roving cell is on it: focus arriving anywhere
+                     else in a grid that was aimed from outside is redirected to that cell, which
+                     would make the hand-off read as failed and fall through to the sentence. */
+                  () =>
+                    rootRef.current?.querySelector<HTMLElement>('[role="grid"] [aria-current] [tabindex="0"]') ??
+                    rootRef.current?.querySelector<HTMLElement>('[role="grid"] [aria-current] [role="rowheader"]'),
+                  () => rootRef.current?.querySelector<HTMLElement>(".pq-widened"),
+                  queryField,
+                ])
+              }
+            >
+              {`Show ${pinned.short} in place`}
+            </Button>
+          </div>
+        ) : widenedSentence !== "" ? (
+          /* tabIndex -1: the widening control hands focus here when it removes itself. */
+          <p className="pq-account__note pq-widened" tabIndex={-1}>
+            {widenedSentence}
+          </p>
+        ) : null}
+
         {problems.length > 0 ? (
           <div className="pq-account__problem" role="alert">
             {problems.map((p) => (
@@ -2146,7 +2467,7 @@ export function PriorityQueue({
            prop. It is deliberately NOT held true across the recompute commit itself: that commit is
            synchronous, so there is no moment in it for a reader to observe. */
         busy={draft !== query || filterText !== draft}
-        revealId={revealId}
+        revealId={reaimGrid ? null : revealId}
         /* What re-runs the reveal. With a finding selected, ONLY the finding: a device, link or hop
            picked on another surface does not change what this queue is showing, and A4 says the
            reader's scroll position survives a device change. MEASURED before this (1920x1080,
@@ -2158,7 +2479,7 @@ export function PriorityQueue({
            whole selection keys the reveal and the first row naming it is brought into view. */
         revealKey={
           activeRowId !== null
-            ? `f|${activeRowId}`
+            ? `f|${activeRowId}|${hasPinned ? "outside-filter" : "in-filter"}`
             : `d|${deviceId ?? ""}|${linkId ?? ""}|${hopIndex ?? ""}`
         }
         /* With no finding selected, the first naming row is only a REPRESENTATIVE: every marked row
@@ -2248,6 +2569,8 @@ export function PriorityQueue({
       {/* The batch count was visible only; a keyboard batch (x, shift+arrows, Ctrl+A) gave a
           screen-reader user no statement of how many rows it now holds. */}
       <LiveRegion message={batchLabel} />
+      {/* The widening changed the reader's filter; that is said aloud as well as shown. */}
+      <LiveRegion message={widenedSentence} />
     </section>
   );
 }

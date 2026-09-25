@@ -206,28 +206,24 @@ describe("failure impact", () => {
     expect(heads.join(" ")).toContain("blast radius");
   });
 
-  it("carries a disagreement block on every device with an impact comparison", () => {
-    // ImpactSection is unconditional on the summary panel, so "every device with an impact
-    // comparison" is every device. Each one is mounted, read and unmounted before the next: the
-    // pane's element ids are fixed, and 26 live copies would make an id lookup ambiguous.
+  // ImpactSection is unconditional on the summary panel, so "every device with an impact
+  // comparison" is every device. One device per case (acceptance F2, W6 gate 2026-09-25: the loop
+  // over every device was one unit of work), each mounted, read and unmounted: the pane's element
+  // ids are fixed, and 26 live copies would make an id lookup ambiguous.
+  it("has more than one device to compare", () => {
     expect(fabric.devices.length).toBeGreaterThan(1);
-    let compared = 0;
-    for (const d of fabric.devices) {
+  });
+  for (const d of fabric.devices) {
+    it(`${d.host}: renders the impact comparison, with a disagreement block`, () => {
       act(() => useInvestigation.getState().selectDevice(d.id));
       const c = mount(<DevicePane />);
       const summary = panel(c, "summary");
-      if (summary.querySelectorAll(".dp-cmp__head").length > 0) {
-        compared++;
-        const block = summary.querySelector(".dp-disagree");
-        expect(block, `${d.host}: comparison without a disagreement block`).not.toBeNull();
-        expect(block!.querySelector(".dp-disagree__head")?.textContent?.trim(), d.host).toBeTruthy();
-      }
-      const m = mounted.pop()!;
-      act(() => m.root.unmount());
-      m.container.remove();
-    }
-    expect(compared, "every device renders the impact comparison").toBe(fabric.devices.length);
-  });
+      expect(summary.querySelectorAll(".dp-cmp__head").length, `${d.host}: every device renders the impact comparison`).toBeGreaterThan(0);
+      const block = summary.querySelector(".dp-disagree");
+      expect(block, `${d.host}: comparison without a disagreement block`).not.toBeNull();
+      expect(block!.querySelector(".dp-disagree__head")?.textContent?.trim(), d.host).toBeTruthy();
+    });
+  }
 });
 
 /* ══ tabs: a tab with no evidence behind it is REACHABLE and explains itself ══

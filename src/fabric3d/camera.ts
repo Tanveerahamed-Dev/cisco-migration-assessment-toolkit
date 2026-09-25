@@ -349,7 +349,10 @@ export interface CameraRig {
   controls: OrbitControls;
   /** True while an eased move is in flight. */
   isTweening(): boolean;
-  /** Ease (or jump, under reduced motion) to a pose. Clears any zoom anchor. */
+  /**
+   * Ease (or jump, under reduced motion) to a pose, landing on it exactly. Clears any zoom anchor
+   * and discards any gesture inertia still coasting, before and throughout the move.
+   */
   moveTo(target: CameraTarget, opts?: { immediate?: boolean }): void;
   /**
    * The world point a wheel dolly zooms TOWARD, or null for OrbitControls' own dolly toward the
@@ -498,6 +501,35 @@ interface OrbitDragHandlers {
   _handleMouseMovePan(e: { clientX: number; clientY: number }): void;
 }
 
+/**
+ * OrbitControls' PENDING inertia (three 0.186 OrbitControls.js): what its `update()` will still add
+ * on later frames. A drag leaves a rotation and a pan delta that `update()` applies a `dampingFactor`
+ * slice of and decays per FRAME; a dolly leaves a scale (and a cursor-zoom flag) for the next update.
+ */
+interface OrbitPendingInertia {
+  _sphericalDelta: { set(radius: number, phi: number, theta: number): unknown };
+  _panOffset: Vector3;
+  _scale: number;
+  _performCursorZoom: boolean;
+}
+
+/** Exported for camera.reset-damping.test.ts, which pins the fail-loud path. */
+export function pendingInertiaOf(controls: OrbitControls): OrbitPendingInertia {
+  const c = controls as unknown as Partial<OrbitPendingInertia>;
+  /* Fail loud, at construction, if a three upgrade renames these: a discard that silently became a
+     no-op would bring back the exact drift camera.reset-damping.test.ts pins (A5), and only on the
+     slow-frame hosts where nobody is looking. */
+  if (
+    typeof c._sphericalDelta?.set !== "function" ||
+    !(c._panOffset instanceof Vector3) ||
+    typeof c._scale !== "number" ||
+    typeof c._performCursorZoom !== "boolean"
+  ) {
+    throw new Error("camera.ts: OrbitControls no longer exposes its pending-inertia state; update discardInertia for this three version");
+  }
+  return c as OrbitPendingInertia;
+}
+
 export function createCameraRig(
   canvas: HTMLCanvasElement,
   opts: CameraRigOptions,
@@ -522,6 +554,31 @@ export function createCameraRig(
   // Explicit, not merely default: a camera that orbits by itself is on the brief's list of
   // cheap-render tells, and it would make every capture a different image.
   controls.autoRotate = false;
+
+  /**
+   * A PROGRAMMATIC MOVE OWNS THE CAMERA: discard whatever a user gesture left coasting.
+   *
+   * MEASURED (A5 refuter at 78bdba5, SwiftShader, 3-9 fps): a 240 px orbit drag, 300 ms, then Reset
+   * view left core1 ~64 px from home, for good. The drag's inertia is pending deltas inside
+   * OrbitControls that its `update()` — called by `update()` below on every frame, tween frames
+   * included — keeps adding on top of the pose the move writes, and after it lands. The tail decays
+   * per FRAME, so the fewer frames that ran before the move (a slow host), the larger the error.
+   *
+   * So every write of a pose this rig makes on its own — `moveTo` (and through it home, Reset view,
+   * device focus, the trace re-framing) and the reduced-motion landing — discards the pending
+   * deltas first, and so does every frame of a tween, which makes a gesture begun while the move is
+   * in flight unable to knock it off its landing either. A gesture AFTER the move lands orbits as it
+   * always did, tail included. One owner, not a list of callers: a new programmatic move that writes
+   * the pose through `moveTo` cannot forget it. (`snapHome` needs no discard: it only runs before
+   * the first gesture — `userMoved` — so nothing can be pending.)
+   */
+  const inertia = pendingInertiaOf(controls);
+  const discardInertia = (): void => {
+    inertia._sphericalDelta.set(0, 0, 0);
+    inertia._panOffset.set(0, 0, 0);
+    inertia._scale = 1;
+    inertia._performCursorZoom = false;
+  };
 
   let sphereRadius = Math.max(1, opts.sphere.radius);
   _sphereCenter.set(...opts.sphere.center);
@@ -851,6 +908,8 @@ export function createCameraRig(
       userMoved = true;
       zoomAnchor = null;
       subjectRadius = null;
+      // Before the from-pose is taken, and before the immediate path's own controls.update().
+      discardInertia();
       _toPos.set(...target.position);
       _toTarget.set(...target.target);
       if (moveOpts?.immediate === true || reducedMotion) {
@@ -923,6 +982,7 @@ export function createCameraRig(
       reducedMotion = reduced;
       controls.enableDamping = !reduced;
       if (reduced && tweenActive) {
+        discardInertia();
         camera.position.copy(_toPos);
         controls.target.copy(_toTarget);
         tweenActive = false;
@@ -932,6 +992,7 @@ export function createCameraRig(
 
     update(nowMs: number): boolean {
       let moved = false;
+      const tweening = tweenActive;
       if (tweenActive) {
         if (tweenStart === 0) tweenStart = nowMs;
         const raw = Math.min(1, (nowMs - tweenStart) / CAMERA_TWEEN_MS);
@@ -961,6 +1022,8 @@ export function createCameraRig(
       /* The height rule runs on EVERY pose — a user orbit, a damping tail, a tween frame — after
          OrbitControls has applied its own clamps. A pose it corrects back to where it already was
          (a drag held against the limit) is judged still by the pose comparison below. */
+      // A tween frame, the landing one included, applies no gesture delta (see discardInertia).
+      if (tweening) discardInertia();
       const reported = controls.update();
       const lifted = keepEyeAboveVisibleLids();
       if (reported || lifted) {

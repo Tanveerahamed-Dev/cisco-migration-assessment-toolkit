@@ -128,11 +128,18 @@ export function ribIncompleteness(host: string): RibIncompleteness[] {
   return out;
 }
 
-/** One sentence naming why `host`'s table is incomplete, or null when nothing says it is. */
+/**
+ * One sentence naming why `host`'s table is incomplete, or null when nothing says it is. Each reason
+ * carries the record that says so, in parentheses right after it: the sentence is quoted verbatim by
+ * the claim, the Filtering row, a caveat, the hop note and the announcement, so a citation that is
+ * not IN the sentence is on none of those surfaces. It used to join the labels and drop the cites —
+ * "an OSPF adjacency with 10.0.99.2 is FULL/DR, yet the table holds no OSPF route" was displayed five
+ * times on the Path surface and `routing_neighbors.core1.ospf[0]` zero times (acceptance B6, refuter).
+ */
 export function ribIncompletenessSentence(host: string): string | null {
   const r = ribIncompleteness(host);
   if (r.length === 0) return null;
-  return `${host}'s collected routing table is itself incomplete — ${r.map((x) => x.label).join("; ")}`;
+  return `${host}'s collected routing table is itself incomplete — ${r.map((x) => `${x.label} (${x.cite})`).join("; ")}`;
 }
 
 /**

@@ -1361,6 +1361,12 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     // The selection itself never moves the camera; a click on the pointer does.
     const rec = lastScene();
     expect(callsOf(rec, "focusDevice")).toHaveLength(0);
+    /* A keyboard reader's route (acceptance D1): the pointer is a button outside the aria-hidden
+       label layer, and it holds focus when activated. */
+    expect(ptr!.tagName).toBe("BUTTON");
+    expect(ptr!.closest('[aria-hidden="true"]')).toBeNull();
+    ptr!.focus();
+    expect(document.activeElement).toBe(ptr);
     act(() => ptr!.click());
     expect(callsOf(rec, "focusDevice").at(-1)).toEqual(["focusDevice", target.id]);
 
@@ -1368,6 +1374,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     mock.projections.set(target.id, { x: 500, y: 500, visible: true });
     flushFrames(2);
     expect(ptr!.dataset["visible"]).toBe("false");
+    /* ...and the focus it held goes to the canvas now framing that host, never to <body> (D3). */
+    expect(ptr!.hidden).toBe(true);
+    expect(document.activeElement, "focus dropped when the pointer left").toBe(m.container.querySelector("canvas"));
     m.unmount();
   });
 

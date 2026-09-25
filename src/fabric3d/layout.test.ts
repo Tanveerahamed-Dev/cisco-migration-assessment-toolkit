@@ -26,6 +26,8 @@ import {
   JITTER_AMPLITUDE,
   MIN_NODE_SEPARATION,
   ROUTE_CLEARANCE,
+  ROUTE_CURVE_SAMPLES,
+  ROUTE_DETOUR_STEPS,
   ROUTE_T_MARGIN,
   computeLayout,
   focusFraming,
@@ -70,6 +72,45 @@ const norm = (a: Vec3): Vec3 => {
 };
 const at = (n: LayoutNode): Vec3 => [n.x, n.y, n.z];
 const distance = (a: Vec3, b: Vec3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+/**
+ * The layout's work, counted instead of timed: every call made while `fn` runs into a function-valued
+ * own property of Array.prototype, Map.prototype, Set.prototype or Math. The class is derived by
+ * reflection, not listed, so a primitive the layout starts using is counted without anyone adding it
+ * here. Each is wrapped for the duration of the synchronous call and restored in `finally`.
+ *
+ * What it cannot see, stated: a loop whose body calls none of them (bare index arithmetic), and the
+ * relative cost of each call — it counts operations, it does not weigh them. Every loop in layout.ts
+ * that does work touches a Map, an array method or Math at least once per iteration, which is what
+ * makes the count track the ORDER of the work.
+ */
+function primitiveOps(fn: () => void): number {
+  let n = 0;
+  const saved: [object, PropertyKey, PropertyDescriptor][] = [];
+  try {
+    for (const o of [Array.prototype, Map.prototype, Set.prototype, Math] as object[]) {
+      for (const key of Reflect.ownKeys(o)) {
+        const d = Object.getOwnPropertyDescriptor(o, key);
+        if (key === "constructor" || d === undefined || typeof d.value !== "function") continue;
+        const f = d.value as (...a: unknown[]) => unknown;
+        saved.push([o, key, d]);
+        Object.defineProperty(o, key, {
+          ...d,
+          value: function counted(this: unknown, ...args: unknown[]): unknown {
+            n += 1;
+            return f.apply(this, args);
+          },
+        });
+      }
+    }
+    /* The wrapping above is itself made of array calls; only what `fn` does is counted. */
+    n = 0;
+    fn();
+    return n;
+  } finally {
+    for (const [o, key, d] of saved) Object.defineProperty(o, key, d);
+  }
+}
 
 /** Distance from `p` to segment ab, plus the clamped parameter along the segment. */
 function pointSegment(p: Vec3, a: Vec3, b: Vec3): { d: number; t: number } {
@@ -936,20 +977,84 @@ describe("computeLayout — honesty and budget", () => {
     expect(l.tierBounds.find((b) => b.tier === l.diagnostics.syntheticTier)!.observedTier).toBeNull();
   });
 
-  /* This one was already written correctly and is deliberately left alone. It asserts a MEDIAN of
-     seven runs, which absorbs a scheduler stall, against a bound roughly an order of magnitude
-     above the operation's real cost — so it catches an algorithmic blow-up without firing when the
-     host is busy. It is the only wall-clock assertion in the suite that has never flaked, and the
-     technique is the reason. The other two were rewritten to match it, not the other way round. */
-  it("lays out the full 26-node fabric in under 50 ms", () => {
-    const runs: number[] = [];
+  /* WORK, NOT TIME (O26; acceptance F2, 2026-09-24). This was a median of seven wall-clock runs
+     under 50 ms, and its comment called it the only timing assertion that had never flaked and said
+     "the other two were rewritten to match it". By wave 4 both halves were false: R64 replaced the
+     engine's and the palette's timings with COUNTS, not with this shape, and vitest.config.ts's rule
+     is that a unit test asserts no wall-clock time at all. A median absorbs one scheduler stall; it
+     does not absorb a host that is 85 % busy for the whole run, and it cannot tell an algorithmic
+     blow-up from that host.
+
+     The count is deterministic — the same number on every run and every seed (the layout reads no
+     clock, and the seed moves only the jitter) — so it is held to a budget with no margin for noise. The budget is stated in the fabric's own size, so a larger fabric earns a
+     larger one and only a change in the ORDER of the work goes red:
+       - 12·E·N — the straight-route clearance scan measures every placed link against every other
+         chassis (3 counted calls a pair), and everything else outside the sweeps is linear in N + E.
+         Measured on this fabric with sweeps 0: 7 035, against 13 728.
+       - 20·(N + E) per barycentre sweep — one reorder pass per layer and one crossing count.
+         Measured: 764 a sweep, against 1 400.
+       - per route hint, 2 directions × ROUTE_DETOUR_STEPS candidates, each measured against every
+         chassis along ROUTE_CURVE_SAMPLES segments at 5 counted calls: the detour ladder at its
+         longest. Measured with the pitch flattened to 26: 20 hints, 33 558 a hint, against 74 880.
+     In all, 16 206 at the defaults against 30 528: about 2x headroom on each term over what the
+     layout does today (1.3x on a detour that exhausts its whole ladder), and the known answer below
+     proves the sweep term is not decorative — a sweep loop run N times over is red. */
+  const workBudget = (n: number, e: number, sweeps: number, hints: number): number =>
+    12 * e * n + 20 * sweeps * (n + e) + hints * 2 * ROUTE_DETOUR_STEPS * n * ROUTE_CURVE_SAMPLES * 5;
+  const N = fabric.devices.length;
+  const E = fabric.links.length;
+
+  it("lays out the full fabric within a counted work budget stated in its own size, on every seed", () => {
     for (let i = 0; i < 7; i += 1) {
-      const t0 = performance.now();
-      computeLayout({ ...OPTS, seed: 100 + i });
-      runs.push(performance.now() - t0);
+      let l: FabricLayout | undefined;
+      const ops = primitiveOps(() => {
+        l = computeLayout({ ...OPTS, seed: 100 + i });
+      });
+      // Stated, not assumed: no route hint fires on the shipped fabric (see the "absent hint" test).
+      expect(l!.routeHints, "precondition: the shipped fabric needs no detour").toHaveLength(0);
+      // The instrument is live: the clearance scan alone makes 3 counted calls per (link, chassis).
+      expect(ops, "the counter saw less than the clearance scan's own work").toBeGreaterThanOrEqual(3 * E * (N - 2));
+      expect(ops, `seed ${100 + i}: ${ops} primitive operations`).toBeLessThanOrEqual(workBudget(N, E, l!.diagnostics.sweeps, 0));
     }
-    runs.sort((a, b) => a - b);
-    const median = runs[3]!;
-    expect(median, `median ${median.toFixed(2)} ms, slowest ${runs[6]!.toFixed(2)} ms`).toBeLessThan(50);
+  });
+
+  it("holds each term of the budget on its own: no sweeps, and a pitch flat enough that the detour ladder runs", () => {
+    let still: FabricLayout | undefined;
+    const noSweeps = primitiveOps(() => {
+      still = computeLayout({ ...OPTS, sweeps: 0 });
+    });
+    expect(still!.diagnostics.sweeps).toBe(0);
+    expect(noSweeps).toBeLessThanOrEqual(workBudget(N, E, 0, 0));
+
+    let flat: FabricLayout | undefined;
+    const detours = primitiveOps(() => {
+      flat = computeLayout({ ...OPTS, tierYPitch: 26 });
+    });
+    expect(flat!.routeHints.length, "precondition: the flattened pitch makes the detour ladder run").toBeGreaterThan(0);
+    expect(detours).toBeLessThanOrEqual(workBudget(N, E, flat!.diagnostics.sweeps, flat!.routeHints.length));
+  });
+
+  it("known answer: a sweep loop run N times over its bound is over budget", () => {
+    // The blow-up, reproduced through the public option: the default sweeps × N, judged against the
+    // budget for the default sweeps. A budget that could not see this could not see the bug.
+    const defaultSweeps = layout.diagnostics.sweeps;
+    expect(defaultSweeps, "precondition: the layout sweeps by default").toBeGreaterThan(0);
+    const blown = primitiveOps(() => {
+      computeLayout({ ...OPTS, sweeps: defaultSweeps * N });
+    });
+    expect(blown).toBeGreaterThan(workBudget(N, E, defaultSweeps, 0));
+  });
+
+  it("the counter counts what runs inside it, and puts every primitive back", () => {
+    const push = Array.prototype.push;
+    const max = Math.max;
+    const arr: number[] = [];
+    const n = primitiveOps(() => {
+      for (let i = 0; i < 10; i += 1) arr.push(Math.max(i, 0));
+    });
+    expect(n).toBe(20);
+    expect(Array.prototype.push).toBe(push);
+    expect(Math.max).toBe(max);
+    expect(primitiveOps(() => {})).toBe(0);
   });
 });

@@ -83,6 +83,12 @@
  *
  *   node review/audit-d3-focus.mjs --vp=390              # any mode, narrowed to the listed widths —
  *                                                        # diagnostic only, never the acceptance run
+ *   node review/audit-d3-focus.mjs --sweep --state=off-view   # the sweep narrowed to the states whose
+ *                                                        # name contains the text — diagnostic only
+ *
+ * The sweep also runs the OPERABLE-ELEMENT CENSUS (operableCensus, 2026-09-25): every element that
+ * is operated by the pointer — found by its handler or its cursor, never by role or tabindex — must
+ * be reached by the Tab walk, be outside aria-hidden, and measure >= 24x24 CSS px.
  *
  * The default run is the sweep, then the surface passes below at all five of those widths. The
  * visibility hit test samples NINE points of the focused element's visible part (focusGeometry);
@@ -1006,6 +1012,32 @@ const SWEEP_VIEWPORTS = [
   [1920, 1080, "wide"],
 ];
 
+/** Keyboard-only, as the refuter drove it: frame the fabric, zoom in, then pan (Alt+arrow) until a
+ *  finding pointer is drawn. Leaves the page as it stands; returns whether one showed. */
+async function panUntilOffViewPointer(page) {
+  const shown = () => page.evaluate(() => document.querySelectorAll('[data-pointer-for][data-visible="true"]').length > 0);
+  const canvas = page.locator(".fabric3d__canvas").first();
+  if ((await canvas.count()) === 0 || !(await canvas.isVisible())) return false;
+  await page.waitForFunction(() => document.querySelector(".fabric3d__canvas") !== null, null, { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  if (await shown()) return true;
+  for (const mv of ["Alt+ArrowLeft", "Alt+ArrowRight", "Alt+ArrowUp", "Alt+ArrowDown"]) {
+    await canvas.focus();
+    await page.keyboard.press("Home");
+    await page.waitForTimeout(900);
+    for (let k = 0; k < 5; k += 1) await page.keyboard.press("+");
+    for (let n = 0; n < 25; n += 1) {
+      await page.keyboard.press(mv);
+      await page.waitForTimeout(250);
+      if (await shown()) {
+        await page.waitForTimeout(800);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 const sweepStates = () => {
   const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
   const flow = encodeURIComponent("10.0.10.50>10.0.30.10>tcp>3389");
@@ -1017,6 +1049,13 @@ const sweepStates = () => {
     ["a device selected", "d=core1&s=fabric"],
     ["a finding selected", `f=${encodeURIComponent(fabricJson.findings[0].id)}&s=findings`],
     ["a traced flow", `s=path&flow=${flow}`],
+    /* The acceptance review's D1/D5 subject: the off-view finding pointer, which is drawn only while
+       a selected finding's host projects outside the canvas. The refuter's route (ptr3.mjs): F094,
+       which names only access5, then the camera panned with the keyboard until the pointer shows.
+       Pinned by id because which host leaves the view is a camera fact no data file states;
+       `offViewPointers` fails the run if no width ever drew one, so the state can never pass by
+       quietly not reaching its subject. */
+    ["a finding naming an off-view host", "f=F094", panUntilOffViewPointer],
   ];
 };
 
@@ -1039,6 +1078,119 @@ const compositeCensus = () => {
       want: owned ? 0 : 1,
       stops: stops.map((s) => `${s.tagName}${s.getAttribute("role") ? `[${s.getAttribute("role")}]` : ""} "${(s.getAttribute("aria-label") ?? s.textContent ?? "").trim().slice(0, 24)}"`),
       items: w.querySelectorAll("*").length,
+    });
+  }
+  return out;
+};
+
+/**
+ * In-page: THE OPERABLE-ELEMENT CENSUS (acceptance D1 and D5, repair wave 6).
+ *
+ * MEASURED (acceptance report, D1 and D5 overturned PASS -> FAIL at 78bdba5): the off-view finding
+ * pointer was a `<span onClick>` — no role, no tabindex, inside an `aria-hidden` layer. A click at
+ * its centre framed access5; a 250-stop Tab walk never reached it; it measured 141.23 x 16.84. Every
+ * census in this file selected elements by ROLE or by being a TAB STOP, so the one control that was
+ * neither was invisible to all of them, and the sweep's "every stop hit-tested" was true of a set
+ * that could not contain it.
+ *
+ * So this census finds a control by what it DOES, whatever its role or tabindex:
+ *   - a pointer handler React attached to it (onClick, onPointerDown, onMouseDown, onPointerUp,
+ *     onMouseUp, onDoubleClick — read from the element's React props), or
+ *   - an OPERABLE cursor that starts on it (its computed cursor is not an inert value and differs
+ *     from its parent's: a child inheriting its button's `pointer` is the same target).
+ * Rendered ones only (a box, not `visibility: hidden`, not `pointer-events: none`, not inert). Each
+ * must be
+ *   REACHABLE: itself a stop of the real Tab walk just made (`tabbed`), or containing one (a row
+ *     whose cells take focus), or inside one, or inside a composite widget (grid, tree, toolbar, …)
+ *     one of whose items took Tab focus — the APG roving-focus contract, where arrows reach the rest;
+ *   EXPOSED: not inside an `aria-hidden="true"` subtree — an operable control assistive technology
+ *     is told does not exist;
+ *   and at least 24 x 24 CSS px by getBoundingClientRect (acceptance D5, WCAG 2.5.8). An element may
+ *     carry `data-target-exempt="<the reason>"`; that is printed with its reason and counted, never
+ *     passed silently. None does today.
+ */
+const operableCensus = () => {
+  const INERT = new Set(["default", "auto", "text", "vertical-text", "not-allowed", "no-drop", "wait", "progress", "help", "none"]);
+  const HANDLERS = ["onClick", "onPointerDown", "onMouseDown", "onPointerUp", "onMouseUp", "onDoubleClick"];
+  const COMPOSITE = '[role="grid"], [role="treegrid"], [role="tree"], [role="toolbar"], [role="tablist"], [role="radiogroup"], [role="listbox"], [role="menu"], [role="menubar"]';
+  const tabbed = window.__tabbed instanceof Set ? window.__tabbed : new Set();
+  const reactHandlers = (el) => {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps"));
+    if (key === undefined) return [];
+    const props = el[key] ?? {};
+    return HANDLERS.filter((h) => typeof props[h] === "function");
+  };
+  const describe = (el) => {
+    const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+    const cls = typeof el.className === "string" ? el.className.split(" ")[0] : "";
+    return `${el.tagName}${el.id ? `#${el.id}` : ""}${cls ? `.${cls}` : ""}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${name}"`;
+  };
+  const out = [];
+  for (const el of document.body.querySelectorAll("*")) {
+    if (el.id === "__sr-top") continue;
+    const cs = getComputedStyle(el);
+    const handlers = reactHandlers(el);
+    const parentCursor = el.parentElement ? getComputedStyle(el.parentElement).cursor : "auto";
+    const cursorStarts = !INERT.has(cs.cursor) && cs.cursor !== parentCursor;
+    if (handlers.length === 0 && !cursorStarts) continue;
+    if (el.getClientRects().length === 0 || cs.visibility === "hidden" || cs.pointerEvents === "none" || el.closest("[inert]") !== null) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    /* A target is what a pointer can land on NOW: nine points of its box inside the viewport, and at
+       least one must hit it (or a descendant). None does for a visually-hidden element (the fabric
+       tree's clip recipe), one scrolled out of its scroller, or one wholly covered — those are
+       counted, not judged. One partly covered IS judged: a pointer still lands on it. */
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    let hits = 0;
+    for (const fy of [0.15, 0.5, 0.85]) {
+      for (const fx of [0.15, 0.5, 0.85]) {
+        const x = r.left + fx * r.width;
+        const y = r.top + fy * r.height;
+        if (x < 0 || y < 0 || x >= vw || y >= vh) continue;
+        const at = document.elementFromPoint(x, y);
+        if (at !== null && (at === el || el.contains(at))) hits += 1;
+      }
+    }
+    if (hits === 0) {
+      window.__censusUnhittable = (window.__censusUnhittable ?? 0) + 1;
+      continue;
+    }
+    /* THE TARGET A CLICK REACHES. A click bubbles: on a region that is not a control of its own (a
+       grid cell, a tree row's text) it also reaches the nearest ancestor with a click handler of its
+       own, and that ancestor's box is where the pointer lands to get that action — DataGrid hangs the
+       row's activation on the ROW for exactly this reason ("what looks clickable is clickable"). A
+       distinct control (a native one, or a control role) is always its own target and is judged by
+       its own box. */
+    const CONTROL_ROLES = /^(button|link|checkbox|switch|menuitem|menuitemcheckbox|menuitemradio|option|tab|radio|slider|spinbutton|textbox|combobox|searchbox)$/;
+    const distinct = /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(el.tagName) || CONTROL_ROLES.test(el.getAttribute("role") ?? "");
+    let box = { w: r.width, h: r.height, via: "" };
+    if (!distinct) {
+      for (let a = el.parentElement; a !== null && a !== document.body; a = a.parentElement) {
+        if (!reactHandlers(a).includes("onClick")) continue;
+        const ar = a.getBoundingClientRect();
+        if (ar.width >= box.w && ar.height >= box.h) box = { w: ar.width, h: ar.height, via: describe(a) };
+        break;
+      }
+    }
+    let reach = null;
+    if (tabbed.has(el)) reach = "a Tab stop";
+    else if ([...tabbed].some((t) => el.contains(t))) reach = "contains a Tab stop";
+    else if ([...tabbed].some((t) => t.contains(el))) reach = "inside a Tab stop";
+    else {
+      const widget = el.closest(COMPOSITE);
+      if (widget !== null && [...tabbed].some((t) => widget.contains(t))) reach = `inside ${widget.getAttribute("role")} whose item took Tab`;
+    }
+    out.push({
+      desc: describe(el),
+      by: handlers.length > 0 ? handlers.join("+") : `cursor: ${cs.cursor}`,
+      roleless: el.getAttribute("role") === null && !el.hasAttribute("tabindex") && !/^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(el.tagName),
+      reach,
+      ariaHidden: el.closest('[aria-hidden="true"]') !== null,
+      w: Math.round(box.w * 100) / 100,
+      h: Math.round(box.h * 100) / 100,
+      via: box.via,
+      exempt: el.getAttribute("data-target-exempt"),
     });
   }
   return out;
@@ -1074,17 +1226,18 @@ const scrollDocTo = async (y) => {
 
 /** @type {{where: string, what: string}[]} */
 const sweepFails = [];
-const sweepCount = { widgets: 0, stops: 0, hitTests: 0, journeys: 0 };
+const sweepCount = { widgets: 0, stops: 0, hitTests: 0, journeys: 0, operable: 0, operableRoleless: 0, offViewPointers: 0 };
 const sweepFail = (where, what) => {
   sweepFails.push({ where, what });
   console.log(`FAIL  ${where} :: ${what}`);
 };
 
-async function sweepState(page, vp, state, query) {
+async function sweepState(page, vp, state, query, prep) {
   const where = `${vp}/${state}`;
   await page.goto(`${APP}/${query === "" ? "" : `?${query}`}`, { waitUntil: "load" });
   await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(1500);
+  if (prep !== undefined) console.log(`INFO  ${where}: ${(await prep(page)) ? "state reached" : "state NOT reached at this width"}`);
 
   for (const w of await page.evaluate(compositeCensus)) {
     sweepCount.widgets += 1;
@@ -1092,13 +1245,20 @@ async function sweepState(page, vp, state, query) {
   }
 
   await page.evaluate(srToTop);
+  /* Every element the real Tab walk lands on, kept live for the operable-element census below. */
+  await page.evaluate(() => (window.__tabbed = new Set()));
   const seenStops = new Set();
+  let lapClosed = false;
   for (let i = 0; i < 400; i += 1) {
     await page.keyboard.press("Tab");
     const id = await page.evaluate(srIdentify);
     if (id === null) continue; /* focus left the document for the browser chrome; the next Tab re-enters */
-    if (seenStops.has(id.path)) break;
+    if (seenStops.has(id.path)) {
+      lapClosed = true;
+      break;
+    }
     seenStops.add(id.path);
+    await page.evaluate(() => window.__tabbed.add(document.activeElement));
     sweepCount.stops += 1;
     await page.evaluate(settleAnimations);
     /* Where Tab left the page: the state SC 2.4.11 is about ("when a component receives focus"). */
@@ -1121,6 +1281,24 @@ async function sweepState(page, vp, state, query) {
     }
     if (offsets.length > 1) await page.evaluate(scrollDocTo, natural);
   }
+
+  /* THE OPERABLE-ELEMENT CENSUS, against the lap just walked. A lap that never came back to its
+     first stop is not the whole tab order, and "not reached" would then be a guess. */
+  if (!lapClosed) return sweepFail(where, "the Tab walk never closed its lap in 400 presses: the operable census cannot judge reach");
+  await page.evaluate(srToTop);
+  for (const c of await page.evaluate(operableCensus)) {
+    sweepCount.operable += 1;
+    if (c.roleless) sweepCount.operableRoleless += 1;
+    if (c.exempt !== null) console.log(`INFO  ${where} :: ${c.desc} [${c.by}] ${c.w}x${c.h} EXEMPT: ${c.exempt}`);
+    if (c.reach === null) sweepFail(where, `${c.desc} [${c.by}] is operable and no Tab stop reaches it (${c.roleless ? "no role, no tabindex" : "not in the tab order"})`);
+    if (c.ariaHidden) sweepFail(where, `${c.desc} [${c.by}] is operable inside an aria-hidden subtree`);
+    if (c.exempt === null && (c.w < 24 || c.h < 24)) {
+      sweepFail(where, `${c.desc} [${c.by}] measures ${c.w}x${c.h} CSS px${c.via ? ` (its click reaches ${c.via})` : ""}, under 24x24 with no stated exemption`);
+    }
+  }
+  /* A state named for a subject must have put it on screen, or it proved nothing about it. */
+  const pointers = await page.evaluate(() => document.querySelectorAll('[data-pointer-for][data-visible="true"]').length);
+  if (pointers > 0) sweepCount.offViewPointers += pointers;
 }
 
 /** More -> Path with real keys, then Tab / Shift+Tab must reach the pane switch's radios. */
@@ -1170,6 +1348,9 @@ async function runSweep(browser) {
   /* `--vp=390,768` narrows a diagnostic run; a run so narrowed says so, and is not the acceptance run. */
   const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
   if (only) console.log(`INFO  sweep narrowed to ${only.join(", ")} px by --vp: NOT an acceptance run`);
+  /* `--state=<text>` narrows to the states whose name contains it: diagnostic only, like --vp. */
+  const onlyState = process.argv.find((a) => a.startsWith("--state="))?.slice(8);
+  if (onlyState) console.log(`INFO  sweep narrowed to states matching "${onlyState}" by --state: NOT an acceptance run`);
   for (const [w, h, vp] of SWEEP_VIEWPORTS.filter(([w]) => !only || only.includes(w))) {
     const ctx = await browser.newContext({ viewport: { width: w, height: h } });
     await ctx.addInitScript(() => {
@@ -1181,17 +1362,20 @@ async function runSweep(browser) {
       }
     });
     const page = await ctx.newPage();
-    for (const [state, query] of sweepStates()) await sweepState(page, `${vp} ${w}x${h}`, state, query);
+    for (const [state, query, prep] of sweepStates().filter(([name]) => !onlyState || name.includes(onlyState))) await sweepState(page, `${vp} ${w}x${h}`, state, query, prep);
     await sweepJourney(page, `${vp} ${w}x${h}`);
     await ctx.close();
   }
   console.log(
     `\nSWEEP: ${sweepCount.widgets} composite widget(s) counted, ${sweepCount.stops} tab stop(s) walked, ` +
-      `${sweepCount.hitTests} nine-point hit test(s), ${sweepCount.journeys} More -> Path journey(s); ${sweepFails.length} failure(s).`,
+      `${sweepCount.hitTests} nine-point hit test(s), ${sweepCount.journeys} More -> Path journey(s), ` +
+      `${sweepCount.operable} operable element(s) censused by behaviour (${sweepCount.operableRoleless} with no role and no tabindex), ` +
+      `${sweepCount.offViewPointers} off-view pointer(s) drawn; ${sweepFails.length} failure(s).`,
   );
   for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
   /* Zero of a denominator is a sweep that proved nothing about it. */
-  const empty = Object.entries(sweepCount).filter(([, n]) => n === 0).map(([k]) => k);
+  /* `operableRoleless` is a breakdown, not a denominator: zero of it is the fixed state. */
+  const empty = Object.entries(sweepCount).filter(([k, n]) => n === 0 && k !== "operableRoleless").map(([k]) => k);
   if (empty.length > 0) console.log(`SWEEP NEVER EXERCISED: ${empty.join(", ")}`);
   return sweepFails.length === 0 && empty.length === 0;
 }

@@ -16,6 +16,7 @@
  */
 import {
   useCallback,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -321,6 +322,19 @@ export interface GridColumn<T> {
 
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
+/** Anything the browser would put in the sequential focus order by default, or that says it wants
+ *  to be there. The cells themselves (`data-r`) are the grid's own roving stops and are skipped. */
+const FOCUSABLE =
+  'a[href], area[href], button, input, select, textarea, iframe, summary, audio[controls], video[controls], [contenteditable]:not([contenteditable="false"]), [tabindex]';
+
+/** Take every interactive descendant of a cell out of the tab sequence (see RecordGrid). */
+function retireInnerStops(grid: HTMLElement): void {
+  for (const el of grid.querySelectorAll<HTMLElement>(FOCUSABLE)) {
+    if (el.hasAttribute("data-r") || el.tabIndex === -1) continue;
+    el.tabIndex = -1;
+  }
+}
+
 export function RecordGrid<T>({
   id,
   label,
@@ -397,6 +411,25 @@ export function RecordGrid<T>({
       default: break;
     }
   };
+
+  /* ONE tab stop, whatever the cells render (APG grid; acceptance D1). A column's `render` is free to
+     produce a control — a cite button, a port's interface/physical links — and a control is in the
+     tab sequence by default. MEASURED (W6 gate, 2026-09-25, core1): "Ports on core1" held 31 stops,
+     "Endpoints on core1" 2 and "Routing table for core1" 9. Every interactive descendant of a cell
+     is taken out of the sequence here, structurally (any focusable element, not a list of
+     components), and stays reachable from its cell with Enter/F2 (see onKeyDown), which focuses it
+     programmatically. Re-applied after every commit of this grid and on any DOM change inside it,
+     because a cell's own component can mount a control in a render the grid never sees. */
+  useLayoutEffect(() => {
+    if (ref.current) retireInnerStops(ref.current);
+  });
+  useLayoutEffect(() => {
+    const g = ref.current;
+    if (!g || typeof MutationObserver === "undefined") return;
+    const mo = new MutationObserver(() => retireInnerStops(g));
+    mo.observe(g, { childList: true, subtree: true, attributes: true, attributeFilter: ["tabindex", "href", "disabled", "contenteditable"] });
+    return () => mo.disconnect();
+  }, []);
 
   const cols = columns.map((col) => col.width).join(" ");
   const style = { "--rg-cols": cols } as CSSProperties;

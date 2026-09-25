@@ -1205,6 +1205,10 @@ export function Fabric3D({
     sceneRef.current?.focusDevice(id);
   }, []);
 
+  const focusCanvas = useCallback(() => {
+    canvasRef.current?.focus({ preventScroll: true });
+  }, []);
+
   const tierLabel = qualityTier ?? "probing";
   /* A reduced tier and a standing budget breach are both "this frame is not what the design
      specifies", and the chip marks either. They are worded apart so the reader is never left
@@ -1254,6 +1258,9 @@ export function Fabric3D({
         onStrandedUnseen={onStrandedUnseen}
         finding={labelFinding}
         coordinateSpace="canvas"
+        /* An off-view pointer the reader activated leaves as its host comes into view; the focus it
+           held goes to the canvas, which is now framing that host (acceptance D3: never to <body>). */
+        onPointerFocusLost={focusCanvas}
       />
 
       <div className="fabric3d__hud" data-label-keepout="">

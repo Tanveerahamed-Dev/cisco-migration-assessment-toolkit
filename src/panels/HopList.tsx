@@ -44,6 +44,7 @@ import { parseIpv4 } from "../forwarding/ip";
 import type { AclLine, Cite, Hop, HopEvidence, HopVerdict, RouteEntry, Trace } from "../core/types";
 import { VERDICT_ICON } from "../ui/icons";
 import { Cite as CiteLink, Disclosure, NotObserved, orNotObserved } from "../ui/primitives";
+import { CitedText } from "./cited-text";
 import "./PathTrace.css";
 
 /* ── verdict vocabulary ─────────────────────────────────────────────────────
@@ -178,7 +179,7 @@ const UNDECIDED_REASON: Readonly<Record<HopUndecided, (hop: Hop, trace: Trace) =
     const gaps = hopUndecidedGaps(hop, trace);
     const also = gaps
       .filter((g) => g.kind !== "rib-partial")
-      .map((g) => (g.kind === "acl-uncollected" ? `no ACLs were collected for ${g.host}, so whether it filters this flow was never evaluated` : g.label));
+      .map((g) => (g.kind === "acl-uncollected" ? `no ACLs were collected for ${g.host}, so whether it filters this flow was never evaluated (${g.cite})` : g.label));
     return `${gaps
       .filter((g) => g.kind === "rib-partial")
       .map((g) => g.label)
@@ -189,6 +190,17 @@ const UNDECIDED_REASON: Readonly<Record<HopUndecided, (hop: Hop, trace: Trace) =
       .map((g) => g.label)
       .join("; ")} — what ${hop.host} did on the modelled path is shown below; whether this is where the flow ends was not decided`,
 };
+
+/**
+ * The records an undecided reason rests on, for the citation controls beside it: the gaps the reason
+ * quotes, and for an unobserved input the absence evidence it names. Read from the same inputs the
+ * reason text is built from, so a reason cannot name a gap whose record it does not show.
+ */
+function undecidedCites(why: HopUndecided, hop: Hop, trace: Trace): string[] {
+  if (why === "input-unobserved") return hop.evidence.filter((e) => e.kind === "absence").map((e) => e.cite);
+  if (why === "refusal-undecided") return outcomeUndecidingGaps(trace).map((g) => g.cite);
+  return hopUndecidedGaps(hop, trace).map((g) => g.cite);
+}
 
 /* ── citation → record ──────────────────────────────────────────────────────
    `acls.<host>.<name>[<index>]` and `routes.<host>[<index>]` are the two shapes the forwarding
@@ -543,7 +555,7 @@ function AclFact({
       <span className="hop__meta">{`on ${host}`}</span>
       {qualifier === "" ? null : (
         <span className="hop__note" data-acl-qualifier="">
-          {qualifier}
+          <CitedText text={qualifier} onOpenCite={onOpenCite} />
         </span>
       )}
       {line.unevaluable ? (
@@ -799,14 +811,24 @@ export function HopList({ trace, activeIndex, onSelect, onOpenCite }: HopListPro
               {undecidedBy !== null ? (
                 <Fact label="Undecided">
                   <span className="hop__note" data-undecided-reason="">
-                    {`${undecidedBy} — the route below was decided; whether the packet passes was not`}
+                    <CitedText
+                      text={`${undecidedBy} — the route below was decided; whether the packet passes was not`}
+                      onOpenCite={openCite}
+                      also={decider === null ? [] : [decider.ev.cite]}
+                    />
                   </span>
                 </Fact>
               ) : null}
               {policyUndecided !== null ? (
                 <Fact label="Undecided">
+                  {/* The reason quotes the engine's gap sentences, which carry their records; each is
+                      rendered as a control, and every gap's own record is shown beside it (B6). */}
                   <span className="hop__note" data-undecided-reason="">
-                    {UNDECIDED_REASON[policyUndecided](hop, trace)}
+                    <CitedText
+                      text={UNDECIDED_REASON[policyUndecided](hop, trace)}
+                      onOpenCite={openCite}
+                      also={undecidedCites(policyUndecided, hop, trace)}
+                    />
                   </span>
                 </Fact>
               ) : null}
@@ -906,7 +928,9 @@ export function HopList({ trace, activeIndex, onSelect, onOpenCite }: HopListPro
                   {hop.evidence.map((ev, i) => (
                     <li key={`${ev.cite}-${i}`} className="hop__ev" data-kind={ev.kind}>
                       <span className="hop__ev-kind">{ev.kind}</span>
-                      <span className="hop__ev-label">{ev.label}</span>
+                      <span className="hop__ev-label">
+                        <CitedText text={ev.label} onOpenCite={openCite} />
+                      </span>
                       {ev.raw === null ? null : <code className="hop__raw">{ev.raw}</code>}
                       <CiteLink cite={ev.cite} onOpen={openCite} />
                     </li>

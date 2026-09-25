@@ -41,7 +41,7 @@ import {
   type FormEvent,
   type ReactElement,
 } from "react";
-import { deviceById, fabric, linksByHost } from "../core/data";
+import { deviceById, fabric, hasRib, linksByHost } from "../core/data";
 import { useInvestigation } from "../core/store";
 import type { Cite, Flow, Trace, TraceOutcome } from "../core/types";
 import { isDecidedOutcome, outcomeUndecidingGaps } from "../core/claims";
@@ -568,6 +568,9 @@ export interface IntentSearch {
   /** The host each traced flow ENTERED at. Ingress is chosen from point-in-time FHRP/SVI evidence,
    *  so every counterfactual this search states is conditional on it. */
   ingressHosts: Set<string>;
+  /** The records each ingress was chosen from (the entry hop's SVI/route evidence), cited wherever
+   *  the ingress assumption is stated. */
+  ingressCites: Set<string>;
   unmodelledHostsSeen: Set<string>;
   /** Terminal hop verdicts among the flows consistent with the intent — the collateral question. */
   satisfyingVerdicts: Map<string, number>;
@@ -614,6 +617,7 @@ export function startIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP)
     undecidedReasons: new Map(),
     hostsTouched: new Set(),
     ingressHosts: new Set(),
+    ingressCites: new Set(),
     unmodelledHostsSeen: new Set(),
     satisfyingVerdicts: new Map(),
     caveats: new Map(),
@@ -668,7 +672,11 @@ export function stepIntentSearch(s: IntentSearch, budget: number): void {
     if (isDecidedOutcome(trace)) s.decidedOutcomeCounts[trace.outcome] += 1;
     for (const h of trace.hops) s.hostsTouched.add(h.host);
     const entry = trace.hops[0];
-    if (entry !== undefined) s.ingressHosts.add(entry.host);
+    if (entry !== undefined) {
+      s.ingressHosts.add(entry.host);
+      const basis = entry.evidence.find((e) => e.kind === "svi" || e.kind === "route") ?? entry.evidence[0];
+      if (basis !== undefined) s.ingressCites.add(basis.cite);
+    }
     for (const h of trace.unmodelledHosts) s.unmodelledHostsSeen.add(h);
     /* Every bound the constituent traces produced is kept. Discarding them was how the strongest
        claim in the product came to carry fewer caveats than the weakest one. */
@@ -721,17 +729,23 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
     .filter((h) => s.hostsTouched.has(h))
     .map((h) => ribIncompletenessSentence(h))
     .filter((x): x is string => x !== null);
+  /* Every clause of the bound names the record behind it — the coverage matrix for the RIB hosts, and
+     each incompleteness reason its own record (./rib-completeness.ts) — so the strongest claim in the
+     product is never displayed without its citations (acceptance B6). */
   const under =
-    `under the collected RIBs of ${c.routableHosts.join(" and ")} only (${c.hostsWithRoutes} of ${total} hosts)` +
+    `under the collected RIBs of ${c.routableHosts.join(" and ")} only (${c.hostsWithRoutes} of ${total} hosts, ${c.cite})` +
     (partialRibs.length === 0 ? "" : ` — and ${partialRibs.join("; ")}`);
   const spaceText = `${searched} flows derivable from ${intent.sources.length} source address(es) and ${intent.destinations.length} destination address(es) across ${intent.services.length} service(s)`;
 
   const first = s.counterexamples[0];
+  /* The record the counterexample's own trace was decided by. */
+  const firstLast = first === undefined ? undefined : first.trace.hops[first.trace.hops.length - 1];
+  const firstCite = firstLast?.decidedBy?.cite ?? (firstLast === undefined ? c.cite : `routes.${firstLast.host}`);
   const boundSentence =
     outcome === "counterexample-found" && first !== undefined
       ? `A counterexample was found: ${first.flow.protocol} ${first.flow.srcIp} to ${first.flow.dstIp}${
           first.flow.dstPort === null ? "" : `:${first.flow.dstPort}`
-        } is ${outcomeWordOf(first.trace)}, which contradicts the intent. ${s.counterexamples.length} of the ${searched} flows searched contradict it, ${under}.${
+        } is ${outcomeWordOf(first.trace)} (${firstCite}), which contradicts the intent. ${s.counterexamples.length} of the ${searched} flows searched contradict it, ${under}.${
           dropped > 0
             ? ` ${dropped} of the ${enumerated} flows this intent implies were never traced because the enumeration was capped at ${cap}, so the contradicting count is a lower bound.`
             : ""
@@ -752,17 +766,17 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
   const unmodelledHosts = fabric.devices.map((d) => d.host).filter((h) => !c.routableHosts.includes(h));
   const unmodelledSentence =
     withoutRib > 0
-      ? `Flows through the ${withoutRib} host(s) with no collected RIB were not modelled and could violate this intent (${unmodelledHosts.join(", ")}).${
+      ? `Flows through the ${withoutRib} host(s) with no collected RIB were not modelled and could violate this intent (${unmodelledHosts.join(", ")}; ${c.cite}).${
           s.unmodelledHostsSeen.size > 0
-            ? ` ${[...s.unmodelledHostsSeen].sort().join(", ")} ${s.unmodelledHostsSeen.size === 1 ? "was" : "were"} reached by this search itself and could not be modelled there.`
+            ? ` ${[...s.unmodelledHostsSeen].sort().join(", ")} ${s.unmodelledHostsSeen.size === 1 ? "was" : "were"} reached by this search itself and could not be modelled there (${c.cite}).`
             : ""
         }`
       : null;
 
   const intendedEffect =
     intent.kind === "none-reach"
-      ? `The intent asserts that nothing from ${intent.sourceSpace.prefix} reaches ${intent.destSpace.prefix}. Inside the searched space, ${s.counterexamples.length} flow(s) reach it, ${s.satisfying} do not, and ${s.undecided} could not be decided.`
-      : `The intent asserts that everything observed in ${intent.sourceSpace.prefix} reaches ${intent.destinations[0]?.ip ?? "its gateway"}. Inside the searched space, ${s.satisfying} flow(s) reach it, ${s.counterexamples.length} do not, and ${s.undecided} could not be decided.`;
+      ? `The intent asserts that nothing from ${intent.sourceSpace.prefix} (${intent.sourceSpace.cite}) reaches ${intent.destSpace.prefix} (${intent.destSpace.cite}). Inside the searched space, ${s.counterexamples.length} flow(s) reach it, ${s.satisfying} do not, and ${s.undecided} could not be decided.`
+      : `The intent asserts that everything observed in ${intent.sourceSpace.prefix} (${intent.sourceSpace.cite}) reaches ${intent.destinations[0]?.ip ?? "its gateway"} (${intent.destSpace.cite}). Inside the searched space, ${s.satisfying} flow(s) reach it, ${s.counterexamples.length} do not, and ${s.undecided} could not be decided.`;
 
   const collateral: string[] = [];
   /* Each outcome is split into what was decided and what the engine returned but did not decide,
@@ -784,7 +798,10 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
   collateral.push(
     s.hostsTouched.size === 0
       ? "No host was traversed: every flow was refused before a device was consulted."
-      : `Hosts traversed: ${[...s.hostsTouched].sort().join(", ")}. No other device in the topology was consulted, so nothing here describes them.`,
+      : `Hosts traversed: ${[...s.hostsTouched]
+          .sort()
+          .map((h) => (hasRib(h) ? `${h} (routes.${h})` : `${h} (${c.cite})`))
+          .join(", ")}. No other device in the topology was consulted, so nothing here describes them.`,
   );
 
   /* The intended-versus-unintended reading. An intent that holds because no route exists is a
@@ -802,7 +819,7 @@ export function finishIntentSearch(s: IntentSearch): IntentVerdict {
   const atIngress =
     ingress.length === 0
       ? ""
-      : ` with ${ingress.join(" and ")} as ingress — chosen from point-in-time FHRP/SVI evidence; another member of the group may be the ingress, and its forwarding and filtering were not searched here`;
+      : ` with ${ingress.join(" and ")} as ingress — chosen from point-in-time FHRP/SVI evidence (${[...s.ingressCites].sort().join(", ") || c.cite}); another member of the group may be the ingress, and its forwarding and filtering were not searched here`;
   if (intent.kind === "none-reach" && s.satisfying > 0) {
     if (noRoute === s.satisfying) {
       collateral.push(
@@ -1454,6 +1471,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
             </Button>
             <span className="pt-form__scope">
               {`Forwarding is modelled on ${fabric.coverage.routableHosts.join(", ")} only — ${fabric.coverage.hostsWithRoutes} of ${fabric.devices.length} hosts have a collected routing table.`}
+              <CiteLink cite={fabric.coverage.cite} onOpen={(c) => onOpenCite?.(c)} />
             </span>
           </div>
         </form>

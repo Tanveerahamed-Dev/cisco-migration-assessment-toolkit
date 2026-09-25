@@ -770,3 +770,46 @@ describe("an external selection moves the roving cell with the reveal", () => {
     expect(position(container)).toEqual([5, 1]);
   });
 });
+
+/* The render-time aim used to fire only when the aim TARGET changed. A filter edit that keeps the
+   selection but moves it to another row index left the tab stop on whatever row now occupied the
+   old index, so Tab entered the grid on a stranger (W6-a4; PriorityQueue worked around it for its
+   own widen control by withdrawing `revealId` for one commit). The aim now follows the row while
+   the reader has not moved the roving cell since the aim placed it; once they have, their place
+   is theirs and the pre-existing clamp keeps its index. */
+describe("the tab stop follows the selected row when the rows re-order", () => {
+  const ui = (rs: readonly Row[], activeId: string | null): ReactNode => (
+    <>
+      <button type="button" id="outside">
+        outside
+      </button>
+      <DataGrid<Row> label="Rows" columns={columns} nodes={dataNodes(rs)} template={TEMPLATE} activeId={activeId} />
+    </>
+  );
+  const evens = manyRows.filter((r) => Number(r.id.slice(1)) % 2 === 0);
+  const stopId = (c: HTMLElement): string | undefined =>
+    focusedCell(c)?.closest('[role="row"]')?.querySelector('[role="rowheader"]')?.textContent ?? undefined;
+
+  it("re-aims when the same selected id moves to a new row index", () => {
+    const { container, render } = mount(ui(manyRows, "m30"));
+    expect(stopId(container)).toBe("m30");
+    render(ui(evens, "m30")); // m30: index 29 -> 14
+    expect(container.querySelectorAll('[tabindex="0"]').length).toBe(1);
+    expect(stopId(container)).toBe("m30");
+    render(ui([...evens].reverse(), "m30")); // and again, on a re-sort
+    expect(stopId(container)).toBe("m30");
+  });
+
+  it("leaves the reader's own place alone once they have moved the roving cell", () => {
+    const { container, render } = mount(ui(manyRows, "m30"));
+    const cell = focusedCell(container)!;
+    focus(cell);
+    key(cell, "ArrowDown");
+    key(document.activeElement!, "ArrowDown");
+    expect(stopId(container)).toBe("m32");
+    focus(container.querySelector<HTMLElement>("#outside")!);
+    render(ui(evens, "m30"));
+    // The index is kept (clamped to the 20 remaining rows), as before: not dragged back to m30.
+    expect(stopId(container)).toBe("m40");
+  });
+});

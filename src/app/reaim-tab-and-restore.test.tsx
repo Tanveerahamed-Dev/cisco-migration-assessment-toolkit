@@ -20,13 +20,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fabric } from "../core/data";
-import { useInvestigation, type EvidenceTab } from "../core/store";
+import { EVIDENCE_TABS, useInvestigation, type EvidenceTab } from "../core/store";
 import { traceFlow } from "../forwarding/engine";
 
 vi.mock("../fabric3d/Fabric3D", () => ({ default: () => <div />, Fabric3D: () => <div /> }));
 
 import { App } from "./App";
 import { RailB, type EvidenceView } from "./surfaces";
+/* The stage's lazy chunk at collection time, as composite-tabstop.test.tsx does (acceptance F2): here
+   it resolves to the mock above, so the first mount never waits on a module load either way. */
+import "../fabric3d/Fabric3D";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -46,14 +49,23 @@ function mount(ui: ReactNode): HTMLElement {
 }
 
 /** Flush until the restored trace has landed AND the shell's hop re-aim has had a commit after it.
- *  Condition-based, not a fixed sleep: a cold first App mount under a loaded suite took seconds. */
+ *
+ *  COUNTED, not timed (acceptance F2, W6 gate 2026-09-25). This waited against a wall-clock deadline
+ *  (`Date.now() + 8000`) and failed on a loaded clone in five of seven runs, at 16-30 s or with
+ *  "expected null to be core1": what the deadline measured was the host, not the app. The restore
+ *  lands after one frame and one task (PathTrace's `deferPastPaint`), a fixed number of the 10 ms
+ *  flush turns below whatever the load; the only wall-clock-bound part, the stage's lazy chunk,
+ *  is loaded at collection time (see the import above). So the wait is a bounded count of turns,
+ *  and running out of it is a stated failure, not a silent fall-through to a later assertion. */
+const RESTORE_TURNS = 50;
 const settleRestore = async (): Promise<void> => {
-  const deadline = Date.now() + 8000;
-  while (useInvestigation.getState().trace === null && Date.now() < deadline) {
+  let turns = 0;
+  for (; useInvestigation.getState().trace === null && turns < RESTORE_TURNS; turns += 1) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
   }
+  expect(useInvestigation.getState().trace, `the restored trace had not landed after ${RESTORE_TURNS} flush turns`).not.toBeNull();
   for (let i = 0; i < 4; i += 1) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
@@ -111,7 +123,8 @@ const finding = fabric.findings.find(
   (f) => f.devices.filter((h) => fabric.devices.some((d) => d.id === h)).length >= 2,
 );
 
-const TABS: readonly EvidenceTab[] = ["summary", "ports", "routing", "acl", "findings", "raw"];
+/* Every tab, from the list the URL parser accepts (not a copy of it). */
+const TABS: readonly EvidenceTab[] = EVIDENCE_TABS;
 
 describe("a device selection keeps the Device-pane tab, whichever surface makes it", () => {
   for (const tab of TABS) {

@@ -644,11 +644,24 @@ function scriptProblems(table: readonly Row[]): string[] {
   return problems;
 }
 
+/** The whole tree's text, read ONCE per file and counted (acceptance F2, W6 gate 2026-09-25): the
+ *  reverse check re-read every source file on each of its calls — the tree read three times over
+ *  inside the "is live" case, on a file a saturated clone spent 31 s on. */
+let treeTextReads = 0;
+let treeTextMemo: string | undefined;
+const treeText = (): string => {
+  if (treeTextMemo === undefined) {
+    treeTextReads += 1;
+    treeTextMemo = files.map((f) => readFileSync(f, "utf8")).join("\n");
+  }
+  return treeTextMemo;
+};
+
 /** Reverse: every row names something the code has, and states only times the code has for it. */
 function reverseProblems(table: readonly Row[]): string[] {
   const cssBySelector = new Map<string, CssMotion[]>();
   for (const m of cssMotion) cssBySelector.set(m.selector, [...(cssBySelector.get(m.selector) ?? []), m]);
-  const source = files.map((f) => readFileSync(f, "utf8")).join("\n");
+  const source = treeText();
   const problems: string[] = [];
   for (const row of table) {
     const label = row.cells[0] ?? row.raw;
@@ -728,6 +741,10 @@ describe("§4.8 names every animation the code declares, with the code's own tim
     expect(cssProblems(liar)).toContain(`${skip!.file}:${skip!.line} \`.skip-link\`: the row says NEVER RENDERED, but markup applies the selector`);
     expect(rendered(".skip-link")).toBe(true);
     expect(rendered(".definitely-not-a-class-in-this-tree")).toBe(false);
+  });
+
+  it("read the tree's text once for every reverse check above", () => {
+    expect(treeTextReads, "the tree was read more than once").toBeLessThanOrEqual(1);
   });
 });
 
@@ -1051,12 +1068,18 @@ describe("§4.8 sees rAF-driven eases: no exponential step outside the ease owne
     expect(findExponentialSteps("finite.ts", finite)).toEqual([]);
   });
 
-  it("finds none anywhere in src/ except the ease owner", () => {
-    const offenders = files
-      .filter((f) => /\.tsx?$/.test(f) && rel(f) !== EASE_OWNER)
-      .flatMap((f) => findExponentialSteps(f, readFileSync(f, "utf8")).map((h) => `${rel(f)}:${h}`));
-    expect(offenders, "a per-frame exponential ease outside src/fabric3d/emphasis.ts").toEqual([]);
+  /* One source file per case (acceptance F2, W6 gate 2026-09-25): this was one whole-tree parse in a
+     single test. Each file is still parsed exactly once. */
+  const easeScanned = files.filter((f) => /\.tsx?$/.test(f) && rel(f) !== EASE_OWNER);
+  it("the ease scan's denominator is the tree's scripts, less only the owner", () => {
+    expect(scriptFiles.map(rel)).toContain(EASE_OWNER);
+    expect(easeScanned.length).toBe(scriptFiles.length - 1);
   });
+  for (const f of easeScanned) {
+    it(`${rel(f)} steps no exponential ease (only ${EASE_OWNER} may own one)`, () => {
+      expect(findExponentialSteps(f, readFileSync(f, "utf8")), "a per-frame exponential ease outside src/fabric3d/emphasis.ts").toEqual([]);
+    });
+  }
 
   it("the ease owner itself steps no exponential ease either: every ease there is finite", () => {
     const own = findExponentialSteps(EASE_OWNER, readFileSync(resolve(PKG, EASE_OWNER), "utf8"));

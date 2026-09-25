@@ -160,6 +160,13 @@ export interface FabricLabelsProps {
    * projects into page space, and no scene in this app does.
    */
   coordinateSpace?: "client" | "canvas";
+  /**
+   * Called when an off-view pointer that HOLDS keyboard focus leaves the stage (its host came into
+   * view — usually because the reader just activated it to frame the host). The pointer stops being
+   * focusable as it goes, and a focused element that vanishes drops focus to <body> (acceptance D3);
+   * the stage hands it somewhere that exists instead (Fabric3D: the canvas, now framing that host).
+   */
+  onPointerFocusLost?: () => void;
 }
 
 /** How far above the anchor a label sits, as a multiple of its own height. The blocked host's
@@ -167,9 +174,12 @@ export interface FabricLabelsProps {
 const LIFT = 1.6;
 const LIFT_BLOCKED = 3;
 /** Where an off-canvas finding pointer's CENTRE is pinned, in from the stage edge, px. Wider than
- *  tall because the pointer is a horizontal chip. */
+ *  tall because the pointer is a horizontal chip. Only the DIRECTION's anchor: the placed box is then
+ *  kept inside the stage by its measured size, and clear of every other layer on the stage. */
 const POINTER_EDGE_X = 84;
 const POINTER_EDGE_Y = 22;
+/** Clearance between a pointer and another layer on the stage (the HUD, the Legend, the tree), px. */
+const POINTER_GAP = 4;
 /** Minimum clearance between a label and the stage edge, px. */
 const LABEL_EDGE_PX = 4;
 /** A name displaced further than this from its anchor gets a leader line back to it, px. */
@@ -195,13 +205,19 @@ export function FabricLabels({
   onStrandedUnseen,
   finding = null,
   coordinateSpace = "canvas",
+  onPointerFocusLost,
 }: FabricLabelsProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const pointerLayerRef = useRef<HTMLDivElement | null>(null);
   const elsRef = useRef(new Map<string, HTMLSpanElement>());
   const sizesRef = useRef(new Map<string, { w: number; h: number; nameC: number }>());
   const writtenRef = useRef(new Map<string, string>());
   /** Edge-of-canvas pointers for finding hosts projected OFF the canvas (A4), by device id. */
-  const pointerElsRef = useRef(new Map<string, HTMLSpanElement>());
+  const pointerElsRef = useRef(new Map<string, HTMLButtonElement>());
+  /** Each pointer's measured box (its text is the finding id and the host, so it is per finding). */
+  const pointerSizesRef = useRef(new Map<string, { w: number; h: number }>());
+  const focusLostRef = useRef(onPointerFocusLost);
+  focusLostRef.current = onPointerFocusLost;
 
   const hoverState = useSyncExternalStore(hover.subscribe, hover.get, () => EMPTY_HOVER);
   const hoveredId = hoverState.deviceId;
@@ -315,8 +331,29 @@ export function FabricLabels({
     const keepouts: Box[] = [];
     const keepoutEls = (): HTMLElement[] =>
       host?.parentElement ? Array.from(host.parentElement.querySelectorAll<HTMLElement>("[data-label-keepout]")) : [];
+    /* THE POINTER'S OBSTACLES are wider than the labels' keep-outs: every OTHER LAYER on the stage —
+       each child of the stage except the canvas's own host and these two overlay layers — whatever
+       it is called and whether or not it opted in with `data-label-keepout`. The pointer is a control:
+       under the HUD, the Legend or the tree (all stacked above it) it is a control a click cannot
+       reach, and MEASURED (acceptance D1, dark theme, 1440x900) that is where it sat — under the
+       blast-radius HUD, where a click did nothing. A layer clipped to nothing (the fabric tree's
+       visually-hidden recipe) is not an obstacle. */
+    const pointerObstacles: Box[] = [];
+    const overlayEls = (): HTMLElement[] => {
+      const stage = host?.parentElement;
+      if (!stage) return [];
+      return Array.from(stage.children).filter(
+        (el): el is HTMLElement =>
+          el instanceof HTMLElement &&
+          el !== host &&
+          el !== pointerLayerRef.current &&
+          !el.matches("canvas") &&
+          el.querySelector("canvas") === null,
+      );
+    };
     const measureKeepouts = (): void => {
       keepouts.length = 0;
+      pointerObstacles.length = 0;
       if (!host) return;
       const c = host.getBoundingClientRect();
       for (const el of keepoutEls()) {
@@ -324,10 +361,18 @@ export function FabricLabels({
         if (r.width <= 0 || r.height <= 0) continue;
         keepouts.push({ x: r.left - c.left, y: r.top - c.top, w: r.width, h: r.height });
       }
+      for (const el of new Set([...keepoutEls(), ...overlayEls()])) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        const cs = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
+        if (cs !== null && (cs.visibility === "hidden" || cs.display === "none" || /inset\(\s*50%/.test(cs.clipPath))) continue;
+        pointerObstacles.push({ x: r.left - c.left, y: r.top - c.top, w: r.width, h: r.height });
+      }
     };
     measureKeepouts();
 
     let ro: ResizeObserver | null = null;
+    let mo: MutationObserver | null = null;
     if (host && typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -339,7 +384,18 @@ export function FabricLabels({
         measureKeepouts();
       });
       ro.observe(host);
-      for (const el of keepoutEls()) ro.observe(el);
+      for (const el of new Set([...keepoutEls(), ...overlayEls()])) ro.observe(el);
+      /* A layer can be REPLACED rather than resized (the Legend swaps its button for its panel): the
+         new element is observed and everything re-measured. Direct children only — the label writes
+         every frame inside this layer's own subtree must never reach this callback. */
+      const stage = host.parentElement;
+      if (stage && typeof MutationObserver !== "undefined") {
+        mo = new MutationObserver(() => {
+          for (const el of overlayEls()) ro?.observe(el);
+          measureKeepouts();
+        });
+        mo.observe(stage, { childList: true });
+      }
     }
 
     /* Projections of this tick, by position in `seq`, so the write pass and the read pass below
@@ -417,8 +473,53 @@ export function FabricLabels({
        gets a pointer pinned to the stage edge on the line from the centre towards it; a click frames
        that device (the camera moves only when the reader asks). A device projecting INSIDE the stage
        but hidden (occluded) is on screen and gets no pointer. Writes only — positions come from this
-       tick's projections, the stage size from the observer — so it adds no layout read (E3). */
+       tick's projections, the stage size from the observer — so it adds no layout read (E3), except
+       ONE size read per pointer per finding, on the tick it first shows.
+
+       A CONTROL, NOT A MARK (acceptance D1/D5, repair wave 6). The pointer is a <button> in a layer
+       of its own, outside the label layer's aria-hidden: MEASURED, the `<span onClick>` it was could
+       be clicked but never reached by Tab (250 stops), was hidden from assistive technology, and was
+       141.23 x 16.84. A hidden pointer carries the `hidden` attribute, so it leaves the Tab order with
+       the screen. And it is placed clear of every other stage layer (pointerObstacles): the edge point
+       on the line towards the device is only where it WANTS to be. */
     const pointerWritten = new Map<string, string>();
+    const hidePointer = (id: string, el: HTMLButtonElement): void => {
+      if (pointerWritten.get(id) === "hidden") return;
+      pointerWritten.set(id, "hidden");
+      const hadFocus = typeof document !== "undefined" && el.contains(document.activeElement);
+      el.dataset.visible = "false";
+      el.hidden = true;
+      if (hadFocus) focusLostRef.current?.();
+    };
+    /** The centre nearest `want` whose box (hw, hh half-extents) is inside the stage and clear of every
+     *  obstacle. Candidates: `want` itself, then flush against each side of each obstacle (and, once
+     *  more, of each obstacle from there — the HUD and the Legend can both be in the way). */
+    const clearCentre = (want: { x: number; y: number }, hw: number, hh: number, w: number, h: number): { x: number; y: number } => {
+      const lo = LABEL_EDGE_PX;
+      const clamp = (c: { x: number; y: number }) => ({
+        x: w - 2 * lo > 2 * hw ? Math.min(Math.max(c.x, lo + hw), w - lo - hw) : w / 2,
+        y: h - 2 * lo > 2 * hh ? Math.min(Math.max(c.y, lo + hh), h - lo - hh) : h / 2,
+      });
+      const clearOf = (c: { x: number; y: number }): boolean =>
+        pointerObstacles.every(
+          (o) =>
+            !(c.x - hw < o.x + o.w + POINTER_GAP && c.x + hw + POINTER_GAP > o.x && c.y - hh < o.y + o.h + POINTER_GAP && c.y + hh + POINTER_GAP > o.y),
+        );
+      const around = (c: { x: number; y: number }) =>
+        pointerObstacles.flatMap((o) => [
+          clamp({ x: o.x - POINTER_GAP - hw - 1, y: c.y }),
+          clamp({ x: o.x + o.w + POINTER_GAP + hw + 1, y: c.y }),
+          clamp({ x: c.x, y: o.y - POINTER_GAP - hh - 1 }),
+          clamp({ x: c.x, y: o.y + o.h + POINTER_GAP + hh + 1 }),
+        ]);
+      const first = clamp(want);
+      if (clearOf(first)) return first;
+      const level1 = around(first);
+      const candidates = [...level1, ...level1.flatMap(around)].filter(clearOf);
+      if (candidates.length === 0) return first;
+      const dist = (c: { x: number; y: number }) => Math.hypot(c.x - want.x, c.y - want.y);
+      return candidates.reduce((best, c) => (dist(c) < dist(best) ? c : best));
+    };
     const placePointers = (w: number, container: HTMLElement): void => {
       const ptrs = pointerElsRef.current;
       if (ptrs.size === 0) return;
@@ -431,23 +532,34 @@ export function FabricLabels({
       }
       const cx = w / 2;
       const cy = h / 2;
+      const sizes = pointerSizesRef.current;
       for (const [id, el] of ptrs) {
         const p = byId.get(id) ?? null;
         if (p === null || w <= 0 || h <= 0 || (p.x >= 0 && p.x <= w && p.y >= 0 && p.y <= h)) {
-          if (pointerWritten.get(id) !== "hidden") {
-            pointerWritten.set(id, "hidden");
-            el.dataset.visible = "false";
-          }
+          hidePointer(id, el);
           continue;
+        }
+        if (el.hidden) {
+          el.hidden = false;
+          el.dataset.visible = "true";
+          pointerWritten.delete(id);
+        }
+        let size = sizes.get(id);
+        if (size === undefined) {
+          size = { w: el.offsetWidth, h: el.offsetHeight };
+          if (size.w > 0) sizes.set(id, size);
         }
         const dx = p.x - cx;
         const dy = p.y - cy;
         const hx = Math.max(1, cx - POINTER_EDGE_X);
         const hy = Math.max(1, cy - POINTER_EDGE_Y);
         const t = Math.min(dx === 0 ? Infinity : hx / Math.abs(dx), dy === 0 ? Infinity : hy / Math.abs(dy));
-        const px = Math.round(cx + dx * t);
-        const py = Math.round(cy + dy * t);
-        const deg = Math.round((Math.atan2(dy, dx) * 180) / Math.PI);
+        const at = clearCentre({ x: cx + dx * t, y: cy + dy * t }, size.w / 2, size.h / 2, w, h);
+        const px = Math.round(at.x);
+        const py = Math.round(at.y);
+        /* The arrow still points from where the chip sits towards the device, so a chip moved off
+           its edge point by an obstacle does not point somewhere else. */
+        const deg = Math.round((Math.atan2(p.y - py, p.x - px) * 180) / Math.PI);
         const key = `${px}:${py}:${deg}`;
         if (pointerWritten.get(id) === key) continue;
         pointerWritten.set(id, key);
@@ -1027,6 +1139,7 @@ export function FabricLabels({
     return () => {
       cancelAnimationFrame(frame);
       ro?.disconnect();
+      mo?.disconnect();
     };
     // `epoch` is a dependency so a replaced scene gets a fresh loop rather than a stale handle.
   }, [baseOrder, coordinateSpace, epoch, sceneRef]);
@@ -1035,6 +1148,7 @@ export function FabricLabels({
   useEffect(() => {
     sizesRef.current.clear();
     writtenRef.current.clear();
+    pointerSizesRef.current.clear();
   }, [finding]);
 
   /* Web-font metrics land after first paint; a stale width makes the declutter reject labels that
@@ -1044,7 +1158,9 @@ export function FabricLabels({
     if (!fonts) return;
     let live = true;
     void fonts.ready.then(() => {
-      if (live) sizesRef.current.clear();
+      if (!live) return;
+      sizesRef.current.clear();
+      pointerSizesRef.current.clear();
     });
     return () => {
       live = false;
@@ -1052,146 +1168,158 @@ export function FabricLabels({
   }, []);
 
   return (
-    <div
-      className="fabric3d__labels"
-      ref={containerRef}
-      /* The fabric tree is the accessible equivalent of this view (acceptance D6). Exposing the
-         labels too would read every hostname twice. */
-      aria-hidden="true"
-      data-testid="fabric3d-labels"
-    >
-      {finding !== null
-        ? devices
-            .filter((d) => findingHosts.has(d.id))
-            .map((d) => (
-              <span
-                key={`ptr-${d.id}`}
-                className="fabric3d-pointer"
-                data-pointer-for={d.id}
-                data-visible="false"
-                data-sev={finding.severity}
-                title={`${d.host} is named by the selected finding ${finding.id} and lies outside the view. Click to frame it.`}
-                onClick={() => sceneRef.current?.focusDevice(d.id)}
-                ref={(el) => {
-                  if (el) pointerElsRef.current.set(d.id, el);
-                  else pointerElsRef.current.delete(d.id);
-                }}
-              >
-                <span className="fabric3d-pointer__arrow" aria-hidden="true">
-                  →
+    <>
+      <div
+        className="fabric3d__labels"
+        ref={containerRef}
+        /* The fabric tree is the accessible equivalent of this view (acceptance D6). Exposing the
+           labels too would read every hostname twice. */
+        aria-hidden="true"
+        data-testid="fabric3d-labels"
+      >
+        {devices.map((d) => (
+          <span
+            key={d.id}
+            className="fabric3d-label"
+            data-device={d.id}
+            data-visible="false"
+            data-state=""
+            data-stranded=""
+            data-finding=""
+            data-cut=""
+            data-alarm=""
+            data-disputed=""
+            data-leader=""
+            ref={(el) => {
+              if (el) elsRef.current.set(d.id, el);
+              else {
+                elsRef.current.delete(d.id);
+                sizesRef.current.delete(d.id);
+                writtenRef.current.delete(d.id);
+              }
+            }}
+          >
+            <span className="fabric3d-label__name">{d.host}</span>
+            {/* SECOND CHANNEL FOR THE HEALTH BAND (acceptance D8). On the canvas the band is carried
+                by chassis colour, and the five band tokens are 1.12–1.14:1 apart in greyscale — which
+                is to say indistinguishable to a deuteranope, in monochrome print, or on a projector.
+                The letter is the same device the severity badge already uses (shape + C/H/M/L/I): it
+                survives greyscale, it is co-located with the device it describes, and the legend
+                names it. `band === null` prints its own mark rather than nothing, because a missing
+                letter would read as "no problems here". */}
+            {(() => {
+              /* The letter, colour and tooltip come from the ONE band owner: a favourable band on a
+                 host with unassessed scoring domains prints its letter with the partial mark, in the
+                 neutral ink, and the tooltip names the gaps (B1). */
+              const p = presentBand(d);
+              return (
+                <span
+                  className="fabric3d-label__band"
+                  data-band={p.legendKey}
+                  {...(p.qualified ? { "data-band-partial": "" } : {})}
+                  style={{ "--band-ink": `var(${p.colorToken})` } as CSSProperties}
+                  title={p.sentence}
+                >
+                  {p.letter}
                 </span>
-                <span aria-hidden="true">◆</span> {`${finding.id} ${d.host}`}
-                <span className="fabric3d-pointer__note">off view</span>
-              </span>
-            ))
-        : null}
-      {devices.map((d) => (
-        <span
-          key={d.id}
-          className="fabric3d-label"
-          data-device={d.id}
-          data-visible="false"
-          data-state=""
-          data-stranded=""
-          data-finding=""
-          data-cut=""
-          data-alarm=""
-          data-disputed=""
-          data-leader=""
-          ref={(el) => {
-            if (el) elsRef.current.set(d.id, el);
-            else {
-              elsRef.current.delete(d.id);
-              sizesRef.current.delete(d.id);
-              writtenRef.current.delete(d.id);
-            }
-          }}
-        >
-          <span className="fabric3d-label__name">{d.host}</span>
-          {/* SECOND CHANNEL FOR THE HEALTH BAND (acceptance D8). On the canvas the band is carried
-              by chassis colour, and the five band tokens are 1.12–1.14:1 apart in greyscale — which
-              is to say indistinguishable to a deuteranope, in monochrome print, or on a projector.
-              The letter is the same device the severity badge already uses (shape + C/H/M/L/I): it
-              survives greyscale, it is co-located with the device it describes, and the legend
-              names it. `band === null` prints its own mark rather than nothing, because a missing
-              letter would read as "no problems here". */}
-          {(() => {
-            /* The letter, colour and tooltip come from the ONE band owner: a favourable band on a
-               host with unassessed scoring domains prints its letter with the partial mark, in the
-               neutral ink, and the tooltip names the gaps (B1). */
-            const p = presentBand(d);
-            return (
-              <span
-                className="fabric3d-label__band"
-                data-band={p.legendKey}
-                {...(p.qualified ? { "data-band-partial": "" } : {})}
-                style={{ "--band-ink": `var(${p.colorToken})` } as CSSProperties}
-                title={p.sentence}
-              >
-                {p.letter}
-              </span>
-            );
-          })()}
-          {d.collected ? null : (
-            <span className="fabric3d-label__unobserved">not collected</span>
-          )}
-          {/* THE ANALYSIS STATES, IN WORDS AND A GLYPH. Each was previously carried on the canvas
-              by colour alone — a red halo at the anchor for the failing host, and nothing at all
-              for a stranded one. A halo behind an opaque label box is not a channel, and a colour
-              is not a channel on its own (D8).
+              );
+            })()}
+            {d.collected ? null : (
+              <span className="fabric3d-label__unobserved">not collected</span>
+            )}
+            {/* THE ANALYSIS STATES, IN WORDS AND A GLYPH. Each was previously carried on the canvas
+                by colour alone — a red halo at the anchor for the failing host, and nothing at all
+                for a stranded one. A halo behind an opaque label box is not a channel, and a colour
+                is not a channel on its own (D8).
 
-              `data-alarm` carries the TRACE's ending and exactly one of its three words shows at a
-              time. They are three distinct claims and the fabric may not blur them: `blocked` says
-              a rule or a missing route stopped this packet; `undecided` says the simulation ran
-              and refused to decide, which is a finding about our evidence and NOT a failure of the
-              network; `delivered here` says the packet arrived. `data-cut` is a separate attribute
-              carrying a separate claim — a hypothetical — so a delivered flow over an articulation
-              point can say both true things at once instead of one of them silently winning.
-              CSS hides every mark at the empty value, so an unaffected label is what it was. */}
-          <span className="fabric3d-label__alarm fabric3d-label__alarm--blocked" title="This host stopped the traced flow">
-            <span aria-hidden="true">✕</span> blocked
-          </span>
-          <span
-            className="fabric3d-label__alarm fabric3d-label__alarm--undetermined"
-            title="The simulation reached this host and declined to decide the flow. Not a drop, not a delivery."
-          >
-            <span aria-hidden="true">?</span> undecided
-          </span>
-          <span
-            className="fabric3d-label__alarm fabric3d-label__alarm--delivered"
-            title="The traced flow reached its destination at this host"
-          >
-            <span aria-hidden="true">✓</span> delivered here
-          </span>
-          <span
-            className="fabric3d-label__alarm fabric3d-label__alarm--cut"
-            title="Removing this host would cut other hosts off the fabric"
-          >
-            <span aria-hidden="true">⚠</span> cut point
-          </span>
-          <span
-            className="fabric3d-label__stranded"
-            title={strandedQualifier === "" ? "Unreachable if the current selection fails" : `Unreachable if the current selection fails — ${strandedQualifier}`}
-          >
-            <span aria-hidden="true">⊘</span> {strandedQualifier === "" ? "stranded" : "stranded?"}
-          </span>
-          <span
-            className="fabric3d-label__disputed"
-            title="The snapshot's failure_impact says this failure strands hosts; this graph reproduces no partition. The Inspector compares the two measures."
-          >
-            <span aria-hidden="true">≠</span> impact disputed
-          </span>
-          {finding !== null ? (
-            <span
-              className="fabric3d-label__finding"
-              data-sev={finding.severity}
-              title={`Named by the selected finding ${finding.id}`}
-            >
-              <span aria-hidden="true">◆</span> {finding.id}
+                `data-alarm` carries the TRACE's ending and exactly one of its three words shows at a
+                time. They are three distinct claims and the fabric may not blur them: `blocked` says
+                a rule or a missing route stopped this packet; `undecided` says the simulation ran
+                and refused to decide, which is a finding about our evidence and NOT a failure of the
+                network; `delivered here` says the packet arrived. `data-cut` is a separate attribute
+                carrying a separate claim — a hypothetical — so a delivered flow over an articulation
+                point can say both true things at once instead of one of them silently winning.
+                CSS hides every mark at the empty value, so an unaffected label is what it was. */}
+            <span className="fabric3d-label__alarm fabric3d-label__alarm--blocked" title="This host stopped the traced flow">
+              <span aria-hidden="true">✕</span> blocked
             </span>
-          ) : null}
-        </span>
-      ))}
-    </div>
+            <span
+              className="fabric3d-label__alarm fabric3d-label__alarm--undetermined"
+              title="The simulation reached this host and declined to decide the flow. Not a drop, not a delivery."
+            >
+              <span aria-hidden="true">?</span> undecided
+            </span>
+            <span
+              className="fabric3d-label__alarm fabric3d-label__alarm--delivered"
+              title="The traced flow reached its destination at this host"
+            >
+              <span aria-hidden="true">✓</span> delivered here
+            </span>
+            <span
+              className="fabric3d-label__alarm fabric3d-label__alarm--cut"
+              title="Removing this host would cut other hosts off the fabric"
+            >
+              <span aria-hidden="true">⚠</span> cut point
+            </span>
+            <span
+              className="fabric3d-label__stranded"
+              title={strandedQualifier === "" ? "Unreachable if the current selection fails" : `Unreachable if the current selection fails — ${strandedQualifier}`}
+            >
+              <span aria-hidden="true">⊘</span> {strandedQualifier === "" ? "stranded" : "stranded?"}
+            </span>
+            <span
+              className="fabric3d-label__disputed"
+              title="The snapshot's failure_impact says this failure strands hosts; this graph reproduces no partition. The Inspector compares the two measures."
+            >
+              <span aria-hidden="true">≠</span> impact disputed
+            </span>
+            {finding !== null ? (
+              <span
+                className="fabric3d-label__finding"
+                data-sev={finding.severity}
+                title={`Named by the selected finding ${finding.id}`}
+              >
+                <span aria-hidden="true">◆</span> {finding.id}
+              </span>
+            ) : null}
+          </span>
+        ))}
+      </div>
+      {/* THE OFF-VIEW POINTERS — controls, so NOT inside the aria-hidden label layer above (acceptance
+          D1). A native button: Tab reaches it (after the canvas, before the HUD, in DOM order), Enter
+          and Space activate it, and its name is what it shows — the finding and the host, "off view".
+          It is not a second copy of the fabric for a screen reader: it exists only for a finding's
+          host while that host is outside the view, and says so. Hidden (`hidden`) whenever it is not
+          drawn, so an undrawn pointer is never a Tab stop. */}
+      <div className="fabric3d__pointers" ref={pointerLayerRef} data-testid="fabric3d-pointers">
+        {finding !== null
+          ? devices
+              .filter((d) => findingHosts.has(d.id))
+              .map((d) => (
+                <button
+                  type="button"
+                  key={`ptr-${d.id}`}
+                  className="fabric3d-pointer"
+                  data-pointer-for={d.id}
+                  data-visible="false"
+                  hidden
+                  data-sev={finding.severity}
+                  title={`${d.host} is named by the selected finding ${finding.id} and lies outside the view. Activate to frame it.`}
+                  onClick={() => sceneRef.current?.focusDevice(d.id)}
+                  ref={(el) => {
+                    if (el) pointerElsRef.current.set(d.id, el);
+                    else pointerElsRef.current.delete(d.id);
+                  }}
+                >
+                  <span className="fabric3d-pointer__arrow" aria-hidden="true">
+                    →
+                  </span>
+                  <span aria-hidden="true">◆</span> {`${finding.id} ${d.host}`}{" "}
+                  <span className="fabric3d-pointer__note">off view</span>
+                </button>
+              ))
+          : null}
+      </div>
+    </>
   );
 }

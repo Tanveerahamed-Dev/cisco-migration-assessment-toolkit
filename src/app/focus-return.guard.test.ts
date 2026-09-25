@@ -390,37 +390,64 @@ describe("the focus-return guard's denominator is the runner's own", () => {
   });
 });
 
+/* THE PROGRAM, BUILT ONCE AND COUNTED; THE SCAN, ONE FILE PER CASE (acceptance F2, W6 gate 2026-09-25).
+   "parses every scanned source file" built the program AND analysed every source file in one test:
+   ~5 s on a quiet host, 148 s on a saturated clone, where it failed. The program is now built once
+   per file (lazily, so a single case run with -t still builds it) and the build is COUNTED, as
+   tracked-sources.test.ts counts its own; each scanned file is analysed in a case of its own, once,
+   and the ledger and owner-routing checks read those same per-file results. Same denominator
+   (SOURCES), same analysis, same verdict. */
+let programsBuilt = 0;
+let sourcesProgram: ts.Program | null = null;
+const program = (): ts.Program => {
+  if (sourcesProgram === null) {
+    programsBuilt += 1;
+    sourcesProgram = makeProgram(SOURCES);
+  }
+  return sourcesProgram;
+};
+const analysed = new Map<string, Analysis>();
+const analysisOf = (f: string): Analysis => {
+  let a = analysed.get(f);
+  if (a === undefined) {
+    a = analyseFile(program(), f);
+    analysed.set(f, a);
+  }
+  return a;
+};
+
 describe("no surface decides focus return on its own (acceptance D3)", () => {
-  let cached: ({ f: string } & Analysis)[] | null = null;
-  const results = (): ({ f: string } & Analysis)[] => {
-    if (cached === null) {
-      const program = makeProgram(SOURCES);
-      cached = SOURCES.map((f) => ({ f, ...analyseFile(program, f) }));
-    }
-    return cached;
-  };
+  const pending = new Set(PENDING_ROUTING.map(key));
 
-  it("parses every scanned source file (unscanned is not clean)", () => {
-    expect(results().filter((r) => r.parseError !== null).map((r) => `${r.f}: ${r.parseError}`)).toEqual([]);
+  it("builds the scanned sources' program (once: every per-file case below shares it)", () => {
+    expect(program().getSourceFiles().filter((sf) => !sf.isDeclarationFile).length).toBeGreaterThanOrEqual(SOURCES.length);
   }, 120_000);
 
-  it("finds no blur(), no un-owned isConnected fallback and no direct focus of a captured origin outside focus-return.ts", () => {
-    const pending = new Set(PENDING_ROUTING.map(key));
-    const found = results().flatMap((r) => r.violations);
-    const fresh = found.filter((v) => !pending.has(key(v))).map((v) => `${v.file}:${v.line} ${v.kind}: ${v.text}`);
-    expect(fresh).toEqual([]);
-  }, 120_000);
+  for (const f of SOURCES) {
+    it(`${f}: parses (unscanned is not clean), and decides no focus return on its own`, () => {
+      const a = analysisOf(f);
+      expect(a.parseError, `${f} did not parse`).toBeNull();
+      /* No blur(), no un-owned isConnected fallback and no direct focus of a captured origin
+         outside focus-return.ts (analyseFile exempts the owner itself). */
+      const fresh = a.violations.filter((v) => !pending.has(key(v))).map((v) => `${v.file}:${v.line} ${v.kind}: ${v.text}`);
+      expect(fresh).toEqual([]);
+    });
+  }
 
   it("every routed off-cluster entry still exists (delete it once its owner fixes it)", () => {
-    const found = new Set(results().flatMap((r) => r.violations).map(key));
+    const found = new Set(PENDING_ROUTING.flatMap((p) => analysisOf(p.file).violations).map(key));
     expect(PENDING_ROUTING.filter((p) => !found.has(key(p))).map(key)).toEqual([]);
-  }, 120_000);
+  });
 
   it("routes Header.tsx and DataGrid.tsx through the owner", () => {
     for (const f of ["src/app/Header.tsx", "src/panels/DataGrid.tsx"]) {
-      expect(results().find((r) => r.f === f)?.ownerCalls, f).toBe(true);
+      expect(analysisOf(f).ownerCalls, f).toBe(true);
     }
-  }, 120_000);
+  });
+
+  it("built the scanned sources' program at most once for all of the cases above", () => {
+    expect(programsBuilt, "the program was built more than once").toBeLessThanOrEqual(1);
+  });
 });
 
 describe("the guard is live (planted counterexamples, compiled with the real owner)", () => {

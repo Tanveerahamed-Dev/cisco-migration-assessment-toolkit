@@ -41,7 +41,7 @@
  */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fabric } from "../core/data";
 import { useInvestigation, type InvestigationState } from "../core/store";
@@ -132,6 +132,7 @@ const signature = (): string => identify(tabStops()).map(keyOf).join("\n");
 /* ── mounting and restoring ── */
 
 let current: { root: Root; container: HTMLElement } | null = null;
+const MOUNT_TURNS = 50;
 let seeded: { state: InvestigationState; signature: string; search: string } | null = null;
 
 const flush = async (ms = 10, rounds = 3): Promise<void> => {
@@ -176,9 +177,13 @@ async function mountSeeded(): Promise<void> {
   const root = createRoot(container);
   act(() => root.render(<App />));
   current = { root, container };
-  /* The restored flow is traced after the first commit; the scope bar then carries every token. */
-  const deadline = Date.now() + 8000;
-  while (useInvestigation.getState().trace === null && Date.now() < deadline) await flush(10, 1);
+  /* The restored flow is traced after the first commit; the scope bar then carries every token.
+     COUNTED, not timed (acceptance F2, W6 gate 2026-09-25): the wait was a `Date.now() + 8000`
+     deadline, which measured the host. The trace lands after one frame and one task, so a bounded
+     count of flush turns waits for it whatever the load, and running out is a stated failure. */
+  let turns = 0;
+  for (; useInvestigation.getState().trace === null && turns < MOUNT_TURNS; turns += 1) await flush(10, 1);
+  if (useInvestigation.getState().trace === null) throw new Error(`the seeded flow had not been traced after ${MOUNT_TURNS} flush turns`);
   await flush(10, 4);
   if (seeded === null) seeded = { state: { ...useInvestigation.getState() }, signature: signature(), search: window.location.search };
 }
@@ -268,8 +273,8 @@ beforeAll(() => {
   });
 });
 
-beforeEach(() => {
-  /* A desktop viewport, so the shell lays out every rail (jsdom has no matchMedia). */
+/** A desktop viewport, so the shell lays out every rail (jsdom has no matchMedia). */
+function desktopViewport(): void {
   window.matchMedia = ((q: string) => {
     let matches = true;
     for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
@@ -288,44 +293,76 @@ beforeEach(() => {
       dispatchEvent: () => false,
     } as unknown as MediaQueryList;
   }) as typeof window.matchMedia;
+}
+
+beforeEach(() => {
+  desktopViewport();
   vi.spyOn(window, "open").mockImplementation(() => null);
 });
 
+/* The seeded page is KEPT between cases — each case restores it in place (`restore`, which remounts
+   when the in-place restore does not reproduce it exactly), as the single drive did between presses.
+   Only per-case globals are cleared here; the page itself goes once, after the last case. */
 afterEach(() => {
-  unmount();
-  seeded = null;
   clearGlobals();
   window.matchMedia = realMatchMedia;
-  window.history.replaceState(null, "", "/");
-  useInvestigation.getState().reset();
   vi.restoreAllMocks();
 });
 
+afterAll(() => {
+  unmount();
+  seeded = null;
+  clearGlobals();
+  window.history.replaceState(null, "", "/");
+  useInvestigation.getState().reset();
+});
+
+/* ── the denominator, discovered once, at collection ──
+ *
+ * ONE CASE PER TAB STOP PER KEY (acceptance F2, W6 gate 2026-09-25). The drive was two tests, one
+ * per key, each pressing every tab stop in turn: 55 s each on a quiet host, 168-206 s on a saturated
+ * clone, under a 1 200 s limit of its own — a unit of work the size of the page. The page is now
+ * mounted once while this file is COLLECTED, its tab stops are identified exactly as the drive
+ * identifies them, and each (stop, key) is a case. The denominator is still discovered, not listed;
+ * the floor (every Chip remove control on screen is among the stops, and each removes itself) is
+ * asserted per remove control and as a count. */
+interface Discovered {
+  ident: string;
+  occurrence: number;
+  /** A Chip primitive's remove control: the floor, so the drive cannot pass by pressing nothing. */
+  remover: boolean;
+}
+async function discover(): Promise<Discovered[]> {
+  desktopViewport();
+  try {
+    await mountSeeded();
+    return identify(tabStops()).map(({ ident, occurrence, el }) => ({ ident, occurrence, remover: el.matches(".ui-chip__remove") }));
+  } finally {
+    unmount();
+    seeded = null;
+    clearGlobals();
+    window.matchMedia = realMatchMedia;
+    window.history.replaceState(null, "", "/");
+    useInvestigation.getState().reset();
+  }
+}
+const DISCOVERED = await discover();
+
 describe("D3: a control that removes itself hands focus to a visible successor", () => {
+  it("the seeded page renders its tab stops and its remove controls (the floor)", () => {
+    expect(DISCOVERED.length, "precondition: the seeded page rendered tab stops").toBeGreaterThan(20);
+    /* One per token, in the scope bar and again in the queue's own chip row. */
+    expect(DISCOVERED.filter((d) => d.remover).length, "precondition: the seeded scope rendered its remove controls").toBeGreaterThanOrEqual(9);
+  });
+
   for (const key of ["Enter", "Space"] as const) {
-    it(`every tab stop pressed with ${key}: none leaves focus on <body>, and every self-removing one hands it on`, { timeout: 1_200_000 }, async () => {
-      await mountSeeded();
-      const stops = identify(tabStops()).map(({ ident, occurrence }) => ({ ident, occurrence }));
-      /* The floor: every Chip primitive's remove control the seed put on screen (one per token, in
-         the scope bar and again in the queue's own chip row). */
-      const removers = identify(tabStops())
-        .filter((s) => s.el.matches(".ui-chip__remove"))
-        .map(keyOf);
-      expect(removers.length, "precondition: the seeded scope rendered its remove controls").toBeGreaterThanOrEqual(9);
-
-      const outcomes: Outcome[] = [];
-      const undriven: string[] = [];
-      for (const stop of stops) {
+    for (const stop of DISCOVERED) {
+      it(`${keyOf(stop)} pressed with ${key}: focus is not left on <body>${stop.remover ? ", and the remove control removes itself and hands focus on" : ""}`, async () => {
         const o = await drive(stop, key);
-        if (o === null) undriven.push(keyOf(stop));
-        else outcomes.push(o);
-      }
-
-      const members = new Set(outcomes.filter((o) => o.removed).map((o) => o.stop));
-      const failed = outcomes.filter((o) => !o.ok).map((o) => `${o.stop} [${key}]${o.removed ? " (removed itself)" : ""} -> ${o.landed}: ${o.why}`);
-      expect(undriven, "tab stops that could not be found again and focused from the seeded state").toEqual([]);
-      expect(removers.filter((r) => !members.has(r)), "remove controls that did not remove themselves").toEqual([]);
-      expect(failed).toEqual([]);
-    });
+        expect(o, "the tab stop could not be found again and focused from the seeded state").not.toBeNull();
+        if (stop.remover) expect(o!.removed, "a remove control that did not remove itself").toBe(true);
+        expect(o!.ok ? "" : `${o!.stop} [${key}]${o!.removed ? " (removed itself)" : ""} -> ${o!.landed}: ${o!.why}`).toBe("");
+      });
+    }
   }
 });

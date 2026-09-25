@@ -164,8 +164,25 @@ export function findDeviceBandReads(program: ts.Program, consider: (fileName: st
   return out;
 }
 
+/* THE TREE'S PROGRAM, BUILT ONCE AND COUNTED (acceptance F2, W6 gate 2026-09-25). The whole-tree check
+   was ONE test — build a type-checked program over every authored module, then walk all of them —
+   ~3 s on a quiet host and 82-160 s on a saturated clone, where it failed. The program is now built
+   once per file (lazily, so a single case run with -t still builds it) and the build is COUNTED, as
+   tracked-sources.test.ts counts its own; the walk is split one source file per case. Same
+   denominator, same predicate, same verdict. */
+let programsBuilt = 0;
+let treeProgram: ts.Program | undefined;
+
 describe("Device.band is read only by band-qualification.ts (B1 structural guard)", () => {
   const files = walk(SRC);
+  const program = (): ts.Program => {
+    if (treeProgram === undefined) {
+      programsBuilt += 1;
+      treeProgram = ts.createProgram(files, compilerOptions());
+    }
+    return treeProgram;
+  };
+  const relOf = (f: string): string => relative(SRC, f).split(sep).join("/");
   const vitestConfig = readFileSync(join(ROOT, "vitest.config.ts"), "utf8");
 
   it("walks the whole denominator vitest collects over, and that denominator is pinned", () => {
@@ -191,17 +208,26 @@ describe("Device.band is read only by band-qualification.ts (B1 structural guard
     expect(files.length).toBeGreaterThan(60);
   });
 
-  it("finds no read of Device.band outside the owner", () => {
-    const program = ts.createProgram(files, compilerOptions());
-    const inTree = new Set(files.map(norm));
-    const reads = findDeviceBandReads(program, (f) => inTree.has(norm(f)));
-    // The owner does read it — which also proves the resolver resolves on the real tree.
-    expect(reads.some((r) => norm(r.file) === norm(OWNER))).toBe(true);
-    const outside = reads
-      .filter((r) => norm(r.file) !== norm(OWNER))
-      .map((r) => `${relative(SRC, r.file).split(sep).join("/")}:${r.line}  ${r.text}`);
-    expect(outside).toEqual([]);
+  it("builds the tree's program (once: every per-file case below shares it)", () => {
+    expect(program().getSourceFiles().filter((sf) => !sf.isDeclarationFile).length).toBeGreaterThanOrEqual(files.length);
   }, 60_000);
+
+  for (const file of files) {
+    const readsIn = (): BandRead[] => findDeviceBandReads(program(), (f) => norm(f) === norm(file));
+    if (norm(file) === norm(OWNER)) {
+      it(`${relOf(file)} (the owner): reads it, so the resolver resolves on the real tree`, () => {
+        expect(readsIn().length).toBeGreaterThan(0);
+      });
+    } else {
+      it(`${relOf(file)}: reads no Device.band`, () => {
+        expect(readsIn().map((r) => `${relOf(r.file)}:${r.line}  ${r.text}`)).toEqual([]);
+      });
+    }
+  }
+
+  it("built the tree's program at most once for all of the cases above", () => {
+    expect(programsBuilt, "the program was built more than once").toBeLessThanOrEqual(1);
+  });
 
   it("is live: a planted module reading the band under any name, by destructuring, or laundered, is flagged", () => {
     const planted = join(SRC, "core", "__planted_band_reader.ts").split(sep).join("/");

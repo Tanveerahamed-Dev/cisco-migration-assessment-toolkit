@@ -195,13 +195,51 @@ export async function buildGraph(root: string, configFile: string | false, input
   return { files: [...files].sort(), importsOf, originalSource };
 }
 
-/** The compilers' side: every file in the program TypeScript builds from tsconfig.scripts.json. */
-export function compilerGraph(): string[] {
+/** How many times this file has built the compilers' program — counted, so its cost is asserted. */
+let programsBuilt = 0;
+
+/** tsconfig.scripts.json, parsed exactly as `tsc -p` parses it. */
+export function scriptsConfig(): ts.ParsedCommandLine {
   const config = resolve(PKG, "tsconfig.scripts.json");
   const raw = ts.readConfigFile(config, (p) => readFileSync(p, "utf8"));
-  const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, PKG, undefined, config);
-  const program = ts.createProgram(parsed.fileNames, parsed.options);
-  return program
+  return ts.parseJsonConfigFileContent(raw.config, ts.sys, PKG, undefined, config);
+}
+
+/**
+ * The only two options the gate's program changes from the config, and why they cannot narrow it.
+ *
+ * WHAT THEY COST, MEASURED (acceptance F2, 2026-09-24). The program the config describes parsed 178
+ * files to report 5: the other 173 were the default libraries (`lib.dom.d.ts` alone is 1.9 MB) and
+ * the automatically included `@types/node` — 1.5 s on a quiet host, 7.7-12.6 s on a busy one, and
+ * it was built twice per run. Every one of those 173 was then dropped by the `node_modules` filter
+ * below, so none of them was ever part of the denominator.
+ *
+ * WHY THAT HOLDS BY CONSTRUCTION, not by this tree's luck. `noLib` stops TypeScript loading the
+ * default libraries, which live in the compiler's own package (`getDefaultLibFilePath`); `types: []`
+ * stops the AUTOMATIC inclusion of type packages, which come from `typeRoots`. Module resolution —
+ * every `import`, `export … from`, `import()` and `/// <reference path>` the compilers write, and
+ * any `/// <reference types>` they write themselves — is untouched, because every other option is
+ * the config's own, spread unchanged. The preconditions test below asserts the two facts the
+ * argument rests on: the default library directory and every configured type directive resolve
+ * inside `node_modules`, and no `typeRoots` points outside it. If either stops being true the
+ * gate goes red instead of quietly narrowing. Measured on this tree: the same 5 files either way.
+ */
+export const PROGRAM_OVERRIDES = Object.freeze({ noLib: true, types: [] as string[] });
+
+let program: ts.Program | undefined;
+
+/** The compilers' program: TypeScript's own resolution from tsconfig.scripts.json's roots, built once. */
+export function compilerProgram(): ts.Program {
+  if (program !== undefined) return program;
+  const parsed = scriptsConfig();
+  programsBuilt += 1;
+  program = ts.createProgram(parsed.fileNames, { ...parsed.options, ...PROGRAM_OVERRIDES });
+  return program;
+}
+
+/** The compilers' side: every file in the program TypeScript builds from tsconfig.scripts.json. */
+export function compilerGraph(): string[] {
+  return compilerProgram()
     .getSourceFiles()
     .map((sf) => relative(PKG, sf.fileName).split("\\").join("/"))
     .filter((r) => !r.startsWith("..") && !r.split("/").includes("node_modules"))
@@ -290,6 +328,45 @@ describe("everything the build loads and the compilers import is committed", () 
         "The fix is to COMMIT them (the repository owner's decision), not to weaken this test:\n" +
         missing.join("\n"),
     ).toEqual([]);
+  });
+});
+
+describe("the compilers' program is built once, and parses only what the gate counts", () => {
+  /* ACCEPTANCE F2, 2026-09-24: "the compilers' program reaches every compiler…" took 35.6 s and "no
+     file the build loads…" 31.4 s on a loaded host, against the 30 s limit — and each of them built
+     the whole program again. Counted here rather than timed. */
+  it("builds one program however many tests read the compilers' side", () => {
+    const before = programsBuilt;
+    const first = compilerGraph();
+    const second = compilerGraph();
+    expect(second).toEqual(first);
+    expect(programsBuilt - before, "the compilers' program was built more than once").toBeLessThanOrEqual(1);
+  });
+
+  it("parses no default library and no automatically included type package: they are never counted", () => {
+    const program = compilerProgram();
+    const parsed = program.getSourceFiles();
+    const lib = parsed.filter((sf) => program.isSourceFileDefaultLibrary(sf)).map((sf) => sf.fileName);
+    const ambientTypes = parsed.filter((sf) => /[\/]node_modules[\/]@types[\/]/.test(sf.fileName)).map((sf) => sf.fileName);
+    expect(lib, "default-library files parsed only to be filtered out").toEqual([]);
+    expect(ambientTypes, "ambient type packages parsed only to be filtered out").toEqual([]);
+  });
+
+  it("what the two overrides leave out can only be a file the node_modules filter drops anyway", () => {
+    const inModules = (p: string): boolean => p.split(/[\/]/).includes("node_modules");
+    const parsed = scriptsConfig();
+    expect(Object.keys(PROGRAM_OVERRIDES).sort(), "the program differs from the config in these options only").toEqual(["noLib", "types"]);
+    // The default libraries noLib skips come from the compiler's own package.
+    expect(inModules(ts.getDefaultLibFilePath(parsed.options)), ts.getDefaultLibFilePath(parsed.options)).toBe(true);
+    // The type packages types: [] skips: no local typeRoots, and every configured one resolves inside node_modules.
+    for (const root of parsed.options.typeRoots ?? []) expect(inModules(root), `typeRoots entry ${root}`).toBe(true);
+    const configured = parsed.options.types ?? [];
+    expect(configured.length, "precondition: the config names its type packages").toBeGreaterThan(0);
+    for (const name of configured) {
+      const hit = ts.resolveTypeReferenceDirective(name, resolve(PKG, "tsconfig.scripts.json"), parsed.options, ts.sys).resolvedTypeReferenceDirective;
+      expect(hit?.resolvedFileName, `type package "${name}" did not resolve`).toBeDefined();
+      expect(inModules(hit!.resolvedFileName!), `type package "${name}" resolved outside node_modules: ${hit?.resolvedFileName}`).toBe(true);
+    }
   });
 });
 

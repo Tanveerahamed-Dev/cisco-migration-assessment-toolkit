@@ -51,6 +51,7 @@ import {
 } from "../ui/icons";
 import { Button, Cite as CiteLink, IconButton, LiveRegion } from "../ui/primitives";
 import type { IntentVerdict } from "./PathTrace";
+import { CitedText } from "./cited-text";
 import "./PathTrace.css";
 
 type Glyph = (p: IconProps) => ReactElement;
@@ -295,7 +296,9 @@ function ScopeBlock({ trace, onOpenCite }: { trace: Trace; onOpenCite: (c: Cite)
   const decidedHere = undecidable.members.filter((m) => decidedCites.has(m.cite));
   return (
     <Section title="Scope of this result" tone="scope">
-      <p className="claim__scope-line">{T1_verdict(trace)}</p>
+      <p className="claim__scope-line">
+        <CitedText text={T1_verdict(trace)} onOpenCite={onOpenCite} also={[c.cite, ...s.policyGaps.map((g) => g.cite)]} />
+      </p>
       <ul className="claim__scope-list">
         <li>
           <span className="claim__k">RIBs</span>
@@ -321,22 +324,35 @@ function ScopeBlock({ trace, onOpenCite }: { trace: Trace; onOpenCite: (c: Cite)
           <li data-emphasis="true">
             <span className="claim__k">Filtering</span>
             <span>
-              {s.policyGaps
-                .map((g) => {
-                  if (g.kind === "acl-uncollected") return `${g.label}.`;
-                  /* The denying line can be a member of the undecidable union above. That union is a
-                     statement about the line across ALL flows; this flow is decided by it only
-                     because every field it matches on is readable for this flow. Said here, so the
-                     list above and the verdict do not read as a contradiction. */
-                  const listed = undecidable.members.find((m) => m.cite === g.cite);
+              {s.policyGaps.map((g, i) => {
+                /* Each gap is rendered with the records it rests on — its own `cite` and every one
+                   written into its sentence — as citation controls, never as inert text (B6). */
+                const lead = i === 0 ? "" : " ";
+                if (g.kind === "acl-uncollected") {
                   return (
-                    `${g.label}.` +
-                    (listed === undefined
-                      ? ""
-                      : ` ${listed.label} is listed above as undecidable in general (${listed.reasons.join("; ")}); for this flow its fields could be read, so it decides what the list would do — not whether the list is applied.`)
+                    <span key={`${g.kind}-${g.host}-${i}`}>
+                      {lead}
+                      <CitedText text={`${g.label}.`} onOpenCite={onOpenCite} also={[g.cite]} />
+                    </span>
                   );
-                })
-                .join(" ")}
+                }
+                /* The denying line can be a member of the undecidable union above. That union is a
+                   statement about the line across ALL flows; this flow is decided by it only
+                   because every field it matches on is readable for this flow. Said here, so the
+                   list above and the verdict do not read as a contradiction. */
+                const listed = undecidable.members.find((m) => m.cite === g.cite);
+                const text =
+                  `${g.label}.` +
+                  (listed === undefined
+                    ? ""
+                    : ` ${listed.label} is listed above as undecidable in general (${listed.reasons.join("; ")}); for this flow its fields could be read, so it decides what the list would do — not whether the list is applied.`);
+                return (
+                  <span key={`${g.kind}-${g.host}-${i}`}>
+                    {lead}
+                    <CitedText text={text} onOpenCite={onOpenCite} also={[g.cite]} />
+                  </span>
+                );
+              })}
             </span>
           </li>
         ) : null}
@@ -344,6 +360,7 @@ function ScopeBlock({ trace, onOpenCite }: { trace: Trace; onOpenCite: (c: Cite)
           <li data-emphasis="true">
             <span className="claim__k">On this path</span>
             <span>{`${trace.unmodelledHosts.join(", ")} — traversed with no collected routing table, so the result stops there.`}</span>
+            <CiteLink cite={c.cite} onOpen={onOpenCite} />
           </li>
         ) : null}
         <li>
@@ -407,7 +424,9 @@ function CounterBlock({
                 {outcomeWordOf(result.trace)}
               </span>
             </p>
-            <p className="claim__counter-why">{result.rationale}</p>
+            <p className="claim__counter-why">
+              <CitedText text={result.rationale} onOpenCite={onOpenCite} />
+            </p>
             {onRunFlow ? (
               <Button variant="secondary" size="sm" onClick={() => onRunFlow(result.flow)}>
                 Trace this flow instead
@@ -417,7 +436,9 @@ function CounterBlock({
         ) : (
           /* The affordance stays even with nothing to offer: its absence would read as "there is
              nothing to try", when the truth is that a bounded search found nothing to try. */
-          <p className="claim__counter-none">{result.reason}</p>
+          <p className="claim__counter-none">
+            <CitedText text={result.reason} onOpenCite={onOpenCite} />
+          </p>
         )}
       </Section>
 
@@ -494,7 +515,11 @@ export function ClaimCard({ trace, counterexample, onRunFlow, onOpenCite }: Clai
         </p>
       ) : null}
 
-      <p className="claim__sentence">{trace.claim}</p>
+      {/* The claim with every citation in it as a control, in place: a sentence quoted from cited
+          records is never shown without them (acceptance B6). */}
+      <p className="claim__sentence">
+        <CitedText text={trace.claim} onOpenCite={openCite} />
+      </p>
       <p className="claim__sample">{T10_SAMPLE_PATH}</p>
 
       <ScopeBlock trace={trace} onOpenCite={openCite} />
@@ -520,7 +545,9 @@ export function ClaimCard({ trace, counterexample, onRunFlow, onOpenCite }: Clai
         ) : (
           <ul className="claim__caveats">
             {trace.caveats.map((c) => (
-              <li key={c}>{c}</li>
+              <li key={c}>
+                <CitedText text={c} onOpenCite={openCite} />
+              </li>
             ))}
           </ul>
         )}
@@ -582,9 +609,13 @@ export function IntentClaimCard({ verdict, onRunFlow, onOpenCite }: IntentClaimC
       {/* The bound is the result. It is rendered first and it is not collapsible: "no
           counterexample" without its denominator is the sentence this whole surface exists to
           prevent. */}
-      <p className="claim__sentence">{verdict.boundSentence}</p>
+      <p className="claim__sentence">
+        <CitedText text={verdict.boundSentence} onOpenCite={openCite} />
+      </p>
       {verdict.unmodelledSentence === null ? null : (
-        <p className="claim__undetermined">{verdict.unmodelledSentence}</p>
+        <p className="claim__undetermined">
+          <CitedText text={verdict.unmodelledSentence} onOpenCite={openCite} />
+        </p>
       )}
 
       {first !== null ? (
@@ -596,7 +627,9 @@ export function IntentClaimCard({ verdict, onRunFlow, onOpenCite }: IntentClaimC
                 {outcomeWordOf(first.trace)}
               </span>
             </p>
-            <p className="claim__counter-why">{first.trace.claim}</p>
+            <p className="claim__counter-why">
+              <CitedText text={first.trace.claim} onOpenCite={openCite} />
+            </p>
             {onRunFlow ? (
               <Button variant="primary" size="sm" onClick={() => onRunFlow(first.flow)}>
                 Open this flow in the trace view
@@ -648,7 +681,9 @@ export function IntentClaimCard({ verdict, onRunFlow, onOpenCite }: IntentClaimC
             {verdict.undecidedReasons.map((r) => (
               <li key={r.reason}>
                 <span className="claim__count">{r.count}</span>
-                <span>{r.reason}</span>
+                <span>
+                  <CitedText text={r.reason} onOpenCite={openCite} />
+                </span>
                 <CiteLink cite={r.cite} onOpen={openCite} />
               </li>
             ))}
@@ -675,20 +710,26 @@ export function IntentClaimCard({ verdict, onRunFlow, onOpenCite }: IntentClaimC
                   ? `all ${verdict.searched}`
                   : c.flows}
               </span>
-              <span>{c.text}</span>
+              <span>
+                <CitedText text={c.text} onOpenCite={openCite} />
+              </span>
             </li>
           ))}
         </ul>
       </Section>
 
       <Section title="Intended effect" tone="intent">
-        <p className="claim__sentence">{verdict.intendedEffect}</p>
+        <p className="claim__sentence">
+          <CitedText text={verdict.intendedEffect} onOpenCite={openCite} />
+        </p>
       </Section>
 
       <Section title="Collateral — what else the search observed inside the same space" tone="caveat">
         <ul className="claim__caveats">
           {verdict.collateral.map((c) => (
-            <li key={c}>{c}</li>
+            <li key={c}>
+              <CitedText text={c} onOpenCite={openCite} />
+            </li>
           ))}
         </ul>
         {verdict.decidedReasons.length > 0 ? (
@@ -698,7 +739,9 @@ export function IntentClaimCard({ verdict, onRunFlow, onOpenCite }: IntentClaimC
               {verdict.decidedReasons.map((r) => (
                 <li key={r.reason}>
                   <span className="claim__count">{r.count}</span>
-                  <span>{r.reason}</span>
+                  <span>
+                    <CitedText text={r.reason} onOpenCite={openCite} />
+                  </span>
                   <CiteLink cite={r.cite} onOpen={openCite} />
                 </li>
               ))}

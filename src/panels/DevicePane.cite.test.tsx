@@ -174,10 +174,14 @@ describe("B6: identity and health rows cite a record that carries the value they
   };
   const inventoried = fabric.devices.filter((d) => d.inventoried);
 
-  it("on every inventoried device, the named rows cite the SOURCE record that holds the field", () => {
-    expect(inventoried.length).toBeGreaterThan(1);
+  /* One inventoried device per case (acceptance F2, W6 gate 2026-09-25); each case's count of the
+     citations it checked is kept, so the floor below sums them rather than re-rendering. */
+  const checkedOn = new Map<string, number>();
+  const checkDevice = (d: Device): number => {
+    const known = checkedOn.get(d.id);
+    if (known !== undefined) return known;
     let checked = 0;
-    for (const d of inventoried) {
+    {
       const c = showDevice(d.id, "summary");
       for (const row of c.querySelectorAll(".dp-kv__row")) {
         const k = squash(row.querySelector(".dp-kv__k")?.textContent);
@@ -203,6 +207,20 @@ describe("B6: identity and health rows cite a record that carries the value they
       }
       unmountAll();
     }
+    checkedOn.set(d.id, checked);
+    return checked;
+  };
+
+  it("there is more than one inventoried device", () => {
+    expect(inventoried.length).toBeGreaterThan(1);
+  });
+  for (const d of inventoried) {
+    it(`${d.id}: the named rows cite the SOURCE record that holds the field`, () => {
+      checkDevice(d);
+    });
+  }
+  it("the named rows were checked on every inventoried device (more than five citations each, on average)", () => {
+    const checked = inventoried.reduce((n, d) => n + checkDevice(d), 0);
     expect(checked).toBeGreaterThan(inventoried.length * 5);
   });
 
@@ -271,24 +289,42 @@ describe("B6 class guard: no value row in the device or link pane lacks a resolv
     }
   }
 
-  it("walks every device and every link, and every row it finds is cited or declares its derivation", () => {
-    const out = { rows: 0, cited: 0, derived: 0, grid: 0, problems: [] as string[] };
-    for (const d of fabric.devices) {
-      for (const tab of DEVICE_TABS) {
-        audit(showDevice(d.id, tab), `device ${d.id} / ${tab}`, out);
+  /* ONE CASE PER DEVICE AND PER LINK (acceptance F2, W6 gate 2026-09-25). The walk was one test over
+     every device and every link, every tab — 1.7 s on a quiet host, 40-43 s for this file on a
+     saturated clone, under a 240 s limit of its own. Each record is now audited in a case of its own
+     and its audit is kept, so the floor below (the walk met the rows it is about) sums the same
+     audits instead of repeating them; a record a filtered run did not reach is audited there. */
+  type Audit = { rows: number; cited: number; derived: number; grid: number; problems: string[] };
+  const audits = new Map<string, Audit>();
+  const auditOf = (kind: "device" | "link", id: string): Audit => {
+    const key = `${kind} ${id}`;
+    let out = audits.get(key);
+    if (out === undefined) {
+      out = { rows: 0, cited: 0, derived: 0, grid: 0, problems: [] };
+      for (const tab of kind === "device" ? DEVICE_TABS : LINK_TABS) {
+        audit(kind === "device" ? showDevice(id, tab) : showLink(id, tab), `${key} / ${tab}`, out);
         unmountAll();
       }
+      audits.set(key, out);
     }
-    for (const l of fabric.links) {
-      for (const tab of LINK_TABS) {
-        audit(showLink(l.id, tab), `link ${l.id} / ${tab}`, out);
-        unmountAll();
-      }
-    }
-    // The walk must have met the rows it is about — an empty walk is not a pass.
-    expect(out.rows).toBeGreaterThan(500);
-    expect(out.grid).toBeGreaterThan(100);
-    expect(out.cited).toBeGreaterThan(out.derived);
-    expect(out.problems.slice(0, 40), `${out.problems.length} uncited rows`).toEqual([]);
-  }, 240_000);
+    return out;
+  };
+  const records = [...fabric.devices.map((d) => ["device", d.id] as const), ...fabric.links.map((l) => ["link", l.id] as const)];
+
+  for (const [kind, id] of records) {
+    it(`${kind} ${id}: every row it renders is cited or declares its derivation`, () => {
+      const out = auditOf(kind, id);
+      expect(out.problems.slice(0, 40), `${out.problems.length} uncited rows`).toEqual([]);
+    });
+  }
+
+  it("the walk met the rows it is about — an empty walk is not a pass", () => {
+    const total = records.map(([kind, id]) => auditOf(kind, id)).reduce(
+      (a, o) => ({ rows: a.rows + o.rows, cited: a.cited + o.cited, derived: a.derived + o.derived, grid: a.grid + o.grid }),
+      { rows: 0, cited: 0, derived: 0, grid: 0 },
+    );
+    expect(total.rows).toBeGreaterThan(500);
+    expect(total.grid).toBeGreaterThan(100);
+    expect(total.cited).toBeGreaterThan(total.derived);
+  });
 });

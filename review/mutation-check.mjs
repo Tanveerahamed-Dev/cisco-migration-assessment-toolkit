@@ -155,6 +155,56 @@ const MUTATIONS = [
     tests: ["src/fabric3d/layout.test.ts"],
     pattern: "a dropped link is not an absence of neighbours",
   },
+  /* The O26 replacement's red-proof, executed (W6 gate, 2026-09-25). layout.test.ts's wall-clock
+     median was replaced by a counted work budget stated in the fabric's own size; these three blow
+     the layout's cost up by a factor of n (or worse) without changing its output, so only that
+     budget can kill them. */
+  {
+    id: "layout-crossings-per-node",
+    engine: "src/fabric3d/layout.ts",
+    record: "open-issues O26 (layout.test.ts: a counted work budget replaced the wall-clock median)",
+    what: "the crossing count is recomputed once per node inside every ordering sweep",
+    edits: [
+      {
+        file: "src/fabric3d/layout.ts",
+        find: "      for (const id of g.ids) {\n        let sum = 0;",
+        replace: "      for (const id of g.ids) {\n        crossings();\n        let sum = 0;",
+      },
+    ],
+    tests: ["src/fabric3d/layout.test.ts"],
+    pattern: "work budget",
+  },
+  {
+    id: "layout-clearance-quadratic",
+    engine: "src/fabric3d/layout.ts",
+    record: "open-issues O26 (layout.test.ts: a counted work budget replaced the wall-clock median)",
+    what: "the edge-clearance pass measures every node against every segment once more per node pair",
+    edits: [
+      {
+        file: "src/fabric3d/layout.ts",
+        find: "      const { distance, t } = pointToSegment([other.x, other.y, other.z], pa, pb);",
+        replace:
+          "      for (const o2 of nodes) pointToSegment([o2.x, o2.y, o2.z], pa, pb);\n      const { distance, t } = pointToSegment([other.x, other.y, other.z], pa, pb);",
+      },
+    ],
+    tests: ["src/fabric3d/layout.test.ts"],
+    pattern: "work budget",
+  },
+  {
+    id: "layout-sweeps-times-n",
+    engine: "src/fabric3d/layout.ts",
+    record: "open-issues O26 (layout.test.ts: a counted work budget replaced the wall-clock median)",
+    what: "the ordering runs its sweep count once per device instead of once",
+    edits: [
+      {
+        file: "src/fabric3d/layout.ts",
+        find: "  for (let s = 0; s < sweepCount; s += 1) {",
+        replace: "  for (let s = 0; s < sweepCount * devices.length; s += 1) {",
+      },
+    ],
+    tests: ["src/fabric3d/layout.test.ts"],
+    pattern: "work budget",
+  },
 
   /* ── query — src/core/query.ts (refutation §4) ──────────────────────────────────────────────── */
   {
