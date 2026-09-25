@@ -32,7 +32,7 @@ import {
   setInspectorCite,
   openInspector,
 } from "./Inspector";
-import { JsonView, ancestorsOf, searchDocument } from "./JsonView";
+import { JsonView, ancestorsOf, rowCite, searchDocument } from "./JsonView";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -834,6 +834,167 @@ describe("JsonView is a real tree over the real document", () => {
     );
     key(rowFor(c, "meta.schema"), "c");
     expect(writeText).toHaveBeenCalledWith("meta.schema");
+  });
+
+  describe("a row that names a record opens it (B6)", () => {
+    /* A tree row whose key or value is a record path the model resolves used to be a treeitem that
+       only selected the node: the reader was shown the citation and could not open it from where it
+       stood (inert-cite-census). Activating the row (Enter, or double-click) now opens that record
+       through the citation control's own path, `openInspector`; the row stays a treeitem with no
+       control added inside it, says what activation does, and announces it. */
+    const KEY_CITE = Object.keys(fabric).find((k) => citationCandidates(k).length > 0 && /_/.test(k))!;
+    const dbl = (el: Element): void => {
+      act(() => {
+        el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      });
+    };
+    const controlsIn = (row: HTMLElement): Element[] => [...row.querySelectorAll("button, a[href], input, select, textarea, [role=button], [role=link]")];
+
+    it("a row whose KEY resolves: Enter and double-click open it, and the row says and announces so", () => {
+      expect(KEY_CITE, "the compiled document has a top-level key the model resolves as a record").toBeDefined();
+      const opened: string[] = [];
+      const c = mount(<JsonView value={fabric as unknown} rootLabel="fabric.json" label="doc" onOpenCite={(x) => opened.push(x)} />);
+      const row = rowFor(c, KEY_CITE);
+      expect(row.getAttribute("role")).toBe("treeitem");
+      expect(row.getAttribute("aria-description")).toBe(`Enter or double-click opens the record ${KEY_CITE} in the Inspector.`);
+      const before = controlsIn(row);
+      key(row, "Enter");
+      expect(opened).toEqual([KEY_CITE]);
+      expect(text(c.querySelector('[aria-live]'))).toBe(`Opened ${KEY_CITE} in the Inspector.`);
+      dbl(rowFor(c, KEY_CITE));
+      expect(opened).toEqual([KEY_CITE, KEY_CITE]);
+      // no control was added inside the treeitem: only the copy tool it already carried
+      expect(controlsIn(rowFor(c, KEY_CITE)).length).toBe(before.length);
+      expect(controlsIn(rowFor(c, KEY_CITE)).every((b) => (b.getAttribute("aria-label") ?? "").startsWith("Copy path "))).toBe(true);
+      // Space keeps its tree meaning: it expands and collapses, it does not open
+      const was = rowFor(c, KEY_CITE).getAttribute("aria-expanded");
+      key(rowFor(c, KEY_CITE), " ");
+      expect(rowFor(c, KEY_CITE).getAttribute("aria-expanded")).not.toBe(was);
+      expect(opened.length).toBe(2);
+    });
+
+    it("a row whose VALUE resolves opens the record the value names", () => {
+      const opened: string[] = [];
+      const c = mount(
+        <JsonView value={fabric as unknown} rootLabel="fabric.json" label="doc" citedPath="findings[0].cite" onOpenCite={(x) => opened.push(x)} />,
+      );
+      const row = rowFor(c, "findings[0].cite");
+      expect(citationCandidates(FIRST_FINDING.cite).length, "the finding's cite resolves").toBeGreaterThan(0);
+      expect(row.getAttribute("aria-description")).toContain(`opens the record ${FIRST_FINDING.cite}`);
+      key(row, "Enter");
+      expect(opened).toEqual([FIRST_FINDING.cite]);
+    });
+
+    it("goes through openInspector: the docked Inspector is re-pointed at the record the row names", () => {
+      act(() => openInspector(MODEL_CITE));
+      const c = mount(<Inspector />);
+      click(tabFor(c, "json"));
+      const row = [...c.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.dataset["nodeId"] === KEY_CITE)!;
+      expect(row, "the JSON view renders the top-level row").toBeDefined();
+      key(row, "Enter");
+      expect(c.querySelector<HTMLElement>("#inspector")?.dataset["cite"]).toBe(KEY_CITE);
+    });
+
+    /* A row that names no record the resolver finds is plain data, and the tree says NOTHING about it.
+       An earlier version stated "X names no record in this model" for any path-SHAPED text the resolver
+       did not match. An independent verifier walked all 11,032 rows of fabric.json and found 78 carrying
+       that sentence, many about data that IS in the model: the ACL rows themselves
+       (acls.core1.PROTECT_SERVERS, whose own path is a record), endpoint MAC addresses, the device's own
+       host name, meta.scriptVersion, the coverage.aclSummary counters. "Path-shaped" is a guess about a
+       string; "names no record" is a claim about the whole model; the guess cannot carry the claim.
+       Absence rendered as a fact is the defect this product exists to refuse, so the tree states only
+       the positive, resolver-verified fact — "opens the record X" — and otherwise stays silent. */
+    it("a value that names no record stays plain data, and the tree states no absence about it", () => {
+      const opened: string[] = [];
+      const c = mount(
+        <JsonView
+          value={{ ref: "no_such_collection[9].nowhere", mac: "aabb.ccdd.ee01", host: "wan-edge-rtr1.lab", version: "V3.23.0", acl: "PROTECT_SERVERS", n: 3 }}
+          rootLabel="doc"
+          label="doc"
+          onOpenCite={(x) => opened.push(x)}
+        />,
+      );
+      for (const k of ["ref", "mac", "host", "version", "acl", "n"]) {
+        const row = rowFor(c, k);
+        expect(row.hasAttribute("aria-description"), `${k} carries no description`).toBe(false);
+        expect(row.dataset["opens"], `${k} is not marked as opening a record`).toBeUndefined();
+        key(row, "Enter");
+        dbl(rowFor(c, k));
+      }
+      expect(opened).toEqual([]);
+      expect(text(c.querySelector('[aria-live]'))).not.toMatch(/no record|names no|not in (this|the) model|nothing to open/i);
+    });
+
+    it("over every node of the compiled model, a row's description is either absent or a record the resolver opens", () => {
+      /* The class, walked rather than sampled: every key and string value in fabric.json, as the tree
+         would render it. Nothing may be described except as a record the model resolves. */
+      let rows = 0;
+      let opening = 0;
+      const bad: string[] = [];
+      const walk = (v: unknown, keyOf: string, path: string): void => {
+        rows += 1;
+        const cite = rowCite(keyOf, v);
+        if (cite !== null) {
+          opening += 1;
+          if (citationCandidates(cite).length === 0) bad.push(`${path}: describes ${cite}, which does not resolve`);
+        }
+        if (Array.isArray(v)) v.forEach((x, i) => walk(x, `[${i}]`, `${path}[${i}]`));
+        else if (v !== null && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, k, path === "" ? k : `${path}.${k}`);
+      };
+      walk(fabric, "fabric.json", "");
+      expect(rows, "the walk visited the whole model").toBeGreaterThan(10_000);
+      expect(opening, "some rows do open records (the positive half is exercised)").toBeGreaterThan(0);
+      expect(bad).toEqual([]);
+    });
+
+    it("the hint says which rows open a record — not 'a record path', since some record paths do not", () => {
+      /* `devices` and `acls` are record paths the tree does not open (their keys carry no path
+         punctuation, so the resolver does not read them as citations). A hint promising that Enter
+         on "a record path" opens it overclaims on exactly those rows (independent verifier). */
+      const c = mount(<JsonView value={fabric as unknown} rootLabel="fabric.json" label="doc" onOpenCite={() => {}} />);
+      const hint = text(c.querySelector(".jsonview__hint"));
+      expect(hint).not.toMatch(/on a record path opens it/);
+      expect(hint).toContain("A row underlined with dots names a record: Enter or double-click opens it.");
+      expect(rowFor(c, "devices").hasAttribute("aria-description"), "a record path the tree does not open is not marked").toBe(false);
+    });
+
+    it("opening the same record twice is announced twice", () => {
+      vi.useFakeTimers();
+      try {
+        const c = mount(<JsonView value={fabric as unknown} rootLabel="fabric.json" label="doc" onOpenCite={() => {}} />);
+        const region = (): string => text(c.querySelector(".jsonview > [aria-live]"));
+        key(rowFor(c, KEY_CITE), "Enter");
+        expect(region()).toBe(`Opened ${KEY_CITE} in the Inspector.`);
+        key(rowFor(c, KEY_CITE), "Enter");
+        // the region empties and is written again, so a screen reader announces the repeat
+        expect(region()).toBe("");
+        act(() => {
+          vi.advanceTimersByTime(200);
+        });
+        expect(region()).toBe(`Opened ${KEY_CITE} in the Inspector.`);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("the tree's announcement clears when something else moves the Inspector, and survives its own open", () => {
+      act(() => openInspector(FIRST_FINDING.cite));
+      const c = mount(<Inspector />);
+      click(tabFor(c, "json"));
+      const region = (): string => text(c.querySelector(".jsonview > [aria-live]"));
+      const row = [...c.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.dataset["nodeId"] === KEY_CITE)!;
+      expect(row, "the JSON view renders the top-level row").toBeDefined();
+      key(row, "Enter");
+      expect(c.querySelector<HTMLElement>("#inspector")?.dataset["cite"]).toBe(KEY_CITE);
+      expect(region(), "the tree's own open re-points the Inspector and stays announced").toBe(`Opened ${KEY_CITE} in the Inspector.`);
+      act(() => openInspector(MODEL_CITE));
+      expect(region(), "another control moved the Inspector: the tree's message is no longer current").toBe("");
+    });
+
+    it("without an opener (a standalone tree) no row claims to open anything", () => {
+      const c = mount(<JsonView value={fabric as unknown} rootLabel="fabric.json" label="doc" />);
+      expect(c.querySelectorAll("[aria-description]").length).toBe(0);
+    });
   });
 
   it("chunks an oversized array and states the remainder rather than truncating silently", () => {

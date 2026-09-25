@@ -79,6 +79,17 @@ export function citesIn(text: string): Cite[] {
   return splitCited(text).flatMap((p) => ("cite" in p ? [p.cite] : []));
 }
 
+/** True when the Inspector, opened at `cite`, would show the record at `modelPath` (the resolver's own answer). */
+export function citeShows(cite: string, modelPath: string): boolean {
+  return cite === modelPath || citationCandidates(cite).includes(modelPath);
+}
+
+/* There is deliberately no "unresolved paths" counterpart to `citesIn`. One existed for a few hours
+   (wave 7 residuals) so the JSON tree could say "X names no record in this model"; an independent
+   verifier found 78 rows of fabric.json carrying that sentence, many about data that IS in the model
+   (ACL rows, MAC addresses, host names, version strings). Path SHAPE is a guess about a string, and
+   "no record" is a claim about the whole model; a surface states only what the resolver found. */
+
 /**
  * The sentence with its citations taken OUT, for a place where a citation cannot be a working control:
  * a `role="option"` row, whose activation runs something else and which may not contain a control

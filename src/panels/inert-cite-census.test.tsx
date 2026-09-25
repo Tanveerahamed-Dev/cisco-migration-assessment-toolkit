@@ -19,8 +19,11 @@
  *      `aria-description`, `placeholder`, `alt`, `aria-valuetext`) of the rendered document is read.
  *   2. Each one must be OWNED by a control, and that control must WORK: activating it must put the
  *      Inspector on that record (`#inspector[data-cite]`, or the model path it shows,
- *      `[data-model-path]`). Its label is not trusted — it is clicked. A citation in a button that
- *      does something else (the preset shape) fails exactly as a citation in no control does.
+ *      `[data-model-path]`). Its label is not trusted — it is activated (clicked; a treeitem is
+ *      activated by Enter, as its role defines). A citation in a button that does something else
+ *      (the preset shape) fails exactly as a citation in no control does. The one other working
+ *      outcome is a COPY TOOL: a control named "Copy …" whose activation writes that citation to the
+ *      clipboard (observed, not assumed — see `verifyAll`).
  *   3. No control is nested inside another: a citation inside a run button must be restructured, not
  *      nested, because nested interactive content is invalid HTML and unreachable to assistive tech.
  * Two things are not citations to open, stated by what they are rather than by name: the Inspector's
@@ -319,21 +322,64 @@ const timing = { clicks: 0, ms: 0 };
  * is not a citation control may have moved the investigation (the preset shape: a run button, whose
  * store write lands a frame later), so the caller then waits and compares before going on.
  */
+/**
+ * Activate a control the way its role is activated. A treeitem is activated by Enter (APG treeview:
+ * Enter performs the item's default action; a click on a treeitem SELECTS it, which is not
+ * activation). Every other control is clicked. By role, never by component or class.
+ */
+function activate(owner: HTMLElement): void {
+  if (owner.getAttribute("role") === "treeitem") owner.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  else owner.click();
+}
+
+/** A control's accessible name: its `aria-label`, else its text. */
+const accessibleName = (el: HTMLElement): string => (el.getAttribute("aria-label") ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * THE COPY-TOOL RULE. A control whose accessible name begins "Copy" and whose activation writes the
+ * citation's text to the clipboard is a citation TOOL, not a dead citation: its name promises the
+ * citation as text, and activating it hands the reader exactly that text to paste. It is recognised
+ * by what it DOES — the clipboard is replaced by a recorder for the duration of the activations, and
+ * the write is observed — and by the name that promises it, never by file, class or list. So a
+ * control named "Copy …" that does anything else is still dead, and so is a control that copies
+ * under a name that does not say it copies (the reader cannot know that is what it will do). Both
+ * are planted and required to fail below ("the copy-tool rule").
+ */
+function withClipboardRecorder<T>(body: (written: string[]) => T): T {
+  const had = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const written: string[] = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    /* A write that never settles: the recorder observes the call, and no status update lands later,
+       outside the batch that caused it. */
+    value: { writeText: (t: string) => (written.push(t), new Promise<void>(() => {})) },
+  });
+  try {
+    return body(written);
+  } finally {
+    if (had) Object.defineProperty(navigator, "clipboard", had);
+    else delete (navigator as unknown as Record<string, unknown>)["clipboard"];
+  }
+}
+
 function verifyAll(pending: { owner: HTMLElement; cite: string; key: string }[]): boolean {
   if (pending.length === 0) return false;
   const t = performance.now();
   const results: boolean[] = [];
-  act(() => {
-    for (const { owner, cite } of pending) {
-      setInspectorCite(null);
-      owner.click();
-      results.push(inspectorCite() === cite);
-    }
+  withClipboardRecorder((written) => {
+    act(() => {
+      for (const { owner, cite } of pending) {
+        setInspectorCite(null);
+        written.length = 0;
+        activate(owner);
+        results.push(inspectorCite() === cite || (/^Copy\b/.test(accessibleName(owner)) && written.some((w) => w === cite)));
+      }
+    });
   });
   pending.forEach(({ owner, cite, key }, i) => {
     let ok = results[i] ?? false;
     if (!ok && owner.isConnected && inspector()?.contains(owner)) {
-      act(() => owner.click());
+      act(() => activate(owner));
       ok = onScreen().includes(cite);
     }
     verified.set(key, ok);
@@ -400,19 +446,16 @@ async function census(state: string, restore: () => Promise<void>, root: Element
    class anywhere fails; a class in a file this wave owns fails regardless of this list; an entry
    whose class no longer occurs is reported by the last test so the list cannot rot silently. */
 const KNOWN_ELSEWHERE: readonly string[] = [
-  /* app/CommandPalette.tsx: a search result for an endpoint or interface record is an option that
-     SELECTS THE HOST, and it prints the record it matched as a "Source record" chip (`.palette__cite`,
-     text and title), which choosing the option does not open. The suggested-flow rows that were the
-     other half of this class no longer print their rationale's citations (merged-tree gate, wave 7;
-     pinned by CommandPalette.test.tsx). Open decision for the palette owner: drop the chip from rows
-     whose activation does not open its record, or make activation open it; an option may not hold a
-     control, so a nested cite button is not an option. */
-  "dead-control :: PaletteRow < CommandPalette (app/CommandPalette.tsx < app/CommandPalette.tsx) :: div.palette__row < div.palette__group < div.palette__results",
-  /* panels/JsonView.tsx (the Inspector's JSON view): a tree row whose key is a model path is a treeitem
-     that selects the node, not a control that opens that record. */
-  "dead-control :: JsonView < Inspector (panels/JsonView.tsx < panels/Inspector.tsx) :: div.jsonview__row < div.jsonview__tree < div.jsonview",
-  /* panels/JsonView.tsx: the row's "Copy path <path>" button names a record path and copies it. */
-  "dead-control :: IconButton < JsonView (ui/primitives.tsx < panels/JsonView.tsx) :: button.ui-btn < div.jsonview__row < div.jsonview__tree",
+  /* Empty. The last three classes were closed on the owner's decision (B6, after wave 7):
+     - app/CommandPalette.tsx: a search hit (an option that SELECTS a device, finding or host) printed
+       the record it matched as a "Source record" chip its activation did not open. The chip is gone;
+       the row states why it matched in words, and an endpoint or interface hit lands on the host's
+       Ports tab, where the record is a working citation (CommandPalette.test.tsx pins both).
+     - panels/JsonView.tsx: a tree row whose key or value is a resolvable record path was a treeitem
+       that only selected the node. Activating it (Enter, double-click) now opens that record through
+       `openInspector` (Inspector.test.tsx pins it); the census activates a treeitem by Enter.
+     - panels/JsonView.tsx: the row's "Copy path <path>" button copies its citation — a citation tool,
+       recognised by what it does (the copy-tool rule in `verifyAll`), not a dead citation. */
 ];
 
 /* ══ the states ═══════════════════════════════════════════════════════════════════════════════════ */
@@ -668,6 +711,49 @@ describe("every citation the app prints is a working citation control", () => {
       expect(byShape.size, "the records fall into more than a handful of rendering shapes").toBeGreaterThan(10);
       expect([...layers.keys()].sort(), "every resolution layer the data holds is censused").toEqual(expect.arrayContaining(["bearer", "model+source"]));
       expect(rendered).toBe(byShape.size + layers.size * 2 + documents.size);
+    });
+  });
+
+  describe("the copy-tool rule exempts what a control DOES, and nothing else", () => {
+    /* Planted controls, censused exactly as the app's are. Each names the same resolvable record in
+       its accessible name; only the one whose name says it copies AND whose activation writes that
+       citation to the clipboard is a citation tool. The planted proofs are removed from `verified`
+       afterwards, so they cannot stand in for the app's own controls in the verdict below. */
+    it("a copy control that copies the citation passes; a 'Copy' name that does something else, a copy under another name, and a copy of other text are dead", { timeout: CASE_TIMEOUT }, async () => {
+      const cite = [...citeBearers().keys()].sort()[0]!;
+      expect(citesIn(`Copy path ${cite}`), "the planted name carries a citation the resolver recognises").toEqual([cite]);
+      const before = new Set(verified.keys());
+      let other = 0;
+      const write = (t: string): void => void navigator.clipboard?.writeText?.(t);
+      const host = mount(
+        <>
+          <div id="plant-copies" className="plant-copies">
+            <button type="button" aria-label={`Copy path ${cite}`} onClick={() => write(cite)} />
+          </div>
+          <div id="plant-copy-named-does-other" className="plant-copy-named-does-other">
+            <button type="button" aria-label={`Copy path ${cite}`} onClick={() => (other += 1)} />
+          </div>
+          <div id="plant-copies-unnamed" className="plant-copies-unnamed">
+            <button type="button" aria-label={`Keep ${cite}`} onClick={() => write(cite)} />
+          </div>
+          <div id="plant-copies-other-text" className="plant-copies-other-text">
+            <button type="button" aria-label={`Copy path ${cite}`} onClick={() => write("something else")} />
+          </div>
+        </>,
+      );
+      try {
+        const found = await census("planted copy controls", async () => {}, host);
+        expect(found.every((f) => f.kind === "dead-control" && f.cite === cite), "every finding is a dead control for the planted record").toBe(true);
+        /* The one that copies its citation under a "Copy" name is absent; the other three are dead. */
+        expect(found.map((f) => f.where).sort()).toEqual([
+          "button < div.plant-copies-other-text < div",
+          "button < div.plant-copies-unnamed < div",
+          "button < div.plant-copy-named-does-other < div",
+        ]);
+        expect(other, "the Copy-named control that does something else was activated").toBeGreaterThan(0);
+      } finally {
+        for (const k of [...verified.keys()]) if (!before.has(k)) verified.delete(k);
+      }
     });
   });
 

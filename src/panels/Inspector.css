@@ -513,6 +513,15 @@
   color: var(--text-faint);
 }
 
+/* A row whose key or value names a record it opens (Enter or double-click — B6). A dotted underline
+   on the text that names it, not a colour alone: the row is still a treeitem, not a link, so it does
+   not borrow the link's solid underline; the words saying what activation does are in the row's
+   accessible description and the tree's hint. */
+.jsonview__row[data-opens="true"] :is(.jsonview__key, .jsonview__value--string) {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
 /* The cited node. An outline rather than a fill so it survives on top of the hover fill and of the
    search-match fill, and it carries the words "cited here" beside it — the ring alone would be
    meaning in colour. */

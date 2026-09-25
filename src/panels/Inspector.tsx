@@ -1312,6 +1312,7 @@ export function Inspector({
             citedPath={resolution.modelPath !== null && documentOf(resolution.modelPath) === "fabric.json" ? resolution.modelPath : null}
             visible={tab === "json"}
             annotations={jsonAnnotations()}
+            onOpenCite={openInspector}
           />
         </TabPanel>
       </div>

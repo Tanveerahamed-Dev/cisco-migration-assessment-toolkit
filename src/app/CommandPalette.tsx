@@ -16,7 +16,10 @@
  *
  * Honesty rules apply here as everywhere else: a record with no observed band or role renders the
  * absence through `NotObserved`, never as a blank; a command that cannot act right now is listed
- * WITH its reason rather than hidden; and every evidence row carries the citation it came from.
+ * WITH its reason rather than hidden; and every evidence row says, in words, why it matched. A row
+ * prints no citation: it is one option whose activation SELECTS (a device, a finding, a host), so a
+ * record path printed on it would be a citation that choosing the row does not open (B6). The
+ * record stays one step away — on the pane the row lands on, as a working citation.
  *
  * Responsiveness (design brief 8.2, journey 5): the search index is built once and memoised inside
  * `rankedSearch`, so opening is a mount over an existing index; the per-keystroke work runs against
@@ -78,8 +81,9 @@ interface Row {
    * would cut a verdict after its word and before its scope and caveat count (acceptance B2).
    */
   verdictBand?: string;
-  /** The citation of the record behind the row. Commands are verbs and carry none. */
-  cite?: string;
+  /* No `cite`. A row is one role=option whose activation runs `run`, and no row's `run` opens a
+     record: a citation printed on it (the "Source record" chip it used to carry) was one the reader
+     could see and not open, and an option may not hold a control to open it with. */
   /** A string makes the row `aria-disabled` and states why. */
   disabledReason?: string | null;
   run: () => void;
@@ -270,15 +274,67 @@ function landFocus(find: Landing): void {
   setTimeout(step, 0);
 }
 
+/** What a hit is, as a reader would name it. */
+const KIND_NOUN: Readonly<Record<SearchHit["kind"], string>> = {
+  device: "device",
+  finding: "finding",
+  "cross-layer": "cross-layer finding",
+  interface: "interface",
+  endpoint: "endpoint",
+};
+
+/** The indexed field names (`rankedSearch`'s `field`) in words. A field this map does not know is
+ *  shown as its own name — still the true reason, only less readable. */
+const FIELD_WORDS: Readonly<Record<string, string>> = {
+  host: "host name",
+  id: "identifier",
+  model: "model",
+  serial: "serial number",
+  software: "software version",
+  role: "role",
+  kind: "kind",
+  platform: "platform",
+  deductions: "health deductions",
+  impact: "impact",
+  devices: "device list",
+  category: "category",
+  severity: "severity",
+  title: "title",
+  detail: "detail",
+  remediation: "remediation",
+  hosts: "host list",
+  layers: "layers",
+  recommendation: "recommendation",
+  port: "port",
+  "host+port": "host and port",
+  description: "description",
+  portChannel: "port-channel",
+  status: "status",
+  ip: "IP address",
+  mac: "MAC address",
+  vlan: "VLAN",
+  class: "endpoint class",
+  vendor: "vendor",
+  evidence: "evidence basis",
+};
+
+/**
+ * Why this row is a hit, in words — "matched this endpoint's IP address". It replaces the record
+ * path the row used to print (see `Row`): the reader keeps the reason, and the record itself is one
+ * step away on the pane the row lands on.
+ */
+function MatchReason({ hit }: { hit: SearchHit }): ReactNode {
+  return (
+    <span className="palette__matched">
+      matched this {KIND_NOUN[hit.kind]}'s <span className="palette__matched-field">{FIELD_WORDS[hit.field] ?? hit.field}</span>
+    </span>
+  );
+}
+
 function hitRow(hit: SearchHit, close: Close): Row {
   const base = {
     key: `hit:${hit.kind}:${hit.id}:${hit.cite}`,
-    cite: hit.cite,
-    meta: (
-      <span className="palette__matched">
-        matched <span className="palette__matched-field">{hit.field}</span>
-      </span>
-    ),
+    meta: <MatchReason hit={hit} />,
   };
 
   if (hit.kind === "device") {
@@ -340,7 +396,9 @@ function hitRow(hit: SearchHit, close: Close): Row {
   }
 
   /* Interfaces and endpoints are evidence ABOUT a host. The palette selects that host and says so
-     on the row, rather than appearing to select a record the rest of the app cannot hold. */
+     on the row, rather than appearing to select a record the rest of the app cannot hold — and it
+     opens the host's Ports tab, the one evidence tab that lists both kinds of record, each with its
+     working citation. That is what keeps the record one step away once the row prints no path. */
   const host = hit.host;
   return {
     ...base,
@@ -349,12 +407,12 @@ function hitRow(hit: SearchHit, close: Close): Row {
         <span className="palette__mono">{hit.label}</span>
         {host === null ? null : (
           <span className="palette__action">
-            <IconArrowRight className="palette__action-glyph" /> select {host}
+            <IconArrowRight className="palette__action-glyph" /> select {host}, Ports tab
           </span>
         )}
       </span>
     ),
-    text: `${hit.label}${host === null ? "" : `, selects ${host}`}`,
+    text: `${hit.label}${host === null ? "" : `, selects ${host} and opens its Ports tab`}`,
     detail: hit.detail ?? <NotObserved what="description" compact />,
     disabledReason:
       host === null ? "This record names no host, so there is nothing to select from it." : null,
@@ -364,8 +422,10 @@ function hitRow(hit: SearchHit, close: Close): Row {
         return;
       }
       close();
-      useInvestigation.getState().selectDevice(host, { surface: "fabric" });
-      announce(`Selected ${host}.`);
+      const store = useInvestigation.getState();
+      store.selectDevice(host, { surface: "fabric" });
+      store.setEvidenceTab("ports");
+      announce(`Selected ${host}, on its Ports tab, where this ${KIND_NOUN[hit.kind]} record is cited.`);
     },
   };
 }
@@ -412,14 +472,7 @@ const PaletteRow = memo(function PaletteRow({
           </span>
         )}
       </span>
-      <span className="palette__row-side">
-        {row.meta ?? null}
-        {row.cite === undefined ? null : (
-          <span className="palette__cite" title={`Source record: ${row.cite}`}>
-            {row.cite}
-          </span>
-        )}
-      </span>
+      <span className="palette__row-side">{row.meta ?? null}</span>
     </div>
   );
 });

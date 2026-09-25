@@ -266,29 +266,21 @@
   max-width: 45%;
 }
 
+/* The reason a hit matched, as a short sentence ("matched this endpoint's IP address"). It wraps
+   rather than clipping: it is the row's only account of itself now that the row prints no record
+   path (B6), and at phone width a nowrap sentence in a 45% column would be cut. */
 .palette__matched {
   color: var(--text-faint);
   font-size: var(--fs-0);
-  white-space: nowrap;
-}
-
-.palette__matched-field {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
+  text-align: end;
+  overflow-wrap: anywhere;
 }
 
 /* --text-muted, not --claim-out-of-scope: that token is NON-TEXT (4.09:1 on the light palette,
-   3.48:1 on the dark one) and this is 11px text. Previously only the highlighted row switched to
-   --text-muted, so every other row failed 1.4.3. src/core/contrast.test.ts now fails any `color:`
-   in src/ that names a token tokens.css declares non-text. */
-.palette__cite {
+   3.48:1 on the dark one) and this is 11px text — src/core/contrast.test.ts fails any `color:` in
+   src/ that names a token tokens.css declares non-text. Prose now, so no monospace. */
+.palette__matched-field {
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-0);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ══ keycaps ═══════════════════════════════════════════════════════════════ */

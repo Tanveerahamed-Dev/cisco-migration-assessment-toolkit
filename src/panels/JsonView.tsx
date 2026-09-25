@@ -10,6 +10,9 @@
  *      checkable.
  *   2. IT IS A TREE, NOT A PRE BLOCK. APG treeview keys, roving tabindex, aria-level/setsize/
  *      posinset, copy-path on every node. A reader navigating by keyboard reaches any record.
+ *      A row whose key or value is a record path the model resolves OPENS that record when it is
+ *      activated (Enter, or double-click), through the citation control's own `onOpenCite` — the
+ *      row stays one treeitem, with no control added inside it (acceptance B6).
  *   3. IT STAYS RESPONSIVE ON THE WHOLE DOCUMENT. Child rows are materialised only for expanded
  *      subtrees, and an oversized array is cut into chunks with the remainder stated, so the row
  *      count never tracks the document size.
@@ -29,6 +32,7 @@ import {
 } from "react";
 import { IconChevronDown, IconChevronRight, IconCopy } from "../ui/icons";
 import { Button, IconButton, Input, LiveRegion, NotObserved } from "../ui/primitives";
+import { citeShows, citesIn } from "./cited-text";
 /* The tree's styles live with the Inspector's because the tree only ever appears inside it;
    importing here keeps the component usable standalone without a second stylesheet to keep in
    step with the first. */
@@ -333,8 +337,43 @@ export interface JsonViewProps {
    * flag, which read bare contradicts the status bar's undecidable count (review item 13).
    */
   annotations?: Readonly<Record<string, string>>;
+  /**
+   * Open the record a citation names — the Inspector passes `openInspector`, the call every
+   * citation control makes. With it, a row whose key or value is a record path the model resolves
+   * (the Inspector's own resolver, via `citesIn`) opens that record when activated: Enter or
+   * double-click, stated in the row's accessible description and announced. Every other row is
+   * plain data and the tree states NOTHING about it — in particular never that it "names no record":
+   * that would be a claim about the whole model resting on a guess about a string's shape, and an
+   * independent verifier found it false on ACL rows, MAC addresses, host names and version strings
+   * that ARE in the model (Inspector.test.tsx pins both halves, over every node of fabric.json).
+   * Without it (a standalone tree) no row claims to open anything.
+   */
+  onOpenCite?: (cite: string) => void;
   className?: string;
 }
+
+/**
+ * The record a row opens: the first citation the Inspector's own resolver finds in the row's key or
+ * string value, or null. Positive facts only — a row the resolver finds nothing in is data, not an
+ * absence to report. Exported so the class can be tested over every node of the compiled model.
+ */
+export function rowCite(key: string, value: unknown): string | null {
+  const texts = [key, typeof value === "string" ? value : ""];
+  return texts.flatMap((t) => citesIn(t))[0] ?? null;
+}
+
+/** What a row's key or value names: the record it opens. */
+interface RowNames {
+  cite: string;
+}
+
+function namesOf(row: Row): RowNames | null {
+  if (row.more || row.depth === 0) return null; // the root row's key is the document's name, not data
+  const cite = rowCite(row.key, row.value);
+  return cite === null ? null : { cite };
+}
+
+const describeNames = (n: RowNames): string => `Enter or double-click opens the record ${n.cite} in the Inspector.`;
 
 export function JsonView({
   value,
@@ -343,6 +382,7 @@ export function JsonView({
   citedPath = null,
   visible = true,
   annotations,
+  onOpenCite,
   className,
 }: JsonViewProps): ReactElement {
   const initialExpanded = useMemo(() => {
@@ -357,6 +397,43 @@ export function JsonView({
   const [needle, setNeedle] = useState("");
   const [hitAt, setHitAt] = useState(0);
   const { copy, status } = useCopyToClipboard();
+  /* One live region for the tree: what the last copy or the last activation did. */
+  const [said, setSaid] = useState("");
+  /* The message currently in the region, and a pending re-announcement. A polite region only speaks
+     when its text CHANGES, so saying the same thing twice (opening the same record again) must empty
+     the region first and write it back a moment later (a timer, never a clock read: acceptance F6). */
+  const saidNow = useRef("");
+  const reannounce = useRef(0);
+  const say = useCallback((message: string): void => {
+    window.clearTimeout(reannounce.current);
+    if (saidNow.current !== message) {
+      saidNow.current = message;
+      setSaid(message);
+      return;
+    }
+    saidNow.current = "";
+    setSaid("");
+    reannounce.current = window.setTimeout(() => {
+      saidNow.current = message;
+      setSaid(message);
+    }, 120);
+  }, []);
+  useEffect(() => () => window.clearTimeout(reannounce.current), []);
+  /* The record this tree last opened. When the Inspector is re-pointed at anything ELSE — by another
+     control — "Opened X" is no longer current, and a reader who moves into the region must not find it. */
+  const lastOpened = useRef<string | null>(null);
+  useEffect(() => {
+    if (status !== "") say(status);
+  }, [status, say]);
+  useEffect(() => {
+    const mine = lastOpened.current;
+    if (mine === null) return;
+    if (citedPath !== null && citeShows(mine, citedPath)) return; // the tree's own open: still current
+    lastOpened.current = null;
+    window.clearTimeout(reannounce.current);
+    saidNow.current = "";
+    setSaid("");
+  }, [citedPath]);
 
   const treeRef = useRef<HTMLDivElement>(null);
   /* Focus is moved only in response to a key or a click. Focusing on mount would rip focus out of
@@ -385,6 +462,16 @@ export function JsonView({
     [value, rootLabel, expanded, limits],
   );
   const index = useMemo(() => new Map(rows.map((r, i) => [r.id, i])), [rows]);
+  /* Only the rows on screen are asked, and only when there is somewhere to open a record. */
+  const names = useMemo(() => {
+    const m = new Map<string, RowNames>();
+    if (onOpenCite === undefined) return m;
+    for (const r of rows) {
+      const n = namesOf(r);
+      if (n !== null) m.set(r.id, n);
+    }
+    return m;
+  }, [rows, onOpenCite]);
   const hitSet = useMemo(() => new Set(search.hits), [search.hits]);
 
   /* When the active row is inside a subtree the reader has since collapsed, the tree would have no
@@ -467,6 +554,18 @@ export function JsonView({
     [copy, rootLabel],
   );
 
+  /** Activate a row as a citation: open the record it names. A row that names none is not in `names`, so this does nothing for it. */
+  const openRow = useCallback(
+    (id: string): void => {
+      const n = names.get(id);
+      if (n === undefined || onOpenCite === undefined) return;
+      lastOpened.current = n.cite;
+      onOpenCite(n.cite);
+      say(`Opened ${n.cite} in the Inspector.`);
+    },
+    [names, onOpenCite, say],
+  );
+
   const showMore = useCallback((parentId: string) => {
     setLimits((prev) => {
       const next = new Map(prev);
@@ -476,7 +575,10 @@ export function JsonView({
   }, []);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
-    const at = index.get(focusId);
+    /* The row the key was pressed ON. With roving focus that is the active row; reading it from the
+       event rather than from state keeps a key pressed on a row meaning that row. */
+    const on = (e.target as Element).closest?.<HTMLElement>("[data-node-id]")?.dataset["nodeId"];
+    const at = index.get(on !== undefined && index.has(on) ? on : focusId);
     if (at === undefined) return;
     const row = rows[at];
     if (!row) return;
@@ -515,8 +617,19 @@ export function JsonView({
         if (last) move(last.id);
         break;
       }
-      case "Enter":
+      case "Enter": {
+        /* APG: Enter performs the node's default action. A row that names a record opens it; any
+           other row keeps the tree's own default (load more, expand or collapse), and a leaf that
+           opens nothing does nothing — it is data, and nothing is claimed about it. */
+        e.preventDefault();
+        if (row.more) showMore(row.more.parentId);
+        else if (names.has(row.id)) openRow(row.id);
+        else if (row.expandable) setExpandedFor(row.id, !expanded.has(row.id));
+        break;
+      }
       case " ":
+        /* Space keeps its tree meaning on every row, so a row that opens a record can still be
+           expanded and collapsed from the keyboard. */
         e.preventDefault();
         if (row.more) showMore(row.more.parentId);
         else if (row.expandable) setExpandedFor(row.id, !expanded.has(row.id));
@@ -600,6 +713,7 @@ export function JsonView({
             {hitLabel === "" ? (
               <span className="jsonview__hint">
                 Keys and values. Enter steps through matches; c copies the focused path.
+                {onOpenCite === undefined ? null : " A row underlined with dots names a record: Enter or double-click opens it."}
               </span>
             ) : (
               hitLabel
@@ -626,6 +740,7 @@ export function JsonView({
           const isCited = citedPath !== null && row.id === citedPath;
           const currentHit = search.hits[hitAt];
           const more = row.more;
+          const named = names.get(row.id);
           if (more) {
             return (
               <div
@@ -666,6 +781,8 @@ export function JsonView({
               aria-setsize={row.setSize}
               aria-selected={row.id === focusId}
               aria-expanded={row.expandable ? open : undefined}
+              aria-description={named === undefined ? undefined : describeNames(named)}
+              data-opens={named !== undefined ? "true" : undefined}
               tabIndex={row.id === focusId ? 0 : -1}
               className="jsonview__row"
               style={{
@@ -675,6 +792,10 @@ export function JsonView({
                 if ((e.target as HTMLElement).closest(".jsonview__copy")) return;
                 move(row.id);
                 if (row.expandable) setExpandedFor(row.id, !open);
+              }}
+              onDoubleClick={(e) => {
+                if ((e.target as HTMLElement).closest(".jsonview__copy")) return;
+                openRow(row.id);
               }}
             >
               <span className="jsonview__twisty" aria-hidden="true">
@@ -699,7 +820,7 @@ export function JsonView({
           );
         })}
       </div>
-      <LiveRegion message={status} />
+      <LiveRegion message={said} />
     </div>
   );
 }

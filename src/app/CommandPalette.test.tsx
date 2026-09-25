@@ -617,6 +617,48 @@ describe("command palette", () => {
     expect(document.activeElement).toBe(stage);
   });
 
+  it("prints no citation in a search hit it cannot open, says in words why it matched, and lands where the record is (B6)", () => {
+    /* A search hit is one role=option whose activation SELECTS something (a device, a finding, a
+       host). It used to print the record it matched as a "Source record" chip — `endpoint_identity[3]`
+       on a row that selects access10 — so the reader was shown a citation that choosing the row did
+       not open (inert-cite-census). An option may not hold a control, so the citation leaves the row
+       and the reason stays, in words; the record is one step away on the host's pane. */
+    const ep = fabric.endpoints.find((e) => e.ip !== null && e.host !== null);
+    const intf = Object.entries(fabric.interfaces).flatMap(([host, rows]) => rows.map((r) => ({ host, r })))[0];
+    const device = fabric.devices.find((d) => d.collected);
+    expect(ep && intf && device, "the snapshot holds an endpoint with an address, an interface and a collected device").toBeTruthy();
+    openPaletteUI();
+    const READER = ["title", "aria-label", "aria-description", "placeholder", "alt"];
+    for (const term of [ep!.ip!, `${intf!.host}:${intf!.r.port}`, device!.host, fabric.findings[0]!.id]) {
+      type(term);
+      act(() => {});
+      const hits = options().filter((o) => o.closest(".palette__group") !== null && o.querySelector(".palette__matched") !== null);
+      expect(hits.length, `"${term}" returns search hits`).toBeGreaterThan(0);
+      for (const o of hits) {
+        const said = [o.textContent ?? "", ...[o, ...o.querySelectorAll("*")].flatMap((e) => READER.map((a) => e.getAttribute(a) ?? ""))].join(" ");
+        expect(citesIn(said), `a hit for "${term}" names no record it does not open: ${o.textContent}`).toEqual([]);
+        expect(o.querySelector(".palette__cite")).toBeNull();
+        // the reason is a sentence, not a field token: "matched this endpoint's IP address"
+        expect(o.querySelector(".palette__matched")?.textContent ?? "").toMatch(/^matched this [\w -]+'s \w/);
+      }
+    }
+    type(ep!.ip!);
+    act(() => {});
+    // The first endpoint hit for that address: its reason in words, and the host it selects.
+    const row = options().find((o) => /, Ports tab/.test(o.textContent ?? "") && /endpoint/.test(o.querySelector(".palette__matched")?.textContent ?? ""))!;
+    expect(row, "an endpoint hit is on screen").toBeDefined();
+    expect(row.querySelector(".palette__matched")?.textContent).toBe("matched this endpoint's IP address");
+    const selects = /select (\S+), Ports tab/.exec(row.textContent ?? "")?.[1];
+    expect(fabric.endpoints.some((e) => e.host === selects && e.ip === ep!.ip), "the row selects a host holding an endpoint record with that address").toBe(true);
+
+    // Choosing the endpoint row selects its host AND opens the tab that holds the record's citation.
+    act(() => row.click());
+    const st = useInvestigation.getState();
+    expect(st.deviceId).toBe(selects);
+    expect(st.evidenceTab).toBe("ports");
+    expect(st.paletteOpen).toBe(false);
+  });
+
   it("runs the active row on Enter", () => {
     openPaletteUI();
     const device = fabric.devices.find((d) => d.collected);
