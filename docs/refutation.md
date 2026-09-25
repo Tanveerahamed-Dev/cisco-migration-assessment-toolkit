@@ -25,21 +25,46 @@ problem, so it agrees with the author's mistakes. The refuter's question is "wha
 that it did not measure?", and the finding is a counterexample, not an opinion.
 
 **The provenance limit, stated first because it qualifies everything else.** When this section was
-first written, `atlas-scope` had no Git history of its own; it was an untracked directory inside its
-parent repository
-(`git status --short` in the parent reports `?? atlas-scope/`). F3 asks for "a regression test that
-**failed before the fix**", and for every engine except `claims` that half is **attested in prose
-by the refuter, not verifiable from history**. A reader can confirm the test exists, that it pins a
-named defect, and that the code now satisfies it. A reader cannot independently confirm that it was
-red first. That is a real gap in F3's evidence and it is not closed by this document.
+first written (2026-09-21), `atlas-scope` had no Git history of its own; it was an untracked
+directory inside its parent repository (`git status --short` in the parent reported
+`?? atlas-scope/`). F3 asks for "a regression test that **failed before the fix**". History now
+starts at the root commit `50a3dc5`, and what it can show is bounded by what that root already held.
+Corrected 2026-09-25 (repair wave 7) against live Git — until then this paragraph said the half was
+prose "for every engine except `claims`", which history contradicts for forwarding. Per engine, for
+the guards `review/mutation-check.mjs` reverts (re-derive with `node review/mutation-check.mjs
+--history`, which reads only Git):
 
-It is closed going forward: a repository was initialised for `atlas-scope` on 2026-09-21, baseline
-commit `857b520` — since rebuilt marker-free as `50a3dc5`, which differs from it by one comment line
-(`docs/open-issues.md` O10; the history continues `254694b`, `1d19e22`) — so every refutation from
-this point has a before and an after. That commit is a
-snapshot taken while several repair agents were working in the tree — its value is being a
-*before*, not being tidy. Retroactively the gap cannot be closed at all, and asserting otherwise
-would be exactly the kind of unearned confidence the refuters exist to catch.
+- **blast, layout, query and the compiler** — every such guard is already in `50a3dc5`, so no commit
+  holds their pre-fix source, and for them the half is **attested in prose by the refuter, not
+  verifiable from history**. A reader can confirm the test exists, that it pins a named defect, and
+  that the code now satisfies it; a reader cannot independently confirm that it was red first. That
+  is a real gap in F3's evidence and it is not closed by this document.
+- **forwarding** — R17's two guards (`receivedAtOwner`, `receivedElsewhereEvidence`) and their test
+  `router-destined.test.ts` first appear in `254694b`, and that commit's test is red on the root's
+  source: "Tests 5 failed | 1 passed (6)" (reproduced 2026-09-25 from `git archive 50a3dc5` with
+  `254694b`'s test file; one of the five is the TRANSIT control failing on claim wording, not on the
+  defect). §1.1's guards and R19's are already in the root, so those remain prose; §1.2 has not been
+  checked against history.
+- **claims** — C1's and C2's `hopsSupportOutcome` first appears in `254694b`; the C2/C3 follow-up's
+  outcome-band rule in `claimBadge` first appears in `1d19e22`, and `1d19e22`'s `claims.test.ts` is red
+  on `254694b`'s source: "Tests 2 failed | 37 passed (39)", both `expected 'SCOPED' to be
+  'INDETERMINATE'` (reproduced 2026-09-25). `254694b`'s `claims.test.ts` on the root is "12 failed |
+  24 passed (36)", but only 4 of those 12 are the C2 assertion; 4 are `TypeError`s for exports the root
+  did not have yet and 4 fail on verdict-header wording. C3's fix is already in the root.
+
+A KILLED mutation is none of this history: `mutation-check.mjs` reverts a guard in TODAY's source,
+which proves the test detects the defect's shape now, not that it was red on the source as it stood.
+
+A before exists for every fix made after the root: a repository was initialised for `atlas-scope` on
+2026-09-21, baseline commit `857b520` — since rebuilt marker-free as `50a3dc5`, which differs from it
+by one comment line (`docs/open-issues.md` O10; the history continues `254694b`, `1d19e22` and on;
+`git rev-list --count HEAD` gives its current length rather than this line) — so a later fix's parent
+commit holds its pre-fix source. Whether its test was red there is a run, not an assumption: the reds
+repair waves 5 and 6 report were observed in working trees, and neither wave committed a red
+checkpoint (`docs/open-issues.md` O34). The root is a snapshot taken while several repair agents were
+working in the tree — its value is being a *before*, not being tidy. For guards it already held,
+the gap cannot be closed retroactively at all, and asserting otherwise would be exactly the kind of
+unearned confidence the refuters exist to catch.
 
 **Second limit.** "Survived a refuter" is not "is correct". A refuter is a bounded adversary with a
 finite budget who attacks the claims it can see. Each section below therefore records what was
@@ -113,10 +138,15 @@ any of the above: an independent algorithm disagreeing is a counterexample, not 
 
 **Refuted: yes. Four confirmed defects, grouped by shape.**
 
-Report: `src/fabric3d/layout.test.ts:570-574`, which states the grouping explicitly — *"a claim the
-code did not compute, a positional artifact published as evidence, an unvalidated input, and
-missing evidence rendered as a structural fact."* The first regression block is
-`layout.test.ts:576` — *"the suggested detour is measured, not assumed"*.
+Report: the block comment in `src/fabric3d/layout.test.ts` directly above the describe *"the
+suggested detour is measured, not assumed"* (cited by text, not line: the line numbers this sentence
+used to give, `:570-574` and `:576`, had drifted to `:651`/`:655` by `6a5d830`), which states the
+grouping explicitly — *"a claim the code did not compute, a positional artifact published as
+evidence, an unvalidated input, and missing evidence rendered as a structural fact."* That describe is
+the first regression block. The unvalidated input is pinned by *"refuses every non-finite numeric
+option before laying anything out"* (behaviour: nothing returned, no layout work first — the test
+`mutation-check.mjs` kills its mutation with) and *"names the offending option in each refusal"*
+(attribution).
 
 The fourth of those — *missing evidence rendered as a structural fact* — is this repository's
 signature failure class appearing in a geometry module, which is worth noting because it is the
@@ -336,28 +366,39 @@ repair waves, so re-derive it (`grep -n "^export" src/core/claims.ts`) rather th
 
 ## 7. Where F3 stands
 
-| Engine | Refuted | Confirmed defects | Fixed | Pre-fix history | Reverted guard turns its test red (`review/mutation-check.mjs`) |
+| Engine | Refuted | Confirmed defects | Fixed | Pre-fix history (Git; §0) | Reverted guard killed by its targeted assertion (`review/mutation-check.mjs`) |
 |---|---|---|---|---|---|
-| forwarding | yes (×2 passes) | 5 | 5 | no — attested in prose only | yes — 4 mutations, 4 killed |
-| blast | yes | 7 | 7 | no — attested in prose only | yes — 2 mutations, 2 killed |
-| layout | yes | 4 | 4 | no — attested in prose only | yes — 2 mutations, 2 killed |
-| query | yes | 1 class | yes | no — attested in prose only | yes — 1 mutation, 1 killed |
-| compiler | yes (fidelity only) | 4 | 4 | no — attested in prose only | yes — 2 mutations, 2 killed (rebuilt, then tested) |
-| claims | **yes, 2026-09-21** | 3 confirmed (+ the 2026-09-22 C2/C3 follow-up) + 1 disclosed limit | **3 of 3, and the follow-up** | **yes — refuter output recorded above** | yes — 5 mutations, 5 killed |
+| forwarding | yes (×2 passes) | 5 | 5 | **partly** — R17: `254694b`'s test is red on root `50a3dc5` (5 failed, 1 passed; one of the 5 on wording). §1.1 and R19: no, their guards are in the root — attested in prose only. §1.2: not checked against history | yes — 4 mutations, 4 killed |
+| blast | yes | 7 | 7 | no — guards predate the root; attested in prose only | yes — 2 mutations, 2 killed |
+| layout | yes | 4 | 4 | no — guards predate the root; attested in prose only | yes — 5 mutations, 5 killed (3 of them the O26 work-budget red-proof) |
+| query | yes | 1 class | yes | no — guards predate the root; attested in prose only | yes — 1 mutation, 1 killed |
+| compiler | yes (fidelity only) | 4 | 4 | no — guards predate the root; attested in prose only | yes — 2 mutations, 2 killed (rebuilt, then tested) |
+| claims | **yes, 2026-09-21** | 3 confirmed (+ the 2026-09-22 C2/C3 follow-up) + 1 disclosed limit | **3 of 3, and the follow-up** | **partly** — the C2/C3 follow-up: `1d19e22`'s test is red on `254694b` (2 failed, both the badge assertion); C2: 4 of the 12 reds of `254694b`'s test on the root. C3: guard in the root. The refuter output recorded above is prose | yes — 5 mutations, 5 killed |
 
-(Counts as run on 2026-09-23 on the working tree: `node review/mutation-check.mjs` exited 0, **18 of
-18 mutations killed** — the 16 in the table above plus two source-binding mutations (O15, not engine
-sections, reported after the documented engines) — every targeted test green unmutated first. The
-2026-09-22 reading here said "16 of 16"; read the count from the run, not from this line.)
+(As run on 2026-09-25, repair wave 7, on the working tree: `node review/mutation-check.mjs` exited 0,
+**21 of 21 mutations killed, each by the assertion its `killedBy` names** — the 19 in the table above
+plus two source-binding mutations (O15, not engine sections, reported after the documented engines;
+`--history` finds both guards first in `1d19e22`, and no red of theirs on an earlier commit has been run) —
+every targeted test green unmutated first. Earlier readings here said "16 of 16" (2026-09-22) and
+"18 of 18" (2026-09-23), and this table's layout row said "2 mutations" after `--list` held 5; read
+the counts from `--list` and the run, not from this line. Until wave 7 a red from ANY assertion counted
+as a kill, and `layout-nonfinite-option` was "killed" only because the refused option's error message
+changed — the layout still threw, from its output post-condition. Its kill now comes from a
+behavioural test that no fabric is returned and no layout work runs before a non-finite option is
+refused, and the script reports a red that is not its targeted assertion, or is only a message
+mismatch, as MISATTRIBUTED and exits non-zero.)
 
 **F3 is supportable for the report half; the history half is now executable evidence of a stated,
 narrower kind.** The reports exist and cite their evidence. For every engine, `review/mutation-check.mjs`
 reverts each recorded guard in a scratch copy of the current tree and requires the named regression
-test to go red; a mutation that survives, a guard text that no longer occurs exactly once, a baseline
+test to go red on the assertion that targets it; a mutation that survives, a red from another
+assertion or from an error message alone, a guard text that no longer occurs exactly once, a baseline
 that was not green, or an engine section of this document with no mutation, all exit non-zero. **It
 does not recreate pre-fix history** — it proves each test detects the defect's shape in today's
 code, not that the test was red on the source as it stood before the fix — and it says so in its
-own output. A reviewer grading F3 should grade it on that split rather than on a single word.
+own output. For blast, layout, query and the compiler a KILLED mutation is all there is; where Git
+does hold a before (forwarding R17, the claims C2/C3 follow-up, §0), that is a separate run. A
+reviewer grading F3 should grade it on that split rather than on a single word.
 
 One item remains open and should not be silently carried:
 

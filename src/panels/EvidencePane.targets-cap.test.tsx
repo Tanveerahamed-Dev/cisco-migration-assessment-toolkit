@@ -67,32 +67,49 @@ describe("step 4's record list", () => {
      test. The cross-finding precondition (at least one list is capped) is gathered as they run and
      asserted after them, together with a count proving every one of them ran. */
   const withTargets = fabric.findings.filter((f) => targetsOf(f.id).length > 0).map((f) => f.id);
-  let visited = 0;
+  /* SPLIT BY WHAT EACH CASE CAN PROVE (repair wave 7, O38's F2 note). The single per-finding test was
+     named "every access list is on screen, and a shorter list states the cap in words", but most
+     findings' records hold no access list, so for them the on-screen half asserted over nothing —
+     measured at 6a5d830: 116 of 145 cases made exactly one assertion, the cap's. The access-list claim
+     now runs over the findings that HAVE access lists, and each case asserts it judged at least one;
+     the cap claim runs over every finding with records, and says only that. */
+  const withAcls = withTargets.filter((id) => targetsOf(id).some((t) => t.kind === "acl"));
+  let aclVisited = 0;
+  let capVisited = 0;
   let capped = 0;
 
-  it("the snapshot has findings with records to list (the per-finding tests below are over this list)", () => {
+  it("the snapshot has findings with records, and findings whose records include an access list (the per-finding tests below are over these lists)", () => {
     expect(withTargets.length).toBeGreaterThan(0);
+    expect(withAcls.length, "precondition: a finding whose records include an access list").toBeGreaterThan(0);
   });
 
-  it.each(withTargets)("%s: every access list is on screen, and a shorter list states the cap in words", (id) => {
+  it.each(withAcls)("%s: every one of its access lists is on screen", (id) => {
+    const acls = targetsOf(id).filter((t) => t.kind === "acl");
+    expect(acls.length, `${id}: selected because it holds an access list`).toBeGreaterThan(0);
+    const shown = buttonsIn(mountFor(id));
+    const missing = acls.filter((t) => !shown.some((b) => b.includes(t.label))).map((t) => t.label);
+    expect(missing, `${id}: access lists cut from step 4's list`).toEqual([]);
+    aclVisited += 1;
+  });
+
+  it.each(withTargets)("%s: a list shorter than its records states the cap in words, and a whole list states none", (id) => {
     const targets = targetsOf(id);
     const c = mountFor(id);
     const shown = buttonsIn(c);
-    for (const t of targets) {
-      if (t.kind === "acl") expect(shown.some((b) => b.includes(t.label)), `${id}: ${t.label}`).toBe(true);
-    }
     const cap = c.querySelector(".ev-cfgactions__cap")?.textContent ?? null;
     if (shown.length < targets.length) {
       capped += 1;
       expect(cap, id).toContain(`Showing ${shown.length} of ${targets.length}`);
     } else {
+      expect(shown.length, `${id}: more buttons than records`).toBe(targets.length);
       expect(cap, id).toBeNull();
     }
-    visited += 1;
+    capVisited += 1;
   });
 
-  it("precondition, over all of the above: at least one finding holds more records than the cap", () => {
-    expect(visited, "every per-finding test above ran and passed (a filtered or failed run proves nothing here)").toBe(withTargets.length);
+  it("precondition, over all of the above: every case ran, and at least one finding holds more records than the cap", () => {
+    expect(aclVisited, "every access-list case above ran and passed (a filtered or failed run proves nothing here)").toBe(withAcls.length);
+    expect(capVisited, "every cap case above ran and passed (a filtered or failed run proves nothing here)").toBe(withTargets.length);
     expect(capped, "precondition: at least one finding holds more records than the cap").toBeGreaterThan(0);
   });
 

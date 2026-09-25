@@ -488,7 +488,8 @@ export function claimBadge(trace: Trace): ClaimBadge {
      input (measured: deleted, all claims tests stay green) and was removed rather than kept as a
      guard no test can reach. The rule has exactly two owners, each load-bearing and each pinned in
      claims.test.ts: the outcome-band rule above (every UNDETERMINED word), and `hopsSupportOutcome`
-     just below (every decided word; `review/mutation-check.mjs` claims-c1-empty-traversal). */
+     just below (every decided word; `review/mutation-check.mjs` claims-c1-decided-owner and
+     claims-c1-both-owners). */
   /* The outcome word may not claim more than the hops say (docs/refutation.md C2): a `delivered`
      trace whose path ends in a loop, or a refusal whose terminal hop passed, is a trace that
      contradicts itself, and a self-contradicting answer is not a scoped one. Read through

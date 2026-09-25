@@ -1,10 +1,16 @@
 /**
  * mutation-check.mjs — acceptance F3, the "failed before the fix" half, made executable.
  *
- * WHAT F3 ASKS. "Confirmed defects fixed with a regression test that failed before the fix." The only
- * commit of this tree already contains every fix, so for forwarding, blast, layout, query and the
- * compiler that half was prose (docs/refutation.md §0, §7; acceptance report F3). Prose cannot be
- * re-run.
+ * WHAT F3 ASKS. "Confirmed defects fixed with a regression test that failed before the fix." This
+ * repository's history starts at its root commit `50a3dc5` (2026-09-21; `git rev-list --max-parents=0
+ * HEAD`), and by then the guards this file reverts for blast, layout, query and the compiler were
+ * already in the source, as were forwarding's §1.1 and R19 guards: no commit holds their pre-fix code,
+ * so for them the "failed before the fix" half is prose (docs/refutation.md §0, §7; acceptance report
+ * F3), and prose cannot be re-run. Some later fixes DO have a before in history — forwarding R17 and
+ * claims C1/C2 landed in `254694b`, the C2/C3 follow-up and the two O15 source-binding guards in
+ * `1d19e22` — and `--history` prints, from
+ * git, which commit first holds each guard reverted here. That is where history exists; this file does
+ * not replace it.
  *
  * WHAT THIS DOES. It copies the CURRENT source into a scratch directory and, one mutation at a time,
  * reverts a guard that a recorded refutation fix added — the named `find` text must occur exactly
@@ -13,10 +19,22 @@
  * tests are run unmutated in the same scratch copy and must be GREEN with at least one test executed,
  * so a red below cannot be explained by a test that was already red or matched nothing.
  *
+ * A RED IS NOT A KILL UNTIL THE TARGETED ASSERTION IS WHAT WENT RED (repair wave 7). Every mutation
+ * names, in `killedBy`, the assertion that exists to catch it — matched against each failure's test
+ * name, message and the source line vitest's code frame points at. A mutant is KILLED only when at least one failure
+ * is that assertion AND that failure is not a bare error-message mismatch (`toThrow(/x/)` failing with
+ * "… but got '<another message>'": the code still threw, only its wording changed, which is not the
+ * behaviour the guard exists for). A red from anything else is reported as MISATTRIBUTED and fails the
+ * run. Measured before this rule: `layout-nonfinite-option` was "KILLED" by "expected [Function] to
+ * throw error matching /tierYPitch/ but got 'layout: non-finite coordinates for ac…'" — the layout's
+ * output post-condition had thrown instead, so the only thing the test noticed was the message.
+ *
  * WHAT THIS DOES NOT DO — printed in its output too, because it is the limit on the evidence. It does
  * NOT recreate pre-fix history. A reverted guard is the defect's SHAPE reintroduced into today's code,
  * not the code as it stood before the fix was written. KILLED proves the regression test detects that
- * shape now; it does not prove the test was red on the historical source. That remains prose.
+ * shape now; it does not prove the test was red on the historical source. For blast, layout, query and
+ * the compiler (and forwarding's §1.1 and R19 guards) that remains prose: their guards predate the root
+ * commit.
  *
  * THE DENOMINATOR IS THE DOCUMENT, NOT THIS FILE'S LIST. Every engine section of docs/refutation.md
  * (`## N. <Name> — \`<path>\``) names the file it refutes; each such path must be the target of at
@@ -26,9 +44,13 @@
  * Usage:  node review/mutation-check.mjs            every mutation
  *         node review/mutation-check.mjs --only ID  one (repeatable), still baseline-checked
  *         node review/mutation-check.mjs --list
- * Exit:   0 every mutation KILLED (and every expected-equivalent probe behaved as recorded)
- *         1 any mutation SURVIVED, was INVALID, or its baseline was not green; or an engine the
- *           document names has no mutation
+ *         node review/mutation-check.mjs --history   per mutation, from git: the first commit whose
+ *                                                    file holds each guard text, and whether the root does
+ * Exit:   0 every mutation KILLED by its targeted assertion (and every expected-equivalent probe
+ *           behaved as recorded)
+ *         1 any mutation SURVIVED, was MISATTRIBUTED (red, but not by `killedBy`, or only by an error
+ *           message), was INVALID, or its baseline was not green; or an engine the document names has
+ *           no mutation
  * Never touches the working tree: every edit happens inside the scratch copy, which is deleted.
  */
 import { spawnSync } from "node:child_process";
@@ -47,8 +69,13 @@ const DOC = resolve(PKG, "docs", "refutation.md");
  * @typedef {{
  *   id: string, engine: string, record: string, what: string,
  *   edits: Edit[], tests: string[], pattern?: string, rebuild?: string[],
+ *   killedBy: RegExp,
  *   expect?: "killed" | "survives", why?: string
  * }} Mutation
+ *
+ * `killedBy` is REQUIRED on every mutation (a mutation without one is INVALID, never "any red will
+ * do"): it identifies the assertion that targets this mutation, tested against each failure's
+ * `<test name>\n<message>\n<source line>`.
  */
 
 /** @type {Mutation[]} */
@@ -61,6 +88,7 @@ const MUTATIONS = [
     what: "a packet addressed to the router's own address is evaluated against its OUTBOUND list again",
     edits: [{ file: "src/forwarding/engine.ts", find: "    if (receivedAs !== undefined) {", replace: "    if (false as boolean && receivedAs !== undefined) {" }],
     tests: ["src/forwarding/router-destined.test.ts"],
+    killedBy: /is not a PROTECT_SERVERS denial[\s\S]*expect\(t\.outcome\)\.toBe\("indeterminate"\)/,
   },
   {
     id: "fwd-received-elsewhere",
@@ -75,6 +103,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/forwarding/router-destined.test.ts"],
+    killedBy: /no flow toward any collected interface address is delivered[\s\S]*expect\(bad\)\.toEqual\(\[\]\)/,
   },
   {
     id: "fwd-null-port-compared",
@@ -86,6 +115,7 @@ const MUTATIONS = [
       { file: "src/forwarding/engine.ts", find: "  const val = portValue(match.val);\n  if (val === null) return \"maybe\";", replace: "  const val = portValue(match.val);\n  if (val === null) return \"no\";" },
     ],
     tests: ["src/forwarding/producer-trust.test.ts"],
+    killedBy: /an unresolved port name must not be evaluated: expected true to be false/,
   },
   {
     id: "fwd-counterfactual-cites-generator",
@@ -101,6 +131,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/forwarding/engine.counterfactual.test.ts"],
+    killedBy: /cites the line its own trace was decided by[\s\S]*expect\(cited\)\.toEqual\(decidedByOwnTrace\)/,
     pattern: "cites the line its own trace was decided by",
   },
 
@@ -112,6 +143,7 @@ const MUTATIONS = [
     what: "a NaN path limit removes the enumeration bound again",
     edits: [{ file: "src/analysis/blast.ts", find: "  if (!Number.isFinite(requested)) {", replace: "  if ((false as boolean) && !Number.isFinite(requested)) {" }],
     tests: ["src/analysis/blast.test.ts"],
+    killedBy: /ceiling is a ceiling[\s\S]*resolvePathLimit\(Number\.NaN\)/,
     pattern: "ceiling is a ceiling",
   },
   {
@@ -121,6 +153,7 @@ const MUTATIONS = [
     what: "the memoised topology graph is handed out mutable again",
     edits: [{ file: "src/analysis/blast.ts", find: "  return freezeGraph(graph);", replace: "  return graph;" }],
     tests: ["src/analysis/blast.test.ts"],
+    killedBy: /renderer cannot edit[\s\S]*Object\.isFrozen\(g\)\)\.toBe\(true\)/,
     pattern: "renderer cannot edit",
   },
 
@@ -129,7 +162,7 @@ const MUTATIONS = [
     id: "layout-nonfinite-option",
     engine: "src/fabric3d/layout.ts",
     record: "refutation §3 (layout.test.ts: an unvalidated input)",
-    what: "a NaN/Infinity option returns a NaN fabric instead of throwing",
+    what: "a non-finite option is no longer refused up front: a NaN seed or sweep count returns a plausible fabric, an infinite sweep count never returns, and a NaN pitch is laid out before the output post-condition throws",
     edits: [
       {
         file: "src/fabric3d/layout.ts",
@@ -138,7 +171,8 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/fabric3d/layout.test.ts"],
-    pattern: "rejects a non-finite option",
+    killedBy: /refuses every non-finite numeric option[\s\S]*a non-finite option was not refused before layout work began/,
+    pattern: "refuses every non-finite numeric option",
   },
   {
     id: "layout-dropped-is-isolated",
@@ -153,6 +187,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/fabric3d/layout.test.ts"],
+    killedBy: /a dropped link is not an absence of neighbours[\s\S]*isolatedHosts\)\.not\.toContain/,
     pattern: "a dropped link is not an absence of neighbours",
   },
   /* The O26 replacement's red-proof, executed (W6 gate, 2026-09-25). layout.test.ts's wall-clock
@@ -172,6 +207,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/fabric3d/layout.test.ts"],
+    killedBy: /counted work budget[\s\S]*primitive operations: expected \d+ to be less than or equal to \d+/,
     pattern: "work budget",
   },
   {
@@ -188,6 +224,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/fabric3d/layout.test.ts"],
+    killedBy: /counted work budget[\s\S]*primitive operations: expected \d+ to be less than or equal to \d+/,
     pattern: "work budget",
   },
   {
@@ -203,6 +240,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/fabric3d/layout.test.ts"],
+    killedBy: /counted work budget[\s\S]*primitive operations: expected \d+ to be less than or equal to \d+/,
     pattern: "work budget",
   },
 
@@ -220,6 +258,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/core/query.test.ts"],
+    killedBy: /never collected[\s\S]*evidenceBlind\)\.toBe\(true\)/,
     pattern: "never-collected device is an evidence gap",
   },
 
@@ -234,6 +273,7 @@ const MUTATIONS = [
     edits: [{ file: "tools/compile-snapshot.mjs", find: "      unevaluable: l.unevaluable === true,", replace: "      unevaluable: false," }],
     rebuild: ["tools/compile-snapshot.mjs"],
     tests: ["src/core/compiler-fidelity.test.ts"],
+    killedBy: /the producer marked this line unevaluable: expected false to be true/,
     pattern: "unevaluable",
   },
   {
@@ -244,6 +284,7 @@ const MUTATIONS = [
     edits: [{ file: "tools/compile-snapshot.mjs", find: "      established: l.established === true,", replace: "      established: false," }],
     rebuild: ["tools/compile-snapshot.mjs"],
     tests: ["src/core/compiler-fidelity.test.ts"],
+    killedBy: /keeps .established.[\s\S]*\.established\)\.toBe\(true\)/,
     pattern: "established",
   },
 
@@ -255,6 +296,7 @@ const MUTATIONS = [
     what: "a delivered traversal that visited nothing earns SCOPED again",
     edits: [{ file: "src/core/claims.ts", find: "  if (last === undefined) return false;", replace: "  if (last === undefined) return true;" }],
     tests: ["src/core/claims.test.ts"],
+    killedBy: /with no hops as INDETERMINATE[\s\S]*claimBadge\(empty\(\)\)\)\.toBe\("INDETERMINATE"\)/,
   },
   {
     id: "claims-undetermined-word-badge",
@@ -269,6 +311,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/core/claims.test.ts"],
+    killedBy: /(?:outcome word is unrecognised|unrecognised outcome word over a clean|whose band is UNDETERMINED)[\s\S]*expected 'SCOPED' to be 'INDETERMINATE'/,
   },
   {
     id: "claims-c1-both-owners",
@@ -284,6 +327,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/core/claims.test.ts"],
+    killedBy: /EMPTY traversal earns no badge[\s\S]*with zero hops: expected 'SCOPED' to be 'INDETERMINATE'/,
     pattern: "EMPTY traversal",
   },
   {
@@ -299,6 +343,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/core/claims.test.ts"],
+    killedBy: /unrecognised verdict bands as UNDETERMINED[\s\S]*expected undefined to be 'UNDETERMINED'/,
     pattern: "unrecognised verdict bands as UNDETERMINED",
   },
   {
@@ -314,6 +359,7 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/core/claims.test.ts"],
+    killedBy: /REFUTED \(C2\)[\s\S]*expected 'SCOPED' to be 'INDETERMINATE'/,
     pattern: "C2",
   },
 
@@ -326,6 +372,7 @@ const MUTATIONS = [
     what: "every compiler hashes the raw working-tree bytes again, so a CRLF checkout binds another digest",
     edits: [{ file: "tools/source-binding.mjs", find: "export function lfNormalise(raw) {\n", replace: "export function lfNormalise(raw) {\n  if (raw !== null) return raw;\n" }],
     tests: ["src/core/provenance.test.ts"],
+    killedBy: /CRLF or LF line endings \(O15\)[\s\S]*compileInSandbox\(crlf\)/,
     pattern: "O15",
   },
   {
@@ -341,14 +388,58 @@ const MUTATIONS = [
       },
     ],
     tests: ["src/forwarding/bindings-trust.test.ts"],
+    killedBy: /expect\(b\.BINDINGS_TRUSTED\)\.toBe\(false\)/,
     pattern: "same sourceSha256",
   },
 ];
+
+/* ── every mutation names the assertion that must kill it ─────────────────────────────────────── */
+const untargeted = MUTATIONS.filter((m) => !(/** @type {unknown} */ (m.killedBy) instanceof RegExp));
+if (untargeted.length > 0) {
+  console.error(`INVALID  ${untargeted.map((m) => m.id).join(", ")}: no \`killedBy\` — a mutation must name the assertion that targets it, or any red would count as a kill`);
+  process.exit(1);
+}
 
 /* ── arguments ─────────────────────────────────────────────────────────────────────────────────── */
 const argv = process.argv.slice(2);
 if (argv.includes("--list")) {
   for (const m of MUTATIONS) console.log(`${m.id.padEnd(40)} ${m.engine.padEnd(28)} ${m.record}`);
+  process.exit(0);
+}
+if (argv.includes("--history")) {
+  /* Facts from git only: for each mutation, whether the ROOT commit's file already holds each guard
+     text this file reverts (if it does, no commit holds the pre-fix source for that guard), and the
+     first commit on HEAD's first-parent line whose file holds it. The exact text is searched, so a
+     guard that existed in another wording reads as absent: this bounds history, it does not prove a
+     red. */
+  const git = (/** @type {string[]} */ ...a) => {
+    const r = spawnSync("git", ["-C", PKG, ...a], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout : null;
+  };
+  const line = git("rev-list", "--reverse", "--first-parent", "HEAD");
+  if (line === null) {
+    console.error("FAIL  not a git checkout, or git is unavailable: --history reads only git");
+    process.exit(1);
+  }
+  const commits = line.trim().split("\n");
+  const root = commits[0] ?? "";
+  console.log(`history: ${commits.length} commit(s) on HEAD's first-parent line, root ${root.slice(0, 7)}`);
+  /** @type {Map<string, string | null>} */
+  const blobs = new Map();
+  const at = (/** @type {string} */ c, /** @type {string} */ f) => {
+    const k = `${c}:${f}`;
+    if (!blobs.has(k)) blobs.set(k, git("show", k)?.replace(/\r\n/g, "\n") ?? null);
+    return blobs.get(k) ?? null;
+  };
+  for (const m of MUTATIONS) {
+    const parts = m.edits.map((ed) => {
+      const first = commits.find((c) => (at(c, ed.file) ?? "").includes(ed.find));
+      const inRoot = (at(root, ed.file) ?? "").includes(ed.find);
+      return inRoot ? "in root (no pre-fix commit)" : first === undefined ? "in no commit (working tree only)" : `first in ${first.slice(0, 7)}`;
+    });
+    const tests = m.tests.map((t) => `${t} ${commits.find((c) => at(c, t) !== null)?.slice(0, 7) ?? "untracked"}`);
+    console.log(`${m.id.padEnd(36)} guard: ${parts.join("; ")}  |  test first tracked: ${tests.join(", ")}`);
+  }
   process.exit(0);
 }
 /** @type {string[]} */
@@ -364,7 +455,9 @@ const selected = only.length === 0 ? MUTATIONS : MUTATIONS.filter((m) => only.in
 console.log("mutation-check — F3 'failed before the fix', executed against TODAY's source");
 console.log("LIMIT: this does NOT recreate pre-fix history. Each mutation reverts one recorded guard in a scratch");
 console.log("copy of the current tree; KILLED proves the regression test detects that defect shape now, not that");
-console.log("it was red on the historical source (which no commit holds).");
+console.log("it was red on the historical source. For blast, layout, query and the compiler (and forwarding's §1.1");
+console.log("and R19 guards) no commit holds that source: their guards predate the root commit. Where a commit does");
+console.log("hold one, `--history` names it; a KILLED line below is never that history.");
 console.log("");
 
 /* ── the denominator, read from the document ───────────────────────────────────────────────────── */
@@ -405,8 +498,51 @@ function runTests(tests, pattern) {
   const failed = Number(/Tests\s+(\d+) failed/.exec(out)?.[1] ?? 0);
   const passed = Number(/(\d+) passed/.exec(/Tests\s+[^\n]*/.exec(out)?.[0] ?? "")?.[1] ?? 0);
   const firstFailure = /(AssertionError[^\n]*|Error:[^\n]*)/.exec(out)?.[1] ?? "";
-  return { code: r.status ?? -1, failed, passed, firstFailure: firstFailure.slice(0, 160), out };
+  return { code: r.status ?? -1, failed, passed, firstFailure: firstFailure.slice(0, 160), failures: parseFailures(out), out };
 }
+
+/**
+ * Every failed test in a vitest run, as { test, message, at, source }: the test's full name (the
+ * `FAIL  file > describe > it` line), the first error line under it, and the code-frame location and
+ * source line vitest's caret points at — the assertion that actually went red. Read from vitest's own
+ * failure blocks (each ends at a `⎯⎯⎯` rule), so nothing here guesses which assertion failed.
+ * @param {string} out
+ * @returns {{ test: string, message: string, at: string, source: string }[]}
+ */
+function parseFailures(out) {
+  /** @type {{ test: string, message: string, at: string, source: string }[]} */
+  const failures = [];
+  const lines = out.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const head = /^\s*FAIL\s+(\S+\s+>\s+.+)$/.exec(lines[i] ?? "");
+    if (head === null || head[1] === undefined) continue;
+    let message = "";
+    let at = "";
+    let source = "";
+    let j = i + 1;
+    for (; j < lines.length; j += 1) {
+      const line = lines[j] ?? "";
+      if (/^\s*FAIL\s+\S+\s+>/.test(line) || /^⎯{3,}/.test(line.trim())) break;
+      if (message === "" && /^\s*(?:[A-Za-z]*Error|AssertionError)\b[:\s]/.test(line)) message = line.trim();
+      const loc = /^\s*❯\s+(\S+:\d+:\d+)\s*$/.exec(line);
+      if (loc !== null && at === "" && loc[1] !== undefined && /\.test\.[cm]?[tj]sx?:/.test(loc[1])) at = loc[1];
+      /* The caret line (`   |    ^`) follows the source line it points at. */
+      if (source === "" && /^\s*\|\s*\^\s*$/.test(line)) source = (/^\s*\d+\|(.*)$/.exec(lines[j - 1] ?? "")?.[1] ?? "").trim();
+    }
+    failures.push({ test: head[1].trim(), message, at, source });
+    i = j - 1;
+  }
+  return failures;
+}
+
+/**
+ * A failure that is ONLY an error-message mismatch: the code under test still threw, and the test
+ * noticed nothing but the wording. Vitest words it "expected [Function] to throw error matching /x/
+ * but got '…'" (or "including"). Such a failure cannot be what kills a mutant whose guard's job is to
+ * throw at all: the throw still happened.
+ * @param {string} message
+ */
+const messageOnly = (message) => /\bto throw (?:an )?error (?:matching|including)\b.*\bbut got\b/.test(message);
 
 /** @param {string[]} scripts */
 function rebuild(scripts) {
@@ -490,8 +626,31 @@ for (const m of selected) {
     continue;
   }
   if (red) {
-    e.killed += 1;
-    console.log(`KILLED    ${m.id}  [${m.record}]  ${where}: ${r.failed} failed, ${r.passed} passed — ${r.firstFailure}`);
+    const targeted = r.failures.filter((f) => m.killedBy.test(`${f.test}\n${f.message}\n${f.source}`));
+    const behavioural = targeted.filter((f) => !messageOnly(f.message));
+    const by = behavioural[0];
+    if (by !== undefined) {
+      e.killed += 1;
+      console.log(`KILLED    ${m.id}  [${m.record}]  ${where}: ${r.failed} failed, ${r.passed} passed`);
+      console.log(`          by the targeted assertion ${by.at}: ${by.source}`);
+      console.log(`          ${by.message.slice(0, 200)}`);
+    } else {
+      const why =
+        targeted.length > 0
+          ? `its targeted assertion failed only on an error-message mismatch (the code still threw): ${targeted[0]?.message.slice(0, 160) ?? ""}`
+          : r.failures.length === 0
+            ? `${r.failed} failed, but no failure block could be read from vitest's output, so what went red is unknown`
+            : `red, but not by its targeted assertion ${String(m.killedBy)}; what failed: ${r.failures.map((f) => `${f.at} ${f.message.slice(0, 100)}`).join(" | ")}`;
+      console.log(`MISATTRIBUTED ${m.id}  [${m.record}]  ${where}: ${why}`);
+      e.problems.push(`${m.id} MISATTRIBUTED`);
+      bad += 1;
+    }
+  } else if (r.code !== 0) {
+    /* No failed test, but a non-zero exit: a crashed worker or an unhandled error. That is neither a
+       kill nor a survival — nothing was judged. */
+    console.log(`INCONCLUSIVE ${m.id}  [${m.record}]  ${where}: exit ${r.code} with ${r.passed} passed and 0 failed (a crash or unhandled error, not a verdict): ${r.firstFailure}`);
+    e.problems.push(`${m.id} INCONCLUSIVE`);
+    bad += 1;
   } else {
     console.log(`SURVIVED  ${m.id}  [${m.record}]  ${where}: ${r.passed} passed, 0 failed (exit ${r.code}) — the test does not catch: ${m.what}`);
     e.problems.push(`${m.id} SURVIVED`);
@@ -514,12 +673,12 @@ for (const path of documented) {
     continue;
   }
   const verdict = e.problems.length === 0 && e.killed === e.total && e.total > 0 ? "PASS" : "FAIL";
-  console.log(`ENGINE ${path}: ${verdict} — ${e.killed} of ${e.total} reverted guard(s) turned the named regression test red${e.problems.length === 0 ? "" : `; ${e.problems.join(", ")}`}`);
+  console.log(`ENGINE ${path}: ${verdict} — ${e.killed} of ${e.total} reverted guard(s) killed by their targeted assertion${e.problems.length === 0 ? "" : `; ${e.problems.join(", ")}`}`);
 }
 for (const [path, e] of byEngine) {
   if (documented.includes(path)) continue;
   const verdict = e.problems.length === 0 && e.killed === e.total && e.total > 0 ? "PASS" : "FAIL";
-  console.log(`ENGINE ${path} (not a refutation.md section): ${verdict} — ${e.killed} of ${e.total} reverted guard(s) turned the named regression test red${e.problems.length === 0 ? "" : `; ${e.problems.join(", ")}`}`);
+  console.log(`ENGINE ${path} (not a refutation.md section): ${verdict} — ${e.killed} of ${e.total} reverted guard(s) killed by their targeted assertion${e.problems.length === 0 ? "" : `; ${e.problems.join(", ")}`}`);
 }
 for (const path of uncovered) {
   if (only.length === 0) bad += 1;

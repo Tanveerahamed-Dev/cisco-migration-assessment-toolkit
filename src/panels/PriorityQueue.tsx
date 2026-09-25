@@ -748,12 +748,14 @@ export function PriorityQueue({
      largest single piece of it, so the queue takes it in a deferred render: React commits it in a
      task of its own after the other surfaces, and time-slices its render phase. The queue's OWN
      clicks do not wait on this — they are marked from local state (see pendingFinding). */
-  const findingId = useDeferredValue(useInvestigation((s) => s.findingId));
+  const urgentFindingId = useInvestigation((s) => s.findingId);
+  const findingId = useDeferredValue(urgentFindingId);
   const urgentDeviceId = useInvestigation((s) => s.deviceId);
   const urgentLinkId = useInvestigation((s) => s.linkId);
   const deviceId = useDeferredValue(urgentDeviceId);
   const linkId = useDeferredValue(urgentLinkId);
-  const hopIndex = useDeferredValue(useInvestigation((s) => s.hopIndex));
+  const urgentHopIndex = useInvestigation((s) => s.hopIndex);
+  const hopIndex = useDeferredValue(urgentHopIndex);
   const selectFinding = useInvestigation((s) => s.selectFinding);
   const setEvidenceTab = useInvestigation((s) => s.setEvidenceTab);
 
@@ -2490,6 +2492,16 @@ export function PriorityQueue({
            -> 2681, dist1 the same. With a finding selected the reveal is of the selection itself and
            this does not apply (the with-finding half of A4 is unchanged). */
         {...(activeRowId === null ? { revealUnlessVisible: related.ids } : {})}
+        /* The reader's ACT, read URGENTLY: the grid records what was on screen before this act's
+           first commit — the one that mounts or re-words the "N of 146 shown findings name <host>"
+           sentence above it — so the deferred reveal's "already visible?" decision is taken
+           against what the reader could see when they acted, not against the layout that sentence
+           has since moved. MEASURED before this (A4, 1920x1080, no finding): F099, the only visible
+           row naming access13, sat at 999-1041 in a port of 352-1054; the sentence moved the port's
+           top to 389.7, the reveal judged F099 hidden and threw the queue 4777 -> 0 (access5/F094:
+           4511 -> 0). Every entry path — canvas, Fabric list, palette, chain chip, hop, Back — writes
+           the same store fields, so one key covers them all. */
+        actKey={`${urgentFindingId ?? ""}|${urgentDeviceId ?? ""}|${urgentLinkId ?? ""}|${urgentHopIndex ?? ""}`}
         relatedIds={related.ids}
         /* Worded from the SAME deferred selection as the marks, so a row's description can never
            name a different host from the mark drawn on it. */

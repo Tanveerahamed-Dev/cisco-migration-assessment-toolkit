@@ -171,6 +171,26 @@
   outline: 1px solid var(--accent);
 }
 
+/* The accent OUTLINE cannot be selection's only mark: every other claim a label carries (a finding,
+   a trace alarm, a cut point) owns the outline too, and the later and more specific of those rules
+   wins it. Selecting a device makes it its own cut point, so on the plain "device selected" state
+   the selected label drew the cut hypothesis's dashed indeterminate outline, 2.47:1 (light) and
+   1.82:1 (dark) against the unselected label, and with a finding or an alarm selected and
+   unselected were identical (acceptance D4, WCAG 1.4.11; measured 2026-09-25). So selection also
+   draws the product's "this one" mark — the accent underline the tabs, the pane switch and the
+   tree use — on a pseudo-element no other label state paints, so every claim keeps its outline
+   and selection stays legible under all of them (src/ui/selected-state-contrast.test.ts). */
+.fabric3d-label[data-state="selected"]::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: 2px;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--accent);
+  pointer-events: none;
+}
+
 .fabric3d-label__name {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -414,10 +434,16 @@
   outline-offset: 2px;
 }
 
+/* The accent edge and ink alone did not carry the state in dark: --accent against the unpressed
+   --border-strong edge is 2.57:1 and against the unpressed --text ink under 3:1 (acceptance D4,
+   WCAG 1.4.11). The inset underline — the product's one mark for "this one" — is drawn on the
+   button's own --surface-1 fill and clears 3:1 against it in both themes
+   (src/ui/selected-state-contrast.test.ts). */
 .fabric3d__btn[aria-pressed="true"],
 .fabric3d__btn[aria-expanded="true"] {
   border-color: var(--accent);
   color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .fabric3d__quality {
@@ -913,6 +939,17 @@
   .fabric3d__treeitem[aria-selected="true"] {
     background: Highlight;
     color: HighlightText;
+  }
+
+  .fabric3d__btn[aria-pressed="true"],
+  .fabric3d__btn[aria-expanded="true"] {
+    border-color: Highlight;
+  }
+
+  /* Forced colours repaint the underline's fill and every label's edge alike, so the selected
+     label's edge takes the selection colour. */
+  .fabric3d-label[data-state="selected"] {
+    border-color: Highlight;
   }
 }
 

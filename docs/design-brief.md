@@ -238,7 +238,21 @@ grown with padding or a `::before` overlay — never by shrinking the target. Wh
 genuinely cannot reach 24 px, it must satisfy the spacing exception: a 24 px-diameter circle centred
 on its bounding box must not intersect another target's circle. **Every such exception is enumerated
 in `docs/target-size-exceptions.md` with its measured spacing.** An unenumerated undersized target
-is a defect.
+is a defect. `docs/target-size-exceptions.md` exists only while at least one such exception does;
+none does today, and `src/ui/target-size.test.ts` asserts the file's absence until it is taught to
+read one (an exemption list nothing enforces is the defect it guards against).
+
+**A grid cell is part of its row's target, not a target of its own.** The D5 browser census finds
+`div.ag__cell` boxes under 24 px tall: one line of text inside a findings or record grid row that is
+at least 32 px tall. They are not spacing exceptions, because the pointer action belongs to the row.
+The data row's click activates it (`DataGrid.tsx`, `handlers.activate`); a click on a cell moves the
+grid's roving focus to that cell (`handlers.move`) and bubbles to the row, which activates. The one
+cell that is a target in its own right is a cell holding its own control (`GridColumn.interactive`):
+that control stops the click, and it is held to the 24 px floor like any other target. The grid does
+not present a cell as a separate control either: `.ag__row--data` sets `cursor: default` and no
+`.ag__cell` rule declares a cursor (`DataGrid.css`). `src/ui/target-size.test.ts` reads that code, so
+the argument fails the build the day it stops being true. The census, not this paragraph, remains
+D5's evidence.
 
 ### 3.3 Colour — the full system, both themes, with measured ratios
 
@@ -1450,7 +1464,7 @@ repopulates, so partial rows are not announced one at a time.
 | **2.4.11** Focus Not Obscured (Minimum) | AA, new in 2.2 | Section 7.4 rule 3. Tested by tabbing the entire app at 1280x720 **and** at 320 px, asserting the focused element's rect is at least partially in-viewport and not covered by any higher-stacking element. |
 | **2.4.13** Focus Appearance | **AAA — adopted above the floor** | Adopted as the design rule because it is the only source giving testable numbers (at least a 2 CSS px perimeter, at least 3:1 focused-vs-unfocused); 2.4.7 AA alone gives none. Stated as AAA-derived. |
 | **2.5.7** Dragging Movements | AA, new in 2.2 | Every drag has a click-only twin: splitters get arrow-key resize plus double-click reset plus a preset menu; camera orbit and pan get explicit buttons and click-to-centre; zoom gets plus/minus/Fit buttons; the inspector divider is keyboard-operable. Dragging remains as the fast path — the criterion requires an alternative, not removal. |
-| **2.5.8** Target Size (Minimum) | AA, new in 2.2 | Section 3.2 — 24x24 floor, 32 px rows, hit areas grown with padding, and every exception enumerated in `docs/target-size-exceptions.md` with its measured 24 px centre-to-centre spacing. |
+| **2.5.8** Target Size (Minimum) | AA, new in 2.2 | Section 3.2 — 24x24 floor, 32 px rows, hit areas grown with padding, and every spacing exception, when one exists, enumerated in `docs/target-size-exceptions.md` with its measured 24 px centre-to-centre spacing (none exists today, so the file does not; a grid cell is part of its row's target, section 3.2). |
 | **3.2.1 / 3.2.2** On Focus / On Input | A | Section 7.4 rule 8. |
 | **3.3.7** Redundant Entry | A, new in 2.2 | A device already selected pre-fills the path form; a target IP typed once is offered in the next flow's autocomplete. |
 | **4.1.2** Name, Role, Value | A | Section 7.2 grid roles; section 7.3 canvas mirror. |

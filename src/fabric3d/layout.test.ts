@@ -33,6 +33,7 @@ import {
   focusFraming,
   type FabricLayout,
   type LayoutNode,
+  type LayoutOptions,
   type RouteHint,
   type Vec3,
 } from "./layout";
@@ -83,8 +84,17 @@ const distance = (a: Vec3, b: Vec3): number => Math.hypot(a[0] - b[0], a[1] - b[
  * relative cost of each call — it counts operations, it does not weigh them. Every loop in layout.ts
  * that does work touches a Map, an array method or Math at least once per iteration, which is what
  * makes the count track the ORDER of the work.
+ *
+ * `runaway` is a hang guard, not a budget: once the count passes it, the next counted call throws
+ * RunawayWork, so a regression that loops forever (a non-finite sweep count) ends as a readable
+ * failure instead of a test timeout. Every caller that states a budget leaves it at Infinity.
  */
-function primitiveOps(fn: () => void): number {
+class RunawayWork extends Error {
+  constructor(readonly ops: number) {
+    super(`still running after ${ops} primitive operations`);
+  }
+}
+function primitiveOps(fn: () => void, runaway = Infinity): number {
   let n = 0;
   const saved: [object, PropertyKey, PropertyDescriptor][] = [];
   try {
@@ -98,6 +108,9 @@ function primitiveOps(fn: () => void): number {
           ...d,
           value: function counted(this: unknown, ...args: unknown[]): unknown {
             n += 1;
+            /* Once, on crossing: the restore loop in `finally` below iterates through these same
+               wrapped primitives, and must not throw on the way out. */
+            if (n === runaway + 1) throw new RunawayWork(n);
             return f.apply(this, args);
           },
         });
@@ -863,9 +876,60 @@ describe("computeLayout — the cable map is a partition, not a tier numbering",
 });
 
 describe("computeLayout — option validation", () => {
-  it("rejects a non-finite option instead of returning a NaN fabric", () => {
+  /* Every numeric option, derived from LayoutOptions by type rather than listed from memory: a
+     numeric option added to LayoutOptions and missing here, or a key here that is not one, fails
+     `tsc` (`satisfies` checks both directions on an object literal). */
+  type NumericOption = {
+    [K in keyof LayoutOptions]-?: NonNullable<LayoutOptions[K]> extends number ? K : never;
+  }[keyof LayoutOptions];
+  const NUMERIC_OPTIONS = {
+    seed: true,
+    sweeps: true,
+    tierYPitch: true,
+    fovDeg: true,
+    aspect: true,
+    margin: true,
+  } as const satisfies Record<NumericOption, true>;
+
+  it("refuses every non-finite numeric option before laying anything out: no fabric comes back, and no layout work runs first", () => {
+    /* The BEHAVIOUR the input guard exists for, judged without reading any error message (repair
+       wave 7: the message test below was the only thing that noticed the guard's removal, because
+       the output post-condition then threw instead, with other wording). A refusal counts only if
+       nothing is returned AND it came before the layout did any work — fewer counted primitive
+       operations than there are devices to place. A NaN that reaches the post-condition has already
+       been laid out, and one the post-condition cannot see (a NaN seed is `>>> 0`, a NaN sweep count
+       runs no sweeps) comes back as a plausible fabric. The runaway guard turns an infinite sweep
+       count into a failure here rather than a timeout. */
+    const upFront = fabric.devices.length;
+    const failures: string[] = [];
+    let judged = 0;
+    for (const name of Object.keys(NUMERIC_OPTIONS) as NumericOption[]) {
+      for (const bad of [NaN, Infinity, -Infinity]) {
+        let returned: FabricLayout | undefined;
+        let thrown: unknown;
+        const ops = primitiveOps(() => {
+          try {
+            returned = computeLayout({ ...OPTS, [name]: bad });
+          } catch (e) {
+            thrown = e;
+          }
+        }, 1_000_000);
+        judged += 1;
+        const at = `${name}=${bad}`;
+        if (returned !== undefined) failures.push(`${at}: returned a fabric after ${ops} primitive operations`);
+        else if (thrown instanceof RunawayWork) failures.push(`${at}: never refused — ${thrown.message}`);
+        else if (!(thrown instanceof Error)) failures.push(`${at}: neither returned nor threw an Error`);
+        else if (ops >= upFront) failures.push(`${at}: refused only after ${ops} primitive operations of layout work`);
+      }
+    }
+    expect(judged, "every numeric option was tried with every non-finite value").toBe(Object.keys(NUMERIC_OPTIONS).length * 3);
+    expect(failures, "a non-finite option was not refused before layout work began").toEqual([]);
+  });
+
+  it("names the offending option in each refusal, and range-checks aspect, fovDeg and margin", () => {
     // Regression: Math.max(MIN_NODE_SEPARATION, NaN) is NaN, so every Y, the bounding sphere and
-    // the camera came back NaN with no throw and no diagnostic.
+    // the camera came back NaN with no throw and no diagnostic. The refusal itself is judged by
+    // behaviour in the test above; this one pins that the refusal says WHICH option was wrong.
     for (const bad of [NaN, Infinity, -Infinity]) {
       expect(() => computeLayout({ ...OPTS, tierYPitch: bad })).toThrow(/tierYPitch/);
       expect(() => computeLayout({ ...OPTS, margin: bad })).toThrow(/margin/);

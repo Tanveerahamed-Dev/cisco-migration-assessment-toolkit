@@ -158,7 +158,7 @@
   padding-block-end: var(--sp-5);
   background-image:
     linear-gradient(to top, var(--scroll-scrim-bg, var(--surface-1)) 40%, transparent 100%),
-    linear-gradient(to top, var(--scroll-scrim-ink, rgb(0 0 0 / 22%)) 0, transparent 100%);
+    linear-gradient(to top, var(--scroll-scrim-ink) 0, transparent 100%);
   background-position: bottom center, bottom center;
   background-size:
     100% var(--sp-5),
@@ -548,12 +548,31 @@
   letter-spacing: var(--ls-0);
 }
 
+/* The tree's selected row (aria-selected follows the roving position, JsonView.tsx): a neutral
+   leading bar, --border-strong, so it reads as position and cannot be taken for the search's
+   current hit, which is the ACCENT bar below. Declared before the match rules so a row that is both
+   shows the current-hit bar, with the position bar just inside it (the combined rule). */
+.jsonview__row[aria-selected="true"] {
+  box-shadow: inset 2px 0 0 0 var(--border-strong);
+}
+
 .jsonview__row[data-match="true"] {
   background: var(--surface-2);
 }
 
+/* The current search hit: a fill plus an accent bar. The fill alone is 1.00:1 against a row that
+   is not the current hit (and 1.09-1.12:1 against a plain match) on the worst ground (D4, WCAG
+   1.4.11); the bar carries the state. No later match/cited rule sets box-shadow, so the bar
+   survives both co-states (the cited ring is an outline). */
 .jsonview__row[data-current-match="true"] {
   background: var(--surface-3);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.jsonview__row[aria-selected="true"][data-current-match="true"] {
+  box-shadow:
+    inset 2px 0 0 0 var(--accent),
+    inset 4px 0 0 0 var(--border-strong);
 }
 
 .jsonview__mark {

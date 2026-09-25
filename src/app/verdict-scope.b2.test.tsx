@@ -235,11 +235,34 @@ describe("the command palette states a suggested flow's verdict with its bounds"
 });
 
 describe("the Path panel's presets state a suggested flow's verdict with its bounds", () => {
-  it("every preset, in the engine's order", () => {
+  /* WHERE A PRESET STATES ITS VERDICT (acceptance B6, wave 7). The whole card used to be the run
+     button, so the button's text WAS the preset's statement and this test read it. The card was split
+     so the citations it prints could be controls (a control cannot sit inside a button): the verdict
+     and its bounds are now the card's own lines, beside the run button, and the button points at them
+     with `aria-describedby`. So each of the two ways a reader meets the preset is asserted, and each
+     must carry the bounds whole: the card as it is read, and the run button as it is announced (its
+     name and its description together). */
+  it("every preset card, in the engine's order", () => {
+    const el = mount(<PathTrace />);
+    const cards = [...el.querySelectorAll<HTMLElement>(".pt-preset")];
+    expect(cards.length).toBe(cases.length);
+    const problems = cards.flatMap((p, i) => boundsProblems(`preset ${cases[i]!.s.id}`, p.textContent ?? "", cases[i]!));
+    expect(problems).toEqual([]);
+  });
+
+  it("every preset's run button, as it is announced: its name and its description", () => {
     const el = mount(<PathTrace />);
     const presets = [...el.querySelectorAll<HTMLElement>(".pt-preset__btn")];
     expect(presets.length).toBe(cases.length);
-    const problems = presets.flatMap((p, i) => boundsProblems(`preset ${cases[i]!.s.id}`, p.textContent ?? "", cases[i]!));
+    const announced = (b: HTMLElement): string =>
+      [
+        b.textContent ?? "",
+        ...(b.getAttribute("aria-describedby") ?? "")
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((id) => document.getElementById(id)?.textContent ?? ""),
+      ].join(" ");
+    const problems = presets.flatMap((p, i) => boundsProblems(`preset button ${cases[i]!.s.id}`, announced(p), cases[i]!));
     expect(problems).toEqual([]);
   });
 });

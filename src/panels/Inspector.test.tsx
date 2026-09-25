@@ -337,6 +337,72 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
     expect(body).toContain("Recompile from a file whose LF-normalised form has that digest");
   });
 
+  /* A MODEL PATH THAT IS ALSO A SOURCE PATH (acceptance B6 secondary, bears on O9; wave 7). The
+     Inspector said "This citation resolves directly inside the compiled model at routes.core1[6]"
+     and stopped. `routes.core1[6]` is ALSO the path of a record in the source snapshot — the compiled
+     record carries it as its own `cite` — and the two differ: the source's `{next_hop: "",
+     out_intf: "Vlan30"}` is compiled to `{nextHop: null, outIntf: "Vlan30"}`, an empty `role` becomes
+     null, `ports` is dropped. A reader who followed a source citation and was told it "resolves
+     directly" could take the compiled projection for the source record (the refuter counted 97 of 723
+     model-resolvable citations that also name a source record, every one with a differing body).
+     Which paths are also source paths is read from the model, never listed: exactly those a compiled
+     record carries as its `cite`. */
+  describe("a model path that is also a source path is shown as the compiled projection", () => {
+    const dataNote = (c: HTMLElement): string => text(panel(c, "data")?.querySelector(".insp-note") ?? null);
+    /* One Inspector at a time: every mount carries the same element ids, and an id selector answers
+       with the document's FIRST match, so a second live Inspector would be read through the first. */
+    const unmountAll = (): void => {
+      for (const m of mounted.splice(0)) {
+        act(() => m.root.unmount());
+        m.container.remove();
+      }
+    };
+    const modelResolvable = [...citeBearers().keys()].filter((cite) => resolveCitation(cite).kind === "model");
+
+    it("the refuter's record: routes.core1[6] is the compiled projection and may differ from the source record", () => {
+      expect(resolveCitation("routes.core1[6]").kind, "precondition: resolves by model path").toBe("model");
+      expect(citeBearers().get("routes.core1[6]"), "precondition: a compiled record carries it as a source citation").toBeDefined();
+      const c = mount(<Inspector cite="routes.core1[6]" forceOpen />);
+      const note = dataNote(c);
+      expect(note).toContain("routes.core1[6]");
+      expect(note).toMatch(/also a path in the source snapshot/);
+      expect(note).toMatch(/compiled projection/);
+      expect(note).toMatch(/may differ from the source record/);
+      expect(text(panel(c, "provenance"))).toMatch(/compiled projection/);
+    });
+
+    it("every source-named top-level collection the model resolves by path says so", () => {
+      /* One citation per top-level collection, so every compiled shape of source record is rendered. */
+      const byCollection = new Map<string, string>();
+      for (const cite of modelResolvable) {
+        const head = /^[A-Za-z_][\w-]*/.exec(cite)?.[0] ?? cite;
+        if (!byCollection.has(head)) byCollection.set(head, cite);
+      }
+      expect(modelResolvable.length, "the model resolves source citations by path").toBeGreaterThan(50);
+      expect(byCollection.size).toBeGreaterThan(1);
+      const bare: string[] = [];
+      for (const cite of byCollection.values()) {
+        unmountAll();
+        const c = mount(<Inspector cite={cite} forceOpen />);
+        if (!/compiled projection/.test(dataNote(c)) || !/may differ from the source record/.test(dataNote(c))) bare.push(`${cite} :: ${dataNote(c)}`);
+      }
+      expect(bare).toEqual([]);
+    });
+
+    it("a model path that names no source record is not called a projection of one", () => {
+      const modelOnly = ["devices[0]", "coverage", "links[0]"].filter(
+        (p) => resolveCitation(p).kind === "model" && (citeBearers().get(p)?.length ?? 0) === 0,
+      );
+      expect(modelOnly.length, "precondition: model-only paths exist").toBeGreaterThan(0);
+      for (const p of modelOnly) {
+        unmountAll();
+        const c = mount(<Inspector cite={p} forceOpen />);
+        expect(dataNote(c), p).toContain("resolves directly inside the compiled model");
+        expect(dataNote(c), p).not.toMatch(/source snapshot/);
+      }
+    });
+  });
+
   it("says which layer answered the citation rather than implying the source was read", () => {
     const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
     expect(text(panel(c, "provenance"))).toContain("the compiled record carrying it");

@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fabric } from "../core/data";
 import { rankedSearch } from "../core/query";
 import { useInvestigation } from "../core/store";
+import { citesIn } from "../panels/cited-text";
 import { CommandPalette } from "./CommandPalette";
 import { ShortcutHelp } from "./ShortcutHelp";
 import {
@@ -367,6 +368,26 @@ describe("commands", () => {
     expect(st.surface).toBe("path");
     // A verdict is never shipped without its scope: the engine's own claim comes with it.
     expect(st.trace?.claim.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("prints no citation inside a command's row: activating the row runs the command, not the record (B6)", () => {
+    /* A palette row is one role=option whose activation RUNS its command. A suggested flow's detail
+       used to carry its rationale's citations (acls.core1.PROTECT_SERVERS[2], l3_forwarding[4], [5]),
+       so the record was named where choosing it re-ran the flow and opened nothing — the Path preset
+       shape, in the palette (inert-cite-census). An option may not hold a control, so the citation
+       stays out of the option; the trace the flow opens cites every hop. Every command, not the flows. */
+    const commands = allCommands();
+    expect(commands.some((c) => c.id.startsWith("path.flow."))).toBe(true);
+    const cited = commands.flatMap((c) => {
+      const text = `${c.title} ${typeof c.detail === "string" ? c.detail : ""}`;
+      const cites = citesIn(text);
+      return cites.length === 0 ? [] : [`${c.id}: ${cites.join(", ")}`];
+    });
+    expect(cited).toEqual([]);
+    // the verdict the row states is kept: only the citations left the text
+    for (const c of commands.filter((x) => x.id.startsWith("path.flow."))) {
+      expect(c.detail, c.id).toContain(c.verdict!.sentence.replace(/\s*\([^()]*\)/g, "").slice(0, 20));
+    }
   });
 });
 

@@ -60,6 +60,7 @@ import {
   type TabItem,
 } from "../ui/primitives";
 import { JsonView, useCopyToClipboard } from "./JsonView";
+import { CitedText } from "./cited-text";
 import { RouteFieldValue } from "./HopList";
 import { lineEvaluability } from "../forwarding/engine";
 import { producerFieldNotEmitted } from "./producer-emission";
@@ -86,7 +87,17 @@ export function openInspector(cite: Cite | null): void {
   const el = typeof document === "undefined" ? null : document.activeElement;
   focusReturn = el instanceof HTMLElement ? el : null;
   emit();
-  useInvestigation.getState().setInspectorOpen(true);
+  /* Only when it is not already open. A store write notifies every subscriber in the app, and with the
+     dock already open it changes nothing — so a reader following citations from record to record
+     re-rendered only the Inspector's own subscription, not the shell (measured in the inert-citation
+     census, which opens every record the app cites: each open cost a whole-app notification). */
+  if (!useInvestigation.getState().inspectorOpen) useInvestigation.getState().setInspectorOpen(true);
+}
+
+/** The citation the Inspector was last pointed at — read-only, for a probe that asks what a control
+ *  opened without waiting for the panel to render it (the inert-citation census). */
+export function inspectorCite(): Cite | null {
+  return activeCite;
 }
 
 /** Change the citation without opening or closing anything. */
@@ -333,7 +344,7 @@ function FieldValue({
         {allPrimitive
           ? value.map((v, i) => (
               <span key={i} className="insp-val__item">
-                {v === null ? <NotObserved compact /> : String(v)}
+                {v === null ? <NotObserved compact /> : <CitedText text={String(v)} onOpenCite={openInspector} />}
               </span>
             ))
           : `${value.length} records — read them in the JSON tab`}
@@ -351,7 +362,11 @@ function FieldValue({
   if (typeof value === "string") {
     /* orNotObserved also catches the engine's own `[NOT OBSERVED] - reason` marker and keeps the
        reason, which is why a raw string never goes straight into the DOM here. */
-    return <span className="insp-val">{orNotObserved(value, (s) => s, { what: name })}</span>;
+    /* A record's string field that names another record — a `cite`, a `source`, a finding's evidence
+       path — is a citation like any other: it opens that record here, in place (`CitedText`). Printed
+       as a plain string it was inert text inside the one surface whose job is following citations
+       (the inert-citation census, acceptance B6 wave 7). */
+    return <span className="insp-val">{orNotObserved(value, (s) => <CitedText text={s} onOpenCite={openInspector} />, { what: name })}</span>;
   }
   return <span className="insp-val insp-val--num">{String(value)}</span>;
 }
@@ -739,6 +754,14 @@ export function Inspector({
     () => resolveCitation(effectiveCite, bearerAt),
     [effectiveCite, bearerAt],
   );
+  /* A model path that is ALSO a source-snapshot path: some compiled record carries it as its `cite`,
+     so the source has a record there too — and what this panel shows is the compiler's projection of
+     it, not it. `routes.core1[6]` is `{next_hop: "", out_intf: "Vlan30"}` in the source and
+     `{nextHop: null, outIntf: "Vlan30"}` here; "resolves directly inside the compiled model", said and
+     left there, let a reader take one for the other (acceptance B6 secondary, O9). Read from the
+     model's own citation index, never from a list of collections. */
+  const projectsSource =
+    resolution.kind === "model" && effectiveCite !== null && (citeBearers().get(effectiveCite)?.length ?? 0) > 0;
   const gaps = useMemo(() => computeGaps(), []);
   const reconciliation = useMemo(() => reconcileCoverage(), []);
   /* Split by what the comparison is CAPABLE of catching. A headline that pools the self-checks in
@@ -863,6 +886,12 @@ export function Inspector({
       id="inspector"
       className={["inspector", className].filter(Boolean).join(" ")}
       aria-label="Inspector"
+      /* Which record is on screen, as data: the citation the reader opened and the model path of the
+         record shown for it. What a citation control is FOR is to put these here, so the
+         inert-citation census (inert-cite-census.test.tsx) and the browser probes read them to prove
+         a control works, rather than trusting its label. */
+      data-cite={effectiveCite ?? undefined}
+      data-model-path={resolution.modelPath ?? undefined}
       style={{ blockSize: `${height}px` }}
     >
       <div
@@ -954,7 +983,17 @@ export function Inspector({
           ) : (
             <>
               <p className="insp-note">
-                {resolution.kind === "model" ? (
+                {resolution.kind === "model" && projectsSource ? (
+                  <>
+                    This citation resolves directly inside the compiled model at{" "}
+                    <code>{resolution.modelPath}</code>. That is also a path in the source snapshot,
+                    and what is shown below is the compiled projection of the source record there,
+                    not the record itself: the compiler renames and retypes fields and leaves some
+                    out (an empty string can become null), so it may differ from the source record.
+                    The source snapshot is not bundled with this build; the Provenance tab names the
+                    file it lives in.
+                  </>
+                ) : resolution.kind === "model" ? (
                   <>
                     This citation resolves directly inside the compiled model at{" "}
                     <code>{resolution.modelPath}</code>.
@@ -1095,7 +1134,9 @@ export function Inspector({
               )}
             </KeyRow>
             <KeyRow label="Resolved by">
-              {resolution.kind === "model"
+              {resolution.kind === "model" && projectsSource
+                ? "the compiled model directly, at the citation path — the compiled projection of the source record at the same path, which may differ from it"
+                : resolution.kind === "model"
                 ? "the compiled model directly, at the citation path"
                 : resolution.kind === "bearer"
                   ? `the compiled record carrying it, at ${resolution.modelPath}`

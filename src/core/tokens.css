@@ -230,6 +230,12 @@
      --scrim is its own token rather than a color-mix of --text, because a mix of the ink token
      inverts with the theme and would LIGHTEN the page behind a dark-theme dialog. */
   --scrim: rgb(16 22 32 / 44%);
+  /* The 4px scroll-edge shadow (shell.css "THE CUT-ROW SCRIM", and Inspector.css's opt-in copy).
+     Text scrolls UNDER it, so in light — where it darkens the ground under dark ink — its darkest
+     row must still leave --text-faint at 4.5:1 on --surface-1 and --bg. It was 22%, which took
+     edge-clipped text to 3.92:1 (5th percentile) and an Inspector key to 3.62:1 (acceptance D4,
+     2026-09-24). contrast.test.ts computes the floor from this value, in both themes. */
+  --scroll-scrim-ink: rgb(0 0 0 / 7%);
   --shadow-1: 0 1px 2px rgb(16 22 32 / 8%);
   --shadow-2: 0 4px 12px rgb(16 22 32 / 10%);
   --shadow-3: 0 12px 32px rgb(16 22 32 / 16%);
@@ -328,6 +334,8 @@
     /* Depth on dark is the surface ladder plus a hairline, never a drop shadow: a shadow on
        #0d1117 is invisible. These exist only for elements that float over the Stage. */
     --scrim: rgb(2 4 8 / 66%);
+    /* On dark the shadow darkens the ground under LIGHT ink, which raises contrast. */
+    --scroll-scrim-ink: rgb(0 0 0 / 52%);
     --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
     --shadow-2: 0 6px 18px rgb(0 0 0 / 48%);
     --shadow-3: 0 18px 44px rgb(0 0 0 / 58%);
@@ -381,6 +389,7 @@
   --unobserved-edge: #8079a0;
 
   --scrim: rgb(2 4 8 / 66%);
+  --scroll-scrim-ink: rgb(0 0 0 / 52%);
   --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-2: 0 6px 18px rgb(0 0 0 / 48%);
   --shadow-3: 0 18px 44px rgb(0 0 0 / 58%);

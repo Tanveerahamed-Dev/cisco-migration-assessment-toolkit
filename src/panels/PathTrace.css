@@ -167,7 +167,27 @@
 .pt-presets__list {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
+}
+
+/* THE CARD IS NOT THE BUTTON (acceptance B6, wave 7). The whole card used to be one run button, so
+   the citations its rationale and provenance note print were inert text inside a control that re-ran
+   the flow. The card is now a list item holding ONE run control (the question: title and flow) and,
+   beside it, what the card says about that question — the verdict with its records, its bounds, the
+   rationale and the provenance — each citation in them a control of its own. The card's own edge is a
+   hairline: it is a grouping, not a control; the run button keeps the control edge (D4). */
+.pt-preset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 2px;
+  padding-bottom: var(--sp-2);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.pt-preset:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
 }
 
 .pt-preset__btn {
@@ -193,27 +213,31 @@
   background: var(--surface-2);
 }
 
-.pt-preset__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0 var(--sp-2);
-  min-width: 0;
-}
-
-.pt-preset__head > *,
-.pt-preset__flow,
+.pt-preset__btn > *,
+.pt-preset__verdict,
 .pt-preset__bounds,
 .pt-preset__why,
 .pt-preset__prov {
   min-width: 0;
 }
 
+/* What the card says about its question, set under the run button on the button's own text inset. */
+.pt-preset__verdict,
+.pt-preset__bounds,
+.pt-preset__why,
+.pt-preset__prov {
+  margin: 0;
+  padding-inline: var(--sp-2);
+}
+
 .pt-preset__title {
   font-size: var(--fs-2);
   font-weight: var(--fw-medium);
   color: var(--text);
+}
+
+.pt-preset__verdict {
+  line-height: var(--lh-1);
 }
 
 .pt-preset__outcome {
@@ -319,8 +343,14 @@
   background-image: var(--unobserved-hatch);
 }
 
+/* The active hop: the three edges the band does not own turn to --text (>= 11:1 against the off
+   hairline, --border). `border-color` here used to set all four sides: --border-strong was 2.97:1
+   light / 2.91:1 dark against --border, and it repainted the band edge, so an active REFUTED or
+   UNDETERMINED hop lost its band (2.66:1 dark) (D4, WCAG 1.4.11). The left edge stays the band's. */
 .hop[data-active] {
-  border-color: var(--border-strong);
+  border-top-color: var(--text);
+  border-right-color: var(--text);
+  border-bottom-color: var(--text);
   background-color: var(--surface-1);
 }
 

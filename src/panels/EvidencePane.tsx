@@ -1089,11 +1089,12 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
         >
           <ol className="ev-chain">
             <ChainStep n={1} title="The finding">
+              {/* The record is named once, as the control that opens it (acceptance B6): it used to
+                  be printed here as mono text and then repeated as a separate cite button. */}
               <p className="ev-step__text">
                 Published on the punchlist as <span className="ev-mono">{finding.id}</span>, at{" "}
-                <span className="ev-mono">{finding.cite}</span>.
+                <CiteButton cite={finding.cite} onOpen={openCite} />.
               </p>
-              <CiteButton cite={finding.cite} onOpen={openCite} />
             </ChainStep>
 
             <ChainStep n={2} title={finding.devices.length === 0 ? "The fleet it speaks for" : `The ${plural(finding.devices.length, "device")} it names`}>
@@ -1273,14 +1274,14 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                 COMPILED record that carries the citation. A projection presented as the source
                 bytes is the exact overclaim B6 forbids, so the words now match the Inspector's. */}
             <ChainStep n={5} title="The compiled record behind the citation">
+              {/* Named once, as the control that opens it (B6), as in step 1. */}
               <p className="ev-step__text">
-                <span className="ev-mono">{finding.cite}</span> is a path into the source snapshot,
-                which is not bundled with this build. The Inspector shows the compiled record that
-                carries this citation — this build&rsquo;s projection of the source record, not its
-                bytes — and its Provenance tab names the source file and sha256 needed to read the
-                original.
+                <CiteButton cite={finding.cite} onOpen={openCite} /> is a path into the source
+                snapshot, which is not bundled with this build. The Inspector shows the compiled
+                record that carries this citation — this build&rsquo;s projection of the source
+                record, not its bytes — and its Provenance tab names the source file and sha256
+                needed to read the original.
               </p>
-              <CiteButton cite={finding.cite} onOpen={openCite} />
               <SnapshotBinding />
             </ChainStep>
           </ol>

@@ -47,6 +47,7 @@ import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { placeholderZero } from "../core/placeholders";
 import { T9_disagreement } from "../core/claims";
 import { RouteFieldValue } from "./HopList";
+import { CitedText } from "./cited-text";
 import { failureImpact, linkFailureImpact } from "../analysis/blast";
 import { cableCountPhrase, disputeSentence, disputesOf, hostCableAccount } from "../analysis/port-claims";
 import { useInvestigation, type EvidenceTab } from "../core/store";
@@ -1033,13 +1034,12 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
         <p className="dp-disagree__body">{ours.engine.note}</p>
         {disagrees ? (
           <p className="dp-disagree__t9">
-            {T9_disagreement(
-              device.host,
-              ourSummary,
-              "failure_impact",
-              theirSummary,
-              theirs?.cite ?? device.cite,
-            )}
+            {/* The sentence ends "Cited at <record>": that record is a control, not mono text (B6). */}
+            <CitedText
+              text={T9_disagreement(device.host, ourSummary, "failure_impact", theirSummary, theirs?.cite ?? device.cite)}
+              onOpenCite={onOpenCite}
+              also={[theirs?.cite ?? device.cite]}
+            />
           </p>
         ) : null}
       </div>
@@ -1873,16 +1873,17 @@ function RawPanel({ record, cite, onOpenCite }: { record: unknown; cite: Cite; o
   const text = useMemo(() => JSON.stringify(record, null, 2), [record]);
   return (
     <div className="dp-panel">
+      {/* Every record path on this tab is a working citation (acceptance B6): the source record in
+          the sentence, and every `cite` value the compiled record carries in its dump, each opened
+          through the same resolver the Inspector uses (CitedText). Printed as mono text they named
+          the record where it could not be opened. */}
       <p className="dp-sec__note">
         This is the <strong>compiled</strong> record this pane renders from. The record in the
-        source snapshot is at <span className="dp-mono">{cite}</span> — open it to check the
+        source snapshot is at <CiteButton cite={cite} onOpen={onOpenCite} /> — open it to check the
         compilation itself rather than its output.
       </p>
-      <p className="dp-sec__note">
-        <CiteButton cite={cite} onOpen={onOpenCite} label={`open ${cite} in the inspector`} />
-      </p>
       <pre className="dp-json" tabIndex={0} aria-label="Compiled record, JSON">
-        {text}
+        <CitedText text={text} onOpenCite={onOpenCite} />
       </pre>
     </div>
   );
@@ -1900,7 +1901,7 @@ function LinkSummary({ link, onOpenCite }: { link: Link; onOpenCite: (c: Cite) =
 
   return (
     <div className="dp-panel">
-      <Section title="Cable" note={<>Source record <span className="dp-mono">{link.cite}</span></>}>
+      <Section title="Cable" note={<>Source record <CiteButton cite={link.cite} onOpen={onOpenCite} /></>}>
         <div className="dp-linkends">
           <button type="button" className="dp-linkbtn dp-linkend" onClick={() => selectDevice(link.a)}>
             <span className="dp-mono dp-linkend__host">{link.a}</span>

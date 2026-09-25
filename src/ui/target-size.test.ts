@@ -647,4 +647,31 @@ describe("a declared pointer target does not declare a size below 24px", () => {
        it — until then its existence would be a list of exemptions nothing enforces. */
     expect(existsSync(resolve(SRC, "..", "docs", "target-size-exceptions.md"))).toBe(false);
   });
+
+  it("the brief states why a sub-24px grid cell is not a target, and the code still makes that true", () => {
+    /* The D5 browser census finds `div.ag__cell` boxes under 24px (one line of text in a >= 32px row).
+       They are not spacing exceptions: the ROW is the target. That argument lived only in D5's grade;
+       design-brief §3.2 now carries it, and requires the exceptions file only when a spacing exception
+       exists. The argument is only as true as the code it cites, so the code is read here too. */
+    const brief = readFileSync(resolve(SRC, "..", "docs", "design-brief.md"), "utf8");
+    const s32 = brief.slice(brief.indexOf("### 3.2 "), brief.indexOf("### 3.3 ")).replace(/\s+/g, " ");
+    expect(s32, "design-brief §3.2 not found").toContain("hit targets");
+    expect(s32).toContain("A grid cell is part of its row's target, not a target of its own");
+    expect(s32).toContain("`docs/target-size-exceptions.md` exists only while at least one such exception does");
+    const s7 = brief.slice(brief.indexOf("| **2.5.8** Target Size")).split("\n")[0]!;
+    expect(s7).toContain("none exists today");
+
+    const grid = readFileSync(join(SRC, "panels", "DataGrid.tsx"), "utf8").replace(/\s+/g, " ");
+    // the data row activates; a cell only moves the roving focus, and stops the click only when it
+    // holds its own control (which is then a target in its own right, under the 24px floor above)
+    expect(grid).toMatch(/onClick=\{\(e\) => \{ const inCell =[^}]*?handlers\.activate\(node\.item/);
+    expect(grid).toMatch(/onClick=\{\(e\) => \{ handlers\.move\(r, c\);[^}]*?if \(col\.interactive\) e\.stopPropagation\(\); \}\}/);
+    const gridCss = readFileSync(join(SRC, "panels", "DataGrid.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(gridCss).toMatch(/\.ag__row--data \{[^}]*cursor: default;/);
+    const cellRules = [...gridCss.matchAll(/(^|\})\s*([^{}]*\.ag__cell[^{}]*)\{([^}]*)\}/g)].filter((m) => /cursor\s*:/.test(m[3]!));
+    expect(
+      cellRules.map((m) => m[2]!.trim()),
+      "a cell rule declares a cursor, presenting the cell as a control of its own",
+    ).toEqual([]);
+  });
 });

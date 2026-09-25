@@ -22,6 +22,7 @@
  * caller cannot be relied on to remember that at every call site.
  */
 import {
+  Component,
   memo,
   useCallback,
   useEffect,
@@ -173,6 +174,26 @@ export interface DataGridProps<T> {
    * and was thrown to 0, where F002 is. Omit it for a reveal of the selection itself.
    */
   revealUnlessVisible?: ReadonlySet<string>;
+  /**
+   * Identity of the reader's ACT — the selection as it stands the moment they make it, before any
+   * deferred render catches up. When it changes, the grid records which rows the reader could see
+   * BEFORE that commit touches the DOM (`getSnapshotBeforeUpdate`), and every "is it already on
+   * screen?" decision the resulting reveal takes (`revealUnlessVisible`, a multi-copy target) also
+   * accepts a row that was fully visible then, and brings it back by the least movement if the
+   * layout has since moved it.
+   *
+   * Why: those decisions are taken against the layout, and the act itself moves the layout before
+   * they run. MEASURED (A4, 1920x1080, no finding): F099 — the only visible row naming access13 —
+   * sat at 999-1041 in a port of 352-1054 at scrollTop 4777. The canvas pick's URGENT render put
+   * "19 of 146 shown findings name access13 — marking the rows." above the grid, moving the port's
+   * top to 389.7; the DEFERRED reveal then found F099 38 px under the bottom edge and threw the list
+   * to 0. Any content the act adds above the grid (a re-worded, re-wrapped sentence on a
+   * device-to-device switch, a note on Back) does the same, so the decision is taken against what
+   * the reader saw when they acted, not against whatever the act has since done to the layout.
+   * The record is dropped as soon as the reader touches the grid or scrolls it: their newer view
+   * is then the one that counts. Omit it and only the live layout is consulted.
+   */
+  actKey?: string;
   /**
    * Rows related to a selection this corpus cannot hold as a row of its own — the findings that
    * name the selected device or the endpoints of the selected cable.
@@ -377,7 +398,12 @@ export function revealBelowHeader(
   const off = offsetFromView(scroller, head, el);
   if (off === 0) return;
   if (align === "nearest") {
-    scroller.scrollTop += off;
+    /* Rounded AWAY from the row, never to nearest: rows sit on fractional pixels (F099 at
+       999.25-1040.63) while the browser snaps scrollTop to device pixels, so `+= 37.7` landed
+       0.3 px short — a row that still failed this very predicate, which the hold then answered by
+       CENTRING it. MEASURED (A4, 1920x1080, dev build): a 38 px restore became a 322 px throw. */
+    const target = scroller.scrollTop + off;
+    scroller.scrollTop = off > 0 ? Math.ceil(target) : Math.floor(target);
     revealThroughAncestors(scroller, head, el);
     return;
   }
@@ -606,9 +632,59 @@ function firstVisibleRow(
     const r = el.getBoundingClientRect();
     if (r.height <= 0) continue;
     band ??= visibleBand(scroller, head); // measured once, and only when a candidate exists
-    if (offsetFromView(scroller, head, el, band) === 0 && (best === null || r.top < best.top)) best = { id, top: r.top };
+    if (seenInBand(scroller, head, el, band) && (best === null || r.top < best.top)) best = { id, top: r.top };
   }
   return best?.id ?? null;
+}
+
+/**
+ * How much of a row may sit outside the band and still count as SEEN for an "already on screen?"
+ * decision: less than one CSS pixel. Rows are laid out on fractional pixels while scrollTop snaps to
+ * device pixels, so a row the reader scrolled flush to the header's edge can sit 0.25 px under it.
+ * MEASURED (A4 band sweep, 1920x1080): F012 flush at the band's top edge, 0.25 px under the header,
+ * read as not visible, and the pick threw the list 645 px to F002. The same slack the hold uses to
+ * decide that a row is still where a reveal put it; a REVEAL still aims for the whole row.
+ */
+const SEEN_SLACK_PX = 1;
+
+function seenInBand(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement, band: { top: number; bottom: number }): boolean {
+  return Math.abs(offsetFromView(scroller, head, el, band)) < SEEN_SLACK_PX;
+}
+
+/**
+ * Every mounted data row (by `rowKeyOf`) the reader can see right now — the same predicate as
+ * `firstVisibleRow`, applied to all rows — with how far it sat outside the band then (0 when fully
+ * inside, under a pixel otherwise). Used only for the act-time record (see `actKey`), which is taken
+ * before the act's commit mutates anything, so the layout it reads is the one already on screen and
+ * forces no reflow (measured on the release build, 146 rows: 0.6 ms median, 1 ms max).
+ */
+function visibleRowKeys(scroller: HTMLElement, head: HTMLElement | null, rowEls: ReadonlyMap<string, HTMLElement>): Map<string, number> {
+  const out = new Map<string, number>();
+  let band: { top: number; bottom: number } | undefined;
+  for (const [key, el] of rowEls) {
+    if (head?.contains(el)) continue;
+    if (el.getBoundingClientRect().height <= 0) continue;
+    band ??= visibleBand(scroller, head);
+    if (seenInBand(scroller, head, el, band)) out.set(key, offsetFromView(scroller, head, el, band));
+  }
+  return out;
+}
+
+/**
+ * Calls `capture` in the commit's BEFORE-MUTATION phase whenever `watch` changes — the one moment
+ * React guarantees the DOM, and so the layout, is still exactly what the reader was looking at.
+ * A layout effect is too late: by then the same commit has already inserted whatever moves the grid.
+ */
+class BeforeCommit extends Component<{ watch: string | undefined; capture: () => void }> {
+  override getSnapshotBeforeUpdate(prev: Readonly<{ watch: string | undefined }>): null {
+    if (prev.watch !== this.props.watch) this.props.capture();
+    return null;
+  }
+  /* Required alongside getSnapshotBeforeUpdate; the snapshot is kept by `capture` itself. */
+  override componentDidUpdate(): void {}
+  override render(): null {
+    return null;
+  }
 }
 
 /** `aimedAt` before the first render has looked at the reveal target. */
@@ -635,6 +711,7 @@ export function DataGrid<T>({
   revealId,
   revealKey,
   revealUnlessVisible,
+  actKey,
   relatedIds,
   relatedDescription,
   batchIds,
@@ -946,6 +1023,16 @@ export function DataGrid<T>({
   /** True once the reader has touched the grid (wheel, touch, pointer, key) since the last reveal;
    *  only then may a scroll release the hold. See the hold effect below. */
   const readerInputRef = useRef(false);
+  /**
+   * What the reader could see when they last acted (see `actKey`): the fully visible row keys and
+   * the scroll offset they were read at. Consumed by the next reveal decision; dropped by reader
+   * input on the grid, and ignored if the grid has scrolled since (the reader's newer view counts).
+   */
+  const actViewRef = useRef<{ keys: ReadonlyMap<string, number>; scrollTop: number } | null>(null);
+  const captureActView = useCallback((): void => {
+    const scroller = gridRef.current;
+    actViewRef.current = scroller ? { keys: visibleRowKeys(scroller, headRef.current, rowRefs.current), scrollTop: scroller.scrollTop } : null;
+  }, []);
 
   useLayoutEffect(() => {
     const scroller = gridRef.current;
@@ -984,8 +1071,40 @@ export function DataGrid<T>({
       for (const id of ids) for (const k of copies.get(id) ?? []) out.add(k);
       return out;
     };
-    const answered =
-      revealUnlessVisible === undefined ? null : firstVisibleRow(scroller, headRef.current, rowRefs.current, keysFor(revealUnlessVisible));
+    /* What the reader saw when they acted (see `actKey`), taken once per act: this decision is the
+       one it was recorded for. Void once the grid has scrolled since — the reader's own newer view
+       (or a clamp) is then what is on screen. */
+    const actView = actViewRef.current;
+    actViewRef.current = null;
+    const sawAtAct = actView !== null && Math.abs(actView.scrollTop - scroller.scrollTop) < 0.5 ? actView.keys : null;
+    /** Of `keys`, the row the reader could see when they acted that the layout has since moved out
+     *  of the band — the one nearest to it, so bringing it back is the least movement. */
+    const seenAtAct = (keys: ReadonlySet<string>): string | null => {
+      if (sawAtAct === null) return null;
+      let best: { key: string; off: number } | null = null;
+      for (const k of keys) {
+        const el = sawAtAct.has(k) ? rowRefs.current.get(k) : undefined;
+        if (el === undefined || el.getBoundingClientRect().height <= 0) continue;
+        const off = Math.abs(offsetFromView(scroller, headRef.current, el));
+        if (best === null || off < best.off) best = { key: k, off };
+      }
+      return best?.key ?? null;
+    };
+    let answered: string | null = null;
+    if (revealUnlessVisible !== undefined) {
+      const keys = keysFor(revealUnlessVisible);
+      answered = firstVisibleRow(scroller, headRef.current, rowRefs.current, keys) ?? seenAtAct(keys);
+      /* The reader was looking at this answer when they acted. If the act has since pushed it
+         further out of the band than it was then (the sentence above the grid moving the port — by
+         38 px, or by the 0.8 px that leaves it just under the edge), put it back by the least
+         movement; never throw the reader to the first naming row, and never nudge a row the act
+         did not move (a sliver the reader's own scroll left under the header stays theirs). */
+      const el = answered === null ? undefined : rowRefs.current.get(answered);
+      const then = answered === null ? undefined : sawAtAct?.get(answered);
+      if (el !== undefined && then !== undefined && Math.abs(offsetFromView(scroller, headRef.current, el)) > Math.abs(then) + 0.01) {
+        revealBelowHeader(scroller, headRef.current, el, "nearest");
+      }
+    }
     if (answered !== null) {
       revealedRef.current = revealTarget;
       revealedKeyRef.current = answered;
@@ -1007,17 +1126,22 @@ export function DataGrid<T>({
        roving cell, where the keyboard is, else the first. */
     const targetCopies = copies.get(revealTarget) ?? [];
     let key = targetCopies[0] ?? revealTarget;
+    /** True when the copy chosen was on screen when the reader acted and has since been moved. */
+    let restoring = false;
     if (targetCopies.length > 1) {
       const onRoving = rows[focusCellRef.current.row];
       const rovingKey = onRoving?.kind === "data" && onRoving.node.id === revealTarget ? rowKeyOf(onRoving.node) : null;
       const rovingEl = rovingKey === null ? undefined : rowRefs.current.get(rovingKey);
       const rovingInView =
-        rovingEl !== undefined && rovingEl.getBoundingClientRect().height > 0 && offsetFromView(scroller, headRef.current, rovingEl) === 0;
-      key =
-        (rovingInView ? rovingKey : null) ??
-        firstVisibleRow(scroller, headRef.current, rowRefs.current, new Set(targetCopies)) ??
-        rovingKey ??
-        key;
+        rovingEl !== undefined && rovingEl.getBoundingClientRect().height > 0 && Math.abs(offsetFromView(scroller, headRef.current, rovingEl)) < SEEN_SLACK_PX;
+      const liveCopy = rovingInView ? rovingKey : firstVisibleRow(scroller, headRef.current, rowRefs.current, new Set(targetCopies));
+      const actCopy = liveCopy === null ? seenAtAct(new Set(targetCopies)) : null;
+      restoring = actCopy !== null;
+      key = liveCopy ?? actCopy ?? rovingKey ?? key;
+    } else if (sawAtAct !== null && sawAtAct.has(key)) {
+      /* The selection itself was on screen when the reader acted: if the act has since moved it, the
+         least movement brings it back — centring would move a row the reader was already reading. */
+      restoring = true;
     }
     const el = rowRefs.current.get(key);
     if (!el) {
@@ -1034,7 +1158,7 @@ export function DataGrid<T>({
     revealedRef.current = revealTarget;
     revealedKeyRef.current = key;
     pagedRef.current = null;
-    revealBelowHeader(scroller, headRef.current, el, "centre");
+    revealBelowHeader(scroller, headRef.current, el, restoring ? "nearest" : "centre");
     heldRef.current = true;
     if (targetCopies.length > 1 && revealTarget === activeId) setChosenCopy(key);
     /* A representative reveal that DID scroll places the roving cell on the row it brought into
@@ -1085,6 +1209,8 @@ export function DataGrid<T>({
        leaving the grid lower again, so the classification is a function of the event sequence. */
     const onUserInput = (): void => {
       readerInputRef.current = true;
+      // The reader's own hand on the grid supersedes what they could see when they last acted.
+      actViewRef.current = null;
     };
     const onLeave = (): void => {
       readerInputRef.current = false;
@@ -1680,6 +1806,7 @@ export function DataGrid<T>({
         </p>
       ) : null}
       <LiveRegion message={announcement} />
+      <BeforeCommit watch={actKey} capture={captureActView} />
     </div>
   );
 }

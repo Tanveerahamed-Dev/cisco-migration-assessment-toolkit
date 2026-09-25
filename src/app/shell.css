@@ -183,7 +183,7 @@ a {
     linear-gradient(to top, var(--scroll-scrim-bg, var(--bg)) 40%, transparent 100%),
     /* 2. the SHADOW, attached `scroll`, so it is pinned to the bottom edge of the box and is
           revealed exactly when there is content past it. */
-    linear-gradient(to top, var(--scroll-scrim-ink, rgb(0 0 0 / 22%)) 0, transparent 100%);
+    linear-gradient(to top, var(--scroll-scrim-ink) 0, transparent 100%);
   background-position: bottom center, bottom center;
   /* The SHADOW is an EDGE, not a band (a11y audit D4, 2026-09-22). It was --sp-5 (24px) tall, so
      the row being cut by the fold sat entirely on top of it: in the light theme "Compound risk"
@@ -217,19 +217,8 @@ a {
   --scroll-scrim-bg: var(--surface-1);
 }
 
-/* Same two-block theme pattern tokens.css uses: the media query for the OS preference, the
-   attribute for an explicit choice, so a user's pick wins in both directions. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .scroll-y,
-  :root:not([data-theme="light"]) .scroll-scrim {
-    --scroll-scrim-ink: rgb(0 0 0 / 52%);
-  }
-}
-
-[data-theme="dark"] .scroll-y,
-[data-theme="dark"] .scroll-scrim {
-  --scroll-scrim-ink: rgb(0 0 0 / 52%);
-}
+/* The shadow ink is a theme token (`--scroll-scrim-ink`, tokens.css), 7% black in light and 52% in
+   dark, so this rule and Inspector.css's opt-in copy read one owner in both themes. */
 
 .scroll-x {
   overflow-x: auto;

@@ -35,6 +35,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { BandPresentation } from "../core/band-qualification";
+import { T8_coverageLine } from "../core/claims";
+import { ribCountQualifier } from "../forwarding/rib-completeness";
 import type { Cite as CitePath, OpStatus, Severity } from "../core/types";
 import {
   IconCheck,
@@ -1025,6 +1027,70 @@ export function Tooltip({
   );
 }
 
+/* ══ coverage under an overlay (acceptance B7) ═════════════════════════════
+   B7 states coverage "permanently and visibly", and the status bar is where it lives. An overlay
+   can take it off the screen: MEASURED 2026-09-25 (390/320/768/1440/1920 px, both themes), with
+   the palette or the keyboard reference open `elementFromPoint` over every figure returned the
+   dialog's scrim or footer at EVERY width, and at 390/320 a priority-queue popover sat over the
+   whole group. So every surface built on Dialog or Popover states the figures itself, read from
+   the owner of the permanent line — never a copy of the numbers. It is rendered by the primitives,
+   not by their consumers, so an overlay added tomorrow carries it without anyone remembering to. */
+
+let figuresOnce: readonly string[] | null = null;
+
+/**
+ * The coverage figures an overlay states, as segments of the owner's line (`T8_coverageLine`,
+ * core/claims.ts). A RIB count without its completeness qualifier reads as that many WHOLE tables,
+ * so the qualifier from forwarding/rib-completeness.ts rides on the RIB segment exactly as it does
+ * on the status bar — and if the owner's line ever stops carrying a RIB segment, the qualifier is
+ * appended as its own segment rather than silently dropped.
+ */
+export function coverageFigures(): readonly string[] {
+  /* Read once. `fabric` is a static import, so there is nothing for the figures to go stale
+     against, and opening an overlay must not read the dataset: the palette's open is a visibility
+     toggle over an index that already exists (E3/J5; CommandPalette.test.tsx "opens over an index
+     that already exists" counts the reads, and reading the line per open was 2 of them). */
+  if (figuresOnce !== null) return figuresOnce;
+  figuresOnce = withRibQualifier(T8_coverageLine().split(" · "), ribCountQualifier());
+  return figuresOnce;
+}
+
+/** The RIB segment carries the qualifier; with no RIB segment the qualifier is its own. Pure. */
+export function withRibQualifier(parts: readonly string[], qualifier: string): string[] {
+  if (qualifier === "") return [...parts];
+  let placed = false;
+  const out = parts.map((p) => {
+    if (placed || !p.startsWith("RIBs ")) return p;
+    placed = true;
+    return `${p} ${qualifier}`;
+  });
+  return placed ? out : [...out, `RIBs ${qualifier}`];
+}
+
+/**
+ * The coverage line an overlay carries. Prose, never a control: it adds no tab stop to a focus
+ * trap (D1/D3), and it is not a live region — a dialog's content is read when the dialog is.
+ * Styled in src/ui/primitives.css (`.ui-overlay-cov`), with the primitives that render it.
+ */
+export function CoverageStatement(): ReactElement {
+  const figures = coverageFigures();
+  return (
+    <p className="ui-overlay-cov" data-overlay-coverage="">
+      <span className="ui-overlay-cov__key">coverage</span>{" "}
+      {figures.map((f, i) => (
+        <span key={f}>
+          <span className="ui-overlay-cov__fig">{f}</span>
+          {i === figures.length - 1 ? null : (
+            <span className="ui-overlay-cov__dot" aria-hidden="true">
+              {" · "}
+            </span>
+          )}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 /**
  * A non-modal popover: the page behind stays live and readable, which is the whole point of a
  * continuous investigation surface. Escape and an outside click close it and return focus to the
@@ -1141,13 +1207,46 @@ export function Popover({
 
   /* An end-aligned panel is pulled left of its trigger by its own width, which the anchor rect
      cannot know; a trigger near the left edge put the panel's first characters off-screen
-     (measured: left -6.7 px on "More display options"). Nudge it back inside an 8 px gutter. */
+     (measured: left -6.7 px on "More display options"). Nudge it back inside an 8 px gutter.
+     The RIGHT edge is the mirror case: a start-aligned panel under a trigger near the right edge
+     ran past the screen (measured 2026-09-25: the queue's "What the collection gap means" panel
+     reached x 908 in a 768 px viewport, cutting off its text and its coverage line). It is pulled
+     back left by its overflow — but never so far that its START leaves the screen, because a
+     panel wider than the viewport is read from its first character. */
+  /* And the BOTTOM edge: the height cap below keeps a 160 px floor so a panel stays usable, which
+     is more than the room left under a trigger low on a short screen. MEASURED 2026-09-25 at
+     320x568: trigger at y 420-436, panel run to y 600 — over the status bar's coverage group, its
+     own coverage line (B7) cut off by the screen edge. A panel that does not fit below opens ABOVE
+     the trigger when there is more room there, and is otherwise capped to the room below; either
+     way it ends inside the viewport, so its last line (the coverage statement) is on screen. */
   useEffect(() => {
     const panel = panelRef.current;
     if (!open || panel === null) return;
     panel.style.marginLeft = "";
-    const left = panel.getBoundingClientRect().left;
-    if (left < 8) panel.style.marginLeft = `${Math.ceil(8 - left)}px`;
+    panel.style.top = "";
+    panel.style.maxHeight = "";
+    const box = panel.getBoundingClientRect();
+    const GUTTER = 8;
+    const viewport = document.documentElement.clientWidth || window.innerWidth;
+    let shift = 0;
+    if (box.right > viewport - GUTTER) shift = viewport - GUTTER - box.right;
+    if (box.left + shift < GUTTER) shift = GUTTER - box.left;
+    if (shift !== 0) panel.style.marginLeft = `${shift > 0 ? Math.ceil(shift) : Math.floor(shift)}px`;
+
+    const viewportH = document.documentElement.clientHeight || window.innerHeight;
+    if (box.bottom <= viewportH - GUTTER) return;
+    const marginTop = Number.parseFloat(getComputedStyle(panel).marginTop) || 0;
+    const below = Math.floor(viewportH - GUTTER - box.top);
+    const above = Math.floor(rect.top - GUTTER - marginTop * 2);
+    if (above > below) {
+      /* The height it WANTS, not the height the floor-capped layout gave it. */
+      const natural = Math.max(box.height, panel.scrollHeight + (box.height - panel.clientHeight));
+      const h = Math.min(natural, above);
+      panel.style.maxHeight = `${above}px`;
+      panel.style.top = `${Math.max(GUTTER - marginTop, Math.floor(rect.top - marginTop * 2 - h))}px`;
+    } else {
+      panel.style.maxHeight = `${Math.max(0, below)}px`;
+    }
   }, [open, rect]);
 
   const p = trigger.props;
@@ -1188,6 +1287,7 @@ export function Popover({
             }
           >
             {children}
+            <CoverageStatement />
           </div>
         </Portal>
       ) : null}
@@ -1386,6 +1486,7 @@ export function Dialog({
         ) : null}
         <div className="ui-dialog__body">{children}</div>
         {footer ? <div className="ui-dialog__foot">{footer}</div> : null}
+        <CoverageStatement />
       </div>
     </Portal>
   );

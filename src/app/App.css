@@ -270,11 +270,26 @@
   cursor: pointer;
 }
 
+/* The chosen pane is marked by the accent UNDERLINE, the same mark the tab strip and the surface
+   switcher use for "this one". The edge cannot carry the state here: both options draw the
+   `--border-strong` control edge, so restating it on the checked option (as this rule once did)
+   changed nothing. Measured 2026-09-24 (acceptance D4, refuter): fill 1.17:1 light / 1.20:1 dark
+   and ink 2.52:1 / 2.20:1 were the only differences, all below the 3:1 a state indicator needs.
+   The underline is >= 4.86:1 against both the chosen fill and the unchosen ground in both themes
+   (src/ui/selected-state-contrast.test.ts), and the fill and ink still change with it. */
 .paneswitch__btn[aria-checked="true"],
 .paneswitch__fabric[aria-pressed="true"] {
-  border-color: var(--border-strong);
   background: var(--surface-3);
   color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* Forced colours drop box-shadow and repaint fills, so the edge takes the state instead. */
+@media (forced-colors: active) {
+  .paneswitch__btn[aria-checked="true"],
+  .paneswitch__fabric[aria-pressed="true"] {
+    border-color: Highlight;
+  }
 }
 
 .paneswitch__fabric {

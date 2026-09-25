@@ -31,6 +31,7 @@ import { valueDomain } from "../core/query";
 import { SEVERITY_ORDER, type Flow, type Severity, type SurfaceId } from "../core/types";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
 import { verdictStatement, type VerdictStatement } from "../panels/ClaimCard";
+import { withoutCitations } from "../panels/cited-text";
 import { parseIpv4 } from "../forwarding/ip";
 import {
   characterKeyShortcutsEnabled,
@@ -753,6 +754,10 @@ const severityCommands = memo((): Command[] =>
  * `verdictStatement`). The detail used to be `${formatFlow} — ${expectedOutcome}. ${rationale}`:
  * the bare enum ("denied") beside a rationale that called the same undecided denial "the
  * blocking-hop answer with its exact configuration line" — no scope, no caveat (acceptance B2).
+ *
+ * The detail carries no citation (acceptance B6): the palette row is one role=option whose activation
+ * RUNS the flow, so a record named in it would be named where choosing it opens nothing, and an option
+ * may not contain a control. The trace the flow opens cites every hop.
  */
 const flowCommands = memo((): Command[] =>
   suggestedFlows().map((s) => {
@@ -762,7 +767,7 @@ const flowCommands = memo((): Command[] =>
       title: `Trace ${s.title}`,
       keywords: ["trace", "path", "flow", s.flow.srcIp, s.flow.dstIp, s.expectedOutcome],
       group: "Path" as const,
-      detail: `${formatFlow(s.flow)} — ${verdict.sentence} ${s.rationale}`,
+      detail: withoutCitations(`${formatFlow(s.flow)} — ${verdict.sentence} ${s.rationale}`),
       verdict,
       run: () => runFlow(s.flow),
     };

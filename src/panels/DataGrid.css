@@ -215,8 +215,12 @@
   border-radius: var(--radius-sm);
 }
 
+/* The selected column is a fill AND an accent underline. The fill alone is 1.00:1 against an
+   unselected cell on the worst ground (acceptance D4, WCAG 1.4.11), so the underline carries the
+   state (src/ui/selected-state-contrast.test.ts). */
 .ag__cell[aria-selected="true"] {
   background: var(--surface-2);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* ── rows ───────────────────────────────────────────────────────────────────── */

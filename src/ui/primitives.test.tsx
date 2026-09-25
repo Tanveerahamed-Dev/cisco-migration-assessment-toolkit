@@ -21,6 +21,7 @@ import {
   IconButton,
   Meter,
   NotObserved,
+  Popover,
   Sparkline,
   SeverityBadge,
   StateDot,
@@ -424,6 +425,106 @@ describe("Dialog", () => {
     const labelledBy = panel.getAttribute("aria-labelledby")!;
     expect(panel.getAttribute("aria-modal")).toBe("true");
     expect(document.getElementById(labelledBy)?.textContent).toBe("Blast radius");
+  });
+});
+
+/* ══ Popover — the panel stays inside the viewport ═════════════════════════
+   MEASURED 2026-09-25 (390 and 768 px, light and dark, headless Chromium): the priority queue's
+   "What the collection gap means" popover opens start-aligned under a trigger at the right edge,
+   and its panel ran to x 908 in a 768 px viewport — the explanation, and the coverage line every
+   overlay carries (B7), were cut off by the screen edge. Only the LEFT edge was nudged. */
+
+describe("Popover stays inside the viewport", () => {
+  /** Open a popover whose panel the layout engine would place at [left, left + width). */
+  function openAt(left: number, width: number, viewport: number): HTMLElement {
+    const realRect = HTMLElement.prototype.getBoundingClientRect;
+    const realWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: viewport });
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (!this.classList.contains("ui-popover")) return realRect.call(this);
+      return { left, right: left + width, width, top: 100, bottom: 200, height: 100, x: left, y: 100, toJSON: () => ({}) } as DOMRect;
+    };
+    try {
+      mount(
+        <Popover label="Probe" open trigger={<button type="button">t</button>}>
+          <p>body</p>
+        </Popover>,
+      );
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = realRect;
+      if (realWidth) Object.defineProperty(window, "innerWidth", realWidth);
+    }
+    const panels = document.querySelectorAll<HTMLElement>(".ui-popover");
+    return panels[panels.length - 1]!;
+  }
+  const shift = (el: HTMLElement): number => Number.parseFloat(el.style.marginLeft || "0");
+
+  it("pulls a panel that would run past the right edge back inside an 8 px gutter", () => {
+    const panel = openAt(740, 168, 768); // right edge 908 in a 768 px viewport, as measured
+    expect(740 + 168 + shift(panel)).toBeLessThanOrEqual(768 - 8);
+    expect(740 + shift(panel)).toBeGreaterThanOrEqual(8);
+  });
+
+  it("keeps the panel's START on screen when it is wider than the viewport", () => {
+    const panel = openAt(300, 500, 390);
+    expect(300 + shift(panel)).toBe(8);
+  });
+
+  it("still pushes a panel off the left edge back in, and leaves one that fits alone", () => {
+    expect(-6.7 + shift(openAt(-6.7, 200, 1024))).toBeGreaterThanOrEqual(8);
+    expect(shift(openAt(100, 200, 1024))).toBe(0);
+  });
+
+  /* The bottom edge. MEASURED 2026-09-25 at 320x568: the same popover's trigger sits at y 420-436,
+     the panel's height floor (160 px) is more than the 116 px left below it, and the panel ran to
+     y 600 — over the status bar's coverage group, with its own coverage line cut off by the
+     screen edge. So a panel that does not fit below opens above when there is more room there,
+     and otherwise is capped to the room below; either way it ends inside the viewport. */
+  type Box = { top: number; height: number };
+  function openBelow(trigger: Box, panel: Box, viewportH: number): HTMLElement {
+    const realRect = HTMLElement.prototype.getBoundingClientRect;
+    const realH = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: viewportH });
+    const box = (b: Box, left: number, width: number): DOMRect =>
+      ({ left, right: left + width, width, top: b.top, bottom: b.top + b.height, height: b.height, x: left, y: b.top, toJSON: () => ({}) }) as DOMRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (this.classList.contains("ui-popover")) return box(panel, 20, 200);
+      if (this.id === "pop-trigger") return box(trigger, 20, 24);
+      return realRect.call(this);
+    };
+    try {
+      mount(
+        <Popover label="Probe" open trigger={<button type="button" id="pop-trigger">t</button>}>
+          <p>body</p>
+        </Popover>,
+      );
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = realRect;
+      if (realH) Object.defineProperty(window, "innerHeight", realH);
+    }
+    const panels = document.querySelectorAll<HTMLElement>(".ui-popover");
+    return panels[panels.length - 1]!;
+  }
+  const px = (v: string): number => Number.parseFloat(v);
+
+  it("opens ABOVE its trigger when it does not fit below and there is more room above", () => {
+    const panel = openBelow({ top: 420, height: 16 }, { top: 440, height: 160 }, 568);
+    expect(panel.style.top, "the panel was left hanging below the trigger").not.toBe("");
+    const top = px(panel.style.top) + px(getComputedStyle(panel).marginTop || "0");
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top + Math.min(160, px(panel.style.maxHeight || "1e9"))).toBeLessThanOrEqual(420);
+  });
+
+  it("is capped to the room below when that is where the room is", () => {
+    const panel = openBelow({ top: 100, height: 16 }, { top: 120, height: 440 }, 400);
+    expect(panel.style.top).toBe("");
+    expect(120 + px(panel.style.maxHeight)).toBeLessThanOrEqual(400 - 8);
+  });
+
+  it("leaves a panel that fits below exactly where it is", () => {
+    const panel = openBelow({ top: 100, height: 16 }, { top: 120, height: 160 }, 800);
+    expect(panel.style.top).toBe("");
+    expect(panel.style.maxHeight).toBe("");
   });
 });
 

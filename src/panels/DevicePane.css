@@ -475,8 +475,11 @@
   background: var(--surface-2);
 }
 
+/* Selected: a fill plus an accent bar. The fill alone is 1.00:1 against an unselected row on the
+   worst ground (D4, WCAG 1.4.11); the bar carries the state. */
 .dp-list__row[data-selected="true"] {
   background: var(--surface-3);
+  box-shadow: inset 2px 0 0 0 var(--accent);
 }
 
 .dp-list__lead {

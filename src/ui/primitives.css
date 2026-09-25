@@ -241,10 +241,15 @@
   cursor: not-allowed;
 }
 
+/* A pressed toggle is marked by the accent underline, the product's one mark for "this one" (tabs,
+   the surface switcher, the pane switch). A fill of --surface-3 over a transparent or --bg button
+   is 1.26:1 at most, and the ink does not change at all, so fill alone did not carry the state
+   (acceptance D4, WCAG 1.4.11; src/ui/selected-state-contrast.test.ts). */
 .ui-btn[aria-pressed="true"],
 .ui-btn[data-active="true"] {
   background: var(--surface-3);
   color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* ══ chip ═════════════════════════════════════════════════════════════════ */
@@ -1154,7 +1159,70 @@ button.ui-chip__body:hover {
     forced-color-adjust: none;
   }
 
+  /* A border, not the inset box-shadow the normal rule uses: forced colours compute every
+     box-shadow to `none` — measured 2026-09-24, a `box-shadow: inset 0 -2px 0 Highlight` here
+     computed to `none` and the selected tab matched its siblings. A border survives. */
   .ui-tab[aria-selected="true"] {
-    box-shadow: inset 0 -2px 0 Highlight;
+    border-bottom: 2px solid Highlight;
+  }
+
+  .ui-btn[aria-pressed="true"],
+  .ui-btn[data-active="true"] {
+    border-color: Highlight;
   }
 }
+
+/* ══ coverage under an overlay (acceptance B7) ═════════════════════════════
+   Every Dialog and Popover states the status bar's coverage figures itself, because an open overlay
+   can cover the bar (scrim at every width, popovers over the whole group at 390/320). The markup is
+   rendered by the primitives (`CoverageStatement`, src/ui/primitives.tsx), and the rule lives with
+   them, so the statement's visual contract does not depend on which other sheet a surface happens
+   to load (it moved here from CommandPalette.css when the status bar's own coverage disclosure
+   became a third consumer). In a Dialog or Popover it is the LAST child of the surface and never
+   scrolls away: a dialog is a flex column whose body owns the scrolling, and a popover — which
+   scrolls as a whole — pins it to its bottom edge. Muted key, full-contrast figures, as on the bar. */
+
+.ui-overlay-cov {
+  flex: none;
+  margin: 0;
+  padding: var(--sp-1) var(--sp-4) var(--sp-2);
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-overlay-cov__key {
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+}
+
+/* A figure is one unit ("RIBs 2/26 (both shown incomplete)" must not break inside); the line
+   wraps between figures. */
+.ui-overlay-cov__fig {
+  white-space: nowrap;
+}
+
+.ui-overlay-cov__dot {
+  color: var(--text-muted);
+}
+
+/* The popover scrolls as a whole, so the line is pinned to its bottom edge over the popover's own
+   padding, on the popover's own surface so scrolled content never shows through it. It takes the
+   popover's width rather than setting it (`contain: inline-size`): a popover sized by its own
+   content must not be widened to fit one line of figures, which then wrap inside it instead. */
+.ui-popover > .ui-overlay-cov {
+  contain: inline-size;
+  position: sticky;
+  /* A sticky box pins its own compositing layer (acceptance F6, src/core/sticky-layer.test.ts):
+     left to Chrome, a sticky line at a fractional offset is layered on some loads and not others,
+     and its glyphs rasterize differently each way. The line holds no fixed-position descendant,
+     so the containing block this creates changes nothing inside it. */
+  will-change: transform;
+  bottom: calc(-1 * var(--sp-2));
+  margin: var(--sp-2) calc(-1 * var(--sp-2)) calc(-1 * var(--sp-2));
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  background: var(--overlay);
+}
+

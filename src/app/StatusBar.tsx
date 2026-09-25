@@ -55,7 +55,7 @@ import { useInvestigation } from "../core/store";
 import type { Cite } from "../core/types";
 import type { QualityTier, SceneStats } from "../fabric3d/contract";
 import { IconClose } from "../ui/icons";
-import { IconButton, NotObserved } from "../ui/primitives";
+import { CoverageStatement, IconButton, NotObserved } from "../ui/primitives";
 import { CoverageBar } from "./CoverageBar";
 import { returnFocus } from "./focus-return";
 import "./chrome.css";
@@ -403,6 +403,9 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
                 <p className="covpanel__lede">
                   {`Everything below is read from the snapshot at ${fabric.meta.source}. A category with nothing observed is a gap in what was collected, not a statement about the network.`}
                 </p>
+                {/* At <= 767 px this panel is docked over the whole bar (chrome.css), so it states the
+                    bar's figures itself, from the same owner (acceptance B7). */}
+                <CoverageStatement />
                 <IconButton
                   label="Close the coverage disclosure"
                   icon={<IconClose />}

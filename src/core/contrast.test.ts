@@ -334,6 +334,75 @@ describe("the ratios quoted in comments are the real ones", () => {
   });
 });
 
+/* ── text under the scroll-edge shadow ───────────────────────────────────────── */
+
+describe("WCAG 1.4.3 — text scrolled under the scroll-edge shadow keeps 4.5:1", () => {
+  /*
+   * Every scroll region paints a 4px shadow at its bottom edge (shell.css, "THE CUT-ROW SCRIM";
+   * Inspector.css has an opt-in copy), and rows scroll UNDER it. At 22% black the light theme's
+   * edge-clipped text measured 3.92:1 (5th percentile) and an Inspector key 3.62:1 (acceptance D4,
+   * 2026-09-24). The shadow's ink is now the theme token `--scroll-scrim-ink`; this composites it,
+   * at its darkest row, over each ground a scroll region has (--bg by default, --surface-1 in the
+   * rails and the Inspector) and requires every ink token to keep 4.5:1 there.
+   */
+  const SCROLL_GROUNDS = ["--bg", "--surface-1"];
+  const scrimBlocks: [string, RegExp][] = [
+    ["light", LIGHT_SEL],
+    ["dark", DARK_SEL],
+    ["dark (OS preference)", DARK_OS_SEL],
+  ];
+  for (const [themeName, sel] of scrimBlocks) {
+    it(`${themeName}: every ink token clears 4.5:1 on the shadow's darkest row`, () => {
+      const raw = declarationsIn(sel).get("--scroll-scrim-ink");
+      expect(raw, `${themeName} declares no --scroll-scrim-ink`).toBeDefined();
+      const m = /^rgb\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\/\s*([\d.]+)%\s*\)$/.exec(raw ?? "");
+      expect(m, `--scroll-scrim-ink must be an rgb()/alpha value this audit can composite, got ${raw}`).toBeTruthy();
+      if (!m) return;
+      const ink = [Number(m[1]), Number(m[2]), Number(m[3])];
+      const a = Number(m[4]) / 100;
+      const t = THEMES.find(([n]) => n === themeName)![1];
+      const failures: string[] = [];
+      let measured = 0;
+      for (const gTok of SCROLL_GROUNDS) {
+        const g = parseHex(t[gTok]!)!;
+        const under = g.map((c, i) => Math.round(c * (1 - a) + ink[i]! * a));
+        const hex = `#${under.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+        for (const inkTok of INK_TEXT) {
+          const r = contrast(t[inkTok]!, hex)!;
+          measured += 1;
+          if (r < 4.5) failures.push(`${inkTok} on ${gTok} under the shadow (${hex}) = ${round2(r)}:1`);
+        }
+      }
+      expect(measured).toBe(SCROLL_GROUNDS.length * INK_TEXT.length);
+      expect(failures, `${themeName} text under the scroll shadow below 4.5:1:\n${failures.join("\n")}`).toEqual([]);
+    });
+  }
+
+  it("every use of the shadow ink is the token itself, with no private fallback this audit never composites", () => {
+    /* The audit above composites the token's value. A `var(--scroll-scrim-ink, <fallback>)` carries a
+       second ink it never reads; the Inspector's copy carried the retired 22% black, the value that
+       measured 3.62:1. tokens.css defines the token in every theme block, so a fallback is dead
+       today and a regression the moment a block loses the token. */
+    const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const walkCss = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const p = join(dir, e.name);
+        return e.isDirectory() ? walkCss(p) : e.name.endsWith(".css") ? [p] : [];
+      });
+    let uses = 0;
+    const withFallback: string[] = [];
+    for (const file of walkCss(SRC_DIR)) {
+      const text = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+      for (const m of text.matchAll(/var\(\s*--scroll-scrim-ink\s*(,)?/g)) {
+        uses += 1;
+        if (m[1] !== undefined) withFallback.push(file.slice(SRC_DIR.length + 1).replace(/\\/g, "/"));
+      }
+    }
+    expect(uses, "no stylesheet paints the scroll shadow — the reader is broken").toBeGreaterThanOrEqual(2);
+    expect(withFallback).toEqual([]);
+  });
+});
+
 /* ── non-text tokens are never used as text ink ─────────────────────────────── */
 
 describe("WCAG 1.4.3 — a token tokens.css declares non-text is never a text colour", () => {

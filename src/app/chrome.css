@@ -674,14 +674,27 @@
   grid-row: 1 / span 2;
 }
 
+/* The status bar's own figures, stated inside the disclosure (acceptance B7): at <= 767 px the panel
+   is docked over the whole bar, so it must say what it covers. Here it is a line of the head, not
+   the footer a Dialog gives it, so it drops the footer's rule and inset. */
+.covpanel__head > .ui-overlay-cov {
+  grid-column: 1;
+  padding: 0;
+  border-top: 0;
+}
+
 .covpanel__legend {
   margin-top: var(--sp-4);
   padding-top: var(--sp-3);
   border-top: var(--hairline) solid var(--border);
 }
 
+/* The section a status-bar chip opened. Its rule is the hairline everywhere else, so the highlight
+   is measured against --border, not against the page: --border-strong on --border was 2.97:1 light
+   and 2.66:1 dark, under the 3:1 a state indicator needs (acceptance D4). The accent rule clears
+   it in both themes (src/ui/selected-state-contrast.test.ts). */
 .covpanel__legend[data-highlight] {
-  border-top-color: var(--border-strong);
+  border-top-color: var(--accent);
 }
 
 .covpanel__subtitle {
@@ -700,7 +713,7 @@
 }
 
 .covpanel__renderer[data-highlight] {
-  border-top-color: var(--border-strong);
+  border-top-color: var(--accent); /* as .covpanel__legend[data-highlight] */
 }
 
 .covpanel__note {
@@ -817,8 +830,17 @@
   white-space: nowrap;
 }
 
+/* The row the reader came from (`aria-current`). The --surface-2 fill is 1.13:1 against --bg and
+   the bold label is not a contrast channel, so neither carries the state on its own (acceptance
+   D4, WCAG 1.4.11). The accent bar at the row's leading edge does — the same bar the fabric tree,
+   the palette and the findings grid use for their current row. It is drawn on the first cell, not
+   on the <tr>, because a table row paints no box-shadow of its own. */
 .cov__table tbody tr[data-highlight="true"] {
   background: var(--surface-2);
+}
+
+.cov__table tbody tr[data-highlight="true"] .cov__c-label {
+  box-shadow: inset 2px 0 0 0 var(--accent);
 }
 
 .cov__table tbody tr[data-highlight="true"] .cov__label {
@@ -1047,6 +1069,18 @@
   .hdr-surface[aria-pressed="true"],
   .thm__opt[aria-checked="true"] {
     border-color: Highlight;
+  }
+
+  /* The accent rule and bar are repainted in the system text colour like every other edge, so the
+     highlighted section and the reader's row take the selection colour instead. */
+  .covpanel__legend[data-highlight],
+  .covpanel__renderer[data-highlight] {
+    border-top-color: Highlight;
+  }
+
+  .cov__table tbody tr[data-highlight="true"] .cov__c-label {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 }
 

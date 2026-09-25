@@ -32,6 +32,7 @@
  * the input handler and it is never hidden behind a frozen UI.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -76,6 +77,7 @@ import {
 } from "../ui/primitives";
 import { ClaimCard, IntentClaimCard, outcomeTallyWord, outcomeWordOf, verdictStatement } from "./ClaimCard";
 import { HopList } from "./HopList";
+import { CitedText } from "./cited-text";
 import { deferPastPaint } from "./deferPastPaint";
 import "./PathTrace.css";
 
@@ -624,6 +626,17 @@ export function startIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP)
   };
 }
 
+/**
+ * The record that decided a trace: the evidence on the hop that ended it; for a trace that consulted
+ * no device, the engine's OWN record of why (`refusalOf`); failing both, the coverage matrix. One rule
+ * for the intent search's reason rows (`record`, below) and the preset cards' verdict words, so a
+ * reason row and the word it groups cannot name different records for the same trace.
+ */
+function decidingCiteOf(trace: Trace): Cite {
+  const last = trace.hops[trace.hops.length - 1] ?? null;
+  return last?.decidedBy?.cite ?? (last === null ? refusalOf(trace)?.cite : undefined) ?? fabric.coverage.cite;
+}
+
 /** Group by the CITATION that ended the trace, so one bucket is one piece of evidence. */
 function record(into: Map<string, ReasonRow>, trace: Trace): void {
   const last = trace.hops[trace.hops.length - 1] ?? null;
@@ -655,7 +668,7 @@ function record(into: Map<string, ReasonRow>, trace: Trace): void {
     ? undefined
     : (outcomeUndecidingGaps(trace)[0] ?? unobservedPolicyInputs(trace)[0]);
   const fullReason = unbound === undefined ? reason : `${reason} — but ${unbound.label}`;
-  const cite = ev?.cite ?? refusal?.cite ?? fabric.coverage.cite;
+  const cite = decidingCiteOf(trace);
   const row = into.get(key);
   if (row) row.count += 1;
   else into.set(key, { reason: fullReason, count: 1, cite });
@@ -903,7 +916,25 @@ const PROTOCOL_OPTIONS = [
   { value: "ip", label: "IP (any protocol)" },
 ] as const;
 
-function Presets({ onPick, title }: { onPick: (f: Flow) => void; title: string }): ReactElement {
+/**
+ * The records behind a trace's verdict word: the evidence that ended it (`decidingCiteOf`), then every
+ * input the claims owner says left the outcome undecided (`outcomeUndecidingGaps`) — the "core1's
+ * routing table incomplete; ingress via core2 not modelled equivalently" a preset's word spells out.
+ * A verdict word printed without these was a claim with nothing behind it (acceptance B6, wave 7).
+ */
+function verdictCitesOf(trace: Trace): Cite[] {
+  return [...new Set([decidingCiteOf(trace), ...outcomeUndecidingGaps(trace).map((g) => g.cite)])];
+}
+
+function Presets({
+  onPick,
+  onOpenCite,
+  title,
+}: {
+  onPick: (f: Flow) => void;
+  onOpenCite?: ((cite: Cite) => void) | undefined;
+  title: string;
+}): ReactElement {
   /* Derived from the snapshot and TRACED by the engine at module load, so each one advertises the
      outcome it actually produced. A form with no starting point is a dead end for anyone who does
      not already know which addresses this collection can answer for. */
@@ -916,31 +947,75 @@ function Presets({ onPick, title }: { onPick: (f: Flow) => void; title: string }
      count (ClaimCard `verdictStatement`). A preset that stated its outcome bare, over a rationale
      calling an undecided denial "the blocking-hop answer", was a verdict with no claim attached
      (acceptance B2). The rationale now names the question; the trace states the answer. */
-  const flows = useMemo(() => suggestedFlows().map((s: SuggestedFlow) => ({ s, verdict: verdictStatement(traceFlow(s.flow)) })), []);
+  /* THE CARD IS NOT THE BUTTON (acceptance B6, wave 7). The whole card used to be one
+     `<button onClick={run}>`, so the rationale and the provenance note — which print their records
+     (`acls.core1.PROTECT_SERVERS[2]`, `l3_forwarding[5]` …) — were inert text inside a run control:
+     clicking the `l3_forwarding[5]` sentence re-ran the preset's flow and opened no Inspector, and no
+     citation there could have been a control, because a button may not contain another. So the run
+     action is one button (the question: its title and its flow), and everything the card SAYS about
+     that question sits beside it, rendered through `CitedText` so every citation in it is the same
+     control every other surface uses. The verdict word carries the records that decided it and the
+     bounds carry the coverage record their denominator is read from. The button's description points
+     at the verdict and its bounds, so a reader who reaches the button alone still hears what running
+     it will answer (B2). */
+  const flows = useMemo(
+    () =>
+      suggestedFlows().map((s: SuggestedFlow) => {
+        const trace = traceFlow(s.flow);
+        return { s, verdict: verdictStatement(trace), cites: verdictCitesOf(trace) };
+      }),
+    [],
+  );
+  const baseId = useId();
+  const open = useCallback((c: Cite) => onOpenCite?.(c), [onOpenCite]);
   return (
     <div className="pt-presets">
       <h3 className="pt-presets__title">{title}</h3>
       <ul className="pt-presets__list">
-        {flows.map(({ s, verdict }) => (
-          <li key={s.id} className="pt-preset">
-            <button type="button" className="pt-preset__btn" onClick={() => onPick(s.flow)}>
-              <span className="pt-preset__head">
+        {flows.map(({ s, verdict, cites }, i) => {
+          const verdictId = `${baseId}-${i}-verdict`;
+          const boundsId = `${baseId}-${i}-bounds`;
+          return (
+            <li key={s.id} className="pt-preset" data-preset={s.id}>
+              <button
+                type="button"
+                className="pt-preset__btn"
+                aria-describedby={`${verdictId} ${boundsId}`}
+                onClick={() => onPick(s.flow)}
+              >
                 <span className="pt-preset__title">{s.title}</span>
-                <span className="pt-preset__outcome" data-outcome={s.expectedOutcome} data-band={verdict.band}>
+                <span className="pt-preset__flow">
+                  {`${s.flow.protocol} ${s.flow.srcIp} → ${s.flow.dstIp}${s.flow.dstPort === null ? "" : `:${s.flow.dstPort}`}`}
+                </span>
+              </button>
+              <p className="pt-preset__verdict">
+                <span
+                  id={verdictId}
+                  className="pt-preset__outcome"
+                  data-outcome={s.expectedOutcome}
+                  data-band={verdict.band}
+                >
                   {verdict.word}
                 </span>
-              </span>
-              <span className="pt-preset__flow">
-                {`${s.flow.protocol} ${s.flow.srcIp} → ${s.flow.dstIp}${s.flow.dstPort === null ? "" : `:${s.flow.dstPort}`}`}
-              </span>
-              <span className="pt-preset__bounds">{verdict.bounds}</span>
-              <span className="pt-preset__why">{s.rationale}</span>
-              <span className="pt-preset__prov" data-kind={s.srcProvenance.kind}>
-                {s.srcProvenance.note}
-              </span>
-            </button>
-          </li>
-        ))}
+                {cites.map((c) => (
+                  <Fragment key={c}>
+                    {" "}
+                    <CiteLink cite={c} onOpen={open} className="cited-text__cite" />
+                  </Fragment>
+                ))}
+              </p>
+              <p className="pt-preset__bounds" id={boundsId}>
+                <CitedText text={verdict.bounds} onOpenCite={open} also={[fabric.coverage.cite]} />
+              </p>
+              <p className="pt-preset__why">
+                <CitedText text={s.rationale} onOpenCite={open} />
+              </p>
+              <p className="pt-preset__prov" data-kind={s.srcProvenance.kind}>
+                <CitedText text={s.srcProvenance.note} onOpenCite={open} also={[s.srcProvenance.cite]} />
+              </p>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -1477,7 +1552,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
         </form>
 
         {shown === null ? (
-          <Presets onPick={run} title="Questions this snapshot can answer" />
+          <Presets onPick={run} onOpenCite={onOpenCite} title="Questions this snapshot can answer" />
         ) : (
           <div className="pt-result" ref={resultRef}>
             <ClaimCard
@@ -1505,7 +1580,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
               onSelect={selectHopAndAim}
               {...(onOpenCite ? { onOpenCite } : {})}
             />
-            <Presets onPick={run} title="Other questions this snapshot can answer" />
+            <Presets onPick={run} onOpenCite={onOpenCite} title="Other questions this snapshot can answer" />
           </div>
         )}
       </TabPanel>
@@ -1640,7 +1715,12 @@ function IntentMode({
 
       <div className="pt-intent__plan">
         <p className="pt-intent__claim">{intent.claim}</p>
-        <p className="pt-intent__why">{intent.rationale}</p>
+        {/* The rationale names the ACL line or FHRP record that motivates the claim, in parentheses;
+            printed as a plain string that citation was inert text (the inert-citation census,
+            acceptance B6 wave 7), so it goes through the same `CitedText` every claim uses. */}
+        <p className="pt-intent__why">
+          <CitedText text={intent.rationale} onOpenCite={(c) => onOpenCite?.(c)} />
+        </p>
         <dl className="pt-intent__facts">
           <div>
             <dt>Sources</dt>

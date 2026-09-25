@@ -476,3 +476,35 @@ describe("every test the runner collects asserts something", () => {
     expect(ASSERTION.test(defs[0]?.body ?? "")).toBe(false);
   });
 });
+
+/* ── a pointer into the mutation harness names a mutation that exists ──────────────────────────
+   Source comments cite `review/mutation-check.mjs` by mutation id so a reader can re-run the proof
+   (`--only <id>`). An id the harness does not define is a dead pointer: claims.ts cited
+   `claims-c1-empty-traversal`, which `--list` never printed (the ids are claims-c1-decided-owner and
+   claims-c1-both-owners). Every id-shaped token that follows a mention of the harness in authored
+   source is read, and each must be one the harness defines. */
+describe("every mutation id cited in source exists in review/mutation-check.mjs", () => {
+  const harness = readFileSync(join(ROOT, "review", "mutation-check.mjs"), "utf8");
+  const ids = new Set([...harness.matchAll(/^\s*id:\s*"([^"]+)"/gm)].map((m) => m[1]!));
+  const cited: { file: string; id: string }[] = [];
+  for (const f of files) {
+    if (!rel(f).startsWith("src/") || !/\.(ts|tsx|css)$/.test(f) || /\.test\.tsx?$/.test(f)) continue;
+    const text = readFileSync(f, "utf8").replace(/\s+/g, " ");
+    for (const m of text.matchAll(/mutation-check\.mjs`?\s*\)?\s*((?:`?[a-z0-9]+(?:-[a-z0-9]+){2,}`?(?:\s*(?:,|and|\/)\s*)?)+)/g)) {
+      for (const id of m[1]!.matchAll(/[a-z0-9]+(?:-[a-z0-9]+){2,}/g)) cited.push({ file: rel(f), id: id[0] });
+    }
+  }
+
+  it("reads the harness's ids (an empty read is not a pass)", () => {
+    expect(ids.size).toBeGreaterThan(10);
+    expect(ids.has("claims-c1-decided-owner")).toBe(true);
+  });
+
+  it("finds the citations it checks", () => {
+    expect(cited.length, "no source cites a mutation id — the reader is broken").toBeGreaterThan(0);
+  });
+
+  it("names no mutation the harness does not define", () => {
+    expect(cited.filter((c) => !ids.has(c.id)).map((c) => `${c.file}: ${c.id}`)).toEqual([]);
+  });
+});

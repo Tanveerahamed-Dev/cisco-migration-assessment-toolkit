@@ -80,6 +80,31 @@ export function citesIn(text: string): Cite[] {
 }
 
 /**
+ * The sentence with its citations taken OUT, for a place where a citation cannot be a working control:
+ * a `role="option"` row, whose activation runs something else and which may not contain a control
+ * (the command palette's suggested flows, acceptance B6). Printing the record there would name it
+ * where choosing it opens nothing. The same resolver decides what is a citation, so nothing
+ * citation-shaped survives and no ordinary word is cut. A bracket that held only citations goes with
+ * them; a citation listed beside other words in a bracket leaves the words; a citation that is a
+ * noun of the sentence ("acls.core1.X[2] could match this flow") becomes "the cited record", so the
+ * sentence keeps its subject.
+ */
+export function withoutCitations(text: string): string {
+  const MARK = "\u0000";
+  const SEP = String.raw`\s*(?:,|;|\/|and)\s*`;
+  return splitCited(text)
+    .map((p) => ("cite" in p ? MARK : p.text))
+    .join("")
+    .replace(new RegExp(String.raw`\s*\(\s*${MARK}(?:${SEP}${MARK})*\s*\)`, "g"), "")
+    .replace(new RegExp(String.raw`\(\s*${MARK}${SEP}`, "g"), "(")
+    .replace(new RegExp(String.raw`${SEP}${MARK}\s*\)`, "g"), ")")
+    .replace(new RegExp(MARK, "g"), (_m, at: number, all: string) =>
+      /(?:^|[.!?]\s+)$/.test(all.slice(0, at)) ? "The cited record" : "the cited record",
+    )
+    .trim();
+}
+
+/**
  * Prose with every citation inside it rendered as a citation control, in place. `also` names
  * citations that back the sentence but are not written in it (a structured record's `cite` beside its
  * label); each one the text does not already carry is rendered after the text, so a sentence is never

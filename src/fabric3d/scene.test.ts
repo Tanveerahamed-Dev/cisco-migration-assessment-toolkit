@@ -25,7 +25,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { Color, InstancedMesh } from "three";
+import { Color, InstancedMesh, MeshStandardMaterial } from "three";
 import fabricJson from "../data/fabric.json";
 import type { Device, Link } from "../core/types";
 import { computeLayout } from "./layout";
@@ -125,23 +125,43 @@ describe("buildFabricGraph — every device is placed, none is omitted", () => {
       const tokens = readTokens("dark");
       const indeterminate = tokens.color("--claim-indeterminate");
       const good = tokens.color("--band-good");
-      const nullBand = devices.filter((d) => d.band === null && d.collected);
-      expect(nullBand.length + devices.filter((d) => d.band === null && !d.collected).length)
-        .toBeGreaterThan(0);
+      /* EVERY null-band device, whatever its collection state (O38, repair wave 7). This loop used to
+         judge only the COLLECTED null-band devices while its precondition counted both kinds; on the
+         compiled snapshot there are 0 collected and 3 uncollected, so the colour assertion never
+         ran. The loop's own set is now the denominator, and each device is judged by the colour the
+         scene actually draws for it: a collected chassis by its body's instance colour, an
+         uncollected one by its translucent shell (the ghost mesh's material, times any per-instance
+         colour it carries). */
+      const nullBand = devices.filter((d) => d.band === null);
+      expect(nullBand.length, "precondition: the snapshot holds a device with no health band").toBeGreaterThan(0);
 
+      let judged = 0;
       const read = new Color();
       for (const d of nullBand) {
         const slot = graph.slots.get(d.id);
-        expect(slot).toBeDefined();
-        const body = slot?.group.body;
-        expect(body).toBeInstanceOf(InstancedMesh);
-        body?.getColorAt(slot!.slot, read);
-        // The body carries the band as a wash (mixed toward white), so compare direction rather
-        // than value: it must lie nearer the indeterminate hue than the "Good" hue.
+        expect(slot, d.id).toBeDefined();
+        expect(slot!.ghost, `${d.id}: drawn as a ghost exactly when it was not collected`).toBe(!d.collected);
+        if (slot!.ghost) {
+          const shell = slot!.group.ghost;
+          expect(shell, d.id).toBeInstanceOf(InstancedMesh);
+          const material = shell!.material;
+          expect(material, d.id).toBeInstanceOf(MeshStandardMaterial);
+          read.copy((material as MeshStandardMaterial).color);
+          if (shell!.instanceColor !== null) read.multiply(shell!.getColorAt(slot!.slot, new Color()));
+        } else {
+          const body = slot!.group.body;
+          expect(body, d.id).toBeInstanceOf(InstancedMesh);
+          body!.getColorAt(slot!.slot, read);
+        }
+        // The body carries the band as a wash (mixed toward white), and the shell is mixed toward the
+        // stage, so compare direction rather than value: it must lie nearer the indeterminate hue
+        // than the "Good" hue.
         const dIndeterminate = hueDistance(read, indeterminate);
         const dGood = hueDistance(read, good);
-        expect(dIndeterminate).toBeLessThan(dGood);
+        expect(dIndeterminate, `${d.id} (${d.collected ? "collected" : "uncollected"})`).toBeLessThan(dGood);
+        judged += 1;
       }
+      expect(judged, "every null-band device's drawn colour was judged").toBe(nullBand.length);
     } finally {
       graph.dispose();
     }

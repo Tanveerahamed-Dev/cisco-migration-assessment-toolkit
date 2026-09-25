@@ -267,8 +267,11 @@
   cursor: pointer;
 }
 
+/* The active suggestion: a fill plus the accent bar `.palette__row[data-active]` uses. The fill
+   alone is 1.00:1 against an unselected option (D4, WCAG 1.4.11); the bar carries the state. */
 .pq-suggest__opt[aria-selected="true"] {
   background: var(--surface-2);
+  box-shadow: inset 2px 0 0 0 var(--accent);
 }
 
 .pq-suggest__value {
