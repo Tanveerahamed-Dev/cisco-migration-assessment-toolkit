@@ -1,0 +1,86 @@
+{
+ "meta": {
+  "source": "webapp/sample_data/sample_fleet.snapshot.json",
+  "sourceDigestForm": "lf-normalised",
+  "sourceSha256": "9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
+  "sourceBytes": 3072771,
+  "aclLineFields": {
+   "unevaluable": "unevaluable",
+   "unmodeledQualifiers": "unmodeled_qualifiers",
+   "established": "established"
+  },
+  "deviceHealthFields": {
+   "deductions": "deductions"
+  }
+ },
+ "aclLineAbsent": {
+  "acls.core1.INET_RETURN[0]": [
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.INET_RETURN[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.INET_RETURN[2]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.MGMT_IN[0]": [
+   "established",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.MGMT_IN[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.PROTECT_SERVERS[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.PROTECT_SERVERS[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.PROTECT_SERVERS[2]": [
+   "established",
+   "unevaluable"
+  ],
+  "acls.core1.PROTECT_SERVERS[3]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.VOICE_FILTER[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.VOICE_FILTER[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.VOICE_FILTER[2]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ]
+ },
+ "deviceAbsent": {
+  "AP-floor1": [
+   "deductions"
+  ],
+  "AP-floor3-01": [
+   "deductions"
+  ],
+  "wan-edge-rtr1.lab": [
+   "deductions"
+  ]
+ }
+}

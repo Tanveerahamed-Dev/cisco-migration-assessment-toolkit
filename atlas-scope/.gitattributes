@@ -1,0 +1,18 @@
+# Byte-reproducibility: the compilers under tools/ write LF, and
+# src/core/provenance.test.ts byte-compares their output against the committed
+# sidecars. A host with core.autocrlf=true (this one: system gitconfig) would
+# otherwise check the multi-line JSON sidecars out with CRLF and break that
+# compare on a fresh clone. Pin LF for every text file, independent of host config.
+* text=auto eol=lf
+
+# Compiled outputs and compiler inputs: always text, always LF, never guessed.
+*.json text eol=lf
+*.mjs  text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+
+# Binary assets: never normalised.
+*.png  binary
+*.jpg  binary
+*.glb  binary
+*.woff2 binary

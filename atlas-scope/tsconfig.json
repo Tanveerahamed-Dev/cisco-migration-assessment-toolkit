@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    /* "node" is here so the claim-lint gate can read the source tree from inside the test suite.
+       A gate that lives outside the suite is a gate nobody runs. */
+    "types": ["vite/client", "node"]
+  },
+  /* "e2e" is deliberately NOT in this list. There is no `e2e` directory and there never was: with
+     `allowJs` off, no .mjs file is read either, so an entry for it added nothing but the APPEARANCE
+     of coverage -- and `npm run e2e` (`playwright test`, no config, no specs) could never exit 0,
+     so it has been removed too. The compiler scripts are type-checked by tsconfig.scripts.json,
+     under strict with checkJs, and `src/core/scripts-typecheck.test.ts` runs THAT from inside the
+     suite so it is a gate rather than a command someone has to remember. Same reasoning that file
+     already carries; it simply was not carried through to "e2e". */
+  "include": ["src", "tools"]
+}

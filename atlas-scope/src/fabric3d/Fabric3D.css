@@ -1,0 +1,1038 @@
+/*
+ * Fabric3D.css — everything drawn in the DOM on top of the fabric canvas.
+ *
+ * Scope rules this file keeps:
+ *   - Every class is prefixed `fabric3d` so the stage owns no global selector.
+ *   - No hex literal, no px font size, no raw duration. `var(--token, var(--fallback))` is used
+ *     where the design brief names a token that tokens.css has not landed yet, so the boundary
+ *     degrades to a defined neutral instead of to a browser default.
+ *   - The canvas has no default focus indication of its own, so the ring here is the only thing
+ *     standing between a keyboard user and an invisible selection.
+ */
+
+.fabric3d {
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+  background: var(--stage-bg, var(--surface-2));
+  color: var(--text);
+  font-family: var(--font-ui);
+  contain: layout paint;
+}
+
+.fabric3d__canvas-host {
+  position: absolute;
+  inset: 0;
+  /* React renders this slot empty and never puts a child in it; the canvas element is appended
+     here imperatively, one per scene instance. */
+}
+
+.fabric3d__canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  /* The scene owns the drawing buffer; the element only owns CSS size. Touch panning must not
+     scroll the page out from under an orbit drag. */
+  touch-action: none;
+  cursor: default;
+  outline: none;
+}
+
+.fabric3d__canvas[data-hovering="true"] {
+  cursor: pointer;
+}
+
+/* outline (not box-shadow) so the ring survives forced-colors / Windows High Contrast.
+ *
+ * The ring is drawn by an OVERLAY, never by the WebGL canvas itself (E4, 2026-09-22). An outline
+ * on the canvas is a display item of the canvas element, so every presented WebGL frame
+ * re-recorded it — and, the ring overlapping the composited canvas, it forced the stage's host
+ * layer AND the page's root layer (the whole document, rails included) to repaint and re-raster on
+ * every rendered frame. MEASURED via the DevTools LayerTree paint counters over one orbit drag
+ * (release build, 1920x1080): #document and .fabric3d__canvas-host each repainted 250-330 times —
+ * once per frame — with the canvas ring on, and 5-6 times with this overlay; with every outline
+ * suppressed, the same 5. review/measure-fps.mjs focuses the canvas before it measures, so every
+ * E4 window was paying for it. The pseudo-element is painted once per focus change, and the
+ * canvas's frames touch nothing but its own layer. Same colour, width and inset as before. */
+.fabric3d__canvas:focus-visible {
+  /* The app-wide :focus-visible ring (shell.css) would put it back on the canvas; the overlay
+     below draws it instead. */
+  outline: none;
+  box-shadow: none;
+}
+
+.fabric3d__canvas-host::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.fabric3d__canvas-host:has(> .fabric3d__canvas:focus-visible)::after {
+  outline: 2px solid var(--focus);
+  outline-offset: calc(-1 * var(--sp-1));
+}
+
+/* ── labels ───────────────────────────────────────────────────────────────── */
+
+.fabric3d__labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Labels are the canvas's own text. The accessible equivalent is the fabric tree, and
+     announcing both would read every host twice. */
+  z-index: 1;
+}
+
+.fabric3d-label {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: var(--text);
+  /* OPAQUE (D4 audit, 2026-09-21). This was the stage colour at 72% alpha over the WebGL scene, so
+     every label's contrast depended on whatever chassis or cable happened to be drawn behind it —
+     measured: the dark Critical band letter fell to 4.34:1 (5th percentile) and the light
+     "stranded" mark to 3.71:1. On a solid --stage-bg chip each mark's contrast is its token's own,
+     fixed ratio against the ground, independent of the scene. Covering the geometry is no longer
+     the cost it was: the anchor sits above each chassis's projected silhouette
+     (scene.ts projectLabelAnchor), so a plate does not lie across the hardware it names. */
+  background: var(--stage-bg, var(--surface-2));
+  transition: opacity var(--dur-instant) linear;
+  will-change: transform;
+}
+
+/* visibility, not display: a hidden label keeps its layout box, and the declutter pass measures
+   that box to decide whether the label fits. `display: none` would measure zero forever. */
+.fabric3d-label[data-visible="false"] {
+  visibility: hidden;
+}
+
+/* A label the stage edge pushed off its anchor draws a leader from its bottom edge down to the
+   device it names (FabricLabels.tsx). Without it a displaced name reads as naming whatever
+   device it now happens to sit over. 2 px across, centred on the anchor's x: it is a line drawn on
+   the stage, held to design-brief §4.5's 2 CSS px stroke floor like every cable (C5 item 8,
+   stroke-floor.test.ts), and it is the 2 px box the declutter already reserves for it
+   (FabricLabels `leaderFor`). */
+.fabric3d-label[data-leader="yes"]::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-start: calc(var(--leader-x, 50%) - 1px);
+  inline-size: 2px;
+  block-size: var(--leader-len, var(--sp-2));
+  background: var(--text-muted);
+  pointer-events: none;
+}
+
+/* A label flipped below its device (it would have crossed the stage's top edge) leads UP. */
+.fabric3d-label[data-leader="up"]::after {
+  content: "";
+  position: absolute;
+  inset-block-end: 100%;
+  inset-inline-start: calc(var(--leader-x, 50%) - 1px);
+  inline-size: 2px;
+  block-size: var(--leader-len, var(--sp-2));
+  background: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Hover is the WEAK state, but it must be visible in a capture: a surface-1 plate on a stage-bg
+   plate changed ~300 canvas px and nothing a reader could name (2026-09-21 critic, A5). A DASHED
+   accent outline says "pointing at", distinct from selection's solid one, and the name underlines. */
+.fabric3d-label[data-state="hover"] {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+}
+.fabric3d-label[data-state="hover"] .fabric3d-label__name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.fabric3d-label[data-state="selected"] {
+  color: var(--text);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 1px solid var(--accent);
+}
+
+/* The accent OUTLINE cannot be selection's only mark: every other claim a label carries (a finding,
+   a trace alarm, a cut point) owns the outline too, and the later and more specific of those rules
+   wins it. Selecting a device makes it its own cut point, so on the plain "device selected" state
+   the selected label drew the cut hypothesis's dashed indeterminate outline, 2.47:1 (light) and
+   1.82:1 (dark) against the unselected label, and with a finding or an alarm selected and
+   unselected were identical (acceptance D4, WCAG 1.4.11; measured 2026-09-25). So selection also
+   draws the product's "this one" mark — the accent underline the tabs, the pane switch and the
+   tree use — on a pseudo-element no other label state paints, so every claim keeps its outline
+   and selection stays legible under all of them (src/ui/selected-state-contrast.test.ts). */
+.fabric3d-label[data-state="selected"]::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: 2px;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.fabric3d-label__name {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The health band's NON-COLOUR channel: one letter, tinted with the same band token the chassis
+   carries. Colour and letter agree; either one alone is enough to read the band, which is what
+   "no information by colour alone" means in practice. Boxed so it reads as a mark rather than as
+   part of the hostname. */
+.fabric3d-label__band {
+  display: inline-block;
+  min-width: 1.15em;
+  padding-inline: 1px;
+  border: var(--hairline) solid currentColor;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  text-align: center;
+  /* The ink is the band owner's token (core/band-qualification.ts presentBand().colorToken), set
+     inline per label, so the label, the chassis and the legend cannot map a band to two colours. */
+  color: var(--band-ink, var(--band-fair));
+}
+/* A favourable band on a host with unassessed scoring domains: neutral ink (from the owner) and a
+   dashed box, the same treatment as the Device pane's partial band pill. */
+.fabric3d-label__band[data-band-partial] {
+  border-style: dashed;
+}
+/* Not a band. Never tinted like one, and never absent. */
+.fabric3d-label__band[data-band="none"] {
+  color: var(--claim-indeterminate, var(--state-unknown));
+  border-style: dashed;
+}
+
+/* ── the analysis marks ─────────────────────────────────────────────────────
+   Hidden unless the state applies, so an unaffected label is byte-identical to what it was.
+   Each is a glyph PLUS a word, because the canvas carried them by colour alone or not at all: the
+   blocked host by a red halo the label box sat on top of, a stranded host by nothing, an
+   UNDECIDED hop by the denied treatment (the same pixels and the same alarm word), and a
+   DELIVERED hop by nothing — measured, a delivered trace over the already-selected terminating
+   host produced a canvas byte-identical to no trace at all. */
+.fabric3d-label__alarm,
+.fabric3d-label__stranded,
+.fabric3d-label__finding {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding-inline: 3px;
+  border: var(--hairline) solid currentColor;
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+}
+
+.fabric3d-label[data-alarm="blocked"] .fabric3d-label__alarm--blocked {
+  display: inline-flex;
+  color: var(--state-down);
+}
+
+/* The alarm and cut-point words sit inside a label that is ALREADY framed by the matching outline
+   (solid for a fact, dashed for "could not decide" / a hypothesis — see below). A chip border of
+   its own drew a second box a few px inside the first: the "BLOCKED" pill read as two stacked
+   borders (C5 audit, appz-gpu-core1). The outline carries the frame and its dash style; the chip
+   keeps its glyph, word and colour. The stranded and finding chips keep their borders — their
+   labels are not outlined by them. */
+.fabric3d-label__alarm {
+  border-color: transparent;
+}
+
+/* UNDECIDED is a third thing, not a weak failure and not a missing success (claims.ts). It gets
+   the indeterminate token — the same one the Inspector and the claim badge use for "the model
+   could not decide" — and a dashed rule, so it cannot be mistaken for the down-coloured `blocked`
+   in greyscale or at a glance. It is drawn as loudly as `blocked` because "we could not decide" is
+   a finding about our evidence; greying it out would read as "not applicable". */
+.fabric3d-label[data-alarm="undetermined"] .fabric3d-label__alarm--undetermined {
+  display: inline-flex;
+  color: var(--claim-indeterminate, var(--state-unknown));
+  border-style: dashed;
+}
+
+/* A resolved hop needs a mark of its own, or a successful trace is legible only where it happens
+   NOT to coincide with the selection treatment. The accent is the traced path's own colour, so the
+   mark reads as the end of that path — deliberately not a health token: this says the packet
+   arrived, not that anything is well. */
+.fabric3d-label[data-alarm="delivered"] .fabric3d-label__alarm--delivered {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+/* A cut point is a hypothesis about a failure that has not happened, so it is NOT painted in the
+   down colour — the indeterminate token is the one this application uses for "the model says, the
+   network has not". Saying "blocked" here would put a fact's word on a conditional. It has its own
+   attribute because it is a different claim from the trace's, about the same host. */
+.fabric3d-label[data-cut="yes"] .fabric3d-label__alarm--cut {
+  display: inline-flex;
+  color: var(--claim-indeterminate, var(--state-unknown));
+}
+
+.fabric3d-label[data-stranded="yes"] .fabric3d-label__stranded {
+  display: inline-flex;
+  color: var(--claim-indeterminate, var(--state-unknown));
+  border-style: dashed;
+}
+
+/* A6: the snapshot's failure_impact says this failure strands hosts and our graph does not
+   reproduce it. Without a mark the fabric showed nothing — the same picture as a host whose
+   failure breaks nothing — while the Inspector said THE TWO MEASURES DISAGREE. Indeterminate token
+   and a dashed rule: this is a conflict between two measures, not a finding of either. */
+.fabric3d-label__disputed {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding-inline: 3px;
+  border: var(--hairline) dashed currentColor;
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+}
+.fabric3d-label[data-disputed="yes"] .fabric3d-label__disputed {
+  display: inline-flex;
+  color: var(--claim-indeterminate, var(--state-unknown));
+}
+
+/* A4: the hosts a SELECTED FINDING names. A third kind of subject — not the device selection
+   (accent outline) and not an analysis hypothesis (indeterminate, dashed) — so it takes the
+   finding's own severity colour, a diamond and the finding's id: "this is where F030 lives",
+   legible in greyscale by the id alone. Opaque, like every marked label, so it reads over the
+   receded field. */
+.fabric3d-label[data-finding="yes"] .fabric3d-label__finding {
+  display: inline-flex;
+  color: var(--text);
+}
+.fabric3d-label[data-finding="yes"] {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 2px solid var(--sev-info);
+}
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="critical"]) { outline-color: var(--sev-critical); }
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="high"]) { outline-color: var(--sev-high); }
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="medium"]) { outline-color: var(--sev-medium); }
+.fabric3d-label[data-finding="yes"]:has(.fabric3d-label__finding[data-sev="low"]) { outline-color: var(--sev-low); }
+
+/* The failing host's label is the one label that must be read before any other, so it is opaque
+   rather than translucent and carries the alarm outline. It is also lifted clear of its anchor by
+   the placement loop, which is what lets the halo underneath it be seen at all. */
+.fabric3d-label[data-alarm="blocked"] {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 1px solid var(--state-down);
+}
+
+.fabric3d-label[data-alarm="undetermined"] {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 1px dashed var(--claim-indeterminate, var(--state-unknown));
+}
+
+.fabric3d-label[data-alarm="delivered"] {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 1px solid var(--accent);
+}
+
+/* The trace's own outline wins the box when a host carries both claims: the fact about the packet
+   in front of the reader outranks the hypothesis. The cut-point WORD still shows either way, so
+   nothing is lost — only the outline is arbitrated. */
+.fabric3d-label[data-cut="yes"]:not([data-alarm="blocked"]):not([data-alarm="undetermined"]):not(
+    [data-alarm="delivered"]
+  ) {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 1px dashed var(--claim-indeterminate, var(--state-unknown));
+}
+
+/* An uncollected device says so on its own label. A bare hostname would read as an assessed
+   device that simply has nothing wrong with it. */
+.fabric3d-label__unobserved {
+  color: var(--claim-indeterminate, var(--state-unknown));
+  font-weight: var(--fw-medium);
+  text-transform: lowercase;
+}
+
+/* ── HUD ──────────────────────────────────────────────────────────────────── */
+
+.fabric3d__hud {
+  position: absolute;
+  inset-block-start: var(--sp-2);
+  inset-inline-end: var(--sp-2);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  /* Never wider than the stage: the blast count below names every stranded host out of view, and
+     a long list must wrap inside the stage rather than run under the rail beside it. When a row
+     cannot hold it, the HUD takes a second row instead of squeezing its controls. */
+  max-inline-size: calc(100% - 2 * var(--sp-2));
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.fabric3d__hud > * {
+  flex-shrink: 0;
+}
+
+/* A6: the stranded count and the hosts out of view. The one HUD note whose length depends on the
+   data, so the one allowed to wrap — as a readable measure (never a column narrower than 20rem, or
+   the stage), not squeezed into whatever a row leaves over. */
+.fabric3d__hud > .fabric3d__quality[data-stranded-total] {
+  flex: 0 1 auto;
+  min-inline-size: min(20rem, 100%);
+  white-space: normal;
+}
+
+.fabric3d__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--sp-5);
+  min-inline-size: var(--sp-5);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.fabric3d__btn:hover {
+  background: var(--surface-2);
+}
+
+.fabric3d__btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The accent edge and ink alone did not carry the state in dark: --accent against the unpressed
+   --border-strong edge is 2.57:1 and against the unpressed --text ink under 3:1 (acceptance D4,
+   WCAG 1.4.11). The inset underline — the product's one mark for "this one" — is drawn on the
+   button's own --surface-1 fill and clears 3:1 against it in both themes
+   (src/ui/selected-state-contrast.test.ts). */
+.fabric3d__btn[aria-pressed="true"],
+.fabric3d__btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.fabric3d__quality {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--sp-5);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Degradation is stated, never silent: a reduced tier is marked, not merely a different word. */
+.fabric3d__quality[data-degraded="true"] {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.fabric3d__quality-dot {
+  inline-size: var(--sp-2);
+  block-size: var(--sp-2);
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.fabric3d__quality[data-degraded="true"] .fabric3d__quality-dot {
+  background: none;
+}
+
+/* ── renderer-unavailable fallback ────────────────────────────────────────── */
+
+.fabric3d__fallback {
+  position: absolute;
+  inset-block-start: var(--sp-6);
+  inset-inline: 50%;
+  z-index: 2;
+  inline-size: 46ch;
+  max-inline-size: calc(100% - var(--sp-6));
+  transform: translateX(-50%);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+  font-size: var(--fs-2);
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.fabric3d__fallback p {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-muted);
+}
+
+.fabric3d__fallback-title {
+  margin: 0;
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+}
+
+/* ── legend ───────────────────────────────────────────────────────────────── */
+
+.fabric3d-legend {
+  position: absolute;
+  inset-block-end: var(--sp-2);
+  inset-inline-start: var(--sp-2);
+  z-index: 3;
+  inline-size: 27ch;
+  max-block-size: calc(100% - var(--sp-6));
+  overflow-y: auto;
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+  font-size: var(--fs-1);
+  color: var(--text);
+}
+
+.fabric3d-legend__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-block-end: var(--sp-2);
+}
+
+.fabric3d-legend__title {
+  margin: 0;
+  font-size: var(--fs-1);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.fabric3d-legend__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--sp-5);
+  block-size: var(--sp-5);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fabric3d-legend__close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.fabric3d-legend__close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.fabric3d-legend__group {
+  margin: 0 0 var(--sp-2);
+  padding: 0;
+  border: 0;
+}
+
+.fabric3d-legend__group:last-of-type {
+  margin-block-end: 0;
+}
+
+.fabric3d-legend__legend {
+  padding: 0;
+  margin-block-end: var(--sp-1);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.fabric3d-legend__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The collapsed legend sits exactly where the panel's corner was, so re-opening it does not make
+   the viewer hunt for the control they just used. */
+.fabric3d-legend__show {
+  position: absolute;
+  inset-block-end: var(--sp-2);
+  inset-inline-start: var(--sp-2);
+  z-index: 3;
+}
+
+.fabric3d-legend__row {
+  display: grid;
+  grid-template-columns: var(--sp-6) 1fr;
+  align-items: center;
+  gap: var(--sp-2);
+  min-block-size: var(--sp-5);
+  padding-block: 1px;
+}
+
+.fabric3d-legend__swatch {
+  display: block;
+  inline-size: var(--sp-6);
+  block-size: var(--sp-4);
+  overflow: visible;
+}
+
+.fabric3d-legend__text {
+  min-inline-size: 0;
+  font-size: var(--fs-1);
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.fabric3d-legend__meaning {
+  display: block;
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+.fabric3d-legend__count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.fabric3d-legend__note {
+  margin: var(--sp-2) 0 0;
+  padding-block-start: var(--sp-2);
+  border-block-start: 1px solid var(--border);
+  font-size: var(--fs-0);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* A note that belongs to the group above it, not to the whole panel: no rule, tighter lead-in. */
+.fabric3d-legend__note--tight {
+  margin-block-start: var(--sp-1);
+  padding-block-start: 0;
+  border-block-start: 0;
+}
+
+/* swatch geometry — colour comes from the token, the second channel from the stroke pattern */
+.fabric3d-legend__chassis {
+  fill: var(--swatch-fill, var(--surface-3));
+  stroke: var(--swatch-stroke, var(--border-strong));
+  stroke-width: 1.2;
+}
+
+.fabric3d-legend__chassis--wire {
+  fill: color-mix(in srgb, var(--claim-indeterminate, var(--state-unknown)) 22%, transparent);
+  stroke: var(--claim-indeterminate, var(--state-unknown));
+  stroke-dasharray: 3 2;
+}
+
+/* A favourable band that is partly the absence of evidence (core/band-qualification.ts): the
+   neutral ink the chassis is drawn in, with a dashed outline like the label chip's. */
+.fabric3d-legend__chassis--partial {
+  stroke-dasharray: 3 2;
+}
+
+/* The band letter inside a swatch. Drawn on top of the chassis fill, so it needs a ground it is
+   legible against in either theme: the swatch fill is the band token, which is light, so the
+   letter is the stage's own dark ink rather than a second tinted colour. */
+.fabric3d-legend__bandletter {
+  fill: var(--stage-bg, #10141a);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0;
+}
+.fabric3d-legend__chassis--wire + .fabric3d-legend__bandletter {
+  fill: var(--claim-indeterminate, var(--state-unknown));
+}
+
+.fabric3d-legend__hatch {
+  stroke: var(--claim-indeterminate, var(--state-unknown));
+  stroke-width: 1;
+}
+
+.fabric3d-legend__glyph {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.fabric3d-legend__line {
+  fill: none;
+  stroke: var(--swatch-stroke, var(--claim-out-of-scope, var(--text-faint)));
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.fabric3d-legend__line--thick {
+  stroke-width: 3;
+}
+
+.fabric3d-legend__line--trace {
+  stroke-width: 4;
+}
+
+/* The blocked terminal segment: 6 px, the width flow.ts gives it, plus its stop plate. */
+.fabric3d-legend__line--blocked {
+  stroke-width: 6;
+  stroke-linecap: butt;
+}
+
+.fabric3d-legend__stop {
+  fill: var(--swatch-stroke, var(--sev-critical));
+  stroke: none;
+}
+
+.fabric3d-legend__rim {
+  fill: none;
+  stroke: var(--swatch-stroke, var(--state-unknown));
+  stroke-width: 2;
+}
+
+/* ── the fabric tree: the non-canvas equivalent (acceptance D6) ────────────── */
+
+.fabric3d__tree {
+  position: absolute;
+  inset-block-start: var(--sp-2);
+  inset-inline-start: var(--sp-2);
+  z-index: 4;
+  inline-size: 34ch;
+  max-block-size: calc(100% - var(--sp-6));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+  color: var(--text);
+}
+
+/*
+ * Hidden by default, but kept in the layout and in the accessibility tree: clipping is what lets
+ * a screen-reader and keyboard user reach the fabric without a sighted user paying for a second
+ * copy of it on screen. :focus-within un-clips it, because a focus ring inside a 1px clip is not
+ * a visible focus indicator (WCAG 2.4.7).
+ */
+.fabric3d__tree[data-hidden="true"]:not(:focus-within) {
+  /* `fixed` rather than `absolute` for the same reason as .visually-hidden (src/ui/primitives.css).
+     The rule stops matching on :focus-within, so the un-clipped tree keeps its own positioning. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  box-shadow: none;
+}
+
+/* The fabric list and the legend open TOGETHER share the left edge: the list anchored at the top, the
+   legend at the bottom, each at most half the stage, so neither covers the other. MEASURED (W6 gate,
+   2026-09-25, `audit-d3-focus.mjs --self-removing` and a direct probe at 768, 1440 and 1920 px): with
+   the list open, pressing Legend opened it UNDER the list (z-index 4 over 3; both ran to the full
+   stage height from the same inline start), and the focus the Legend button handed on landed on the
+   legend's close button with 0 of 9 hit-test points on it — the whole legend hidden, and the focused
+   control obscured (WCAG 2.4.11). Each still scrolls its own content. Only this pairing is affected:
+   either one alone keeps its full height. The list counts as open when it is shown or when keyboard
+   focus has un-clipped it (the :focus-within rule above). */
+.fabric3d:has(> .fabric3d-legend) > .fabric3d__tree:is(:not([data-hidden="true"]), :focus-within),
+.fabric3d:has(> .fabric3d__tree:is(:not([data-hidden="true"]), :focus-within)) > .fabric3d-legend {
+  max-block-size: calc(50% - var(--sp-2) * 1.5);
+}
+
+.fabric3d__tree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border-block-end: 1px solid var(--border);
+}
+
+.fabric3d__tree-title {
+  margin: 0;
+  font-size: var(--fs-1);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.fabric3d__tree-scroll {
+  overflow-y: auto;
+  /*
+   * A focus ring is drawn with `outline`, which paints outside the row box. An `overflow: hidden`
+   * ancestor clips it and the regression is invisible in review because the ring still shows on
+   * whichever row happens to sit mid-viewport. `auto` scrolls without clipping the inline axis.
+   */
+  overflow-x: hidden;
+  padding: var(--sp-1) 0 var(--sp-2);
+}
+
+.fabric3d__treeitem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--sp-6);
+  padding-block: var(--sp-1);
+  padding-inline: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-1);
+  line-height: 1.35;
+  cursor: default;
+}
+
+.fabric3d__treeitem:hover {
+  background: var(--surface-2);
+}
+
+.fabric3d__treeitem:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.fabric3d__treeitem[aria-selected="true"] {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.fabric3d__treeitem[data-kind="device"] {
+  cursor: pointer;
+}
+
+.fabric3d__treeitem[data-kind="link"] {
+  cursor: pointer;
+}
+
+.fabric3d__tw {
+  flex: none;
+  inline-size: var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  text-align: center;
+}
+
+.fabric3d__tree-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The meta may be a sentence (a qualified band names its unassessed domains; a link row can state
+   its drawn state AND its cut analysis), and a non-shrinking meta on one line squeezed the HOSTNAME
+   to its first letter ("c Good, partial …" for core2, measured in the running app). The row wraps
+   instead: the meta drops to its own right-aligned line and may wrap within it, and the name keeps
+   its width. */
+.fabric3d__tree-meta {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  text-align: end;
+  margin-inline-start: auto;
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fabric3d__tree-meta[data-unobserved="true"] {
+  color: var(--claim-indeterminate, var(--state-unknown));
+}
+
+.fabric3d__tree-foot {
+  padding: var(--sp-2) var(--sp-3);
+  border-block-start: 1px solid var(--border);
+  font-size: var(--fs-0);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* The gesture note and the counts read as one footer, not two ruled-off blocks. */
+.fabric3d__tree-foot + .fabric3d__tree-foot {
+  border-block-start: 0;
+  padding-block-start: 0;
+}
+
+/* ── screen-reader-only text ──────────────────────────────────────────────── */
+
+/* `fixed`, not `absolute` — see .visually-hidden in src/ui/primitives.css. An absolute box with no
+   offsets is positioned against whatever happens to be the nearest positioned ancestor, so it can
+   escape a scroller and stretch the document. */
+.fabric3d__sr-only {
+  position: fixed;
+  top: 0;
+  left: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fabric3d-label {
+    transition-duration: 1ms;
+  }
+}
+
+@media (forced-colors: active) {
+  .fabric3d-label,
+  .fabric3d__btn,
+  .fabric3d-legend,
+  .fabric3d__tree {
+    border: 1px solid CanvasText;
+  }
+
+  .fabric3d__treeitem[aria-selected="true"] {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .fabric3d__btn[aria-pressed="true"],
+  .fabric3d__btn[aria-expanded="true"] {
+    border-color: Highlight;
+  }
+
+  /* Forced colours repaint the underline's fill and every label's edge alike, so the selected
+     label's edge takes the selection colour. */
+  .fabric3d-label[data-state="selected"] {
+    border-color: Highlight;
+  }
+}
+
+/* A STANDING draw-call breach, stated on the chip rather than only in a DEV console line that is
+   stripped from every shipped chunk. Amber, not red: the frame is costing more than the design
+   budgets for, which is a warning about our own engineering — it is not a claim about the data,
+   and it must never read like one of the severity colours the evidence surfaces own. */
+.fabric3d__quality[data-over-budget="true"] {
+  border-color: var(--sev-medium, var(--border-strong));
+  color: var(--text);
+}
+
+.fabric3d__quality[data-over-budget="true"] .fabric3d__quality-dot {
+  background: var(--sev-medium, currentColor);
+  border-color: var(--sev-medium, currentColor);
+}
+
+.fabric3d__quality-breach {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A4 — a device named by the selected finding that projects OUTSIDE the canvas gets a pointer
+   pinned to the stage edge (FabricLabels.tsx placePointers). The arrow turns towards the device;
+   activating it frames it. Outlined in the finding's severity, like the finding mark on a visible
+   label.
+
+   A CONTROL (acceptance D1/D5, repair wave 6). It is a <button> in this layer of its own, NOT in the
+   aria-hidden label layer, and a 24 x 24 target: MEASURED before, 141.23 x 16.84 CSS px — one line of
+   11 px text and 1 px of padding, with no size declared at all. The layer sits above the labels and
+   below every other stage layer (HUD 3, Legend 3, tree 4); the pointer is placed clear of those
+   (FabricLabels pointerObstacles) instead of stacked over them, so neither covers the other. */
+.fabric3d__pointers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.fabric3d-pointer {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: none;
+  align-items: center;
+  gap: var(--sp-1);
+  min-block-size: var(--target-min);
+  min-inline-size: var(--target-min);
+  margin: 0;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  line-height: 1.35;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+  outline: 2px solid var(--sev-info);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.fabric3d-pointer[data-visible="true"]:not([hidden]) { display: inline-flex; }
+.fabric3d-pointer[data-sev="critical"] { outline-color: var(--sev-critical); }
+.fabric3d-pointer[data-sev="high"] { outline-color: var(--sev-high); }
+.fabric3d-pointer[data-sev="medium"] { outline-color: var(--sev-medium); }
+.fabric3d-pointer[data-sev="low"] { outline-color: var(--sev-low); }
+/* The focus ring replaces the severity outline while focused, in the app's focus token and at the
+   same offset as every other stage control (.fabric3d__btn). After the severity rules and one
+   attribute heavier than them: MEASURED, at equal weight the severity colour won and the "ring" was
+   the High outline moved 2 px out. */
+.fabric3d-pointer:focus-visible,
+.fabric3d-pointer[data-sev]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.fabric3d-pointer__arrow {
+  display: inline-block;
+  transform: rotate(var(--pointer-deg, 0deg));
+}
+.fabric3d-pointer__note {
+  font-weight: var(--fw-medium);
+  color: var(--text-muted, var(--text));
+}

@@ -1,0 +1,569 @@
+/**
+ * CommandPalette.css — the command palette, the shortcut sheet, and the pending-key indicator.
+ *
+ * One stylesheet for the whole keyboard surface, because the three share a vocabulary: keycaps,
+ * dense rows, and a muted right column that never competes with the row's own text.
+ *
+ * Every colour and every duration is a token from src/core/tokens.css. The only literal lengths
+ * here are hairlines and ring widths, which are device pixels by definition; everything a reader
+ * measures — type, rows, gutters — is in rem or a spacing token, so the whole surface scales with
+ * the root font size (WCAG 1.4.4).
+ */
+
+/* ══ the palette shell ═════════════════════════════════════════════════════ */
+
+.ui-dialog.palette {
+  width: min(44rem, 94vw);
+  /* Higher than a confirmation dialog: the list below it is the content, and a centred palette
+     jumps as the list grows. Anchoring near the top keeps the first result in one place. */
+  top: 9vh;
+  max-height: 78vh;
+}
+
+.palette .ui-dialog__head {
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+}
+
+.palette .ui-dialog__title {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.palette .ui-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow: hidden; /* the results region owns the scrolling, so the search row stays put */
+}
+
+.palette .ui-dialog__foot {
+  justify-content: stretch;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* ══ search row ════════════════════════════════════════════════════════════ */
+
+.palette__search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.palette__search-glyph {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--fs-3);
+}
+
+.palette__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* A11Y AUDIT FIX, 2026-09-21 (D5). This input was the only control in the product under
+     24 x 24 CSS px: it measured 643 x 22.3, 1.7 px short on the short axis, because a borderless
+     input with no height takes it from `line-height` alone. It PASSED SC 2.5.8 on the spacing
+     exception — the nearest other target, the dialog Close button, is 304.5 px away against a
+     12 px radius — but passing a target-size criterion by being far from everything else is a
+     property of the layout, not of the control, and it stops being true the moment anything is
+     put beside it. The floor belongs on the target. */
+  min-block-size: var(--target-min);
+  /* Deliberately borderless: the dialog edge already bounds it, and a second box inside a box is
+     the tell of a search field bolted onto a panel. Focus is shown on the dialog's own row. */
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-3);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.palette__input::placeholder {
+  color: var(--text-faint);
+}
+
+/* The ring goes on the row, not the bare input: an outline on a borderless full-width input reads
+   as a box appearing from nowhere. `outline` (not box-shadow) survives forced-colors mode, and the
+   NEGATIVE offset draws it inside the row's own box — which is what makes it safe for the dialog
+   body above to clip its overflow (design brief 7.4 rule 2 exists to stop clipped rings; an inset
+   ring cannot be clipped by an ancestor). */
+.palette__search:focus-within {
+  outline: var(--focus-ring-w) solid var(--focus);
+  outline-offset: calc(-1 * var(--focus-ring-w));
+}
+
+.palette__input:focus {
+  outline: none;
+}
+
+/* ══ results ═══════════════════════════════════════════════════════════════ */
+
+.palette__results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-2) 0;
+  scroll-padding-block: var(--sp-5);
+}
+
+.palette__group + .palette__group {
+  border-top: 1px solid var(--border);
+}
+
+.palette__group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4) var(--sp-1);
+}
+
+.palette__group-label {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+}
+
+.palette__group-note {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.palette__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-block-size: var(--row-grid);
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+  /* The active marker is a 2px inset rule, drawn in the row's own box so it cannot shift the
+     layout as the cursor moves. Colour is the SECOND channel here, never the only one. */
+  box-shadow: inset 2px 0 0 0 transparent;
+  transition:
+    background-color var(--dur-instant) linear,
+    box-shadow var(--dur-instant) linear;
+}
+
+.palette__row[data-active="true"] {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.palette__row[aria-disabled="true"] .palette__row-label {
+  color: var(--text-muted);
+}
+
+.palette__row-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.palette__row-label {
+  display: block;
+  color: var(--text);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  letter-spacing: var(--ls-2);
+}
+
+.palette__row[data-active="true"] .palette__row-label {
+  font-weight: var(--fw-medium);
+}
+
+.palette__row-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  /* Two lines, then truncate: the detail is a hint toward the record, and the record itself is
+     one Enter away. A four-line hint turns a scannable list into a wall. */
+  max-height: calc(2 * var(--fs-1) * var(--lh-1));
+  overflow: hidden;
+}
+
+/* A detail that states a forwarding verdict is not a hint: it is the verdict, and its scope clause and
+   caveat count are part of it. Clamped like a hint it was cut after the word — the unbounded verdict
+   again, one rule later (acceptance B2). It wraps whole; the list scrolls. */
+.palette__row-detail[data-verdict-band] {
+  max-height: none;
+  overflow: visible;
+}
+
+.palette__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.palette__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette__mono {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.palette__row[data-active="true"] .palette__mono {
+  color: var(--text);
+}
+
+.palette__example {
+  color: var(--text);
+  font-size: var(--fs-2);
+}
+
+.palette__kv {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  white-space: nowrap;
+}
+
+.palette__kv--absent {
+  color: var(--unobserved);
+}
+
+.palette__action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-faint);
+  font-size: var(--fs-1);
+  white-space: nowrap;
+}
+
+.palette__action-glyph {
+  font-size: var(--fs-1);
+}
+
+.palette__row-side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  max-width: 45%;
+}
+
+/* The reason a hit matched, as a short sentence ("matched this endpoint's IP address"). It wraps
+   rather than clipping: it is the row's only account of itself now that the row prints no record
+   path (B6), and at phone width a nowrap sentence in a 45% column would be cut. It wraps as PROSE,
+   at spaces: no `overflow-wrap: anywhere` here (34bd435 added one, and the C2 gate failed it — the
+   licence is inherited by every token in the sentence; see "wrapping" in src/ui/primitives.css).
+   Every word it prints is short, because FIELD_WORDS is total over the indexed fields
+   (CommandPalette.test.tsx); a field it cannot name is a <code> identifier with its own breaks. */
+.palette__matched {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  text-align: end;
+}
+
+.palette__matched-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+}
+
+/* --text-muted, not --claim-out-of-scope: that token is NON-TEXT (4.09:1 on the light palette,
+   3.48:1 on the dark one) and this is 11px text — src/core/contrast.test.ts fails any `color:` in
+   src/ that names a token tokens.css declares non-text. Prose now, so no monospace. */
+.palette__matched-field {
+  color: var(--text-muted);
+}
+
+/* ══ keycaps ═══════════════════════════════════════════════════════════════ */
+
+.palette__keys,
+.kb-help__keys {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  white-space: nowrap;
+}
+
+.palette__then,
+.kb-help__then {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+}
+
+/* ══ empty state and footer ════════════════════════════════════════════════ */
+
+.palette__empty {
+  padding: var(--sp-5) var(--sp-4);
+}
+
+.palette__empty-title {
+  color: var(--text);
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-3);
+}
+
+.palette__empty-reason {
+  margin-top: var(--sp-2);
+  max-width: 62ch;
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+}
+
+/* THE FOOTER STAYS INSIDE THE DIALOG (acceptance D4, 2026-09-22). The scope line was
+   `white-space: nowrap` with its ellipsis but no `min-width: 0`, so as a flex item its minimum was
+   its whole sentence: it never shrank, and it pushed the keycap hints 15 px past the dialog's edge
+   onto the backdrop — where "<Esc> close" measured 1.37-1.78:1 in the light theme, because it was
+   being read against the scrim, not the dialog. The container's own scrollWidth still equalled its
+   clientWidth, so nothing flagged it. Now the scope line is the part that gives: it takes the
+   remaining width and WRAPS (a statement of what is being searched is prose, not an identifier to
+   ellipsise), the hints keep their own width, and when both cannot share a line the row wraps. */
+.palette__foot {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1) var(--sp-4);
+  min-inline-size: 0;
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+}
+
+.palette__scope {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+  white-space: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.palette__hints {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.palette__hint-label {
+  color: var(--text-faint);
+}
+
+/* ══ shortcut sheet ════════════════════════════════════════════════════════ */
+
+.kb-help .ui-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.kb-help__scope-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-3);
+}
+
+.kb-help__scope-note {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--ls-0);
+  text-transform: none;
+}
+
+.kb-help__group {
+  margin-top: var(--sp-3);
+}
+
+/* The WCAG 2.1.4 mechanism: first thing in the sheet, because a user who needs it is the one
+   whose stray keystrokes are already firing commands. */
+.kb-help__setting {
+  display: grid;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.kb-help__setting-desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+}
+
+.kb-help__group-title {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+}
+
+.kb-help__list {
+  list-style: none;
+  margin: var(--sp-1) 0 0;
+  padding: 0;
+}
+
+.kb-help__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-block-size: var(--row-kv);
+  padding: var(--sp-1) 0;
+}
+
+.kb-help__row + .kb-help__row {
+  border-top: 1px solid var(--border);
+}
+
+.kb-help__label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+}
+
+/* A binding that cannot act right now keeps its row and states why. Struck-through or hidden
+   rows both teach the user the key does not exist, which is a different and false claim. */
+.kb-help__reason {
+  color: var(--unobserved);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.kb-help__row--conflict .kb-help__label {
+  color: var(--sev-high);
+}
+
+.kb-help__conflicts {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+}
+
+.kb-help__empty {
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+  max-width: 62ch;
+}
+
+.kb-help__foot {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ══ pending-key indicator ═════════════════════════════════════════════════ */
+
+.kb-pending {
+  position: fixed;
+  left: var(--sp-4);
+  bottom: calc(var(--statusbar-h) + var(--sp-3));
+  z-index: var(--z-tooltip);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  /* It appears mid-sequence and must be readable immediately; a fade would make the first frames
+     of a 1.5 s window unreadable, which is most of the time it is on screen. */
+}
+
+.kb-pending__keys {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.kb-pending__caret {
+  color: var(--text-faint);
+}
+
+.kb-pending__hint {
+  color: var(--text-faint);
+}
+
+/* ══ narrow viewports ══════════════════════════════════════════════════════
+   Below 768px the palette becomes a sheet: full width, anchored to the top, taller list.
+   The right-hand column (match explanation, citation) wraps under the label rather than being
+   dropped — the citation is the row's evidence, and a narrow screen is not a reason to stop
+   citing. */
+
+@media not all and (min-width: 48rem) {
+  .ui-dialog.palette {
+    width: 100vw;
+    top: 0;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .palette__row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-1);
+  }
+
+  .palette__row-side {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--sp-3);
+    max-width: 100%;
+  }
+}
+
+/* ══ forced colours ════════════════════════════════════════════════════════
+   In Windows High Contrast the token palette is replaced wholesale, so the active row loses its
+   surface fill. The inset rule is re-expressed as a real border on the system's highlight colour,
+   because `box-shadow` is not painted in forced-colors mode. */
+
+@media (forced-colors: active) {
+  .palette__row[data-active="true"] {
+    border-inline-start: 2px solid Highlight;
+    background: Canvas;
+    forced-color-adjust: none;
+  }
+
+  .palette__row[data-active="true"] .palette__row-label {
+    color: HighlightText;
+    background: Highlight;
+  }
+}
