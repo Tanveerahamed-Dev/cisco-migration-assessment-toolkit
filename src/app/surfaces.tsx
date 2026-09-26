@@ -26,7 +26,7 @@
  *     a SEPARATE, SEPARATELY-CACHEABLE 797 KB on a second waterfall hop; it does not keep it off
  *     the first load. Any claim that "a user who never opens the fabric never downloads a renderer"
  *     is about the stacked rung only.
- *   - At <= 767px, where the brief collapses the stage, it genuinely is not fetched: 849,042 bytes
+ *   - Below 768px, where the brief collapses the stage, it genuinely is not fetched: 849,042 bytes
  *     on first load instead of 1,767,100. That was NOT true until 2026-09-21 — `App` seeded
  *     `fabricVisible` to `true` and corrected it in an effect, one commit after `Stage` had already
  *     latched. `surfaces.test.tsx` holds it.
@@ -81,11 +81,47 @@ const Fabric3D = lazy(() => whenInputIdle().then(() => import("../fabric3d/Fabri
 
 /* ── viewport ladder (design brief 2.5), read live ─────────────────────────── */
 
-function useMediaQuery(query: string): boolean {
+/**
+ * THE ONE OWNER of the viewport ladder's boundaries, in rem (a media query's rem is the initial
+ * 16 px, whatever the page's own root size). Each is the FIRST width of a rung, and a rung runs up
+ * to, but not including, the next boundary — so the rungs partition the width line by construction.
+ *
+ * Every width condition in this app — `useLadder` below, the header's compact rung, and every
+ * `@media` rule in every stylesheet — is `(min-width: <one of these>rem)` or its exact complement
+ * (`not all and (min-width: …)` in CSS, `!` in JavaScript). Never a second number beside it: the
+ * ladder used to write its narrow side as `(max-width: 47.9375rem)`, one sixteenth of a rem below
+ * `(min-width: 48rem)`, and a media width is a real number, not an integer. MEASURED by the
+ * independent refuter (wave 8, headed Chromium at device scale factor 1.5): mediaWidth 767.349 px
+ * matched neither, so the frame was in no rung — the fabric mounted, three.js was fetched at 985 ms
+ * where the brief collapses the stage, the Finding/Device controls overlapped the first grid row
+ * and the status bar was clipped. The same gap sat at 1023–1024 and 1279–1280.
+ * `src/core/breakpoint-ladder.test.ts` proves every stylesheet rule and this hook tile the line.
+ */
+export const LADDER_REM = {
+  /** >= 48rem (768px): the frame leaves the stacked phone layout for one column. */
+  singleColumn: 48,
+  /** >= 64rem (1024px): two rails, Rail B an overlay drawer. */
+  drawer: 64,
+  /** >= 80rem (1280px): the reference layout, every region side by side. */
+  reference: 80,
+  /** >= 100rem (1600px): the wide refinement. Stylesheet-only (shell.css); no JS layout reads it. */
+  wide: 100,
+} as const;
+
+/** The only form a width query takes in this app's TypeScript: the lower edge of a rung. */
+export const atLeast = (rem: number): string => `(min-width: ${rem}rem)`;
+
+/**
+ * Is the viewport at least `rem` wide? With no `matchMedia` to ask (server render, a bare test
+ * environment) the answer is YES: the reference layout of design brief 2.1, which is the layout the
+ * frame fell back to there before the ladder was written as lower edges only.
+ */
+function useAtLeast(rem: number): boolean {
+  const query = atLeast(rem);
   const subscribe = useCallback(
     (cb: () => void) => {
       const mq = typeof window !== "undefined" && window.matchMedia ? window.matchMedia(query) : null;
-      mq?.addEventListener("change", cb);
+      mq?.addEventListener?.("change", cb);
       /* `resize` as well as the query's own event, because the two must never disagree: measured
          in this harness, a viewport change applied by the debugger moved the CSS breakpoint
          without delivering a `change` event, so the stylesheet was in single-column mode while
@@ -94,39 +130,41 @@ function useMediaQuery(query: string): boolean {
          removes a whole class of "the layout disagrees with its own stylesheet" defect. */
       window.addEventListener("resize", cb);
       return () => {
-        mq?.removeEventListener("change", cb);
+        mq?.removeEventListener?.("change", cb);
         window.removeEventListener("resize", cb);
       };
     },
     [query],
   );
   const get = useCallback(
-    () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia(query).matches : false),
+    () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia(query).matches : true),
     [query],
   );
-  return useSyncExternalStore(subscribe, get, () => false);
+  return useSyncExternalStore(subscribe, get, () => true);
 }
 
 /**
- * The three rungs are mutually exclusive, and each matches a block in shell.css exactly. They are
- * written as disjoint ranges rather than as nested `max-width` thresholds because two rungs true
- * at once is the shape of every layout bug in a ladder: the widest rule wins in CSS and the
- * narrowest in JavaScript, and nothing reports the disagreement.
+ * The three rungs are mutually exclusive, and each matches a block in shell.css exactly: each is
+ * derived from the owner's lower edges only, so exactly one of stacked / singleColumn / drawer /
+ * (none: the reference layout) holds at every width, whole or fractional. The edges are chained
+ * (`drawer` requires `singleColumn`'s edge too) so even an inconsistent `matchMedia` cannot put
+ * the frame in two rungs at once — two rungs true together is the shape of every layout bug in a
+ * ladder: the widest rule wins in CSS and the narrowest in JavaScript, and nothing reports it.
  */
 export interface Ladder {
-  /** 1024–1279px: Rail B is an overlay drawer over the stage rather than a column. */
+  /** 1024–1279.99px: Rail B is an overlay drawer over the stage rather than a column. */
   drawer: boolean;
-  /** 768–1023px: one column, and a segmented control chooses which region occupies it. */
+  /** 768–1023.99px: one column, and a segmented control chooses which region occupies it. */
   singleColumn: boolean;
-  /** <= 767px: every rail is a stacked full-width section and the fabric is behind a toggle. */
+  /** below 768px: every rail is a stacked full-width section and the fabric is behind a toggle. */
   stacked: boolean;
 }
 
 export function useLadder(): Ladder {
-  const drawer = useMediaQuery("(min-width: 64rem) and (max-width: 79.9375rem)");
-  const singleColumn = useMediaQuery("(min-width: 48rem) and (max-width: 63.9375rem)");
-  const stacked = useMediaQuery("(max-width: 47.9375rem)");
-  return { drawer, singleColumn, stacked };
+  const atSingle = useAtLeast(LADDER_REM.singleColumn);
+  const atDrawer = useAtLeast(LADDER_REM.drawer) && atSingle;
+  const atReference = useAtLeast(LADDER_REM.reference) && atDrawer;
+  return { drawer: atDrawer && !atReference, singleColumn: atSingle && !atDrawer, stacked: !atSingle };
 }
 
 /* ── which single region owns the column below 1024px ──────────────────────── */

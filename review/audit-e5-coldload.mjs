@@ -428,6 +428,71 @@ const f4NarrowLoad = await (async () => {
   }
 })();
 
+/* ── F4 at FRACTIONAL widths: REPORTED, NEVER JUDGED (acceptance repair wave 8) ─────────────────────
+ *
+ * The 767 px load above runs at deviceScaleFactor 1, so its media width is a whole CSS pixel and it
+ * can never land in the gap between `max-width: 47.9375rem` (767 px) and `min-width: 48rem` (768 px)
+ * that the pre-wave-8 ladder left open: at 767.35 px NEITHER rung matched, the stage rendered as if
+ * wide, and three.js was fetched on a narrow load. A forced device scale factor makes the media width
+ * fractional; `viewport: null` lets the window, not an emulated viewport, set it. Each case prints the
+ * bisected media width, so a host whose window manager moves the width is visible rather than silent.
+ * Expected on a correct ladder: 767.3490 -> no `.app[data-fabric3d]`, a "Show the 3-D fabric" button,
+ * no three-*.js request; the controls 766.0156 (the same) and 1023.3490 (`.app[data-pane]` set).
+ */
+const F4_FRACTIONAL_CASES = [
+  { label: "just-below-768 (fractional)", dsf: 1.5, winWidth: 781, expect: "narrow" },
+  { label: "control: below 768", dsf: 1.5, winWidth: 780, expect: "narrow" },
+  { label: "control: just-below-1024 (fractional)", dsf: 1.5, winWidth: 1037, expect: "pane" },
+];
+const f4FractionalLoads = [];
+for (const c of F4_FRACTIONAL_CASES) {
+  let browser = null;
+  try {
+    browser = await chromium.launch({ headless: false, args: [`--force-device-scale-factor=${c.dsf}`, `--window-size=${c.winWidth},900`, "--window-position=0,0"] });
+    const ctx = await browser.newContext({ viewport: null });
+    const page = await ctx.newPage();
+    /** @type {string[]} */
+    const scripts = [];
+    page.on("request", (req) => {
+      const name = (req.url().split("?")[0] ?? "").split("/").pop() ?? "";
+      if (/\.js$/.test(name)) scripts.push(name);
+    });
+    await page.goto(PAGE_URL, { waitUntil: "networkidle" });
+    await sleep(3000);
+    const st = await page.evaluate(() => {
+      /* Bisect the real media width: 40 halvings of 0..4000 px is far below 1/1000 px. */
+      let lo = 0;
+      let hi = 4000;
+      for (let i = 0; i < 40; i++) {
+        const m = (lo + hi) / 2;
+        if (matchMedia(`(min-width: ${m}px)`).matches) lo = m;
+        else hi = m;
+      }
+      const app = document.querySelector(".app");
+      return {
+        mediaWidth: Number(lo.toFixed(4)),
+        dpr: devicePixelRatio,
+        fabricAttr: app?.getAttribute("data-fabric3d") ?? null,
+        pane: app?.getAttribute("data-pane") ?? null,
+        showFabricButton: [...document.querySelectorAll("button")].some((b) => (b.textContent ?? "").includes("Show the 3-D fabric")),
+      };
+    });
+    const appLoaded = scripts.some((n) => /^mount-[^/]*\.js$/.test(n));
+    const three = scripts.filter((n) => /^three-[^/]*\.js$/.test(n));
+    const fractional = Math.abs(st.mediaWidth - Math.round(st.mediaWidth)) > 0.01;
+    const result = !appLoaded
+      ? "NOT MEASURED — the application chunk was never requested"
+      : c.expect === "narrow"
+        ? `${three.length === 0 ? "three.js never requested" : "three.js REQUESTED"}; fabric ${st.fabricAttr ?? "off"}; show-fabric button ${st.showFabricButton ? "present" : "ABSENT"}`
+        : `pane ${st.pane ?? "NONE"}`;
+    f4FractionalLoads.push({ ...c, ...st, fractional, appLoaded, threeRequested: three, result });
+  } catch (e) {
+    f4FractionalLoads.push({ ...c, error: String(e).slice(0, 160), result: "NOT MEASURED — the load failed" });
+  } finally {
+    if (browser) await hostLoadMeter.close(browser).catch(() => {});
+  }
+}
+
 writeFileSync(
   "review/reports/e5-coldload.json",
   JSON.stringify(
@@ -463,6 +528,8 @@ writeFileSync(
       url: PAGE_URL,
       /* F4 (c) below 768 px — reported, never judged: see where it is measured. */
       f4NarrowLoad,
+      /* F4 at fractional media widths — reported, never judged: see where it is measured. */
+      f4FractionalLoads,
       runs,
     },
     null,
@@ -480,6 +547,12 @@ console.log(`carve-out: ${CARVE_OUT} — ${CARVE_OUT_SANCTIONED ? "SANCTIONED by
   );
 }
 console.log(`F4 at ${F4_NARROW_WIDTH_PX} px (reported, not judged): ${f4NarrowLoad.result}${f4NarrowLoad.error ? ` (${f4NarrowLoad.error})` : ""}`);
+for (const f of f4FractionalLoads) {
+  console.log(
+    `F4 fractional ${f.label} (reported, not judged): media width ${f.mediaWidth ?? "?"} px at dsf ${f.dsf}, window ${f.winWidth}` +
+      `${f.fractional === false ? " — NOT FRACTIONAL on this host" : ""}: ${f.result}${f.error ? ` (${f.error})` : ""}`,
+  );
+}
 console.log(`power: ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " — THROTTLED" : ""}; presentation below full rate in run(s): ${notFullRate.join(", ") || "none"}`);
 console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"} read from its ${hostLoad.method ?? "(unreadable)"}, idle baseline ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) (bar ${MAX_HOST_BUSY_FRACTION * 100}%); build: ${freshness.fresh ? "fresh" : "NOT FRESH — " + freshness.why}`);
 console.log(`${verdict}  E5  ${why}${hostQuiet && freshness.fresh ? "" : "  [NOT ACCEPTANCE EVIDENCE]"}`);

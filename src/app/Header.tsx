@@ -23,7 +23,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactElement,
 } from "react";
 import { fabric, severityCounts } from "../core/data";
@@ -42,6 +41,7 @@ import {
 } from "../ui/primitives";
 import { setHelpOpen } from "./keyboard";
 import { recordReturn, returnFocus, type ReturnRecord } from "./focus-return";
+import { useLadder } from "./surfaces";
 import { ThemeToggle, useThemeShortcut } from "./ThemeToggle";
 import "./chrome.css";
 
@@ -50,31 +50,18 @@ import "./chrome.css";
    buttons 56 + six 12px gaps = 856px of content. Below 1024 that starts to overlap — and because
    the header sets no scroll region, overlap is what it does rather than clipping, which is worse
    because it still looks deliberate in a screenshot.
-   So at 1023px and below the toolbar, the theme group and the utilities move into ONE overflow
+   So below 1024px the toolbar, the theme group and the utilities move into ONE overflow
    popover. They are moved, never dropped: a control that disappears at a narrow viewport is a
-   function the keyboard user has lost, not a layout that has adapted. */
-const COMPACT_QUERY = "(max-width: 63.9375rem)";
+   function the keyboard user has lost, not a layout that has adapted.
 
-const compactQuery = (): MediaQueryList | null =>
-  typeof window === "undefined" || !window.matchMedia ? null : window.matchMedia(COMPACT_QUERY);
-
-/**
- * Deliberately NOT memoised at module scope. `matchMedia` returns a fresh `MediaQueryList` per
- * call, so the subscription closes over the exact object it registered on — which is what makes
- * the unsubscribe remove the listener it added rather than a different instance's. A module-level
- * cache would also freeze whatever `matchMedia` existed at import time, which silently defeats
- * any harness that replaces it.
- */
+   The rung is the shell's single-column-and-below rung, read from the one ladder (`useLadder`,
+   surfaces.tsx) rather than restated here. It used to be its own `(max-width: 63.9375rem)`: a
+   second number one sixteenth of a rem below the shell's `(min-width: 64rem)`, so at a fractional
+   width such as 1023.5 CSS px (Windows display scaling) the header was in neither rung and laid
+   out its full toolbar inside the single-column frame (acceptance F4, repair wave 8). */
 function useCompact(): boolean {
-  return useSyncExternalStore(
-    (cb) => {
-      const mq = compactQuery();
-      mq?.addEventListener?.("change", cb);
-      return () => mq?.removeEventListener?.("change", cb);
-    },
-    () => compactQuery()?.matches ?? false,
-    () => false,
-  );
+  const ladder = useLadder();
+  return ladder.stacked || ladder.singleColumn;
 }
 
 /* ── surfaces ──────────────────────────────────────────────────────────────── */

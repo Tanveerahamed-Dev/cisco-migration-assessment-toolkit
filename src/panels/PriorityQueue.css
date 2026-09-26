@@ -690,7 +690,7 @@
 
    SIZE containment is only safe where this box never sizes from its rows — `flex: 1 1 auto` under
    a definite-height rail — and that is true only while the shell is a fixed frame. Below the
-   shell's own single-column breakpoint (shell.css, `max-width: 47.9375rem`) the page becomes a
+   shell's own single-column breakpoint (shell.css, `not all and (min-width: 48rem)`) the page becomes a
    scrolling document and the queue grows with its content; size containment there collapsed it
    to 12px (measured at 390x844 on four surfaces; box geometry checked identical with and without
    containment at 40 viewport/route combinations from 800x600 to 1920x1080). Hence the query. */
@@ -887,9 +887,12 @@
   font-family: var(--font-ui);
 }
 
-/* ── narrow rails: the grid scrolls inside its own region, the page never does ── */
+/* ── narrow rails: the grid scrolls inside its own region, the page never does ──
+   The stacked rung only: this was `(max-width: 48rem)`, which OVERLAPPED the `(min-width: 48rem)`
+   rung above at exactly 768 px (wave 8). The declaration restates the grid's own `overflow: auto`
+   (DataGrid.css), so moving the edge changes no computed value at any width. */
 
-@media (max-width: 48rem) {
+@media not all and (min-width: 48rem) {
   .pq .ag__grid {
     overflow-x: auto;
   }

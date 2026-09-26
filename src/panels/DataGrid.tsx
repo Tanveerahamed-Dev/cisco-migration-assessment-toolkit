@@ -394,9 +394,24 @@ export function revealBelowHeader(
   head: HTMLElement | null,
   el: HTMLElement,
   align: "nearest" | "centre" = "nearest",
+  /** False: the remainder may scroll the grid's scrolling ANCESTORS but never the document (see
+   *  `revealThroughAncestors`). */
+  page = true,
 ): void {
-  const off = offsetFromView(scroller, head, el);
+  let off = offsetFromView(scroller, head, el);
   if (off === 0) return;
+  /* NESTED PORTS: when the grid's OWN port already shows the row and only an outer clip hides it,
+     the outer scroller is the one to move — scrolling the grid instead aims the row at a band that
+     may be shorter than the row. MEASURED (A4, repair wave 8, 1920x1080): the path panel grew above
+     the queue inside rail A and left the grid's visible band at 1042-1054 (12 px) with F026 at
+     1141-1197 inside the grid's own box; a grid-first reveal cannot fit a 56 px row in 12 px, while
+     scrolling the rail by 143 px shows it whole. Element ancestors only here; whatever is left falls
+     through to the grid-first reveal below, exactly as before. */
+  if (isOwnPort(scroller) && ownPortShows(scroller, head, el)) {
+    revealThroughAncestors(scroller, head, el, false);
+    off = offsetFromView(scroller, head, el);
+    if (off === 0) return;
+  }
   if (align === "nearest") {
     /* Rounded AWAY from the row, never to nearest: rows sit on fractional pixels (F099 at
        999.25-1040.63) while the browser snaps scrollTop to device pixels, so `+= 37.7` landed
@@ -404,7 +419,7 @@ export function revealBelowHeader(
        CENTRING it. MEASURED (A4, 1920x1080, dev build): a 38 px restore became a 322 px throw. */
     const target = scroller.scrollTop + off;
     scroller.scrollTop = off > 0 ? Math.ceil(target) : Math.floor(target);
-    revealThroughAncestors(scroller, head, el);
+    revealThroughAncestors(scroller, head, el, page);
     return;
   }
   /* "centre" — for a SELECTION reveal (not keyboard focus, which stays nearest so an arrow key moves
@@ -416,7 +431,22 @@ export function revealBelowHeader(
   const row = (el.closest<HTMLElement>('[role="row"]') ?? el).getBoundingClientRect();
   const delta = row.top + row.height / 2 - (top + bottom) / 2;
   scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
-  revealThroughAncestors(scroller, head, el);
+  revealThroughAncestors(scroller, head, el, page);
+}
+
+/** The grid scrolls its own rows (every desktop layout); narrow layouts lay it out at full height. */
+function isOwnPort(scroller: HTMLElement): boolean {
+  return scroller.scrollHeight > scroller.clientHeight + 1;
+}
+
+/** Is `el`'s row wholly inside the grid's own box below its sticky header — ignoring every clip and
+ *  overlay outside the grid? */
+function ownPortShows(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): boolean {
+  if (head?.contains(el)) return false;
+  const box = scroller.getBoundingClientRect();
+  const top = head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top;
+  const row = (el.closest<HTMLElement>('[role="row"]') ?? el).getBoundingClientRect();
+  return row.height > 0 && row.top >= top - 0.5 && row.bottom <= box.bottom + 0.5;
 }
 
 /**
@@ -437,7 +467,7 @@ export function revealBelowHeader(
  * (a fixed or sticky bar) does not block the reveal. Focus inside the grid is the row being
  * revealed or its neighbour, and focus on <body> has nothing to lose, so neither restrains it.
  */
-function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): void {
+function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement, page = true): void {
   let rest = offsetFromView(scroller, head, el);
   if (rest === 0) return;
   const doc = scroller.ownerDocument;
@@ -460,7 +490,7 @@ function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null,
     }
     rest -= a.scrollTop - before;
   }
-  if (rest === 0) return;
+  if (rest === 0 || !page) return;
   const y0 = view.scrollY;
   view.scrollBy(0, rest);
   if (!keepsFocus()) view.scrollBy(0, y0 - view.scrollY);
@@ -557,24 +587,43 @@ function trimOverlays(
   top: number,
   bottom: number,
 ): { top: number; bottom: number } {
-  if (typeof doc.elementFromPoint !== "function" || bottom <= top) return { top, bottom };
+  const stack = typeof doc.elementsFromPoint === "function";
+  if ((!stack && typeof doc.elementFromPoint !== "function") || bottom <= top) return { top, bottom };
   const view = doc.defaultView;
   const maxX = view && view.innerWidth > 0 ? view.innerWidth - 1 : box.right;
   const x = Math.min(Math.max((Math.max(box.left, 0) + Math.min(box.right, maxX)) / 2, 0), maxX);
-  const overlayAt = (y: number): DOMRect | null => {
-    const hit = doc.elementFromPoint(x, y);
-    if (hit === null || scroller.contains(hit) || hit.contains(scroller)) return null;
-    return hit.getBoundingClientRect();
+  /**
+   * Every box painted OVER the grid at (x, y): the hit-test stack down to the grid (or an element
+   * that holds it). The WHOLE stack, not only the topmost hit. MEASURED (D3, 390x844, repair wave 8,
+   * `audit-d3-focus.mjs` phone/inspector (citation), traced): focus arrived on a grid cell while the
+   * queue's "What the collection gap means" popover (635-833) was still open over the band, and the
+   * edge probes hit the popover's pieces rather than the status bar (759-844) under them. With the
+   * topmost hit only, a box that covers the whole remaining band (the popover's own frame) ends the
+   * walk, and whatever it hides — the bar — is never trimmed; the stack lets it be passed over. (That
+   * trace's cell went under the bar by a second route as well — the arrival reveal measured against
+   * the still-open popover; see `settleFocus`.) Where only `elementFromPoint` exists, the topmost hit
+   * is the stack.
+   */
+  const coversAt = (y: number): DOMRect[] => {
+    const hits = stack ? doc.elementsFromPoint(x, y) : [doc.elementFromPoint(x, y)];
+    const out: DOMRect[] = [];
+    for (const hit of hits) {
+      if (hit === null || scroller.contains(hit) || hit.contains(scroller)) break;
+      out.push(hit.getBoundingClientRect());
+    }
+    return out;
   };
   for (let i = 0; i < 4 && bottom > top; i += 1) {
-    const r = overlayAt(bottom - 1);
-    if (r === null || r.top >= bottom || r.top <= top) break;
-    bottom = r.top;
+    let next = bottom;
+    for (const r of coversAt(bottom - 1)) if (r.top < next && r.top > top) next = r.top;
+    if (next >= bottom) break;
+    bottom = next;
   }
   for (let i = 0; i < 4 && bottom > top; i += 1) {
-    const r = overlayAt(top + 1);
-    if (r === null || r.bottom <= top || r.bottom >= bottom) break;
-    top = r.bottom;
+    let next = top;
+    for (const r of coversAt(top + 1)) if (r.bottom > next && r.bottom < bottom) next = r.bottom;
+    if (next <= top) break;
+    top = next;
   }
   return { top, bottom };
 }
@@ -685,6 +734,18 @@ class BeforeCommit extends Component<{ watch: string | undefined; capture: () =>
   override render(): null {
     return null;
   }
+}
+
+/** Keys that scroll the page when the element they are pressed on does not take them. */
+const PAGE_SCROLL_KEYS: ReadonlySet<string> = new Set([" ", "PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"]);
+
+/** The element focus is on inside `scroller` (not the scroller itself), or null when the grid does
+ *  not hold focus. */
+function focusedCellIn(scroller: HTMLElement | null, hasFocus: boolean): HTMLElement | null {
+  const view = scroller?.ownerDocument.defaultView;
+  const active = scroller?.ownerDocument.activeElement;
+  if (!scroller || !view || !hasFocus || !(active instanceof view.HTMLElement) || active === scroller || !scroller.contains(active)) return null;
+  return active;
 }
 
 /** `aimedAt` before the first render has looked at the reveal target. */
@@ -928,6 +989,7 @@ export function DataGrid<T>({
      cell's centre landed on the header's sort button (D3). So focus never scrolls on its own; the
      same header-aware nearest-reveal the selection reveal uses brings the cell's row into view. */
   const focusInView = useCallback((el: HTMLElement): void => {
+    focusKeptRef.current = true;
     el.focus({ preventScroll: true });
     const scroller = gridRef.current;
     if (scroller) revealBelowHeader(scroller, headRef.current, el);
@@ -1018,6 +1080,36 @@ export function DataGrid<T>({
    * with the reader's own scrolling.
    */
   const heldRef = useRef(false);
+  /**
+   * How the hold re-reveals. "centre" for a row a reveal SCROLLED to (its own alignment); "nearest"
+   * for a selection the reader made with the row already under their eyes — a click, Enter or Space
+   * in this grid — which no reveal moved, so a later change of the port brings it back by the least
+   * movement and never throws the list to centre it.
+   *
+   * WHY THE SECOND MODE EXISTS (A4, repair wave 8; acceptance-report.md at `34bd435`, reproduced
+   * twice at 1920x1080): the reader scrolled to 1000, CLICKED F026 (visible at 844-900 in a port of
+   * 389-1054), picked access5, core1, L33 and access5 on the canvas, then pressed the Path surface
+   * button. The path panel shrank the port to 786-1054, scrollTop moved only 1000 -> 1015, and the
+   * `data-active` F026 sat at 1241-1297, off screen; the flow submit and a double-click on dist1
+   * left it there. The hold was armed only by a reveal that scrolled, and a click skips the reveal
+   * (the activation path below), so the port-size observer had nothing to keep; the device, link and
+   * hop picks do not re-key the reveal (a device pick keeps the reader's place, A4). After a URL load
+   * the same switch re-anchored the row, because that selection HAD scrolled. The latch now depends
+   * on whether the reader can see the selection, not on how it was reached.
+   */
+  const holdAlignRef = useRef<"centre" | "nearest">("centre");
+  /**
+   * Whether the FOCUSED cell is to be kept on screen (see `keepFocusInView`): raised whenever focus
+   * arrives in the grid or the keyboard moves it (the grid itself has just put it in view), and
+   * re-read from the screen when the READER scrolls — the grid, an ancestor or the page — so a reader
+   * who scrolls away from their focus to read something else is never pulled back by a later layout
+   * change. The same rule as the hold, for the keyboard's position.
+   */
+  const focusKeptRef = useRef(true);
+  /** Reader input that scrolls the PAGE or a scrolling ancestor of the grid (the grid's own port has
+   *  `readerInputRef`): see `onPageInput`. Lowered when focus arrives in the grid or the keyboard
+   *  acts in it. No clock, as for the grid. */
+  const pageInputRef = useRef(false);
   const revealTargetRef = useRef(revealTarget);
   revealTargetRef.current = revealTarget;
   /** True once the reader has touched the grid (wheel, touch, pointer, key) since the last reveal;
@@ -1059,6 +1151,14 @@ export function DataGrid<T>({
       revealedKeyRef.current = activated.key;
       pagedRef.current = null;
       repAim.current = "none";
+      /* The row is under the reader's pointer or focused cell: nothing to reveal NOW, but it is the
+         selection on screen, so it is held — by the least movement (see `holdAlignRef`). Armed
+         without measuring anything: this is the click's own commit (E3, journey 1); the hold's
+         triggers (the port's ResizeObserver, a scroll the reader did not make, a later commit
+         that reflows the rows) do the measuring. */
+      heldRef.current = true;
+      holdAlignRef.current = "nearest";
+      pageInputRef.current = false;
       return;
     }
 
@@ -1160,6 +1260,9 @@ export function DataGrid<T>({
     pagedRef.current = null;
     revealBelowHeader(scroller, headRef.current, el, restoring ? "nearest" : "centre");
     heldRef.current = true;
+    /* The hold keeps the row the way it was placed: a row the reader was already looking at is
+       restored by the least movement, and so is every later re-reveal of it (see `holdAlignRef`). */
+    holdAlignRef.current = restoring ? "nearest" : "centre";
     if (targetCopies.length > 1 && revealTarget === activeId) setChosenCopy(key);
     /* A representative reveal that DID scroll places the roving cell on the row it brought into
        view — what the render-time aim does for every other reveal (see `repAim`). A target with
@@ -1170,6 +1273,7 @@ export function DataGrid<T>({
     }
     // A fresh reveal starts a fresh hold: input that preceded it is not a scroll away from it.
     readerInputRef.current = false;
+    pageInputRef.current = false;
     /* A row that had to be paged in has only just mounted, so the focus-follows-roving effect
        below found no cell to focus when the roving cell moved. Hand it focus now. */
     if (aimFocus.current && hasFocus.current) {
@@ -1185,16 +1289,106 @@ export function DataGrid<T>({
   /* The hold itself (see `heldRef`). One re-reveal routine, three triggers: the port or its sticky
      header changing size (ResizeObserver), the rows changing (a commit that reflows what is above
      the target), and the reader's own scrolling, which decides whether the hold still applies. */
-  const holdReveal = useCallback((): void => {
+  const holdReveal = useCallback((page = true): void => {
     const scroller = gridRef.current;
     const id = revealTargetRef.current;
     const key = revealedKeyRef.current;
     if (!scroller || !heldRef.current || id === null || id === undefined || revealedRef.current !== id || key === null) return;
     const el = rowRefs.current.get(key);
-    if (el) revealBelowHeader(scroller, headRef.current, el, "centre");
+    if (el) revealBelowHeader(scroller, headRef.current, el, holdAlignRef.current, page);
   }, []);
 
-  useLayoutEffect(holdReveal, [nodes, relatedIds, holdReveal]);
+  /**
+   * The FOCUSED cell answers to the same rule as the held selection: a change the reader did not
+   * make to the grid — the port shrinking under a surface switch, the viewport resizing, a panel
+   * closing over it — must not leave the cell the keyboard is on out of view (WCAG 2.4.11). Nearest
+   * semantics, so a cell in view never moves; run after the hold, so when the two disagree the
+   * keyboard's position wins. Only while focus is IN the grid: a reader focused elsewhere has
+   * nothing here to lose.
+   */
+  const keepFocusInView = useCallback((): void => {
+    const scroller = gridRef.current;
+    const active = focusedCellIn(scroller, hasFocus.current);
+    if (!scroller || active === null || !focusKeptRef.current) return;
+    revealBelowHeader(scroller, headRef.current, active);
+  }, []);
+  /**
+   * Re-check the focused cell once the layout has SETTLED after focus arrived from outside the grid.
+   * The arrival's own reveal (onFocus) measures a layout the same act is still changing: MEASURED
+   * (D3, 390x844, repair wave 8, `audit-d3-focus.mjs` phone/inspector (citation)), Tab off the
+   * queue's "What the collection gap means" popover focused the roving cell at 714-755 — above the
+   * status bar (759) — while the popover was still open. The arrival reveal, measuring THAT layout,
+   * read one of the popover's boxes as an overlay over the band's top and called
+   * `window.scrollBy(0, -37.3)` (traced from `onFocus` through `revealThroughAncestors`); the popover
+   * then closed and left the cell at 754-788, under the bar (0 of 9 hit points on it). The same shape for
+   * the Escape that follows: the selection it clears re-words the rail above the grid in a deferred
+   * commit and pushed the cell 24 px down, under the bar. So the reveal is re-run after the next
+   * frame, and again after the task the deferred commits run in (`deferPastPaint`), twice over.
+   * Nothing here runs inside the event: each check reads layout AFTER the act, never in its commit.
+   */
+  const settleTimers = useRef<{ raf: Set<number>; timeout: Set<number> }>({ raf: new Set(), timeout: new Set() });
+  const settleFocus = useCallback((): void => {
+    const view = gridRef.current?.ownerDocument.defaultView;
+    if (!view || typeof view.requestAnimationFrame !== "function") return;
+    const t = settleTimers.current;
+    const pass = (left: number): void => {
+      const raf = view.requestAnimationFrame(() => {
+        t.raf.delete(raf);
+        keepFocusInView();
+        const timeout = view.setTimeout(() => {
+          t.timeout.delete(timeout);
+          keepFocusInView();
+          if (left > 1) pass(left - 1);
+        }, 0);
+        t.timeout.add(timeout);
+      });
+      t.raf.add(raf);
+    };
+    pass(2);
+  }, [keepFocusInView]);
+  useEffect(
+    () => () => {
+      const view = gridRef.current?.ownerDocument.defaultView ?? window;
+      for (const id of settleTimers.current.raf) view.cancelAnimationFrame(id);
+      for (const id of settleTimers.current.timeout) view.clearTimeout(id);
+    },
+    [],
+  );
+  /** One routine for every layout change the reader did not make: keep the selection, then focus. */
+  const keepInView = useCallback((): void => {
+    holdReveal();
+    keepFocusInView();
+  }, [holdReveal, keepFocusInView]);
+
+  useLayoutEffect(() => holdReveal(), [nodes, relatedIds, holdReveal]);
+
+  /**
+   * The held row and the focused cell, WATCHED on screen (IntersectionObserver, which accounts for
+   * every clipping ancestor). Resizes are not the only way a layout change takes them out of view:
+   * content growing ABOVE the grid moves it inside a scrolling rail without resizing anything the
+   * grid observes. MEASURED (A4, repair wave 8, 1920x1080, the report's sequence then "Trace this
+   * flow" with the form's errors): the path panel above the queue grew, the grid kept its 19rem box
+   * and slid down inside rail A, and the visible band became 1042-1054 — F026 at 1141-1197, marked,
+   * not on screen, with no resize and no scroll event anywhere. The observer answers "it left the
+   * screen" whatever moved it; the reader's own scrolling has already released the hold or the focus
+   * by then (scroll events run before intersection callbacks in a frame). A hold re-reveal from here
+   * never scrolls the DOCUMENT: when the page is what scrolls the grid, a page that moved is the
+   * reader's or another surface's (a JSON search revealing its match), and pulling it back would take
+   * their place away; only the grid and its scrolling ancestors move.
+   */
+  const watchRef = useRef<{ io: IntersectionObserver | null; targets: Element[] }>({ io: null, targets: [] });
+  useLayoutEffect(() => {
+    const w = watchRef.current;
+    if (w.io === null) return;
+    const key = revealedKeyRef.current;
+    const held = heldRef.current && key !== null ? rowRefs.current.get(key) : undefined;
+    const focused = focusedCellIn(gridRef.current, hasFocus.current);
+    const next = [held, focused].filter((e): e is HTMLElement => e !== undefined && e !== null);
+    if (next.length === w.targets.length && next.every((e, i) => e === w.targets[i])) return;
+    for (const e of w.targets) w.io.unobserve(e);
+    for (const e of next) w.io.observe(e);
+    w.targets = next;
+  });
 
   useEffect(() => {
     const scroller = gridRef.current;
@@ -1207,8 +1401,14 @@ export function DataGrid<T>({
        on the grid re-runs the reveal instead of abandoning it.
        No clock: reader input raises a flag (`readerInputRef`) that a new reveal and the pointer
        leaving the grid lower again, so the classification is a function of the event sequence. */
-    const onUserInput = (): void => {
+    const onUserInput = (e: Event): void => {
       readerInputRef.current = true;
+      /* The keyboard acting in the grid puts the reader back on their focus (the grid reveals every
+         cell it moves to), and ends a page scroll of theirs. */
+      if (e.type === "keydown") {
+        focusKeptRef.current = true;
+        pageInputRef.current = false;
+      }
       // The reader's own hand on the grid supersedes what they could see when they last acted.
       actViewRef.current = null;
     };
@@ -1221,27 +1421,120 @@ export function DataGrid<T>({
       const el = id === null || id === undefined || revealedRef.current !== id || key === null ? undefined : rowRefs.current.get(key);
       if (heldRef.current && !readerInputRef.current) {
         holdReveal();
+        keepFocusInView();
         return;
       }
       /* 1 px of slack: a reveal lands on fractional device pixels, and a row the reveal itself just
          placed must not read as scrolled away. */
       heldRef.current = el !== undefined && Math.abs(offsetFromView(scroller, headRef.current, el)) <= 1;
+      /* The focused cell by the same rule: a scroll the reader did not make keeps it; one they made
+         decides, from what it left on screen, whether it is still theirs to keep. */
+      if (!readerInputRef.current) keepFocusInView();
+      else {
+        const focused = focusedCellIn(scroller, hasFocus.current);
+        if (focused !== null) focusKeptRef.current = Math.abs(offsetFromView(scroller, headRef.current, focused)) <= 1;
+      }
     };
     const inputs = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
     for (const t of inputs) scroller.addEventListener(t, onUserInput, { passive: true });
     scroller.addEventListener("pointerleave", onLeave, { passive: true });
     scroller.addEventListener("scroll", onScroll, { passive: true });
     const RO = typeof ResizeObserver === "undefined" ? null : ResizeObserver;
-    const ro = RO ? new RO(holdReveal) : null;
+    const ro = RO ? new RO(keepInView) : null;
     ro?.observe(scroller);
     if (headRef.current) ro?.observe(headRef.current);
+    /* The viewport is the band's last clip (`visibleBand`): a window resize can take the row or the
+       focused cell off screen without resizing the grid's own box (narrow layouts, where the page
+       scrolls the grid). The hold answers it without scrolling the DOCUMENT: a phone resizes the
+       window whenever its address bar slides away under the reader's own page scroll. */
+    const view = scroller.ownerDocument.defaultView;
+    const onViewResize = (): void => {
+      holdReveal(false);
+      keepFocusInView();
+    };
+    view?.addEventListener("resize", onViewResize);
+    /* The FOCUSED cell also answers to changes outside the grid's box. Narrow layouts scroll the grid
+       with the page, so content above it growing or shrinking MOVES the grid without resizing it
+       (no observer above fires), and a scroll of the page or of a scrolling ancestor that the reader
+       did not make — a panel's close, scroll anchoring, a clamp — carries the cell off screen with no
+       event on the grid at all. A scroll of those that the reader did not make re-reveals the focused
+       cell only; the held row is answered by the watcher below, which never scrolls the document (a
+       page scroll may be another surface revealing ITS content). A scroll the reader DID make decides,
+       for both, whether they are still to be kept. */
+    const doc = scroller.ownerDocument;
+    const IO = typeof IntersectionObserver === "undefined" ? null : IntersectionObserver;
+    const io = IO
+      ? new IO(
+          () => {
+            holdReveal(false);
+            keepFocusInView();
+          },
+          { threshold: [0, 0.5, 1] },
+        )
+      : null;
+    watchRef.current = { io, targets: [] };
+    const ro2 = RO ? new RO(keepFocusInView) : null;
+    ro2?.observe(doc.body);
+    const onDocScroll = (e: Event): void => {
+      if (!hasFocus.current && !heldRef.current) return;
+      const t = e.target;
+      // The grid's own port has its own handler; a scroller that does not hold the grid is unrelated.
+      if (t instanceof Node && t !== doc && (t === scroller || scroller.contains(t) || !t.contains(scroller))) return;
+      if (!pageInputRef.current) {
+        keepFocusInView();
+        return;
+      }
+      const focused = focusedCellIn(scroller, hasFocus.current);
+      if (focused !== null) focusKeptRef.current = Math.abs(offsetFromView(scroller, headRef.current, focused)) <= 1;
+      /* The reader scrolled the page or a rail that carries the grid: the held row, by the grid's own
+         rule, stays held only while it is still on screen. */
+      const key = revealedKeyRef.current;
+      const row = heldRef.current && key !== null ? rowRefs.current.get(key) : undefined;
+      if (row !== undefined) heldRef.current = Math.abs(offsetFromView(scroller, headRef.current, row)) <= 1;
+    };
+    /* Reader input counts only when it scrolls a scroller that CARRIES the grid — the page or a rail
+       holding it. MEASURED (A4, repair wave 8, 1440x900): counting any press or wheel anywhere let the
+       press on "Trace this flow" and the wheel that zooms the canvas classify the rail's own
+       re-layout scroll that followed as the reader's, which released the hold and left F026 at
+       970-1026 below a port of 751-874. So: a wheel, touch or scroll key counts when the innermost
+       scroller under it is the page or one of the grid's scrolling ancestors; a press counts only on
+       such a scroller itself (its scrollbar). */
+    const scrollsY = (a: Element): boolean => {
+      const oy = view?.getComputedStyle(a).overflowY ?? "";
+      return (oy === "auto" || oy === "scroll") && a.scrollHeight > a.clientHeight;
+    };
+    const carries = (a: Element): boolean => a === doc.documentElement || a === doc.body || (a !== scroller && a.contains(scroller));
+    const onPageInput = (e: Event): void => {
+      if (!hasFocus.current && !heldRef.current) return;
+      const t = e.target;
+      if (!(t instanceof Element)) return;
+      // The grid's own keys and presses are the grid's (`readerInputRef`).
+      if (scroller.contains(t) && e.type !== "wheel" && e.type !== "touchmove") return;
+      if (e.type === "keydown" && !PAGE_SCROLL_KEYS.has((e as KeyboardEvent).key)) return;
+      if (e.type === "pointerdown") {
+        if (carries(t)) pageInputRef.current = true;
+        return;
+      }
+      let a: Element | null = t;
+      while (a !== null && a !== doc.documentElement && !scrollsY(a)) a = a.parentElement;
+      if (a === null || a === doc.documentElement || a === scroller || carries(a)) pageInputRef.current = true;
+    };
+    const pageInputs = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
+    doc.addEventListener("scroll", onDocScroll, { capture: true, passive: true });
+    for (const t of pageInputs) doc.addEventListener(t, onPageInput, { capture: true, passive: true });
     return () => {
       for (const t of inputs) scroller.removeEventListener(t, onUserInput);
       scroller.removeEventListener("pointerleave", onLeave);
       scroller.removeEventListener("scroll", onScroll);
+      view?.removeEventListener("resize", onViewResize);
+      doc.removeEventListener("scroll", onDocScroll, { capture: true });
+      for (const t of pageInputs) doc.removeEventListener(t, onPageInput, { capture: true });
       ro?.disconnect();
+      ro2?.disconnect();
+      io?.disconnect();
+      watchRef.current = { io: null, targets: [] };
     };
-  }, [holdReveal]);
+  }, [holdReveal, keepInView, keepFocusInView]);
 
   const move = useCallback(
     (row: number, col: number, keepDesired = false): void => {
@@ -1666,6 +1959,8 @@ export function DataGrid<T>({
         }}
         onFocus={(e) => {
           hasFocus.current = true;
+          focusKeptRef.current = true;
+          pageInputRef.current = false;
           /* Focus ARRIVING from outside the grid by keyboard or script — Tab, a dialog restoring focus
              to its invoker — gets the same band-aware reveal as focus the grid moves itself. The
              browser's own focus scroll knows nothing of a bar painted over the grid: MEASURED (D3,
@@ -1679,6 +1974,8 @@ export function DataGrid<T>({
             const scroller = gridRef.current;
             const target = e.target as HTMLElement;
             if (scroller && target !== scroller) revealBelowHeader(scroller, headRef.current, target);
+            // …and again once whatever moved focus here has finished changing the layout.
+            settleFocus();
           }
           /* Focus coming back from OUTSIDE the grid after an external selection moved the roving
              cell — a dialog restoring focus to the cell that opened it is the common case — lands

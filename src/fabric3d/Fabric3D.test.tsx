@@ -1980,6 +1980,129 @@ describe("measure-inp: anchor discovery names its failures; E3 across runs does 
   });
 });
 
+/* ── measure-inp J2: anchor discovery aims at the DEVICE, not at its label (repair wave 8) ────────
+ *
+ * The acceptance report (E harness, 2026-09-25) found J2's anchors were aimed a little below the
+ * centre of each `.fabric3d-label` box. A label is anchored at its device but extends to one side, so
+ * a wide label ("? not collected") put the aim 43-46 px off its chassis and three devices were never
+ * reached. The fix aims through the scene's own projection (`__atlasScene.chassisScreenBox`). Until now
+ * that was guarded only by a scratch script and a real-browser run. Here the harness's exported
+ * `discoverJ2Anchors` runs against a fake page of three devices, one with a 180 px label, where a
+ * click selects a device ONLY inside that device's projected chassis box (the stand-in for a pick).
+ * Each `page.evaluate` runs the harness's function from its SOURCE TEXT with the fake page's globals
+ * as parameters, as Playwright does, so no closure of this test leaks into it. */
+describe("measure-inp J2: anchor discovery aims at each device's chassis, whatever its label's width", () => {
+  interface Anchor {
+    id: string;
+    x: number;
+    y: number;
+  }
+  interface Box {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }
+  interface Rect {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
+  interface HarnessModule {
+    discoverJ2Anchors(
+      launch: () => Promise<unknown>,
+      opts: { app: string; context: object; initScript: string; log?: (l: string) => void },
+    ): Promise<{ hits: Anchor[]; anchors?: Anchor[]; reasons: string[] }>;
+    chassisAimPoint?: (box: Box | null, canvas: Rect | null, fraction: [number, number]) => { x: number; y: number } | null;
+  }
+  const load = async (): Promise<HarnessModule> =>
+    (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "measure-inp.mjs")).href)) as HarnessModule;
+
+  const CANVAS: Rect = { x: 340, y: 92, width: 1160, height: 962 };
+  const DEVICES: { id: string; box: Box; labelW: number }[] = [
+    { id: "narrow-a", box: { x0: 300, y0: 300, x1: 330, y1: 320 }, labelW: 70 },
+    { id: "narrow-b", box: { x0: 500, y0: 300, x1: 530, y1: 320 }, labelW: 70 },
+    /* Anchored at the device's left like every label, but 180 px wide: its box centre is 60 px right
+       of the chassis centre, off the 30 px chassis entirely. */
+    { id: "wide-unobserved", box: { x0: 700, y0: 300, x1: 730, y1: 320 }, labelW: 180 },
+  ];
+
+  const fakeBrowser = (clicks: [number, number][]) => {
+    let search = "?s=fabric";
+    class FakeCanvas {}
+    const labelRect = (d: (typeof DEVICES)[number]) => {
+      const left = CANVAS.x + d.box.x0 - 20;
+      const bottom = CANVAS.y + d.box.y0 - 8;
+      return { left, right: left + d.labelW, width: d.labelW, top: bottom - 18, bottom, height: 18, x: left, y: bottom - 18 };
+    };
+    const labels = DEVICES.map((d) => ({ getAttribute: (k: string) => (k === "data-device" ? d.id : null), getBoundingClientRect: () => labelRect(d), dataset: { device: d.id } }));
+    const scope = () => ({
+      window: { __atlasScene: { stats: () => ({ converged: true }), chassisScreenBox: (id: string) => DEVICES.find((d) => d.id === id)?.box ?? null } },
+      document: {
+        querySelectorAll: (sel: string) => (sel.includes("fabric3d-label") ? labels : []),
+        querySelector: (sel: string) => labels.find((e) => sel.includes(`"${e.dataset.device}"`)) ?? null,
+        elementFromPoint: () => new FakeCanvas(),
+      },
+      location: { search },
+      HTMLCanvasElement: FakeCanvas,
+      CSS: { escape: (s: string) => s },
+    });
+    const run = (fn: unknown, arg: unknown): unknown => {
+      if (typeof fn !== "function") return null;
+      const g = scope();
+      const names = Object.keys(g);
+      const f = new Function(...names, "__arg", `return (${String(fn)})(__arg);`) as (...a: unknown[]) => unknown;
+      return f(...names.map((n) => g[n as keyof typeof g]), arg);
+    };
+    const page = {
+      goto: async () => null,
+      waitForTimeout: async () => undefined,
+      waitForSelector: async () => null,
+      evaluate: async (fn: unknown, arg?: unknown) => run(fn, arg),
+      waitForFunction: async (fn: unknown, arg?: unknown) => {
+        const v = run(fn, arg);
+        if (!v) throw new Error("page.waitForFunction: Timeout");
+        return v;
+      },
+      locator: () => ({ first: () => ({ boundingBox: async () => CANVAS }) }),
+      mouse: {
+        click: async (x: number, y: number) => {
+          clicks.push([x, y]);
+          const hit = DEVICES.find((d) => x >= CANVAS.x + d.box.x0 && x <= CANVAS.x + d.box.x1 && y >= CANVAS.y + d.box.y0 && y <= CANVAS.y + d.box.y1);
+          if (hit) search = `?d=${hit.id}&s=fabric`;
+        },
+      },
+    };
+    return { newContext: async () => ({ addInitScript: async () => undefined, newPage: async () => page }), close: async () => undefined };
+  };
+
+  it("every device gets an anchor, and every anchor lies on its own chassis", async () => {
+    const { discoverJ2Anchors } = await load();
+    const clicks: [number, number][] = [];
+    const d = await discoverJ2Anchors(async () => fakeBrowser(clicks), { app: "http://x", context: {}, initScript: "", log: () => undefined });
+    const anchors = d.anchors ?? d.hits;
+    expect(clicks.length, "positive control: the scan clicked the canvas").toBeGreaterThan(0);
+    expect(DEVICES.filter((x) => !anchors.some((a) => a.id === x.id)).map((x) => `no anchor selects ${x.id}`)).toEqual([]);
+    for (const a of anchors) {
+      const dev = DEVICES.find((x) => x.id === a.id);
+      expect(dev, `${a.id} is one of the devices laid out`).toBeDefined();
+      if (!dev) continue;
+      expect(a.x >= CANVAS.x + dev.box.x0 && a.x <= CANVAS.x + dev.box.x1, `${a.id}'s anchor x=${a.x} is on its chassis`).toBe(true);
+      expect(a.y >= CANVAS.y + dev.box.y0 && a.y <= CANVAS.y + dev.box.y1, `${a.id}'s anchor y=${a.y} is on its chassis`).toBe(true);
+    }
+    expect(d.reasons).toEqual([]);
+  });
+
+  it("chassisAimPoint is the whole aim: a fraction of the projected box, null off the canvas", async () => {
+    const { chassisAimPoint } = await load();
+    expect(typeof chassisAimPoint, "chassisAimPoint is exported").toBe("function");
+    if (!chassisAimPoint) return;
+    expect(chassisAimPoint({ x0: 100, y0: 200, x1: 140, y1: 230 }, CANVAS, [0.5, 0.5])).toEqual({ x: 460, y: 307 });
+    expect(chassisAimPoint({ x0: 5000, y0: 0, x1: 5010, y1: 10 }, CANVAS, [0.5, 0.5])).toBeNull();
+  });
+});
+
 /* ── measure-inp item 15: the headed window must fit the screen it is measured on ── */
 describe("measure-inp: the headed window is planned inside the screen's work area", () => {
   interface Plan {

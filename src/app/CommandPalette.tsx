@@ -283,9 +283,11 @@ const KIND_NOUN: Readonly<Record<SearchHit["kind"], string>> = {
   endpoint: "endpoint",
 };
 
-/** The indexed field names (`rankedSearch`'s `field`) in words. A field this map does not know is
- *  shown as its own name — still the true reason, only less readable. */
-const FIELD_WORDS: Readonly<Record<string, string>> = {
+/** The indexed field names (`rankedSearch`'s `field`) in words. TOTAL over the fields query.ts
+ *  indexes: CommandPalette.test.tsx reads every `iv`/`ivList` field literal there and fails on one
+ *  missing here. A field it still does not know (a future index entry) is printed as what it is, an
+ *  identifier — see `MatchReason`. */
+export const FIELD_WORDS: Readonly<Record<string, string>> = {
   host: "host name",
   id: "identifier",
   model: "model",
@@ -323,12 +325,37 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
  * path the row used to print (see `Row`): the reader keeps the reason, and the record itself is one
  * step away on the pane the row lands on.
  */
-function MatchReason({ hit }: { hit: SearchHit }): ReactNode {
+export function MatchReason({ hit }: { hit: SearchHit }): ReactNode {
+  const words = FIELD_WORDS[hit.field];
   return (
     <span className="palette__matched">
-      matched this {KIND_NOUN[hit.kind]}'s <span className="palette__matched-field">{FIELD_WORDS[hit.field] ?? hit.field}</span>
+      matched this {KIND_NOUN[hit.kind]}'s{" "}
+      {words !== undefined ? (
+        <span className="palette__matched-field">{words}</span>
+      ) : (
+        /* An identifier, not prose: in a <code>, which primitives.css ("wrapping") gives
+           `overflow-wrap: normal`, with a <wbr> after each separator so a long name breaks at a
+           boundary a reader accepts and never between two letters. The sentence itself carries no
+           token-break licence (C2, wave 8). */
+        <code className="palette__matched-field palette__matched-id">{fieldBreaks(hit.field)}</code>
+      )}
     </span>
   );
+}
+
+/** `text` with a <wbr> after every identifier separator (`.` `_` `/` `-` `:` `+`); text is unchanged. */
+function fieldBreaks(text: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let run = "";
+  for (const ch of text) {
+    run += ch;
+    if ("._/-:+".includes(ch)) {
+      out.push(run, <wbr key={out.length} />);
+      run = "";
+    }
+  }
+  if (run !== "") out.push(run);
+  return out;
 }
 
 function hitRow(hit: SearchHit, close: Close): Row {

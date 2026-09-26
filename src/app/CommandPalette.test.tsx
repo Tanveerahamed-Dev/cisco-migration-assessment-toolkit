@@ -15,15 +15,19 @@
  * No testing-library: this project does not depend on one. React's own `act` over a real
  * `createRoot` in jsdom is enough, and it keeps the dependency surface honest.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fabric } from "../core/data";
 import { rankedSearch } from "../core/query";
 import { useInvestigation } from "../core/store";
 import { citesIn } from "../panels/cited-text";
-import { CommandPalette } from "./CommandPalette";
+import { CommandPalette, FIELD_WORDS, MatchReason } from "./CommandPalette";
 import { ShortcutHelp } from "./ShortcutHelp";
 import {
   allCommands,
@@ -668,6 +672,93 @@ describe("command palette", () => {
     expect(first).toBeDefined();
     press("Enter", {}, paletteInput());
     expect(useInvestigation.getState().paletteOpen).toBe(false);
+  });
+});
+
+/* ══ the match reason breaks like prose, and never names a field it has no words for (C2) ═══ */
+
+describe("the match reason (C2, repair wave 8)", () => {
+  /* 34bd435 set `overflow-wrap: anywhere` on `.palette__matched` so that a field name with no entry in
+     FIELD_WORDS — printed raw, `hit.field` is typed `string` — could not overrun the 45 % side column.
+     That licence is inherited by every token in the sentence and is how "(num_power_supplie / s)" was
+     split (primitives.css, "wrapping"); `node review/capture.mjs text` failed C2 on it. The licence is
+     gone. What replaces it: (1) FIELD_WORDS is TOTAL over the fields `rankedSearch` can emit, proved from
+     query.ts's own index construction, not from a list; (2) a field it cannot name is an IDENTIFIER, in
+     a <code> element that breaks only at a separator, never between two letters. */
+  const QUERY_TS = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "core", "query.ts"), "utf8");
+
+  /** Every field name query.ts indexes: the first argument of every `iv(…)` / `ivList(…)` call. A call
+   *  INSIDE `iv`/`ivList`'s own definition that forwards that function's own parameter is the
+   *  indexer passing its caller's field through (ivList → iv), and every such caller is scanned. */
+  const INDEXERS = new Set(["iv", "ivList"]);
+  function indexedFields(code: string): { fields: Set<string>; unprovable: string[] } {
+    const sf = ts.createSourceFile("query.ts", code, ts.ScriptTarget.Latest, true);
+    const fields = new Set<string>();
+    const unprovable: string[] = [];
+    const visit = (n: ts.Node, forwarded: ReadonlySet<string>): void => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && INDEXERS.has(n.name.text) && n.initializer !== undefined && ts.isArrowFunction(n.initializer)) {
+        const params = new Set(n.initializer.parameters.flatMap((p) => (ts.isIdentifier(p.name) ? [p.name.text] : [])));
+        ts.forEachChild(n, (c) => visit(c, params));
+        return;
+      }
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && INDEXERS.has(n.expression.text)) {
+        const a = n.arguments[0];
+        if (a !== undefined && (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a))) fields.add(a.text);
+        else if (!(a !== undefined && ts.isIdentifier(a) && forwarded.has(a.text)))
+          unprovable.push(`query.ts:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1} ${n.getText(sf).slice(0, 60)}`);
+      }
+      ts.forEachChild(n, (c) => visit(c, forwarded));
+    };
+    visit(sf, new Set());
+    return { fields, unprovable };
+  }
+
+  it("FIELD_WORDS has words for every field query.ts indexes (read from its iv/ivList calls)", () => {
+    const { fields, unprovable } = indexedFields(QUERY_TS);
+    expect(unprovable, "an indexed field whose name is not a literal cannot be proved to have words").toEqual([]);
+    expect(fields.size, "the scan found no indexed field at all").toBeGreaterThan(20);
+    expect([...fields].filter((f) => FIELD_WORDS[f] === undefined), "fields the palette would print raw").toEqual([]);
+    // Nothing constructs an indexed value except `iv`: the only `field:` written in query.ts's search
+    // index is the one `iv` itself returns and the winner copied from it.
+    const sf = ts.createSourceFile("query.ts", QUERY_TS, ts.ScriptTarget.Latest, true);
+    const writers: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isPropertyAssignment(n) && n.name.getText(sf) === "field") writers.push(n.initializer.getText(sf));
+      if (ts.isShorthandPropertyAssignment(n) && n.name.text === "field") writers.push("field");
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    expect([...new Set(writers)].sort()).toEqual(["field", "v.field", "winner.field"].sort());
+  });
+
+  it("the scan fails a field FIELD_WORDS does not know, and a field name it cannot read (positive control)", () => {
+    const planted = indexedFields('add({ values: ivs(iv("zzNotAField", x), iv(name, y)), ...ivList("hosts", h) });');
+    expect([...planted.fields].filter((f) => FIELD_WORDS[f] === undefined)).toEqual(["zzNotAField"]);
+    expect(planted.unprovable.length).toBe(1);
+  });
+
+  it("every field a real search over the snapshot emits has words", () => {
+    const seen = new Set<string>();
+    for (const term of [..."abcdefghijklmnopqrstuvwxyz0123456789.:-/"]) {
+      for (const h of rankedSearch(term, { limit: 1_000_000 }).hits) seen.add(h.field);
+    }
+    expect(seen.size).toBeGreaterThan(10);
+    expect([...seen].filter((f) => FIELD_WORDS[f] === undefined)).toEqual([]);
+  });
+
+  it("renders a field it has no words for as an identifier that breaks only at a separator", () => {
+    const hit = { ...rankedSearch(fabric.devices[0]!.host).hits[0]!, field: "zz_unmapped.field-name" };
+    const c = mount(<MatchReason hit={hit} />);
+    const code = c.querySelector(".palette__matched code");
+    expect(code, "an unknown field is printed as prose").not.toBeNull();
+    expect(code!.textContent).toBe("zz_unmapped.field-name");
+    // a <wbr> after every separator, and nowhere else
+    const runs = [...code!.childNodes].map((n) => (n.nodeName === "WBR" ? "|" : (n.textContent ?? ""))).join("");
+    expect(runs).toBe("zz_|unmapped.|field-|name");
+    // a known field stays words, in no <code>
+    const known = mount(<MatchReason hit={{ ...hit, field: "ip" }} />);
+    expect(known.querySelector(".palette__matched")?.textContent).toMatch(/'s IP address$/);
+    expect(known.querySelector(".palette__matched code")).toBeNull();
   });
 });
 

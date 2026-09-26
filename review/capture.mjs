@@ -83,7 +83,7 @@ const APP_STATES = [
     q: "s=path&flow=10.0.10.50>10.0.30.10>tcp>3389&hop=0",
     note:
       "A genuinely denied flow: the blocking-hop answer, naming PROTECT_SERVERS line 4 of 4 (acls.core1.PROTECT_SERVERS[3]). " +
-      "On the fabric the trace is a BLOCKED verdict marker on core1 only — the trace is single-hop, so no path geometry between devices is drawn (acceptance A5).",
+      "On the fabric the trace is a '? UNDECIDED' verdict marker on core1 only — the ACL line denies the flow but the denial is not decided, and the trace is single-hop, so no path geometry between devices is drawn (acceptance A5).",
   },
   {
     id: "08-path-indeterminate",

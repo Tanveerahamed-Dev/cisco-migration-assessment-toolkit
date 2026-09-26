@@ -543,11 +543,11 @@ a {
   }
 }
 
-/* 1024–1279px — Rail B becomes a right-anchored overlay drawer over the Stage. The Stage stays
+/* 1024 up to (not including) 1280px — Rail B becomes a right-anchored overlay drawer over the Stage. The Stage stays
    visible (not hidden, not dimmed — the never-applied `.stage-dim` rule was deleted as dead CSS,
    2026-09-23) and keeps >= 360px. The drawer is toggled by `E` and by any evidence
    affordance; its open state is `data-drawer="open"` on .app. */
-@media (max-width: 79.9375rem) {
+@media not all and (min-width: 80rem) {
   :root {
     --rail-left: 17.5rem; /* 280px */
   }
@@ -588,9 +588,9 @@ a {
   }
 }
 
-/* 768–1023px — single column: query bar, Stage at 46vh, then one full-width panel chosen by a
+/* 768 up to (not including) 1024px — single column: query bar, Stage at 46vh, then one full-width panel chosen by a
    segmented control. The Inspector becomes a full-width sheet. */
-@media (max-width: 63.9375rem) {
+@media not all and (min-width: 64rem) {
   .app__body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(20rem, 46vh) minmax(0, 1fr);
@@ -626,7 +626,7 @@ a {
   }
 }
 
-/* 768–1023px with NO trace open: rail A is a flex column, and the rule above that lets the rail
+/* 768 up to (not including) 1024px with NO trace open: rail A is a flex column, and the rule above that lets the rail
    scroll internally applies only to the split (trace) grid. Measured 2026-09-23 (repair wave 3):
    the findings grid keeps its own 19rem floor (DataGrid.css) and is size-contained at >=48rem
    (PriorityQueue.css), so with the rail's overflow visible it ran past its rail, under the status
@@ -636,21 +636,24 @@ a {
    the rail scrolls here too, and the queue slot keeps its min-content (the chrome plus the grid's
    floor) instead of being squeezed into a port the grid then overflows. Guarded in a real browser
    by review/layout-guard.mjs invariant 5. */
-@media (min-width: 48rem) and (max-width: 63.9375rem) {
-  .rail--a {
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
+@media (min-width: 48rem) {
+  @media not all and (min-width: 64rem) {
+    .rail--a {
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
 
-  .rail--a:not([data-split="true"]) > .rail__slot {
-    min-block-size: min-content;
+    .rail--a:not([data-split="true"]) > .rail__slot {
+      min-block-size: min-content;
+    }
   }
 }
 
-/* <= 767px down to 320 CSS px — the 1.4.10 reflow answer for the canvas. The Stage collapses and
+/* Below 768px (48rem, the complement of the single-column edge — never a second `max-width` number:
+   a fractional width such as 767.35 px fell between the two, wave 8) down to 320 CSS px — the 1.4.10 reflow answer for the canvas. The Stage collapses and
    the DOM mirror table is shown in its place; 3-D sits behind an explicit toggle. At 320px a
    26-node fabric is not legible, and pretending otherwise is decoration. */
-@media (max-width: 47.9375rem) {
+@media not all and (min-width: 48rem) {
   :root {
     --header-h: 2.75rem;
     --querybar-h: auto;
@@ -714,7 +717,7 @@ a {
   }
 
   /* The Inspector is docked inside the stage, so collapsing the stage used to collapse it too: at
-     390-767 px the `i` shortcut and every evidence citation opened an Inspector that was in the DOM
+     390 px up to 768 px the `i` shortcut and every evidence citation opened an Inspector that was in the DOM
      and never on screen, focus left on the invoker (merged-tree gate, 2026-09-24; held by
      src/app/stage-inspector-narrow.test.ts). An open Inspector re-opens the stage; with the fabric
      still collapsed it shows the Inspector alone, at its own height — the reader asked for a record,

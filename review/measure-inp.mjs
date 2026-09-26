@@ -242,6 +242,9 @@ const interactionDurations = (entries) => {
 /** Canvas points proven to select a device, found once per run by `discoverJ2Anchors` in a
  *  THROWAWAY browser — never on a page whose interactions are measured. */
 export const J2_HITS = [];
+/** EVERY device anchor discovery proved selectable (J2_HITS is its first 12); the first-selection
+ *  trials look their targets up here, so a target outside J2's 12 still gets its anchor. */
+export const J2_ANCHORS = [];
 /** The characters J3 types, one per repetition; shared by its act and its per-rep effect check. */
 const J3_CHARS = "coreaccesswitdb";
 
@@ -274,34 +277,89 @@ const stratifyByTier = (labels) => {
   return out;
 };
 
+/** How many anchors J2's measured loop cycles through (its sample composition; unchanged by the
+ *  aim fix below — discovery now aims at EVERY device, and J2 keeps the first 12 in scan order). */
+const J2_ANCHOR_COUNT = 12;
+
+/** Where inside a device's projected chassis box a click is aimed, in order: the centre first, then
+ *  four points around it for a chassis whose centre another body covers. Fractions of the box. */
+const CHASSIS_AIM_FRACTIONS = [
+  [0.5, 0.5],
+  [0.5, 0.3],
+  [0.5, 0.7],
+  [0.3, 0.5],
+  [0.7, 0.5],
+];
+
+/**
+ * The page point to aim at for `fraction` of a device's projected chassis box. `box` is in the
+ * scene's canvas-relative CSS pixels (`FabricScene.chassisScreenBox`, the same space as `project()`),
+ * `canvas` is the canvas's page box. Null when the box is absent or the point is off the canvas.
+ * Exported for the known-answer test: this is the whole aim, and it reads no label.
+ */
+export function chassisAimPoint(box, canvas, [fx, fy]) {
+  if (!box || !canvas || ![box.x0, box.y0, box.x1, box.y1].every(Number.isFinite)) return null;
+  const x = canvas.x + box.x0 + fx * (box.x1 - box.x0);
+  const y = canvas.y + box.y0 + fy * (box.y1 - box.y0);
+  if (x < canvas.x || x > canvas.x + canvas.width || y < canvas.y || y > canvas.y + canvas.height) return null;
+  return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+}
+
+/** The device the application reports selected (`d=` is a navigation field in urlSync). */
+const selectedDevice = (page) => page.evaluate(() => (location.search.match(/[?&]d=([^&]*)/) || [])[1] ?? null);
+
+/**
+ * Click the canvas at (x, y) and return the device the APPLICATION then reports selected, or null.
+ *
+ * The readback waits for the selection to CHANGE rather than sleeping a guessed 120 ms. urlSync writes
+ * the URL once per frame (src/app/urlSync.ts, coalesced), so on a slow frame the old fixed read saw
+ * the PREVIOUS click's device — measured 2026-09-26 on the dev server, headless: every one of 26
+ * chassis-centre clicks picked its device, and the 150 ms read reported the device before it in 25 of
+ * 26 — and the old scan then kept 6 anchors of 26.
+ */
+const clickAndReadSelection = async (page, x, y) => {
+  const before = await selectedDevice(page);
+  await page.mouse.click(x, y);
+  await page
+    .waitForFunction((prev) => ((location.search.match(/[?&]d=([^&]*)/) || [])[1] ?? null) !== prev, before, { timeout: 1500 })
+    .catch(() => null);
+  const after = await selectedDevice(page);
+  return after !== null && after !== before ? after : null;
+};
+
 const deviceAnchors = async (page, priority = []) => {
   /* Scan the canvas for points that actually pick a DEVICE, and keep only those.
      The selection is read back from the URL (`d=` is a navigation field in urlSync), so a point is
-     kept only when the APPLICATION says a device became selected. That is deliberately independent
-     of `window.__atlasScene`: the scene handle is an instrument, and an instrument should not be
-     the thing that decides whether the actuation worked.
+     kept only when the APPLICATION says a device became selected. The scene handle supplies only
+     WHERE to aim (below); it never decides whether the actuation worked.
      This CLICKS, so it spends the page's first device selections. It therefore runs ONLY in the
      throwaway browser `discoverJ2Anchors` launches and closes before any measured page exists
      (acceptance report E3, 2026-09-23: running it as J2's `prime` spent the first selection after
      load — the one with the 55-79 ms task on its path — outside the measurement). */
+  const empty = { anchors: [], unreached: [], devices: [], sceneHandle: false, misaims: [] };
   const canvas = page.locator("canvas").first();
   const b = await canvas.boundingBox();
-  if (!b) return [];
-  const hits = [];
-  const seen = new Set();
-  /* Aim through the devices' own labels FIRST, as the journey's note says it does. REVIEW FIX,
-     2026-09-21: the code only ever swept a fixed lattice of canvas fractions, so whether J2 could be
-     measured at all depended on where the camera's default framing happened to put the chassis —
-     after a framing change, 2 of 81 lattice points hit a device and J2 went NOT MEASURED on a build
-     whose picking was fine. Each label sits just above its chassis, so the candidates are points a
-     little below the label's centre; a point is still kept only when the APPLICATION reports that
-     device selected, and the click still goes to the canvas (a real 3-D pick, not a DOM shortcut). */
-  const domLabels = await page.evaluate(() =>
-    [...document.querySelectorAll(".fabric3d-label[data-device]")].map((el) => {
-      const r = el.getBoundingClientRect();
-      return { id: el.getAttribute("data-device"), x: r.left + r.width / 2, y: r.bottom };
-    }),
-  );
+  if (!b) return empty;
+  /* AIM AT THE DEVICE, NOT AT ITS LABEL (acceptance report, E harness, 2026-09-25). The candidates
+     used to be points a little below the centre of each `.fabric3d-label` box. A label is anchored
+     at its device but extends to one side of it, so its centre is the device's x only for a label of
+     one particular width. Measured 2026-09-26, 1920x1080: the label-box centre sat 6-12 px right of
+     the chassis centre for the 23 collected devices and 43-46 px right for the 3 'not collected' ones
+     (AP-floor1, AP-floor3-01, wan-edge-rtr1.lab), whose "? not collected" mark widens the label —
+     so those three were never aimed at, J2 never measured them, and their first-selection trials
+     were NOT MEASURED ("only 9 of 25 trials"). Any label variant (a band chip, an alarm, a finding
+     mark, a longer host name) moves the box the same way, so correcting for a known width is the
+     named-list fix. The aim is now taken from the scene's own projection of the device's chassis
+     body — `window.__atlasScene.chassisScreenBox(id)`, canvas-relative, the same projection the
+     labels are placed from — read immediately before each click, and the click still goes to the
+     CANVAS (a real 3-D pick). A point whose topmost element is not the canvas (a HUD, a pointer
+     button) is not clicked: that would be a DOM shortcut, not a pick. */
+  const probe = await page.evaluate(() => ({
+    ids: [...document.querySelectorAll(".fabric3d-label[data-device]")].map((el) => el.getAttribute("data-device")),
+    sceneHandle: typeof window.__atlasScene?.chassisScreenBox === "function",
+  }));
+  const devices = Array.isArray(probe?.ids) ? [...new Set(probe.ids.filter((id) => typeof id === "string" && id))] : [];
+  const sceneHandle = probe?.sceneHandle === true;
   /* STRATIFIED BY TIER, HEAVIEST FIRST (review finding, E1, 2026-09-21). The labels used to be
      taken in DOM order and the first 12 hits kept, which on this snapshot is access1..access4 and
      access10..access17: every J2 sample was an access switch, and the core and distribution
@@ -309,41 +367,49 @@ const deviceAnchors = async (page, priority = []) => {
      now read from the compiled data the app renders: devices grouped by layout tier, each tier
      sorted by link degree (descending), and the tiers interleaved heaviest-tier first, so the 12
      anchors cover every tier and start with the most expensive selections. */
-  /* The first-selection trials' targets go first, so each of them gets an anchor whatever the
-     stratified order would have kept (the scan stops at 12). */
-  const stratified = stratifyByTier(domLabels);
-  const labels = [...priority.flatMap((id) => stratified.filter((l) => l.id === id)), ...stratified.filter((l) => !priority.includes(l.id))];
-  for (const l of labels) {
-    if (hits.length >= 12) break;
-    if (seen.has(l.id)) continue;
-    for (const dy of [22, 34, 12, 48]) {
-      const x = l.x;
-      const y = l.y + dy;
-      if (x < b.x || x > b.x + b.width || y < b.y || y > b.y + b.height) continue;
-      await page.mouse.click(x, y);
-      await page.waitForTimeout(120);
-      const id = await page.evaluate(() => (location.search.match(/[?&]d=([^&]*)/) || [])[1] ?? null);
-      if (id && !seen.has(id)) {
-        seen.add(id);
-        hits.push({ id, x, y });
-        break;
+  /* The first-selection trials' targets go first, so J2's 12 anchors include them. EVERY device is
+     then aimed at (no early stop), so the run reports which devices a click can reach at all: a
+     device with no anchor is named, never silently absent from the sample. */
+  const stratified = stratifyByTier(devices.map((id) => ({ id })));
+  const order = [...priority.flatMap((id) => stratified.filter((l) => l.id === id)), ...stratified.filter((l) => !priority.includes(l.id))].map((l) => l.id);
+  const found = new Map();
+  const misaims = [];
+  if (sceneHandle) {
+    for (const id of order) {
+      if (found.has(id)) continue;
+      for (const fraction of CHASSIS_AIM_FRACTIONS) {
+        const box = await page.evaluate((d) => window.__atlasScene?.chassisScreenBox?.(d) ?? null, id);
+        const p = chassisAimPoint(box, b, fraction);
+        if (p === null) continue;
+        const onCanvas = await page.evaluate(([x, y]) => document.elementFromPoint(x, y) instanceof HTMLCanvasElement, [p.x, p.y]);
+        if (!onCanvas) continue;
+        const got = await clickAndReadSelection(page, p.x, p.y);
+        if (got === null) continue;
+        /* Whatever device the application reports is what the point selects: kept for THAT device
+           if it has no point yet (a proven pick is a proven pick), and the aimed device is retried. */
+        if (!found.has(got)) found.set(got, { id: got, x: p.x, y: p.y });
+        if (got === id) break;
+        misaims.push(`aimed at ${id}, selected ${got}`);
       }
     }
   }
-  for (let gy = 0; gy < 9 && hits.length < 12; gy++) {
-    for (let gx = 0; gx < 9 && hits.length < 12; gx++) {
+  const rank = new Map(order.map((id, k) => [id, k]));
+  const anchors = [...found.values()].sort((a, c) => (rank.get(a.id) ?? Infinity) - (rank.get(c.id) ?? Infinity));
+  /* FALLBACK ONLY: without a scene handle (or when too few devices were reachable) a fixed lattice of
+     canvas fractions still gives J2 something to measure, and its misses are named below. */
+  for (let gy = 0; gy < 9 && anchors.length < J2_ANCHOR_COUNT; gy++) {
+    for (let gx = 0; gx < 9 && anchors.length < J2_ANCHOR_COUNT; gx++) {
       const x = b.x + b.width * (0.1 + 0.8 * (gx / 8));
       const y = b.y + b.height * (0.1 + 0.8 * (gy / 8));
-      await page.mouse.click(x, y);
-      await page.waitForTimeout(120);
-      const id = await page.evaluate(() => (location.search.match(/[?&]d=([^&]*)/) || [])[1] ?? null);
-      if (id && !seen.has(id)) {
-        seen.add(id);
-        hits.push({ id, x, y });
+      const id = await clickAndReadSelection(page, x, y);
+      if (id && !found.has(id)) {
+        found.set(id, { id, x, y });
+        anchors.push({ id, x, y });
       }
     }
   }
-  return hits;
+  const unreached = devices.filter((id) => !found.has(id));
+  return { anchors, unreached, devices, sceneHandle, misaims };
 };
 
 /**
@@ -419,11 +485,12 @@ export const JOURNEYS = [
        space, which is the cheapest interaction the app has, and they dominated the percentile.
        A journey whose actuation misses its target 56% of the time reports the cost of missing.
 
-       Devices are now aimed at through their own labels: FabricLabels writes one
-       `.fabric3d-label[data-device]` per host and positions it with a translate3d whose x/y is the
-       device's projected screen anchor, so the label's transform gives a point that is ON the
-       device. The click still goes to the CANVAS at that point — this remains a real 3-D pick, not
-       a DOM shortcut. */
+       Devices are now aimed at through the scene's own projection of each chassis body
+       (`__atlasScene.chassisScreenBox`, see `deviceAnchors`). They were once aimed through the
+       centre of each `.fabric3d-label` box, which is ON the device only for one label width: the
+       three 'not collected' devices' wider labels moved it ~46 px off them (acceptance report, E
+       harness, 2026-09-25). The click still goes to the CANVAS at that point — this remains a real
+       3-D pick, not a DOM shortcut. */
     /* HARNESS FIX (acceptance report E3, 2026-09-23). The anchors used to be found HERE, in `prime`,
        by clicking the canvas until the app reported a device selected — so the first device
        selections after load were spent before the loop, and J2 only ever measured warm selections
@@ -913,11 +980,17 @@ export const J2_ANCHOR_REASONS = [];
  *
  * @param {() => Promise<any>} launch  starts the throwaway browser
  * @param {{ app: string, context: object, initScript: string, log?: (line: string) => void, meter?: { sample(): void } | null }} opts
- * @returns {Promise<{ hits: { id: string, x: number, y: number }[], reasons: string[] }>}
+ * `hits` are J2's anchors (the first J2_ANCHOR_COUNT in scan order); `anchors` is every device a
+ * canvas point was proven to select, which the first-selection trials draw on; `coverage` names every
+ * device no point reached.
+ *
+ * @returns {Promise<{ hits: { id: string, x: number, y: number }[], anchors: { id: string, x: number, y: number }[], coverage: object | null, reasons: string[] }>}
  */
 export async function discoverJ2Anchors(launch, { app, context, initScript, log = console.log, meter = null }) {
   const reasons = [];
   let hits = [];
+  let anchors = [];
+  let coverage = null;
   let scout = null;
   try {
     scout = await launch();
@@ -933,7 +1006,14 @@ export async function discoverJ2Anchors(launch, { app, context, initScript, log 
       } catch (e) {
         reasons.push(`the fabric never reached a drawn, settled state before the scan (${String(e).split("\n")[0].slice(0, 160)}); the scan ran on an unsettled canvas`);
       }
-      hits = await deviceAnchors(spage, FIRST_SELECTION.targets.map((t) => t.id));
+      const scan = await deviceAnchors(spage, FIRST_SELECTION.targets.map((t) => t.id));
+      anchors = scan.anchors;
+      hits = anchors.slice(0, J2_ANCHOR_COUNT);
+      coverage = { devices: scan.devices.length, reached: scan.devices.filter((id) => anchors.some((a) => a.id === id)).length, unreached: scan.unreached, sceneHandle: scan.sceneHandle, misaims: scan.misaims };
+      if (scan.devices.length > 0 && !scan.sceneHandle)
+        reasons.push("the scene handle (window.__atlasScene.chassisScreenBox) is absent, so no device could be aimed at through its own projection; only the fallback lattice ran");
+      if (scan.unreached.length > 0)
+        reasons.push(`${scan.unreached.length} of ${scan.devices.length} devices have no canvas point that selects them: ${scan.unreached.join(", ")}`);
       if (hits.length === 0) reasons.push("no scanned canvas point made the application report a device selected");
     }
   } catch (e) {
@@ -944,13 +1024,17 @@ export async function discoverJ2Anchors(launch, { app, context, initScript, log 
   }
   J2_HITS.length = 0;
   J2_HITS.push(...hits);
+  J2_ANCHORS.length = 0;
+  J2_ANCHORS.push(...anchors);
   J2_ANCHOR_REASONS.length = 0;
   J2_ANCHOR_REASONS.push(...reasons);
   log(
-    `  J2 anchors (found in a throwaway browser; first-selection targets first, then tier-stratified): ${hits.map((h) => h.id).join(", ") || "none"}` +
-      (reasons.length ? ` — ${reasons.join("; ")}` : ""),
+    `  J2 anchors (found in a throwaway browser, aimed through the scene's projection; first-selection targets first, then tier-stratified): ${hits.map((h) => h.id).join(", ") || "none"}` +
+      /* Reasons first, straight after the ids: "none" is never printed apart from its cause. */
+      (reasons.length ? ` — ${reasons.join("; ")}` : "") +
+      (coverage && coverage.devices > 0 ? ` | devices a canvas click reaches: ${coverage.reached} of ${coverage.devices}` : ""),
   );
-  return { hits, reasons };
+  return { hits, anchors, coverage, reasons };
 }
 
 /**
@@ -1428,7 +1512,7 @@ async function main() {
 
   /* ── the first device selection after load, one fresh browser per trial (see FIRST_SELECTION) ── */
   if (selected(FIRST_SELECTION.id)) {
-    const anchorOf = new Map(J2_HITS.map((h) => [h.id, h]));
+    const anchorOf = new Map([...J2_ANCHORS, ...J2_HITS].map((h) => [h.id, h]));
     const trials = [];
     for (const target of FIRST_SELECTION.targets) {
       const anchor = anchorOf.get(target.id) ?? null;

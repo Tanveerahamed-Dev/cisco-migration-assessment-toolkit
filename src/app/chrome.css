@@ -674,7 +674,7 @@
   grid-row: 1 / span 2;
 }
 
-/* The status bar's own figures, stated inside the disclosure (acceptance B7): at <= 767 px the panel
+/* The status bar's own figures, stated inside the disclosure (acceptance B7): below 768 px the panel
    is docked over the whole bar, so it must say what it covers. Here it is a line of the head, not
    the footer a Dialog gives it, so it drops the footer's rule and inset. */
 .covpanel__head > .ui-overlay-cov {
@@ -1001,12 +1001,12 @@
 }
 
 /* ══ narrow viewports ══════════════════════════════════════════════════════
-   The collapse ladder in shell.css takes the frame to one column at 1023px and drops the canvas
-   at 767px. Here the chrome follows: the identity keeps its file name as long as it fits, the
+   The collapse ladder in shell.css takes the frame to one column below 1024px and drops the canvas
+   below 768px (each rung the complement of one `min-width` edge, LADDER_REM in surfaces.tsx). Here the chrome follows: the identity keeps its file name as long as it fits, the
    coverage table drops its widest columns rather than scrolling the page in two dimensions, and
    nothing is removed that was not moved somewhere reachable. */
 
-@media (max-width: 79.9375rem) {
+@media not all and (min-width: 80rem) {
   .hdr-snap {
     max-width: 16rem;
   }
@@ -1016,7 +1016,7 @@
   }
 }
 
-@media (max-width: 63.9375rem) {
+@media not all and (min-width: 64rem) {
   .hdr-brand__name {
     /* The mark stays; the wordmark is the first thing a dense bar can afford to lose. */
     display: none;
@@ -1031,7 +1031,7 @@
      on a small screen; the table scrolls inside its own region instead. */
 }
 
-@media (max-width: 47.9375rem) {
+@media not all and (min-width: 48rem) {
   /* 320px budget: mark 32 + identity 90 + query 96 + More 60 + three 12px gaps = 314. */
   .hdr-query {
     flex-basis: 8rem;

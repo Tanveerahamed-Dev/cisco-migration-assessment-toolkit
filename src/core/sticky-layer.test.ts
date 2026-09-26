@@ -165,11 +165,16 @@ function mediaAt(conds: readonly string[], px: number): "yes" | "no" | "maybe" {
       verdict = "maybe";
       continue;
     }
-    const q = c.replace(/^@media/, "");
+    const q = c.replace(/^@media/, "").trim();
+    /* `not all and (…)` is the COMPLEMENT of its width condition: the form every narrow rung
+       takes since wave 8 (LADDER_REM in surfaces.tsx), so a fractional width cannot fall between rungs. */
+    const negated = /^not\s+all\s+and\s/.test(q);
+    let inside = true;
     for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)(rem|px)\)/g)) {
       const bound = Number(m[2]) * (m[3] === "rem" ? REM : 1);
-      if (m[1] === "min" ? px < bound : px > bound) return "no";
+      if (m[1] === "min" ? px < bound : px > bound) inside = false;
     }
+    if (negated ? inside : !inside) return "no";
     if (/\((?!(min|max)-width)[a-z-]+\s*:/.test(q) || /\b(hover|forced-colors|prefers-[a-z-]+)\b/.test(q)) verdict = "maybe";
   }
   return verdict;
@@ -306,10 +311,10 @@ const REGIONS: Target[] = [
 ];
 const statusMatch = /<(\w+)[^>]*?id="status-bar"[^>]*?className="([^"]+)"/.exec(appTsx);
 const STATUS: Target = { tag: statusMatch?.[1] ?? "", id: "status-bar", classes: new Set((statusMatch?.[2] ?? "").split(" ")) };
-const ladderTop = /singleColumn = useMediaQuery\("\(min-width: [\d.]+rem\) and \(max-width: ([\d.]+)rem\)"\)/.exec(
-  readFileSync(join(APP_DIR, "surfaces.tsx"), "utf8"),
-);
-const NARROW_TOP = Math.round(Number(ladderTop?.[1] ?? Number.NaN) * REM);
+/* The single-column rung ends where the drawer rung's edge begins: `LADDER_REM.drawer` in surfaces.tsx, the
+   ladder's one owner. The last whole pixel below it is the top of the narrow widths sampled here. */
+const ladderTop = /export const LADDER_REM = \{[^}]*?\bdrawer:\s*([\d.]+)\s*,/.exec(readFileSync(join(APP_DIR, "surfaces.tsx"), "utf8"));
+const NARROW_TOP = Math.ceil(Number(ladderTop?.[1] ?? Number.NaN) * REM) - 1;
 
 let orderBase = 0;
 const allRules: Rule[] = [];
@@ -347,6 +352,26 @@ describe("the status bar paints above every body region at every narrow width (D
     expect(bad[0]).toMatch(/390px: \.rail\.rail--b can take z-index 30, not below the status bar's 5/);
     const fixed = rulesOf("x.css", css.replace("{ position: static; }", "{ position: static; z-index: auto; }"), 0);
     expect(layerViolations(fixed, STATUS, [rb], [390, 767, 900])).toEqual([]);
+  });
+
+  it("the detector reads the ladder's complement form: `not all and (min-width: X)` is BELOW X, not above it", () => {
+    /* The same measured defect, written as every narrow rung is written since wave 8 (LADDER_REM in
+       surfaces.tsx). A detector that read the complement as its bare condition would examine the wide
+       rules at narrow widths and report nothing here. */
+    const css =
+      ".app__status { position: relative; z-index: 2; }\n" +
+      "@media not all and (min-width: 80rem) { .rail--b { position: absolute; z-index: var(--z-overlay); } }\n" +
+      "@media not all and (min-width: 64rem) { .rail--b { position: static; } }\n" +
+      "@media not all and (min-width: 48rem) { .app__status { position: sticky; z-index: 5; } }";
+    const rb: Target = { tag: "aside", id: null, classes: new Set(["rail", "rail--b"]) };
+    const bad = layerViolations(rulesOf("x.css", css, 0), STATUS, [rb], [390, 767, 900, 1280]);
+    expect(bad.length).toBe(3);
+    expect(bad[0]).toMatch(/390px: \.rail\.rail--b can take z-index 30, not below the status bar's 5/);
+    expect(bad.some((b) => b.startsWith("1280px")), "at 80rem and above the overlay rung does not apply").toBe(false);
+    expect(mediaAt(["@media not all and (min-width: 48rem)"], 767)).toBe("yes");
+    expect(mediaAt(["@media not all and (min-width: 48rem)"], 768)).toBe("no");
+    expect(mediaAt(["@media (min-width: 48rem)", "@media not all and (min-width: 64rem)"], 1023)).toBe("yes");
+    expect(mediaAt(["@media (min-width: 48rem)", "@media not all and (min-width: 64rem)"], 1024)).toBe("no");
   });
 
   it("the detector counts a state-dependent rule as possible, and a rule scoped under a region", () => {

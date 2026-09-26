@@ -321,12 +321,14 @@ describe("the surface switcher is one tab stop", () => {
 /* ── narrow viewports ──────────────────────────────────────────────────────── */
 
 describe("at a narrow viewport the header moves controls, it does not drop them", () => {
-  /** Report every media query as matching, which is what a sub-1024px viewport does here. */
+  /** A narrow viewport: every ladder edge (`(min-width: …)`, the only width query the app asks since
+   *  wave 8 — see LADDER_REM in surfaces.tsx) is NOT reached, and every other query matches, so the
+   *  system still reads as dark for the theme-shortcut case below. */
   const forceCompact = (): (() => void) => {
     const real = window.matchMedia;
     window.matchMedia = ((q: string) =>
       ({
-        matches: true,
+        matches: !/min-width/.test(q),
         media: q,
         onchange: null,
         addEventListener: () => {},
@@ -377,6 +379,49 @@ describe("at a narrow viewport the header moves controls, it does not drop them"
     } finally {
       restore();
     }
+  });
+
+  it("is compact at every width below the single-column rung's top, fractional ones included (F4, wave 8)", () => {
+    /* The header's own rung used to be `(max-width: 63.9375rem)`, a second number beside the shell's
+       `(min-width: 64rem)`: at 1023.5 CSS px (Windows display scaling) it was neither, so the header
+       laid out its full toolbar in the single-column frame. It now reads the ONE ladder
+       (`useLadder`, surfaces.tsx), so its compact rung is the complement of the same boundary. */
+    const atWidth = (width: number): (() => void) => {
+      const real = window.matchMedia;
+      window.matchMedia = ((q: string) => {
+        let matches = /width/.test(q);
+        for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
+          const bound = Number.parseFloat(m[2] as string) * 16;
+          matches &&= m[1] === "min" ? width >= bound : width <= bound;
+        }
+        return {
+          matches,
+          media: q,
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+          dispatchEvent: () => false,
+        } as unknown as MediaQueryList;
+      }) as typeof window.matchMedia;
+      return () => {
+        window.matchMedia = real;
+      };
+    };
+    const compactAt = (w: number): boolean => {
+      const restore = atWidth(w);
+      try {
+        const c = mount(<Header />);
+        const compact = c.querySelector(".hdr-more") !== null;
+        expect(compact, `at ${w}px the header is ${compact ? "compact" : "full"} and must not also be the other`).toBe(c.querySelector(".hdr-surface") === null);
+        return compact;
+      } finally {
+        restore();
+      }
+    };
+    expect([767.349, 1023.01, 1023.5, 1023.99].map(compactAt)).toEqual([true, true, true, true]);
+    expect([1024, 1024.5, 1279.5, 1440].map(compactAt)).toEqual([false, false, false, false]);
   });
 
   it("still names the snapshot, by its sha when the file name will not fit", () => {

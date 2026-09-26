@@ -160,6 +160,47 @@ describe("the renderer chunk is only fetched when the fabric is mounted", () => 
   });
 });
 
+/* ── a fractional viewport width is in a rung too (F4 regression, repair wave 8) ───────────────── */
+
+describe("a fractional viewport width lands in exactly one rung of the ladder", () => {
+  /* Windows 125/150/175 % scaling gives media widths that are not whole CSS pixels. MEASURED by the
+     independent refuter (headed Chromium, --force-device-scale-factor=1.5 --window-size=781,900):
+     mediaWidth 767.3490, `(max-width: 47.9375rem)` false AND `(min-width: 48rem)` false, so the frame
+     was in no rung — `data-fabric3d="on"`, no "Show the 3-D fabric" control, and three.js fetched at
+     985 ms on a viewport the brief collapses. 767.44 is the dsf-1.75 case. The ladder's rungs are now
+     the complement of ONE boundary each (`LADDER_REM`, surfaces.tsx), so nothing falls between them;
+     `src/core/breakpoint-ladder.test.ts` proves it for every stylesheet rule and the hook itself. */
+  for (const w of [767.349, 767.44, 767.99]) {
+    it(`${w}px is the stacked rung: the fabric starts collapsed behind its toggle`, async () => {
+      const restore = setViewport(w);
+      try {
+        const c = mount(<App />);
+        await flush();
+        expect(c.querySelector('[data-fabric3d="off"]'), `at ${w}px the frame must start collapsed`).not.toBeNull();
+        const toggle = [...c.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("Show the 3-D fabric"));
+        expect(toggle, `at ${w}px the collapsed stage must offer its toggle`).toBeTruthy();
+        expect(c.querySelector(".app")?.hasAttribute("data-pane"), "the stacked rung chooses no single pane").toBe(false);
+      } finally {
+        restore();
+      }
+    });
+  }
+
+  for (const w of [1023.01, 1023.5, 1023.99]) {
+    it(`${w}px is the single-column rung: one pane, chosen by the segmented control`, async () => {
+      const restore = setViewport(w);
+      try {
+        const c = mount(<App />);
+        await flush();
+        expect(c.querySelector(".app")?.getAttribute("data-pane"), `at ${w}px the frame must be single-column`).toBe("queue");
+        expect(c.querySelector('[data-fabric3d="on"]'), `at ${w}px the stage is on screen`).not.toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  }
+});
+
 /* ── the Path surface has a way in (acceptance A2) ─────────────────────────── */
 
 describe("the path surface is reachable before a flow exists", () => {
