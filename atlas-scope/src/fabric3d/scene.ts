@@ -78,10 +78,12 @@ import {
   SELECT_EASE,
   createEaseChannel,
   createEmphasisState,
+  createTierFadeDriver,
   stepEaseChannel,
   isConverged,
   markEmphasisDirty,
   stepEmphasis,
+  type TierFadeDriver,
   type EmphasisState,
   type RecedeMirror,
 } from "./emphasis";
@@ -2486,9 +2488,24 @@ const createSceneImpl = (
    *
    * So the OLD tier's picture is copied to a 2-D canvas laid over the WebGL one before the chain is
    * torn down. It holds through the re-warm-up (so no half-built frame is ever seen either) and,
-   * once the new tier has presented its first frame underneath, fades out over TIER_FADE_MS — a
+   * once the new tier has presented its first frame underneath, fades out over TIER_FADE_MS (./emphasis) — a
    * true cross-fade between the two tiers' frames. Reduced motion removes it in one step on that
    * same frame instead: a swap, never an animation.
+   *
+   * STEPPED, NOT TRANSITIONED (C5, 2026-09-26). The fade used to be a CSS transition, and a CSS
+   * transition runs on the wall clock: MEASURED at 7f67013 (dark, high -> low, pixel copy off), the
+   * overlay went 1 -> 0.64 across ONE 116.6 ms host frame — a cut, against the 0.25 bar — after the
+   * hold below had seen three calm frames. A hold predicts future frames from past ones; it cannot
+   * stop a stall that has not happened yet. So the overlay's opacity is now written once per frame by
+   * `frame()`, through `createTierFadeDriver` (./emphasis, the ease owner). That is the same 280 ms
+   * ease-in-out, on the frame's REAL duration, but never more than FADE_MAX_STEP (0.2) per frame.
+   * After a stall it moves 0.2 and catches up with the curve. At 60 Hz the cap never binds, so the look
+   * is unchanged. A stall of about 33 ms or more can engage it, and a stall can then push the end past
+   * 300 ms: a delay, not a cut. The measured and modelled envelope is at TIER_FADE_MS in ./emphasis.
+   * The overlay leaves on the frame the value reaches exactly 0 — not on a `TIER_FADE_MS + 50` timer,
+   * which (armed when the fade was asked to start, not when it did) could remove an overlay still
+   * at 0.32 opacity after a 160 ms late start: a cut by removal. It owes no WebGL render: the overlay
+   * is DOM, and `frame()` runs on every animation frame whether or not it renders.
    *
    * STARTED ONE FRAME LATE (C5 critic, 2026-09-22: "a hard cut in a single frame"; the fade was 300 ms then).
    * Measured in-page with a per-rAF opacity trace on a real GPU: the overlay held for 289 ms, then
@@ -2498,18 +2515,23 @@ const createSceneImpl = (
    * working fade read as a cut. The transition now starts on the animation frame AFTER the new
    * tier has presented, and runs long enough to span several ordinary frames.
    *
-   * 280 ms, not 300 (acceptance C6, 2026-09-22): the 300 ms fade MEASURED 299.9-300.1 ms — at the
-   * ceiling, not under it — and a transition's end state is first on screen up to one 60 Hz frame
-   * after its duration, so the duration must leave that frame of room: 280 + 16.7 < 300. Still ~17
-   * ordinary frames, so the one-frame-late start above keeps its margin. Held by
-   * `src/core/motion-inventory.test.ts` (and its §4.8 row). */
-  const TIER_FADE_MS = 280;
-  let tierFade: { el: HTMLCanvasElement; fading: boolean; timer: ReturnType<typeof setTimeout> | null } | null =
-    null;
+   * The duration and its reasoning (280 ms, not 300: acceptance C6) live with the ease in
+   * ./emphasis (`TIER_FADE_MS`, `TIER_FADE_EASE`), held by `src/core/motion-inventory.test.ts`
+   * against its §4.8 row. */
+  let tierFade: {
+    el: HTMLCanvasElement;
+    fading: boolean;
+    /** The hold's start backstop (see `releaseTierFade`). */
+    timer: ReturnType<typeof setTimeout> | null;
+    /** The running fade (null while the hold waits). `frame()` drives it once per frame; it writes the
+     *  overlay's opacity and removes it at exactly 0, and owns the no-frames watchdog (./emphasis). */
+    driver: TierFadeDriver | null;
+  } | null = null;
 
   function clearTierFade(): void {
     if (tierFade === null) return;
     if (tierFade.timer !== null) clearTimeout(tierFade.timer);
+    tierFade.driver?.dispose();
     tierFade.el.remove();
     tierFade = null;
   }
@@ -2555,7 +2577,7 @@ const createSceneImpl = (
     el.style.cssText =
       "position:absolute;inset:0;inline-size:100%;block-size:100%;pointer-events:none;opacity:1;";
     parent.appendChild(el);
-    tierFade = { el, fading: false, timer: null };
+    tierFade = { el, fading: false, timer: null, driver: null };
   }
 
   /** Called after a composed frame lands on the canvas (at `now`): release the old tier's picture. */
@@ -2568,15 +2590,26 @@ const createSceneImpl = (
     const fade = tierFade;
     fade.fading = true;
     const start = (): void => {
-      if (tierFade !== fade) return;
-      fade.el.style.transition = `opacity ${TIER_FADE_MS}ms ease-in-out`;
-      fade.el.style.opacity = "0";
-      /* Removed on a timer, not on transitionend: a transition that never starts (a hidden tab, a
-         UA without transitions) fires no event, and the overlay would then cover the fabric
-         forever. */
-      fade.timer = setTimeout(() => {
-        if (tierFade === fade) clearTierFade();
-      }, TIER_FADE_MS + 50);
+      if (tierFade !== fade || fade.driver !== null) return;
+      if (fade.timer !== null) clearTimeout(fade.timer);
+      fade.timer = null;
+      /* From the next animation frame on, `frame()` drives this. The driver steps the fade on the
+         frame's raw duration (capped at FADE_MAX_STEP per frame), writes the overlay's opacity, and
+         removes the overlay on the frame the fade reaches exactly 0. Its watchdog is a NO-FRAMES
+         backstop, not a duration timer: two consecutive windows with no frame (rAF suspended), where
+         nothing is presented and removing it is not a visible cut. All of it is executed with fake
+         timers in emphasis.test.ts. */
+      fade.driver = createTierFadeDriver({
+        write: (opacity) => {
+          fade.el.style.opacity = String(opacity);
+        },
+        finish: () => {
+          if (tierFade === fade) clearTierFade();
+        },
+        watchdogMs: TIER_FADE_HOLD_DEFAULTS.maxHoldMs,
+        setTimer: (fn, ms) => setTimeout(fn, ms),
+        clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      });
     };
     /* One frame late: the heavy first composed frame of the new chain is being presented now, and a
        transition begun in it would spend itself inside that frame. A setTimeout backstop covers a
@@ -2602,7 +2635,7 @@ const createSceneImpl = (
       const heldContent = contentVersion;
       /* Reads the loop's own per-frame interval (`lastFrameMs`, measured for every frame in
          `frame`) and its camera-motion stamp rather than a clock of its own; `frame` runs before
-         this in each animation frame (it was queued first). It only decides WHEN the overlay's CSS
+         this in each animation frame (it was queued first). It only decides WHEN the overlay's
          fade begins, and the frame underneath is the new tier's frame either way. */
       const watch = (): void => {
         if (started || tierFade !== fade) return;
@@ -3320,6 +3353,11 @@ const createSceneImpl = (
        render is requested: an animated change is a change of content, a camera move only of view. */
     const emphasisMoved = animateEmphasis(dt);
     const fadesMoved = animateFades(dt);
+    /* The tier cross-fade (see "tier cross-fade" above): driven on `raw`, the frame's real duration.
+       The ease is the wall clock's, and FADE_MAX_STEP inside the driver is the per-frame bound that the
+       64 ms `dt` clamp is not. It runs every frame, ahead of every early exit below, UNCONDITIONALLY
+       (the driver is null while the hold waits and after the overlay is gone), and owes no render. */
+    tierFade?.driver?.frame(raw, reducedMotion);
     const flowMoved = flow.update(now, cameraRig.camera);
 
     if (emphasisMoved || fadesMoved || flowMoved) markDirty();

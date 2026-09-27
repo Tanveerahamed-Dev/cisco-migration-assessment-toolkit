@@ -764,6 +764,11 @@ export const JOURNEYS = [
     id: "J5-open-palette",
     url: "/",
     ready: "body",
+    /* LABELLED WARM (acceptance report E2/E3, 2026-09-26). This journey's page shares ONE browser —
+       one GPU process, one shader cache — with J1-J4, so even its rep 0 is not the first palette open
+       a user makes after a fresh load: the refuter measured that open at p95 320 ms where this
+       journey said 64. The cold first open is `FIRST_PALETTE` (J5-first-open-palette) below. */
+    warmth: "warm: shares one browser (GPU process, shader cache) with J1-J4; the cold first open is J5-first-open-palette",
     /* Opens the palette, so it runs AFTER the loop: before it, it spent the first palette open after
        load (the chunk/first-mount cost) outside the measurement (the J1 defect's class, 2026-09-22).
        The palette is closed again within the rep, so no per-rep effect can be read after timing. */
@@ -827,6 +832,139 @@ export const FIRST_SELECTION = {
   /** The one measured interaction of a trial. */
   async act(page, anchor) {
     await page.mouse.click(anchor.x, anchor.y);
+  },
+};
+
+/* ── THE PALETTE PRE-WARM, AS EVERY MEASURED PAGE SEES IT ───────────────────────────────────────────
+ *
+ * After the scene converges the app draws the palette's frame once, invisibly (opacity 0.001), so the
+ * GPU compiles its programs and the first Ctrl+K pays none of that (CommandPalette.tsx; the state is
+ * on `<html data-palette-warm>`). That draw is one-time work — a transition render, a style/layout of
+ * the frame, and ~120 ms of GPU program compile — and it lands wherever the page happens to be ~1 s
+ * after convergence: possibly inside a journey's timed loop (the journeys wait for `body` and a 2.5 s
+ * drain, not for convergence). Whether it cost an unrelated interaction anything is the question the
+ * owner's "no INP regression elsewhere" asks, so it is RECORDED, not waited out: every measured page
+ * logs the state transitions with their page-clock times, each timed interaction that overlapped the
+ * drawn window (plus PREWARM_TAIL_MS for the GPU work behind it) is named, and it stays COUNTED in
+ * the verdict — waiting for the pre-warm before timing would hide exactly the cost being asked about.
+ * The same script records each keydown's own timestamp, which is what tells a first-palette trial's
+ * open from its close (`actStepOf`). */
+export const PREWARM_TAIL_MS = 250;
+export const PREWARM_TIMELINE = `
+  window.__paletteWarm = [];
+  window.__keydowns = [];
+  new MutationObserver(() => {
+    const s = document.documentElement && document.documentElement.dataset.paletteWarm;
+    const last = window.__paletteWarm[window.__paletteWarm.length - 1];
+    if (s !== undefined && (last === undefined || last.state !== s)) window.__paletteWarm.push({ state: s, t: performance.now() });
+  }).observe(document, { attributes: true, subtree: true, attributeFilter: ['data-palette-warm'] });
+  window.addEventListener('keydown', (e) => window.__keydowns.push({ key: e.key, t: e.timeStamp }), true);
+`;
+
+/** The windows in which the pre-warm frame was DRAWN: from each "mounted" to the state that ended it. Pure. */
+export function prewarmWindows(timeline) {
+  const out = [];
+  for (let i = 0; i < timeline.length; i++) {
+    if (timeline[i].state !== "mounted") continue;
+    const next = timeline.slice(i + 1).find((x) => x.state !== "mounted");
+    out.push({ from: timeline[i].t, to: next ? next.t : null, endedAs: next ? next.state : null });
+  }
+  return out;
+}
+
+/** Whether an interaction [start, start+duration] overlapped a drawn window or the GPU tail behind it. Pure. */
+export function overlapsPrewarm(windows, start, duration, tailMs = PREWARM_TAIL_MS) {
+  return windows.some((w) => start < (w.to === null ? Infinity : w.to) + tailMs && start + duration > w.from);
+}
+
+/**
+ * Which step of J5's act a long task belongs to, by TIME against the Escape keydown's own timestamp —
+ * not by which Event Timing entry it happened to overlap first (a task overlapping the Escape keyup,
+ * or an Escape task when the Ctrl+K keydown produced no entry, used to be called the open). A task
+ * that started before the Escape keydown is the open's; one that started after it is the close's, or
+ * the open's own frame delayed past the Escape — named as exactly that, not guessed. Pure.
+ */
+export function actStepOf(taskStart, escapeAt) {
+  if (typeof escapeAt !== "number") return "unattributed (no Escape keydown recorded)";
+  return taskStart < escapeAt ? "open (before Escape)" : "after Escape (the close, or the open's late frame)";
+}
+
+/* ── THE FIRST PALETTE OPEN AFTER LOAD (J5 cold), one fresh browser per trial ─────────────────────
+ *
+ * Acceptance report E2/E3 (2026-09-24, both overturned PASS): J5 was only ever timed at 1920x1080,
+ * in one browser that J1-J4 had already warmed, so its single first-open sample hid inside 24 warm
+ * reps. The refuter's fresh-browser probe at 1280x800 (the reference machine's own panel) measured
+ * "worst-interaction p50 224 p95 320 max 352" and a `#document.onkeydown` long task of 51-83 ms in
+ * 6/20 dark and 9/20 light loads. Discovery (2026-09-26) split that into a main-thread first mount
+ * (render, then the forced style/layout of `focus()`) and a GPU first raster (six Skia programs
+ * compiled, ~120 ms), which a fresh browser — an empty shader cache — pays on every first open.
+ *
+ * So it is measured like FIRST_SELECTION: every trial launches a NEW browser (new GPU process, new
+ * temp profile: no shader or program cache survives from an earlier trial), loads, waits for the
+ * scene to converge plus the same 2.5 s drain every journey gets, and performs J5's act EXACTLY ONCE.
+ * Legs: every viewport x colour scheme in `legs`, each with its own headed-window plan from
+ * host-env.mjs (the window for a 1280x800 viewport is not the one for 1920x1080).
+ *
+ * THE EFFECT IS CHECKED, AFTER THE TIMING. A press that opened nothing is NOT MEASURED, never a fast
+ * sample (the refuter's "fast" 96 ms trials had no open check at all). An init script records every
+ * focus that lands on a combobox inside an `aria-modal` dialog; a trial counts only when one landed
+ * after its press.
+ *
+ * THE PRE-WARM STATE IS RECORDED, NOT WAITED FOR. The app pre-warms the palette after the scene
+ * converges (CommandPalette.tsx: drawn once, then parked hidden until the first open) and publishes
+ * the state on `<html data-palette-warm>`. The trial reads it at the moment of the press and the
+ * report splits the figures by it, so an open that beat the pre-warm is visible as such; the VERDICT
+ * is over every trial, whatever the state — a user's first Ctrl+K is not obliged to wait for an idle
+ * slice. A build without the pre-warm reads "absent". Each on-path task is attributed to the open or
+ * to what followed the Escape by the Escape keydown's own timestamp (`actStepOf`).
+ * `ATLAS_FIRST_PALETTE_LEGS=WxH:scheme,...` and `ATLAS_FIRST_PALETTE_TRIALS=n` override the sample. */
+export const parsePaletteLegs = (spec) =>
+  spec
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => {
+      const [size = "", scheme = "dark"] = x.split(":");
+      const [width, height] = size.split("x").map((n) => Math.floor(Number(n)));
+      return { width, height, colorScheme: scheme === "light" ? "light" : "dark" };
+    })
+    .filter((l) => Number.isFinite(l.width) && Number.isFinite(l.height) && l.width > 0 && l.height > 0);
+
+export const FIRST_PALETTE = {
+  id: "J5-first-open-palette",
+  url: "/",
+  legs: parsePaletteLegs(process.env.ATLAS_FIRST_PALETTE_LEGS || "1280x800:dark,1280x800:light,1920x1080:dark,1920x1080:light"),
+  trials: Math.max(1, Math.floor(Number(process.env.ATLAS_FIRST_PALETTE_TRIALS || 20))),
+  /** Installed before the app mounts: every focus that reaches a combobox inside a modal dialog. */
+  recorder: `
+    window.__paletteFocus = [];
+    document.addEventListener('focusin', (e) => {
+      const t = e.target;
+      if (t instanceof Element && t.matches('[role="combobox"]') && t.closest('[role="dialog"][aria-modal="true"]'))
+        window.__paletteFocus.push(performance.now());
+    }, true);
+  `,
+  /** Everything between navigation and the measured press. It reads and waits; it never actuates. */
+  async beforePress(page) {
+    await page.waitForSelector("canvas", { timeout: 15000 });
+    /* 60 s, not FIRST_SELECTION's 30. MEASURED 2026-09-26, fresh headed browsers at 1280x800 with this
+       harness's window arguments (forced device scale 1.261) on a host 68-100% busy: the scene often
+       converged only after its automatic step-down to "balanced", 8.4-42 s after load, and in several
+       loads not within 60 s. CONDITIONAL, not a general property: at the default device scale the
+       same build converged at tier "high" in 4.2-5.2 s (independent verifier, three loads). So the
+       wait is generous, and a trial that still never converges is NOT MEASURED and says so. */
+    const settled = await page
+      .waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: 60000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!settled) throw new Error("the scene never reported converged within 60 s of load, so there was no settled page to press on");
+    await page.waitForTimeout(2500); // the same drain every journey gets before its loop
+  },
+  /** The one measured act of a trial: J5's own, unchanged. */
+  async act(page) {
+    await page.keyboard.press("Control+k");
+    await page.waitForTimeout(60);
+    await page.keyboard.press("Escape");
   },
 };
 
@@ -1170,8 +1308,9 @@ async function main() {
     const ctx = await browser.newContext(CONTEXT);
     await ctx.addInitScript(EXPOSE_SCENE);
     await ctx.addInitScript(INSTRUMENT);
+    await ctx.addInitScript(PREWARM_TIMELINE);
     const page = await ctx.newPage();
-    const rec = { id: j.id, measured: false, reason: null, reps: 0, inp: {}, longTasks: {} };
+    const rec = { id: j.id, measured: false, reason: null, reps: 0, inp: {}, longTasks: {}, warmth: j.warmth ?? null };
     try {
       const nav = await gotoWithRetry(page, `${APP}${j.url}`);
       if (nav.retried) rec.transportRetry = nav.firstError;
@@ -1297,7 +1436,9 @@ async function main() {
         long: window.__long,
         loaf: window.__loaf,
         loafSupported: window.__loafSupported === true,
+        warm: window.__paletteWarm ?? [],
       }));
+      const warmWindows = prewarmWindows(data.warm);
       /* The animation frame a long task belongs to: the LoAF entry whose window contains most of it. */
       const frameFor = (l) => {
         let best = null;
@@ -1341,13 +1482,23 @@ async function main() {
         });
       }
       const repWorst = new Array(repStarts.length).fill(null);
+      const repInPrewarm = new Array(repStarts.length).fill(false);
       rec.interactionsBeforeFirstRep = 0;
       for (const { start, dur } of byInteraction.values()) {
         let bin = -1;
         for (let k = 0; k < repStarts.length; k++) if (start >= repStarts[k]) bin = k;
         if (bin < 0) { rec.interactionsBeforeFirstRep++; continue; }
         repWorst[bin] = Math.max(repWorst[bin] ?? 0, dur);
+        if (overlapsPrewarm(warmWindows, start, dur)) repInPrewarm[bin] = true;
       }
+      /* The palette pre-warm, if it was drawn while this journey's loop ran (see PREWARM_TIMELINE):
+         which timed reps overlapped it, and what they measured. Counted in the verdict either way. */
+      rec.preWarm = {
+        timeline: data.warm.map((x) => ({ state: x.state, t: Number(x.t.toFixed(1)) })),
+        drawnWindows: warmWindows.map((w) => ({ from: Number(w.from.toFixed(1)), to: w.to === null ? null : Number(w.to.toFixed(1)), endedAs: w.endedAs })),
+        loopWindow: repStarts.length ? { from: Number(repStarts[0].toFixed(1)), lastRepStart: Number(repStarts[repStarts.length - 1].toFixed(1)) } : null,
+        repsOverlapping: repWorst.flatMap((w, k) => (repInPrewarm[k] ? [{ rep: k, worstMs: w === null ? null : Number(w.toFixed(1)) }] : [])),
+      };
       rec.firstInteraction = {
         worstMs: repWorst[0] === null || repWorst[0] === undefined ? null : Number(repWorst[0].toFixed(1)),
         effectObserved: j.effect ? repEffects[0] === null : null,
@@ -1503,9 +1654,14 @@ async function main() {
       `${rec.verdict.padEnd(12)} ${(rec.e3Verdict ?? "-").padEnd(9)} ${rec.id.padEnd(22)} worstPerRep p95=${rec.worstPerRep?.p95 ?? "-"}ms p50=${rec.worstPerRep?.p50 ?? "-"}ms max=${rec.worstPerRep?.max ?? "-"}ms | pooled p95=${rec.inp?.p95 ?? "-"}ms  samples=${rec.samples ?? 0}  longTasks>50ms=${rec.longTasks?.over50ms ?? "-"} (max ${rec.longTasks?.maxMs ?? "-"}ms, ON-PATH ${rec.longTasksOver50OnPath ?? "-"}${rec.onPathByPhase ? ` = input-delay ${rec.onPathByPhase["input-delay"]} / in-handler ${rec.onPathByPhase["in-handler"]} / post-handler ${rec.onPathByPhase["post-handler-pre-present"]}` : ""})${rec.reason ? "  [" + rec.reason + "]" : ""}`,
     );
     if (rec.dilution) console.log(`             ${" ".repeat(22)} DILUTION: ${rec.dilution}`);
+    if (rec.warmth) console.log(`             ${" ".repeat(22)} ${rec.warmth}`);
+    if (rec.preWarm)
+      console.log(
+        `             ${" ".repeat(22)} palette pre-warm: ${rec.preWarm.timeline.length ? rec.preWarm.timeline.map((x) => `${x.state}@${Math.round(x.t)}`).join(" ") : "no state recorded (absent)"}; drawn ${rec.preWarm.drawnWindows.map((w) => `${Math.round(w.from)}-${w.to === null ? "end" : Math.round(w.to)}`).join(", ") || "never"}; loop ${rec.preWarm.loopWindow ? `${Math.round(rec.preWarm.loopWindow.from)}-${Math.round(rec.preWarm.loopWindow.lastRepStart)}+` : "-"}; timed reps overlapping it ${rec.preWarm.repsOverlapping.length ? rec.preWarm.repsOverlapping.map((r) => `#${r.rep} ${r.worstMs ?? "-"} ms`).join(", ") : "none"} (counted in the verdict)`,
+      );
     if (rec.firstInteraction)
       console.log(
-        `             ${" ".repeat(22)} first interaction after load: ${rec.firstInteraction.consumedBeforeLoop ? `NOT MEASURED HERE — ${rec.firstInteraction.consumedBeforeLoop}` : `rep 0 worst ${rec.firstInteraction.worstMs ?? "-"} ms`}; warm (reps 2..${rec.reps}) p95 ${rec.worstPerRepWarm?.p95 ?? "-"} ms max ${rec.worstPerRepWarm?.max ?? "-"} ms${rec.repEffects ? `; acts with a verified effect ${rec.repsWithEffect} of ${rec.reps}` : "; per-rep effect not checkable"}`,
+        `             ${" ".repeat(22)} ${rec.warmth ? `[${rec.warmth.toUpperCase().slice(0, 4)}] ` : ""}first interaction after load: ${rec.firstInteraction.consumedBeforeLoop ? `NOT MEASURED HERE — ${rec.firstInteraction.consumedBeforeLoop}` : `rep 0 worst ${rec.firstInteraction.worstMs ?? "-"} ms`}; warm (reps 2..${rec.reps}) p95 ${rec.worstPerRepWarm?.p95 ?? "-"} ms max ${rec.worstPerRepWarm?.max ?? "-"} ms${rec.repEffects ? `; acts with a verified effect ${rec.repsWithEffect} of ${rec.reps}` : "; per-rep effect not checkable"}`,
       );
   }
 
@@ -1528,6 +1684,7 @@ async function main() {
           const ctx = await fresh.newContext(CONTEXT);
           await ctx.addInitScript(EXPOSE_SCENE);
           await ctx.addInitScript(INSTRUMENT);
+          await ctx.addInitScript(PREWARM_TIMELINE);
           const page = await ctx.newPage();
           const nav = await gotoWithRetry(page, `${APP}${FIRST_SELECTION.url}`);
           if (!nav.ok) {
@@ -1559,8 +1716,10 @@ async function main() {
             .catch(() => false);
           if (!trial.effect) trial.why = `the click aimed at ${target.id} selected ${await page.evaluate(() => (location.search.match(/[?&]d=([^&]*)/) || [])[1] ?? null).catch(() => "?") ?? "nothing"}`;
           await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300)))));
-          const data = await page.evaluate(() => ({ ev: window.__ev, long: window.__long, loaf: window.__loaf, loafSupported: window.__loafSupported === true }));
+          const data = await page.evaluate(() => ({ ev: window.__ev, long: window.__long, loaf: window.__loaf, loafSupported: window.__loafSupported === true, warm: window.__paletteWarm ?? [] }));
           const interactions = data.ev.filter((e) => e.interactionId > 0 && e.startTime >= start - 1);
+          /* The palette pre-warm (PREWARM_TIMELINE): named when the timed click overlapped its drawn window; still counted. */
+          trial.inPreWarm = interactions.some((e) => overlapsPrewarm(prewarmWindows(data.warm), e.startTime, e.duration));
           trial.observed = interactions.length > 0;
           trial.worstMs = interactions.length ? Number(Math.max(...interactions.map((e) => e.duration)).toFixed(1)) : null;
           trial.eventHistogram = interactions.reduce((h, e) => ((h[e.name] = (h[e.name] ?? 0) + 1), h), {});
@@ -1579,7 +1738,7 @@ async function main() {
         }
         const onPathMs = (trial.onPath ?? []).map((x) => x.durationMs);
         console.log(
-          `  first selection ${target.id} #${k + 1}: ${trial.observed ? `worst interaction ${trial.worstMs} ms, on-path tasks >50 ms ${onPathMs.length ? onPathMs.join("/") : "none"}, worst LoAF on the path ${trial.worstLoafOnPathMs ?? "n/a"} ms` : "NOT OBSERVED"}${trial.effect ? "" : ` [${trial.why}]`}`,
+          `  first selection ${target.id} #${k + 1}${trial.inPreWarm ? " [overlapped the palette pre-warm]" : ""}: ${trial.observed ? `worst interaction ${trial.worstMs} ms, on-path tasks >50 ms ${onPathMs.length ? onPathMs.join("/") : "none"}, worst LoAF on the path ${trial.worstLoafOnPathMs ?? "n/a"} ms` : "NOT OBSERVED"}${trial.effect ? "" : ` [${trial.why}]`}`,
         );
       }
     }
@@ -1641,6 +1800,183 @@ async function main() {
       );
   }
 
+  /* ── the first palette open after load, one fresh browser per trial, per leg (see FIRST_PALETTE) ── */
+  /** Every window plan a FIRST_PALETTE leg used, with the window the OS gave it (the acceptance gate reads them all). */
+  const paletteWindows = [];
+  if (selected(FIRST_PALETTE.id)) {
+    const trials = [];
+    const legs = [];
+    for (const leg of FIRST_PALETTE.legs) {
+      const legName = `${leg.width}x${leg.height} ${leg.colorScheme}`;
+      /* Its own window plan: VIEWPORT is the journeys', and a 1280x800 viewport needs its own window. */
+      const legWindow = HEADED ? await headedWindow(chromium, { width: leg.width, height: leg.height }, hostLoadMeter) : null;
+      if (legWindow) console.log(`  ${legName}: ${legWindow.line}`);
+      const legLaunch = HEADED ? { headless: false, args: legWindow.args } : {};
+      const legContext = { viewport: { width: leg.width, height: leg.height }, deviceScaleFactor: 1, colorScheme: leg.colorScheme };
+      const legRec = { leg: legName, plan: legWindow?.plan ?? null, windowCheck: HEADED ? { checked: false } : { checked: false, skipped: "headless" } };
+      legs.push(legRec);
+      for (let k = 0; k < FIRST_PALETTE.trials; k++) {
+        const trial = { leg: legName, trial: k, observed: false, effect: false, why: null, warmAtPress: null };
+        trials.push(trial);
+        const fresh = await chromium.launch(legLaunch);
+        try {
+          const ctx = await fresh.newContext(legContext);
+          await ctx.addInitScript(EXPOSE_SCENE);
+          await ctx.addInitScript(INSTRUMENT);
+          await ctx.addInitScript(FIRST_PALETTE.recorder);
+          await ctx.addInitScript(PREWARM_TIMELINE);
+          const page = await ctx.newPage();
+          const nav = await gotoWithRetry(page, `${APP}${FIRST_PALETTE.url}`);
+          if (!nav.ok) {
+            trial.why = `transport: ${nav.error ?? nav.firstError}`;
+            continue;
+          }
+          await FIRST_PALETTE.beforePress(page);
+          trial.presenting = await ensurePresenting(ctx, page).catch((e) => ({ ok: false, error: String(e).slice(0, 120) }));
+          if (!trial.presenting.ok) {
+            trial.why = "window not presenting — harness environment, not the app";
+            continue;
+          }
+          if (HEADED && !legRec.windowCheck.checked) legRec.windowCheck = await windowBoundsCheck(ctx, page, legWindow.plan);
+          if (environment === null) environment = await page.evaluate(RENDERER_PROBE).catch(() => null);
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300)))));
+          const start = await page.evaluate(() => {
+            window.__ev.length = 0;
+            window.__long.length = 0;
+            window.__loaf.length = 0;
+            window.__paletteFocus.length = 0;
+            window.__keydowns.length = 0;
+            return performance.now();
+          });
+          /* Read at the press, not waited for: see FIRST_PALETTE. */
+          trial.warmAtPress = await page.evaluate(() => document.documentElement.dataset.paletteWarm ?? "absent");
+          await FIRST_PALETTE.act(page);
+          await page.waitForTimeout(160);
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 300)))));
+          const data = await page.evaluate(() => ({
+            ev: window.__ev,
+            long: window.__long,
+            loaf: window.__loaf,
+            loafSupported: window.__loafSupported === true,
+            focus: window.__paletteFocus.slice(),
+            warm: window.__paletteWarm.slice(),
+            keydowns: window.__keydowns.slice(),
+          }));
+          /* The effect, read after the timing window closed: the palette's dialog opened and its
+             combobox took focus after the press. */
+          trial.effect = data.focus.some((t) => t >= start - 1);
+          if (!trial.effect) trial.why = "Ctrl+K opened no palette (no focus reached a combobox in a modal dialog after the press) — a press that did nothing is not a fast sample";
+          const interactions = data.ev.filter((e) => e.interactionId > 0 && e.startTime >= start - 1);
+          trial.observed = interactions.length > 0;
+          trial.worstMs = interactions.length ? Number(Math.max(...interactions.map((e) => e.duration)).toFixed(1)) : null;
+          trial.eventHistogram = interactions.reduce((h, e) => ((h[e.name] = (h[e.name] ?? 0) + 1), h), {});
+          /* E3's attribution, the journeys' shape: each on-path task joined to the animation frame it
+             overlaps most, with that frame's scripts (invoker, duration, forced style+layout). */
+          const attribute = (l) => {
+            if (!data.loafSupported) return { available: false };
+            let best = null;
+            let bestOverlap = 0;
+            for (const f of data.loaf) {
+              const overlap = Math.min(l.startTime + l.duration, f.startTime + f.duration) - Math.max(l.startTime, f.startTime);
+              if (overlap > bestOverlap) {
+                best = f;
+                bestOverlap = overlap;
+              }
+            }
+            if (best === null) return { available: true, frame: null };
+            const scripted = best.scripts.reduce((a, s) => a + s.durationMs, 0);
+            return {
+              available: true,
+              frame: { startTime: Number(best.startTime.toFixed(1)), durationMs: Number(best.duration.toFixed(1)) },
+              scripts: best.scripts,
+              renderOnly: best.scripts.every((s) => s.durationMs < 50) && scripted < best.duration / 2,
+            };
+          };
+          trial.onPath = onPathLongTasks(
+            data.long.map((l) => ({ ...l, duration: Number(l.duration.toFixed(1)), startTime: Number(l.startTime.toFixed(1)) })),
+            interactions,
+            attribute,
+          ).filter((x) => x.overlapsInteraction);
+          const loaf = data.loafSupported ? worstLoafOnPath(data.loaf, interactions) : null;
+          trial.worstLoafOnPathMs = data.loafSupported ? (loaf === null ? 0 : Number(loaf.duration.toFixed(1))) : null;
+          trial.worstLoafScripts = loaf === null ? [] : loaf.scripts;
+          /* The open (Ctrl+K) and the close (Escape) — different code paths with different fixes — told
+             apart by TIME against the Escape keydown's own timestamp (actStepOf). */
+          const escapeAt = data.keydowns.filter((k) => k.key === "Escape" && k.t >= start - 1).map((k) => k.t)[0];
+          trial.escapeAt = typeof escapeAt === "number" ? Number(escapeAt.toFixed(1)) : null;
+          for (const x of trial.onPath) x.actStep = actStepOf(x.startTime, escapeAt);
+          trial.preWarmTimeline = data.warm.map((x) => ({ state: x.state, t: Number(x.t.toFixed(1)) }));
+          trial.inPreWarm = interactions.some((e) => overlapsPrewarm(prewarmWindows(data.warm), e.startTime, e.duration));
+        } catch (e) {
+          trial.why = `trial threw: ${String(e).slice(0, 160)}`;
+        } finally {
+          await hostLoadMeter.close(fresh);
+        }
+        const onPathMs = (trial.onPath ?? []).map((x) => `${x.durationMs}${x.actStep ? ` (${x.actStep})` : ""}`);
+        console.log(
+          `  first palette open ${legName} #${k + 1} [pre-warm ${trial.warmAtPress ?? "?"}]: ${trial.observed ? `worst interaction ${trial.worstMs} ms, on-path tasks >50 ms ${onPathMs.length ? onPathMs.join("/") : "none"}, worst LoAF on the path ${trial.worstLoafOnPathMs ?? "n/a"} ms${trial.worstLoafScripts?.length ? ` (${trial.worstLoafScripts.map((s) => `${s.invoker} ${s.durationMs} ms, forced style+layout ${s.forcedStyleAndLayoutMs} ms`).join("; ")})` : ""}` : "NOT OBSERVED"}${trial.effect ? "" : ` [${trial.why}]`}`,
+        );
+      }
+      if (legWindow) paletteWindows.push({ leg: legName, plan: legWindow.plan, check: legRec.windowCheck });
+    }
+    const good = trials.filter((t) => t.observed && t.effect);
+    const need = Math.min(MIN_REPS_WITH_SAMPLE, FIRST_PALETTE.trials);
+    const summarise = (ts) => {
+      const w = ts.map((t) => t.worstMs);
+      const steps = {};
+      for (const t of ts) for (const x of t.onPath ?? []) steps[x.actStep ?? "unattributed"] = (steps[x.actStep ?? "unattributed"] ?? 0) + 1;
+      return { n: ts.length, p50: pct(w, 50), p75: pct(w, 75), p95: pct(w, 95), max: w.length ? Math.max(...w) : null, over200: w.filter((x) => x > 200).length, trialsWithOnPathTaskOver50: ts.filter((t) => (t.onPath ?? []).length > 0).length, onPathTasksByActStep: steps };
+    };
+    const perLeg = Object.fromEntries(
+      legs.map((l) => {
+        const ts = good.filter((t) => t.leg === l.leg);
+        const byWarm = {};
+        for (const t of ts) (byWarm[t.warmAtPress ?? "?"] ??= []).push(t);
+        return [l.leg, { planned: FIRST_PALETTE.trials, measured: ts.length, ...summarise(ts), byPreWarmState: Object.fromEntries(Object.entries(byWarm).map(([s, xs]) => [s, summarise(xs)])) }];
+      }),
+    );
+    const onPath = good.flatMap((t) => t.onPath ?? []);
+    /* Every leg must be measured and inside the bar: one p95 pooled over the legs could hide a leg. */
+    const legsMeasured = legs.length > 0 && legs.every((l) => perLeg[l.leg].measured >= need);
+    const allWorst = good.map((t) => t.worstMs);
+    const rec = {
+      id: FIRST_PALETTE.id,
+      firstPaletteOpen: true,
+      reps: trials.length,
+      repsWithASample: good.length,
+      measured: legsMeasured,
+      firstInteractionConsumedBeforeLoop: null,
+      trials,
+      legs: legs.map((l) => ({ leg: l.leg, plan: l.plan, windowCheck: l.windowCheck })),
+      perLeg,
+      worstPerRep: { p50: pct(allWorst, 50), p75: pct(allWorst, 75), p95: pct(allWorst, 95), max: allWorst.length ? Math.max(...allWorst) : null, n: allWorst.length },
+      longTasksOnInteractionPath: onPath,
+      longTasksOver50OnPath: onPath.length,
+      onPathByPhase: { "input-delay": 0, "in-handler": 0, "post-handler-pre-present": 0 },
+      presenting: { ok: true, rafMedianMs: Math.max(0, ...trials.map((t) => t.presenting?.rafMedianMs ?? 0)) || null },
+      reason: null,
+    };
+    for (const x of onPath) if (x.phase) rec.onPathByPhase[x.phase] += 1;
+    if (!rec.measured)
+      rec.reason = `a leg had fewer than ${need} fresh-browser trials that both produced an Event Timing entry and opened the palette (${legs.map((l) => `${l.leg} ${perLeg[l.leg].measured}/${FIRST_PALETTE.trials}`).join(", ")})`;
+    const within = legs.length > 0 && legs.every((l) => (perLeg[l.leg].p95 ?? 1e9) <= 200);
+    rec.verdict = !rec.measured ? "NOT MEASURED" : LANE === "evidence" ? (within ? "PASS" : "FAIL") : within ? "FLOOR-PASS" : "FLOOR-FAIL";
+    rec.e3Verdict = onPath.length > 0 ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS";
+    rec.e3Why =
+      onPath.length === 0
+        ? `no task over 50 ms overlapped the first palette open in ${good.length} fresh-browser trial(s)`
+        : `${onPath.length} task(s) over 50 ms overlapped the first palette open; worst ${Math.max(...onPath.map((x) => x.durationMs))} ms`;
+    rec.longTasks = { maxMs: Math.max(0, ...onPath.map((x) => x.durationMs)) };
+    results.push(rec);
+    console.log(
+      `${rec.verdict.padEnd(12)} ${rec.e3Verdict.padEnd(9)} ${rec.id.padEnd(22)} FIRST palette open after load, one fresh browser per trial: worst interaction p95=${rec.worstPerRep.p95 ?? "-"}ms max=${rec.worstPerRep.max ?? "-"}ms over ${good.length}/${trials.length} trials${rec.reason ? "  [" + rec.reason + "]" : ""}`,
+    );
+    for (const [leg, s] of Object.entries(perLeg))
+      console.log(
+        `             ${" ".repeat(22)} ${leg}: ${s.measured}/${s.planned} measured; worst interaction p50 ${s.p50 ?? "-"} p95 ${s.p95 ?? "-"} max ${s.max ?? "-"} ms; over 200 ms in ${s.over200}; on-path task >50 ms in ${s.trialsWithOnPathTaskOver50} (${Object.entries(s.onPathTasksByActStep).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}); by pre-warm state at the press: ${Object.entries(s.byPreWarmState).map(([st, x]) => `${st} n=${x.n} p95 ${x.p95 ?? "-"}`).join(", ") || "none"}`,
+      );
+  }
+
   /* Every close in this file goes through the meter (host-env.mjs :: closeMeasured). */
   await hostLoadMeter.close(browser);
 
@@ -1665,7 +2001,13 @@ async function main() {
   const hostPowerThrottled = Boolean(hostPowerAtStart.throttled || hostPowerAtEnd.throttled);
   const hostQuiet = hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION && !hostPowerThrottled && !presentationBelowFullRate;
   /* A headed window that is not inside the screen is not a measurement environment (see planWindow). */
-  const windowFits = !HEADED || windowFitsOf(windowPlan, windowCheck);
+  /* Every window a measured page was opened in: the journeys' plan whenever a journey or the first
+     selection was selected (checked or not — an unchecked window is not known to fit), and each
+     FIRST_PALETTE leg's own plan. A run that measured only the palette legs opened no journey window,
+     so that plan is not required of it; a run that used no window at all has not shown one fits. */
+  const journeyWindowUsed = JOURNEYS.some((x) => selected(x.id)) || selected(FIRST_SELECTION.id);
+  const windowsUsed = [...(journeyWindowUsed ? [{ leg: "journeys", plan: windowPlan, check: windowCheck }] : []), ...paletteWindows];
+  const windowFits = !HEADED || (windowsUsed.length > 0 && windowsUsed.every((x) => windowFitsOf(x.plan, x.check)));
   const acceptanceEvidence =
     LANE === "evidence" && server.devServer === false && !softwareRasteriser && hostQuiet && freshness.fresh && windowFits;
 
@@ -1688,7 +2030,7 @@ async function main() {
             : null,
           environment === null ? "no renderer could be read from the page." : null,
           freshness.fresh ? null : `build freshness: ${freshness.why}.`,
-          windowFits ? null : `the headed window is not inside the screen's work area (plan ${JSON.stringify(windowPlan)}, window ${JSON.stringify(windowCheck)}).`,
+          windowFits ? null : `a headed window is not inside the screen's work area (${JSON.stringify(windowsUsed.map((x) => ({ leg: x.leg, plan: x.plan, window: x.check })))}).`,
           hostPowerThrottled
             ? `host on battery or Energy Saver (start ${JSON.stringify(hostPowerAtStart)}, end ${JSON.stringify(hostPowerAtEnd)}); measured 2026-09-22: rAF at a 33.4 ms median and windows that stopped presenting under it.`
             : null,
@@ -1719,7 +2061,7 @@ async function main() {
       capturedAt: new Date().toISOString(),
     },
     hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, throttled: hostPowerThrottled },
-    window: { screen: screenProbe, plan: windowPlan, check: windowCheck, fits: windowFits },
+    window: { screen: screenProbe, plan: windowPlan, check: windowCheck, fits: windowFits, firstPaletteLegs: paletteWindows },
     hostQuiescence: {
       busyFractionOfRun: hostBusy,
       basis: harnessBasis(hostLoad),

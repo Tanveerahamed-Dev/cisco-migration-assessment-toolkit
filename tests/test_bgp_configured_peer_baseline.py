@@ -422,6 +422,47 @@ def test_no_bgp_subject_with_complete_config_is_neutral_not_applicable(tmp_path)
     }
 
 
+@pytest.mark.parametrize("runtime, runtime_capture, runtime_parser", [
+    # A peerless switch whose summary capture came back empty (capture_integrity: 'empty').
+    ("", "empty", "not_verified"),
+    # A peerless IOS switch that prints the no-process banner: the capture is usable, but no
+    # peer-table header is recognized, so the runtime parser reports 'review' with zero candidates.
+    ("% BGP not active\n", "ok", "review"),
+])
+def test_complete_peerless_config_is_not_applicable_and_validates_whatever_the_runtime_capture(
+        tmp_path, runtime, runtime_capture, runtime_parser):
+    """The complete running-config is what establishes 'no configured-peer subject'; the producer
+    therefore marks the host not_applicable whatever its runtime summary capture is. The validator
+    must re-derive the SAME status, or one peerless host invalidates the whole fleet's baseline
+    ('baseline_coverage_status_mismatch' -> projected 'unavailable')."""
+    config = "version 17.9\nhostname edge1\nend\n"
+    baseline, *_ = _run(tmp_path, config=config, runtime=runtime)
+
+    cell = baseline["coverage"][0]
+    assert (cell["subject"], cell["status"]) == (False, "not_applicable")
+    assert (cell["config_capture_status"], cell["config_parser_status"]) == ("ok", "complete")
+    assert (cell["runtime_capture_status"], cell["runtime_parser_status"]) == (
+        runtime_capture, runtime_parser)
+    assert baseline["verdict"] == "NOT_APPLICABLE" and baseline["assessed"] is False
+    view = validate_bgp_configured_peer_baseline(baseline)
+    assert (view["valid"], view["reason"]) == (True, "ok")
+
+
+@pytest.mark.parametrize("forged", ["review", "not_verified", "assessed"])
+def test_complete_peerless_config_rejects_any_status_but_not_applicable(tmp_path, forged):
+    """The non-subject rule stays exact: a complete peerless config admits ONLY not_applicable."""
+    config = "version 17.9\nhostname edge1\nend\n"
+    baseline, *_ = _run(tmp_path, config=config, runtime="")
+    hostile = copy.deepcopy(dict(baseline))
+    hostile["coverage"][0]["status"] = forged
+    counts = hostile["summary"]["by_coverage_status"]
+    counts["not_applicable"] -= 1
+    counts[forged] += 1
+    _reseal(hostile)
+    view = validate_bgp_configured_peer_baseline(hostile)
+    assert (view["valid"], view["reason"]) == (False, "baseline_coverage_status_mismatch")
+
+
 def test_truncated_config_cannot_create_assessed_or_degraded_peer_rows(tmp_path):
     truncated = """\
 Building configuration...

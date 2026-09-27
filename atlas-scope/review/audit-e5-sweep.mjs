@@ -36,6 +36,7 @@ import os from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkBuildFreshness } from "./build-freshness.mjs";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 import { VISIBLE_AFFORDANCE_JS, affordancePaintedAt } from "./working-affordance.mjs";
 import { createLoadMeter, describePower, ensurePresenting, gatedBusy, harnessBasis, headedWindow, hostPower, idleBaseline, presentationState, rafCadence, windowBoundsCheck, windowFitsOf } from "./host-env.mjs";
 
@@ -348,6 +349,8 @@ async function main() {
   const windowFits = windowFitsOf(headedPlan.plan, windowCheck);
   await page.goto(`${APP}${SWEEP_START}`, { waitUntil: "networkidle", timeout: 30000 });
   await page.waitForTimeout(6000);
+  /* The palette's pre-warm frame must be parked before anything is timed (review/palette-warm.mjs). */
+  await awaitPaletteWarm(page);
   const presentationBefore = await ensurePresenting(ctx, page);
 
   const clear = () => page.evaluate(() => { window.__loaf.length = 0; });
@@ -500,6 +503,8 @@ async function main() {
     await page.goto(`${APP}${SWEEP_START}`, { waitUntil: "networkidle", timeout: 30000 });
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.waitForTimeout(4000);
+    /* The palette's pre-warm frame must be parked before anything is timed (review/palette-warm.mjs). */
+    await awaitPaletteWarm(page);
     console.log(`\n── repetition ${rep} of ${REPS} ──`);
     for (const a of ACTIONS) await run(a, rep);
   }

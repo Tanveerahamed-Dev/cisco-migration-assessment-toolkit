@@ -42,8 +42,9 @@ export const LABEL_DROP_EVERY_FRAMES = 3;
 
 /* ── THE EASE OWNER ─────────────────────────────────────────────────────────────────────────────
  *
- * Every JavaScript-stepped fade on the fabric — recession (dim/undim), the hover rim and the
- * selection halo — is one of the finite-duration eases below, and nothing outside this file steps
+ * Every JavaScript-stepped fade on the fabric — recession (dim/undim), the hover rim, the selection
+ * halo, and (since C5 2026-09-26) the quality-tier cross-fade's overlay — is one of the
+ * finite-duration eases below, and nothing outside this file steps
  * an ease of its own (`src/core/motion-inventory.test.ts` parses `src/` and fails on any
  * exponential step anywhere else, and on one here).
  *
@@ -59,10 +60,47 @@ export const LABEL_DROP_EVERY_FRAMES = 3;
  *
  * REDUCED MOTION: every ease snaps to its target on the frame its target changes (§4.8's contract:
  * the end state is identical, only the movement is removed).
+ *
+ * AND BOUNDED PER FRAME (C5, 2026-09-26). A finite ease advanced by the frame delta is still a
+ * wall-clock ease: a frame of dt ms covers dt / duration of the curve whatever the frame rate, so ONE
+ * long frame is a cut. MEASURED (acceptance grading at 7f67013): the quality-tier cross-fade — then a
+ * CSS transition — fell from opacity 1 to 0.64 across one 116.6 ms host frame (bar 0.25), and the
+ * same arithmetic here carried the hover rim 80 % of its ease in one 64 ms frame and the ease-out
+ * selection rim 0.56 of its span on an ordinary 60 Hz frame. So every fade this owner steps advances
+ * its eased FRACTION by at most FADE_MAX_STEP per frame (`capFraction`): after a stall it moves the
+ * cap and then catches up with the wall-clock curve, so the fade spans at least 1 / FADE_MAX_STEP
+ * frames and a slow frame delays it instead of cutting it. The cap never makes an ease end early and
+ * never changes its settled value: the fraction still reaches exactly 1, on the first frame at or
+ * after `durationMs` whenever the cap is not binding there (it does not bind on the last frames of
+ * any ease here at 60 Hz, so §4.8's settle times are unchanged). Under reduced motion the cap does not
+ * apply: the contract there is a swap, not an animation.
  */
 
-/** An ease's curve. `ease-out` is tokens.css `--ease-out`, cubic-bezier(0.16, 1, 0.3, 1). */
-export type EaseCurve = "linear" | "ease-out";
+/**
+ * The most any fade the owner steps may advance in ONE frame, as a fraction of its span (|to - from|).
+ * An opacity fading over [0, 1] therefore moves at most 0.2 of opacity per frame. The grading bar was
+ * 0.25 per frame. Since C5 (owner decision, 2026-09-26) review/capture-motion.mjs holds all 24 tier
+ * fades to this cap, 0.2. It states that number itself and does not read it from here, because the
+ * verifier does not take the product's word for its bar. At 60 Hz the cap never binds on the tier
+ * fade's ease-in-out (largest ordinary step 0.103). A frame of about 33 ms or more on the steep part of
+ * the curve does bind it (see TIER_FADE_MS).
+ */
+export const FADE_MAX_STEP = 0.2;
+
+/**
+ * The eased fraction after one more frame: the wall-clock curve's value at `elapsedMs`, but never more
+ * than FADE_MAX_STEP past the fraction the previous frame showed. Every curve here is monotone, so the
+ * result never goes backwards. Exactly 1 once the curve has reached 1 and the cap allows it.
+ */
+function capFraction(prev: number, spec: EaseSpec, elapsedMs: number, reduced: boolean): number {
+  if (reduced) return 1;
+  const onCurve = elapsedMs >= spec.durationMs ? 1 : easeFraction(spec.curve, elapsedMs / spec.durationMs);
+  return Math.min(onCurve, prev + FADE_MAX_STEP);
+}
+
+/** An ease's curve. `ease-out` is tokens.css `--ease-out`, cubic-bezier(0.16, 1, 0.3, 1);
+ *  `ease-in-out` is CSS's keyword, cubic-bezier(0.42, 0, 0.58, 1). */
+export type EaseCurve = "linear" | "ease-out" | "ease-in-out";
 
 export interface EaseSpec {
   /** The constant's name, as design-brief §4.8 names it on the ease's own row. */
@@ -82,8 +120,145 @@ export const SELECT_MS = 140;
 export const RECEDE_EASE: EaseSpec = { name: "RECEDE_MS", durationMs: RECEDE_MS, curve: "ease-out" };
 export const HOVER_EASE: EaseSpec = { name: "HOVER_MS", durationMs: HOVER_MS, curve: "linear" };
 export const SELECT_EASE: EaseSpec = { name: "SELECT_MS", durationMs: SELECT_MS, curve: "ease-out" };
-/** Every ease this owner defines. The motion inventory steps each one against its §4.8 row. */
+/** The emphasis eases: the ones `stepEaseChannel` / `stepEmphasis` step towards a changing target.
+ *  The tier cross-fade's ease (below) is a one-shot the driver runs, so it is not in this list. The
+ *  motion inventory does not read this list to decide what to check: it steps EVERY EaseSpec this
+ *  file exports against its §4.8 row, cross-checked against this file's source. */
 export const EASES: readonly EaseSpec[] = [RECEDE_EASE, HOVER_EASE, SELECT_EASE];
+
+/* ── The quality-tier cross-fade ────────────────────────────────────────────────────────────────
+ *
+ * scene.ts lays the OLD tier's last frame over the canvas when the tier changes and fades it out once
+ * the new tier's frames are ordinary (the hold: `createTierFadeHold`, ./stepdown). The fade used to be
+ * a CSS transition (`opacity 280ms ease-in-out`), and a CSS transition runs on the wall clock: the
+ * 2026-09-26 grading at 7f67013 measured opacity 1 -> 0.64 across one 116.6 ms host frame. It is now
+ * stepped here, by the render loop, once per frame, on the same curve and duration, with the
+ * FADE_MAX_STEP cap — so no frame, including the one after a stall or a returning tab, moves it more
+ * than 0.2. The scene removes the overlay on the frame the value reaches exactly 0.
+ *
+ * 280 ms, not 300 (acceptance C6, 2026-09-22): the 300 ms fade MEASURED 299.9-300.1 ms — at the
+ * ceiling, not under it — and the end state is first on screen up to one 60 Hz frame after the
+ * duration: 280 + 16.7 < 300. At 60 Hz this ease lands on the 17th frame (283.3 ms).
+ *
+ * WHEN THE CAP WINS OVER 300 ms. On ordinary 60 Hz frames the cap never binds. It binds on any frame
+ * of about 33 ms or more that lands on the steep part of the curve, so a single dropped frame can
+ * engage it. Once engaged, the fade trails the curve and ends later than 280 ms. MEASURED by an
+ * independent run on a contended host (2026-09-26): one 83.3 ms frame near the tail took a fade to
+ * 316.6 ms, and one 133.4 ms frame mid-fade took another to 316.7 ms. MODELLED, with 60 Hz frames and
+ * one long frame, as the harness measures a fade:
+ *   - an 83-100 ms frame adds at most one 60 Hz frame over the uncapped wall-clock fade;
+ *   - a 116-133 ms frame adds at most two;
+ *   - a 200-250 ms frame adds at most four.
+ * The wall-clock fade itself, the old CSS transition included, already reaches 300 ms when one 50 ms
+ * frame lands among its last frames. So "under 300 ms" is a property of the product on ordinary
+ * frames, and a stall delays the fade. The cap wins there: a cut is what the reader sees, a late
+ * fade is not. review/capture-motion.mjs judges it that way. A fade over 300 ms passes only with a
+ * host stall inside it, and only if every frame from 300 ms on ends the fade or moves the full cap. */
+export const TIER_FADE_MS = 280;
+export const TIER_FADE_EASE: EaseSpec = { name: "TIER_FADE_MS", durationMs: TIER_FADE_MS, curve: "ease-in-out" };
+
+/** A tier cross-fade, already STARTED: its value (the overlay's opacity) is 1 and it eases to 0 over
+ *  TIER_FADE_EASE from the next `stepTierFade`. */
+export function createTierFade(): EaseChannel {
+  const fade = createEaseChannel(1);
+  stepEaseChannel(fade, TIER_FADE_EASE, 0, 0);
+  return fade;
+}
+
+/**
+ * Advance a tier cross-fade by one frame of `rawMs` — the frame's REAL duration, not the render
+ * loop's 64 ms simulation clamp: the curve is the wall clock's, and the cap is the per-frame bound.
+ * Returns true while the fade is still moving; `fade.value` is exactly 0 on the frame it ends.
+ */
+export function stepTierFade(fade: EaseChannel, rawMs: number, reduced = false): boolean {
+  return stepEaseChannel(fade, TIER_FADE_EASE, 0, Number.isFinite(rawMs) ? rawMs : 0, reduced);
+}
+
+/** What the scene lends the tier-fade driver: the overlay and a timer. No DOM or WebGL in here. */
+export interface TierFadeHost {
+  /** Show the overlay at this opacity (0 < opacity < 1). */
+  write(opacity: number): void;
+  /** Remove the overlay. The driver calls it at most once. */
+  finish(): void;
+  /** The no-frames watchdog's window, ms. */
+  watchdogMs: number;
+  setTimer(fn: () => void, ms: number): unknown;
+  clearTimer(handle: unknown): void;
+}
+
+export interface TierFadeDriver {
+  /** One animation frame of `rawMs`, the frame's REAL duration. Returns true while the overlay is up. */
+  frame(rawMs: number, reduced: boolean): boolean;
+  /** Stop without calling `finish` (the scene removed the overlay itself). Idempotent. */
+  dispose(): void;
+  /** The overlay's opacity now (exactly 0 once the fade has ended). */
+  readonly value: number;
+}
+
+/**
+ * A STARTED tier cross-fade, as the scene runs it (C5, 2026-09-26). The scene calls `frame` once per
+ * animation frame, unconditionally. The driver steps the fade on `rawMs` (stepTierFade, capped at
+ * FADE_MAX_STEP per frame) and writes the overlay's opacity. It removes the overlay (`finish`) on the
+ * frame the value reaches exactly 0, never while it is above 0.
+ *
+ * THE WATCHDOG is a no-frames backstop, not a duration timer. It acts only where no frames come at
+ * all: rAF suspended in a hidden tab or a throttled frame. There the overlay would otherwise cover the
+ * fabric until frames resume, and since nothing is presented, removing it is not a visible cut. It
+ * needs TWO consecutive `watchdogMs` windows with no stepped frame. A single main-thread stall longer
+ * than the window can let the timer run before the rAF that is already due, and one strike would then
+ * remove a half-faded overlay in front of the reader.
+ *
+ * Executed with fake timers in emphasis.test.ts. scene.test.ts pins that `frame()` drives it on `raw`.
+ */
+export function createTierFadeDriver(host: TierFadeHost): TierFadeDriver {
+  const fade = createTierFade();
+  let done = false;
+  let steps = 0;
+  let seen = 0;
+  let idleWindows = 0;
+  let timer: unknown = null;
+  const stop = (): void => {
+    done = true;
+    if (timer !== null) host.clearTimer(timer);
+    timer = null;
+  };
+  const end = (): void => {
+    if (done) return;
+    stop();
+    host.finish();
+  };
+  const watchdog = (): void => {
+    timer = null;
+    if (done) return;
+    idleWindows = steps === seen ? idleWindows + 1 : 0;
+    seen = steps;
+    if (idleWindows >= 2) {
+      end();
+      return;
+    }
+    timer = host.setTimer(watchdog, host.watchdogMs);
+  };
+  timer = host.setTimer(watchdog, host.watchdogMs);
+  return {
+    frame(rawMs: number, reduced: boolean): boolean {
+      if (done) return false;
+      stepTierFade(fade, rawMs, reduced);
+      steps += 1;
+      if (fade.value === 0) {
+        end();
+        return false;
+      }
+      host.write(fade.value);
+      return true;
+    },
+    dispose(): void {
+      if (!done) stop();
+    },
+    get value(): number {
+      return fade.value;
+    },
+  };
+}
 
 /** cubic-bezier(x1, y1, x2, y2) at time fraction `x`, solved by bisection (monotone in x). */
 function cubicBezier(x1: number, y1: number, x2: number, y2: number, x: number): number {
@@ -103,16 +278,8 @@ function cubicBezier(x1: number, y1: number, x2: number, y2: number, x: number):
 export function easeFraction(curve: EaseCurve, t: number): number {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
-  return curve === "linear" ? t : cubicBezier(0.16, 1, 0.3, 1, t);
-}
-
-/**
- * The value of one ease at `elapsedMs` after it started from `from` towards `to`. Returns `to`
- * itself — not a value near it — once `elapsedMs >= durationMs`, or at once under reduced motion.
- */
-export function easeValue(spec: EaseSpec, from: number, to: number, elapsedMs: number, reduced = false): number {
-  if (reduced || elapsedMs >= spec.durationMs || from === to) return to;
-  return from + (to - from) * easeFraction(spec.curve, elapsedMs / spec.durationMs);
+  if (curve === "linear") return t;
+  return curve === "ease-in-out" ? cubicBezier(0.42, 0, 0.58, 1, t) : cubicBezier(0.16, 1, 0.3, 1, t);
 }
 
 /** One scalar eased channel (the hover rim's opacity, the halo's). */
@@ -121,10 +288,12 @@ export interface EaseChannel {
   from: number;
   to: number;
   elapsedMs: number;
+  /** The eased fraction (0..1) of the current ease the value shows — what FADE_MAX_STEP caps. */
+  fraction: number;
 }
 
 export function createEaseChannel(value = 0): EaseChannel {
-  return { value, from: value, to: value, elapsedMs: 0 };
+  return { value, from: value, to: value, elapsedMs: 0, fraction: 1 };
 }
 
 /**
@@ -134,23 +303,28 @@ export function createEaseChannel(value = 0): EaseChannel {
  *
  * determinism: `ch.elapsedMs` accumulates the render loop's frame delta, which comes from the rAF
  * clock, so a MID-ease value does depend on this machine's frame timing. What is drawn in a SETTLED
- * frame does not: `easeValue` returns `to` itself (not a value near it) once `elapsedMs` reaches the
- * duration — at once under reduced motion — and this returns true on every frame before that, which
+ * frame does not: the channel holds `to` itself (not a value near it) once its capped fraction reaches
+ * 1 — at once under reduced motion — and this returns true on every frame before that, which
  * keeps the scene dirty, so `converged()` (the settle the F6 captures wait on) cannot be reached
  * while any channel is mid-ease. An interrupted ease restarts from a timing-dependent value but
  * still ends on its target. The settled value is therefore a function of the target alone — pinned
  * by `emphasis.test.ts` ("an ease channel's settled value does not depend on this machine's frame
  * timing": steady, jittery and coarse dt sequences land bit-identically).
+ *
+ * per-frame bound: the fraction advances by at most FADE_MAX_STEP per call (`capFraction`), so one long
+ * `dt` moves the value at most 0.2 of |to - from|; the value is `to` itself once the fraction is 1.
  */
 export function stepEaseChannel(ch: EaseChannel, spec: EaseSpec, target: number, dt: number, reduced = false): boolean {
   if (target !== ch.to) {
     ch.from = ch.value;
     ch.to = target;
     ch.elapsedMs = 0;
+    ch.fraction = 0;
   }
   if (ch.value === ch.to) return false;
   ch.elapsedMs += Math.max(0, dt);
-  const next = easeValue(spec, ch.from, ch.to, ch.elapsedMs, reduced);
+  ch.fraction = capFraction(ch.fraction, spec, ch.elapsedMs, reduced);
+  const next = ch.fraction >= 1 ? ch.to : ch.from + (ch.to - ch.from) * ch.fraction;
   const moved = next !== ch.value;
   ch.value = next;
   /* Still easing counts as motion even on a frame whose value happened not to change (a flat
@@ -231,8 +405,10 @@ export interface EmphasisState {
   from: Float32Array;
   to: Float32Array;
   elapsed: Float64Array;
+  /** The eased fraction each device's value shows — what FADE_MAX_STEP caps per frame. */
+  fraction: Float64Array;
   /** The same per cable segment, keyed by batch (allocated once per batch, never per frame). */
-  segments: WeakMap<RecedeBatch, { from: Float32Array; to: Float32Array; elapsed: Float64Array }>;
+  segments: WeakMap<RecedeBatch, { from: Float32Array; to: Float32Array; elapsed: Float64Array; fraction: Float64Array }>;
 }
 
 export function createEmphasisState(deviceCount: number): EmphasisState {
@@ -245,6 +421,7 @@ export function createEmphasisState(deviceCount: number): EmphasisState {
     from: new Float32Array(deviceCount),
     to: new Float32Array(deviceCount).fill(Number.NaN),
     elapsed: new Float64Array(deviceCount),
+    fraction: new Float64Array(deviceCount),
     segments: new WeakMap(),
   };
 }
@@ -283,13 +460,18 @@ export function stepEmphasis(scene: EmphasisScene, state: EmphasisState, dt: num
       state.from[i] = cur;
       state.to[i] = tgt;
       state.elapsed[i] = 0;
+      state.fraction[i] = 0;
     }
     if (cur === tgt) continue;
     const elapsed = (state.elapsed[i] ?? 0) + step;
     state.elapsed[i] = elapsed;
     /* The last frame of an ease writes the TARGET itself and reports motion, which is what flushes
-       it to the attribute below (the F6 defect was a snap that was not flushed). */
-    state.current[i] = easeValue(RECEDE_EASE, state.from[i] ?? cur, tgt, elapsed, reduced);
+       it to the attribute below (the F6 defect was a snap that was not flushed). The fraction is
+       capped per frame (FADE_MAX_STEP), so a long frame recedes a device by at most 0.2 of its span. */
+    const f = capFraction(state.fraction[i] ?? 0, RECEDE_EASE, elapsed, reduced);
+    state.fraction[i] = f;
+    const from = state.from[i] ?? cur;
+    state.current[i] = f >= 1 ? tgt : from + (tgt - from) * f;
     devicesMoved = true;
   }
 
@@ -320,7 +502,7 @@ export function stepEmphasis(scene: EmphasisScene, state: EmphasisState, dt: num
       let track = state.segments.get(batch);
       if (track === undefined) {
         const n = batch.segmentLinkIds.length;
-        track = { from: new Float32Array(n), to: new Float32Array(n).fill(Number.NaN), elapsed: new Float64Array(n) };
+        track = { from: new Float32Array(n), to: new Float32Array(n).fill(Number.NaN), elapsed: new Float64Array(n), fraction: new Float64Array(n) };
         state.segments.set(batch, track);
       }
       let changed = false;
@@ -339,11 +521,15 @@ export function stepEmphasis(scene: EmphasisScene, state: EmphasisState, dt: num
           track.from[i] = cur;
           track.to[i] = tgt;
           track.elapsed[i] = 0;
+          track.fraction[i] = 0;
         }
         if (cur === tgt) continue;
         const elapsed = (track.elapsed[i] ?? 0) + step;
         track.elapsed[i] = elapsed;
-        const next = easeValue(RECEDE_EASE, track.from[i] ?? cur, tgt, elapsed, reduced);
+        const f = capFraction(track.fraction[i] ?? 0, RECEDE_EASE, elapsed, reduced);
+        track.fraction[i] = f;
+        const from = track.from[i] ?? cur;
+        const next = f >= 1 ? tgt : from + (tgt - from) * f;
         attr.setX(i, next);
         /* Motion until the ease ENDS, even across a frame whose float32 value did not change. */
         changed = true;

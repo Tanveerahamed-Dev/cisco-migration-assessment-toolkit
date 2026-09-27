@@ -38,6 +38,21 @@
  * summary, checkbox or radio on keyup) unless a handler cancelled the key. The real-browser
  * counterpart, reached by real Tab presses at 1440, 768 and 390 px, is
  * `node review/audit-d3-focus.mjs --self-removing`.
+ *
+ * ONE TIMEOUT IS ONE RED (acceptance F2, the load cascade). At 85-100 % host CPU one case here timed
+ * out at 37 s and the 277 cases after it all failed "the seeded flow had not been traced": Vitest
+ * does not stop a timed-out body, its act() scope closed out of order with the next case's, and
+ * React's act depth stuck so nothing committed again. Every async act() here now goes through
+ * `src/test-support/act-turns.ts` (a checkpoint on this case's own signal on each side of it), each
+ * case's work is `track()`ed, and the after-each hook settles it BEFORE touching React — so an
+ * abandoned case stops within one turn and the next one starts from a clean root.
+ *
+ * THE UNIT OF WORK. Restoring the seeded page (sometimes a full remount: ~6 s at ~99 % load) runs in
+ * the case's before-each hook, with its own budget; the case itself is focus, press and verdict.
+ * React 19's development build captures an `Error` stack for every element it creates (measured:
+ * ~25 % of this file's CPU); the synchronous React work of mounting, restoring and pressing runs
+ * with `Error.stackTraceLimit` lowered for its duration only (`reactWork`), and an error raised
+ * inside it is re-raised with a full stack of its own. Assertion stacks are untouched.
  */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -45,6 +60,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { fabric } from "../core/data";
 import { useInvestigation, type InvestigationState } from "../core/store";
+import { flushTurns, settleActTurns, track } from "../test-support/act-turns";
 import { setCharacterKeyShortcuts, setHelpOpen } from "./keyboard";
 
 vi.mock("../fabric3d/Fabric3D", () => ({ default: () => <div />, Fabric3D: () => <div /> }));
@@ -127,7 +143,6 @@ function identify(els: readonly HTMLElement[]): Stop[] {
 }
 
 const keyOf = (s: { ident: string; occurrence: number }): string => `${s.ident}${s.occurrence > 0 ? ` #${s.occurrence + 1}` : ""}`;
-const signature = (): string => identify(tabStops()).map(keyOf).join("\n");
 
 /* ── mounting and restoring ── */
 
@@ -135,13 +150,36 @@ let current: { root: Root; container: HTMLElement } | null = null;
 const MOUNT_TURNS = 50;
 let seeded: { state: InvestigationState; signature: string; search: string } | null = null;
 
-const flush = async (ms = 10, rounds = 3): Promise<void> => {
-  for (let i = 0; i < rounds; i += 1) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, ms));
-    });
+/* Checkpointed act turns: an abandoned case stops at the next one instead of opening a scope inside
+   a later case. */
+const flush = (ms = 10, rounds = 3): Promise<void> => flushTurns(ms, rounds);
+
+/**
+ * Synchronous React work (render, hydrate, a key press) with React 19 dev's per-element stack
+ * capture made cheap: `Error.stackTraceLimit` is lowered for exactly this call and restored in
+ * `finally`. Nothing else runs while it is low (the work is synchronous), and an error raised
+ * inside is re-raised from here, after the limit is restored, so its report carries a full stack.
+ */
+function reactWork<T>(work: () => T): T {
+  const limit = Error.stackTraceLimit;
+  let raised: unknown = undefined;
+  let failed = false;
+  let value: T | undefined;
+  Error.stackTraceLimit = 1;
+  try {
+    value = work();
+  } catch (e) {
+    failed = true;
+    raised = e;
+  } finally {
+    Error.stackTraceLimit = limit;
   }
-};
+  if (failed) {
+    const message = raised instanceof Error ? raised.message : String(raised);
+    throw new Error(`${message} (raised inside React work run with a 1-frame stack limit; its own stack is truncated, see cause)`, { cause: raised });
+  }
+  return value as T;
+}
 
 /** State outside the investigation store that a press can leave behind. */
 function clearGlobals(): void {
@@ -167,7 +205,7 @@ function unmount(): void {
   document.body.innerHTML = "";
 }
 
-async function mountSeeded(): Promise<void> {
+async function mountSeeded(): Promise<Stop[]> {
   unmount();
   clearGlobals();
   useInvestigation.getState().reset();
@@ -175,7 +213,7 @@ async function mountSeeded(): Promise<void> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  act(() => root.render(<App />));
+  reactWork(() => act(() => root.render(<App />)));
   current = { root, container };
   /* The restored flow is traced after the first commit; the scope bar then carries every token.
      COUNTED, not timed (acceptance F2, W6 gate 2026-09-25): the wait was a `Date.now() + 8000`
@@ -183,25 +221,40 @@ async function mountSeeded(): Promise<void> {
      count of flush turns waits for it whatever the load, and running out is a stated failure. */
   let turns = 0;
   for (; useInvestigation.getState().trace === null && turns < MOUNT_TURNS; turns += 1) await flush(10, 1);
-  if (useInvestigation.getState().trace === null) throw new Error(`the seeded flow had not been traced after ${MOUNT_TURNS} flush turns`);
+  if (useInvestigation.getState().trace === null) {
+    /* Measured over a full run at ~99 % host load: 59 of 59 mounts traced on the FIRST turn. Running
+       out of turns is therefore not a slow host; it means React is not committing. */
+    throw new Error(
+      `the seeded flow had not been traced after ${MOUNT_TURNS} flush turns: React committed no restore effect ` +
+        `(an act() scope left open or a corrupted act depth — see any [act-scope guard] error above — or the ` +
+        `restore effect itself did not run). The trace lands on the first turn when React commits, so this is ` +
+        `not the host being slow.`,
+    );
+  }
   await flush(10, 4);
-  if (seeded === null) seeded = { state: { ...useInvestigation.getState() }, signature: signature(), search: window.location.search };
+  const stops = identify(tabStops());
+  if (seeded === null) seeded = { state: { ...useInvestigation.getState() }, signature: stops.map(keyOf).join("\n"), search: window.location.search };
+  return stops;
 }
 
-/** Back to the seeded page: in place when that reproduces it exactly, by a fresh mount otherwise. */
-async function restore(): Promise<void> {
-  if (current === null || seeded === null) {
-    await mountSeeded();
-    return;
-  }
+/**
+ * Back to the seeded page: in place when that reproduces it exactly, by a fresh mount otherwise.
+ * Returns the page's tab stops, identified once (the signature check already needs them).
+ */
+async function restore(): Promise<Stop[]> {
+  if (current === null || seeded === null) return mountSeeded();
   clearGlobals();
   const s = seeded;
-  act(() => {
-    window.history.replaceState(null, "", `/${s.search}`);
-    useInvestigation.getState().hydrate(s.state);
-  });
+  reactWork(() =>
+    act(() => {
+      window.history.replaceState(null, "", `/${s.search}`);
+      useInvestigation.getState().hydrate(s.state);
+    }),
+  );
   await flush(10, 3);
-  if (signature() !== s.signature) await mountSeeded();
+  const stops = identify(tabStops());
+  if (stops.map(keyOf).join("\n") !== s.signature) return mountSeeded();
+  return stops;
 }
 
 /* ── a key press, with the browser's default action ── */
@@ -212,18 +265,20 @@ function press(el: HTMLElement, key: ActivationKey): void {
   const init: KeyboardEventInit = { key: key === "Space" ? " " : "Enter", code: key, bubbles: true, cancelable: true };
   const tag = el.tagName;
   const type = el instanceof HTMLInputElement ? el.type : "";
-  act(() => {
-    const down = el.dispatchEvent(new KeyboardEvent("keydown", init));
-    if (key === "Enter") {
-      const activates = tag === "BUTTON" || tag === "SUMMARY" || (tag === "A" && el.hasAttribute("href")) || ["submit", "button", "reset"].includes(type);
-      if (down && activates) el.click();
-      el.dispatchEvent(new KeyboardEvent("keyup", init));
-      return;
-    }
-    const up = el.dispatchEvent(new KeyboardEvent("keyup", init));
-    const activates = tag === "BUTTON" || tag === "SUMMARY" || ["checkbox", "radio", "submit", "button", "reset"].includes(type);
-    if (down && up && activates) el.click();
-  });
+  reactWork(() =>
+    act(() => {
+      const down = el.dispatchEvent(new KeyboardEvent("keydown", init));
+      if (key === "Enter") {
+        const activates = tag === "BUTTON" || tag === "SUMMARY" || (tag === "A" && el.hasAttribute("href")) || ["submit", "button", "reset"].includes(type);
+        if (down && activates) el.click();
+        el.dispatchEvent(new KeyboardEvent("keyup", init));
+        return;
+      }
+      const up = el.dispatchEvent(new KeyboardEvent("keyup", init));
+      const activates = tag === "BUTTON" || tag === "SUMMARY" || ["checkbox", "radio", "submit", "button", "reset"].includes(type);
+      if (down && up && activates) el.click();
+    }),
+  );
 }
 
 /* ── the drive ── */
@@ -243,10 +298,10 @@ const describeActive = (): string => {
   return `${a.tagName.toLowerCase()} "${nameOf(a).replace(/\s+/g, " ").slice(0, 50)}"`;
 };
 
-async function drive(target: { ident: string; occurrence: number }, key: ActivationKey): Promise<Outcome | null> {
-  await restore();
-  const el = identify(tabStops()).find((s) => s.ident === target.ident && s.occurrence === target.occurrence)?.el;
-  if (el === undefined) return null;
+/** Press one stop of the page `restore` just produced (its `stops`), from the seeded state. */
+async function drive(stops: readonly Stop[], target: { ident: string; occurrence: number }, key: ActivationKey): Promise<Outcome | null> {
+  const el = stops.find((s) => s.ident === target.ident && s.occurrence === target.occurrence)?.el;
+  if (el === undefined || !el.isConnected) return null;
   act(() => el.focus());
   if (document.activeElement !== el) return null;
   press(el, key);
@@ -302,8 +357,15 @@ beforeEach(() => {
 
 /* The seeded page is KEPT between cases — each case restores it in place (`restore`, which remounts
    when the in-place restore does not reproduce it exactly), as the single drive did between presses.
-   Only per-case globals are cleared here; the page itself goes once, after the last case. */
-afterEach(() => {
+   Only per-case globals are cleared here; the page itself goes once, after the last case.
+
+   FIRST, the case's own work is settled: a case the runner abandoned (a timeout under load) is still
+   running, parked in an act() turn. It stops at its next checkpoint, and nothing here touches React
+   until it has — clearGlobals() opens an act() scope of its own. A case that failed or was abandoned
+   may have left the page in any state, so the next case remounts rather than restoring in place. */
+afterEach(async (ctx) => {
+  await settleActTurns();
+  if (ctx.signal.aborted || ctx.task.result?.state === "fail") unmount();
   clearGlobals();
   window.matchMedia = realMatchMedia;
   vi.restoreAllMocks();
@@ -355,14 +417,25 @@ describe("D3: a control that removes itself hands focus to a visible successor",
     expect(DISCOVERED.filter((d) => d.remover).length, "precondition: the seeded scope rendered its remove controls").toBeGreaterThanOrEqual(9);
   });
 
-  for (const key of ["Enter", "Space"] as const) {
-    for (const stop of DISCOVERED) {
-      it(`${keyOf(stop)} pressed with ${key}: focus is not left on <body>${stop.remover ? ", and the remove control removes itself and hands focus on" : ""}`, async () => {
-        const o = await drive(stop, key);
-        expect(o, "the tab stop could not be found again and focused from the seeded state").not.toBeNull();
-        if (stop.remover) expect(o!.removed, "a remove control that did not remove itself").toBe(true);
-        expect(o!.ok ? "" : `${o!.stop} [${key}]${o!.removed ? " (removed itself)" : ""} -> ${o!.landed}: ${o!.why}`).toBe("");
-      });
+  describe("each tab stop, pressed from the seeded page", () => {
+    /* The seeded page is restored in each case's before-each hook: a remount is the largest unit of
+       work here (~6 s at ~99 % load, against ~1.6 s for a whole in-place case), and it gets a hook's own
+       budget instead of eating the case's. The case is the focus, the press and the verdict. */
+    let stops: Stop[] = [];
+    beforeEach(async () => {
+      stops = [];
+      stops = await track(restore());
+    });
+
+    for (const key of ["Enter", "Space"] as const) {
+      for (const stop of DISCOVERED) {
+        it(`${keyOf(stop)} pressed with ${key}: focus is not left on <body>${stop.remover ? ", and the remove control removes itself and hands focus on" : ""}`, async () => {
+          const o = await track(drive(stops, stop, key));
+          expect(o, "the tab stop could not be found again and focused from the seeded state").not.toBeNull();
+          if (stop.remover) expect(o!.removed, "a remove control that did not remove itself").toBe(true);
+          expect(o!.ok ? "" : `${o!.stop} [${key}]${o!.removed ? " (removed itself)" : ""} -> ${o!.landed}: ${o!.why}`).toBe("");
+        });
+      }
     }
-  }
+  });
 });

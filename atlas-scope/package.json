@@ -6,7 +6,7 @@
   "description": "Atlas Scope — 3D network investigation cockpit over the Cisco assessment engine's evidence snapshot.",
   "engines": { "node": ">=24.18.0" },
   "scripts": {
-    "compile:data": "node tools/compile-snapshot.mjs",
+    "compile:data": "node tools/compile-all.mjs",
     "dev": "vite",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.config.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit --noImplicitAny && tsc -p tsconfig.config.json --noEmit",

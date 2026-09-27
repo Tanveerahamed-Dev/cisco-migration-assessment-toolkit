@@ -13,9 +13,12 @@
  * Found by the 2026-09-21 auditor (B1).
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
+
+const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface Graded {
   severity?: unknown;
@@ -25,7 +28,8 @@ interface SourceSnapshot {
   cross_layer?: Graded[];
 }
 
-const SNAPSHOT = resolve(process.cwd(), "../webapp/sample_data/sample_fleet.snapshot.json");
+/* The dataset under test: the file the compiled model names (`meta.source`), not a typed path (R7). */
+const SNAPSHOT = resolve(PKG, "..", fabric.meta.source);
 const source = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as SourceSnapshot;
 
 const stated = (v: unknown): boolean => typeof v === "string" && v.trim() !== "" && !/^\s*(N\/A|unknown|\[NOT OBSERVED\]|-)\s*$/i.test(v);

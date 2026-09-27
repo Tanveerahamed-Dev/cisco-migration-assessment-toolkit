@@ -811,6 +811,47 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
     expect(frameBody).toMatch(/warmupFrames -= 1;\s*requestFrame\(\);/);
   });
 
+  it("the tier fade is STEPPED by the render loop on the frame's real duration, never a CSS transition (C5, 2026-09-26)", () => {
+    /* Graded at 7f67013: opacity 1 -> 0.64 across one 116.6 ms frame, because the fade was a CSS
+       transition on the wall clock. The per-frame bound is `stepTierFade` (emphasis.ts, stepped
+       under hostile frame sequences in emphasis.test.ts); what is pinned here is that the scene
+       drives the overlay through it — with `raw`, not the 64 ms-clamped `dt` — and nowhere else. */
+    const snap = source.slice(source.indexOf("function snapshotForTierFade(): void {"), source.indexOf("\n  function releaseTierFade("));
+    const release = source.slice(source.indexOf("function releaseTierFade(now: number): void {"), source.indexOf("\n  function applyQuality("));
+    for (const [where, text] of [["snapshotForTierFade", snap], ["releaseTierFade", release]] as const) {
+      expect(text, `${where} sets a CSS transition on the overlay`).not.toMatch(/\.transition\s*=/);
+      expect(text, `${where} removes the overlay on a timer tied to the fade's duration`).not.toMatch(/TIER_FADE_MS\s*\+/);
+    }
+    expect(source, "scene.ts declares its own tier-fade duration instead of the ease owner's").not.toMatch(/const TIER_FADE_MS\s*=/);
+    /* The overlay is run by the ease owner's driver (`createTierFadeDriver`, executed with fake timers
+       in emphasis.test.ts: step on raw, write, remove at exactly 0, the two-window watchdog). What is
+       pinned here is the wiring a unit test cannot reach: the release starts it, its host writes the
+       overlay and removes it through clearTierFade, and frame() drives it on every frame. */
+    expect(release).toMatch(/fade\.driver = createTierFadeDriver\(\{/);
+    expect(release).toMatch(/write: \(opacity\) => \{\s*fade\.el\.style\.opacity = String\(opacity\);\s*\}/);
+    expect(release).toMatch(/finish: \(\) => \{\s*if \(tierFade === fade\) clearTierFade\(\);\s*\}/);
+    expect(release).toMatch(/watchdogMs: TIER_FADE_HOLD_DEFAULTS\.maxHoldMs/);
+    expect(snap + release + frameBody, "scene.ts steps or times the fade itself instead of through the driver").not.toMatch(/stepTierFade\(|createTierFade\(\)|idleWindows/);
+    const clear = source.slice(source.indexOf("function clearTierFade(): void {"), source.indexOf("\n  /** Copy the frame the OLD tier draws."));
+    expect(clear, "removing the overlay stops its driver").toMatch(/tierFade\.driver\?\.dispose\(\);/);
+    /* UNCONDITIONAL: a statement of frame()'s own body (4-space indent), not inside an if. A guard in
+       front of it (the verifier's `&& lastNow < 0` mutation) would leave the overlay at opacity 1. */
+    const step = frameBody.search(/\n {4}tierFade\?\.driver\?\.frame\(raw, reducedMotion\);\n/);
+    expect(step, "frame() drives the tier fade, unconditionally, with the frame's raw duration").toBeGreaterThan(-1);
+    /* Before every early return of the frame (the idle, warm-up, yield and step-down paths), so the
+       fade advances on frames that render nothing — the overlay is DOM and owes no WebGL render. */
+    const firstReturn = frameBody.search(/\n\s*if \(landHeldStepDown\(now\)\) return;/);
+    expect(firstReturn).toBeGreaterThan(-1);
+    expect(step).toBeLessThan(firstReturn);
+    /* Code only (comments stripped): the one `return` above it is `if (disposed) return;`. */
+    const code = frameBody.slice(0, firstReturn).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code.match(/\breturn\b/g) ?? [], "an early return before the fade is stepped").toEqual(["return"]);
+    expect(code).toMatch(/if \(disposed\) return;/);
+    /* The overlay leaves on the frame the fade reaches exactly 0, not on a timer. That is the driver's
+       rule (emphasis.test.ts), reached through the one call above. */
+    expect(frameBody.match(/\.driver\?\.frame\(/g) ?? [], "the fade is driven once per frame").toHaveLength(1);
+  });
+
   it("a held step-down lands only with the camera at rest — before the gate, so its 6 s backstop cannot land it mid-orbit", () => {
     const land = source.slice(source.indexOf("function landHeldStepDown(now: number): boolean {"), source.indexOf("\n  /**", source.indexOf("function landHeldStepDown(now: number): boolean {")));
     const rest = land.indexOf("if (cameraRig.isTweening() || now - lastCameraMotionAt < MOTION_HOLD_MS) return false;");

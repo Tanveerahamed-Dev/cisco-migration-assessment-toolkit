@@ -331,6 +331,27 @@ describe("C5: a creeping camera's frames are blended with the last, and a still 
     expect(creepThen({ stepPx: 0.75, frameMs: 1000 / 60 })).toBeLessThanOrEqual(historyWeightFor(0.75));
   });
 
+  /* MEASURED (engine gate, 2026-09-27; the E2E3 verifier's D2): a headed browser at a forced 1.261
+     window scale with the page emulated at DSF 1 (devicePixelRatio 0.9999999908) never reported
+     `converged` — 60 fps for as long as it was watched, historyWeight pinned at 8.618e-12. OrbitControls
+     re-derives the pose through spherical coordinates on every update(), so at some poses the camera
+     moves by a rounding error every frame while every owner (the rig's POSE_EPS, OrbitControls' own
+     EPS) calls it still; 8.618e-12 = 0.75 * step / 0.02 puts that step at 2.3e-13 drawing-buffer px.
+     A history for float noise is a weight that never drains, so the scene owed a plain frame forever. */
+  it("a step below the float-noise floor is a still camera: its weight drains to exactly 0 (the scene can converge)", () => {
+    expect(HISTORY_AA.stillBelowPx).toBeGreaterThan(0);
+    /* The floor sits far below any step the blend exists for (the creep ramp starts at fullFromPx)... */
+    expect(HISTORY_AA.stillBelowPx).toBeLessThanOrEqual(HISTORY_AA.fullFromPx / 1000);
+    /* ...and the weight it withholds could not move an 8-bit channel by half a step. */
+    expect(HISTORY_AA.weight * (HISTORY_AA.stillBelowPx / HISTORY_AA.fullFromPx)).toBeLessThan(0.5 / 255);
+    for (const noise of [2.298e-13, 1e-12, HISTORY_AA.stillBelowPx / 2]) expect(historyWeightFor(noise)).toBe(0);
+    expect(historyWeightFor(HISTORY_AA.stillBelowPx)).toBeGreaterThan(0);
+    /* The measured case, driven frame by frame after a creep: the weight drains on the stated step to 0. */
+    const ws = drive([...creep(20, 0.2), ...creep(12, 2.298e-13)]);
+    expect(ws.at(-1), `weights ${ws.map((w) => w.toExponential(2)).join(" ")}`).toBe(0);
+    expect(Math.max(...jumps(ws))).toBeLessThanOrEqual(HISTORY_AA.maxStepPerFrame + 1e-12);
+  });
+
   it("at full weight, a pixel SMAA toggles by 80 levels every frame steps by less than the flip rule's 12", async () => {
     const { T } = (await import(/* @vite-ignore */ pathToFileURL(resolve(process.cwd(), "review", "capture-motion.mjs")).href)) as { T: { FLIP_DELTA: number } };
     const w = HISTORY_AA.weight;

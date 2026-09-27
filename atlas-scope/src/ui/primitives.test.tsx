@@ -18,6 +18,7 @@ import {
   Button,
   Cite,
   Dialog,
+  Disclosure,
   IconButton,
   Meter,
   NotObserved,
@@ -25,6 +26,7 @@ import {
   Sparkline,
   SeverityBadge,
   StateDot,
+  TabPanel,
   Tabs,
   Toolbar,
   Tooltip,
@@ -352,6 +354,66 @@ describe("Tooltip", () => {
     );
     focus(container.querySelector("button")!);
     expect(onFocus).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ══ a subtree hidden while it holds focus (the third door, src/app/focus-return.ts) ═══════ */
+
+describe("TabPanel / Disclosure / Tooltip never strand focus", () => {
+  function TabsHarness({ tab }: { tab: string }): ReactNode {
+    return (
+      <>
+        <Tabs id="h" label="Views" value={tab} onChange={() => {}} items={[{ id: "a", label: "A" }, { id: "b", label: "B" }]} />
+        <TabPanel id="h" tabId="a" active={tab === "a"}>
+          <button type="button" id="in-a">inside A</button>
+        </TabPanel>
+        <TabPanel id="h" tabId="b" active={tab === "b"}>
+          <button type="button" id="in-b">inside B</button>
+        </TabPanel>
+      </>
+    );
+  }
+
+  it("a tab panel hidden by its owner while focus is inside it hands focus to the selected tab, never <body>", () => {
+    const { render } = mount(<TabsHarness tab="a" />);
+    focus(document.getElementById("in-a")!);
+    render(<TabsHarness tab="b" />);
+    expect(document.getElementById("h-panel-a")!.hidden).toBe(true);
+    expect(document.activeElement).toBe(document.getElementById("h-tab-b"));
+  });
+
+  it("a controlled disclosure closed by its owner while focus is in its region hands focus to its trigger", () => {
+    const harness = (open: boolean): ReactNode => (
+      <Disclosure summary="More" open={open} onOpenChange={() => {}}>
+        <button type="button" id="in-region">inside</button>
+      </Disclosure>
+    );
+    const { container, render } = mount(harness(true));
+    focus(document.getElementById("in-region")!);
+    render(harness(false));
+    expect(container.querySelector<HTMLElement>(".ui-disclosure__region")!.hidden).toBe(true);
+    expect(document.activeElement).toBe(container.querySelector(".ui-disclosure__trigger"));
+  });
+
+  it("an Escape that dismisses an open tooltip is consumed, so the global Escape does not also close a surface", () => {
+    const { container } = mount(
+      <Tooltip content="hint">
+        <Button>Trigger</Button>
+      </Tooltip>,
+    );
+    const btn = container.querySelector("button")!;
+    const press = (): KeyboardEvent => {
+      const e = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      act(() => {
+        btn.dispatchEvent(e);
+      });
+      return e;
+    };
+    focus(btn);
+    expect(document.querySelector('[role="tooltip"]')).not.toBeNull();
+    expect(press().defaultPrevented, "the dismissing Escape").toBe(true);
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(press().defaultPrevented, "an Escape with no tooltip open is left to the app").toBe(false);
   });
 });
 

@@ -22,9 +22,12 @@
  * either" — rather than the implementation of a helper.
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
+
+const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface SourcePort {
   switch?: unknown;
@@ -47,8 +50,10 @@ interface SourceSnapshot {
 }
 
 /* The real producer's output, not a fixture shaped like it: a hand-written fixture in the shape
-   the compiler expects agrees with the compiler's bugs. */
-const SNAPSHOT = resolve(process.cwd(), "../webapp/sample_data/sample_fleet.snapshot.json");
+   the compiler expects agrees with the compiler's bugs. It is the dataset UNDER TEST — the file the
+   compiled model names (`meta.source`, repository-relative) — not a path typed here and not one
+   relative to whatever directory the runner happened to start in (R7). */
+const SNAPSHOT = resolve(PKG, "..", fabric.meta.source);
 const source = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as SourceSnapshot;
 
 /** Every way the engine writes "I did not collect this". */
@@ -159,7 +164,9 @@ describe("a missing bridge flag is not a safety claim", () => {
     /* `Boolean(cen.is_bridge)` on a present-but-empty field renders "Cutting it partitions: no"
        and is announced as "A redundant path exists around this link" — a safety claim derived from
        silence. Not reachable in this snapshot, which is why it needs a test rather than a look. */
-    const compilerSource = readFileSync(resolve(process.cwd(), "tools/compile-snapshot.mjs"), "utf8");
+    /* The compile logic moved (2026-09-26) from tools/compile-snapshot.mjs into the one pure compiler;
+       the pin moves with the code it pins rather than going vacuous on a now-thin wrapper. */
+    const compilerSource = readFileSync(resolve(PKG, "tools", "lib", "compile-model.mjs"), "utf8");
     expect(compilerSource).not.toMatch(/isBridge:\s*cen\s*\?\s*Boolean\(/);
     expect(compilerSource).toMatch(/isBridge:\s*cen\s*&&\s*typeof cen\.is_bridge === "boolean"/);
   });

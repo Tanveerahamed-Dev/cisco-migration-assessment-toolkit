@@ -56,6 +56,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { checkBuildFreshness } from "./build-freshness.mjs";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 import {
   FULL_RATE_MAX_RAF_MS,
   createLoadMeter,
@@ -194,6 +195,9 @@ await page.waitForSelector("canvas", { timeout: 25000 });
 /* Let the cold load finish. The warm-up (scene.ts) deliberately spends several frames linking
    programs before the first painted frame, and those frames are not the subject of E4. */
 await page.waitForTimeout(9000);
+/* ...and the command palette's one-time pre-warm raster (with its program compile) is over, so it is
+   not counted as the scene's frames (review/palette-warm.mjs). Throws when it never parks. */
+await awaitPaletteWarm(page);
 
 if (FULLBLEED) {
   /* The app's own route to a wide fabric: the single-column ladder hides the rails below 1024, and

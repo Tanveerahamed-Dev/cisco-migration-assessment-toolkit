@@ -780,6 +780,22 @@
    "hosts": [
     "access1",
     "core1"
+   ],
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "access1",
+     "ref": "/interfaces/access1/Gi0~11",
+     "role": "subject",
+     "cite": "access1 Gi0/1 (single-fiber uplink)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (sole gateway SVI, VLAN 30)"
+    }
    ]
   },
   {
@@ -791,6 +807,22 @@
    "recommendation": "Treat as a top migration risk: stage redundancy at every implicated layer before cutover.",
    "hosts": [
     "core1"
+   ],
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (L1 leg of the stacked SPOF)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (L3 leg of the stacked SPOF)"
+    }
    ]
   },
   {
@@ -802,6 +834,15 @@
    "recommendation": "Add an FHRP peer (HSRP/VRRP/GLBP) or confirm a redundant off-scan gateway.",
    "hosts": [
     "core1"
+   ],
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (sole gateway SVI, VLAN 30, no FHRP)"
+    }
    ]
   },
   {
@@ -813,6 +854,15 @@
    "recommendation": "Investigate the affected port; instability here affects every VLAN gatewayed by this switch.",
    "hosts": [
     "core1"
+   ],
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (err-disabled / high-error port on a gateway switch)"
+    }
    ]
   }
  ],
@@ -1928,10 +1978,10 @@
     "members": [
      {
       "source_group_key": "HSRP:Vlan10:10",
-      "virtual_ip": "10.0.10.1",
-      "protocol": "HSRP",
       "interface": "Vlan10",
       "projection_custody": "embedded_unverified",
+      "svi_ip": "10.0.10.2/24",
+      "participation": "positive",
       "findings": [
        {
         "kind": "not_verified",
@@ -1939,19 +1989,19 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "local_status": "not_verified",
       "role": "ACTIVE",
       "group": "10",
       "switch": "core1",
-      "svi_ip": "10.0.10.2/24",
-      "participation": "positive"
+      "virtual_ip": "10.0.10.1",
+      "local_status": "not_verified",
+      "protocol": "HSRP"
      },
      {
       "source_group_key": "HSRP:Vlan10:10",
-      "virtual_ip": "10.0.10.1",
-      "protocol": "HSRP",
       "interface": "Vlan10",
       "projection_custody": "embedded_unverified",
+      "svi_ip": "10.0.10.3/24",
+      "participation": "positive",
       "findings": [
        {
         "kind": "not_verified",
@@ -1959,12 +2009,12 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "local_status": "not_verified",
       "role": "STANDBY",
       "group": "10",
       "switch": "core2",
-      "svi_ip": "10.0.10.3/24",
-      "participation": "positive"
+      "virtual_ip": "10.0.10.1",
+      "local_status": "not_verified",
+      "protocol": "HSRP"
      }
     ],
     "findings": [
@@ -1993,10 +2043,10 @@
     "members": [
      {
       "source_group_key": "HSRP:Vlan20:20",
-      "virtual_ip": "10.0.20.1",
-      "protocol": "HSRP",
       "interface": "Vlan20",
       "projection_custody": "embedded_unverified",
+      "svi_ip": "10.0.20.2/24",
+      "participation": "positive",
       "findings": [
        {
         "kind": "not_verified",
@@ -2004,19 +2054,19 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "local_status": "not_verified",
       "role": "STANDBY",
       "group": "20",
       "switch": "core1",
-      "svi_ip": "10.0.20.2/24",
-      "participation": "positive"
+      "virtual_ip": "10.0.20.1",
+      "local_status": "not_verified",
+      "protocol": "HSRP"
      },
      {
       "source_group_key": "HSRP:Vlan20:20",
-      "virtual_ip": "10.0.20.1",
-      "protocol": "HSRP",
       "interface": "Vlan20",
       "projection_custody": "embedded_unverified",
+      "svi_ip": "10.0.20.3/24",
+      "participation": "positive",
       "findings": [
        {
         "kind": "not_verified",
@@ -2024,12 +2074,12 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "local_status": "not_verified",
       "role": "ACTIVE",
       "group": "20",
       "switch": "core2",
-      "svi_ip": "10.0.20.3/24",
-      "participation": "positive"
+      "virtual_ip": "10.0.20.1",
+      "local_status": "not_verified",
+      "protocol": "HSRP"
      }
     ],
     "findings": [
@@ -6182,7 +6232,8 @@
     "label": "No QoS configured anywhere",
     "severity": "Low",
     "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
-    "recommendation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration."
+    "recommendation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
+    "evidence_basis": "absence"
    }
   ],
   "summary": {
@@ -6417,6 +6468,64 @@
     "OSPF High (-10)",
     "weak-user-pw high (-8)"
    ],
+   "deduction_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (err-disabled)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/l3_forwarding/2",
+     "role": "derived_from",
+     "cite": "core1 L3 forwarding row VLAN 30 (single-gateway)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/0",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-01 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/1",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-09 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/2",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-03 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/3",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-07 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/protocol_health/3",
+     "role": "derived_from",
+     "cite": "core1 OSPF protocol-health row"
+    },
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/6",
+     "role": "derived_from",
+     "cite": "core1 security check weak-user-pw (fail)"
+    }
+   ],
    "data_quality": 1.0
   },
   {
@@ -6435,6 +6544,64 @@
     "no-logging low (-1)",
     "no-banner low (-1)"
    ],
+   "deduction_refs": [
+    {
+     "kind": "interface",
+     "host": "access1",
+     "ref": "/interfaces/access1/Gi0~11",
+     "role": "subject",
+     "cite": "access1 Gi0/1 (single-fiber-uplink)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "access1",
+     "ref": "/cross_layer/0",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-01 row"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/0",
+     "role": "derived_from",
+     "cite": "access1 security check password-encryption (fail)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/1",
+     "role": "derived_from",
+     "cite": "access1 security check no-aaa (fail)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/9",
+     "role": "derived_from",
+     "cite": "access1 security check vty-hardening (fail)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/2",
+     "role": "derived_from",
+     "cite": "access1 security check no-ntp (fail)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/3",
+     "role": "derived_from",
+     "cite": "access1 security check no-logging (fail)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/4",
+     "role": "derived_from",
+     "cite": "access1 security check no-banner (fail)"
+    }
+   ],
    "data_quality": 1.0
   },
   {
@@ -6444,6 +6611,7 @@
    "role": "distribution",
    "criticality": 1.2,
    "deductions": [],
+   "deduction_refs": [],
    "data_quality": 1.0
   }
  ],
@@ -10236,6 +10404,23 @@
    "title": "CR-01: End-of-support keystone",
    "detail": "Hardware is past last-day-of-support AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0",
+     "role": "derived_from",
+     "cite": "core1 device risk dossier"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0/compound/0",
+     "role": "derived_from",
+     "cite": "core1 compound-risk pattern CR-01"
+    }
+   ],
    "priority": 1
   },
   {
@@ -10250,6 +10435,30 @@
    "title": "VLAN 30: single-fiber uplink to a sole gateway",
    "detail": "VLAN 30's only L3 gateway is core1 (no FHRP); access1 Gi0/1 reach the fabric over a single non-redundant fiber.",
    "remediation": "",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "access1",
+     "ref": "/interfaces/access1/Gi0~11",
+     "role": "subject",
+     "cite": "access1 Gi0/1 (single-fiber uplink)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (sole gateway SVI, VLAN 30)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/cross_layer/0",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-01 row"
+    }
+   ],
    "priority": 2
   },
   {
@@ -10263,6 +10472,30 @@
    "title": "core1: stacked single point of failure across L1, L3",
    "detail": "core1 is implicated at multiple layers at once (L1, L3) - its loss compounds physical, switching, and/or routing failure.",
    "remediation": "",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (L1 leg of the stacked SPOF)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (L3 leg of the stacked SPOF)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/cross_layer/1",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-09 row"
+    }
+   ],
    "priority": 3
   },
   {
@@ -10276,6 +10509,23 @@
    "title": "CR-02: Failing hardware past support",
    "detail": "Critical health score on hardware that is past last-day-of-support \u2014 no standard TAC escalation path when it degrades further.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0",
+     "role": "derived_from",
+     "cite": "core1 device risk dossier"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0/compound/1",
+     "role": "derived_from",
+     "cite": "core1 compound-risk pattern CR-02"
+    }
+   ],
    "priority": 4
   },
   {
@@ -10289,6 +10539,23 @@
    "title": "CR-03: Root bridge on degraded hardware",
    "detail": "STP root for 1 VLAN(s) on a device with Critical health \u2014 a root failure reconverges every VLAN it anchors.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0",
+     "role": "derived_from",
+     "cite": "core1 device risk dossier"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0/compound/2",
+     "role": "derived_from",
+     "cite": "core1 compound-risk pattern CR-03"
+    }
+   ],
    "priority": 5
   },
   {
@@ -10302,6 +10569,23 @@
    "title": "CR-04: Open advisory surface on a high-impact asset",
    "detail": "Config-evidenced advisory surface is open AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 validate with the Cisco PSIRT Software Checker before the window.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0",
+     "role": "derived_from",
+     "cite": "core1 device risk dossier"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0/compound/3",
+     "role": "derived_from",
+     "cite": "core1 compound-risk pattern CR-04"
+    }
+   ],
    "priority": 6
   },
   {
@@ -10316,6 +10600,23 @@
    "detail": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
    "source_command": "show running-config",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "config_text",
+     "host": "core1",
+     "ref": "/config_hygiene/core1/undefined/0/context",
+     "role": "subject",
+     "cite": "core1 referencing configuration line"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/config_hygiene/core1/undefined/0",
+     "role": "derived_from",
+     "cite": "core1 config-hygiene undefined reference #0"
+    }
+   ],
    "priority": 7
   },
   {
@@ -10330,6 +10631,23 @@
    "detail": "Referenced (router bgp 65001) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
    "source_command": "show running-config",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "config_text",
+     "host": "core1",
+     "ref": "/config_hygiene/core1/undefined/1/context",
+     "role": "subject",
+     "cite": "core1 referencing configuration line"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/config_hygiene/core1/undefined/1",
+     "role": "derived_from",
+     "cite": "core1 config-hygiene undefined reference #1"
+    }
+   ],
    "priority": 8
   },
   {
@@ -10343,6 +10661,23 @@
    "title": "VLAN 30: sole gateway core1 with no FHRP",
    "detail": "core1 is the only in-scan L3 gateway for VLAN 30; loss drops the default gateway for every VLAN 30 host.",
    "remediation": "",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (sole gateway SVI, VLAN 30, no FHRP)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/cross_layer/2",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-03 row"
+    }
+   ],
    "priority": 9
   },
   {
@@ -10356,6 +10691,72 @@
    "title": "Critical-health switch",
    "detail": "Health score 3 (Critical band).",
    "remediation": "Resolve the deductions above before migrating this device.",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (err-disabled)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/6",
+     "role": "derived_from",
+     "cite": "core1 security check weak-user-pw (fail)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/0",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-01 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/1",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-09 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/2",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-03 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/cross_layer/3",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-07 row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/health_scores/0",
+     "role": "derived_from",
+     "cite": "core1 health score row"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/l3_forwarding/2",
+     "role": "derived_from",
+     "cite": "core1 L3 forwarding row VLAN 30 (single-gateway)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/protocol_health/3",
+     "role": "derived_from",
+     "cite": "core1 OSPF protocol-health row"
+    }
+   ],
    "priority": 10
   },
   {
@@ -10369,6 +10770,16 @@
    "title": "BGPv6 2001:db8:0:9::9 state Active degraded before cutover",
    "detail": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
    "remediation": "",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "adjacency",
+     "host": "access1",
+     "ref": "/ipv6_routing_adjacency_baseline/rows/4",
+     "role": "subject",
+     "cite": "access1 BGPv6 adjacency receipt row"
+    }
+   ],
    "priority": 11
   },
   {
@@ -10382,6 +10793,16 @@
    "title": "OSPFv3 10.0.0.9 state EXSTART/- degraded before cutover",
    "detail": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
    "remediation": "",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "adjacency",
+     "host": "access1",
+     "ref": "/ipv6_routing_adjacency_baseline/rows/2",
+     "role": "subject",
+     "cite": "access1 OSPFv3 adjacency receipt row"
+    }
+   ],
    "priority": 12
   },
   {
@@ -10396,6 +10817,16 @@
    "detail": "L1 risk 'err-disabled' on 1 switch(es).",
    "remediation": "",
    "source_command": "show interface status",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (err-disabled)"
+    }
+   ],
    "priority": 13
   },
   {
@@ -10410,6 +10841,23 @@
    "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
    "remediation": "Add gateway / FHRP redundancy.",
    "source_command": "show ip route",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (gateway SVI, single-gateway)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/l3_forwarding/2",
+     "role": "derived_from",
+     "cite": "core1 L3 forwarding row VLAN 30 (single-gateway)"
+    }
+   ],
    "priority": 14
   },
   {
@@ -10424,6 +10872,16 @@
    "detail": "2 event(s) in the collected log window.",
    "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
    "source_command": "show logging",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/syslog_intelligence/detections/1",
+     "role": "derived_from",
+     "cite": "core1 Operational logs finding row (mac-flap)"
+    }
+   ],
    "priority": 15
   },
   {
@@ -10438,6 +10896,16 @@
    "detail": "1 event(s) in the collected log window.",
    "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
    "source_command": "show logging",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/syslog_intelligence/detections/0",
+     "role": "derived_from",
+     "cite": "core1 Operational logs finding row (err-disable)"
+    }
+   ],
    "priority": 16
   },
   {
@@ -10451,6 +10919,16 @@
    "title": "OSPF high",
    "detail": "10.0.99.9 EXSTART/DROTHER",
    "remediation": "",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/protocol_health/3",
+     "role": "derived_from",
+     "cite": "core1 OSPF protocol-health row"
+    }
+   ],
    "priority": 17
   },
   {
@@ -10465,6 +10943,16 @@
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
    "source_command": "show running-config",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/6",
+     "role": "derived_from",
+     "cite": "core1 security check weak-user-pw (fail; matched line not retained in the snapshot)"
+    }
+   ],
    "priority": 18
   },
   {
@@ -10479,6 +10967,16 @@
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
    "source_command": "show running-config",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/7",
+     "role": "derived_from",
+     "cite": "core1 security check insecure-snmp (fail; matched line not retained in the snapshot)"
+    }
+   ],
    "priority": 19
   },
   {
@@ -10493,6 +10991,16 @@
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
    "source_command": "show running-config",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/8",
+     "role": "derived_from",
+     "cite": "core1 security check telnet-enabled (fail; matched line not retained in the snapshot)"
+    }
+   ],
    "priority": 20
   },
   {
@@ -10507,6 +11015,23 @@
    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
    "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
    "source_command": "show version",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "config_text",
+     "host": "core1",
+     "ref": "/software_risk/findings/0/evidence",
+     "role": "subject",
+     "cite": "core1 configuration line (http-server)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/software_risk/findings/0",
+     "role": "derived_from",
+     "cite": "core1 Software exposure finding row (http-server)"
+    }
+   ],
    "priority": 21
   },
   {
@@ -10520,6 +11045,23 @@
    "title": "CR-06: Layered config debt on a critical asset",
    "detail": "2 config-truth axes are off-baseline AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 drift on the box you can least afford to misjudge.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0",
+     "role": "derived_from",
+     "cite": "core1 device risk dossier"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/device_dossiers/per_device/0/compound/4",
+     "role": "derived_from",
+     "cite": "core1 compound-risk pattern CR-06"
+    }
+   ],
    "priority": 22
   },
   {
@@ -10533,6 +11075,23 @@
    "title": "core1: L1 fault on an L3 gateway switch",
    "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
    "remediation": "",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~19",
+     "role": "subject",
+     "cite": "core1 Gi1/0/9 (err-disabled / high-error port on a gateway switch)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/cross_layer/3",
+     "role": "derived_from",
+     "cite": "cross-layer rule CL-07 row"
+    }
+   ],
    "priority": 23
   },
   {
@@ -10548,6 +11107,44 @@
    "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
    "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
    "source_command": "show standby brief",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan10",
+     "role": "subject",
+     "cite": "core1 Vlan10 (FHRP member SVI)"
+    },
+    {
+     "kind": "interface",
+     "host": "core2",
+     "ref": "/interfaces/core2/Vlan10",
+     "role": "subject",
+     "cite": "core2 Vlan10 (FHRP member SVI)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/fhrp/0",
+     "role": "derived_from",
+     "cite": "FHRP domain row VLAN 10"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/fhrp/0/members/0",
+     "role": "derived_from",
+     "cite": "core1 FHRP member row VLAN 10"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core2",
+     "ref": "/fhrp/0/members/1",
+     "role": "derived_from",
+     "cite": "core2 FHRP member row VLAN 10"
+    }
+   ],
    "priority": 24
   },
   {
@@ -10563,6 +11160,44 @@
    "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
    "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
    "source_command": "show standby brief",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan20",
+     "role": "subject",
+     "cite": "core1 Vlan20 (FHRP member SVI)"
+    },
+    {
+     "kind": "interface",
+     "host": "core2",
+     "ref": "/interfaces/core2/Vlan20",
+     "role": "subject",
+     "cite": "core2 Vlan20 (FHRP member SVI)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/fhrp/1",
+     "role": "derived_from",
+     "cite": "FHRP domain row VLAN 20"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/fhrp/1/members/0",
+     "role": "derived_from",
+     "cite": "core1 FHRP member row VLAN 20"
+    },
+    {
+     "kind": "analysis_row",
+     "host": "core2",
+     "ref": "/fhrp/1/members/1",
+     "role": "derived_from",
+     "cite": "core2 FHRP member row VLAN 20"
+    }
+   ],
    "priority": 25
   },
   {
@@ -10577,6 +11212,16 @@
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
    "source_command": "show interface status",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "access1",
+     "ref": "/interfaces/access1/Gi0~11",
+     "role": "subject",
+     "cite": "access1 Gi0/1 (single-fiber-uplink)"
+    }
+   ],
    "priority": 26
   },
   {
@@ -10591,6 +11236,16 @@
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
    "source_command": "show logging",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "access1",
+     "ref": "/syslog_intelligence/detections/2",
+     "role": "derived_from",
+     "cite": "access1 Operational logs finding row (duplex-mismatch)"
+    }
+   ],
    "priority": 27
   },
   {
@@ -10605,6 +11260,16 @@
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
    "source_command": "show logging",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/syslog_intelligence/detections/4",
+     "role": "derived_from",
+     "cite": "core1 Operational logs finding row (link-flap)"
+    }
+   ],
    "priority": 28
   },
   {
@@ -10619,6 +11284,16 @@
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
    "source_command": "show logging",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "access1",
+     "ref": "/syslog_intelligence/detections/3",
+     "role": "derived_from",
+     "cite": "access1 Operational logs finding row (login-fail)"
+    }
+   ],
    "priority": 29
   },
   {
@@ -10632,6 +11307,16 @@
    "title": "Control-plane CPU elevated",
    "detail": "CPU 63% (show processes cpu (5-min avg)).",
    "remediation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role.",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": "core1",
+     "ref": "/platform_health/findings/0",
+     "role": "derived_from",
+     "cite": "core1 Platform capacity finding row (elevated-cpu)"
+    }
+   ],
    "priority": 30
   },
   {
@@ -10647,6 +11332,23 @@
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
    "source_command": "show spanning-tree",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Vlan30",
+     "role": "subject",
+     "cite": "core1 Vlan30 (VLAN 30 gateway SVI)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/stp_roots/access1/30",
+     "role": "subject",
+     "cite": "access1 STP root record VLAN 30"
+    }
+   ],
    "priority": 31
   },
   {
@@ -10661,6 +11363,16 @@
    "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
    "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting.",
    "source_command": "show running-config",
+   "evidence_basis": "absence",
+   "evidence_refs": [
+    {
+     "kind": "absence_witness",
+     "host": "access1",
+     "ref": "/security/access1/findings/1",
+     "role": "witness",
+     "cite": "access1 security check no-aaa (fail: line looked for and not present)"
+    }
+   ],
    "priority": 32
   },
   {
@@ -10675,6 +11387,16 @@
    "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
    "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9.",
    "source_command": "show running-config",
+   "evidence_basis": "absence",
+   "evidence_refs": [
+    {
+     "kind": "absence_witness",
+     "host": "access1",
+     "ref": "/security/access1/findings/0",
+     "role": "witness",
+     "cite": "access1 security check password-encryption (fail: line looked for and not present)"
+    }
+   ],
    "priority": 33
   },
   {
@@ -10689,6 +11411,16 @@
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
    "source_command": "show running-config",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/10",
+     "role": "derived_from",
+     "cite": "core1 security check risky-services (fail; matched line not retained in the snapshot)"
+    }
+   ],
    "priority": 34
   },
   {
@@ -10704,6 +11436,23 @@
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
    "source_command": "show running-config",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/security/access1/findings/9",
+     "role": "derived_from",
+     "cite": "access1 security check vty-hardening (fail; matched line not retained in the snapshot)"
+    },
+    {
+     "kind": "device_fact",
+     "host": "core1",
+     "ref": "/security/core1/findings/9",
+     "role": "derived_from",
+     "cite": "core1 security check vty-hardening (fail; matched line not retained in the snapshot)"
+    }
+   ],
    "priority": 35
   },
   {
@@ -10719,6 +11468,44 @@
    "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
    "detail": "4 operationally-trunking port(s) (live trunk status) across 3 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",
    "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk.",
+   "evidence_basis": "record",
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "access1",
+     "ref": "/interfaces/access1/Gi0~11",
+     "role": "subject",
+     "cite": "access1 Gi0/1 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~124",
+     "role": "subject",
+     "cite": "core1 Gi1/0/24 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Po1",
+     "role": "subject",
+     "cite": "core1 Po1 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "interface",
+     "host": "core2",
+     "ref": "/interfaces/core2/Po1",
+     "role": "subject",
+     "cite": "core2 Po1 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/operational_drift/0",
+     "role": "derived_from",
+     "cite": "operational-drift finding row"
+    }
+   ],
    "priority": 36
   },
   {
@@ -10731,6 +11518,30 @@
    "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
    "source_command": "show policy-map interface",
+   "evidence_basis": "absence",
+   "evidence_refs": [
+    {
+     "kind": "analysis_row",
+     "host": null,
+     "ref": "/qos_audit/findings/0",
+     "role": "derived_from",
+     "cite": "(fleet) QoS finding row (best-effort-fleet)"
+    },
+    {
+     "kind": "absence_witness",
+     "host": null,
+     "ref": "/qos_audit/per_device/0",
+     "role": "witness",
+     "cite": "access1 assessed -- none found"
+    },
+    {
+     "kind": "absence_witness",
+     "host": null,
+     "ref": "/qos_audit/per_device/1",
+     "role": "witness",
+     "cite": "core1 assessed -- none found"
+    }
+   ],
    "priority": 37
   },
   {
@@ -10745,6 +11556,16 @@
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
    "source_command": "show spanning-tree",
+   "evidence_basis": "row",
+   "evidence_refs": [
+    {
+     "kind": "device_fact",
+     "host": "access1",
+     "ref": "/stp_roots/access1/30",
+     "role": "subject",
+     "cite": "access1 STP root record VLAN 30 (default priority)"
+    }
+   ],
    "priority": 38
   },
   {
@@ -10759,6 +11580,16 @@
    "detail": "no syslog / buffered logging -- no audit trail across the migration.",
    "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail.",
    "source_command": "show running-config",
+   "evidence_basis": "absence",
+   "evidence_refs": [
+    {
+     "kind": "absence_witness",
+     "host": "access1",
+     "ref": "/security/access1/findings/3",
+     "role": "witness",
+     "cite": "access1 security check no-logging (fail: line looked for and not present)"
+    }
+   ],
    "priority": 39
   },
   {
@@ -10774,6 +11605,23 @@
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
    "source_command": "show running-config",
+   "evidence_basis": "absence",
+   "evidence_refs": [
+    {
+     "kind": "absence_witness",
+     "host": "access1",
+     "ref": "/security/access1/findings/4",
+     "role": "witness",
+     "cite": "access1 security check no-banner (fail: line looked for and not present)"
+    },
+    {
+     "kind": "absence_witness",
+     "host": "core1",
+     "ref": "/security/core1/findings/4",
+     "role": "witness",
+     "cite": "core1 security check no-banner (fail: line looked for and not present)"
+    }
+   ],
    "priority": 40
   },
   {
@@ -10788,6 +11636,16 @@
    "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
    "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy.",
    "source_command": "show running-config",
+   "evidence_basis": "absence",
+   "evidence_refs": [
+    {
+     "kind": "absence_witness",
+     "host": "access1",
+     "ref": "/security/access1/findings/2",
+     "role": "witness",
+     "cite": "access1 security check no-ntp (fail: line looked for and not present)"
+    }
+   ],
    "priority": 41
   }
  ],
@@ -10799,6 +11657,36 @@
     "access1",
     "core1",
     "core2"
+   ],
+   "evidence_refs": [
+    {
+     "kind": "interface",
+     "host": "access1",
+     "ref": "/interfaces/access1/Gi0~11",
+     "role": "subject",
+     "cite": "access1 Gi0/1 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Gi1~10~124",
+     "role": "subject",
+     "cite": "core1 Gi1/0/24 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "interface",
+     "host": "core1",
+     "ref": "/interfaces/core1/Po1",
+     "role": "subject",
+     "cite": "core1 Po1 (live trunk, native VLAN 1)"
+    },
+    {
+     "kind": "interface",
+     "host": "core2",
+     "ref": "/interfaces/core2/Po1",
+     "role": "subject",
+     "cite": "core2 Po1 (live trunk, native VLAN 1)"
+    }
    ],
    "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
    "detail": "4 operationally-trunking port(s) (live trunk status) across 3 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",

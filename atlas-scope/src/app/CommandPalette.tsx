@@ -28,6 +28,7 @@
  */
 import {
   memo,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -44,8 +45,9 @@ import { presentBand } from "../core/band-qualification";
 import { deviceById, fabric, findingById } from "../core/data";
 import { applyToFindings, parseQuery, rankedSearch, type SearchHit } from "../core/query";
 import { useInvestigation } from "../core/store";
+import { useSceneStats } from "../fabric3d/telemetry";
 import { IconArrowRight, IconSearch } from "../ui/icons";
-import { Band, Dialog, Kbd, LiveRegion, NotObserved, SeverityBadge } from "../ui/primitives";
+import { Band, coverageFigures, Dialog, Kbd, LiveRegion, NotObserved, SeverityBadge } from "../ui/primitives";
 import {
   GROUP_ORDER,
   allCommands,
@@ -469,6 +471,7 @@ const PaletteRow = memo(function PaletteRow({
   id,
   index,
   isActive,
+  live,
   onHover,
   onRun,
 }: {
@@ -476,6 +479,8 @@ const PaletteRow = memo(function PaletteRow({
   id: string;
   index: number;
   isActive: boolean;
+  /** False while the palette is only pre-warming: the row is drawn but exposes no option. */
+  live: boolean;
   onHover: (i: number) => void;
   onRun: (r: Row) => void;
 }): ReactNode {
@@ -483,9 +488,8 @@ const PaletteRow = memo(function PaletteRow({
   return (
     <div
       id={id}
-      role="option"
-      aria-selected={isActive}
-      {...(disabled ? { "aria-disabled": true } : {})}
+      {...(live ? { role: "option", "aria-selected": isActive } : {})}
+      {...(live && disabled ? { "aria-disabled": true } : {})}
       {...(isActive ? { "data-active": "true" } : {})}
       className="palette__row"
       onMouseEnter={() => onHover(index)}
@@ -503,6 +507,123 @@ const PaletteRow = memo(function PaletteRow({
     </div>
   );
 });
+
+/* ══ the pre-warm (acceptance E2/E3: the first Ctrl+K after load) ══════════
+   MEASURED (release build, fresh headed browser per trial, 1280x800, 2026-09-26): the FIRST Ctrl+K
+   after load had worst-interaction p95 320 ms and ran `#document.onkeydown` as a 51-83 ms long task;
+   every later open was warm (p95 64). Two first-time costs, measured apart:
+     - main thread: React built the palette's DOM from nothing inside the keydown (8-17 ms, much of
+       it `grammarExamples()` tracing its flows), then `focus()` forced the first style and layout of
+       that subtree (24-51 ms cold, 5-9 warm);
+     - GPU: the palette's paint operations needed six Skia programs compiled on first raster
+       (~120 ms of shader compile and link), and the open's frame waited behind them.
+   So the palette's own frame is rendered ONCE in advance — after the scene has converged (the one
+   period nothing else is competing for the GPU), in idle time, in a transition — invisibly but
+   really rasterised ("raster": opacity 0.001) for a few presented frames, and then PARKED
+   (`visibility: hidden`: painting nothing, its boxes kept) until the first real open, which turns
+   those same, already styled and laid-out nodes into the dialog by flipping attributes: the first
+   Ctrl+K creates no DOM and forces no first layout (owner decision, cluster E2E3, 2026-09-26; the
+   first repair removed the frame after the raster, and the first open still built and laid out the
+   subtree inside the keydown — measured 36-46 ms of forced style/layout on a loaded host). Parking
+   ends at that first open: a closed palette renders nothing again, exactly as before, so every later
+   open is the ordinary warm one. While parked, the frame's rows are FROZEN (they are not recomputed
+   when the set of command owners changes), so it adds no render work to any other interaction.
+   `Dialog`'s `prewarm` owns what that frame may not do (no focus, no trap, no inert page, no dialog
+   role, hidden and inert itself); this component withholds every combobox/listbox/option/group role
+   and its live region while it is only pre-warming, so the warm frame exposes nothing to a harness
+   either.
+
+   The state is published on `<html data-palette-warm>` for the harnesses and captures (a capture
+   taken while the 0.001-opacity frame is up could differ by one colour step):
+     waiting     — mounted, the scene has not settled yet;
+     scheduled   — the idle slices are queued;
+     mounted     — the frame is in the document, being rasterised;
+     done        — it was held for WARM_HOLD_FRAMES presented frames AND at least WARM_MIN_HOLD_MS, and
+                   is now parked (paints nothing);
+     unpresented — no frame was presented within WARM_UNPRESENTED_MS (an occluded or minimised
+                   window), so it was parked without having been rasterised;
+     superseded  — a real open came before the frame was parked; that open paid what was left.
+   A Ctrl+K pressed before the pre-warm has run is still a cold open; that window is the cold-load
+   audit's (acceptance E5), and `review/measure-inp.mjs` reports it apart. */
+
+type WarmState = "waiting" | "scheduled" | "mounted" | "done" | "unpresented" | "superseded";
+
+function markWarm(state: WarmState): void {
+  if (typeof document !== "undefined") document.documentElement.dataset.paletteWarm = state;
+}
+
+/** Presented frames the pre-warm is held for: more than one, so the first frame's raster is flushed. */
+const WARM_HOLD_FRAMES = 3;
+/**
+ * ...and for at least this long. Frames alone are not a bound on the GPU: measured (release build,
+ * 2026-09-26), three rAF callbacks after the mount completed within 13-63 ms, while the first raster's
+ * program compile the frame exists to trigger was measured at ~120 ms. A frame parked before its raster
+ * work ran could leave that compile to the first open. Parking costs nothing, so the drawn phase is
+ * held long enough for the compile to have run; the harnesses wait for the terminal state anyway.
+ */
+const WARM_MIN_HOLD_MS = 250;
+/** The pre-warm is never left drawn longer than this, presented or not: then it is parked. */
+const WARM_UNPRESENTED_MS = 1000;
+/** Idle callbacks run by this deadline even on a page that is never idle. */
+const WARM_IDLE_TIMEOUT_MS = 4000;
+/** Without requestIdleCallback (Safari), the gap between slices. */
+const WARM_IDLE_FALLBACK_MS = 50;
+/** A scene that never reports convergence (no WebGL, never settles) does not keep the palette cold. */
+const WARM_SETTLE_CEILING_MS = 10000;
+
+type IdleWindow = Window & {
+  requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+  cancelIdleCallback?: (id: number) => void;
+};
+
+/** Run `fn` when the page is idle, at the latest after `timeout`. Returns the cancel. */
+function whenIdle(fn: () => void, timeout: number, fallbackMs: number): () => void {
+  const w = window as IdleWindow;
+  if (typeof w.requestIdleCallback === "function") {
+    const id = w.requestIdleCallback(fn, { timeout });
+    return () => w.cancelIdleCallback?.(id);
+  }
+  const t = setTimeout(fn, fallbackMs);
+  return () => clearTimeout(t);
+}
+
+/** Each step in its OWN idle slice, in order — so no one slice is a long task. Returns the cancel. */
+function idleSteps(steps: readonly (() => void)[], timeout: number, fallbackMs: number): () => void {
+  let cancel: () => void = () => {};
+  let next = 0;
+  const run = (): void => {
+    if (next >= steps.length) return;
+    cancel = whenIdle(
+      () => {
+        const step = steps[next];
+        next += 1;
+        step?.();
+        run();
+      },
+      timeout,
+      fallbackMs,
+    );
+  };
+  run();
+  return () => cancel();
+}
+
+/**
+ * Reports once the scene has converged (or after a ceiling, when it never does). A component of
+ * its own so that only it re-renders on a telemetry notification — the same reason `App` isolates
+ * its subscriber — and it is unmounted once the pre-warm no longer needs it.
+ */
+function SceneSettledGate({ onSettled }: { onSettled: () => void }): null {
+  const converged = useSceneStats()?.converged === true;
+  useEffect(() => {
+    if (converged) onSettled();
+  }, [converged, onSettled]);
+  useEffect(() => {
+    const t = setTimeout(onSettled, WARM_SETTLE_CEILING_MS);
+    return () => clearTimeout(t);
+  }, [onSettled]);
+  return null;
+}
 
 /* ══ the component ═════════════════════════════════════════════════════════ */
 
@@ -553,28 +674,132 @@ export function CommandPalette(): ReactNode {
     setActive(0);
   }, [open]);
 
-  /* ...and pays for the command list once the page is IDLE, so the first open does not either. The
+  /* ...and pays for the command list, the grammar examples (each one TRACED), the scope line and the
+     dialog's coverage line once the page is IDLE, each in its own slice, so neither the first open
+     nor the pre-warm's render reads the dataset (CommandPalette.test.tsx counts those reads). The
      idle callback runs only when no input is pending; the timeout is a floor, not a schedule. */
+  useEffect(
+    () =>
+      idleSteps(
+        [() => void allCommands(), () => void grammarExamples(), () => void searchScope(), () => void coverageFigures()],
+        15000,
+        5000,
+      ),
+    [],
+  );
+
+  /* The pre-warm (see the block above `SceneSettledGate`). */
+  const [sceneSettled, setSceneSettled] = useState(false);
+  /** The pre-warm frame while the palette is closed: none, being rasterised, or parked. */
+  const [frame, setFrame] = useState<"none" | "raster" | "parked">("none");
+  const warmPhase = useRef<"pending" | "scheduled" | "mounted" | "parked" | "finished">("pending");
+  const cancelWarm = useRef<() => void>(() => {});
+  const onSceneSettled = useCallback(() => setSceneSettled(true), []);
+  const rastering = frame === "raster" && !open;
+  /** The frame is in the document (rasterising or parked): its rows are drawn while closed. */
+  const drawn = frame !== "none";
+
   useEffect(() => {
-    const w = window as Window & {
-      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-    if (typeof w.requestIdleCallback === "function") {
-      const id = w.requestIdleCallback(() => void allCommands(), { timeout: 15000 });
-      return () => w.cancelIdleCallback?.(id);
-    }
-    const t = setTimeout(() => void allCommands(), 5000);
-    return () => clearTimeout(t);
+    if (warmPhase.current === "pending") markWarm("waiting");
   }, []);
 
+  /* The first real open ends the pre-warm at any stage. Before the frame was parked it supersedes it
+     (that open paid what was left); a parked frame has already become this open's dialog, and after
+     it closes the palette renders nothing again. */
+  useEffect(() => {
+    if (!open) return;
+    const phase = warmPhase.current;
+    if (phase === "finished") return;
+    warmPhase.current = "finished";
+    cancelWarm.current();
+    if (phase !== "parked") markWarm("superseded");
+    setFrame("none");
+  }, [open]);
+
+  useEffect(() => {
+    if (!sceneSettled || warmPhase.current !== "pending") return;
+    warmPhase.current = "scheduled";
+    markWarm("scheduled");
+    const cancel = idleSteps(
+      [
+        () => void allCommands(),
+        () => void grammarExamples(),
+        () => void searchScope(),
+        /* The dialog's own coverage line (read once; it filters the RIB coverage). */
+        () => void coverageFigures(),
+        () => {
+          if (warmPhase.current === "scheduled") startTransition(() => setFrame("raster"));
+        },
+      ],
+      WARM_IDLE_TIMEOUT_MS,
+      WARM_IDLE_FALLBACK_MS,
+    );
+    cancelWarm.current = cancel;
+    return () => {
+      cancel();
+      /* A cleanup that is not the end of the pre-warm (StrictMode's re-run) leaves it pending. */
+      if (warmPhase.current === "scheduled") warmPhase.current = "pending";
+    };
+  }, [sceneSettled]);
+
+  useEffect(() => {
+    if (!rastering) return;
+    warmPhase.current = "mounted";
+    markWarm("mounted");
+    let raf: number | null = null;
+    let done: ReturnType<typeof setTimeout> | null = null;
+    let presented = 0;
+    /* The minimum hold is its own timer from mount, joined with the last frame: the frame is parked no
+       earlier than both. No clock is read (determinism.test.ts), and the moment is the same as
+       "after the last frame, the rest of WARM_MIN_HOLD_MS". */
+    let held = false;
+    let framesDone = false;
+    const finish = (state: "done" | "unpresented"): void => {
+      if (warmPhase.current !== "mounted") return;
+      warmPhase.current = "parked";
+      markWarm(state);
+      setFrame("parked");
+    };
+    const bound = setTimeout(() => finish("unpresented"), WARM_UNPRESENTED_MS);
+    const hold = setTimeout(() => {
+      held = true;
+      if (framesDone) finish("done");
+    }, WARM_MIN_HOLD_MS);
+    const tick = (): void => {
+      raf = null;
+      presented += 1;
+      if (presented < WARM_HOLD_FRAMES) raf = requestAnimationFrame(tick);
+      /* After the last frame's callback: that frame is then drawn, and the timer runs after it —
+         no earlier than the minimum hold. */ else
+        done = setTimeout(() => {
+          framesDone = true;
+          if (held) finish("done");
+        }, 0);
+    };
+    if (typeof requestAnimationFrame === "function") raf = requestAnimationFrame(tick);
+    return () => {
+      if (raf !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
+      if (done !== null) clearTimeout(done);
+      clearTimeout(hold);
+      clearTimeout(bound);
+      /* Unmounted or opened mid-hold: an effect re-run (StrictMode) must be able to hold again. */
+      if (warmPhase.current === "mounted") warmPhase.current = "scheduled";
+    };
+  }, [rastering]);
+
+  /* Availability is recomputed when the set of mounted owners changes — while OPEN. A closed palette
+     (including a parked pre-warm frame) does not follow it: nothing reads those rows, and following
+     it would put a recompute and a row re-render into whichever interaction mounted a surface. The
+     first open recomputes them anyway (`open` changes). */
+  const groupsEpoch = open ? targetEpoch : -1;
   const groups = useMemo<RowGroup[]>(() => {
-    void targetEpoch; // availability is recomputed when the set of mounted owners changes
+    void groupsEpoch;
     /* A closed palette lists nothing, so it computes nothing (acceptance E5, cold load). The
        palette is mounted at boot for its keyboard model, and building every command then — every
-       suggested flow TRACED — ran inside the first render, where a keystroke cannot interrupt it. */
-    if (!open) return [];
-    const q = term.trim();
+       suggested flow TRACED — ran inside the first render, where a keystroke cannot interrupt it.
+       The one exception is the pre-warm, which draws the EMPTY state — what the first open draws. */
+    if (!open && !drawn) return [];
+    const q = open ? term.trim() : "";
     const commands = allCommands();
 
     if (q === "") {
@@ -765,7 +990,7 @@ export function CommandPalette(): ReactNode {
       });
 
     return out;
-  }, [open, term, close, targetEpoch]);
+  }, [open, drawn, term, close, groupsEpoch]);
 
   const rows = useMemo(() => groups.flatMap((g) => g.rows), [groups]);
 
@@ -878,8 +1103,11 @@ export function CommandPalette(): ReactNode {
   }, [rows]);
 
   return (
+    <>
+    {sceneSettled ? null : <SceneSettledGate onSettled={onSceneSettled} />}
     <Dialog
       open={open}
+      prewarm={open || frame === "none" ? false : frame}
       onClose={() => close()}
       title="Command palette"
       width="lg"
@@ -910,13 +1138,18 @@ export function CommandPalette(): ReactNode {
           ref={inputRef}
           className="palette__input"
           type="text"
-          role="combobox"
           autoComplete="off"
           spellCheck={false}
           aria-label="Search commands, devices, findings and paths"
-          aria-expanded={count > 0}
-          aria-controls={listId}
-          {...(activeId === undefined ? {} : { "aria-activedescendant": activeId })}
+          /* The combobox contract only while OPEN: a pre-warm frame exposes no widget role. */
+          {...(open
+            ? {
+                role: "combobox",
+                "aria-expanded": count > 0,
+                "aria-controls": listId,
+                ...(activeId === undefined ? {} : { "aria-activedescendant": activeId }),
+              }
+            : {})}
           aria-describedby={`${baseId}-scope`}
           placeholder={`Search a command, a device, a finding ${EM_DASH} or an address pair to trace`}
           value={input}
@@ -929,7 +1162,12 @@ export function CommandPalette(): ReactNode {
         />
       </div>
 
-      <div className="palette__results" id={listId} role="listbox" aria-label="Results" ref={listRef}>
+      <div
+        className="palette__results"
+        id={listId}
+        {...(open ? { role: "listbox", "aria-label": "Results" } : {})}
+        ref={listRef}
+      >
         {groups.length === 0 ? (
           <div className="palette__empty">
             <p className="palette__empty-title">Nothing in this snapshot matches that.</p>
@@ -942,8 +1180,7 @@ export function CommandPalette(): ReactNode {
           groups.map((g) => (
             <div
               className="palette__group"
-              role="group"
-              aria-label={g.note ? `${g.label}, ${g.note}` : g.label}
+              {...(open ? { role: "group", "aria-label": g.note ? `${g.label}, ${g.note}` : g.label } : {})}
               key={g.key}
             >
               <div className="palette__group-head" aria-hidden="true">
@@ -959,6 +1196,7 @@ export function CommandPalette(): ReactNode {
                     id={`${baseId}-opt-${i}`}
                     index={i}
                     isActive={i === active}
+                    live={open}
                     onHover={hover}
                     onRun={runRow}
                   />
@@ -973,8 +1211,10 @@ export function CommandPalette(): ReactNode {
         Searching {searchScope()} in this snapshot. Type a key and a value to filter, or two
         addresses to trace a path.
       </span>
-      <LiveRegion message={status} />
+      {/* The announcement channel exists only while the palette is open: a pre-warm says nothing. */}
+      {open ? <LiveRegion message={status} /> : null}
     </Dialog>
+    </>
   );
 }
 

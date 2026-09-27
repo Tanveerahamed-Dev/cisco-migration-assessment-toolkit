@@ -18,7 +18,9 @@
  * THE CLASS, NOT THE INSTANCE. A roving tabindex written as `selected === id ? 0 : -1` has no tab
  * stop whenever the value names no rendered item — and nothing about that shape says so. So the
  * guard is not "PaneSwitch has a tab stop": the whole app is mounted at one width per ladder rung
- * and at the five widths the runtime audit drives, in the states a reader reaches, and EVERY rendered
+ * (the runtime audit derives its own coverage from LADDER_REM: 390/768/1000/1440/1920, 1152 for the
+ * drawer rung, and a drawer pass at 1024/1152/1270 with and without reduced motion), in the states a
+ * reader reaches, and EVERY rendered
  * element whose role is a composite widget (derived from the role, not from a list of components)
  * must hold exactly one sequential-focus stop. `review/audit-d3-focus.mjs --sweep` checks the same
  * rule in a real browser, where CSS decides what is rendered.
@@ -27,6 +29,7 @@ import { act, type ReactNode, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import { fabric } from "../core/data";
 import { EVIDENCE_TABS, useInvestigation } from "../core/store";
@@ -96,7 +99,7 @@ function setViewport(width: number): () => void {
    the reader never sees. */
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 12; i += 1) {
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 20));
     });
   }
@@ -412,7 +415,8 @@ const STATES: readonly (readonly [string, string, (() => boolean)?])[] = [
     (t) => [`device evidence: ${t}`, `d=core1&s=fabric&tab=${t}`] as const,
   ),
 ];
-/** One width per ladder rung (1100 is the drawer rung), and the five the runtime audit drives. */
+/** One width per ladder rung (1100 is the drawer rung). The runtime audit derives its own widths from
+ *  LADDER_REM (review/audit-d3-focus.mjs), so this list is not a copy of them. */
 const WIDTHS = [390, 768, 1000, 1100, 1440, 1920] as const;
 
 describe("every rendered composite widget has exactly one tab stop, and its items are arrow-reachable", () => {

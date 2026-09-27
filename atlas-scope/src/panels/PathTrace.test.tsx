@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { fabric } from "../core/data";
 import { decodeInvestigation, useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
@@ -72,7 +73,7 @@ afterEach(() => {
  * component's is what orders this after it rather than guessing at a delay.
  */
 async function settleCommit(): Promise<void> {
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
@@ -1348,7 +1349,7 @@ describe("PathTrace — history Back while no frame has been painted (hidden tab
   };
   const showTab = async (): Promise<void> => {
     vi.unstubAllGlobals();
-    await act(async () => {
+    await actAsync(async () => {
       for (const cb of held.splice(0)) cb?.(performance.now());
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       await new Promise<void>((resolve) => setTimeout(resolve, 0));

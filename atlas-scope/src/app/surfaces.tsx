@@ -59,6 +59,7 @@ import { PriorityQueue } from "../panels/PriorityQueue";
 import { useSceneStats } from "../fabric3d/telemetry";
 import type { SceneStatsEx } from "../fabric3d/scene";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { releaseFocusFrom, useReleaseFocusOnHide } from "./focus-return";
 import "./App.css";
 
 /* The three.js + postprocessing chunk. Named so the build output is readable and so a failure to
@@ -291,10 +292,16 @@ function Splitter({ value, onChange, railRef }: SplitterProps): ReactElement {
   );
 }
 
+/** Where focus goes when a rail stops being shown and nothing it recorded can take focus. */
+type RailFallbacks = () => readonly (HTMLElement | null)[];
+const NO_RAIL_FALLBACKS: RailFallbacks = () => [];
+
 export interface RailAProps {
   /** Hidden rather than unmounted below 1024px, so its scroll position and filters survive. */
   hidden?: boolean;
   onOpenCite: (cite: string) => void;
+  /** The frame's fallbacks for focus held inside the rail as it is hidden (focus-return.ts, third door). */
+  fallbacks?: RailFallbacks;
 }
 
 /**
@@ -314,10 +321,13 @@ export interface RailAProps {
  * — plus the suggested-flow presets this snapshot can actually answer. That is an answer-shaped
  * affordance, which is exactly what the brief asks for.
  */
-export function RailA({ hidden = false, onOpenCite }: RailAProps): ReactElement {
+export function RailA({ hidden = false, onOpenCite, fallbacks = NO_RAIL_FALLBACKS }: RailAProps): ReactElement {
   const flow = useInvestigation((s) => s.flow);
   const surface = useInvestigation((s) => s.surface);
   const railRef = useRef<HTMLElement | null>(null);
+  /* Hidden at the single-column rung while the evidence pane has the column: focus inside it (a
+     queue cell, a path-form field) is released through the owner, never left in a hidden rail. */
+  useReleaseFocusOnHide(railRef, !hidden, fallbacks);
   const [split, setSplit] = useState(SPLIT_DEFAULT);
 
   useEffect(() => {
@@ -431,7 +441,15 @@ const VIEW_IDS: readonly EvidenceView[] = VIEWS.map((v) => v.id);
 
 export interface RailBProps {
   hidden?: boolean;
+  /**
+   * True at the drawer rung while the drawer is closed: the rail is still in the layout but slid off
+   * screen and, after a 240 ms delayed step, `visibility: hidden` (shell.css). Not `hidden`, so its
+   * closing transition can play — which is why it needs its own signal here.
+   */
+  closed?: boolean;
   onOpenCite: (cite: string) => void;
+  /** The frame's fallbacks for focus held inside the rail as it stops being shown. */
+  fallbacks?: RailFallbacks;
   /** Controlled by the frame so the `v` command can bring the configuration evidence on screen. */
   view: EvidenceView;
   onView: (v: EvidenceView) => void;
@@ -448,7 +466,7 @@ export interface RailBProps {
  * device or a link shows that record. An explicit choice from the control survives until the
  * selection next changes, which is the behaviour of a preference rather than a mode.
  */
-export function RailB({ hidden = false, onOpenCite, view, onView }: RailBProps): ReactElement {
+export function RailB({ hidden = false, closed = false, onOpenCite, view, onView, fallbacks = NO_RAIL_FALLBACKS }: RailBProps): ReactElement {
   const findingId = useInvestigation((s) => s.findingId);
   const deviceId = useInvestigation((s) => s.deviceId);
   const linkId = useInvestigation((s) => s.linkId);
@@ -484,24 +502,38 @@ export function RailB({ hidden = false, onOpenCite, view, onView }: RailBProps):
    * cause a switch — the chips in steps 2 and 3, a URL restore, the `v` command, and anything
    * added later all hide a pane the same way. The test is structural: after the commit that
    * changed the view, is focus still inside a pane that is now hidden? If so it is about to be
-   * lost, and it goes to the heading of the pane the reader was sent to. Focus anywhere else —
-   * the radio that made the switch, the query bar, the fabric — is left exactly where it is.
+   * lost, and it goes to the heading of the pane the reader was sent to — handed over by the
+   * focus-return owner's third door (`releaseFocusFrom`), which also knows where to go when that
+   * pane has no heading. Focus anywhere else — the radio that made the switch, the query bar, the
+   * fabric — is left exactly where it is.
    */
   const panesRef = useRef<Record<EvidenceView, HTMLDivElement | null>>({ finding: null, device: null });
   useLayoutEffect(() => {
     const active = document.activeElement;
-    if (!(active instanceof HTMLElement)) return;
-    const stranded = VIEWS.some((v) => v.id !== view && panesRef.current[v.id]?.contains(active) === true);
-    if (!stranded) return;
-    const pane = panesRef.current[view];
-    const heading = pane?.querySelector<HTMLElement>("h2, h3");
-    if (!heading) return;
-    if (!heading.hasAttribute("tabindex")) heading.tabIndex = -1;
-    heading.focus({ preventScroll: false });
+    const stranded = VIEWS.filter((v) => v.id !== view && panesRef.current[v.id]?.contains(active) === true);
+    if (stranded.length === 0) return;
+    const heading = panesRef.current[view]?.querySelector<HTMLElement>("h2, h3") ?? null;
+    /* Programmatically focusable (never a Tab stop), so the owner can land on it. */
+    if (heading !== null && !heading.hasAttribute("tabindex")) heading.tabIndex = -1;
+    for (const v of stranded) releaseFocusFrom(panesRef.current[v.id], null, [heading]);
   }, [view]);
+
+  /* ── focus survives the rail itself being hidden or closed (acceptance D3, 2026-09-26) ──
+   *
+   * MEASURED: at the drawer rung, `e`, the palette's "Toggle the evidence rail" and a resize to
+   * 900 px each hid this rail around a focused control, and Chromium parked focus on <body> when the
+   * drawer's delayed `visibility` step landed (251 ms in the rail, 276 ms on <body>). The rule lives
+   * HERE, at the one place that knows whether the rail is shown — not in each command that happens
+   * to hide it — exactly as the pane switch above: `e`, the palette, Escape, `v`, a resize, and
+   * anything added later all hide the rail the same way. Shown = not `hidden` and not a closed
+   * drawer. On show, what held focus is recorded (the drawer's opener); on hide, focus inside is
+   * handed back to it through the owner, synchronously, before the delayed style step. */
+  const railRef = useRef<HTMLElement | null>(null);
+  useReleaseFocusOnHide(railRef, !hidden && !closed, fallbacks);
 
   return (
     <aside
+      ref={railRef}
       id="rail-evidence"
       className="rail rail--b"
       aria-label="Evidence"

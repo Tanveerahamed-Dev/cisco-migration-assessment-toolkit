@@ -35,6 +35,7 @@
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { DataGrid, revealBelowHeader, type GridColumn, type GridNode } from "./DataGrid";
 
 declare global {
@@ -148,7 +149,7 @@ const deliverResize = (el: Element): void => {
 /** One frame plus one task, twice: what a settle re-check waits for. */
 async function frames(): Promise<void> {
   for (let i = 0; i < 2; i += 1) {
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     });
   }

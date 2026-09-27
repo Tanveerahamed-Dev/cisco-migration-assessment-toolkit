@@ -18,11 +18,13 @@
  *        Declarations inside `@media (prefers-reduced-motion: reduce)` are the collapse, not motion:
  *        they are held to <= 1 ms instead.
  *   JS   every `*_MS` constant that is the DIVISOR of a progress fraction (`(now - start) / X_MS`,
- *        `elapsed / X_MS`) or is interpolated into an inline `transition`/`animation`; every ease the
- *        ease owner exports; every OrbitControls `dampingFactor`. And any inline `transition` or
+ *        `elapsed / X_MS`), is interpolated into an inline `transition`/`animation`, or is the
+ *        `durationMs` of an ease spec (a fade the render loop steps, like the tier cross-fade since
+ *        C5 2026-09-26); every ease the ease owner exports; every OrbitControls `dampingFactor`. And any inline `transition` or
  *        `animation` a script sets in a form this scan cannot resolve fails, so a new spelling
  *        cannot hide. And every HOLD before such motion: a `setTimeout` whose callback starts it
- *        (directly or through the local functions it calls), with its delay resolved through a local
+ *        (directly or through the local functions it calls — and a script-STEPPED fade starts where
+ *        a function uses what the ease owner exports to run one: see `easeOwnerStarters`), with its delay resolved through a local
  *        constant or an object constant's numeric property anywhere in src/ (C6, 2026-09-23: the
  *        tier step-down hold had no §4.8 bound). A delay it cannot resolve fails the same way.
  *
@@ -40,7 +42,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { EASES, createEaseChannel, stepEaseChannel } from "../fabric3d/emphasis";
+import * as easeOwner from "../fabric3d/emphasis";
+import { EASES, createEaseChannel, stepEaseChannel, type EaseSpec } from "../fabric3d/emphasis";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SRC = resolve(PKG, "src");
@@ -288,14 +291,100 @@ export function numericPropsIn(text: string): Map<string, number> {
   return out;
 }
 
+/** The ease owner: the one module allowed to step a JavaScript ease (see the lower half of this file). */
+const EASE_OWNER = "src/fabric3d/emphasis.ts";
+
+/**
+ * EVERY ease the owner exports, derived from its exports rather than from the hand-kept `EASES` list
+ * (C5 verification, 2026-09-26: the tier cross-fade's `TIER_FADE_EASE` is stepped by the render loop
+ * but is not in `EASES`, so a settle check over `EASES` covered a named subset of the class). An
+ * ease is any exported value shaped like an EaseSpec. The denominator test below cross-checks this
+ * against the owner's SOURCE (every `export const X: EaseSpec`), so neither derivation can drift.
+ */
+const isEaseSpec = (v: unknown): v is EaseSpec =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as EaseSpec).name === "string" &&
+  typeof (v as EaseSpec).durationMs === "number" &&
+  typeof (v as EaseSpec).curve === "string";
+const OWNER_EASE_EXPORTS: readonly (readonly [string, EaseSpec])[] = Object.entries(easeOwner).filter((e): e is [string, EaseSpec] => isEaseSpec(e[1]));
+const OWNER_EASES: readonly EaseSpec[] = OWNER_EASE_EXPORTS.map(([, v]) => v);
+
+/**
+ * What the ease owner exports that RUNS a script-stepped fade, found from the owner's source, not
+ * from a list (C5, 2026-09-26). The tier cross-fade stopped being an inline CSS transition: its hold's
+ * backstop timer now starts a fade the render loop steps (`createTierFade`), so a scan that only knew
+ * `el.style.transition = …` as "starting motion" lost the hold AND the fade at once — measured, the
+ * "is live" and hold cases went red on exactly that. The class is "a function that sets a fade
+ * going", and the owner is where every such fade is defined, so:
+ *   - an owner DURATION is a `const X_MS = <number>`;
+ *   - an owner SPEC is a `const` whose initializer names a duration or another spec (`RECEDE_EASE`,
+ *     `TIER_FADE_EASE`, `EASES`);
+ *   - an owner function RUNS a fade when its body names a duration, a spec, or another such function.
+ * Exported names in any of the three are returned; a script that references one (imported from the
+ * owner, under any local alias) is doing so to run an ease on the fabric.
+ */
+export function easeOwnerStarters(text: string): Set<string> {
+  const sf = ts.createSourceFile(EASE_OWNER, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const exported = (n: ts.Node): boolean =>
+    (ts.canHaveModifiers(n) ? ts.getModifiers(n) ?? [] : []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  const reach = new Set<string>();
+  const decls: { name: string; body: ts.Node; isExported: boolean }[] = [];
+  for (const st of sf.statements) {
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations) {
+        if (!ts.isIdentifier(d.name) || d.initializer === undefined) continue;
+        if (/_MS$/.test(d.name.text) && ts.isNumericLiteral(stripExpr(d.initializer))) reach.add(d.name.text);
+        decls.push({ name: d.name.text, body: d.initializer, isExported: exported(st) });
+      }
+    } else if (ts.isFunctionDeclaration(st) && st.name !== undefined && st.body !== undefined) {
+      decls.push({ name: st.name.text, body: st.body, isExported: exported(st) });
+    }
+  }
+  const names = (root: ts.Node): boolean => {
+    let hit = false;
+    const scan = (n: ts.Node): void => {
+      if (hit) return;
+      if (ts.isIdentifier(n) && reach.has(n.text)) hit = true;
+      else ts.forEachChild(n, scan);
+    };
+    scan(root);
+    return hit;
+  };
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const d of decls) if (!reach.has(d.name) && names(d.body)) (reach.add(d.name), (grew = true));
+  }
+  const exportedNames = new Set(decls.filter((d) => d.isExported).map((d) => d.name));
+  return new Set([...reach].filter((n) => exportedNames.has(n)));
+}
+
 /** Every animation-timing constant one script declares, found by what the code DOES with it.
- *  `external` resolves `NAME.prop` delays declared in another file (see `numericPropsIn`). */
+ *  `external` resolves `NAME.prop` delays declared in another file (see `numericPropsIn`);
+ *  `ownerStarters` is `easeOwnerStarters` of the ease owner, so a delayed start of a script-stepped
+ *  fade is found as surely as one of an inline CSS transition. */
 export function scriptMotionIn(
   file: string,
   text: string,
   external: ReadonlyMap<string, number> = new Map(),
+  ownerStarters: ReadonlySet<string> = new Set(),
 ): { found: ScriptMotion[]; unresolved: string[] } {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  /* Local names this file binds to an owner starter: `import { createTierFade as begin } from "./emphasis"`.
+     Resolved by PATH, so another module's same-named export is not mistaken for the owner's. */
+  const ownerLocal = new Set<string>();
+  const ownerPath = EASE_OWNER.replace(/\.ts$/, "");
+  for (const st of sf.statements) {
+    if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier)) continue;
+    const spec = st.moduleSpecifier.text;
+    if (!spec.startsWith(".")) continue;
+    const target = relative(PKG, resolve(PKG, dirname(file), spec)).split("\\").join("/").replace(/\.ts$/, "");
+    if (target !== ownerPath) continue;
+    const bindings = st.importClause?.namedBindings;
+    if (bindings !== undefined && ts.isNamedImports(bindings)) {
+      for (const el of bindings.elements) if (ownerStarters.has((el.propertyName ?? el.name).text)) ownerLocal.add(el.name.text);
+    }
+  }
   const consts = new Map<string, number>();
   const found: ScriptMotion[] = [];
   const unresolved: string[] = [];
@@ -340,6 +429,7 @@ export function scriptMotionIn(
       if (hit) return;
       if (setsMotionAt(n)) hit = true;
       else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && starters.has(n.expression.text)) hit = true;
+      else if (ts.isIdentifier(n) && ownerLocal.has(n.text)) hit = true;
       else ts.forEachChild(n, scan);
     };
     scan(root);
@@ -377,6 +467,11 @@ export function scriptMotionIn(
         found.push({ file, line: lineOf(n), name: r.text, kind: "progress", value: consts.get(r.text) });
       }
     }
+    // A stepped ease's duration: `{ …, durationMs: X_MS, … }` (an EaseSpec: the render loop runs it).
+    if (ts.isPropertyAssignment(n) && (ts.isIdentifier(n.name) || ts.isStringLiteral(n.name)) && n.name.text === "durationMs") {
+      const d = strip(n.initializer);
+      if (ts.isIdentifier(d) && /^[A-Z][A-Z0-9_]*_MS$/.test(d.text)) found.push({ file, line: lineOf(n), name: d.text, kind: "ease", value: consts.get(d.text) });
+    }
     // An inline CSS motion property set from script: `el.style.transition = …` or `{ transition: … }`.
     const setsMotion =
       (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left) && MOTION_PROP.test(n.left.name.text)) ||
@@ -408,11 +503,12 @@ export function scriptMotionIn(
 const scriptFiles = files.filter((f) => /\.tsx?$/.test(f));
 /** Every numeric property of every object-literal constant in src/, for delays spelled `X.prop`. */
 const treeProps = new Map(scriptFiles.flatMap((f) => [...numericPropsIn(readFileSync(f, "utf8"))]));
-const scriptScan = scriptFiles.map((f) => scriptMotionIn(rel(f), readFileSync(f, "utf8"), treeProps));
+const OWNER_STARTERS = easeOwnerStarters(readFileSync(resolve(PKG, EASE_OWNER), "utf8"));
+const scriptScan = scriptFiles.map((f) => scriptMotionIn(rel(f), readFileSync(f, "utf8"), treeProps, OWNER_STARTERS));
 const scriptMotion: ScriptMotion[] = [
   ...scriptScan.flatMap((s) => s.found),
   // The eases the fabric steps (their divisor is `spec.durationMs`, so they are read from the owner).
-  ...EASES.map((e) => ({ file: "src/fabric3d/emphasis.ts", line: 0, name: e.name, kind: "ease" as const, value: e.durationMs })),
+  ...OWNER_EASES.map((e) => ({ file: "src/fabric3d/emphasis.ts", line: 0, name: e.name, kind: "ease" as const, value: e.durationMs })),
 ];
 /** One entry per constant: the same constant can drive several expressions. */
 const scriptByName = new Map<string, ScriptMotion>();
@@ -452,7 +548,7 @@ const EXEMPT = /Exempt from the 300 ms bar:/;
 
 /** 60 fps settle time of an exported ease, as the lower half of this file measures it. */
 function easeSettleMs(name: string): number | undefined {
-  const spec = EASES.find((e) => e.name === name);
+  const spec = OWNER_EASES.find((e) => e.name === name);
   if (spec === undefined) return undefined;
   const ch = createEaseChannel(0);
   for (let frames = 1; frames <= 10_000; frames += 1) {
@@ -560,6 +656,59 @@ describe("the motion scan is live and its denominator is the real tree", () => {
         ["A.b", 2],
       ]),
     );
+  });
+
+  it("the script scan finds a script-STEPPED fade: its spec's duration, and a timer that starts it through the ease owner (C5, 2026-09-26)", () => {
+    /* The tier cross-fade stopped being an inline CSS transition (it is stepped per frame by the ease
+       owner's `stepTierFade`, capped per frame). Before this rule, that change made the scan lose the
+       fade's 280 ms AND the hold before it — the "walks the real …" and hold cases below went red on
+       exactly that. Both are found here from what the code does, under a local alias too. */
+    const starters = new Set(["createTierFade", "HOVER_EASE", "FADE_MS"]);
+    const { found, unresolved } = scriptMotionIn(
+      "src/fabric3d/planted-stepped.ts",
+      [
+        "import { createTierFade as begin, HOVER_EASE, stepEaseChannel } from \"./emphasis\";",
+        "import { createTierFade as elsewhere } from \"./not-the-owner\";",
+        "const SLIDE_MS = 90;",
+        "export const SLIDE: EaseSpec = { name: \"SLIDE_MS\", durationMs: SLIDE_MS, curve: \"linear\" };",
+        "export function f(fade: { ease: unknown }, ch: EaseChannel) {",
+        "  const start = (): void => { fade.ease = begin(); };",
+        "  const once = (): void => start();",
+        "  setTimeout(once, 700);",
+        "  setTimeout(() => stepEaseChannel(ch, HOVER_EASE, 1, 16), 50);",
+        "  setTimeout(() => { fade.ease = elsewhere(); }, 900);",
+        "  setTimeout(() => stepEaseChannel(ch, SLIDE, 1, 16), 400);",
+        "}",
+      ].join("\n"),
+      new Map(),
+      starters,
+    );
+    expect(found.map((x) => [x.name, x.kind, x.value])).toEqual([
+      ["SLIDE_MS", "ease", 90],
+      ["700", "delay", 700],
+      ["50", "delay", 50],
+    ]);
+    expect(unresolved).toEqual([]);
+  });
+
+  it("the ease owner's starters are derived from its source: what defines or runs a fade, and nothing else", () => {
+    expect([...OWNER_STARTERS].sort()).toEqual(
+      expect.arrayContaining(["createTierFade", "createTierFadeDriver", "stepTierFade", "stepEmphasis", "TIER_FADE_EASE", "TIER_FADE_MS", "RECEDE_EASE", "HOVER_EASE", "SELECT_EASE", "EASES"]),
+    );
+    for (const inert of ["isConverged", "createEmphasisState", "markEmphasisDirty", "LABEL_DROP_EVERY_FRAMES", "RECEDE_DEPTH", "FADE_MAX_STEP"]) {
+      expect(OWNER_STARTERS.has(inert), `${inert} runs no fade`).toBe(false);
+    }
+    // A planted owner: a new fade defined through a new duration is found without editing this test.
+    const planted = easeOwnerStarters(
+      [
+        "const WIPE_MS = 120;",
+        "export const WIPE: EaseSpec = { name: \"WIPE_MS\", durationMs: WIPE_MS, curve: \"linear\" };",
+        "function helper() { return WIPE; }",
+        "export function startWipe() { return helper(); }",
+        "export function unrelated() { return 3; }",
+      ].join("\n"),
+    );
+    expect([...planted].sort()).toEqual(["WIPE", "startWipe"]);
   });
 
   it("walks the real stylesheets and scripts, and finds the motion they carry", () => {
@@ -777,6 +926,18 @@ describe("C6: motion ends under 300 ms at 60 Hz unless §4.8 exempts it by name"
     expect(cssCollapse.length).toBeGreaterThan(0);
   });
 
+  it("a reduced-motion override that reaches descendants through `*` creates no transition (0 s, not 1 ms)", () => {
+    /* D3 drawer pass: `.ev * { transition-duration: 1ms !important }` gave EVERY descendant — including
+       ones that authored no transition, whose transition-property defaults to `all` — a 1 ms transition
+       of the `visibility` they inherit. When the drawer opened, they read `hidden` for their first
+       frame and focus() on them did nothing. A universal override must collapse to zero, never to a
+       short non-zero time, so it cannot create a transition an element never declared. */
+    const universal = cssCollapse.filter((m) => m.kind === "transition" && m.selector.includes("*"));
+    expect(universal.length, "positive control: the tree has universal reduced-motion overrides").toBeGreaterThan(0);
+    const creating = universal.filter((m) => m.times.some((t) => t > 0)).map((m) => `${m.file}:${m.line} ${m.selector} ${m.times.join("/")}`);
+    expect(creating).toEqual([]);
+  });
+
   it("every script-driven duration ends before 300 ms at 60 Hz, unless its row is exempt", () => {
     const problems: string[] = [];
     let judged = 0;
@@ -892,10 +1053,8 @@ describe("the one looping animation", () => {
  *       function —
  * and fails on any of them outside the ease owner (`src/fabric3d/emphasis.ts`). Then it steps every
  * ease the owner exports at 60 fps and holds its measured settle time against the row §4.8 states
- * for it, read from the brief itself.
+ * for it, read from the brief itself. (`EASE_OWNER` is declared with the script scan above.)
  */
-
-const EASE_OWNER = "src/fabric3d/emphasis.ts";
 
 /** Every exponential-ease shape in one source text, as `line: text` strings. */
 function findExponentialSteps(fileName: string, text: string): string[] {
@@ -1091,7 +1250,7 @@ describe("§4.8 states, for every ease the owner exports, the settle time the ea
   /** 60 fps, the display rate §4.8's settle figures are stated at. */
   const DT = 1000 / 60;
   /** Step one ease 0 -> 1 at 60 fps; the time of the first frame whose value IS the target. */
-  const settleMs = (spec: (typeof EASES)[number], reduced = false): number => {
+  const settleMs = (spec: EaseSpec, reduced = false): number => {
     const ch = createEaseChannel(0);
     for (let frames = 1; frames <= 10_000; frames += 1) {
       stepEaseChannel(ch, spec, 1, DT, reduced);
@@ -1102,23 +1261,46 @@ describe("§4.8 states, for every ease the owner exports, the settle time the ea
   const rowOf = (name: string): string | undefined =>
     s48.split("\n").find((l) => l.startsWith("|") && l.includes("`" + name + "`"));
 
+  /* A row that states its duration but no settle figure yet, named with its reason. This is a ratchet:
+     it may only shrink. TIER_FADE_MS: its §4.8 row predates the stepped fade and states "**280 ms**"
+     only, and the record step owns docs/design-brief.md. Until that row adds "settles in **283.4 ms**
+     at 60 fps", it is held to everything else: its duration, a measured settle under 300 ms and within
+     one frame of that duration, and reduced motion. Once the row states the figure, it is checked
+     exactly like the others, with no edit here. */
+  const SETTLE_FIGURE_PENDING = new Set(["TIER_FADE_MS"]);
+  /** What this block iterates: every ease the owner exports. */
+  const SETTLE_CHECKED: readonly EaseSpec[] = OWNER_EASES;
+
   it("the owner exports the eases the fabric steps (the check is not vacuous)", () => {
     expect(EASES.map((e) => e.name).sort()).toEqual(["HOVER_MS", "RECEDE_MS", "SELECT_MS"]);
   });
 
-  for (const spec of EASES) {
+  it("the settle check's denominator is EVERY EaseSpec the owner exports, not the EASES list", () => {
+    const declared = [...readFileSync(resolve(PKG, EASE_OWNER), "utf8").matchAll(/^export const (\w+): EaseSpec\b/gm)].map((m) => m[1]!);
+    expect(declared.length, "the source parse found the owner's eases").toBeGreaterThan(0);
+    expect(OWNER_EASE_EXPORTS.map(([k]) => k).sort(), "exports vs source").toEqual([...declared].sort());
+    expect(SETTLE_CHECKED.map((e) => e.name).sort(), "the eases this block checks").toEqual(OWNER_EASES.map((e) => e.name).sort());
+    expect(OWNER_EASES.map((e) => e.name), "the render loop's tier cross-fade is an owner ease").toContain("TIER_FADE_MS");
+    for (const n of SETTLE_FIGURE_PENDING) expect(OWNER_EASES.map((e) => e.name), `pending entry ${n} names no owner ease`).toContain(n);
+  });
+
+  for (const spec of SETTLE_CHECKED) {
     it(`${spec.name}: the §4.8 row's duration is the ease's, and its stated settle time is the measured one`, () => {
       const row = rowOf(spec.name);
       expect(row, `§4.8 has no row naming \`${spec.name}\``).toBeDefined();
       const duration = /\*\*(\d+(?:\.\d+)?) ms\*\*/.exec(row!)?.[1];
       expect(Number(duration), `${spec.name}: the row's bold duration`).toBe(spec.durationMs);
       const stated = /settles in \*\*(\d+(?:\.\d+)?) ms\*\* at 60 fps/.exec(row!)?.[1];
-      expect(stated, `${spec.name}: the row states "settles in **N ms** at 60 fps"`).toBeDefined();
+      if (!SETTLE_FIGURE_PENDING.has(spec.name)) expect(stated, `${spec.name}: the row states "settles in **N ms** at 60 fps"`).toBeDefined();
       // Rounded to the microsecond: 15 frames of 1000/60 ms is 250.00000000000003 in doubles.
       const measured = Math.round(settleMs(spec) * 1000) / 1000;
-      // No later than stated, and stated no more than a millisecond of rounding above it.
-      expect(measured, `${spec.name} settles at ${measured.toFixed(2)} ms, later than §4.8 states`).toBeLessThanOrEqual(Number(stated));
-      expect(Number(stated) - measured, `${spec.name}: §4.8 overstates the settle time`).toBeLessThan(1);
+      if (stated !== undefined) {
+        // No later than stated, and stated no more than a millisecond of rounding above it.
+        expect(measured, `${spec.name} settles at ${measured.toFixed(2)} ms, later than §4.8 states`).toBeLessThanOrEqual(Number(stated));
+        expect(Number(stated) - measured, `${spec.name}: §4.8 overstates the settle time`).toBeLessThan(1);
+      }
+      // Every ease lands on the first 60 fps frame at or after its duration: the cap never binds there.
+      expect(measured, `${spec.name}: settles later than one frame after its duration`).toBeLessThan(spec.durationMs + DT + 1e-6);
       // And the C6 bar itself: under 300 ms.
       expect(measured).toBeLessThan(300);
       expect(row!, `${spec.name}: reduced-motion behaviour`).toMatch(/reduced motion/i);

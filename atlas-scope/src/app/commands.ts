@@ -42,6 +42,7 @@ import {
   type Shortcut,
 } from "./keyboard";
 import { useEffect, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { applyTheme, writeThemePreference } from "./theme-preference";
 
 /* ══ capabilities: verbs that need a surface to be mounted ═════════════════ */
@@ -230,14 +231,44 @@ const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 /**
+ * What a surface needs, beyond the store write, to be ON SCREEN before focus can land in it — owned
+ * by the frame, which alone knows the layout rung. At the drawer rung the evidence rail is an overlay
+ * that is closed by default; "go to the evidence rail" there must open it first (App.tsx registers
+ * that). `opener` is what held focus when the move was asked for.
+ */
+type SurfaceReveal = (surface: SurfaceId, opener: HTMLElement | null) => void;
+let surfaceReveal: SurfaceReveal | null = null;
+
+/** Register the frame's reveal. Returns the un-registration. */
+export function registerSurfaceReveal(fn: SurfaceReveal): () => void {
+  surfaceReveal = fn;
+  return () => {
+    if (surfaceReveal === fn) surfaceReveal = null;
+  };
+}
+
+/**
  * Navigate. The store write is the navigation; moving focus is what makes it a keyboard
  * navigation rather than a state change the keyboard user cannot follow.
  *
  * `#rail-path` is absent from the DOM whenever no flow exists (design brief 2.2), so "go to path"
  * with no trace running has nowhere to land — it says so instead of pretending to move.
+ *
+ * THE MOVE IS ANNOUNCED ONLY IF IT HAPPENED (acceptance D3 discovery, 2026-09-26). This used to call
+ * `landing.focus()` and announce "Moved to the evidence rail." unconditionally. MEASURED at 1100 px
+ * with the drawer closed: the landing sat inside a `visibility: hidden` rail, `focus()` did nothing,
+ * focus stayed on the grid cell — and the live region said it had moved. The same was true at the
+ * single-column rung, where the store write that unhides the rail had not been committed yet when
+ * `focus()` ran. So the write (and the frame's reveal, which opens the drawer) is committed first,
+ * synchronously, and the announcement is made from where focus actually is.
  */
 export function goToSurface(surface: SurfaceId): void {
-  useInvestigation.getState().setSurface(surface);
+  const from = typeof document === "undefined" ? null : document.activeElement;
+  const opener = from instanceof HTMLElement && from !== document.body ? from : null;
+  flushSync(() => {
+    useInvestigation.getState().setSurface(surface);
+    surfaceReveal?.(surface, opener);
+  });
   const region = document.querySelector<HTMLElement>(REGION_SELECTOR[surface]);
   if (!region) {
     announce(
@@ -258,6 +289,10 @@ export function goToSurface(surface: SurfaceId): void {
     return;
   }
   landing.focus();
+  if (document.activeElement !== landing && !region.contains(document.activeElement)) {
+    announce(`${SURFACE_LABEL[surface]} could not take focus in this layout, so focus stayed where it was.`);
+    return;
+  }
   announce(`Moved to ${SURFACE_LABEL[surface]}.`);
 }
 
@@ -881,10 +916,24 @@ export function installAppCommands(): () => void {
         // Escape must not be swallowed when there is nothing to close: the grid clears its
         // selection with it, and a preventDefault here would take that away.
         preventDefault: false,
-        run: () => {
+        /* The topmost layer that holds focus closes first. An inner layer inside the drawer (a
+           popover, the configuration overlay, a grid's cell mode) handles Escape itself and cancels
+           or stops the key, so the manager never sees it: the drawer closes on the NEXT Escape.
+           The evidence drawer closes only while focus is inside it (owner decision on design brief
+           7.1, 2026-09-26: at the drawer rung Rail B is a transient overlay; the persistent rail of
+           the reference layout is never collapsed by Escape). Focus then returns to the control
+           that opened it — the frame's release on hide (App.tsx, focus-return.ts third door). */
+        run: (e) => {
           const s = st();
           if (s.paletteOpen) {
             s.setPaletteOpen(false);
+            return;
+          }
+          const drawer = typeof document === "undefined" ? null : document.getElementById("rail-evidence");
+          if (s.evidenceDrawerOpen && drawer !== null && drawer.contains(document.activeElement)) {
+            e.preventDefault();
+            s.setEvidenceDrawerOpen(false);
+            announce("Evidence drawer closed.");
             return;
           }
           if (s.inspectorOpen) {

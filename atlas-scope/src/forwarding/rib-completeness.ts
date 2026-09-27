@@ -7,12 +7,35 @@
  * snapshot does testify, in two places this module reads (compiled by
  * `tools/compile-rib-evidence.mjs` into `rib-evidence.json`, sha-bound to the same bytes):
  *
- *  - `protocol_assessability.rows`: a routing-protocol family (the producer's own routing
- *    vocabulary — the keys of its `routing_neighbors` records) whose state on this host is anything
- *    but `assessed` was not collected, or only partly, so what it installs is unknown;
+ *  - `protocol_assessability.rows`: for each routing-protocol family (the producer's own routing
+ *    vocabulary — the keys of its `routing_neighbors` records), what the engine's receipt
+ *    (cisco_toolkit/analyze.py compute_protocol_assessability) says was collected on this host.
+ *    `assessed` means a neighbor state parsed from usable current-run output. `captured_empty`
+ *    means the neighbor table was captured and holds nothing — no adjacency, so the family teaches
+ *    this host no routes; that is POSITIVE evidence of absence, and it is the only state read so
+ *    (the producer always names ospf/eigrp/bgp, so demanding `assessed` for all three demanded that
+ *    every router run all three protocols). Every other state — `captured_no_record` (output
+ *    present but nothing parsed: a parser gap is as likely as an idle protocol), `partial`,
+ *    `capture_error`, `not_collected`, `analysis_unavailable`, a missing row or a state this code
+ *    has never seen — leaves what the family installs unknown, and is a reason citing its row;
  *  - control-plane evidence the table does not reflect: an established overlay peer reporting
- *    received prefixes, or an established/FULL adjacency, where the table holds no route of that
- *    protocol at all.
+ *    received prefixes, an adjacency exchanging routes (OSPF `FULL`, a listed EIGRP neighbor
+ *    `up …`, a BGP peer whose State/PfxRcd is a positive count — a number IS the Established
+ *    state) while the table holds no route of its family, or an empty neighbor table beside routes
+ *    of that family, where the table and the control plane disagree;
+ *  - PER ADJACENCY, the link every session runs over. A session (OSPF `FULL`/`2WAY`, EIGRP `up`, a
+ *    BGP peer in the Established state — any State/PfxRcd count, 0 included) exists only over a path
+ *    to the neighbour: when the record names the interface it formed on, the table must hold a
+ *    connected route on that interface covering the neighbour's link address; when it names none
+ *    (BGP), some route in the table must at least cover the peer. A table that does not is missing
+ *    that link AND whatever the session teaches. A per-family test ("the table holds SOME OSPF
+ *    route") let routes learned over one adjacency vouch for another: on the substrate fleet,
+ *    core1's OSPF routes from dist1 cancelled its FULL/DR neighbour 10.0.99.2 on Po1, whose link
+ *    the table does not hold, and the B1 false decision came back (2026-09-26 verifier, E2-V1). The
+ *    link is read from the record's `address` (the OSPF link address; an EIGRP/BGP record names its
+ *    neighbour BY address, so `neighbor` is the address there) and `interface`. A record compiled
+ *    without those fields leaves that session's link unknown — never held. An adjacency stuck below
+ *    2-WAY (INIT/EXSTART/…) is not read as a session: a stated boundary, not evidence of a link.
  *
  * Every reason is derived from those records — never from a list of host names. When the sidecar
  * was compiled from other bytes, or names no routing vocabulary at all, completeness is UNKNOWN and
@@ -23,6 +46,7 @@
 import evidenceJson from "./rib-evidence.json";
 import { fabric, routesOf } from "../core/data";
 import { sameSourceBinding, type Cite, type SourceBinding } from "../core/types";
+import { parseIpv4, parsePrefix, prefixContains } from "./ip";
 
 interface ProtocolRow {
   protocol: string;
@@ -35,6 +59,12 @@ interface Adjacency {
   neighbor: string | null;
   state: string | null;
   cite: Cite;
+  /** The neighbour's link address as the producer's record carries it (null when the record has
+   *  none: EIGRP/BGP records name the neighbour BY its address). Absent — the key itself missing —
+   *  when the compiler did not publish it, which leaves the link unreadable, never held. */
+  address?: string | null;
+  /** The interface the adjacency formed on (null when the record names none, as BGP's does). */
+  interface?: string | null;
 }
 interface OverlayPeer {
   kind: string;
@@ -65,27 +95,150 @@ export interface RibIncompleteness {
   cite: Cite;
 }
 
-/** An adjacency / session state that means routes are being exchanged. */
-const EXCHANGING = /^(full|established)\b/i;
+/** An adjacency / session state that means routes are being exchanged, in every encoding the
+ *  producer's neighbor parsers emit: OSPF `FULL/…`, EIGRP `up <uptime>` (its table lists only up
+ *  neighbors), an `Established` word, or BGP's State/PfxRcd count — a number is the Established
+ *  state carrying the received-prefix count, so it exchanges routes exactly when it is positive. */
+const EXCHANGING = /^(full|established|up)\b/i;
+const PREFIX_COUNT = /^\d+$/;
+function exchanging(state: string | null): boolean {
+  if (state === null) return false;
+  const s = state.trim();
+  if (PREFIX_COUNT.test(s)) return Number(s) > 0;
+  return EXCHANGING.test(s);
+}
+function describeState(state: string): string {
+  const s = state.trim();
+  return PREFIX_COUNT.test(s) ? `Established (${s} prefix${s === "1" ? "" : "es"} received)` : state;
+}
 
-const CACHE = new Map<string, RibIncompleteness[]>();
+/** Is this route of `family`? The engine's route-source vocabulary sub-types a family as
+ *  `<family>-<subtype>` (`ospf-ext2`, `ospf-interarea`, `eigrp-external`), so an O E2 route IS an
+ *  OSPF route; an exact-string match on the source missed every sub-typed route. */
+function ofFamily(source: string | null, family: string): boolean {
+  const s = (source ?? "").toLowerCase();
+  const f = family.toLowerCase();
+  return s === f || s.startsWith(`${f}-`);
+}
+
+/** "an OSPF", "an EIGRP", "a BGP": the article for an acronym read letter by letter. */
+function article(acronym: string): string {
+  return /^[aefhilmnorsx]/i.test(acronym) ? "an" : "a";
+}
+
+/** A session is up over a path to the neighbour: OSPF `FULL`/`2WAY` (2-WAY is a stable session on a
+ *  shared segment that exchanges no routes), EIGRP `up`, `Established`, or BGP's numeric
+ *  State/PfxRcd — any count, 0 included: an Established peer that sent nothing is still a session. */
+const SESSION = /^(full|2way|established|up)\b/i;
+function sessionUp(state: string | null): boolean {
+  if (state === null) return false;
+  const s = state.trim();
+  return PREFIX_COUNT.test(s) || SESSION.test(s);
+}
+
+/** Two spellings of one interface: the same number and one name a prefix of the other, whatever the
+ *  case (`Po1` / `Port-channel1`, `Gi1/0/3` / `GigabitEthernet1/0/3`, `Vl40` / `Vlan40`). */
+function sameInterface(a: string, b: string): boolean {
+  const split = (t: string) => {
+    const m = /^([a-z][a-z-]*)\s*(\S.*)$/i.exec(t.trim());
+    return m === null ? null : { name: m[1]!.toLowerCase(), num: m[2]!.toLowerCase() };
+  };
+  const x = split(a);
+  const y = split(b);
+  if (x === null || y === null) return a.trim().toLowerCase() === b.trim().toLowerCase();
+  return x.num === y.num && (x.name.startsWith(y.name) || y.name.startsWith(x.name));
+}
+
+/** The one assessability state that is positive evidence a family teaches this host no routes. */
+const NEIGHBOR_TABLE_EMPTY = "captured_empty";
+
+/** Why a protocol row that is not `assessed` / `captured_empty` leaves the table's completeness unknown. */
+function unknownStateLabel(protocol: string, state: string | null, host: string): string {
+  switch (state) {
+    case "captured_no_record":
+      return `${protocol} output was captured on ${host} but no neighbor state was parsed from it, so what ${protocol} installs is unknown (not evidence that it is idle)`;
+    case "partial":
+      return `${protocol} is only partly collected on ${host}, so what it installs is unknown`;
+    case "capture_error":
+      return `the ${protocol} capture on ${host} returned an error, so what ${protocol} installs is unknown`;
+    case "not_collected":
+      return `${protocol} is not collected on ${host}`;
+    case "analysis_unavailable":
+      return `${protocol} on ${host}: protocol analysis was unavailable for this run, so what it installs is unknown`;
+    default:
+      return `${protocol} is ${(state ?? "unrecorded").replace(/_/g, " ")} on ${host}`;
+  }
+}
+
+/** A reason plus the family it concerns (null: every family), so the basis can never vouch for a
+ *  family that is itself the reason (2026-09-26 verifier, E2-V3). */
+interface Reason extends RibIncompleteness {
+  family: string | null;
+}
+
+const CACHE = new Map<string, Reason[]>();
+const PUBLIC = new Map<string, RibIncompleteness[]>();
+
+/** Why the session `a` is not accounted for by a link `host`'s table holds, or null when it is. */
+function linkReason(a: Adjacency, host: string, routes: ReturnType<typeof routesOf>): string | null {
+  const P = a.protocol.toUpperCase();
+  const head = `${article(P)} ${P} adjacency with ${a.neighbor ?? "an unrecorded neighbour"} is ${describeState(a.state ?? "")}`;
+  if (!("address" in a) || !("interface" in a)) {
+    return `${head}, but its compiled record does not carry the neighbour's address and interface, so whether ${host}'s table holds the link that session runs over is unknown`;
+  }
+  const addrText = a.address ?? a.neighbor;
+  const addr = addrText === null ? null : parseIpv4(addrText);
+  if (addrText === null || addr === null) {
+    return `${head}, but its record names no neighbour address, so whether ${host}'s table holds the link that session runs over is unknown`;
+  }
+  const covers = (prefix: string) => {
+    const p = parsePrefix(prefix);
+    return p !== null && prefixContains(p, addr);
+  };
+  const intf = a.interface ?? null;
+  if (intf !== null) {
+    const held = routes.some(
+      (r) => r.source === "connected" && r.outIntf !== null && sameInterface(r.outIntf, intf) && covers(r.prefix),
+    );
+    if (held) return null;
+    return `${head}, yet the table holds no connected route on ${intf} covering its address ${addrText} — the link that adjacency runs over, and whatever it teaches, are missing from the table`;
+  }
+  if (routes.some((r) => covers(r.prefix))) return null;
+  return `${head}, yet no route in the table covers ${addrText} — the session could not be up over the table as collected`;
+}
 
 /**
- * Why `host`'s collected routing table is not complete. Empty means the snapshot's own
- * routing-protocol receipts cover this table and nothing observed contradicts it — NOT that the
- * table is proven complete (the families' own boundaries still apply). A host with no collected
- * table is not asked here: it is unmodelled, which is a stronger statement.
+ * Why `host`'s collected routing table is not complete. Empty means every family of the snapshot's
+ * routing vocabulary is accounted for by its own receipt (`assessed`, or a neighbor table captured
+ * empty — see `ribCompletenessBasis`), every session the host holds runs over a link its table
+ * holds, and nothing observed contradicts the table — NOT that the table is proven complete (the
+ * families' own boundaries still apply). A host with no collected table is not asked here: it is
+ * unmodelled, which is a stronger statement.
  */
 export function ribIncompleteness(host: string): RibIncompleteness[] {
+  const hit = PUBLIC.get(host);
+  if (hit !== undefined) return hit;
+  const out = reasonsOf(host).map(({ label, cite }) => ({ label, cite }));
+  PUBLIC.set(host, out);
+  return out;
+}
+
+function reasonsOf(host: string): Reason[] {
   const hit = CACHE.get(host);
   if (hit !== undefined) return hit;
-  const out: RibIncompleteness[] = [];
+  const out = computeReasons(host);
+  CACHE.set(host, out);
+  return out;
+}
+
+function computeReasons(host: string): Reason[] {
+  const out: Reason[] = [];
   if (!RIB_EVIDENCE_TRUSTED) {
     out.push({
       label: `the routing-completeness record was compiled from different snapshot bytes (${FILE.meta.sourceSha256.slice(0, 8)}) than this build's data, so whether ${host}'s table is complete is unknown`,
       cite: `routes.${host}`,
+      family: null,
     });
-    CACHE.set(host, out);
     return out;
   }
   const vocab = FILE.meta.routingProtocols;
@@ -93,39 +246,104 @@ export function ribIncompleteness(host: string): RibIncompleteness[] {
     out.push({
       label: `the snapshot names no routing-protocol families (no ${FILE.meta.routingProtocolsFrom} keys), so whether ${host}'s table is complete is unknown`,
       cite: `routes.${host}`,
+      family: null,
     });
-    CACHE.set(host, out);
     return out;
   }
   const ev = FILE.hosts[host];
-  const sources = new Set(routesOf(host).map((r) => (r.source ?? "").toLowerCase()));
+  const routes = routesOf(host);
+  /** The first route of `family` in the table, or undefined. */
+  const routeOf = (family: string) => routes.find((r) => ofFamily(r.source, family));
   for (const proto of vocab) {
     const row = ev?.protocols.find((p) => p.protocol.toLowerCase() === proto);
     if (row === undefined) {
-      out.push({ label: `no ${proto.toUpperCase()} collection receipt exists for ${host}`, cite: "protocol_assessability" });
+      out.push({ label: `no ${proto.toUpperCase()} collection receipt exists for ${host}`, cite: "protocol_assessability", family: proto });
+    } else if (row.state === NEIGHBOR_TABLE_EMPTY) {
+      const held = routeOf(proto);
+      if (held !== undefined) {
+        out.push({
+          label: `the ${row.protocol} neighbor table was captured on ${host} and is empty, yet the table holds ${article(row.protocol)} ${row.protocol} route (${held.cite}) — the two captures disagree, so what ${row.protocol} installs is unknown`,
+          cite: row.cite,
+          family: proto,
+        });
+      }
     } else if (row.state !== "assessed") {
+      out.push({ label: unknownStateLabel(row.protocol, row.state, host), cite: row.cite, family: proto });
+    }
+  }
+  /* One reason per session — the first contradiction found: a session exchanging routes while the
+     table holds none of its family (the kept rule), then, per adjacency, a session whose link the
+     table does not hold. */
+  for (const a of ev?.adjacencies ?? []) {
+    if (!sessionUp(a.state)) continue;
+    const family = a.protocol.toLowerCase();
+    if (exchanging(a.state) && routeOf(a.protocol) === undefined) {
       out.push({
-        label: `${row.protocol} is ${(row.state ?? "unrecorded").replace(/_/g, " ")} on ${host}`,
+        label: `${article(a.protocol)} ${a.protocol.toUpperCase()} adjacency with ${a.neighbor ?? "an unrecorded neighbour"} is ${describeState(a.state ?? "")}, yet the table holds no ${a.protocol.toUpperCase()} route`,
+        cite: a.cite,
+        family,
+      });
+      continue;
+    }
+    const link = linkReason(a, host, routes);
+    if (link !== null) out.push({ label: link, cite: a.cite, family });
+  }
+  for (const p of ev?.overlay ?? []) {
+    if (p.state === null || !exchanging(p.state) || p.prefixes === null || p.prefixes <= 0 || routeOf("bgp") !== undefined) continue;
+    out.push({
+      label: `an established ${p.kind.toUpperCase()} peer ${p.neighbor ?? "(unrecorded)"} reports ${p.prefixes} received prefixes, none of which the table holds`,
+      cite: p.cite,
+      family: "bgp",
+    });
+  }
+  return out;
+}
+
+/** Why one routing-protocol family does NOT make a host's table incomplete, with the row that says so. */
+export interface RibCompletenessBasis {
+  protocol: string;
+  label: string;
+  cite: Cite;
+}
+
+/**
+ * For each family of the snapshot's routing vocabulary that does not make `host`'s table
+ * incomplete, the evidence that it does not: `assessed` (a neighbor state parsed from usable
+ * output), or `captured_empty` (the neighbor table was captured and is empty, and the table holds
+ * no route of that family) — and no reason concerns the family (none of its sessions lacks its
+ * routes or its link). Sorted by protocol. Empty when the record is untrusted or names no
+ * vocabulary — nothing then vouches for any family. This is what a surface quotes when it says a
+ * table is NOT shown incomplete, so that "complete" is never an absence of reasons alone.
+ */
+export function ribCompletenessBasis(host: string): RibCompletenessBasis[] {
+  if (!RIB_EVIDENCE_TRUSTED) return [];
+  const vocab = FILE.meta.routingProtocols;
+  const ev = FILE.hosts[host];
+  const reasons = reasonsOf(host);
+  if (reasons.some((r) => r.family === null)) return [];
+  /* A family is vouched for only when NO reason concerns it — its row, its adjacencies' routes or
+     links, or its overlay peers (2026-09-26 verifier, E2-V3: a cite-only filter listed OSPF as a basis
+     while an OSPF adjacency was the very reason the table is incomplete). */
+  const blocked = new Set(reasons.map((r) => r.family));
+  const out: RibCompletenessBasis[] = [];
+  for (const proto of vocab) {
+    const row = ev?.protocols.find((p) => p.protocol.toLowerCase() === proto);
+    if (row === undefined || blocked.has(proto)) continue;
+    if (row.state === "assessed") {
+      out.push({
+        protocol: row.protocol,
+        label: `${row.protocol} is assessed on ${host}: a neighbor state was parsed from usable current-run output`,
+        cite: row.cite,
+      });
+    } else if (row.state === NEIGHBOR_TABLE_EMPTY) {
+      out.push({
+        protocol: row.protocol,
+        label: `the ${row.protocol} neighbor table was captured on ${host} and is empty — no adjacency, so no ${row.protocol}-learned route is missing from the table`,
         cite: row.cite,
       });
     }
   }
-  for (const a of ev?.adjacencies ?? []) {
-    if (a.state === null || !EXCHANGING.test(a.state) || sources.has(a.protocol)) continue;
-    out.push({
-      label: `an ${a.protocol.toUpperCase()} adjacency with ${a.neighbor ?? "an unrecorded neighbour"} is ${a.state}, yet the table holds no ${a.protocol.toUpperCase()} route`,
-      cite: a.cite,
-    });
-  }
-  for (const p of ev?.overlay ?? []) {
-    if (p.state === null || !EXCHANGING.test(p.state) || p.prefixes === null || p.prefixes <= 0 || sources.has("bgp")) continue;
-    out.push({
-      label: `an established ${p.kind.toUpperCase()} peer ${p.neighbor ?? "(unrecorded)"} reports ${p.prefixes} received prefixes, none of which the table holds`,
-      cite: p.cite,
-    });
-  }
-  CACHE.set(host, out);
-  return out;
+  return out.sort((a, b) => a.protocol.localeCompare(b.protocol));
 }
 
 /**

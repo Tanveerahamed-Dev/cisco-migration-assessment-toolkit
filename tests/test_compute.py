@@ -154,7 +154,8 @@ def test_causality_aggregates_transit_and_uplink_per_host():
 def test_health_clean_host_is_perfect(cp):
     recs = cp.compute_health_scores({"clean": {}}, [], [], [], [])
     assert recs == [{"switch": "clean", "score": 100, "band": "Excellent",
-                     "role": "access", "criticality": 1.0, "deductions": []}]
+                     "role": "access", "criticality": 1.0, "deductions": [],
+                     "deduction_refs": []}]   # structured twin of `deductions` (evidence pointers, A1)
 
 
 def test_health_l1_category_is_capped(cp):

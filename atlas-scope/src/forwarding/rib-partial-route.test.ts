@@ -6,6 +6,16 @@
  * 10.0.0.0/16 summary won the lookup, egress resolved to Vlan30, and PROTECT_SERVERS "deny ip any
  * any" was returned as a decided (REFUTED) denial with no word of the incompleteness. The sweep below
  * runs real engine output over a grid of flows and asserts the class, not the one flow.
+ *
+ * Every assertion here runs on the REAL snapshot, and must keep holding when the sample fleet gains
+ * its routed substrate (webapp/sample_data/build_sample.py `_add_forwarding_substrate`), which gives
+ * core1 OSPF routes learned from dist1. What makes core1's table incomplete is the 10.0.99.2
+ * adjacency itself (routing_neighbors.core1.ospf[0], FULL/DR on Po1): today the table holds no OSPF
+ * route at all; on the substrate fleet it holds OSPF routes from ANOTHER neighbour but still no link
+ * to this one (no connected route on Po1 covering 10.0.99.2) — ./rib-completeness.ts checks that per
+ * adjacency. A per-family check let dist1's routes vouch for 10.0.99.2 and brought this false decision
+ * back as a decided denial on the substrate fleet (2026-09-26 verifier, E2-V1); an earlier revision
+ * of this file moved these assertions into a counterfactual, which hid that. They stay on real data.
  */
 import { describe, expect, it } from "vitest";
 
@@ -37,6 +47,8 @@ describe("a route chosen from an incomplete table never decides an outcome silen
   it("the critic's flow is UNDETERMINED and names core1's incompleteness in claim and caveats", () => {
     const t = traceFlow({ srcIp: "10.0.30.50", dstIp: "10.0.99.2", protocol: "tcp", dstPort: 443, srcPort: null } as Flow);
     expect(ribIncompleteness("core1").length).toBeGreaterThan(0);
+    // The adjacency the critic named is itself a reason, whatever else the table holds.
+    expect(ribIncompleteness("core1").map((r) => r.cite)).toContain("routing_neighbors.core1.ospf[0]");
     expect(t.outcome).toBe("denied");
     expect(bandOfTrace(t)).toBe("UNDETERMINED");
     expect(unobservedPolicyInputs(t).some((g) => g.kind === "rib-partial" && g.host === "core1")).toBe(true);

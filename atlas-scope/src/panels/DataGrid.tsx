@@ -406,8 +406,14 @@ export function revealBelowHeader(
      the queue inside rail A and left the grid's visible band at 1042-1054 (12 px) with F026 at
      1141-1197 inside the grid's own box; a grid-first reveal cannot fit a 56 px row in 12 px, while
      scrolling the rail by 143 px shows it whole. Element ancestors only here; whatever is left falls
-     through to the grid-first reveal below, exactly as before. */
-  if (isOwnPort(scroller) && ownPortShows(scroller, head, el)) {
+     through to the grid-first reveal below, exactly as before.
+     FITS FIRST (C2, 2026-09-26): that reason is the predicate. The outer scroller carries everything
+     else in it — at 1440x900 Rail A carries the path panel — so it moves first ONLY when the grid's
+     own visible band cannot hold the row. MEASURED (acceptance report C2, 1440x900, state 06): F001
+     (40.4 px) slid 19 px below a 51.3 px band; moving the rail instead of the grid cut the path
+     panel's tab strip to 13 of its 32 px ("Trace a flow" visibleFrac 0.406), where scrolling the
+     grid 20 px showed F001 whole with the rail left at 0. */
+  if (isOwnPort(scroller) && ownPortShows(scroller, head, el) && !bandHoldsRow(scroller, head, el)) {
     revealThroughAncestors(scroller, head, el, false);
     off = offsetFromView(scroller, head, el);
     if (off === 0) return;
@@ -450,6 +456,103 @@ function ownPortShows(scroller: HTMLElement, head: HTMLElement | null, el: HTMLE
 }
 
 /**
+ * Can the grid show `el`'s row WHOLE by scrolling only itself? True when the part of the grid the
+ * reader can see (below the sticky header, inside every clip, past every overlay — `visibleBand`
+ * without its layout-box fallback) is at least as tall as the row, with a pixel to spare for the
+ * device-pixel snap of scrollTop (see the "rounded AWAY" note in `revealBelowHeader`). An empty band
+ * (an ancestor scrolled the grid wholly away) cannot hold anything: only an ancestor can bring it back.
+ */
+function bandHoldsRow(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): boolean {
+  const band = clippedBand(scroller, head && !head.contains(el) ? head : null);
+  const row = (el.closest<HTMLElement>('[role="row"]') ?? el).getBoundingClientRect();
+  return row.height > 0 && band.bottom - band.top >= row.height + 1;
+}
+
+/**
+ * NAVIGATION IS WHOLE OR ABSENT (C2). The composite widgets a reader steers a region by: a strip of
+ * tabs, a toolbar, a menu bar. Named by ARIA role — the platform's own definition of the class — not
+ * by panel, so a strip any future panel adds is covered without being listed here.
+ */
+const NAV_STRIP_SELECTOR = '[role="tablist"],[role="toolbar"],[role="menubar"]';
+
+interface NavStrip {
+  el: HTMLElement;
+  height: number;
+  /** Wholly on screen before the scroll: the only strips a scroll can newly cut. */
+  whole: boolean;
+}
+
+/** Every navigation strip in `root` that a scroll of `root` could carry, outside the grid. */
+function navStripsIn(root: ParentNode, scroller: HTMLElement): NavStrip[] {
+  const out: NavStrip[] = [];
+  for (const strip of root.querySelectorAll<HTMLElement>(NAV_STRIP_SELECTOR)) {
+    if (scroller.contains(strip) || strip.contains(scroller)) continue;
+    const height = strip.getBoundingClientRect().height;
+    if (height <= 0) continue;
+    out.push({ el: strip, height, whole: onScreenExtent(strip) >= height - 0.5 });
+  }
+  return out;
+}
+
+/** The first strip that was whole before the scroll and is now only PARTLY on screen, with how much
+ *  of it the reader still sees. A strip scrolled wholly away is absent, not cut. */
+function cutStrip(strips: readonly NavStrip[]): { strip: NavStrip; seen: number } | null {
+  for (const strip of strips) {
+    if (!strip.whole) continue;
+    const seen = onScreenExtent(strip.el);
+    if (seen > 0.5 && seen < strip.height - 0.5) return { strip, seen };
+  }
+  return null;
+}
+
+/**
+ * The ancestor (or document) half of a reveal has just moved a scroller by `moved` px; make sure it
+ * did not leave a navigation strip that was whole PARTLY visible. MEASURED (acceptance report C2,
+ * 1440x900): the queue's act-view restore scrolled Rail A 19 px and left the path panel's tab strip
+ * 13 of 32 px on screen — "a primary control sliced in half". A sticky strip does not move with its
+ * scroller and is never newly cut, so it never engages this.
+ *
+ * Two ways out, tried in order:
+ *   1. TAKE IT OUT: move on, in the same direction, by what is still visible of the strip — the
+ *      strip leaves whole — provided the row being revealed ends at least as visible as the scroll
+ *      left it (everything in this scroller moves together, so it normally does).
+ *   2. KEEP IT WHOLE: otherwise (the scroller cannot move that far, or the row would be lost) move
+ *      back by what is hidden of the strip, never past where the scroll started. The row is then
+ *      revealed as far as the strip allows, and whatever is left is handed to the next ancestor.
+ * `move(dy)` scrolls and returns the distance actually moved (scroll ranges clamp).
+ */
+function keepNavWhole(
+  strips: readonly NavStrip[],
+  moved: number,
+  move: (dy: number) => number,
+  rowOff: () => number,
+): void {
+  if (moved === 0 || strips.length === 0) return;
+  const dir = Math.sign(moved);
+  let cut = cutStrip(strips);
+  if (cut === null) return;
+  const offBefore = Math.abs(rowOff());
+  let pushed = 0;
+  for (let i = 0; i < 4 && cut !== null; i += 1) {
+    const step = move(dir * Math.ceil(cut.seen));
+    pushed += step;
+    if (step === 0) break;
+    cut = cutStrip(strips);
+  }
+  if (cut === null && Math.abs(rowOff()) <= offBefore + 0.5) return;
+  move(-pushed);
+  let total = moved;
+  cut = cutStrip(strips);
+  for (let i = 0; i < 4 && cut !== null && total !== 0; i += 1) {
+    const back = -dir * Math.min(Math.abs(total), Math.ceil(cut.strip.height - cut.seen));
+    const step = move(back);
+    total += step;
+    if (step === 0) break;
+    cut = cutStrip(strips);
+  }
+}
+
+/**
  * The remainder of a reveal the grid could not absorb itself. When the grid is its own scroll port
  * (every desktop layout) the adjustment above already made the row visible and this is a no-op.
  * When it is NOT — narrow layouts where the grid lays out at full height inside a scrolling rail or
@@ -479,20 +582,50 @@ function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null,
   const seen = guarded === null ? 0 : onScreenExtent(guarded);
   /** False when the scroll just made cost the reader some of their focused element. */
   const keepsFocus = (): boolean => guarded === null || seen <= 0 || onScreenExtent(guarded) >= seen - 0.5;
+  const rowOff = (): number => offsetFromView(scroller, head, el);
   for (let a = scroller.parentElement; a !== null && rest !== 0; a = a.parentElement) {
     const oy = view.getComputedStyle(a).overflowY;
     if ((oy !== "auto" && oy !== "scroll") || a.scrollHeight <= a.clientHeight) continue;
-    const before = a.scrollTop;
-    a.scrollTop = before + rest;
+    const port = a;
+    const strips = navStripsIn(port, scroller);
+    const before = port.scrollTop;
+    port.scrollTop = before + rest;
+    keepNavWhole(
+      strips,
+      port.scrollTop - before,
+      (dy) => {
+        const b = port.scrollTop;
+        port.scrollTop = b + dy;
+        return port.scrollTop - b;
+      },
+      rowOff,
+    );
     if (!keepsFocus()) {
-      a.scrollTop = before;
+      port.scrollTop = before;
       return;
     }
-    rest -= a.scrollTop - before;
+    /* What this scroller did not absorb goes outward — never MORE than was asked, in either
+       direction. keepNavWhole's take-out may move past the remainder (the row is then revealed with
+       the strip wholly out of view); subtracting that overshoot left a remainder of the opposite
+       sign, and the next scroller out (the document, at the full-height shape) scrolled BACK by it.
+       MEASURED (C2 verifier V2, model): rail 16 px -> 32 px, then scrollY 500 -> 484. */
+    const left = rest - (port.scrollTop - before);
+    rest = Math.sign(left) === Math.sign(rest) ? left : 0;
   }
   if (rest === 0 || !page) return;
+  const strips = navStripsIn(doc, scroller);
   const y0 = view.scrollY;
   view.scrollBy(0, rest);
+  keepNavWhole(
+    strips,
+    view.scrollY - y0,
+    (dy) => {
+      const b = view.scrollY;
+      view.scrollBy(0, dy);
+      return view.scrollY - b;
+    },
+    rowOff,
+  );
   if (!keepsFocus()) view.scrollBy(0, y0 - view.scrollY);
 }
 
@@ -533,6 +666,16 @@ function onScreenExtent(el: HTMLElement): number {
  * instead — and the predicate must answer for THAT box, whatever clips it, not for one layout.
  */
 function visibleBand(scroller: HTMLElement, head: HTMLElement | null): { top: number; bottom: number } {
+  const { top, bottom } = clippedBand(scroller, head);
+  /* Nothing visible at all (a rail scrolled away from the grid): fall back to the layout box, so a
+     reveal still moves the row to where the grid WILL show it rather than thrashing. */
+  if (bottom > top) return { top, bottom };
+  const box = scroller.getBoundingClientRect();
+  return { top: head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top, bottom: box.bottom };
+}
+
+/** `visibleBand` without its fallback: what the reader sees, which may be empty (bottom <= top). */
+function clippedBand(scroller: HTMLElement, head: HTMLElement | null): { top: number; bottom: number } {
   const box = scroller.getBoundingClientRect();
   let top = head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top;
   let bottom = box.bottom;
@@ -561,9 +704,7 @@ function visibleBand(scroller: HTMLElement, head: HTMLElement | null): { top: nu
     }
     ({ top, bottom } = trimOverlays(scroller, doc, box, top, bottom));
   }
-  /* Nothing visible at all (a rail scrolled away from the grid): fall back to the layout box, so a
-     reveal still moves the row to where the grid WILL show it rather than thrashing. */
-  return bottom > top ? { top, bottom } : { top: head ? Math.max(box.top, head.getBoundingClientRect().bottom) : box.top, bottom: box.bottom };
+  return { top, bottom };
 }
 
 /**

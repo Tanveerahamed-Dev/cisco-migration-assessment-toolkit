@@ -46,10 +46,38 @@
  * that leaves focus on <body>; `review/audit-d3-focus.mjs --self-removing` does the same in Chromium
  * by real Tab presses and also measures the successor's ring.
  *
+ * A THIRD DOOR, SAME RULE: a CONTAINER hidden while it holds focus (`releaseFocusFrom`, and its
+ * React form `useReleaseFocusOnHide`). Nothing is removed and no surface "closes" in the sense above:
+ * the element holding focus stays connected, and the container around it becomes unrendered — the
+ * `hidden` attribute, `display: none` at a layout rung, or a CSS `visibility` step. The browser then
+ * parks focus on <body> on its own, at the moment the hide takes effect. MEASURED (acceptance report
+ * D3, overturned PASS to FAIL): the evidence drawer (Rail B at 1024–1279 px) closed by `e`, by the
+ * palette's "Toggle the evidence rail", and by a resize to 900 px, each with focus on its "Finding"
+ * radio — the last sample still in the rail at 251 ms, <body> at 276 ms, exactly the drawer's
+ * delayed 240 ms `visibility` step. No code ran on that path at all, so no guard shape could see it.
+ * The door is called SYNCHRONOUSLY on the shown -> hidden transition (a layout effect, before any
+ * delayed style step), and acts only when focus is inside the container. Its order:
+ *   a. the recorded target (what held focus when the container was SHOWN — the drawer's opener),
+ *   b. that target's opener (rule 2),
+ *   c. the caller's fallbacks, in order,
+ *   d. the region landmark around the container, then the target's recorded region (rule 4),
+ *   e. the nearest tab stop OUTSIDE the container in document order — the next one, else the
+ *      previous one — so there is always somewhere real left to go;
+ * and from that same commit the container is `inert` until it is shown again, so neither Tab nor a
+ * later focus() can walk back into it while a closing slide still paints it (measured by the
+ * independent verifier: seven fast Tabs after `e` re-entered the sliding drawer and ended on <body>);
+ * every candidate INSIDE the container is passed over (it is still rendered, and so still accepts
+ * focus, for as long as the container's closing transition runs), and so is every candidate inside a
+ * `hidden` subtree. `src/app/drawer-focus-return.test.tsx` drives the drawer's three close paths, a
+ * lost opener and a resize; `review/audit-d3-focus.mjs --sweep` drives them in Chromium at every
+ * drawer width derived from the ladder, with the real 240 ms step.
+ *
  * `src/app/focus-return.guard.test.ts` parses every source
- * file and fails on a `.blur()` call anywhere but here, and on an `isConnected` focus branch whose
- * else-arm does not call this module.
+ * file and fails on a `.blur()` call anywhere but here, on an `isConnected` focus branch whose
+ * else-arm does not call this module, and on a state-driven `hidden`/`inert` attribute on an element
+ * whose `ref` is not the container a third-door call names.
  */
+import { useLayoutEffect, useRef, type RefObject } from "react";
 
 /** Where focus should go back to, and — captured while it still exists — what opened its surface. */
 export interface ReturnRecord {
@@ -181,6 +209,99 @@ export function returnFocus(
     if (focusLandmark(region)) return region;
   }
   return null;
+}
+
+/* ══ a container hidden while it holds focus ═════════════════════════════════ */
+
+/** Tab stops in document order, filtered by `isTabStop`. Hoisted use: defined with the second door. */
+function tabStopsOf(root: ParentNode): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(TAB_STOP_SELECTOR)].filter(isTabStop);
+}
+
+/**
+ * The THIRD DOOR (see the module comment): `container` is about to stop being rendered. If focus is
+ * inside it, move focus out — to the recorded target, its opener, the caller's fallbacks, the landmark
+ * around the container, the target's recorded region, and last the nearest tab stop outside the
+ * container in document order — never to a candidate inside the container or inside a `hidden`
+ * subtree, and never to <body>. Returns the element that now holds focus, or null when focus was not
+ * inside the container (nothing to do) or nothing outside it could take focus.
+ */
+export function releaseFocusFrom(
+  container: Element | null | undefined,
+  record: ReturnRecord | HTMLElement | null | undefined,
+  fallbacks: readonly Candidate[] = [],
+): HTMLElement | null {
+  if (typeof document === "undefined" || !container) return null;
+  const active = document.activeElement;
+  if (active === null || !container.contains(active)) return null;
+  const usable = (el: Candidate): el is HTMLElement =>
+    el instanceof HTMLElement && !container.contains(el) && el.closest("[hidden]") === null;
+  const attempt = (el: Candidate): boolean => usable(el) && tryFocus(el);
+
+  const target = record instanceof HTMLElement ? record : (record?.target ?? null);
+  const opener = record instanceof HTMLElement ? null : (record?.opener ?? null);
+  for (const c of [target, opener, ...fallbacks]) if (attempt(c)) return c as HTMLElement;
+
+  const mark = landmarkOf(container);
+  if (usable(mark) && focusLandmark(mark)) return mark;
+  const region = record instanceof HTMLElement ? null : (record?.region ?? null);
+  if (usable(region) && region !== mark && focusLandmark(region)) return region;
+
+  /* The nearest tab stop outside, by document position relative to the container. */
+  const stops = tabStopsOf(document).filter((s) => usable(s));
+  const after = stops.filter((s) => (container.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+  const before = stops.filter((s) => (container.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_PRECEDING) !== 0).reverse();
+  for (const s of [...after, ...before]) if (tryFocus(s)) return s;
+  return null;
+}
+
+const NO_FALLBACKS = (): readonly Candidate[] => [];
+
+/**
+ * The third door as a React hook, for the component that decides whether `ref`'s element is SHOWN.
+ * On every hidden -> shown transition it records what holds focus at that moment (for a drawer, the
+ * control that opened it — focus has not moved yet when the open commits); on every shown -> hidden
+ * transition it calls `releaseFocusFrom` synchronously, in the layout phase, before the browser gets
+ * to a delayed style step or its own focus fix-up. `fallbacks` is read when the release runs.
+ *
+ * A container that is not shown is also made `inert`, from the same commit, for as long as it is not
+ * shown — after the release, so focus leaves before the container stops accepting it. Releasing once
+ * is not enough when the hide is a delayed style step: MEASURED (independent verifier, release build,
+ * 1100 px), seven Tab presses right after the drawer closed walked focus back INTO the still-visible
+ * sliding rail, and 600 ms later it was on <body>; a programmatic focus() did the same. `inert` makes
+ * the browser skip the container for Tab and refuse focus() into it at once, while its slide still
+ * paints. The hook removes only an `inert` it set itself.
+ */
+export function useReleaseFocusOnHide(
+  ref: RefObject<Element | null>,
+  shown: boolean,
+  fallbacks: () => readonly Candidate[] = NO_FALLBACKS,
+): void {
+  const was = useRef(shown);
+  const record = useRef<ReturnRecord | null>(null);
+  const madeInert = useRef(false);
+  const latestFallbacks = useRef(fallbacks);
+  latestFallbacks.current = fallbacks;
+  useLayoutEffect(() => {
+    const before = was.current;
+    was.current = shown;
+    if (typeof document === "undefined") return;
+    const el = ref.current;
+    if (shown) {
+      if (madeInert.current && el !== null) el.removeAttribute("inert");
+      madeInert.current = false;
+      if (before !== shown) record.current = recordReturn(document.activeElement, el);
+      return;
+    }
+    if (before !== shown) {
+      releaseFocusFrom(el, record.current, latestFallbacks.current());
+      record.current = null;
+    }
+    if (el !== null && !el.hasAttribute("inert")) {
+      el.setAttribute("inert", "");
+      madeInert.current = true;
+    }
+  }, [shown, ref]);
 }
 
 /* ══ a control that removes itself ═══════════════════════════════════════════ */

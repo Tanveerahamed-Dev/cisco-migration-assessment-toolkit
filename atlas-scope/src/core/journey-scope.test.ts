@@ -207,7 +207,31 @@ interface InpModule {
   JOURNEYS: { id: string; prime?: Hook; act: Hook }[];
   FIRST_SELECTION: { id: string; beforeClick: Hook; act: (page: unknown, anchor: { x: number; y: number }) => Promise<unknown> };
   J2_HITS: { id: string; x: number; y: number }[];
+  actStepOf?: (taskStart: number, escapeAt: number | undefined) => string;
+  prewarmWindows?: (timeline: { state: string; t: number }[]) => { from: number; to: number | null; endedAs: string | null }[];
+  overlapsPrewarm?: (windows: { from: number; to: number | null }[], start: number, duration: number, tailMs?: number) => boolean;
+  PREWARM_TAIL_MS?: number;
 }
+
+/** A measured trial measure-inp defines OUTSIDE `JOURNEYS` — a first-after-load case run in fresh browsers. */
+interface Trial {
+  id: string;
+  act: (page: unknown, anchor?: unknown) => Promise<unknown>;
+  [hook: string]: unknown;
+}
+
+/**
+ * Every measured trial the harness EXPORTS beside `JOURNEYS`: any exported object with a string `id`
+ * and an `act` function (FIRST_SELECTION, FIRST_PALETTE, and whatever is added next). DISCOVERED, not
+ * listed: when `J2-first-select-device-3d` was the only one, this file named it, and the next
+ * first-after-load case (`J5-first-open-palette`, 2026-09-26) would have been measured and declared
+ * nowhere. A trial's untimed hooks are its functions named `before…`.
+ */
+const exportedTrials = (inp: InpModule): Trial[] =>
+  Object.values(inp as unknown as Record<string, unknown>).filter(
+    (v): v is Trial => v !== null && typeof v === "object" && !Array.isArray(v) && typeof (v as Trial).id === "string" && typeof (v as Trial).act === "function",
+  );
+const measuredIds = (inp: InpModule): string[] => [...inp.JOURNEYS.map((j) => j.id), ...exportedTrials(inp).map((t) => t.id)];
 interface SweepModule {
   ACTIONS: { name: string; setup?: Hook; fn: (page: unknown, env: { app: string }) => Promise<unknown> }[];
 }
@@ -243,15 +267,25 @@ async function journeyActs(): Promise<{ id: string; inputs: Input[] }[]> {
     rec.inputs = [];
     out.push({ id: j.id, inputs: measured });
   }
+  for (const t of exportedTrials(inp)) {
+    const rec: Recorder = { inputs: [], focus: null };
+    const page = recordingPage(rec);
+    for (const [name, hook] of Object.entries(t)) if (/^before/.test(name) && typeof hook === "function") await (hook as Hook)(page).catch(() => null);
+    const measured: Input[] = [];
+    rec.inputs = measured;
+    await t.act(page, { x: 10, y: 10 }).catch(() => null);
+    rec.inputs = [];
+    out.push({ id: t.id, inputs: measured });
+  }
+  return out;
+}
+
+/** The inputs a trial's untimed `before…` hooks perform (they must perform none). */
+async function trialSetupInputs(t: Trial): Promise<Input[]> {
   const rec: Recorder = { inputs: [], focus: null };
   const page = recordingPage(rec);
-  await inp.FIRST_SELECTION.beforeClick(page).catch(() => null);
-  const measured: Input[] = [];
-  rec.inputs = measured;
-  await inp.FIRST_SELECTION.act(page, { x: 10, y: 10 }).catch(() => null);
-  rec.inputs = [];
-  out.push({ id: inp.FIRST_SELECTION.id, inputs: measured });
-  return out;
+  for (const [name, hook] of Object.entries(t)) if (/^before/.test(name) && typeof hook === "function") await (hook as Hook)(page).catch(() => null);
+  return rec.inputs;
 }
 
 /** Every sweep action's MEASURED inputs, run in the sweep's own order on one page (focus carries). */
@@ -274,6 +308,92 @@ async function sweepActs(): Promise<{ name: string; inputs: Input[] }[]> {
 }
 
 /* ── 1. the harnesses ───────────────────────────────────────────────────────────────────────── */
+
+describe("the harness's first-after-load trials are discovered, and each times exactly one journey's act", () => {
+  it("discovers FIRST_SELECTION and FIRST_PALETTE among the exports (a discovery that finds nothing pins nothing)", async () => {
+    const ids = exportedTrials(await loadInp()).map((t) => t.id);
+    expect(ids).toEqual(expect.arrayContaining(["J2-first-select-device-3d", "J5-first-open-palette"]));
+  });
+
+  it("J5-first-open-palette performs no input before its press, and its press is J5's act exactly", async () => {
+    const inp = await loadInp();
+    const t = exportedTrials(inp).find((x) => x.id === "J5-first-open-palette");
+    expect(t, "measure-inp measures the first palette open after load in a fresh browser").toBeDefined();
+    expect(await trialSetupInputs(t!), "its untimed setup would spend the first open before the measurement").toEqual([]);
+    const acts = await journeyActs();
+    const cold = acts.find((a) => a.id === "J5-first-open-palette")!;
+    const warm = acts.find((a) => a.id === "J5-open-palette")!;
+    expect(cold.inputs.length, "its act performs an input").toBeGreaterThan(0);
+    expect(cold.inputs.map(show), "the cold trial times the same act as the warm journey, so the two figures compare").toEqual(warm.inputs.map(show));
+  });
+
+  it("every discovered trial's untimed setup performs no input", async () => {
+    const offenders: string[] = [];
+    for (const t of exportedTrials(await loadInp())) {
+      const spent = await trialSetupInputs(t);
+      if (spent.length > 0) offenders.push(`${t.id}: ${spent.map(show).join(", ")}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("the cold palette trial measures more than one viewport and both colour schemes by default", async () => {
+    const t = exportedTrials(await loadInp()).find((x) => x.id === "J5-first-open-palette") as unknown as {
+      legs: { width: number; height: number; colorScheme: string }[];
+      trials: number;
+    };
+    if (process.env.ATLAS_FIRST_PALETTE_LEGS === undefined) {
+      expect(t.legs.map((l) => `${l.width}x${l.height}:${l.colorScheme}`).sort()).toEqual(["1280x800:dark", "1280x800:light", "1920x1080:dark", "1920x1080:light"]);
+    } else expect(t.legs.length, "ATLAS_FIRST_PALETTE_LEGS parsed to no leg").toBeGreaterThan(0);
+    if (process.env.ATLAS_FIRST_PALETTE_TRIALS === undefined) expect(t.trials, "E2 says over at least 20 repetitions").toBeGreaterThanOrEqual(20);
+    else expect(t.trials).toBeGreaterThan(0);
+  });
+});
+
+describe("the cold palette trial tells the open from the close, and every measured page sees the pre-warm", () => {
+  it("a long task is the open's or the close's by TIME against the Escape keydown, not by the first entry it overlaps", async () => {
+    const { actStepOf } = await loadInp();
+    expect(typeof actStepOf, "measure-inp exports its attribution rule, so it can be pinned").toBe("function");
+    /* The shapes the old rule misfiled (verifier V4, 2026-09-26): a task overlapping only the Escape's
+       keyup was called the open, and with the Ctrl+K keydown below the Event Timing threshold (no
+       entry) the Escape keydown was the ONLY keydown and its task was called the open too. Time
+       against the Escape keydown's own timestamp answers both. */
+    const escapeAt = 1060;
+    expect(actStepOf!(1000, escapeAt), "starts at the Ctrl+K").toMatch(/^open/);
+    expect(actStepOf!(1059.9, escapeAt), "starts just before the Escape").toMatch(/^open/);
+    expect(actStepOf!(1061, escapeAt), "starts after the Escape (the keyup-overlap case, the lone-keydown case)").toMatch(/^after Escape/);
+    expect(actStepOf!(1000, undefined), "no Escape recorded is said, not guessed").toMatch(/^unattributed/);
+  });
+
+  it("the pre-warm's drawn window, and which interactions overlapped it (with the GPU tail behind it)", async () => {
+    const { prewarmWindows, overlapsPrewarm, PREWARM_TAIL_MS } = await loadInp();
+    expect(typeof prewarmWindows).toBe("function");
+    expect(typeof overlapsPrewarm).toBe("function");
+    expect(PREWARM_TAIL_MS, "a tail for the GPU compile that follows the draw").toBeGreaterThanOrEqual(120);
+    const tl = [
+      { state: "waiting", t: 100 },
+      { state: "scheduled", t: 4000 },
+      { state: "mounted", t: 5000 },
+      { state: "done", t: 5050 },
+    ];
+    const w = prewarmWindows!(tl);
+    expect(w).toEqual([{ from: 5000, to: 5050, endedAs: "done" }]);
+    expect(overlapsPrewarm!(w, 4990, 20), "an interaction spanning the mount").toBe(true);
+    expect(overlapsPrewarm!(w, 5100, 40), "one inside the GPU tail").toBe(true);
+    expect(overlapsPrewarm!(w, 5050 + PREWARM_TAIL_MS! + 1, 40), "one after the tail").toBe(false);
+    expect(overlapsPrewarm!(w, 4000, 100), "one before the draw").toBe(false);
+    expect(prewarmWindows!(tl.slice(0, 3)), "still drawn when the record ended: open-ended, not dropped").toEqual([{ from: 5000, to: null, endedAs: null }]);
+    expect(overlapsPrewarm!(prewarmWindows!(tl.slice(0, 3)), 90_000, 10)).toBe(true);
+    expect(prewarmWindows!([{ state: "waiting", t: 1 }]), "never drawn: no window").toEqual([]);
+  });
+
+  it("every page measure-inp instruments also records the pre-warm timeline (the class: every INSTRUMENT install)", () => {
+    const src = readFileSync(INP, "utf8");
+    const instrumented = src.match(/addInitScript\(INSTRUMENT\)/g) ?? [];
+    const recorded = src.match(/addInitScript\(PREWARM_TIMELINE\)/g) ?? [];
+    expect(instrumented.length, "precondition: the harness instruments pages (a count of 0 would pin nothing)").toBeGreaterThanOrEqual(3);
+    expect(recorded.length, "a measured page that does not record the pre-warm cannot say whether its timed interaction absorbed it").toBe(instrumented.length);
+  });
+});
 
 describe("the E5 sweep times no input a declared journey's act performs", () => {
   it("every journey's measured act performs an input (a comparison against nothing pins nothing)", async () => {
@@ -338,7 +458,7 @@ function listUnder(section: string, lead: string): { item: string; line: string 
 describe("acceptance.md's E3 scope is the harnesses' own lists", () => {
   it("'inside the declared journeys' is exactly measure-inp's journey ids", async () => {
     const inp = await loadInp();
-    const ids = [...inp.JOURNEYS.map((j) => j.id), inp.FIRST_SELECTION.id].sort();
+    const ids = measuredIds(inp).sort();
     const inside = listUnder(scopeSection(), "Inside the declared journeys").map((x) => x.item).sort();
     expect(inside).toEqual(ids);
   });
@@ -351,7 +471,7 @@ describe("acceptance.md's E3 scope is the harnesses' own lists", () => {
 
   it("no 'outside' item names a journey", async () => {
     const inp = await loadInp();
-    const ids = [...inp.JOURNEYS.map((j) => j.id), inp.FIRST_SELECTION.id];
+    const ids = measuredIds(inp);
     const offenders = listUnder(scopeSection(), "Outside the declared journeys").filter((x) =>
       ids.some((id) => x.line.includes(id) || x.line.includes(id.split("-")[0]! + " ") || x.line.includes(`(${id.split("-")[0]!})`)),
     );

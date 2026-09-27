@@ -25,6 +25,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import { decodeInvestigation, encodeInvestigation, useInvestigation } from "../core/store";
 import type { Flow } from "../core/types";
@@ -57,7 +58,7 @@ function mount(ui: ReactNode): void {
 
 const tick = async (n = 4): Promise<void> => {
   for (let i = 0; i < n; i += 1) {
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
   }
@@ -135,7 +136,7 @@ describe("the store: selectDevice is explicit unless the trace says otherwise", 
 });
 
 describe("the shell: the trace's re-aim versus the reader's choice (A6 over A5)", () => {
-  it("marks the trace's own re-aim as the hop's, and writes its link without d=", { timeout: 20000 }, async () => {
+  it("marks the trace's own re-aim as the hop's, and writes its link without d=", async () => {
     window.history.replaceState(null, "", `/?s=path&flow=${encodeURIComponent(FLOW_TEXT)}&hop=0`);
     mount(<App />);
     await settle();
@@ -147,7 +148,7 @@ describe("the shell: the trace's re-aim versus the reader's choice (A6 over A5)"
     expect(linkParams().get("flow")).toBe(FLOW_TEXT);
   });
 
-  it("does not book the next keystroke as a navigation after a landing that left the link unchanged", { timeout: 20000 }, async () => {
+  it("does not book the next keystroke as a navigation after a landing that left the link unchanged", async () => {
     /* The trace's own selection writes no `d=`, so its landing can change the navigation signature
        (device, origin) without changing the link. The URL writer must still record that step as
        seen: otherwise the next in-progress edit (a query keystroke) is compared with the signature
@@ -157,13 +158,13 @@ describe("the shell: the trace's re-aim versus the reader's choice (A6 over A5)"
     await settle();
     expect(useInvestigation.getState().deviceOrigin).toBe("hop");
     const depth = window.history.length;
-    await act(async () => useInvestigation.getState().setQuery("c"));
+    await actAsync(async () => useInvestigation.getState().setQuery("c"));
     await tick(3);
     expect(window.location.search).toContain("q=c");
     expect(window.history.length, "a query keystroke replaces the entry; it is not a step").toBe(depth);
   });
 
-  it("treats a restored d= naming the hop's host as the reader's choice", { timeout: 20000 }, async () => {
+  it("treats a restored d= naming the hop's host as the reader's choice", async () => {
     window.history.replaceState(null, "", `/?s=path&d=${HOP_HOST}&flow=${encodeURIComponent(FLOW_TEXT)}&hop=0`);
     mount(<App />);
     await settle();
@@ -173,24 +174,24 @@ describe("the shell: the trace's re-aim versus the reader's choice (A6 over A5)"
     expect(linkParams().get("d")).toBe(HOP_HOST);
   });
 
-  it("makes a selection of the hop's host DURING the trace explicit, and the link carries it", { timeout: 20000 }, async () => {
+  it("makes a selection of the hop's host DURING the trace explicit, and the link carries it", async () => {
     window.history.replaceState(null, "", `/?s=path&flow=${encodeURIComponent(FLOW_TEXT)}&hop=0`);
     mount(<App />);
     await settle();
     expect(useInvestigation.getState().deviceOrigin).toBe("hop");
-    await act(async () => useInvestigation.getState().selectDevice(HOP_HOST));
+    await actAsync(async () => useInvestigation.getState().selectDevice(HOP_HOST));
     await tick(2);
     expect(useInvestigation.getState().deviceOrigin).toBe("explicit");
     expect(linkParams().get("d")).toBe(HOP_HOST);
   });
 
-  it("lets a NEW trace landing on an already-selected host claim that selection", { timeout: 20000 }, async () => {
+  it("lets a NEW trace landing on an already-selected host claim that selection", async () => {
     window.history.replaceState(null, "", "/?s=path");
     mount(<App />);
     await tick(4);
-    await act(async () => useInvestigation.getState().selectDevice(HOP_HOST));
+    await actAsync(async () => useInvestigation.getState().selectDevice(HOP_HOST));
     expect(useInvestigation.getState().deviceOrigin).toBe("explicit");
-    await act(async () => {
+    await actAsync(async () => {
       const s = useInvestigation.getState();
       s.setFlow(FLOW);
       s.setTrace(traceFlow(FLOW));

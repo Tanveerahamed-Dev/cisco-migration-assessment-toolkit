@@ -15,6 +15,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { fabric, severityCounts } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { PriorityQueue } from "./PriorityQueue";
@@ -71,7 +72,7 @@ const click = (el: Element): void => {
  * after a row click waits one frame plus one task; a test asserting on what the ROW shows does not.
  */
 async function settleCommit(): Promise<void> {
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
@@ -360,7 +361,7 @@ describe("filter accounting", () => {
     });
     // The character is on screen before any filtering has happened.
     expect(input.value).toBe("severity:Critical");
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
     expect(useInvestigation.getState().query).toBe("severity:Critical");
@@ -389,7 +390,7 @@ describe("filter accounting", () => {
     // ...and the popup is gone before the next control can take focus (SC 2.4.11 / 2.4.12).
     expect(c.querySelector(".pq-suggest")).toBeNull();
 
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
     expect(useInvestigation.getState().query).toBe("");

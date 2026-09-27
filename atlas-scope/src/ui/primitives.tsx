@@ -51,7 +51,7 @@ import {
 } from "./icons";
 /* The one owner of focus return (acceptance D3). A dependency-free DOM leaf, so importing it from
    the primitives layer creates no cycle. */
-import { handOffFocus, returnFocus, type Successor } from "../app/focus-return";
+import { handOffFocus, returnFocus, useReleaseFocusOnHide, type Successor } from "../app/focus-return";
 import "./primitives.css";
 
 const cx = (...parts: (string | false | null | undefined)[]): string =>
@@ -827,8 +827,17 @@ export function TabPanel({
   children: ReactNode;
   className?: string;
 }): ReactElement {
+  const panelRef = useRef<HTMLDivElement>(null);
+  /* A panel hidden by its owner (a link or a command changing the tab) while focus is inside it hands
+     focus to the tab strip's selected tab — never to <body>. */
+  useReleaseFocusOnHide(panelRef, active, () => {
+    const own = document.getElementById(`${id}-tab-${tabId}`);
+    const selected = own?.closest('[role="tablist"]')?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    return [selected, own];
+  });
   return (
     <div
+      ref={panelRef}
       role="tabpanel"
       id={`${id}-panel-${tabId}`}
       aria-labelledby={`${id}-tab-${tabId}`}
@@ -863,6 +872,10 @@ export function Disclosure({
   const [uncontrolled, setUncontrolled] = useState(defaultOpen);
   const open = controlled ?? uncontrolled;
   const id = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const regionRef = useRef<HTMLDivElement>(null);
+  /* A region closed by its owner while focus is inside it hands focus to its own trigger. */
+  useReleaseFocusOnHide(regionRef, open, () => [triggerRef.current]);
   const toggle = (): void => {
     const next = !open;
     if (controlled === undefined) setUncontrolled(next);
@@ -871,6 +884,7 @@ export function Disclosure({
   return (
     <div className={cx("ui-disclosure", className)} data-open={open}>
       <button
+        ref={triggerRef}
         type="button"
         className="ui-disclosure__trigger"
         aria-expanded={open}
@@ -880,7 +894,7 @@ export function Disclosure({
         <IconChevronRight className="ui-disclosure__chev" />
         <span className="ui-disclosure__summary">{summary}</span>
       </button>
-      <div id={`${id}-region`} role="region" hidden={!open} className="ui-disclosure__region">
+      <div ref={regionRef} id={`${id}-region`} role="region" hidden={!open} className="ui-disclosure__region">
         {children}
       </div>
     </div>
@@ -964,6 +978,9 @@ export function Tooltip({
       /* 1.4.13: dismissible WITHOUT moving focus. The flag keeps it dismissed until the pointer
          leaves and focus moves on, so Escape is not undone by the mouse still sitting there. */
       dismissed.current = true;
+      /* Consumed: the app's global Escape (keyboard.ts skips a defaultPrevented key) must not also close
+         the drawer or a transient in the same keystroke. */
+      e.preventDefault();
       setOpen(false);
     };
     document.addEventListener("keydown", onKey, true);
@@ -1307,6 +1324,121 @@ export interface DialogProps {
   /** The command palette wants the full width; a confirmation does not. */
   width?: "sm" | "md" | "lg";
   className?: string;
+  /**
+   * While CLOSED, render the frame anyway — inert and hidden from assistive technology — so the
+   * browser styles, lays out and RASTERISES it before the real first open. See `DialogFrame`.
+   * `"raster"`: drawn at an opacity below one colour step, so it is really rasterised. `"parked"`:
+   * also `visibility: hidden` — kept in the document, painting nothing, so the real open only flips
+   * attributes on nodes that already exist. Ignored while `open`: an open dialog is always the
+   * ordinary, exposed one.
+   */
+  prewarm?: DialogPrewarm;
+}
+
+/** How a CLOSED dialog's frame is pre-rendered, if at all (see `DialogFrame`). */
+export type DialogPrewarm = false | "raster" | "parked";
+
+/**
+ * How a pre-warm frame is drawn. NOT opacity 0: a layer at zero opacity is never rasterised, so
+ * the GPU never compiles the programs the first real open will need (measured, cold first Ctrl+K
+ * at 1280x800: p95 152 ms at opacity 0 against 64 ms at 0.001). 0.001 is below one 8-bit colour
+ * step, so nothing is seen; pointer-events none so nothing is hit.
+ */
+const RASTER_STYLE: CSSProperties = { opacity: 0.001, pointerEvents: "none" };
+/**
+ * A parked frame paints nothing (`visibility: hidden` — which also removes it from the
+ * accessibility tree a second time over) but keeps its boxes, so the first real open is an
+ * attribute flip on laid-out nodes, not a mount: no DOM to create, no first layout to force.
+ */
+const PARKED_STYLE: CSSProperties = { ...RASTER_STYLE, visibility: "hidden" };
+const prewarmAttrs = (mode: "raster" | "parked") =>
+  ({
+    "aria-hidden": true,
+    inert: true,
+    "data-dialog-prewarm": mode,
+    style: mode === "parked" ? PARKED_STYLE : RASTER_STYLE,
+  }) as const;
+
+export interface DialogFrameProps {
+  /** The `useId()` the title and description ids derive from. */
+  id: string;
+  title: string;
+  description?: ReactNode;
+  children: ReactNode;
+  footer?: ReactNode;
+  width: "sm" | "md" | "lg";
+  className?: string | undefined;
+  onClose: () => void;
+  /** A mode: the invisible, inert, unexposed pre-warm rendering. False: the real dialog. */
+  prewarm: DialogPrewarm;
+  panelRef?: RefObject<HTMLDivElement | null>;
+  scrimRef?: RefObject<HTMLDivElement | null>;
+}
+
+/**
+ * A dialog's PRESENTATION: the scrim, the panel and its head, body, foot and coverage statement.
+ * No behaviour — focus, the key trap and the inert page belong to `Dialog`.
+ *
+ * WHY IT IS SPLIT OUT (acceptance E2/E3, the first Ctrl+K after load, 2026-09-26). A closed Dialog
+ * renders nothing, so the first open built the palette's DOM inside the keydown and then paid, for
+ * the first time, the style and layout of that subtree (forced by `focus()`) and the GPU's first
+ * compile of the programs its paint needs: p95 320 ms and a 51-83 ms keydown task, against a warm
+ * p95 of 64. The same markup rendered beforehand, with `prewarm`, pays those first-time costs off
+ * the interaction's path: `"raster"` while the GPU draws it once, then `"parked"` (painting nothing)
+ * until the real open turns those very nodes into the dialog. What a pre-warm frame must not be is
+ * ANYTHING a user or assistive
+ * technology can meet: it is `aria-hidden` and `inert` on both the scrim and the panel, it takes no
+ * pointer, it carries no `role="dialog"`/`aria-modal` (so no harness, audit or AT query mistakes it
+ * for an open dialog), and the scrim has no close handler. Only the frame's own content is inside
+ * it; the consumer decides what that content exposes while pre-warming.
+ */
+export function DialogFrame({
+  id,
+  title,
+  description,
+  children,
+  footer,
+  width,
+  className,
+  onClose,
+  prewarm,
+  panelRef,
+  scrimRef,
+}: DialogFrameProps): ReactNode {
+  return (
+    <Portal>
+      <div ref={scrimRef} className="ui-dialog__scrim" {...(prewarm ? prewarmAttrs(prewarm) : { onMouseDown: onClose })} />
+      <div
+        ref={panelRef}
+        {...(prewarm
+          ? prewarmAttrs(prewarm)
+          : {
+              role: "dialog",
+              "aria-modal": "true" as const,
+              "aria-labelledby": `${id}-title`,
+              ...(description ? { "aria-describedby": `${id}-desc` } : {}),
+              tabIndex: -1,
+            })}
+        data-width={width}
+        className={cx("ui-dialog", className)}
+      >
+        <div className="ui-dialog__head">
+          <h2 className="ui-dialog__title" id={`${id}-title`}>
+            {title}
+          </h2>
+          <IconButton label="Close dialog" icon={<IconClose />} onClick={onClose} size="sm" />
+        </div>
+        {description ? (
+          <p className="ui-dialog__desc" id={`${id}-desc`}>
+            {description}
+          </p>
+        ) : null}
+        <div className="ui-dialog__body">{children}</div>
+        {footer ? <div className="ui-dialog__foot">{footer}</div> : null}
+        <CoverageStatement />
+      </div>
+    </Portal>
+  );
 }
 
 const LIVE_REGION = "[aria-live], [role=\"status\"], [role=\"alert\"], [role=\"log\"]";
@@ -1362,6 +1494,7 @@ export function Dialog({
   initialFocus,
   width = "md",
   className,
+  prewarm = false,
 }: DialogProps): ReactNode {
   const id = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -1458,37 +1591,27 @@ export function Dialog({
     return () => document.removeEventListener("keydown", onKey, true);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open && !prewarm) return null;
 
+  /* The same element tree open, rasterising or parked, so a pre-warm frame that is mounted when the
+     real open arrives is UPDATED into the real dialog (its attributes flip) rather than replaced —
+     the same DOM nodes, already styled and laid out — and the behaviour effects above, keyed on
+     `open` alone, never run for a pre-warm. */
   return (
-    <Portal>
-      <div ref={scrimRef} className="ui-dialog__scrim" onMouseDown={onClose} />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={`${id}-title`}
-        aria-describedby={description ? `${id}-desc` : undefined}
-        tabIndex={-1}
-        data-width={width}
-        className={cx("ui-dialog", className)}
-      >
-        <div className="ui-dialog__head">
-          <h2 className="ui-dialog__title" id={`${id}-title`}>
-            {title}
-          </h2>
-          <IconButton label="Close dialog" icon={<IconClose />} onClick={onClose} size="sm" />
-        </div>
-        {description ? (
-          <p className="ui-dialog__desc" id={`${id}-desc`}>
-            {description}
-          </p>
-        ) : null}
-        <div className="ui-dialog__body">{children}</div>
-        {footer ? <div className="ui-dialog__foot">{footer}</div> : null}
-        <CoverageStatement />
-      </div>
-    </Portal>
+    <DialogFrame
+      id={id}
+      title={title}
+      description={description}
+      footer={footer}
+      width={width}
+      className={className}
+      onClose={onClose}
+      prewarm={open ? false : prewarm}
+      panelRef={panelRef}
+      scrimRef={scrimRef}
+    >
+      {children}
+    </DialogFrame>
   );
 }
 

@@ -4876,6 +4876,9 @@ def main():
     _actx.drift = _drift
     _actx.ptp_readiness = _ptp_readiness
     _actx.media_risks = _media_risks
+    # The interface index lets the L3 / STP / FHRP / IPv6 folds point at a reconstructed SVI key only
+    # when the collected interfaces prove it (analyze._interface_key); without it they keep row refs.
+    _actx.all_interfaces = all_interfaces
     punchlist = _run_phase("Migration Punch-List", _punchlist, _actx, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Device Risk Register sheet", write_device_risk_sheet, wb, device_dossiers)
@@ -6253,7 +6256,8 @@ def _punchlist(ctx: "AnalysisContext") -> list:
         vtp_safety_baseline=ctx.vtp_safety_baseline,
         vtp_safety_subject_scope=ctx.vtp_safety_subject_scope,
         ipv6_routing_adjacency_baseline=ctx.ipv6_routing_adjacency_baseline,
-        ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope)
+        ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope,
+        interface_index=ctx.all_interfaces or None)
 
 
 def _executive_brief(ctx: "AnalysisContext") -> dict:

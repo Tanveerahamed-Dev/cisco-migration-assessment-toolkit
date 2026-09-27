@@ -57,6 +57,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
 import { checkBuildFreshness } from "./build-freshness.mjs";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /* Executed (`node review/capture-motion.mjs`), not imported: see `main` at the bottom. */
@@ -96,7 +97,8 @@ function constFrom(file, name) {
   if (!m) throw new Error(`capture-motion: ${name} not found in src/${file} — the harness cannot state its bar`);
   return Number(m[1]);
 }
-const TIER_FADE_MS = constFrom("fabric3d/scene.ts", "TIER_FADE_MS");
+/* Since C5 2026-09-26 the tier fade's ease (duration, curve, per-frame cap) lives with the ease owner. */
+const TIER_FADE_MS = constFrom("fabric3d/emphasis.ts", "TIER_FADE_MS");
 const RECEDE_MS = constFrom("fabric3d/emphasis.ts", "RECEDE_MS");
 /** Acceptance C6: every animation except a deliberate camera move ends under this. */
 const C6_BAR_MS = 300;
@@ -212,22 +214,70 @@ export const T = {
   AO_MAX_SHARE: 0.005,
   AO_STRONG_DELTA: 32,
   AO_MAX_STRONG_SHARE: 0.0005,
-  /* TIER CROSS-FADE. scene.ts: TIER_FADE_MS (read above), ease-in-out, started once the new tier's
-     frames are ordinary. The measured fade (the frame before the overlay's opacity leaves 1 to the
-     frame it is gone or <= 0.005) must be at least TIER_FADE_MS - 50 ms (the tail below 0.005 of an
-     ease-in-out, plus a frame of start slop) and UNDER the C6 bar of 300 ms. The upper bound used
-     to be 400 ms around a 300 ms fade, so a fade AT the ceiling passed here while the grading
-     measured 299.9-300.1 ms and failed C6 on it. No single frame may carry more than
-     FADE_MAX_STEP (0.25) of opacity — an ease-in-out over 18 frames peaks near 0.09/frame, so 0.25
-     allows a dropped frame; the critic's "cut" was 0.92 -> 0.50 (0.42) and 0.94 -> 0.056. The
-     composited picture must agree: no frame may carry more than FADE_MAX_PIXEL_SHARE (40 %) of the
-     total pixel change from the old tier's picture to the new one. */
+  /* TIER CROSS-FADE. emphasis.ts: TIER_FADE_MS (read above), ease-in-out, stepped once per frame by
+     the render loop, started once the new tier's frames are ordinary. The measured fade (the frame
+     before the overlay's opacity leaves 1 to the frame it is gone or <= 0.005) must be at least
+     TIER_FADE_MS - 50 ms (the tail below 0.005 of an ease-in-out, plus a frame of start slop) and
+     UNDER the C6 bar of 300 ms. The upper bound used to be 400 ms around a 300 ms fade, so a fade AT
+     the ceiling passed here while the grading measured 299.9-300.1 ms and failed C6 on it.
+     ONE FRAME'S STEP. No frame may move the overlay's opacity by more than FADE_MAX_STEP. It was 0.25
+     ("an ease-in-out over 18 frames peaks near 0.09/frame, so 0.25 allows a dropped frame"); the
+     2026-09-26 re-grade failed one fade at 0.36 across a 116.6 ms host frame, and the product now
+     CAPS every fade at 0.2 per frame (emphasis.ts FADE_MAX_STEP). The bar is that cap, stated HERE as
+     a number and not read from the product: a verifier that takes the product's constant as its bar
+     would pass a product that raised it. It is judged on the opacity at full precision as the page
+     reports it (getComputedStyle), plus FADE_STEP_EPS for the serialisation of that number; the
+     rounded figure is what is printed. The critic's earlier "cuts" were 0.92 -> 0.50 (0.42) and
+     0.94 -> 0.056.
+     THE COMPOSITED PICTURE must agree: no frame may carry more than FADE_MAX_PIXEL_SHARE (40 %) of
+     the total change from the old tier's picture to the new one — judged two ways, the whole-canvas
+     mean (as before) and MASKED to the pixels the tier change actually moves (|end - start| >=
+     FADE_MASK_DELTA). The whole-canvas SHARE is a ratio, so area alone does not dilute it. What
+     does dilute it is gradual change below FADE_MASK_DELTA spread over the rest of the canvas (AO or
+     history drift, grain). That change carries most of the whole-canvas total and can pull a
+     small-area cut's one-frame share under the bar. The masked share counts only the pixels the tiers
+     really change, so the drift cannot hide the cut (pinned by a known answer in
+     stepdown.fadehold.test.ts). Area DOES dilute the whole-canvas MEAN, which is what gates judging
+     below: the dark tiers differ over 1.3 % of the canvas, so their 0.58/255 mean is about 45 times
+     smaller than the change in those pixels (measured 2026-09-26). A composite is JUDGED only with pixels (the
+     copy-off control has none, by design) and only when the two tiers differ in at least
+     FADE_MIN_CHANGED_PX pixels (the light theme's tiers differed in ONE pixel at >= 8/255,
+     measured): otherwise it is "not applicable", published as a null share with the reason, never
+     as a number. */
   FADE_MIN_MS: TIER_FADE_MS - 50,
-  /* exclusive: a fade that lasts 300 ms is not under 300 ms */
+  /* exclusive: a fade that lasts 300 ms is not under 300 ms.
+     WHOSE DURATION (C5 verification, 2026-09-26). A duration measured on the wall clock belongs to the
+     HOST as much as to the product. An independent run on a contended host failed 2 of 24 fades at
+     316.6 / 316.7 ms, although every step was within the cap. One trace was 16.7 ms frames down to 0.25,
+     then an 83.3 ms frame (0.25 -> 0.05, the cap binding) and a 50 ms frame to removal. The offline
+     model of a 280 ms ease-in-out on 60 Hz frames with ONE long frame gives the same picture:
+     - One 50 ms frame among the last two frames takes even an UNCAPPED wall-clock fade (the old CSS
+       one) to 300 ms.
+     - An 83.3 ms frame there takes it to 300-333 ms, and a 116.6 ms frame to 300-367 ms.
+     - The 0.2 cap adds at most one 60 Hz frame of its own for an 83-100 ms stall, and two for a
+       116-133 ms stall. A frame of 33 ms or more can bind it.
+     So this bar judges the PRODUCT's duration on the fades the host presented ordinarily. A fade with a
+     host stall inside it (a frame longer than FADE_HOST_STALL_MS) may pass 300 ms under one condition:
+     every frame from 300 ms on either ENDS the fade or moves the full FADE_MAX_STEP. That is a delayed
+     fade catching up at the most the step bar allows, never one that dawdles. A fade over 300 ms with no
+     stall inside it fails as before. Stall-extended fades are listed in the verdict with their stall. */
   FADE_MAX_MS: C6_BAR_MS,
-  FADE_MAX_STEP: 0.25,
+  /* A frame that missed at least one 60 Hz vsync: longer than 1.5 frames. At the 280 ms ease-in-out's
+     steepest point a frame of about 33 ms covers the 0.2 cap. */
+  FADE_HOST_STALL_MS: 1.5 * FRAME_60_MS,
+  FADE_MAX_STEP: 0.2,
+  FADE_STEP_EPS: 0.001,
   FADE_MAX_PIXEL_SHARE: 0.4,
   FADE_MIN_VISIBLE_DELTA: 0.1,
+  FADE_MASK_DELTA: 8,
+  /* the POP_MAX_PIXELS area: the smallest change this harness treats as a visible event */
+  FADE_MIN_CHANGED_PX: 60,
+  /* THE INJECTED STALL (the deterministic reproduction of the 2026-09-26 FAIL). One sequence per
+     direction and theme blocks the main thread for FADE_STALL_MS on the first frame the overlay's
+     opacity leaves 1 — so the frame after it is a ~130 ms frame, exactly where the graded cut came
+     from. A wall-clock fade steps >= 0.36 there (the model: 0.36-0.65 by where the stall lands); a
+     per-frame-capped one steps at most its cap. It turns a 1-in-24 host event into a certain test. */
+  FADE_STALL_MS: 120,
 };
 
 /* ── in-page instrumentation (init script; self-contained) ─────────────────────────────────── */
@@ -249,6 +299,10 @@ function instrument() {
     /* false = metadata only (no pixel copy): the control that separates a product stall from one the
        copy itself could cause. */
     copy: true,
+    /* FADE_STALL_MS: when > 0, busy-wait that long once, after the hook of the first frame whose
+       overlay opacity is below 1 (see T.FADE_STALL_MS). `stalledAt` records the frame. */
+    stallMs: 0,
+    stalledAt: null,
     pool: [],
     frames: [],
     ids: null,
@@ -320,6 +374,13 @@ function instrument() {
         w: c.width,
         h: c.height,
       });
+      if (M.stallMs > 0 && M.stalledAt === null && fade && fade.opacity < 1) {
+        M.stalledAt = i;
+        const until = performance.now() + M.stallMs;
+        while (performance.now() < until) {
+          /* a heavy host frame, on purpose */
+        }
+      }
     } catch (e) {
       M.hookErrors += 1;
       M.lastHookError = String(e).slice(0, 200);
@@ -360,6 +421,7 @@ function instrument() {
 
   M.start = (label, ids) => {
     M.frames = [];
+    M.stalledAt = null;
     M.ids = ids;
     M.label = label;
     M.recording = true;
@@ -405,7 +467,12 @@ async function awaitSettled(page, capMs = 60000) {
   const t0 = Date.now();
   for (;;) {
     const st = await page.evaluate(readSettle).catch(() => null);
-    if (st?.ok) return st;
+    if (st?.ok) {
+      /* ...and the palette's pre-warm frame is no longer drawn (review/palette-warm.mjs): a recording
+         inside that window would carry its raster and one-time program compile. Throws when bounded out. */
+      await awaitPaletteWarm(page);
+      return st;
+    }
     if (Date.now() - t0 > capMs) throw new Error(`not settled within ${capMs} ms: ${JSON.stringify(st)}`);
     await page.waitForTimeout(100);
   }
@@ -560,11 +627,17 @@ const FADE_SEQUENCES = [
 ];
 
 /* ── recording ────────────────────────────────────────────────────────────────────────────────── */
-async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba = false } = {}) {
+async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba = false, stallMs = 0 } = {}) {
   await page.evaluate((c) => (window.__motion.copy = c), copy);
+  await page.evaluate((ms) => (window.__motion.stallMs = ms), stallMs);
   await page.evaluate(({ l, ids }) => window.__motion.start(l, ids), { l: seqId, ids });
   await run(page, box);
   const meta = await page.evaluate(() => window.__motion.stop());
+  const stalledAt = await page.evaluate(() => {
+    const at = window.__motion.stalledAt;
+    window.__motion.stallMs = 0;
+    return at;
+  });
   const hookErrors = await page.evaluate(() => ({ n: window.__motion.hookErrors, last: window.__motion.lastHookError ?? null }));
   const frames = [];
   const rgbaFrames = [];
@@ -587,7 +660,7 @@ async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba =
     });
   }
   await page.evaluate(() => window.__motion.release());
-  return { meta, frames, rgbaFrames, hookErrors };
+  return { meta, frames, rgbaFrames, hookErrors, stalledAt };
 }
 
 /* ── analysis ─────────────────────────────────────────────────────────────────────────────────── */
@@ -1023,7 +1096,19 @@ export function clustersOf(mask, w, h) {
   return out.sort((a, b) => b.size - a.size);
 }
 
-function analyseFade(seq, meta, L, w, h) {
+/** One AO event as the progress log prints it. A DROP carries no `msAfterLastCameraChange` (only a
+ *  restore does), and the old one-template log printed every drop as "drop@34 undefinedms" — which
+ *  the 2026-09-26 grading then read as the tier fade's frame 34. Each kind now prints its own fields. */
+export function aoLogEntry(x) {
+  const share = x.jump ? ` ${x.jump.shareOver8}` : "";
+  if (x.kind === "restore") return `restore@${x.frame} ${x.msAfterLastCameraChange}ms${share}`;
+  if (x.kind === "drop") return `drop@${x.frame} cam ${x.camPx}px ${x.maskedByMotion ? "masked" : "UNMASKED"}${share}`;
+  return `${x.kind}@${x.frame}${share}`;
+}
+
+/** Pure: the fade in one recorded sequence. Exported so its rules are pinned by known answers
+ *  (src/fabric3d/stepdown.fadehold.test.ts), including on the recorded 2026-09-26 failure. */
+export function analyseFade(seq, meta, L, w, h) {
   const n = w * h;
   const firstPresent = meta.findIndex((f) => f.fade);
   if (firstPresent < 0) return { sequence: seq.id, established: false, why: "the tier-fade overlay never appeared", density: density(meta) };
@@ -1051,27 +1136,74 @@ function analyseFade(seq, meta, L, w, h) {
   let maxStep = 0;
   let maxStepFrame = -1;
   const op = (t) => (meta[t].fade ? meta[t].fade.opacity : 0);
+  /* Host stalls inside the fade, and every frame from the C6 bar on (see T.FADE_MAX_MS). */
+  const hostStallFrames = [];
+  const pastBarFrames = [];
   for (let t = start; t <= end; t++) {
     const s = Math.abs(op(t - 1) - op(t));
     if (s > maxStep) {
       maxStep = s;
       maxStepFrame = t;
     }
+    const dt = meta[t].ts - meta[t - 1].ts;
+    if (dt > T.FADE_HOST_STALL_MS) hostStallFrames.push({ frame: t, dtMs: r2(dt) });
+    const elapsed = meta[t].ts - meta[start - 1].ts;
+    if (elapsed >= T.FADE_MAX_MS) pastBarFrames.push({ frame: t, elapsedMs: r2(elapsed), stepRaw: op(t - 1) - op(t), ended: t === end });
   }
+  const fadeMs = r2(meta[end].ts - meta[start - 1].ts);
   /* Composited pixel progress: total change from the last full-overlay frame to the first frame
-     without it, and the largest one-frame share of that. */
-  const hasPixels = L.length === meta.length;
+     without it, and the largest one-frame share of that — whole-canvas, and MASKED to the pixels the
+     tier change moves (see T). */
+  const hasPixels = L.length === meta.length && L.length > 0;
   const total = hasPixels ? frameDiff(L[start - 1], L[end], 8).mean : 0;
-  /* Below FADE_MIN_VISIBLE_DELTA mean luma the two tiers' pictures are the same picture (light theme:
-     0.02/255 measured), and a one-frame "share" of a near-zero total is rounding noise, not a cut. */
-  const judgeComposite = hasPixels && total >= T.FADE_MIN_VISIBLE_DELTA;
-  let maxShare = hasPixels ? 0 : null;
+  let mask = null;
+  let changedPx = null;
+  let maskedTotal = 0;
+  if (hasPixels) {
+    mask = new Uint8Array(n);
+    changedPx = 0;
+    const A = L[start - 1];
+    const B = L[end];
+    for (let p = 0; p < n; p++) {
+      const d = Math.abs(A[p] - B[p]);
+      if (d >= T.FADE_MASK_DELTA) {
+        mask[p] = 1;
+        changedPx++;
+        maskedTotal += d;
+      }
+    }
+  }
+  /* Below FADE_MIN_VISIBLE_DELTA mean luma, or FADE_MIN_CHANGED_PX changed pixels, the two tiers'
+     pictures are the same picture (light theme: 0.02/255 mean, 1 px measured), and a one-frame
+     "share" of a near-zero total is rounding noise, not a cut. */
+  const judgeComposite = hasPixels && total >= T.FADE_MIN_VISIBLE_DELTA && changedPx >= T.FADE_MIN_CHANGED_PX;
+  const compositeWhy = !hasPixels
+    ? "no pixels recorded (the copy-off control): judged on the opacity trace only"
+    : judgeComposite
+      ? `judged on ${changedPx} changed px`
+      : `composite not applicable: the tiers differ in ${changedPx} px at >= ${T.FADE_MASK_DELTA}/255 (under ${T.FADE_MIN_CHANGED_PX}) and by ${r2(total)}/255 mean`;
+  let maxShare = null;
   let maxShareFrame = -1;
-  for (let t = start; hasPixels && t <= end; t++) {
-    const s = total > 0 ? frameDiff(L[t - 1], L[t], 8).mean / total : 0;
-    if (s > maxShare) {
-      maxShare = s;
-      maxShareFrame = t;
+  let maskedMax = null;
+  let maskedMaxFrame = -1;
+  if (judgeComposite) {
+    maxShare = 0;
+    maskedMax = 0;
+    for (let t = start; t <= end; t++) {
+      const s = frameDiff(L[t - 1], L[t], 8).mean / total;
+      if (s > maxShare) {
+        maxShare = s;
+        maxShareFrame = t;
+      }
+      let step = 0;
+      const P = L[t - 1];
+      const Q = L[t];
+      for (let p = 0; p < n; p++) if (mask[p]) step += Math.abs(P[p] - Q[p]);
+      const m = maskedTotal > 0 ? step / maskedTotal : 0;
+      if (m > maskedMax) {
+        maskedMax = m;
+        maskedMaxFrame = t;
+      }
     }
   }
   return {
@@ -1082,17 +1214,70 @@ function analyseFade(seq, meta, L, w, h) {
     holdMs: r2(meta[start].ts - meta[firstPresent].ts),
     fadeStartFrame: start,
     fadeEndFrame: end,
-    fadeMs: r2(meta[end].ts - meta[start - 1].ts),
+    fadeMs,
     framesInFade: end - start + 1,
+    /* frames inside the fade longer than T.FADE_HOST_STALL_MS, and whether one of them is why the fade
+       passed the C6 bar (judged by fadeFailures' catch-up rule instead of the plain 300 ms bar) */
+    hostStallFrames,
+    stallExtended: fadeMs >= T.FADE_MAX_MS && hostStallFrames.length > 0,
+    pastBarFrames,
     maxOpacityStep: r2(maxStep),
+    /* full precision: the verdict judges this one (see T.FADE_MAX_STEP) */
+    maxOpacityStepRaw: maxStep,
     maxOpacityStepFrame: maxStepFrame,
+    /* the frame interval that ended on the largest step: a stall shows here */
+    maxOpacityStepDtMs: maxStepFrame > 0 ? r2(meta[maxStepFrame].ts - meta[maxStepFrame - 1].ts) : null,
     compositeTotalMeanDelta: hasPixels ? r2(total) : null,
+    compositeChangedPixels: changedPx,
     compositeJudged: judgeComposite,
+    compositeWhy,
     compositeMaxOneFrameShare: r2(maxShare),
     compositeMaxShareFrame: maxShareFrame,
+    compositeMaskedMaxShare: maskedMax === null ? null : Math.round(maskedMax * 1000) / 1000,
+    compositeMaskedMaxShareFrame: maskedMaxFrame,
     tierAfter: meta[meta.length - 1].quality,
     trace,
   };
+}
+
+/** Pure: the verdict's failures for one established fade (pinned by known answers alongside analyseFade). */
+export function fadeFailures(tag, f) {
+  const out = [];
+  if (!f.established) return out;
+  if (f.fadeMs < T.FADE_MIN_MS) out.push(`${tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS})`);
+  else if (f.fadeMs >= T.FADE_MAX_MS) {
+    /* See T.FADE_MAX_MS: over the bar with no host stall inside it is the product's own duration. With
+       one, every frame from the bar on must end the fade or move the full cap. */
+    if (!f.stallExtended) out.push(`${tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS}; no host stall inside it)`);
+    else {
+      const longest = Math.max(...f.hostStallFrames.map((s) => s.dtMs));
+      for (const p of f.pastBarFrames ?? []) {
+        if (p.ended || p.stepRaw >= T.FADE_MAX_STEP - T.FADE_STEP_EPS) continue;
+        out.push(
+          `${tag}: fade lasted ${f.fadeMs} ms, extended by a host stall (longest frame ${longest} ms), but frame ${p.frame}, ${p.elapsedMs} ms in, moved only ${r2(p.stepRaw)} (from ${T.FADE_MAX_MS} ms on a stalled fade must end or move the full ${T.FADE_MAX_STEP} each frame)`,
+        );
+      }
+    }
+  }
+  if (f.maxOpacityStepRaw > T.FADE_MAX_STEP + T.FADE_STEP_EPS)
+    out.push(`${tag}: opacity fell ${f.maxOpacityStep} in one frame (frame ${f.maxOpacityStepFrame}${f.maxOpacityStepDtMs !== null && f.maxOpacityStepDtMs !== undefined ? `, a ${f.maxOpacityStepDtMs} ms frame` : ""}; bar ${T.FADE_MAX_STEP})`);
+  if (f.compositeJudged && f.compositeMaxOneFrameShare > T.FADE_MAX_PIXEL_SHARE)
+    out.push(`${tag}: one frame carried ${f.compositeMaxOneFrameShare} of the composited change (frame ${f.compositeMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+  if (f.compositeJudged && f.compositeMaskedMaxShare > T.FADE_MAX_PIXEL_SHARE)
+    out.push(`${tag}: one frame carried ${f.compositeMaskedMaxShare} of the masked composited change over ${f.compositeChangedPixels} px (frame ${f.compositeMaskedMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+  return out;
+}
+
+/** Pure: one injected-stall fade (T.FADE_STALL_MS). ESTABLISHED only when the stall was injected AND
+ *  produced a long frame: a busy-wait that the page never blocked on would otherwise pass vacuously.
+ *  An established one is held to every rule fadeFailures applies, including the catch-up duration rule. */
+export function stalledFadeVerdict(tag, f) {
+  if (!f.established) return { established: false, why: f.why, fails: [] };
+  if (f.stalledAtFrame === null || f.stalledAtFrame === undefined) return { established: false, why: "the stall was never injected", fails: [] };
+  const floor = r2(T.FADE_STALL_MS - FRAME_60_MS);
+  if (f.stallDtMs === null || f.stallDtMs === undefined || f.stallDtMs < floor)
+    return { established: false, why: `the frame after the injected stall lasted ${f.stallDtMs} ms (bar: at least ${floor}): no stall landed`, fails: [] };
+  return { established: true, why: "", fails: fadeFailures(tag, f) };
 }
 
 /* ── evidence images for the worst frames ─────────────────────────────────────────────────────── */
@@ -1147,6 +1332,20 @@ async function main() {
   const { chromium } = await import("@playwright/test");
   const server = await serverIdentity();
   const freshness = await checkBuildFreshness(APP);
+  /* THE SERVER MUST NOT CHANGE UNDER THE RUN (2026-09-26). Freshness is established once, here; a
+     full run takes over an hour on a contended host, and in the C5 re-grade another lane restarted
+     :4181 on an isolated copy of an older tree between legs — the dark legs measured this build, the
+     light legs another program, and the report could not tell them apart. So the served page is
+     fingerprinted now and re-read before every leg; a leg served anything else is a leg problem
+     (every item it would feed is then UNPROVEN, never graded on a different program). */
+  const servedPage = async () => {
+    try {
+      return await (await fetch(APP + "/")).text();
+    } catch (e) {
+      return `unreachable: ${String(e).slice(0, 120)}`;
+    }
+  };
+  const servedAtStart = await servedPage();
   console.log(`server: ${server.url} (${server.mode}); build fresh: ${freshness.fresh} — ${freshness.why}`);
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(OUT, { recursive: true });
@@ -1159,6 +1358,7 @@ async function main() {
          never PASS (the verdicts below require all four legs). */
       if (process.env.ATLAS_MOTION_LEGS && !process.env.ATLAS_MOTION_LEGS.split(",").includes(`${theme}/${tier}`)) continue;
       const leg = { theme, tier, problems: [], sequences: [], fades: [] };
+      if ((await servedPage()) !== servedAtStart) leg.problems.push(`the page served at ${APP} changed since the run began (another server or build replaced it): this leg measured a different program`);
       legs.push(leg);
       const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DSF, colorScheme: theme, reducedMotion: "no-preference" });
       await ctx.addInitScript(instrument);
@@ -1236,7 +1436,7 @@ async function main() {
           `  ${seq.id}: tiers ${JSON.stringify(a.tierHeld.tiersSeen)}${a.tierHeld.framesOffTier ? ` (${a.tierHeld.framesOffTier} frames off the declared ${tier}, first at ${a.tierHeld.firstOffTierFrame})` : ""}, pinned ${a.tierHeld.frames - a.tierHeld.framesUnpinned}/${a.tierHeld.frames}, ` +
             `${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
             `still pops ${a.stillPops.length}/${a.stillPairsJudged}, spikes ${a.motionSpikes.length}, flip px ${a.zfight.flipPixels}${a.zfight.flipClasses ? " " + JSON.stringify(a.zfight.flipClasses) : ""} (clusters>=${T.ZF_CLUSTER}: ${a.zfight.clusterCount}), ` +
-            `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map((x) => x.kind + "@" + x.frame + (x.jump ? ` ${x.msAfterLastCameraChange}ms ${x.jump.shareOver8}` : "")))}`,
+            `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map(aoLogEntry))}`,
         );
       }
 
@@ -1259,7 +1459,23 @@ async function main() {
           f.worstSceneFrameMs = r2(Math.max(...meta.map((m) => m.sceneFrameMs ?? 0)));
           f.maxHookMs = r2(Math.max(...meta.map((m) => m.hookMs ?? 0)));
           leg.fades.push(f);
-          console.log(`  ${tag}: max dt ${f.density.maxDtMs} ms, worst scene frame ${f.worstSceneFrameMs} ms, hook <= ${f.maxHookMs} ms; ${f.established ? `hold ${f.holdMs} ms, fade ${f.fadeMs} ms over ${f.framesInFade} frames, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame}, max composite share ${f.compositeMaxOneFrameShare}` : "NOT ESTABLISHED: " + f.why}`);
+          console.log(`  ${tag}: max dt ${f.density.maxDtMs} ms, worst scene frame ${f.worstSceneFrameMs} ms, hook <= ${f.maxHookMs} ms; ${f.established ? `hold ${f.holdMs} ms, fade ${f.fadeMs} ms over ${f.framesInFade} frames${f.hostStallFrames.length ? ` (host frames ${f.hostStallFrames.map((x) => x.dtMs).join("/")} ms inside it${f.stallExtended ? ", stall-extended" : ""})` : ""}, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame} (${f.maxOpacityStepDtMs} ms frame), composite ${f.compositeJudged ? `share ${f.compositeMaxOneFrameShare}, masked ${f.compositeMaskedMaxShare} over ${f.compositeChangedPixels} px` : f.compositeWhy}` : "NOT ESTABLISHED: " + f.why}`);
+        }
+        /* THE INJECTED STALL (T.FADE_STALL_MS): one fade per direction with a FADE_STALL_MS main-thread
+           block on the first frame the overlay leaves 1. Copy off (the opacity trace is the evidence).
+           Judged by the same per-frame bar, as its own item; not part of the 24 above. */
+        for (const seq of FADE_SEQUENCES) {
+          await awaitSettled(page);
+          const tag = `${seq.id}-stalled`;
+          const dir = resolve(OUT, theme, "fade", tag);
+          const { meta, frames, stalledAt } = await record(page, ids, seq.id, seq.run, box, dir, { copy: false, stallMs: T.FADE_STALL_MS });
+          const f = analyseFade(seq, meta, frames, meta[0].w, meta[0].h);
+          f.copy = false;
+          f.tag = tag;
+          f.stalledAtFrame = stalledAt;
+          f.stallDtMs = stalledAt !== null && stalledAt + 1 < meta.length ? r2(meta[stalledAt + 1].ts - meta[stalledAt].ts) : null;
+          leg.stalledFades = [...(leg.stalledFades ?? []), f];
+          console.log(`  ${tag}: stall injected after frame ${stalledAt} (next frame ${f.stallDtMs} ms); ${f.established ? `fade ${f.fadeMs} ms over ${f.framesInFade} frames, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame} (${f.maxOpacityStepDtMs} ms frame)` : "NOT ESTABLISHED: " + f.why}`);
         }
       }
       leg.pageErrors = errors.slice(0, 5);
@@ -1314,16 +1530,43 @@ async function main() {
   }
   const fadeFails = [];
   let fadesEstablished = 0;
+  let maxStepSeen = 0;
+  const compositeJudgedTags = [];
+  const compositeNotJudged = new Map();
   for (const l of legs) {
     for (const f of l.fades) {
       if (!f.established) continue;
       fadesEstablished++;
-      if (f.fadeMs < T.FADE_MIN_MS || f.fadeMs >= T.FADE_MAX_MS) fadeFails.push(`${l.theme}/${f.tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS})`);
-      if (f.maxOpacityStep > T.FADE_MAX_STEP) fadeFails.push(`${l.theme}/${f.tag}: opacity fell ${f.maxOpacityStep} in one frame (frame ${f.maxOpacityStepFrame}; bar ${T.FADE_MAX_STEP})`);
-      if (f.compositeJudged && f.compositeMaxOneFrameShare > T.FADE_MAX_PIXEL_SHARE) fadeFails.push(`${l.theme}/${f.tag}: one frame carried ${f.compositeMaxOneFrameShare} of the composited change (frame ${f.compositeMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+      maxStepSeen = Math.max(maxStepSeen, f.maxOpacityStepRaw);
+      for (const m of fadeFailures(`${l.theme}/${f.tag}`, f)) fadeFails.push(m);
+      if (f.compositeJudged) compositeJudgedTags.push(`${l.theme}/${f.tag}`);
+      else {
+        const why = f.copy ? `${l.theme}: ${f.compositeWhy}` : "copy-off control (no pixels by design)";
+        compositeNotJudged.set(why, (compositeNotJudged.get(why) ?? 0) + 1);
+      }
     }
   }
   const fadeNotEst = legs.flatMap((l) => l.fades.filter((f) => !f.established).map((f) => `${l.theme}/${f.tag}: ${f.why}`));
+  const stallFails = [];
+  let stallsEstablished = 0;
+  const stallNotEst = [];
+  for (const l of legs) {
+    for (const f of l.stalledFades ?? []) {
+      /* Established only if the stall LANDED (a long frame followed it), then held to every fade rule,
+         the catch-up duration rule included (stalledFadeVerdict). */
+      const v = stalledFadeVerdict(`${l.theme}/${f.tag}`, f);
+      if (!v.established) {
+        stallNotEst.push(`${l.theme}/${f.tag}: ${v.why}`);
+        continue;
+      }
+      stallsEstablished++;
+      for (const m of v.fails) stallFails.push(`${m} (stall injected after frame ${f.stalledAtFrame}, next frame ${f.stallDtMs} ms)`);
+    }
+  }
+  const stallExtended = legs.flatMap((l) =>
+    l.fades.filter((f) => f.established && f.stallExtended).map((f) => `${l.theme}/${f.tag} ${f.fadeMs} ms (host frames ${f.hostStallFrames.map((s) => s.dtMs).join("/")} ms)`),
+  );
+  const compositeSummary = `composite judged on pixels for ${compositeJudgedTags.length} of ${fadesEstablished}${compositeNotJudged.size ? `; not judged: ${[...compositeNotJudged].map(([why, k]) => `${k} x ${why}`).join("; ")}` : ""}`;
   const tierFails = legs.flatMap((l) => declaredTierFails(`${l.theme}/${l.tier}`, l.sequences));
   const allLegsRan = legs.length === THEMES.length * TIERS.length && legs.every((l) => l.sequences.length === SEQUENCES.length);
 
@@ -1333,7 +1576,8 @@ async function main() {
     "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
     "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),
     "AO drop and restore at camera stop (high tier)": verdict(aoFails, aoRestores >= 4 && aoUnjudged.length === 0 && notDense.length === 0 && legProblems.length === 0, `${aoRestores} restores observed at the high tier${aoUnjudged.length ? "; not judged: " + aoUnjudged.join("; ") : ""}`),
-    [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
+    [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms on ordinary host frames, a stalled one catching up at the cap; at most ${T.FADE_MAX_STEP} opacity per frame)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0 && legProblems.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established, per-frame opacity step measured on every one (largest ${r2(maxStepSeen)}); duration under ${C6_BAR_MS} ms on ${fadesEstablished - stallExtended.length}, stall-extended and judged on catch-up at the full cap: ${stallExtended.length}${stallExtended.length ? ` (${stallExtended.join("; ")})` : ""}; ${compositeSummary}${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
+    [`tier cross-fade under an injected ${T.FADE_STALL_MS} ms stall (at most ${T.FADE_MAX_STEP} opacity per frame)`]: verdict(stallFails, stallsEstablished === THEMES.length * 2 && stallNotEst.length === 0 && legProblems.length === 0, `${stallsEstablished} of ${THEMES.length * 2} stalled fades (2 themes x 2 directions) established (each stall landed: next frame at least ${r2(T.FADE_STALL_MS - FRAME_60_MS)} ms), held to the step bar and the catch-up duration rule${stallNotEst.length ? "; " + stallNotEst.join("; ") : ""}`),
   };
 
   const report = {

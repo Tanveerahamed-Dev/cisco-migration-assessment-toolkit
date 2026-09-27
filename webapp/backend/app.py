@@ -26,7 +26,7 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, BinaryIO, Dict, List, Literal
+from typing import Annotated, Any, BinaryIO, Callable, Dict, List, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi import Path as PathParam
@@ -84,6 +84,35 @@ def _default_db_path() -> str:
 
 
 FRONTEND_DIST = _WEBAPP / "frontend" / "dist"
+# Atlas Scope (the 3-D investigation app, `atlas-scope/` in this repository) is served same-origin at
+# /scope when its /scope build exists. Absent in an installed wheel (the parent is site-packages), in
+# which case /scope answers honestly that it is not built. `create_app(scope_dist_dir=...)` overrides.
+_REPO_ATLAS_SCOPE_DIST = _WEBAPP.parent / "atlas-scope" / "dist"
+ATLAS_SCOPE_DIST = _REPO_ATLAS_SCOPE_DIST
+_SCOPE_MOUNT = "/scope/"
+# The build contract a scope build must declare to be linked from a stored snapshot: it reads that
+# snapshot at RUN TIME from /api (GET /api/snapshots/{id}/raw), rather than showing whatever evidence
+# was compiled into it. Without it, /scope/snapshots/{id}/ could render the bundled sample fleet under
+# a client snapshot's URL — a view of the wrong data presented as the right one.
+_SCOPE_RUNTIME_SOURCE_META = "atlas-scope-snapshot-source"
+_SCOPE_RUNTIME_SOURCE_VALUE = "assesshub-api-runtime"
+_SCOPE_DIST_DEFAULT: Any = object()
+_SHA256_HEX_TOKEN_RE = re.compile(rb"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+_SCOPE_UNAVAILABLE_DETAIL = {
+    "not_built": "Atlas Scope is not built in this installation. AssessHub serves it at /scope only "
+                 "when a /scope build of atlas-scope is present.",
+    "invalid_build": "Atlas Scope is not built in this installation for AssessHub: the build found is "
+                     "not a /scope runtime-snapshot build (every asset must load from /scope/assets/ "
+                     f"and index.html must declare <meta name=\"{_SCOPE_RUNTIME_SOURCE_META}\" "
+                     f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">), so it is not served.",
+    "refused_embeds_stored_snapshot": "Atlas Scope is withheld: its static build embeds the digest of "
+                                      "a stored snapshot, and /scope static files are served without "
+                                      "the /api access guard. Rebuild Atlas Scope without compiling "
+                                      "client evidence into it; it must read snapshots at run time "
+                                      "from /api.",
+}
+_SCOPE_READY_DETAIL = ("Atlas Scope is built for this installation and reads the snapshot at run "
+                       "time from the guarded /api.")
 _FRONTEND_MAX_FILES = 4_096
 _FRONTEND_MAX_ENTRIES = 8_192
 _FRONTEND_MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -1280,7 +1309,10 @@ def _frontend_tree_census(
     return tuple(sorted(records)), tuple(sorted(files))
 
 
-def _frontend_reference_key(value: str) -> str | None:
+def _frontend_reference_key(value: str, mount: str = "/") -> str | None:
+    """The startup-index key (``assets/...``) a shell reference names, or None when the reference is
+    not a plain local asset under ``<mount>assets/``. ``mount`` is "/" for AssessHub's own SPA and
+    ``_SCOPE_MOUNT`` for Atlas Scope."""
     if (
         not value
         or len(value) > 2_048
@@ -1296,11 +1328,11 @@ def _frontend_reference_key(value: str) -> str | None:
     if (
         parsed.scheme
         or parsed.netloc
-        or not parsed.path.startswith("/assets/")
+        or not parsed.path.startswith(mount + "assets/")
         or parsed.path.startswith("//")
     ):
         return None
-    raw_path = parsed.path[1:]
+    raw_path = parsed.path[len(mount):]
     segments = raw_path.split("/")
     if not segments or any(segment in ("", ".", "..") for segment in segments):
         return None
@@ -1362,6 +1394,114 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
     Request text never enters filesystem handling. Enumeration rejects links, junctions, hard
     links, path escapes, races, partial walks, oversized members, and aggregate/file-count excess.
     """
+    return _indexed_dist_tree(dist_root, _frontend_shell_valid)
+
+
+class _ScopeShellParser(HTMLParser):
+    """Collect every URL-bearing attribute and the runtime-source declaration of a scope shell.
+
+    Atlas Scope's shell legitimately carries an inline classic script (its theme boot), so the
+    AssessHub shell grammar does not apply; what must hold instead is that every URL it loads is a
+    startup-indexed asset under /scope/assets/ (or an inline ``data:`` icon)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.references: list[tuple[str, str, str]] = []  # (tag, rel/type, url)
+        self.runtime_sources: list[str] = []
+        self.invalid = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        names = [name.casefold() for name, _value in attrs]
+        if len(names) != len(set(names)):
+            self.invalid = True
+            return
+        attributes = {name.casefold(): (value or "") for name, value in attrs}
+        tag = tag.casefold()
+        if tag == "base" or (tag == "meta" and "http-equiv" in attributes):
+            self.invalid = True
+            return
+        if tag == "meta" and attributes.get("name", "").casefold() == _SCOPE_RUNTIME_SOURCE_META:
+            self.runtime_sources.append(attributes.get("content", ""))
+        for attribute in ("src", "href", "srcset", "poster", "data", "action", "formaction"):
+            if attribute in attributes:
+                kind = (attributes.get("type") if tag == "script" else attributes.get("rel")) or ""
+                self.references.append((tag, kind.casefold(), attributes[attribute]))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+
+def _scope_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
+    """A scope shell is servable only when it was built FOR the /scope mount and declares the
+    runtime-snapshot source contract. A Vite build with the default base loads ``/assets/...`` —
+    AssessHub's own asset namespace — and would render as a broken page; a build without the
+    declaration may show compiled-in evidence under a snapshot URL it does not belong to."""
+    index_file = indexed.get("index.html")
+    if index_file is None or not index_file.content:
+        return False
+    try:
+        parser = _ScopeShellParser()
+        parser.feed(index_file.content.decode("utf-8", errors="strict"))
+        parser.close()
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if parser.invalid or parser.runtime_sources != [_SCOPE_RUNTIME_SOURCE_VALUE]:
+        return False
+    module_entries = 0
+    for tag, kind, reference in parser.references:
+        if tag == "link" and kind.split() == ["icon"] and reference.startswith("data:image/"):
+            continue
+        key = _frontend_reference_key(reference, _SCOPE_MOUNT)
+        if key is None or key not in indexed or not indexed[key].content.strip():
+            return False
+        if tag == "script":
+            if kind != "module" or indexed[key].media_type != "text/javascript":
+                return False
+            module_entries += 1
+    return module_entries >= 1
+
+
+def _scope_file_index(
+        dist_root: Path | None) -> tuple[str, dict[str, _FrontendFile]]:
+    """(status, files) for the Atlas Scope build: ``ready`` with its startup-indexed bytes,
+    ``not_built`` when there is no build directory, ``invalid_build`` when one exists but is not a
+    servable /scope runtime build. Never raises: a broken scope build must not stop AssessHub."""
+    if dist_root is None:
+        return "not_built", {}
+    try:
+        if not Path(dist_root).is_dir():
+            return "not_built", {}
+    except (OSError, ValueError):
+        return "not_built", {}
+    index = _indexed_dist_tree(Path(dist_root), _scope_shell_valid)
+    if index is None:
+        return "invalid_build", {}
+    return "ready", index[1]
+
+
+def _embedded_sha256_tokens(indexed: dict[str, _FrontendFile]) -> frozenset[str]:
+    """Every 64-hex-digit token in the indexed files, lower-cased — the form a snapshot binding
+    digest takes when a compiler embeds it (with or without a ``sha256:`` prefix)."""
+    tokens: set[str] = set()
+    for entry in indexed.values():
+        tokens.update(match.decode("ascii").lower()
+                      for match in _SHA256_HEX_TOKEN_RE.findall(entry.content))
+    return frozenset(tokens)
+
+
+def _scope_unavailable_response(status: str) -> Response:
+    return Response(
+        content=_SCOPE_UNAVAILABLE_DETAIL[status] + "\n",
+        status_code=503,
+        media_type="text/plain; charset=utf-8",
+        headers={"cache-control": "no-store"},
+    )
+
+
+def _indexed_dist_tree(
+        dist_root: Path,
+        shell_valid: Callable[[dict[str, _FrontendFile]], bool],
+) -> tuple[Path, dict[str, _FrontendFile]] | None:
     try:
         dist = dist_root.resolve(strict=True)
         if not dist.is_dir() or _is_filesystem_link(dist_root):
@@ -1392,7 +1532,7 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
     after = _frontend_tree_census(dist)
     if after is None or after[0] != before_records or after[1] != members:
         return None
-    if not _frontend_shell_valid(indexed):
+    if not shell_valid(indexed):
         return None
     return dist, indexed
 
@@ -1493,10 +1633,13 @@ def is_guarded_api_path(path: str, doc_paths) -> bool:
 
 
 def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None,
-               boot_hardening: bool = False) -> FastAPI:
+               boot_hardening: bool = False,
+               scope_dist_dir: str | os.PathLike | None = _SCOPE_DIST_DEFAULT) -> FastAPI:
     """``dist_dir`` overrides where the built SPA is served from (default: the checkout's
     webapp/frontend/dist) — the hook the Atlas entry module uses to point at the bundled copy
-    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``boot_hardening`` threads the
+    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``scope_dist_dir`` is the Atlas
+    Scope build served at /scope (default: the repository's atlas-scope/dist when it exists, else
+    none; ``None`` disables it explicitly). ``boot_hardening`` threads the
     P3 unplug-safety boot (integrity check + backup — see storage.Store) and may raise
     StoreCorruptError; only the production entry turns it on. The returned ASGI object owns one
     Store for one application lifespan; create a new app object for a later independent run."""
@@ -1633,6 +1776,29 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return response
 
     app.state.store = store
+
+    # Atlas Scope build state, fixed at startup except for one transition: a build that embeds the
+    # digest of a stored snapshot is withdrawn. Its files are served outside the /api guard (static
+    # shell and bundles), so client evidence compiled into them would be readable by any page on
+    # any site; Atlas Scope must fetch evidence at run time from /api/snapshots/{id}/raw instead.
+    # Checked for every snapshot already stored, and — via the store's one insert path — for every
+    # snapshot stored later, BEFORE its commit. The scope routes then read only this in-memory state.
+    scope_status, scope_files = _scope_file_index(
+        ATLAS_SCOPE_DIST if scope_dist_dir is _SCOPE_DIST_DEFAULT
+        else (Path(scope_dist_dir) if scope_dist_dir is not None else None))
+    scope_digest_tokens = (_embedded_sha256_tokens(scope_files)
+                           if scope_status == "ready" else frozenset())
+    app.state.scope_status = scope_status
+    if scope_digest_tokens:
+        if store.stored_snapshot_blob_digests() & scope_digest_tokens:
+            app.state.scope_status = "refused_embeds_stored_snapshot"
+
+        def _withdraw_scope_embedding(blob_digest: str) -> None:
+            if blob_digest in scope_digest_tokens:
+                app.state.scope_status = "refused_embeds_stored_snapshot"
+
+        store.add_snapshot_digest_observer(_withdraw_scope_embedding)
+
     # Bound concurrent heavy deliverable/explorer generations for this app (see _generation_slot).
     app.state.generation_semaphore = generation_semaphore
 
@@ -1956,6 +2122,48 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if not meta:
             raise HTTPException(404, "Snapshot not found")
         return _summary_freshened(snapshot_id, meta)
+
+    @app.get("/api/snapshots/{snapshot_id}/raw")
+    def get_snapshot_raw(snapshot_id: RowId) -> Response:
+        """The persisted snapshot bytes, UNCHANGED, with the store's binding of those bytes.
+
+        This is the runtime evidence source for Atlas Scope (/scope): client evidence is fetched
+        here, under every /api guard, and never compiled into a static bundle. The body is the
+        exact ``snapshots.snapshot_json`` blob — not a re-serialisation — so a consumer can verify
+        ``sha256(body) == X-Snapshot-Sha256``. That digest is the store's blob form
+        (``X-Snapshot-Digest-Form: assesshub-store-blob``), which is NOT the digest of the file that
+        was uploaded (uploads are parsed, provenance-stamped and stored compact)."""
+        blob = store.get_snapshot_blob(snapshot_id)
+        if blob is None:
+            raise HTTPException(404, "Snapshot not found")
+        raw, binding = blob
+        return Response(
+            content=raw,
+            media_type="application/json",
+            headers={
+                "cache-control": "no-store",
+                "x-snapshot-sha256": str(binding["sha256"]).removeprefix("sha256:"),
+                "x-snapshot-bytes": str(binding["bytes"]),
+                "x-snapshot-digest-form": "assesshub-store-blob",
+            },
+        )
+
+    @app.get("/api/snapshots/{snapshot_id}/scope-view")
+    def get_snapshot_scope_view(snapshot_id: RowId) -> Dict[str, Any]:
+        """Whether this installation can show the snapshot in Atlas Scope, and the link to do it.
+
+        The SPA renders its "Open in Atlas Scope" link only from ``href`` here, so the link target
+        has one owner and an absent, invalid or withdrawn scope build never yields a dead link."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        status = app.state.scope_status
+        available = status == "ready"
+        return {
+            "available": available,
+            "status": status,
+            "href": f"{_SCOPE_MOUNT}snapshots/{snapshot_id}/" if available else None,
+            "detail": _SCOPE_READY_DETAIL if available else _SCOPE_UNAVAILABLE_DETAIL[status],
+        }
 
     # full-snapshot parse per call
     @app.get("/api/snapshots/{snapshot_id}/section/{name}")
@@ -2800,6 +3008,28 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         s = store.add_snapshot(c["id"], "Baseline collection", snap, summary.summarize(snap))
         return {"campaign": store.get_campaign(c["id"]), "snapshot": s}
 
+    # -- Atlas Scope (/scope) ---------------------------------------------
+    # Registered BEFORE the SPA catch-all below, and ALWAYS (built or not), so a /scope URL never
+    # falls through to AssessHub's own shell. GET only: Atlas Scope is first-party read-only code
+    # served same-origin, which is exactly why it must never grow a write surface here. Like the
+    # SPA catch-all these read no store and touch no filesystem at request time: an exact key
+    # selects bytes captured at startup, so traversal/UNC-shaped input cannot name a file.
+    @app.get("/scope/assets/{asset_path:path}", include_in_schema=False)
+    def scope_asset(request: Request, asset_path: str):
+        if app.state.scope_status != "ready":
+            return _scope_unavailable_response(app.state.scope_status)
+        selected = scope_files.get("assets/" + asset_path)
+        if selected is None:
+            raise HTTPException(404, "Not found")
+        return _frontend_response(selected, request)
+
+    @app.get("/scope", include_in_schema=False)
+    @app.get("/scope/{rest:path}", include_in_schema=False)
+    def scope_shell(request: Request, rest: str = ""):
+        if app.state.scope_status != "ready":
+            return _scope_unavailable_response(app.state.scope_status)
+        return _frontend_response(scope_files["index.html"], request)
+
     # -- frontend (production) --------------------------------------------
     # Serve the built SPA with a history-fallback: hashed assets are served directly, every other
     # non-API path returns index.html so client-side deep links survive a hard refresh. The /api
@@ -2819,6 +3049,10 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         def spa(request: Request, full_path: str):
             if full_path.startswith("api/"):
                 raise HTTPException(404, "Not found")
+            if full_path == _SCOPE_MOUNT.strip("/") or full_path.startswith(_SCOPE_MOUNT[1:]):
+                # Only a non-GET (HEAD) method reaches here for /scope — the GET-only scope routes
+                # above answer every GET. Refuse it rather than answering with AssessHub's shell.
+                raise HTTPException(405, "Method Not Allowed", headers={"Allow": "GET"})
             # This unguarded catch-all accepts no request-time filesystem operation. Only an
             # exact key can select bounded immutable bytes captured under ``dist`` at startup;
             # missing assets stay 404 while non-asset deep links receive the SPA shell.

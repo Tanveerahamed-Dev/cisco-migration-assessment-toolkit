@@ -77,9 +77,11 @@
  *   node review/audit-d3-focus.mjs --self-removing       # ONLY the self-removing-control pass, at
  *                                                        # 1440, 768 and 390 (see that section)
  *   node review/audit-d3-focus.mjs --sweep               # ONLY the sweep (see that section): at 390,
- *                                                        # 768, 1000, 1440 and 1920, every composite
- *                                                        # widget's tab stops, the whole tab order
- *                                                        # hit-tested at nine points, More -> Path
+ *                                                        # 768, 1000, 1440, 1920 and every rung those
+ *                                                        # miss (LADDER_REM), every composite widget's
+ *                                                        # tab stops, the whole tab order hit-tested at
+ *                                                        # nine points, More -> Path, and the evidence
+ *                                                        # drawer pass (its open/close/resize cases)
  *
  *   node review/audit-d3-focus.mjs --vp=390              # any mode, narrowed to the listed widths —
  *                                                        # diagnostic only, never the acceptance run
@@ -90,7 +92,12 @@
  * is operated by the pointer — found by its handler or its cursor, never by role or tabindex — must
  * be reached by the Tab walk, be outside aria-hidden, and measure >= 24x24 CSS px.
  *
- * The default run is the sweep, then the surface passes below at all five of those widths. The
+ * EVERY WIDTH LIST COVERS EVERY RUNG (2026-09-26). The lists are checked against `LADDER_REM`, read
+ * from src/app/surfaces.tsx; a rung a list misses gets its midpoint added and printed. The drawer rung
+ * (1024-1279 px) was missing from all three lists, which is how the evidence drawer's focus loss went
+ * unseen. The drawer itself has its own pass (see "the evidence drawer" below), part of the sweep.
+ *
+ * The default run is the sweep, then the surface passes below at all of those widths. The
  * visibility hit test samples NINE points of the focused element's visible part (focusGeometry);
  * until 2026-09-24 it sampled the centre only, and the surface passes never drove 768 or 390.
  *
@@ -100,18 +107,83 @@
  */
 import { readFileSync } from "node:fs";
 import { chromium } from "@playwright/test";
+import ts from "typescript";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4181";
 const SETTLE_MS = 1000;
-const VIEWPORTS = [
-  [1920, 1080, "wide"],
-  [1440, 900, "desktop"], // the acceptance review's 1440 measurement of the snapshot popover
-  [1000, 800, "compact"], // below the header's 1024px breakpoint: the "More" popover exists
-  /* 2026-09-24: the two narrow rungs were never driven here, and both acceptance findings of that
-     date live there — D1's pane switch at 768 and D3's covered status bar at 390. */
-  [768, 1024, "tablet"],
-  [390, 844, "phone"],
-];
+
+/* ── the viewport ladder, READ from its one owner ──────────────────────────────
+ * MEASURED (acceptance report D3, overturned PASS -> FAIL, 2026-09-26): every width list in this file
+ * was typed by hand — 1920/1440/1000/768/390 — and none fell in the drawer rung (1024-1279 px), where
+ * Rail B is an overlay drawer. So the drawer's close paths, which dropped focus to <body>, were never
+ * driven, and the run said "547 case(s), 0 failed" with the defect present. The rungs are now read from
+ * `LADDER_REM` in src/app/surfaces.tsx (parsed with the TypeScript compiler, not restated), every
+ * width list is checked to hold at least one width in EVERY rung, and a rung a list misses gets that
+ * rung's midpoint added — printed, so the addition is visible. The drawer pass below derives its
+ * widths (the rung's lower edge, its midpoint, and just under its upper edge) from the same owner. */
+function readLadderRem() {
+  const file = new URL("../src/app/surfaces.tsx", import.meta.url);
+  const sf = ts.createSourceFile("surfaces.tsx", readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let found = null;
+  const visit = (n) => {
+    if (found !== null) return;
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "LADDER_REM" && n.initializer !== undefined) {
+      let init = n.initializer;
+      while (ts.isAsExpression(init) || ts.isSatisfiesExpression(init) || ts.isParenthesizedExpression(init)) init = init.expression;
+      if (ts.isObjectLiteralExpression(init)) {
+        found = {};
+        for (const p of init.properties) {
+          if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ts.isNumericLiteral(p.initializer)) found[p.name.text] = Number(p.initializer.text);
+        }
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  if (found === null || Object.keys(found).length === 0) throw new Error("LADDER_REM could not be read from src/app/surfaces.tsx: the audit will not guess the ladder");
+  return found;
+}
+const LADDER_REM = readLadderRem();
+const REM_PX = 16; /* a media query's rem is the initial 16 px, whatever the page's root size (surfaces.tsx) */
+/** The rungs, in px: [from, to) — the first has no lower owner boundary and is "stacked". */
+const RUNGS = (() => {
+  const edges = Object.entries(LADDER_REM)
+    .map(([name, rem]) => [name, rem * REM_PX])
+    .sort((a, b) => a[1] - b[1]);
+  const out = [{ name: "stacked", from: 0, to: edges[0][1] }];
+  edges.forEach(([name, px], i) => out.push({ name, from: px, to: edges[i + 1]?.[1] ?? Infinity }));
+  return out;
+})();
+const rungOf = (w) => RUNGS.find((r) => w >= r.from && w < r.to)?.name ?? "none";
+const midpointOf = (r) => (Number.isFinite(r.to) ? Math.round((r.from + r.to) / 2) : r.from + 160);
+/** `list` with a width added for every rung it does not reach. */
+function coverRungs(list, label) {
+  const out = [...list];
+  for (const r of RUNGS) {
+    if (out.some(([w]) => rungOf(Number(w)) === r.name)) continue;
+    const w = midpointOf(r);
+    console.log(`INFO  ${label}: no width in the ${r.name} rung (${r.from}-${Number.isFinite(r.to) ? r.to - 1 : "up"} px, LADDER_REM); added ${w} px`);
+    out.push([w, 800, `${r.name} rung`]);
+  }
+  return out;
+}
+const DRAWER_RUNG = RUNGS.find((r) => r.name === "drawer");
+if (DRAWER_RUNG === undefined) throw new Error("LADDER_REM has no `drawer` rung: the drawer pass has nothing to derive its widths from");
+/** The drawer rung's lower edge, midpoint, and just under its upper edge. */
+const DRAWER_WIDTHS = [DRAWER_RUNG.from, midpointOf(DRAWER_RUNG), DRAWER_RUNG.to - 10];
+
+const VIEWPORTS = coverRungs(
+  [
+    [1920, 1080, "wide"],
+    [1440, 900, "desktop"], // the acceptance review's 1440 measurement of the snapshot popover
+    [1000, 800, "compact"], // below the header's 1024px breakpoint: the "More" popover exists
+    /* 2026-09-24: the two narrow rungs were never driven here, and both acceptance findings of that
+       date live there — D1's pane switch at 768 and D3's covered status bar at 390. */
+    [768, 1024, "tablet"],
+    [390, 844, "phone"],
+  ],
+  "surface passes",
+);
 
 /** @type {{surface: string, scenario: string, ok: boolean, why: string}[]} */
 const results = [];
@@ -129,6 +201,21 @@ const notDriven = (surface, scenario, why) => {
   results.push({ surface, scenario, ok: false, why: `NOT DRIVEN: ${why}` });
   console.log(`FAIL  ${surface} :: ${scenario} -> NOT DRIVEN (${why})`);
 };
+
+/**
+ * Put focus on `loc` and confirm it got there. A case whose focus never reached the element under
+ * test proves nothing about that element, so it is NOT DRIVEN (a failure) — never a PASS of wherever
+ * focus happened to be. MEASURED (independent verifier, 2026-09-26, --vp=1152): the previous case's
+ * Escape had closed the evidence drawer, the next case's tab.focus() ran while the drawer was still
+ * sliding shut, and cases whose focus never reached their tab were printed as PASS with focus on
+ * #stage.
+ */
+async function focusOn(page, loc, surface, scenario) {
+  await loc.focus().catch(() => {});
+  const ok = await loc.evaluate((el) => el === document.activeElement || el.contains(document.activeElement)).catch(() => false);
+  if (!ok) notDriven(surface, scenario, "focus never reached the element under test");
+  return ok;
+}
 
 /** @type {{stop: string, surface: string, scenario: string, ok: boolean, why: string}[]} */
 const visResults = [];
@@ -434,8 +521,34 @@ async function ensureFinding(page) {
 
 /** Returns "n/a" when the evidence rail is not on screen at this viewport (it is hidden, not
  *  unmounted, below the rail breakpoint): a state that does not exist is reported, not failed. */
+/** At the drawer rung Rail B is a CLOSED overlay, not an absent one: open it (with `e`, from the grid
+ *  cell, as a reader does) so the states that live in it are driven there too. Anywhere else a no-op. */
+/*  Keyed on the drawer's STATE (`data-drawer`) at a width of the drawer rung (LADDER_REM), never on
+ *  its computed visibility: a drawer still sliding shut is `visibility: visible` for its 240 ms step,
+ *  and a visibility test read it as open and left it closing (independent verifier, 2026-09-26). */
+async function ensureRailShown(page) {
+  if (rungOf(page.viewportSize()?.width ?? 0) !== "drawer") return;
+  const isOpen = () =>
+    page.evaluate(() => {
+      const rail = document.getElementById("rail-evidence");
+      return (
+        document.querySelector(".app")?.getAttribute("data-drawer") === "open" &&
+        rail !== null &&
+        !rail.hasAttribute("inert") &&
+        getComputedStyle(rail).visibility === "visible"
+      );
+    });
+  if (await isOpen()) return;
+  const cell = page.locator('#rail-queue [role="grid"] [tabindex="0"]').first();
+  if ((await cell.count()) > 0) await cell.focus();
+  await page.keyboard.press("e");
+  await page.waitForTimeout(400);
+  if (!(await isOpen())) console.log(`INFO  ensureRailShown: e did not open the evidence drawer at ${page.viewportSize()?.width}px`);
+}
+
 async function ensureDeviceView(page) {
   if (!(await ensureFinding(page))) return false;
+  await ensureRailShown(page);
   const radio = page.locator('#rail-evidence [role="radio"]', { hasText: /device/i }).first();
   if ((await radio.count()) === 0) return false;
   if (!(await radio.isVisible())) return "n/a";
@@ -484,11 +597,35 @@ async function ensureInspector(page) {
 }
 
 /** The Inspector opened from a citation affordance — the path `openInspector` records an origin for. */
+/*  The state is "the Inspector, opened from a citation that is still in the page". An Inspector left
+ *  open by an earlier case is that state only while the citation it was opened from is still
+ *  connected and on screen: MEASURED (this cluster, --vp=1152, 2026-09-26), the grid cases before
+ *  it (ArrowDown selects another finding) re-rendered the evidence pane, the marked citation left the
+ *  page, and the Inspector's close cases then measured the owner's fallback (#stage) under the name
+ *  "inspector (citation)". So the citation is marked, and a drifted state is closed and re-entered. */
 async function ensureInspectorFromCite(page) {
-  if (await inspectorShown(page)) return true;
+  const citeLive = () =>
+    page.evaluate(() => {
+      const c = document.querySelector("[data-d3-cite-origin]");
+      return c !== null && c.isConnected && c.getClientRects().length > 0 && getComputedStyle(c).visibility === "visible";
+    });
+  if ((await inspectorShown(page)) && (await citeLive())) return true;
+  if (await inspectorShown(page)) {
+    const tab = page.locator('#inspector [role="tab"][aria-selected="true"]').first();
+    if ((await tab.count()) > 0) {
+      await tab.focus();
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+    }
+  }
   if (!(await ensureFinding(page))) return false;
+  await ensureRailShown(page);
   const cite = page.locator("#rail-evidence button.ui-cite:visible").first();
   if ((await cite.count()) === 0) return (await page.locator("#rail-evidence").isVisible()) ? false : "n/a";
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-d3-cite-origin]")) el.removeAttribute("data-d3-cite-origin");
+  });
+  await cite.evaluate((el) => el.setAttribute("data-d3-cite-origin", ""));
   await cite.focus();
   await page.keyboard.press("Enter");
   await page.waitForTimeout(400);
@@ -530,7 +667,7 @@ async function auditPopovers(page, where, enter) {
       }
       const before = await page.evaluate(visibleDialogs);
       await t.scrollIntoViewIfNeeded().catch(() => {});
-      await t.focus();
+      if (!(await focusOn(page, t, name, scenario))) continue;
       await page.keyboard.press("Enter");
       await page.waitForTimeout(250);
       const expanded = (await t.getAttribute("aria-expanded").catch(() => null)) === "true";
@@ -593,7 +730,7 @@ async function auditTabs(page, where, enter) {
     /* Arrowing moves selection, so the panel the reader was in unmounts under them. */
     let tab = await fresh();
     if (tab === null) return notDriven(name, "tab → ArrowRight → Escape", "tab not found");
-    await tab.focus();
+    if (!(await focusOn(page, tab, name, "tab → ArrowRight → Escape"))) return;
     await checkVisible(page, "tab", name, "tab → ArrowRight → Escape");
     await page.keyboard.press("ArrowRight");
     await page.waitForTimeout(150);
@@ -609,7 +746,7 @@ async function auditTabs(page, where, enter) {
     await tab.click();
     await page.waitForTimeout(250);
     const panelId = await tab.getAttribute("aria-controls");
-    await tab.focus();
+    if (!(await focusOn(page, tab, name, "tab → Tab into its panel"))) return;
     await page.keyboard.press("Tab");
     await page.waitForTimeout(150);
     const intoPanel = panelId
@@ -639,7 +776,7 @@ async function auditTabs(page, where, enter) {
       console.log(`INFO  ${name} :: panel holds no focusable control; panel case not applicable`);
       return;
     }
-    await inner.focus();
+    if (!(await focusOn(page, inner, name, "panel control → Escape"))) return;
     await checkVisible(page, "panel control", name, "panel control → Escape");
     await page.keyboard.press("Escape");
     await landed(page, "tab", name, "panel control → Escape");
@@ -668,7 +805,7 @@ async function auditTabs(page, where, enter) {
           continue;
         }
         const label = await fb.evaluate((el) => (el.getAttribute("aria-label") ?? el.labels?.[0]?.textContent ?? "input").trim());
-        await fb.focus();
+        if (!(await focusOn(page, fb, `${name} find bar "${label}"`, scenario))) continue;
         await page.keyboard.type("up");
         await page.keyboard.press("Enter");
         if (scenario.includes("Tab")) await page.keyboard.press("Tab");
@@ -693,7 +830,7 @@ async function auditFields(page, where, enter) {
         notDriven(name, scenario, "field not found after re-entering the state");
         continue;
       }
-      await f.focus();
+      if (!(await focusOn(page, f, name, scenario))) continue;
       await page.keyboard.type("up");
       await page.keyboard.press("Enter");
       if (scenario.includes("Tab")) await page.keyboard.press("Tab");
@@ -718,7 +855,7 @@ async function auditGrids(page, where, enter) {
         notDriven(name, scenario, "no roving cell");
         continue;
       }
-      await cell.focus();
+      if (!(await focusOn(page, cell, name, scenario))) continue;
       if (scenario.includes("ArrowDown")) await page.keyboard.press("ArrowDown");
       await page.waitForTimeout(150);
       await checkVisible(page, "grid cell", name, scenario);
@@ -732,18 +869,21 @@ async function auditGrids(page, where, enter) {
 async function auditInspectorClose(page, where, enter) {
   const name = `${where} inspector`;
   const cases = [
-    ["close button → Enter", async () => {
-      await page.locator('#inspector button[aria-label="Close the inspector"]').focus();
+    ["close button → Enter", async (scenario) => {
+      if (!(await focusOn(page, page.locator('#inspector button[aria-label="Close the inspector"]'), name, scenario))) return false;
       await checkVisible(page, "inspector control", name, "close button → Enter");
       await page.keyboard.press("Enter");
+      return true;
     }],
-    ["tab → i (toggles it closed from inside)", async () => {
-      await page.locator('#inspector [role="tab"][aria-selected="true"]').focus();
+    ["tab → i (toggles it closed from inside)", async (scenario) => {
+      if (!(await focusOn(page, page.locator('#inspector [role="tab"][aria-selected="true"]'), name, scenario))) return false;
       await page.keyboard.press("i");
+      return true;
     }],
-    ["tab → Escape", async () => {
-      await page.locator('#inspector [role="tab"][aria-selected="true"]').focus();
+    ["tab → Escape", async (scenario) => {
+      if (!(await focusOn(page, page.locator('#inspector [role="tab"][aria-selected="true"]'), name, scenario))) return false;
       await page.keyboard.press("Escape");
+      return true;
     }],
   ];
   for (const [scenario, act] of cases) {
@@ -752,7 +892,7 @@ async function auditInspectorClose(page, where, enter) {
       notDriven(name, scenario, "the Inspector did not open");
       continue;
     }
-    await act();
+    if (!(await act(scenario))) continue;
     const gone = (await page.locator("#inspector").count()) === 0;
     await landed(page, "inspector", `${name}${gone ? "" : " [still open]"}`, scenario);
   }
@@ -775,7 +915,7 @@ async function auditToasts(page, where) {
     console.log(`INFO  ${where} toasts: no copy action on screen to provoke one`);
     return;
   }
-  await copy.focus();
+  if (!(await focusOn(page, copy, `${where} copy action`, "copy → wait"))) return;
   await checkVisible(page, "copy action", `${where} copy action`, "copy → wait");
   await page.keyboard.press("Enter");
   await landed(page, "copy", `${where} copy action`, "copy → wait");
@@ -820,11 +960,14 @@ async function auditToasts(page, where) {
  * reached again, or a width found NO self-removing control at all (the seed then did not reach the
  * screen, and the pass proved nothing).
  */
-const SR_VIEWPORTS = [
-  [1440, 900, "desktop"],
-  [768, 1024, "tablet"],
-  [390, 844, "phone"],
-];
+const SR_VIEWPORTS = coverRungs(
+  [
+    [1440, 900, "desktop"],
+    [768, 1024, "tablet"],
+    [390, 844, "phone"],
+  ],
+  "self-removing pass",
+);
 
 const srSeedUrl = () => {
   const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
@@ -1004,18 +1147,30 @@ if (process.argv.includes("--self-removing")) await runSelfRemoving();
  * The hit test is the class check here; the >=3:1 ring-pixel measurement stays with the surface
  * passes above, which run it on every stop they reach.
  */
-const SWEEP_VIEWPORTS = [
-  [390, 844, "phone"],
-  [768, 1024, "tablet"],
-  [1000, 800, "compact"],
-  [1440, 900, "desktop"],
-  [1920, 1080, "wide"],
-];
+const SWEEP_VIEWPORTS = coverRungs(
+  [
+    [390, 844, "phone"],
+    [768, 1024, "tablet"],
+    [1000, 800, "compact"],
+    [1440, 900, "desktop"],
+    [1920, 1080, "wide"],
+  ],
+  "sweep",
+);
 
 /** Keyboard-only, as the refuter drove it: frame the fabric, zoom in, then pan (Alt+arrow) until a
  *  finding pointer is drawn. Leaves the page as it stands; returns whether one showed. */
 async function panUntilOffViewPointer(page) {
   const shown = () => page.evaluate(() => document.querySelectorAll('[data-pointer-for][data-visible="true"]').length > 0);
+  /* Below the stacked breakpoint the fabric is off until the reader turns it on (App.tsx,
+     `fabricOptional`): turn it on the way a keyboard reader does, so the phone rung reaches this
+     state instead of leaving `offViewPointers` unexercised on a narrowed run. */
+  const turnOn = page.locator('.paneswitch__fabric[aria-pressed="false"]').first();
+  if ((await page.locator(".fabric3d__canvas").count()) === 0 && (await turnOn.count()) > 0 && (await turnOn.isVisible())) {
+    await turnOn.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector(".fabric3d__canvas") !== null, null, { timeout: 30000 }).catch(() => {});
+  }
   const canvas = page.locator(".fabric3d__canvas").first();
   if ((await canvas.count()) === 0 || !(await canvas.isVisible())) return false;
   await page.waitForFunction(() => document.querySelector(".fabric3d__canvas") !== null, null, { timeout: 30000 }).catch(() => {});
@@ -1344,6 +1499,312 @@ async function sweepJourney(page, vp) {
   }
 }
 
+/* ── the evidence drawer (part of --sweep, and so of the default run) ───────────
+ * MEASURED (acceptance report D3, overturned PASS -> FAIL, 2026-09-26): at 1100, 1024 and 1270 px Rail
+ * B is an overlay drawer. With focus on its "Finding" radio, `e` and the palette's "Toggle the
+ * evidence rail" closed it and Chromium parked focus on <body> when the delayed 240 ms `visibility`
+ * step landed; Escape did not close it at all; a resize to 900 px lost focus the same way; and `g e`
+ * with the drawer closed announced "Moved to the evidence rail." while focus stayed put. This file
+ * had no drawer case: it never drove a width in that rung, and its surface discovery (`aria-haspopup`
+ * triggers, a two-key dialog list) cannot see a surface with no trigger element.
+ *
+ * So, at every width DRAWER_WIDTHS derives from LADDER_REM, and from a real control (the findings
+ * grid's roving cell, marked as the INVOKER):
+ *   OPENERS  `e`, the palette's "Toggle the evidence rail", `v` (a finding is selected), and `g e`;
+ *   CLOSES   `e`, the palette's toggle, and Escape (pressed again while an inner layer — the
+ *            configuration overlay — closes first; at most three presses),
+ * each close made with focus INSIDE the drawer, reached by real Tab presses. A case is NOT DRIVEN
+ * unless the drawer really opened (`data-drawer="open"` and the rail's computed visibility
+ * "visible"). After SETTLE_MS (longer than the 240 ms step) it FAILS when focus is on <body>, still
+ * inside the closed rail, or anywhere but the invoker while the invoker is still in the page; the
+ * element it returned to is then checked for VISIBILITY like every other stop in this file. `g e`
+ * must announce "Moved to" exactly when focus is inside the rail.
+ *   MOTION   every opener with the Escape close, and both re-entry shapes, again under
+ *            prefers-reduced-motion: reduce; and `v` must have moved focus INTO the drawer.
+ *   REENTRY  open with `e`, Tab inside, close with `e`, then at once Tab seven times, or focus() a
+ *            control inside the rail, while it is still sliding shut: focus must end neither on
+ *            <body> nor inside the closed rail.
+ *   RESIZE   open with `e`, Tab inside, resize to a width in every OTHER rung (the sweep's widths):
+ *            focus must not be on <body>, nor inside the rail where the rail is no longer shown, and
+ *            must be visible; back at the drawer width the drawer must be CLOSED (its state does not
+ *            outlive its rung).
+ * `--vp=` narrows it like everything else: open/close cases run at a listed drawer width; a resize
+ * case runs when its start or its end width is listed (so `--vp=390` drives the resizes to 390).
+ */
+const DRAWER_OPENERS = ["e", "palette", "v", "g e"];
+const DRAWER_CLOSES = ["e", "palette", "Escape"];
+const PALETTE_TOGGLE = "Toggle the evidence rail";
+
+/** In-page: the drawer's rendered state and where focus is, relative to the rail and the invoker. */
+const drawerState = () => {
+  const app = document.querySelector(".app");
+  const rail = document.getElementById("rail-evidence");
+  const a = document.activeElement;
+  const cs = rail ? getComputedStyle(rail) : null;
+  const railShown = rail !== null && rail.getClientRects().length > 0 && cs.visibility === "visible";
+  const inv = document.querySelector("[data-d3-invoker]");
+  const name = a && a !== document.body ? (a.getAttribute("aria-label") ?? (a.textContent ?? "")).trim().replace(/\s+/g, " ").slice(0, 40) : "";
+  return {
+    drawer: app?.getAttribute("data-drawer") ?? null,
+    railShown,
+    body: a === null || a === document.body,
+    inRail: rail !== null && a !== null && rail.contains(a),
+    onInvoker: inv !== null && a === inv,
+    invokerConnected: inv !== null && inv.isConnected,
+    desc: a === null ? "null" : a === document.body ? "BODY (nothing focused)" : `${a.tagName}${a.id ? `#${a.id}` : ""} "${name}"`,
+    status: (document.getElementById("sr-status")?.textContent ?? "").replace(/​/g, ""),
+  };
+};
+
+const drawerCount = { cases: 0 };
+function drawerResult(where, scenario, ok, why) {
+  results.push({ surface: where, scenario, ok, why: ok ? "" : why });
+  driven.set("drawer", (driven.get("drawer") ?? 0) + 1);
+  drawerCount.cases += 1;
+  /* A failure is printed once, by sweepFail, and counted in the sweep's verdict. */
+  if (ok) console.log(`PASS  ${where} :: ${scenario}`);
+  else sweepFail(where, `${scenario}: ${why}`);
+}
+/** checkVisible, with its verdict carried into the sweep's. */
+async function drawerVisible(page, stop, where, scenario) {
+  const before = visResults.filter((r) => !r.ok).length;
+  await checkVisible(page, stop, where, scenario);
+  const failed = visResults.filter((r) => !r.ok).slice(before);
+  for (const f of failed) sweepFail(where, `${scenario}: focus NOT VISIBLE [${stop}] ${f.why}`);
+}
+
+async function drawerLoad(page) {
+  const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
+  await page.goto(`${APP}/?s=findings&f=${encodeURIComponent(fabricJson.findings[0].id)}`, { waitUntil: "load" });
+  await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1200);
+  const cell = page.locator("#rail-queue [role='grid'] [tabindex='0']").first();
+  if ((await cell.count()) === 0) return false;
+  await cell.focus();
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-d3-invoker]")) el.removeAttribute("data-d3-invoker");
+    document.activeElement?.setAttribute("data-d3-invoker", "");
+  });
+  await page.keyboard.press("Shift");
+  return true;
+}
+
+/** Run the palette's evidence toggle. Returns false when the palette did not offer it on top. */
+async function paletteToggle(page) {
+  await page.keyboard.press("Control+k");
+  await page.waitForTimeout(300);
+  await page.keyboard.type(PALETTE_TOGGLE);
+  await page.waitForTimeout(300);
+  const top = await page.evaluate(() => {
+    const input = document.querySelector('[role="dialog"] [role="combobox"]');
+    const id = input?.getAttribute("aria-activedescendant");
+    return (id ? document.getElementById(id)?.textContent : "") ?? "";
+  });
+  if (!top.includes(PALETTE_TOGGLE)) {
+    await page.keyboard.press("Escape");
+    return false;
+  }
+  await page.keyboard.press("Enter");
+  return true;
+}
+
+async function drawerOpen(page, opener) {
+  if (opener === "e") await page.keyboard.press("e");
+  else if (opener === "v") await page.keyboard.press("v");
+  else if (opener === "g e") {
+    await page.keyboard.press("g");
+    await page.keyboard.press("e");
+  } else if (!(await paletteToggle(page))) return "the palette's top row was not the evidence toggle";
+  await page.waitForTimeout(500);
+  /* And eight animation frames: `v` moves focus a frame (up to six under reduced motion) after the
+     open commits. MEASURED (this cluster, 2026-09-26, reduced motion at 1152 px, 8 runs): that frame
+     arrived 100-190 ms after the key in six runs and 790 ms and 3.2 s in two, while the lazy fabric
+     chunk was evaluating under software GL — a fixed 500 ms judged a race, not the app. */
+  for (let i = 0; i < 4; i += 1) await framesSettled(page);
+  const st = await page.evaluate(drawerState);
+  return st.drawer === "open" && st.railShown ? null : `after ${opener}: data-drawer=${st.drawer} railShown=${st.railShown}`;
+}
+
+/** Tab (real presses) until focus is inside the rail. */
+async function tabIntoDrawer(page) {
+  for (let i = 0; i < 150; i += 1) {
+    if ((await page.evaluate(drawerState)).inRail) return true;
+    await page.keyboard.press("Tab");
+  }
+  return (await page.evaluate(drawerState)).inRail;
+}
+
+async function drawerCase(page, w, opener, close, motion = "") {
+  const where = `drawer ${w}px${motion}`;
+  const scenario = `open by ${opener} → focus inside → close by ${close}`;
+  if (!(await drawerLoad(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: no grid cell to start from");
+  const notOpened = await drawerOpen(page, opener);
+  if (notOpened !== null) return drawerResult(where, scenario, false, `NOT DRIVEN: ${notOpened}`);
+  if (opener === "g e") {
+    const st = await page.evaluate(drawerState);
+    const claims = /^Moved to/.test(st.status);
+    if (claims !== st.inRail) return drawerResult(where, scenario, false, `announced "${st.status}" with focus ${st.inRail ? "inside" : "outside"} the rail (${st.desc})`);
+  }
+  /* `v` opens the configuration evidence AND moves focus to it, as it does at every other rung.
+     MEASURED (independent verifier, 2026-09-26): under reduced motion at 1100 px focus stayed on the
+     grid cell; the Tab walk below then reached the rail anyway and the case passed without noticing. */
+  if (opener === "v") {
+    const st = await page.evaluate(drawerState);
+    if (!st.inRail) return drawerResult(where, scenario, false, `v opened the drawer but focus stayed outside it (${st.desc})`);
+  }
+  if (!(await tabIntoDrawer(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: Tab never reached the open drawer");
+  await drawerVisible(page, "drawer control", where, scenario);
+  if (close === "e") await page.keyboard.press("e");
+  else if (close === "palette") {
+    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: the palette's top row was not the evidence toggle");
+  } else {
+    /* Escape: an inner layer (the configuration overlay) closes first; the drawer on a later press. */
+    for (let k = 0; k < 3; k += 1) {
+      const st = await page.evaluate(drawerState);
+      if (st.drawer !== "open" || !st.inRail) break;
+      if (st.body) break;
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(150);
+      const after = await page.evaluate(drawerState);
+      if (after.body) break;
+    }
+  }
+  await page.waitForTimeout(SETTLE_MS);
+  const st = await page.evaluate(drawerState);
+  if (st.drawer === "open") return drawerResult(where, scenario, false, `the drawer did not close (focus ${st.desc})`);
+  if (st.body) return drawerResult(where, scenario, false, "focus landed on BODY");
+  if (st.inRail) return drawerResult(where, scenario, false, `focus left inside the closed rail (${st.desc})`);
+  /* The invoker is the element marked before the open. If it left the page (a re-render replaced the
+     cell), "returned to the invoker" was not tested at all: say so, never pass it (verifier D3-V5). */
+  if (!st.invokerConnected) return drawerResult(where, scenario, false, `NOT DRIVEN: the invoker left the page, so the return to it was not tested (focus ${st.desc})`);
+  if (!st.onInvoker) return drawerResult(where, scenario, false, `focus returned to ${st.desc}, not to the control that opened the drawer`);
+  drawerResult(where, scenario, true, "");
+  await drawerVisible(page, "returned", where, scenario);
+}
+
+/**
+ * RE-ENTRY DURING THE CLOSING SLIDE. MEASURED (independent verifier, 2026-09-26, release build at
+ * 1100 px): open with `e`, Tab inside, close with `e`, then Tab seven times at once — focus walked
+ * back INTO the rail, still `visibility: visible` for its 240 ms step, and 600 ms later it was on
+ * <body>. The programmatic shape (a focus() into the rail right after the close) did the same.
+ * The release on hide ran once; nothing kept focus out afterwards. Both shapes are driven here:
+ * after SETTLE_MS focus must not be on <body> and not inside the closed rail.
+ */
+const DRAWER_REENTRIES = ["Tab x7 at once", "focus() into the rail"];
+async function drawerReenter(page, w, how, motion = "") {
+  const where = `drawer ${w}px${motion}`;
+  const scenario = `open by e → focus inside → close by e → ${how} during the slide`;
+  if (!(await drawerLoad(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: no grid cell to start from");
+  const notOpened = await drawerOpen(page, "e");
+  if (notOpened !== null) return drawerResult(where, scenario, false, `NOT DRIVEN: ${notOpened}`);
+  if (!(await tabIntoDrawer(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: Tab never reached the open drawer");
+  await page.keyboard.press("e");
+  if (how.startsWith("Tab")) {
+    for (let i = 0; i < 7; i += 1) await page.keyboard.press("Tab");
+  } else {
+    await page.evaluate(() => document.querySelector('#rail-evidence [role="radio"]')?.focus());
+  }
+  const during = await page.evaluate(drawerState);
+  await page.waitForTimeout(SETTLE_MS);
+  const st = await page.evaluate(drawerState);
+  if (st.drawer === "open") return drawerResult(where, scenario, false, `the drawer did not close (focus ${st.desc})`);
+  if (st.body) return drawerResult(where, scenario, false, `focus landed on BODY (right after the close it was ${during.inRail ? "back inside the rail" : "outside the rail"}: ${during.desc})`);
+  if (st.inRail) return drawerResult(where, scenario, false, `focus left inside the closed rail (${st.desc})`);
+  drawerResult(where, scenario, true, "");
+  await drawerVisible(page, "returned", where, scenario);
+}
+
+/**
+ * Wait until the page has PROCESSED a viewport change: two animation frames, which cannot run until
+ * the resize has been dispatched and the app's synchronous re-render committed. MEASURED (this pass,
+ * 2026-09-26, 2 runs of 3): at 1024 px the first resize case landed while the lazy fabric chunk was
+ * evaluating under software GL; a fixed 1 s wait elapsed before the page had even seen the resize to
+ * 390, the resize back to 1024 followed, and the app never observed the crossing — the harness then
+ * reported the drawer "reopened by itself". A case must judge the state it drove, not a race.
+ */
+const framesSettled = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const t = setTimeout(resolve, 10000);
+        requestAnimationFrame(() => requestAnimationFrame(() => (clearTimeout(t), resolve())));
+      }),
+  );
+
+async function drawerResize(page, w, t) {
+  const where = `drawer ${w}px`;
+  const scenario = `open by e → focus inside → resize to ${t}px (${rungOf(t)} rung) → back to ${w}px`;
+  if (!(await drawerLoad(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: no grid cell to start from");
+  const notOpened = await drawerOpen(page, "e");
+  if (notOpened !== null) return drawerResult(where, scenario, false, `NOT DRIVEN: ${notOpened}`);
+  if (!(await tabIntoDrawer(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: Tab never reached the open drawer");
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: t, height: size?.height ?? 800 });
+  await framesSettled(page);
+  await page.waitForTimeout(SETTLE_MS);
+  let st = await page.evaluate(drawerState);
+  if (st.body) return drawerResult(where, scenario, false, `at ${t}px focus landed on BODY`);
+  if (st.inRail && !st.railShown) return drawerResult(where, scenario, false, `at ${t}px focus left inside the rail, which is not shown (${st.desc})`);
+  await drawerVisible(page, "after resize", where, scenario);
+  await page.setViewportSize({ width: w, height: size?.height ?? 800 });
+  await framesSettled(page);
+  await page.waitForTimeout(SETTLE_MS);
+  st = await page.evaluate(drawerState);
+  if (st.drawer === "open") return drawerResult(where, scenario, false, `back at ${w}px the drawer reopened by itself: its open state outlived its rung`);
+  if (st.body) return drawerResult(where, scenario, false, `back at ${w}px focus landed on BODY`);
+  drawerResult(where, scenario, true, "");
+}
+
+/** The drawer pass. `only` is the --vp list (or undefined). Returns whether it was in scope at all. */
+async function runDrawer(browser, only) {
+  const targets = SWEEP_VIEWPORTS.map(([w]) => Number(w)).filter((w) => rungOf(w) !== "drawer");
+  const plan = [];
+  for (const w of DRAWER_WIDTHS) {
+    const cases = [];
+    if (!only || only.includes(w)) for (const o of DRAWER_OPENERS) for (const c of DRAWER_CLOSES) cases.push((page) => drawerCase(page, w, o, c));
+    if (!only || only.includes(w)) for (const how of DRAWER_REENTRIES) cases.push((page) => drawerReenter(page, w, how));
+    for (const t of targets) if (!only || only.includes(w) || only.includes(t)) cases.push((page) => drawerResize(page, w, t));
+    if (cases.length > 0) plan.push([w, cases, "no-preference"]);
+    /* REDUCED MOTION: the 240 ms step becomes 1 ms, and every `.ev *` / `.dp *` descendant gains a
+       1 ms transition of the visibility it inherits (the `v` finding above). Every opener with the
+       Escape close, and both re-entry shapes, run again in a reduced-motion context. */
+    const reduced = [];
+    if (!only || only.includes(w)) {
+      for (const o of DRAWER_OPENERS) reduced.push((page) => drawerCase(page, w, o, "Escape", " reduced-motion"));
+      for (const how of DRAWER_REENTRIES) reduced.push((page) => drawerReenter(page, w, how, " reduced-motion"));
+    }
+    if (reduced.length > 0) plan.push([w, reduced, "reduce"]);
+  }
+  console.log(
+    `INFO  drawer pass: widths ${DRAWER_WIDTHS.join(", ")} px (LADDER_REM drawer rung ${DRAWER_RUNG.from}-${DRAWER_RUNG.to - 1} px), ` +
+      `resize targets ${targets.join(", ")} px; ${plan.reduce((n, [, c]) => n + c.length, 0)} case(s) planned${only ? " (narrowed by --vp)" : ""}`,
+  );
+  /* One page per width, in parallel: most of a case is waiting (a load, the settle). */
+  await Promise.all(
+    plan.map(async ([w, cases, reducedMotion]) => {
+      const ctx = await browser.newContext({ viewport: { width: w, height: 800 }, reducedMotion });
+      await ctx.addInitScript(() => {
+        try {
+          localStorage.clear();
+          sessionStorage.clear();
+        } catch {
+          /* storage blocked: nothing persists anyway */
+        }
+      });
+      const page = await ctx.newPage();
+      try {
+        for (const run of cases) {
+          if (page.viewportSize()?.width !== w) await page.setViewportSize({ width: w, height: 800 });
+          await run(page);
+        }
+      } finally {
+        await ctx.close();
+      }
+    }),
+  );
+  return plan.length > 0;
+}
+
 async function runSweep(browser) {
   /* `--vp=390,768` narrows a diagnostic run; a run so narrowed says so, and is not the acceptance run. */
   const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
@@ -1366,6 +1827,12 @@ async function runSweep(browser) {
     await sweepJourney(page, `${vp} ${w}x${h}`);
     await ctx.close();
   }
+  /* The evidence drawer: its own widths (derived from LADDER_REM) and its own resize targets. A
+     `--state` narrowing that does not name it leaves it out, and says so. */
+  const drawerNamed = !onlyState || "evidence drawer".includes(onlyState);
+  const drawerInScope = drawerNamed ? await runDrawer(browser, only) : false;
+  if (!drawerNamed) console.log(`INFO  drawer pass left out by --state="${onlyState}"`);
+  console.log(`DRAWER: ${drawerCount.cases} case(s) driven.`);
   console.log(
     `\nSWEEP: ${sweepCount.widgets} composite widget(s) counted, ${sweepCount.stops} tab stop(s) walked, ` +
       `${sweepCount.hitTests} nine-point hit test(s), ${sweepCount.journeys} More -> Path journey(s), ` +
@@ -1376,6 +1843,7 @@ async function runSweep(browser) {
   /* Zero of a denominator is a sweep that proved nothing about it. */
   /* `operableRoleless` is a breakdown, not a denominator: zero of it is the fixed state. */
   const empty = Object.entries(sweepCount).filter(([k, n]) => n === 0 && k !== "operableRoleless").map(([k]) => k);
+  if (drawerInScope && drawerCount.cases === 0) empty.push("drawer cases");
   if (empty.length > 0) console.log(`SWEEP NEVER EXERCISED: ${empty.join(", ")}`);
   return sweepFails.length === 0 && empty.length === 0;
 }
@@ -1438,7 +1906,9 @@ console.log(`Driven, by kind: ${[...driven].map(([k, n]) => `${k}=${n}`).join(" 
 for (const f of failed) console.log(`  FAIL ${f.surface} :: ${f.scenario} (${f.why})`);
 
 /* The kinds the acceptance review named. Zero of one is a gap in this audit, not a pass. */
-const REQUIRED = ["popover", "dialog", "tab", "find bar", "inspector"];
+/* "drawer" since 2026-09-26: the evidence drawer's close paths, which the review found dropping focus
+   to <body> while this list — and so this run — had no case for them. */
+const REQUIRED = ["popover", "dialog", "tab", "find bar", "inspector", "drawer"];
 const missing = REQUIRED.filter((k) => (driven.get(k) ?? 0) === 0);
 if (missing.length > 0) console.log(`NOT DRIVEN AT ALL: ${missing.join(", ")}`);
 

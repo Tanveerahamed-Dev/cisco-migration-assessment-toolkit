@@ -23,6 +23,7 @@
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import { useInvestigation } from "../core/store";
 
@@ -86,7 +87,7 @@ function setViewport(width: number): () => void {
 
 /** Let React resolve the lazy component and commit the result. */
 const flush = async (): Promise<void> => {
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 };
@@ -250,7 +251,7 @@ describe("a shared link with an invalid flow", () => {
   ];
   const settle = async (): Promise<void> => {
     for (let i = 0; i < 6; i += 1) {
-      await act(async () => {
+      await actAsync(async () => {
         await new Promise((r) => setTimeout(r, 10));
       });
     }
@@ -258,7 +259,7 @@ describe("a shared link with an invalid flow", () => {
 
   for (const [flow, named] of LINKS) {
     for (const withSurface of [true, false]) {
-      it(`${flow}${withSurface ? "" : " (no s=path)"}: names the bad field and shows no verdict`, { timeout: 15000 }, async () => {
+      it(`${flow}${withSurface ? "" : " (no s=path)"}: names the bad field and shows no verdict`, async () => {
         const restore = setViewport(1440);
         try {
           window.history.replaceState(null, "", `/?${withSurface ? "s=path&" : ""}flow=${encodeURIComponent(flow)}`);

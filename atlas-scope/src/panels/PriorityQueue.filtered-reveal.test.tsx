@@ -23,6 +23,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { fabric } from "../core/data";
 import { applyToCrossLayer, applyToFindings, FILTER_KEYS, parseQuery, valueDomain } from "../core/query";
 import { useInvestigation } from "../core/store";
@@ -118,7 +119,7 @@ const rowId = (row: Element): string => textOf(row.querySelector('[role="rowhead
 /** Let the queue's debounced echo (debounceMs 0 → one task) reach the store. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 3; i++) {
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
   }
@@ -174,7 +175,7 @@ async function expectRevealedThenWidened(opts: {
     button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   await flush();
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 60));
   });
   const landedRow = currentRows(c)[0]!;

@@ -850,7 +850,11 @@
   .dp *,
   .dp *::before,
   .dp *::after {
-    transition-duration: 1ms !important;
+    /* Zero, not 1 ms: a non-zero duration on `*` gives every descendant that authored no transition
+       (transition-property defaults to `all`) a transition of the visibility it inherits, so it reads
+       hidden for its first frame when the drawer opens. Nothing here waits on transitionend. */
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
     animation-duration: 1ms !important;
   }
 }

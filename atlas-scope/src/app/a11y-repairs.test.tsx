@@ -8,6 +8,7 @@
  */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { actAsync } from "../test-support/act-turns";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { fabric } from "../core/data";
@@ -73,7 +74,7 @@ describe("D3 — a modal makes the page behind it inert", () => {
   /* The page is made inert on the first task after the dialog is presented (perf audit E3, J5 —
      see Dialog in ui/primitives.tsx), so the check waits one frame and one task for it. */
   const afterFirstPaint = (): Promise<void> =>
-    act(async () => {
+    actAsync(async () => {
       await new Promise<void>((r) => (typeof requestAnimationFrame === "function" ? requestAnimationFrame(() => r()) : r()));
       await new Promise<void>((r) => setTimeout(r, 0));
     });

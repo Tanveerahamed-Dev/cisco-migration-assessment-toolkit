@@ -20,13 +20,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { actAsync } from "../test-support/act-turns";
 import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fabric } from "../core/data";
 import { rankedSearch } from "../core/query";
 import { useInvestigation } from "../core/store";
+import type { SceneStatsEx } from "../fabric3d/scene";
+import { publishSceneStats, releaseSceneStats } from "../fabric3d/telemetry";
 import { citesIn } from "../panels/cited-text";
+import { Dialog } from "../ui/primitives";
 import { CommandPalette, FIELD_WORDS, MatchReason } from "./CommandPalette";
 import { ShortcutHelp } from "./ShortcutHelp";
 import {
@@ -72,6 +76,19 @@ vi.mock("react/jsx-runtime", async (importOriginal) => {
   const jsx: typeof m.jsx = (type, props, ...rest) => (seen(type, props), m.jsx(type, props, ...rest));
   const jsxs: typeof m.jsxs = (type, props, ...rest) => (seen(type, props), m.jsxs(type, props, ...rest));
   return { ...m, jsx, jsxs };
+});
+
+/* Records every `startTransition` call made by the app's source (React's own scheduling does not go
+   through this export), with the palette pre-warm state at the moment of the call. It delegates
+   unchanged; nothing else is observed or altered. See "the pre-warm renders in a transition". */
+const transitionProbe = vi.hoisted(() => ({ calls: [] as (string | undefined)[] }));
+vi.mock("react", async (importOriginal) => {
+  const m = await importOriginal<typeof import("react")>();
+  const startTransition: typeof m.startTransition = (cb) => {
+    transitionProbe.calls.push(typeof document === "undefined" ? undefined : document.documentElement.dataset.paletteWarm);
+    return m.startTransition(cb);
+  };
+  return { ...m, startTransition };
 });
 
 declare global {
@@ -614,7 +631,7 @@ describe("command palette", () => {
     act(() => useInvestigation.getState().setPaletteOpen(true, trigger));
     trigger.disabled = true;
     press("Escape", {}, paletteInput());
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
     expect(document.activeElement).not.toBe(document.body);
@@ -789,7 +806,7 @@ describe("shortcut help", () => {
     expect(document.querySelector(".kb-help")).not.toBeNull();
     menu.remove();
     act(() => setHelpOpen(false));
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(document.activeElement).not.toBe(document.body);
@@ -833,7 +850,7 @@ describe("shortcut help", () => {
    harnesses'. */
 
 /** Element reads of the compiled dataset's collections while `fn` runs. */
-function datasetReads(fn: () => void): number {
+function datasetReads(fn: () => void, dataset: object = fabric): number {
   let reads = 0;
   const restore: (() => void)[] = [];
   const count = <T extends object>(arr: T): T =>
@@ -853,7 +870,7 @@ function datasetReads(fn: () => void): number {
       } else if (depth > 1 && v !== null && typeof v === "object") walk(v as Record<string, unknown>, depth - 1);
     }
   };
-  walk(fabric as unknown as Record<string, unknown>, 3);
+  walk(dataset as unknown as Record<string, unknown>, 3);
   expect(restore.length, "the probe wrapped the dataset's collections").toBeGreaterThan(5);
   try {
     fn();
@@ -920,5 +937,485 @@ describe("per-keystroke work", () => {
     console.log(`[jsdom] one cursor move rendered ${rendered} of ${rows} palette rows`);
     expect(rendered, `one cursor move rendered ${rendered} of ${rows} rows`).toBeLessThanOrEqual(2);
     expect(rendered, "the probe saw the two rows that did change (a count of 0 would prove nothing)").toBeGreaterThan(0);
+  });
+});
+
+/* ══ the cold first open: the pre-warm (acceptance E2/E3, 2026-09-26) ══════
+   THE DEFECT. The first Ctrl+K after load, in a fresh browser at 1280x800, measured worst-interaction
+   p95 320 ms (E2) with a 51-83 ms `#document.onkeydown` long task (E3). Two costs, measured apart:
+   the main thread built and styled the palette's DOM for the first time inside the keydown (render,
+   then the forced style/layout of `focus()`), and the GPU compiled the Skia programs for the
+   palette's paint operations the first time they were rasterised. Every later open was warm.
+
+   THE REPAIR (owner decision, cluster E2E3). Once the scene has converged, in idle time, the
+   palette's own frame is mounted once, invisibly but REALLY rasterised (opacity 0.001 — measured: at
+   opacity 0 the compositor never rasterises it and the GPU half remains), for a few presented frames,
+   then PARKED (`visibility: hidden`) until the first real open, which turns those same nodes into the
+   dialog — so the first Ctrl+K creates no DOM (the first repair removed the frame, and the first open
+   still built and laid out the subtree inside the keydown). What that frame must never do is what
+   these tests pin: it is hidden from assistive technology and inert, it takes no focus, it traps no
+   key, it makes nothing outside itself inert, it announces nothing, it collides with no id, it adds
+   no render work to other interactions, and a real Ctrl+K always wins.
+
+   jsdom rasterises nothing, so the timing claim is the browser harness's (review/measure-inp.mjs,
+   `J5-first-open-palette`); these tests pin the structure that claim depends on. Idle callbacks and
+   animation frames are driven by hand, so the order of events is the test's, not the host's. */
+
+describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
+  type IdleCb = () => void;
+  const w = window as unknown as {
+    requestIdleCallback?: (cb: IdleCb, o?: { timeout: number }) => number;
+    cancelIdleCallback?: (id: number) => void;
+  };
+  const saved = {
+    ric: w.requestIdleCallback,
+    cic: w.cancelIdleCallback,
+    raf: window.requestAnimationFrame,
+    caf: window.cancelAnimationFrame,
+  };
+  let idle = new Map<number, IdleCb>();
+  let frames = new Map<number, FrameRequestCallback>();
+  let nextId = 1;
+
+  beforeEach(() => {
+    idle = new Map();
+    frames = new Map();
+    w.requestIdleCallback = (cb) => {
+      const id = nextId++;
+      idle.set(id, cb);
+      return id;
+    };
+    w.cancelIdleCallback = (id) => void idle.delete(id);
+    window.requestAnimationFrame = (cb) => {
+      const id = nextId++;
+      frames.set(id, cb);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => void frames.delete(id);
+    delete document.documentElement.dataset.paletteWarm;
+    releaseSceneStats();
+  });
+
+  afterEach(() => {
+    w.requestIdleCallback = saved.ric;
+    w.cancelIdleCallback = saved.cic;
+    window.requestAnimationFrame = saved.raf;
+    window.cancelAnimationFrame = saved.caf;
+    releaseSceneStats();
+    delete document.documentElement.dataset.paletteWarm;
+  });
+
+  /** Run every queued idle callback, including those the callbacks queue, one slice per act. */
+  const flushIdle = (): number => {
+    let ran = 0;
+    for (let guard = 0; idle.size > 0 && guard < 50; guard++) {
+      const [id, cb] = idle.entries().next().value as [number, IdleCb];
+      idle.delete(id);
+      act(() => cb());
+      ran += 1;
+    }
+    return ran;
+  };
+  /** Present `n` frames, then let the zero-delay timers the frames scheduled run. */
+  const presentFrames = async (n: number): Promise<void> => {
+    for (let i = 0; i < n; i++) {
+      const due = [...frames.values()];
+      frames.clear();
+      act(() => {
+        for (const cb of due) cb(0);
+      });
+      await actAsync(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+      });
+    }
+  };
+  /** Let the drawn phase's minimum hold (WARM_MIN_HOLD_MS, 250 ms) run out, in real time. */
+  const holdElapsed = async (): Promise<void> => {
+    await actAsync(async () => {
+      await new Promise((r) => setTimeout(r, 320));
+    });
+  };
+  const stats = (converged: boolean): SceneStatsEx =>
+    ({
+      fps: 60,
+      frameMs: 16,
+      drawCalls: 10,
+      triangles: 100,
+      programs: 4,
+      quality: "high",
+      converged,
+      qualityAuto: true,
+      warmupStage: null,
+      programsLinked: 4,
+      programsTotal: 4,
+      frameRateBelowBar: false,
+    }) as unknown as SceneStatsEx;
+  const converge = (): void => act(() => publishSceneStats(stats(true)));
+
+  const warmFrame = (): HTMLElement | null => document.querySelector<HTMLElement>(".ui-dialog[data-dialog-prewarm]");
+  const warmNodes = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>("[data-dialog-prewarm]")];
+  const duplicateIds = (): string[] => {
+    const seen = new Map<string, number>();
+    for (const el of document.querySelectorAll("[id]")) seen.set(el.id, (seen.get(el.id) ?? 0) + 1);
+    return [...seen].filter(([, n]) => n > 1).map(([id]) => id);
+  };
+  const outsideButton = (): HTMLButtonElement => {
+    const b = document.createElement("button");
+    b.textContent = "page control";
+    document.body.appendChild(b);
+    b.focus();
+    return b;
+  };
+
+  it("waits for the scene to converge, then mounts the palette's own frame once in idle time", () => {
+    mount(<CommandPalette />);
+    flushIdle();
+    expect(warmFrame(), "no pre-warm before the scene has converged").toBeNull();
+    expect(document.documentElement.dataset.paletteWarm).toBe("waiting");
+    converge();
+    expect(warmFrame(), "the pre-warm waits for an idle slice, it is not mounted by the convergence itself").toBeNull();
+    flushIdle();
+    expect(warmFrame(), "the pre-warm mounted once the page was idle").not.toBeNull();
+    expect(document.documentElement.dataset.paletteWarm).toBe("mounted");
+    expect(useInvestigation.getState().paletteOpen, "the pre-warm is not an open").toBe(false);
+  });
+
+  it("draws the real empty state, so the first open's paint operations are the ones rasterised", () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    const frame = warmFrame();
+    expect(frame, "precondition: the pre-warm mounted").not.toBeNull();
+    expect(frame!.classList.contains("palette"), "the palette's own frame, not a stand-in").toBe(true);
+    expect(frame!.getAttribute("data-width")).toBe("lg");
+    expect(frame!.querySelectorAll(".palette__row").length, "the empty state's rows").toBeGreaterThan(0);
+    const text = frame!.querySelector(".palette__results")?.textContent ?? "";
+    for (const ex of grammarExamples()) expect(text).toContain(ex.query);
+    expect(frame!.querySelector(".palette__input"), "the search row").not.toBeNull();
+    expect(frame!.querySelector(".palette__foot"), "the footer").not.toBeNull();
+    expect(frame!.querySelector('.palette__row[data-active="true"]'), "the active row's fill, as the first open draws it").not.toBeNull();
+  });
+
+  it("is hidden from assistive technology and inert, and is rasterised (opacity above zero), never visible", () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    const nodes = warmNodes();
+    expect(nodes.length, "the scrim and the panel both carry the pre-warm marking").toBe(2);
+    for (const el of nodes) {
+      expect(el.getAttribute("data-dialog-prewarm"), `${el.className}: being rasterised`).toBe("raster");
+      expect(el.style.visibility, `${el.className}: drawn (not yet parked), so it is rasterised`).toBe("");
+      expect(el.getAttribute("aria-hidden"), `${el.className}: aria-hidden`).toBe("true");
+      expect(el.hasAttribute("inert"), `${el.className}: inert`).toBe(true);
+      const opacity = Number.parseFloat(el.style.opacity);
+      /* NOT zero: an opacity-0 layer is never rasterised, which leaves the GPU half of the cold cost
+         (measured: first-open p95 152 ms at opacity 0 against 64 ms at 0.001). */
+      expect(opacity, `${el.className}: opacity is non-zero, so the frame is really rasterised`).toBeGreaterThan(0);
+      expect(opacity, `${el.className}: opacity is below one 8-bit step, so nothing is seen`).toBeLessThan(1 / 255);
+      expect(el.style.pointerEvents, `${el.className}: takes no pointer`).toBe("none");
+    }
+  });
+
+  it("exposes no dialog, combobox, listbox, option or live region while pre-warming, rasterising or parked", async () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    for (const phase of ["raster", "parked"]) {
+      if (phase === "parked") {
+        await presentFrames(4);
+        await holdElapsed();
+      }
+      const frame = warmFrame();
+      expect(frame, `precondition: the pre-warm frame is in the document (${phase})`).not.toBeNull();
+      expect(frame!.getAttribute("data-dialog-prewarm"), "precondition: the phase under test").toBe(phase);
+      expect(document.querySelectorAll('[role="dialog"], [aria-modal]').length, `${phase}: no dialog role anywhere`).toBe(0);
+      expect(frame!.querySelectorAll('[role="combobox"], [role="listbox"], [role="option"], [role="group"]').length, phase).toBe(0);
+      expect(frame!.querySelectorAll('[aria-live], [role="status"], [role="alert"], [role="log"]').length, `${phase}: no live region: the pre-warm announces nothing`).toBe(0);
+      expect(duplicateIds(), `${phase}: no duplicate id`).toEqual([]);
+    }
+  });
+
+  it("takes no focus, traps no key and makes nothing outside itself inert", () => {
+    const outside = outsideButton();
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    expect(warmFrame(), "precondition: the pre-warm mounted").not.toBeNull();
+    expect(document.activeElement, "focus stayed where the user left it").toBe(outside);
+    const inert = [...document.querySelectorAll("[inert]")].filter((el) => !el.hasAttribute("data-dialog-prewarm"));
+    expect(inert.map((el) => el.tagName), "inertOutside was not run for a pre-warm").toEqual([]);
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    act(() => void document.dispatchEvent(tab));
+    expect(tab.defaultPrevented, "no Tab trap while pre-warming").toBe(false);
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    act(() => void outside.dispatchEvent(esc));
+    expect(warmFrame(), "Escape is not the pre-warm's to take").not.toBeNull();
+  });
+
+  it("parks after it has been presented: paints nothing, stays hidden and inert, and is never re-warmed", async () => {
+    const outside = outsideButton();
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    const drawn = warmFrame();
+    expect(drawn, "precondition: the pre-warm mounted").not.toBeNull();
+    await presentFrames(1);
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "held for more than one presented frame, so it is rasterised before it parks").toBe("raster");
+    await presentFrames(3);
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "and for its minimum time, not frames alone (the GPU compile outlasts three quick frames)").toBe("raster");
+    expect(document.documentElement.dataset.paletteWarm).toBe("mounted");
+    await holdElapsed();
+    expect(document.documentElement.dataset.paletteWarm).toBe("done");
+    const nodes = warmNodes();
+    expect(nodes.length, "parked, not removed: the scrim and the panel are still in the document").toBe(2);
+    expect(warmFrame(), "the SAME panel, parked in place").toBe(drawn);
+    for (const el of nodes) {
+      expect(el.getAttribute("data-dialog-prewarm"), el.className).toBe("parked");
+      expect(el.style.visibility, `${el.className}: parked paints nothing`).toBe("hidden");
+      expect(el.getAttribute("aria-hidden"), `${el.className}: aria-hidden`).toBe("true");
+      expect(el.hasAttribute("inert"), `${el.className}: inert`).toBe(true);
+      expect(el.style.pointerEvents, `${el.className}: takes no pointer`).toBe("none");
+    }
+    expect(document.activeElement).toBe(outside);
+    /* One-shot: a later convergence (the scene settles again after every camera move) re-warms nothing. */
+    act(() => publishSceneStats(stats(false)));
+    act(() => publishSceneStats(stats(true)));
+    expect(flushIdle(), "nothing was scheduled").toBe(0);
+    await presentFrames(2);
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "still parked, never drawn again").toBe("parked");
+  });
+
+  it("parks on a bounded timer when no frame is ever presented (an occluded window)", async () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    expect(warmFrame(), "precondition: the pre-warm mounted").not.toBeNull();
+    await actAsync(async () => {
+      await new Promise((r) => setTimeout(r, 1100));
+    });
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "a drawn layer must not outlive its purpose: it is parked").toBe("parked");
+    expect(warmFrame()?.style.visibility).toBe("hidden");
+    expect(document.documentElement.dataset.paletteWarm, "and it says it was never presented").toBe("unpresented");
+  });
+
+  it("a parked frame adds no render work to other interactions: its rows do not follow the command owners", async () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    await presentFrames(4);
+    await holdElapsed();
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "precondition: parked").toBe("parked");
+    const rows = warmFrame()!.querySelectorAll(".palette__row").length;
+    expect(rows, "precondition: the parked frame holds rows").toBeGreaterThan(0);
+    /* A surface mounting (it registers a command owner) re-renders the palette component. */
+    renderProbe.paletteRows = 0;
+    act(() => void teardown.push(registerCommandTarget("fabric.resetCamera", () => {})));
+    expect(renderProbe.paletteRows, `a surface mount re-rendered ${renderProbe.paletteRows} of the parked frame's ${rows} rows`).toBe(0);
+    /* The probe can see it (its red branch, executed): the same change while OPEN does re-render them. */
+    press("k", MOD);
+    expect(useInvestigation.getState().paletteOpen, "precondition: opened").toBe(true);
+    renderProbe.paletteRows = 0;
+    act(() => void teardown.push(registerCommandTarget("fabric.toggleLegend", () => {})));
+    expect(renderProbe.paletteRows, "an open palette follows its owners").toBeGreaterThan(0);
+  });
+
+  it("waits no longer than its ceiling for a scene that never converges", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      mount(<CommandPalette />);
+      act(() => void vi.advanceTimersByTime(9_900));
+      expect(document.documentElement.dataset.paletteWarm, "before the ceiling it waits for convergence").toBe("waiting");
+      act(() => void vi.advanceTimersByTime(200));
+      expect(document.documentElement.dataset.paletteWarm, "a scene that never converges does not leave the palette cold").toBe("scheduled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the pre-warm renders in a transition, so a keystroke is never queued behind it", () => {
+    mount(<CommandPalette />);
+    converge();
+    transitionProbe.calls.length = 0;
+    flushIdle();
+    expect(warmFrame(), "precondition: the pre-warm mounted").not.toBeNull();
+    /* What this pins: the update that mounts the frame is issued through `startTransition` (a probe
+       over React's export — the only call site, CommandPalette's final idle step — records it). That
+       React yields a transition render to a discrete update is React's contract, not re-proven here. */
+    expect(transitionProbe.calls, "the frame was mounted by a transition issued from the scheduled idle step").toEqual(["scheduled"]);
+  });
+
+  it("neither the pre-warm's render nor the first open traces the grammar examples: the idle slices already did", async () => {
+    /* Fresh modules: the grammar examples and the command list are memoised at module scope, so any
+       earlier test in this file would have computed them already and the count below would pass
+       without the idle slices. React itself is not re-instantiated (a dependency, not a source module). */
+    vi.resetModules();
+    const fresh = {
+      data: await import("../core/data"),
+      store: await import("../core/store"),
+      telemetry: await import("../fabric3d/telemetry"),
+      palette: await import("./CommandPalette"),
+    };
+    expect(fresh.data.fabric, "precondition: a fresh dataset instance, so these memos are cold").not.toBe(fabric);
+    mount(<fresh.palette.CommandPalette />);
+    act(() => fresh.telemetry.publishSceneStats(stats(true)));
+    let mountingSliceReads: number | null = null;
+    let idleReads = 0;
+    for (let guard = 0; idle.size > 0 && guard < 50; guard++) {
+      const [id, cb] = idle.entries().next().value as [number, IdleCb];
+      idle.delete(id);
+      const before = warmFrame();
+      const reads = datasetReads(() => act(() => cb()), fresh.data.fabric);
+      if (before === null && warmFrame() !== null) mountingSliceReads = reads;
+      else idleReads += reads;
+    }
+    expect(idleReads, "precondition: the idle slices did the dataset work (a probe that saw nothing proves nothing)").toBeGreaterThan(0);
+    expect(mountingSliceReads, "precondition: the pre-warm mounted in one of the slices").not.toBeNull();
+    expect(mountingSliceReads, "the slice that renders the pre-warm frame read the dataset").toBe(0);
+    await presentFrames(4);
+    await holdElapsed();
+    const openReads = datasetReads(() => act(() => fresh.store.useInvestigation.getState().setPaletteOpen(true)), fresh.data.fabric);
+    expect(document.querySelector(".palette__input")?.getAttribute("role"), "precondition: the first open happened").toBe("combobox");
+    expect(openReads, "the first open read the dataset").toBe(0);
+    act(() => fresh.store.useInvestigation.getState().setPaletteOpen(false));
+    act(() => fresh.telemetry.releaseSceneStats());
+  });
+
+  it("a real Ctrl+K before the idle slice cancels the pre-warm; the open is the ordinary dialog", () => {
+    mount(<CommandPalette />);
+    converge();
+    press("k", MOD);
+    expect(useInvestigation.getState().paletteOpen).toBe(true);
+    flushIdle();
+    expect(warmNodes(), "no hidden copy beside the real palette").toEqual([]);
+    expect(document.querySelectorAll(".ui-dialog")).toHaveLength(1);
+    expect(document.querySelector(".ui-dialog")?.getAttribute("role")).toBe("dialog");
+    expect(document.documentElement.dataset.paletteWarm).toBe("superseded");
+  });
+
+  it("a real Ctrl+K while the pre-warm is mounted becomes the real dialog: exposed, visible, focused", async () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    const drawn = warmFrame();
+    expect(drawn, "precondition: the pre-warm mounted").not.toBeNull();
+    const drawnInput = drawn!.querySelector(".palette__input");
+    press("k", MOD);
+    expect(warmNodes(), "no pre-warm marking survives the open").toEqual([]);
+    const dialogs = document.querySelectorAll<HTMLElement>(".ui-dialog");
+    expect(dialogs).toHaveLength(1);
+    const panel = dialogs[0]!;
+    expect(panel, "UPDATED in place: the pre-warm's own panel node became the dialog (not a remount)").toBe(drawn);
+    expect(paletteInput(), "and its own search box").toBe(drawnInput);
+    expect(panel.getAttribute("role")).toBe("dialog");
+    expect(panel.getAttribute("aria-modal")).toBe("true");
+    expect(panel.hasAttribute("aria-hidden")).toBe(false);
+    expect(panel.hasAttribute("inert")).toBe(false);
+    expect(panel.style.opacity, "fully visible").toBe("");
+    const scrim = document.querySelector<HTMLElement>(".ui-dialog__scrim")!;
+    expect(scrim.hasAttribute("inert") || scrim.hasAttribute("aria-hidden") || scrim.style.opacity !== "").toBe(false);
+    expect(document.activeElement, "focus is in the search box").toBe(paletteInput());
+    expect(paletteInput().getAttribute("role")).toBe("combobox");
+    expect(panel.querySelectorAll('[role="status"]').length, "the palette's live region is back").toBe(1);
+    expect(duplicateIds()).toEqual([]);
+    expect(document.documentElement.dataset.paletteWarm).toBe("superseded");
+    await presentFrames(4);
+    expect(useInvestigation.getState().paletteOpen, "the pre-warm's own teardown does not close a real open").toBe(true);
+    expect(document.querySelectorAll('.ui-dialog[role="dialog"]')).toHaveLength(1);
+  });
+
+  it("the first Ctrl+K after parking flips the parked nodes into the dialog; after it closes, nothing is left", async () => {
+    const outside = outsideButton();
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    await presentFrames(4);
+    await holdElapsed();
+    const parked = warmFrame();
+    expect(parked?.getAttribute("data-dialog-prewarm"), "precondition: parked").toBe("parked");
+    const parkedInput = parked!.querySelector(".palette__input");
+    const parkedRows = parked!.querySelectorAll(".palette__row").length;
+    press("k", MOD);
+    const panel = document.querySelector<HTMLElement>(".ui-dialog");
+    expect(panel, "the first open creates no panel: it is the parked one").toBe(parked);
+    expect(paletteInput(), "the same search box").toBe(parkedInput);
+    expect(panel!.querySelectorAll(".palette__row").length, "the same rows it drew while parked").toBe(parkedRows);
+    expect(warmNodes(), "no pre-warm marking survives the open").toEqual([]);
+    expect(panel!.getAttribute("role")).toBe("dialog");
+    expect(panel!.getAttribute("aria-modal")).toBe("true");
+    expect(panel!.hasAttribute("aria-hidden") || panel!.hasAttribute("inert")).toBe(false);
+    expect(panel!.style.visibility, "visible").toBe("");
+    expect(panel!.style.opacity, "fully opaque").toBe("");
+    const scrim = document.querySelector<HTMLElement>(".ui-dialog__scrim")!;
+    expect(scrim.hasAttribute("inert") || scrim.hasAttribute("aria-hidden") || scrim.style.visibility !== "" || scrim.style.opacity !== "").toBe(false);
+    expect(document.activeElement, "focus is in the search box").toBe(parkedInput);
+    expect(paletteInput().getAttribute("role")).toBe("combobox");
+    expect(panel!.querySelectorAll('[role="option"]').length, "its rows are options now").toBe(parkedRows);
+    expect(panel!.querySelectorAll('[role="status"]').length, "the palette's live region is there").toBe(1);
+    expect(duplicateIds()).toEqual([]);
+    expect(document.documentElement.dataset.paletteWarm, "a parked frame is not superseded: it WAS this open").toBe("done");
+    press("Escape", {}, paletteInput());
+    expect(useInvestigation.getState().paletteOpen).toBe(false);
+    expect(document.querySelector(".ui-dialog, .ui-dialog__scrim"), "closed, the palette renders nothing again — parking ended at the first open").toBeNull();
+    expect(document.activeElement, "focus went back").toBe(outside);
+    press("k", MOD);
+    expect(document.querySelectorAll('.ui-dialog[role="dialog"]'), "a later open is the ordinary one").toHaveLength(1);
+    expect(warmNodes()).toEqual([]);
+  });
+
+  it("Dialog: a pre-warm renders the frame only — no focus, no key handling, no inert page", () => {
+    const outside = outsideButton();
+    const onClose = vi.fn();
+    mount(
+      <Dialog open={false} prewarm="raster" onClose={onClose} title="Probe" footer={<button type="button">foot</button>}>
+        <button type="button">inside</button>
+      </Dialog>,
+    );
+    const frame = warmFrame();
+    expect(frame, "the frame rendered").not.toBeNull();
+    expect(frame!.textContent).toContain("inside");
+    expect(document.activeElement).toBe(outside);
+    press("Escape");
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => {
+      document.querySelector<HTMLElement>(".ui-dialog__scrim")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(onClose, "the scrim of a pre-warm closes nothing").not.toHaveBeenCalled();
+    expect([...document.querySelectorAll("[inert]")].every((el) => el.hasAttribute("data-dialog-prewarm"))).toBe(true);
+  });
+
+  it("Dialog: a parked pre-warm paints nothing and is the same nodes when it opens", () => {
+    const outside = outsideButton();
+    const onClose = vi.fn();
+    const Probe = ({ open, prewarm }: { open: boolean; prewarm: "raster" | "parked" | false }): ReactNode => (
+      <Dialog open={open} prewarm={prewarm} onClose={onClose} title="Probe">
+        <button type="button">inside</button>
+      </Dialog>
+    );
+    const container = mount(<Probe open={false} prewarm="raster" />);
+    const drawn = warmFrame();
+    expect(drawn?.style.visibility, "rasterising: drawn").toBe("");
+    const root = mounted.find((m) => m.container === container)!.root;
+    act(() => root.render(<Probe open={false} prewarm="parked" />));
+    expect(warmFrame(), "parking keeps the node").toBe(drawn);
+    for (const el of warmNodes()) {
+      expect(el.style.visibility, el.className).toBe("hidden");
+      expect(el.getAttribute("aria-hidden"), el.className).toBe("true");
+      expect(el.hasAttribute("inert"), el.className).toBe(true);
+    }
+    expect(document.activeElement).toBe(outside);
+    act(() => root.render(<Probe open prewarm="parked" />));
+    const panel = document.querySelector<HTMLElement>('.ui-dialog[role="dialog"]');
+    expect(panel, "open: the parked node, exposed").toBe(drawn);
+    expect(panel!.style.visibility).toBe("");
+    expect(panel!.contains(document.activeElement), "focus moved into the dialog").toBe(true);
+  });
+
+  it("Dialog: closed and not pre-warming still renders nothing", () => {
+    mount(
+      <Dialog open={false} onClose={() => {}} title="Probe">
+        x
+      </Dialog>,
+    );
+    expect(document.querySelector(".ui-dialog, .ui-dialog__scrim")).toBeNull();
   });
 });

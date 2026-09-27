@@ -9,7 +9,7 @@ keystone, topology link, and lifecycle band is genuinely computed by the engine 
 
 Output: webapp/sample_data/sample_fleet.snapshot.json
 
-Run:  python webapp/sample_data/build_sample.py
+Run:  python webapp/sample_data/build_sample.py [--check] [--out PATH]
 """
 
 from __future__ import annotations
@@ -323,6 +323,207 @@ def build_collections() -> dict:
     # Splice the new spokes into the cores' CDP neighbour tables so the topology forms a 2-hub star.
     cols["core1"][1]["show cdp neighbors detail"] += "".join(core1_cdp_extra)
     cols["core2"][1]["show cdp neighbors detail"] += "".join(core2_cdp_extra)
+    return _add_forwarding_substrate(cols)
+
+
+# --------------------------------------------------------------------------- #
+# Forwarding substrate — the routed evidence a multi-hop path decision needs.
+#
+# Without it only core1/core2 have a routing table, no collected route points at an address another
+# collected host owns, and the dist pair has no running-config: every trace stops after one hop.
+# The substrate turns the EXISTING dist1 Gi1/0/3 <-> core1 Gi1/0/40 cable into a routed /30 transit
+# (10.0.140.0/30, OSPF point-to-point), gives dist1/dist2 their routing tables, OSPF adjacencies and a
+# hardened running-config, and collects EIGRP/BGP on the dist pair as the EMPTY output of switches
+# that do not run them. It deliberately does NOT fabricate EIGRP/BGP adjacencies: a neighbor table
+# that was captured and is empty is itself the evidence that the family teaches no routes there.
+# core1 keeps its configured `router bgp 65001` as one Established upstream peer (RFC 5737) that has
+# sent no prefixes — its table holds no BGP route, and the two captures agree. The peer is eBGP
+# multihop to the upstream behind core1's existing default next hop (10.0.10.254), with the static
+# /32 that makes it reachable, so the session has a route under it.
+#
+# The routes each table holds are the ones the configuration beside it would originate: core1 puts
+# only the Gi1/0/40 transit in area 0 and brings its user/voice/server VLANs into OSPF with its
+# existing `redistribute connected`, so dist1/dist2 hold them as `O E2`, and the dists' `O*E2`
+# default exists because core1 now carries `default-information originate` (it has a static default).
+# The new dist running-configs end with `end`, as a real IOS dump does, so the engine's capture-
+# integrity guard reads them as whole (core1's keeps the fixture's no-`end` convention).
+#
+# One contradiction is deliberately NOT resolved: core1's FULL/DR OSPF neighbour 10.0.99.2 on the L2
+# trunk Port-channel1, whose link core1's table does not hold. It is the fixture's B1 seed (Atlas
+# Scope's rib-partial-route.test.ts pins that core1's table stays incomplete because of it); giving
+# core1 OSPF routes from dist1 does not account for that session, and must not be read as if it did.
+#
+# Every CDP capture is left byte-identical, including the deliberately disputed core1 Gi1/0/40 that
+# both access16 and dist1 claim; so the cable map, move groups, wave sequencing and failure impact
+# are unchanged. Only deep copies are edited: tests/synthetic_fixtures.py (the golden's source) is not.
+# --------------------------------------------------------------------------- #
+_ROUTE_CODES = ("Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n"
+                "       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n"
+                "       E1 - OSPF external type 1, E2 - OSPF external type 2\n")
+_OSPF_NEIGHBOR_HDR = "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
+# `show ip eigrp neighbors` / `show ip bgp summary` on a switch with no EIGRP AS / no BGP process
+# configured: the capture exists and holds nothing (protocol_assessability -> captured_empty).
+_NOT_RUNNING = ""
+
+
+def _replace_once(text: str, old: str, new: str) -> str:
+    """Replace exactly one occurrence; a missing anchor is a build error, never a silent no-op."""
+    if text.count(old) != 1:
+        raise ValueError(f"substrate anchor must occur exactly once, found {text.count(old)}: {old!r}")
+    return text.replace(old, new, 1)
+
+
+def _dist_running_config(hostname: str, router_id: str, networks: tuple, passive: tuple = ()) -> str:
+    return ("!\n"
+            f"hostname {hostname}\n"
+            "service password-encryption\n"
+            "aaa new-model\n"
+            "ip ssh version 2\n"
+            "no ip http server\n"
+            "no ip http secure-server\n"
+            "ntp server 10.0.0.10\n"
+            "logging host 10.0.0.20\n"
+            "banner login ^C\n"
+            "Authorized access only. Activity on this device is logged.\n"
+            "^C\n"
+            "ip access-list extended VTY_ACCESS\n"
+            " permit tcp 10.0.99.0 0.0.0.255 any eq 22\n"
+            " deny   ip any any\n"
+            "!\n"
+            "router ospf 1\n"
+            f" router-id {router_id}\n"
+            + "".join(f" passive-interface {p}\n" for p in passive)
+            + "".join(f" network {n} area 0\n" for n in networks)
+            + "!\n"
+            "line vty 0 4\n"
+            " access-class VTY_ACCESS in\n"
+            " exec-timeout 10 0\n"
+            " transport input ssh\n"
+            "!\n"
+            "end\n")
+
+
+def _add_forwarding_substrate(cols: dict) -> dict:
+    """Return a copy of `cols` with the routed core1<->dist1<->dist2 substrate (see the block above).
+    The argument is never mutated."""
+    cols = copy.deepcopy(cols)
+
+    # ---- core1: Gi1/0/40 (the port dist1 already cables to) becomes the routed transit.
+    c1 = cols["core1"][1]
+    c1["show running-config | section ^interface"] += (
+        "interface GigabitEthernet1/0/40\n description to-dist1\n no switchport\n"
+        " ip address 10.0.140.1 255.255.255.252\n ip ospf network point-to-point\n ip ospf 1 area 0\n")
+    c1["show ip route"] = _replace_once(
+        c1["show ip route"],
+        "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks\n",
+        "      10.0.0.0/8 is variably subnetted, 12 subnets, 4 masks\n")
+    c1["show ip route"] = _replace_once(
+        c1["show ip route"],
+        "L        10.0.30.1/32 is directly connected, Vlan30\n",
+        "L        10.0.30.1/32 is directly connected, Vlan30\n"
+        "O        10.0.40.0/24 [110/2] via 10.0.140.2, 00:12:04, GigabitEthernet1/0/40\n"
+        "O        10.0.41.0/24 [110/2] via 10.0.140.2, 00:12:04, GigabitEthernet1/0/40\n"
+        "C        10.0.140.0/30 is directly connected, GigabitEthernet1/0/40\n"
+        "L        10.0.140.1/32 is directly connected, GigabitEthernet1/0/40\n")
+    c1["show ip ospf neighbor"] += (
+        "10.0.99.50        0   FULL/  -        00:00:38    10.0.140.2      GigabitEthernet1/0/40\n")
+    c1["show ip interface brief"] += (
+        "GigabitEthernet1/0/40  10.0.140.1      YES NVRAM  up                    up\n")
+    # core1 has a static default, and the dists' O*E2 default says core1 originates it into OSPF.
+    c1["show running-config"] = _replace_once(
+        c1["show running-config"],
+        "router ospf 1\n redistribute bgp 65001 subnets\n redistribute connected\n",
+        "router ospf 1\n redistribute bgp 65001 subnets\n redistribute connected\n default-information originate\n")
+    # The configured `router bgp 65001` gets its one upstream peer: Established, no prefixes received
+    # (core1 advertises the campus and keeps its static default), so the table rightly holds no B route.
+    # The peer sits behind core1's existing upstream next hop (10.0.10.254): eBGP multihop, reached by a
+    # static /32 — so the table holds a route under the session (not only the default).
+    c1["show running-config"] = _replace_once(
+        c1["show running-config"],
+        "router bgp 65001\n",
+        "router bgp 65001\n neighbor 203.0.113.1 remote-as 64500\n neighbor 203.0.113.1 ebgp-multihop 2\n")
+    c1["show running-config"] = _replace_once(
+        c1["show running-config"],
+        " redistribute ospf 1 route-map OSPF_TO_BGP\n!\n",
+        " redistribute ospf 1 route-map OSPF_TO_BGP\n!\nip route 203.0.113.1 255.255.255.255 10.0.10.254\n!\n")
+    c1["show ip route"] = _replace_once(
+        c1["show ip route"],
+        "S      192.168.99.0/24 [1/0] via 10.0.10.254\n",
+        "S      192.168.99.0/24 [1/0] via 10.0.10.254\n"
+        "      203.0.113.0/32 is subnetted, 1 subnets\n"
+        "S        203.0.113.1 [1/0] via 10.0.10.254\n")
+    c1["show ip bgp summary"] = (
+        "BGP router identifier 10.0.99.1, local AS number 65001\n"
+        "BGP table version is 7, main routing table version 7\n\n"
+        "Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "203.0.113.1     4        64500     120     118        7    0    0 01:02:03        0\n")
+    c1["show ip eigrp neighbors"] = _NOT_RUNNING       # no `router eigrp` in core1's configuration
+
+    # ---- dist1: Gi1/0/3 goes from trunk to routed; OSPF to core1 (transit) and dist2 (Vlan40).
+    d1 = cols["dist1"][1]
+    d1["show interface status"] = _replace_once(
+        d1["show interface status"],
+        "Gi1/0/3   to-core1           connected    trunk        full  1000  1000BaseLX SFP\n",
+        "Gi1/0/3   to-core1           connected    routed       full  1000  1000BaseLX SFP\n")
+    d1["show interfaces switchport"] = _replace_once(
+        d1["show interfaces switchport"], _sw_trunk("Gi1/0/3"), "Name: Gi1/0/3\nSwitchport: Disabled\n\n")
+    d1["show interfaces trunk"] = _replace_once(
+        d1["show interfaces trunk"], "Gi1/0/3     on               802.1q         trunking      1\n", "")
+    d1["show interfaces trunk"] = _replace_once(d1["show interfaces trunk"], "Gi1/0/3     40,41\n", "")
+    d1["show running-config | section ^interface"] = _replace_once(
+        d1["show running-config | section ^interface"],
+        "interface GigabitEthernet1/0/3\n description to-core1\n switchport trunk encapsulation dot1q\n"
+        " switchport mode trunk\n",
+        "interface GigabitEthernet1/0/3\n description to-core1\n no switchport\n"
+        " ip address 10.0.140.2 255.255.255.252\n ip ospf network point-to-point\n")
+    d1["show ip interface brief"] += (
+        "GigabitEthernet1/0/3   10.0.140.2      YES NVRAM  up                    up\n")
+    d1["show ip route"] = (
+        _ROUTE_CODES
+        + "Gateway of last resort is 10.0.140.1 to network 0.0.0.0\n\n"
+        "O*E2  0.0.0.0/0 [110/1] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "      10.0.0.0/8 is variably subnetted, 9 subnets, 3 masks\n"
+        "O E2     10.0.10.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "O E2     10.0.20.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "O E2     10.0.30.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "C        10.0.40.0/24 is directly connected, Vlan40\n"
+        "L        10.0.40.2/32 is directly connected, Vlan40\n"
+        "C        10.0.41.0/24 is directly connected, Vlan41\n"
+        "L        10.0.41.2/32 is directly connected, Vlan41\n"
+        "C        10.0.140.0/30 is directly connected, GigabitEthernet1/0/3\n"
+        "L        10.0.140.2/32 is directly connected, GigabitEthernet1/0/3\n")
+    d1["show ip ospf neighbor"] = (
+        _OSPF_NEIGHBOR_HDR
+        + "10.0.99.1         0   FULL/  -        00:00:38    10.0.140.1      GigabitEthernet1/0/3\n"
+        "10.0.99.51        1   FULL/BDR        00:00:35    10.0.40.3       Vlan40\n")
+    d1["show ip eigrp neighbors"] = _NOT_RUNNING
+    d1["show ip bgp summary"] = _NOT_RUNNING
+    d1["show running-config"] = _dist_running_config(
+        "dist1", "10.0.99.50", ("10.0.40.0 0.0.1.255", "10.0.140.0 0.0.0.3"), passive=("Vlan41",))
+
+    # ---- dist2: its uplink to core2 stays an L2 trunk; it routes toward the core via dist1 on Vlan40,
+    # so the HSRP-standby ingress for a pod source is modelled the same way as the active one.
+    d2 = cols["dist2"][1]
+    d2["show ip route"] = (
+        _ROUTE_CODES
+        + "Gateway of last resort is 10.0.40.2 to network 0.0.0.0\n\n"
+        "O*E2  0.0.0.0/0 [110/1] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks\n"
+        "O E2     10.0.10.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "O E2     10.0.20.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "O E2     10.0.30.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "C        10.0.40.0/24 is directly connected, Vlan40\n"
+        "L        10.0.40.3/32 is directly connected, Vlan40\n"
+        "C        10.0.41.0/24 is directly connected, Vlan41\n"
+        "L        10.0.41.3/32 is directly connected, Vlan41\n"
+        "O        10.0.140.0/30 [110/2] via 10.0.40.2, 00:12:04, Vlan40\n")
+    d2["show ip ospf neighbor"] = (
+        _OSPF_NEIGHBOR_HDR
+        + "10.0.99.50        1   FULL/DR         00:00:35    10.0.40.2       Vlan40\n")
+    d2["show ip eigrp neighbors"] = _NOT_RUNNING
+    d2["show ip bgp summary"] = _NOT_RUNNING
+    d2["show running-config"] = _dist_running_config(
+        "dist2", "10.0.99.51", ("10.0.40.0 0.0.1.255",), passive=("Vlan41",))
     return cols
 
 
@@ -381,12 +582,32 @@ def _freshness_drift(fresh: dict, committed_path: str):
     return sorted(set(k for k in set(a) | set(b) if a.get(k) != b.get(k)))
 
 
-def main() -> None:
+def _parse_args(argv: list) -> tuple:
+    """(check, out_path) from the command line. `--out PATH` writes (or, with --check, compares
+    against) PATH instead of the tracked fixture, so the fleet can be regenerated into scratch."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="build_sample.py", description="Regenerate the engine-computed demo fleet.")
+    ap.add_argument("--check", action="store_true",
+                    help="rebuild in a temp dir and diff against the output path instead of writing it")
+    ap.add_argument("--out", default=OUT, metavar="PATH",
+                    help="snapshot path to write / check (default: the tracked sample_fleet.snapshot.json)")
+    ns = ap.parse_args(argv)
+    return ns.check, ns.out
+
+
+def _write_snapshot(path: str, snap: dict) -> None:
+    """Pretty (indent=2) JSON with LF line endings on EVERY platform: text-mode open() on Windows would
+    otherwise write CRLF, and the tracked blob (and Atlas Scope's digest binding of it) is LF."""
+    with open(path, "w", encoding="utf-8", newline="\n") as _out:
+        json.dump(snap, _out, indent=2)
+
+
+def main(argv: list = None) -> None:
     # --check: rebuild the demo in a temp dir and DIFF it against the committed fixture instead of
     # overwriting it — the full-fidelity freshness tool (runs the real pipeline, ~minutes; the cheap
     # per-section locks that run in the default test gate live in tests/test_sample_fleet.py).
     # Exit 0 = fresh, exit 2 = stale (regenerate by rerunning WITHOUT --check).
-    check = "--check" in sys.argv[1:]
+    check, out_path = _parse_args(sys.argv[1:] if argv is None else argv)
     cols = build_collections()
     devices = [{"hostname": h, "ip": f"10.0.99.{i + 1}", "username": "demo",
                 "password": "x", "platform": plat}
@@ -427,7 +648,7 @@ def main() -> None:
         # only the demo copy webapp/ ships.)
         snap = json.loads(open(snap_path, encoding="utf-8").read())
         if check:
-            drift = _freshness_drift(snap, OUT)
+            drift = _freshness_drift(snap, out_path)
             if drift:
                 print("STALE sample_fleet.snapshot.json — section(s) drifted from the current engine:")
                 for s in drift:
@@ -437,12 +658,11 @@ def main() -> None:
             print("sample_fleet.snapshot.json is FRESH — matches the current engine output "
                   "(only genuine wall-clock leaves excluded)")
             return
-        with open(OUT, "w", encoding="utf-8") as _out:
-            json.dump(snap, _out, indent=2)
+        _write_snapshot(out_path, snap)
         bands: dict = {}
         for r in snap.get("health_scores", []):
             bands[r.get("band", "?")] = bands.get(r.get("band", "?"), 0) + 1
-        print(f"wrote {OUT}")
+        print(f"wrote {out_path}")
         print(f"  devices={len(snap.get('devices', {}))}  "
               f"links={len(snap.get('topology_links') or snap.get('link_centrality') or [])}  "
               f"punchlist={len(snap.get('punchlist', []))}  bands={bands}")

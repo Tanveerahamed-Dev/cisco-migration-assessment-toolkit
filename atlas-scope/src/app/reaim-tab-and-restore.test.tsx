@@ -18,6 +18,7 @@
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import { fabric } from "../core/data";
 import { EVIDENCE_TABS, useInvestigation, type EvidenceTab } from "../core/store";
@@ -61,13 +62,13 @@ const RESTORE_TURNS = 50;
 const settleRestore = async (): Promise<void> => {
   let turns = 0;
   for (; useInvestigation.getState().trace === null && turns < RESTORE_TURNS; turns += 1) {
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
   }
   expect(useInvestigation.getState().trace, `the restored trace had not landed after ${RESTORE_TURNS} flush turns`).not.toBeNull();
   for (let i = 0; i < 4; i += 1) {
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
   }
@@ -173,7 +174,7 @@ describe("a link carrying both a device and a flow restores the device", () => {
     return t.hops[0]!.host;
   };
 
-  it("keeps d= instead of letting the trace's first hop overwrite it", { timeout: 15000 }, async () => {
+  it("keeps d= instead of letting the trace's first hop overwrite it", async () => {
     const host = hopHost();
     const other = fabric.devices.find((d) => d.id !== host && d.collected)!.id;
     window.history.replaceState(null, "", `/?s=path&d=${other}&f=F099&flow=${encodeURIComponent(FLOW)}`);
@@ -185,7 +186,7 @@ describe("a link carrying both a device and a flow restores the device", () => {
     expect(st.deviceId).toBe(other);
   });
 
-  it("control: with no d=, the device defaults to the hop's host", { timeout: 15000 }, async () => {
+  it("control: with no d=, the device defaults to the hop's host", async () => {
     window.history.replaceState(null, "", `/?s=path&f=F099&flow=${encodeURIComponent(FLOW)}`);
     mount(<App />);
     await settleRestore();

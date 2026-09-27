@@ -1,87 +1,76 @@
 /**
- * source-binding.mjs — the ONE rule for binding a compiled file to the snapshot it was read from.
+ * source-binding.mjs — the ONE place a Node tool hashes snapshot bytes, and the name of the sample
+ * snapshot the tracked compiled files are built from.
  *
- * Every `tools/compile-*.mjs` imports this module; none of them hashes the source itself.
- * `src/core/provenance.test.ts` enforces both halves by globbing tools/ (not by listing): every
- * compiler must import `./source-binding.mjs` and must not import `node:crypto`, and every
+ * Every `tools/compile-*.mjs` reaches this module through `tools/lib/compile-io.mjs`; no other file
+ * under tools/ imports `node:crypto` or calls createHash. `src/core/provenance.test.ts` enforces both
+ * halves structurally (it walks each compiler's import graph and scans every tools module), and every
  * compiler must write byte-identical output from a CRLF and from an LF copy of the source.
  *
- * WHAT WAS WRONG (acceptance F5 / open-issues O15). Each compiler hashed `readFileSync(SRC)` — the
- * RAW bytes on disk. On this Windows host Git checks the snapshot out with CRLF line endings, so
- * the recorded digest (`9cc348bd…5dfd`, 3,148,592 bytes) was a digest of THIS host's working tree,
- * while the committed blob is LF (`9580aa09…3089`, 3,072,771 bytes). The binding the product
- * displays held on one disk and on no clone: a Linux checkout, or `git cat-file blob`, could not
- * reproduce it, and the same snapshot compiled on two hosts gave two "different" snapshots.
+ * WHAT A BINDING IS — the rule itself lives in tools/lib/compile-model.mjs (`bindSourceWith`), which is
+ * pure so a browser applies the SAME rule with WebCrypto; this module only supplies node:crypto:
  *
- * THE CANONICAL FORM. The digest is taken over the LF-normalised bytes: every CR LF pair is read as
- * LF, byte-level, and nothing else is touched (a lone CR stays, no Unicode normalisation, no JSON
- * re-serialisation). That is exactly the conversion Git applies to a text blob on commit, so the
- * recorded `sourceSha256` equals `git cat-file blob HEAD:<source> | sha256sum`, and `sourceBytes`
- * equals `git cat-file -s`. It is independent of the checkout's line endings by construction.
- * `meta.sourceDigestForm` states the form, so a reader never has to guess which bytes are bound.
+ *   sourceSha256 / sourceBytes / sourceDigestForm — the digest over the LF-NORMALISED bytes (every CR LF
+ *     read as LF, byte-level, nothing else touched). That is the conversion Git applies to a text blob
+ *     on commit, so the digest equals `git cat-file blob HEAD:<source> | sha256sum` and does not depend
+ *     on the checkout's line endings. (Before O15 each compiler hashed the RAW bytes on disk — on this
+ *     Windows host the CRLF working tree, `9cc348bd…5dfd` — a binding that held on one disk and on no
+ *     clone.) Form "assesshub-store-blob" instead binds an AssessHub stored blob exactly.
+ *   sourceExactSha256 — the ENGINE's binding form, `"sha256:" + sha256(<exact bytes>)`
+ *     (cisco_toolkit/protocol_assurance.py `bind_snapshot_json_bytes`), so a compiled model joins an
+ *     engine receipt by value. For a repository file the exact bytes are the ones Git stores (the
+ *     blob), never the CRLF rendering a Windows checkout makes of them — see compile-model.mjs
+ *     `bindingPreimages` for why that is the only definition that is both true and reproducible.
+ *   sourceGitBlob — the Git blob id of the LF-normalised bytes (`git hash-object`; for an unmodified
+ *     tracked source, `git rev-parse HEAD:<source>`), so "compiled from the tracked engine output" is a
+ *     claim Git itself can check.
+ *   source / sourceOrigin — WHICH file: a repository-relative path, or a bare file name for a file
+ *     outside the repository. Never an absolute path (the home directory's username is a privacy marker).
  *
- * Why the working-tree digest is NOT also recorded: it would differ between a CRLF and an LF
- * checkout, which would make the compiled files themselves differ between hosts — the very
- * non-reproducibility this module exists to remove. It is printed by the compiler instead.
- *
- * JSON semantics are unaffected: a JSON string cannot contain a raw CR or LF, so a CR LF pair can
- * only occur as insignificant whitespace between tokens, and the parsed value is the same either way.
+ * JSON semantics are unaffected by LF normalisation: a JSON string cannot contain a raw CR or LF, so a
+ * CR LF pair can only occur as insignificant whitespace between tokens.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { bindSourceWith, lfNormalise as lfNormaliseBytes } from "./lib/compile-model.mjs";
 
-/** The snapshot every compiler reads, relative to the repository root (the package's parent). */
+/** The sample snapshot the TRACKED compiled files are built from, relative to the repository root. */
 export const SOURCE_REL = "webapp/sample_data/sample_fleet.snapshot.json";
 
-/** The name of the byte form the digest is taken over. Recorded in every compiled `meta`. */
+/** The default byte form the digest is taken over. Recorded in every compiled `meta`. */
 export const SOURCE_DIGEST_FORM = "lf-normalised";
 
-const CR = 0x0d;
-const LF = 0x0a;
-
 /**
- * The LF-normalised form: every CR LF pair becomes LF. Every other byte is copied unchanged.
- * @param {Buffer} raw
+ * The LF-normalised form of `raw`, as a Buffer.
+ * @param {Uint8Array} raw
  * @returns {Buffer}
  */
 export function lfNormalise(raw) {
-  const out = Buffer.allocUnsafe(raw.length);
-  let n = 0;
-  for (let i = 0; i < raw.length; i += 1) {
-    const b = /** @type {number} */ (raw[i]);
-    if (b === CR && raw[i + 1] === LF) continue;
-    out[n] = b;
-    n += 1;
-  }
-  return out.subarray(0, n);
+  const out = lfNormaliseBytes(raw);
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
-/** @param {Buffer} buf @returns {string} */
-const sha256Hex = (buf) => createHash("sha256").update(buf).digest("hex");
+/** The hash functions the binding rule is applied with. */
+export const NODE_HASHES = Object.freeze({
+  /** @param {Uint8Array} b */
+  sha256Hex: (b) => createHash("sha256").update(b).digest("hex"),
+  /** @param {Uint8Array} b */
+  sha1Hex: (b) => createHash("sha1").update(b).digest("hex"),
+});
 
 /**
- * Read the snapshot the compiler in `toolsDir` resolves, and return its parsed value, the bytes that
- * bind, and the `meta` fields every compiled file carries.
- * @param {string} toolsDir  the directory of the calling compiler (`tools/`)
+ * Bind `bytes` under `label` (see the header for every field).
+ * @param {Uint8Array} bytes
+ * @param {import("./lib/compile-model.mjs").SourceLabel} label
  */
-export function readSource(toolsDir) {
-  const path = resolve(toolsDir, "..", "..", SOURCE_REL);
-  const raw = readFileSync(path);
-  const canonical = lfNormalise(raw);
-  /** @type {any} */
-  const snap = JSON.parse(canonical.toString("utf8"));
-  const binding = {
-    source: SOURCE_REL,
-    sourceDigestForm: SOURCE_DIGEST_FORM,
-    sourceSha256: sha256Hex(canonical),
-    sourceBytes: canonical.length,
-  };
-  return {
-    path,
-    snap,
-    binding,
-    /** For the compiler's console line only — never written into a compiled file (see above). */
-    workingTree: { sha256: sha256Hex(raw), bytes: raw.length },
-  };
+export function bindSource(bytes, label) {
+  return bindSourceWith(bytes, label, NODE_HASHES);
+}
+
+/**
+ * The raw working-tree digest — for a compiler's console line ONLY, never written into a compiled file
+ * (it differs between a CRLF and an LF checkout, which is exactly what the binding must not).
+ * @param {Uint8Array} raw
+ */
+export function workingTreeDigest(raw) {
+  return { sha256: NODE_HASHES.sha256Hex(raw), bytes: raw.length };
 }

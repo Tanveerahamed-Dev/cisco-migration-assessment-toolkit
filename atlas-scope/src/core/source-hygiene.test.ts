@@ -37,6 +37,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -474,6 +475,291 @@ describe("every test the runner collects asserts something", () => {
     const defs = testDefinitions(stripped);
     expect(defs).toHaveLength(1);
     expect(ASSERTION.test(defs[0]?.body ?? "")).toBe(false);
+  });
+});
+
+/* ── every async act() scope goes through the shared helper (acceptance F2, the load cascade) ────
+ * An async act() scope that outlives its test corrupts React's process-global act depth, and every
+ * later render in the file is queued and never committed (src/test-support/act-turns.ts has the
+ * mechanism). The helper stops an abandoned test at its next scope and settles every scope after
+ * each test; a raw `await act(async …)` gets neither. So the rule is about the CALL, found by
+ * scanning the tree rather than by naming the files that had one: outside the helper itself, no
+ * source under src/ may open an async act() scope directly.
+ *
+ * The scan PARSES each file with the TypeScript compiler rather than stripping text. A text
+ * stripper cannot tell a regex literal from division, so a quote inside one (`/'s IP address$/`)
+ * opened a fake string and swallowed the next raw scope in CommandPalette.test.tsx: the gate
+ * reported 3 of that file's 4 raw scopes as the whole set (verifier finding F2-V1). A raw scope is a
+ * call to React's act — `act`, an alias imported for it, or `<a React import>.act` — that is
+ * awaited, chained with `.then`/`.catch`/`.finally`, or handed an async function. The runtime canary
+ * in src/test-setup.ts is the backstop for what syntax cannot see (a sync-looking act() whose
+ * callback returns a promise). */
+describe("every async act() scope in src/ goes through src/test-support/act-turns.ts", () => {
+  const HELPER = "src/test-support/act-turns.ts";
+  const CODE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+  /* Its own walk, over every JS/TS source under src/: the text walk above collects only the
+     extensions this project happens to author today, so a .mts/.cts/.jsx file would slip past it. */
+  const walkCode = (dir: string, out: string[] = []): string[] => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) {
+        if (!SKIP_DIRS.has(name)) walkCode(p, out);
+      } else if (CODE.test(name) && !name.endsWith(".d.ts")) out.push(p);
+    }
+    return out;
+  };
+  const sources = walkCode(SRC).map(rel);
+  const parse = (text: string, name: string): ts.SourceFile =>
+    ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, /x$/.test(name) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const REACT_MODULE = /^(?:react(?:-dom)?(?:\/.*)?|@testing-library\/react)$/;
+  const unparen = (e: ts.Expression): ts.Expression => (ts.isParenthesizedExpression(e) ? unparen(e.expression) : e);
+
+  /** Each raw async act() scope in `text`, as `line:col <call head>`. */
+  const offenders = (text: string, name = "planted.tsx"): string[] => {
+    const sf = parse(text, name);
+    const actNames = new Set(["act"]);
+    const reactNamespaces = new Set(["React"]);
+    for (const st of sf.statements) {
+      if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || st.importClause === undefined) continue;
+      const fromReact = REACT_MODULE.test(st.moduleSpecifier.text);
+      const clause = st.importClause;
+      if (fromReact && clause.name !== undefined) reactNamespaces.add(clause.name.text);
+      const bindings = clause.namedBindings;
+      if (bindings === undefined) continue;
+      if (ts.isNamespaceImport(bindings)) {
+        if (fromReact) reactNamespaces.add(bindings.name.text);
+      } else {
+        for (const el of bindings.elements) if ((el.propertyName ?? el.name).text === "act") actNames.add(el.name.text);
+      }
+    }
+    const isAct = (callee: ts.Expression): boolean => {
+      const e = unparen(callee);
+      if (ts.isIdentifier(e)) return actNames.has(e.text);
+      if (ts.isPropertyAccessExpression(e) && e.name.text === "act") {
+        const obj = unparen(e.expression);
+        return ts.isIdentifier(obj) && reactNamespaces.has(obj.text);
+      }
+      return false;
+    };
+    const isAsyncFn = (a: ts.Expression): boolean =>
+      (ts.isArrowFunction(a) || ts.isFunctionExpression(a)) && (ts.getCombinedModifierFlags(a) & ts.ModifierFlags.Async) !== 0;
+    const found: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && isAct(n.expression)) {
+        let up: ts.Node = n.parent;
+        while (ts.isParenthesizedExpression(up)) up = up.parent;
+        const awaited = ts.isAwaitExpression(up);
+        const chained = ts.isPropertyAccessExpression(up) && /^(?:then|catch|finally)$/.test(up.name.text);
+        if (awaited || chained || n.arguments.some((a) => isAsyncFn(unparen(a)))) {
+          const { line, character } = sf.getLineAndCharacterOfPosition(n.getStart(sf));
+          found.push(`${line + 1}:${character + 1} ${n.getText(sf).replace(/\s+/g, " ").slice(0, 32)}`);
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    return found;
+  };
+
+  /** The module specifiers `text` imports from. */
+  const importsOf = (text: string, name: string): string[] =>
+    parse(text, name)
+      .statements.filter(ts.isImportDeclaration)
+      .map((st) => (ts.isStringLiteral(st.moduleSpecifier) ? st.moduleSpecifier.text : ""));
+  /** Whether `text` calls one of the helper's scope-opening exports. */
+  const callsHelper = (text: string, name: string): boolean => {
+    let yes = false;
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^(?:actAsync|flushTurns)$/.test(n.expression.text)) yes = true;
+      if (!yes) ts.forEachChild(n, visit);
+    };
+    visit(parse(text, name));
+    return yes;
+  };
+
+  it("walked the source tree and found the helper in it", () => {
+    expect(sources.length).toBeGreaterThan(50);
+    expect(sources).toContain(HELPER);
+  });
+
+  it("no file outside the helper opens an async act() scope directly", () => {
+    const found = sources
+      .filter((f) => f !== HELPER)
+      .flatMap((f) => offenders(readFileSync(resolve(ROOT, f), "utf8"), f).map((opened) => `${f}:${opened}`));
+    expect(found, `raw async act() scopes; use actAsync/flushTurns from ${HELPER}:\n${found.join("\n")}`).toEqual([]);
+  });
+
+  it("the files that drive React asynchronously do use the helper (the class is not empty)", () => {
+    const users = sources.filter((f) => f !== HELPER && callsHelper(readFileSync(resolve(ROOT, f), "utf8"), f));
+    expect(users.length, "no test opens an async act() scope through the helper: the scan is reading nothing").toBeGreaterThan(10);
+    /* Every such file imports it, whatever the relative prefix. */
+    const fromHelper = (spec: string): boolean => /^(?:\.{1,2}\/)+(?:[\w-]+\/)*test-support\/act-turns(?:\.ts)?$/.test(spec);
+    expect(users.filter((f) => !importsOf(readFileSync(resolve(ROOT, f), "utf8"), f).some(fromHelper))).toEqual([]);
+  });
+
+  it("the gate is live — it flags every raw shape and passes the helper's", () => {
+    const raw = [
+      "await act(async () => { await flush(); });",
+      "await act(() => store.set(1));",
+      "await React.act(async () => {});",
+      "void act(async () => {});",
+      "const p = act(async () => {});",
+      "const p = act(async function () {});",
+      "act(() => pending).then(done);",
+      "await (act)(() => store.set(1));",
+      /* F2-V1: a quote inside a regex literal before the call. The text stripper this replaced read
+         it as the start of a string and swallowed the scope. */
+      "const re = /^matched this [\\w -]+'s \\w/;\nawait act(async () => {});",
+      "const re = /'s IP address$/;\nconst flush = (): Promise<void> => act(async () => {});",
+      'import { act as flushReact } from "react";\nawait flushReact(async () => {});',
+      'import * as R from "react";\nawait R.act(async () => {});',
+      'import TL from "@testing-library/react";\nawait TL.act(async () => {});',
+    ];
+    /* `export {}` makes each planted text a module, as every real file is: in a script, top-level
+       `await (act)(…)` parses as a call of an identifier named `await`. */
+    for (const r of raw) expect(offenders(`${r}
+export {};`), r).toHaveLength(1);
+    const fine = [
+      "await actAsync(async () => { await flush(); });",
+      "act(() => root.render(ui));",
+      "await flushTurns(10, 3);",
+      "// await act(async () => {}) in a comment",
+      'const s = "await act(async () => {})";',
+      "const re = /await act\\(async/;",
+      "const t = `await act(async () => {}) ${x}`;",
+      /* A journey's own act(), not React's: a member call on something that is not a React import. */
+      "await j.act(page, 0).catch(() => null);",
+    ];
+    for (const f of fine) expect(offenders(`${f}
+export {};`), f).toEqual([]);
+  });
+});
+
+/* ── no test carries a time limit below the configured hang detector (acceptance F2, load) ─────
+ * vitest.config.ts sets `testTimeout`/`hookTimeout` as a HANG detector and states the rule a unit
+ * test lives by: it asserts no wall-clock time. A per-call limit BELOW that detector is a
+ * wall-clock assertion under another name — the test goes red when the host is busy, not when the
+ * code regressed. Three files carried one (`{ timeout: 15000 }` / `{ timeout: 20000 }` on whole-App
+ * mounts in reaim-tab-and-restore, selection-origin and surfaces), and on both loaded F2 runs they
+ * were the only red in the F2-owned files. Limits ABOVE the detector stay each owner's to justify
+ * (the config says so); limits below it are not a choice this suite offers. The set is every test
+ * file the runner collects, found by parsing, and the detector values are read from the config
+ * itself, failing closed if they move out of reach. */
+describe("no test or hook sets a time limit below the configured hang detector", () => {
+  const configText = readFileSync(resolve(ROOT, "vitest.config.ts"), "utf8");
+  const configured = (key: string): number | null => {
+    let found: number | null = null;
+    const visit = (n: ts.Node): void => {
+      if (ts.isPropertyAssignment(n) && ts.isIdentifier(n.name) && n.name.text === key && ts.isNumericLiteral(n.initializer)) {
+        found = Number(n.initializer.text.replace(/_/g, ""));
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(ts.createSourceFile("vitest.config.ts", configText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS));
+    return found;
+  };
+  const TEST_LIMIT = configured("testTimeout");
+  const HOOK_LIMIT = configured("hookTimeout");
+  const TESTS = new Set(["it", "test", "describe", "suite", "bench"]);
+  const HOOKS = new Set(["beforeEach", "afterEach", "beforeAll", "afterAll", "aroundEach", "aroundAll"]);
+
+  /** The runner function a call ultimately names: `it`, `it.each(t)`, `test.skip.each(t)` → `it`/`test`. */
+  const rootName = (callee: ts.Expression): string | null => {
+    let e: ts.Expression = callee;
+    for (;;) {
+      if (ts.isPropertyAccessExpression(e)) e = e.expression;
+      else if (ts.isCallExpression(e)) e = e.expression;
+      else if (ts.isParenthesizedExpression(e)) e = e.expression;
+      else break;
+    }
+    return ts.isIdentifier(e) ? e.text : null;
+  };
+  /** Each limit below the detector in `text`, as `line: <runner> <value>`. */
+  const lowLimits = (text: string, name: string, testLimit: number, hookLimit: number): string[] => {
+    const sf = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, /x$/.test(name) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    /* A limit named by a `const NAME = <number>` in the same file is read through the name. */
+    const consts = new Map<string, number>();
+    const collect = (n: ts.Node): void => {
+      if (ts.isVariableDeclarationList(n) && (n.flags & ts.NodeFlags.Const) !== 0) {
+        for (const d of n.declarations) {
+          if (ts.isIdentifier(d.name) && d.initializer !== undefined && ts.isNumericLiteral(d.initializer)) consts.set(d.name.text, Number(d.initializer.text.replace(/_/g, "")));
+        }
+      }
+      ts.forEachChild(n, collect);
+    };
+    collect(sf);
+    const valueOf = (v: ts.Expression): number | null =>
+      ts.isNumericLiteral(v) ? Number(v.text.replace(/_/g, "")) : ts.isIdentifier(v) ? (consts.get(v.text) ?? null) : null;
+    const out: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n)) {
+        const runner = rootName(n.expression);
+        const limit = runner === null ? null : TESTS.has(runner) ? testLimit : HOOKS.has(runner) ? hookLimit : null;
+        if (limit !== null) {
+          const values: ts.Expression[] = [];
+          for (const a of n.arguments) {
+            /* A positional limit is a number or a name for one; a callback passed by name is skipped below. */
+            if (ts.isNumericLiteral(a) || ts.isIdentifier(a)) values.push(a);
+            else if (ts.isObjectLiteralExpression(a)) {
+              for (const p of a.properties) {
+                if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === "timeout") values.push(p.initializer);
+              }
+            }
+          }
+          for (const v of values) {
+            const line = sf.getLineAndCharacterOfPosition(v.getStart(sf)).line + 1;
+            const value = valueOf(v);
+            /* A `timeout:` this cannot resolve is reported, not assumed fine. A positional identifier that
+               names no number constant is a callback passed by name, not a limit. */
+            if (value === null) {
+              if (v.parent !== n) out.push(`${line}: ${runner} timeout is not a number it can read (${v.getText(sf)})`);
+            } else if (value < limit) out.push(`${line}: ${runner} ${v.getText(sf)} < ${limit}`);
+          }
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    return out;
+  };
+
+  it("read both hang-detector limits from vitest.config.ts", () => {
+    expect(TEST_LIMIT, "vitest.config.ts no longer sets testTimeout as a numeric literal").not.toBeNull();
+    expect(HOOK_LIMIT, "vitest.config.ts no longer sets hookTimeout as a numeric literal").not.toBeNull();
+  });
+
+  it("every collected test file keeps to them", () => {
+    const tests = files.map(rel).filter((f) => /^src\/.*\.test\.tsx?$/.test(f) && !/\/_/.test(f));
+    expect(tests.length, "the walk found the suite").toBeGreaterThan(100);
+    const low = tests.flatMap((f) => lowLimits(readFileSync(resolve(ROOT, f), "utf8"), f, TEST_LIMIT!, HOOK_LIMIT!).map((l) => `${f}:${l}`));
+    expect(low, `per-call limits below the configured hang detector (a wall-clock assertion under load):\n${low.join("\n")}`).toEqual([]);
+  });
+
+  it("the gate is live — it flags every shape of a low limit and passes the rest", () => {
+    const low = [
+      'it("x", { timeout: 15000 }, async () => {});',
+      'it("x", async () => {}, 15_000);',
+      'test.each([1])("x %s", async () => {}, { timeout: 100 });',
+      'it.skip("x", { "timeout": 20000 }, () => {});',
+      'describe("x", { timeout: 1000 }, () => {});',
+      "beforeEach(async () => {}, 5000);",
+      'it("x", { timeout: LIMIT }, () => {});',
+      'const LIMIT = 10_000;\nit("x", { timeout: LIMIT }, () => {});',
+      'const LIMIT = 10_000;\nit("x", async () => {}, LIMIT);',
+    ];
+    for (const l of low) expect(lowLimits(l, "planted.ts", 30_000, 30_000), l).toHaveLength(1);
+    const fine = [
+      'it("x", { timeout: 30000 }, async () => {});',
+      'it("x", async () => {}, 600_000);',
+      "beforeAll(async () => {}, 60_000);",
+      'it("x", async () => { await sleep(10); });',
+      'const t = setTimeout(() => {}, 100);',
+      'run({ timeout: 100 });',
+      'const LIMIT = 300_000;\nit("x", { timeout: LIMIT }, () => {});',
+      'it("x", body);',
+      'const s = `it("x", { timeout: 100 }, () => {})`;',
+    ];
+    for (const f of fine) expect(lowLimits(f, "planted.ts", 30_000, 30_000), f).toEqual([]);
   });
 });
 

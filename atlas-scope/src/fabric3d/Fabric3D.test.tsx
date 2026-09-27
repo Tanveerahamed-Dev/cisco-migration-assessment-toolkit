@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import { act, StrictMode, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import { failureImpact } from "../analysis/blast";
 import { fabric } from "../core/data";
@@ -205,7 +206,7 @@ const press = (el: Element, key: string): void => {
 const settleCanvasCommit = async (): Promise<void> => {
   for (let i = 0; i < 4; i += 1) {
     act(() => flushFrames(1));
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
   }
@@ -1681,7 +1682,7 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
     pointer(canvas, "pointerup");
   };
   const tick = (): Promise<void> =>
-    act(async () => {
+    actAsync(async () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 

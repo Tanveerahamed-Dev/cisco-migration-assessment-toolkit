@@ -11,6 +11,7 @@
  * looking at empty space, and handing a critic a blank frame burns a whole review round.
  */
 import { chromium } from "@playwright/test";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 
 /*
  * --hairline: acceptance C5 item 8 ("1px hairline links"), as a detector rather than a look.
@@ -39,6 +40,7 @@ if (process.argv.includes("--hairline")) {
       const page = await ctx.newPage();
       await page.goto(`${app}/?__atlasScene=1`, { waitUntil: "networkidle", timeout: 120000 });
       await page.waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: 60000 });
+      await awaitPaletteWarm(page);
       await page.evaluate((t) => window.__atlasScene?.setQuality?.(t), tier);
       await page.waitForTimeout(4000);
       await page.waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: 60000 });
@@ -152,6 +154,11 @@ const converged = await page
   .waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: 20000 })
   .then(() => true)
   .catch(() => false);
+/* The palette's pre-warm draws once after convergence (review/palette-warm.mjs): say where it stands. */
+console.log(
+  "palette pre-warm:",
+  converged ? await awaitPaletteWarm(page).catch((e) => `NOT terminal: ${e instanceof Error ? e.message : String(e)}`) : "not waited (the scene never converged)",
+);
 
 const stats = await page.evaluate(() => {
   const s = window.__atlasScene?.stats?.();

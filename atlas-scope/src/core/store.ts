@@ -75,6 +75,14 @@ export interface InvestigationState {
   evidenceTab: EvidenceTab;
   paletteOpen: boolean;
   inspectorOpen: boolean;
+  /**
+   * The evidence drawer is open: Rail B at the drawer rung (1024–1279 px, design brief 2.5), where it
+   * is an overlay toggled by `e` rather than a column. View state, NOT part of the investigation: it
+   * is never written to the link, and the frame (App.tsx) clears it the moment the drawer rung is
+   * left, so crossing back never reopens a drawer the reader did not open there. Held here rather
+   * than in the frame so the one Escape binding (`transient.close`, commands.ts) can close it.
+   */
+  evidenceDrawerOpen: boolean;
   /** Last element to own focus before a modal opened, so focus can be returned exactly. */
   focusReturn: HTMLElement | null;
 
@@ -93,6 +101,7 @@ export interface InvestigationState {
   setEvidenceTab: (t: EvidenceTab) => void;
   setPaletteOpen: (v: boolean, focusReturn?: HTMLElement | null) => void;
   setInspectorOpen: (v: boolean) => void;
+  setEvidenceDrawerOpen: (v: boolean) => void;
   reset: () => void;
   hydrate: (patch: Partial<InvestigationState>) => void;
 }
@@ -116,6 +125,7 @@ export const useInvestigation = create<InvestigationState>((set) => ({
   evidenceTab: "summary",
   paletteOpen: false,
   inspectorOpen: false,
+  evidenceDrawerOpen: false,
   focusReturn: null,
 
   /* Selecting a device keeps the rest of the context: the finding that led here stays selected so
@@ -151,6 +161,7 @@ export const useInvestigation = create<InvestigationState>((set) => ({
   setPaletteOpen: (v, focusReturn) =>
     set((s) => ({ paletteOpen: v, focusReturn: v ? (focusReturn ?? null) : s.focusReturn })),
   setInspectorOpen: (v) => set({ inspectorOpen: v }),
+  setEvidenceDrawerOpen: (v) => set({ evidenceDrawerOpen: v }),
   reset: () =>
     set({
       deviceId: null,

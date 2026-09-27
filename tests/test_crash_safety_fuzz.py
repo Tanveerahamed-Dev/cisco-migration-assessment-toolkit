@@ -480,3 +480,69 @@ def test_guards_are_inert_on_the_real_golden_snapshot():
     assert isinstance(coverage_matrix.compute_coverage_matrix(snap), dict)
     assert isinstance(html.compute_snapshot_delta(snap, snap), dict)
     assert isinstance(html._trend_point(snap), dict)
+
+
+# ---------------------------------------------------------------------------------------------
+# PUNCH-LIST EVIDENCE POINTERS (Atlas Scope SSOT program, A1) -- the producer's NEW ref paths
+# (hosts, ports, indexes, carried upstream refs, carried totals, the interface index) poisoned with
+# every JSON-legal wrong type must DEGRADE to well-formed refs, never raise or publish a
+# non-pointer / non-finite count. Before the hardening, a dict host in any folded row raised
+# `unhashable type` inside the punch-list row constructor.
+# ---------------------------------------------------------------------------------------------
+_POISON = [INF, NAN, "x", {"k": 1}, [1], None, True, BIG]
+
+
+@pytest.mark.parametrize("bad", _POISON, ids=["inf", "nan", "str", "dict", "list", "none", "bool", "bigint"])
+def test_punchlist_evidence_paths_degrade_under_poison(bad):
+    from cisco_toolkit.analyze import (PUNCH_EVIDENCE_BASES, PUNCH_EVIDENCE_REF_KINDS,
+                                       compute_migration_punchlist)
+
+    def _ph(switch, port, risk):
+        return {"switch": switch, "port": port, "risk": risk}
+    rows = compute_migration_punchlist(
+        [{"id": "CL-01", "severity": "High", "title": "t", "detail": "d", "hosts": ["h"],
+          "evidence_refs": [{"kind": "interface", "host": bad, "ref": bad, "role": "subject", "cite": bad},
+                            bad], "evidence_refs_total": bad}],
+        {"h": {"findings": [{"id": bad, "status": "fail"}, bad]}, "h2": bad},
+        {"h": {"undefined": [{"kind": "acl", "name": "n", "context": bad}, bad]}},
+        [_ph(bad, bad, "err-disabled"), _ph("h", bad, "half-duplex"), bad],
+        [{"switch": bad, "vlan": bad, "risk": "single-gateway"}],
+        [{"switch": bad, "severity": "High", "protocol": "OSPF"},
+         {"switch": "h", "severity": "Info", "protocol": "VTP"}, {"switch": "h", "protocol": "IPv6 Routing"}],
+        {"misaligned": [{"root": bad, "vlan": bad, "gateways": bad}], "accidental": [{"host": bad, "vlan": bad}]},
+        [{"switch": bad, "band": "Critical", "deduction_refs": bad}],
+        [],
+        l2={"addressing": {"dup_ip": [{"ip": "1.1.1.1", "where": [(bad, bad, 1), bad]}], "dup_subnet": bad},
+            "fhrp": [{"vid": bad, "status": "review", "members": [{"host": bad, "interface": bad}, bad]}],
+            "trunk_native": [{"a_host": bad, "a_port": bad, "b_host": "h", "b_port": bad}],
+            "link_phy": [{"a_host": "h", "a_port": bad, "b_host": bad, "b_port": "Gi1"}]},
+        hostname_mismatches=[{"inventory": bad, "reported": "r"}],
+        drift=[{"severity": "Low", "devices": bad, "title": "t", "evidence_refs": bad,
+                "evidence_refs_total": bad}],
+        ptp_readiness=[{"devices": [bad], "evidence_refs": [bad]}],
+        media_risks=[{"devices": bad, "evidence_refs": bad}],
+        syslog_intelligence={"detections": [{"host": bad, "kind": bad}, bad]},
+        qos_audit={"findings": [{"host": "(fleet)", "kind": "k", "evidence_basis": "absence"}],
+                   "per_device": [{"host": bad}, bad]},
+        software_risk={"findings": [{"host": bad, "kind": "http-server", "evidence": bad}]},
+        platform_health={"findings": bad},
+        device_dossiers={"per_device": [{"host": bad, "compound": [{"code": bad}]}, bad]},
+        # The VTP / IPv6 receipt folds index the EMBEDDED projection of these receipts; a poisoned
+        # receipt must publish as the unavailable projection and leave the fold's refs well-formed.
+        protocol_assessability=bad,
+        vtp_safety_baseline={"rows": [bad, {"switch": bad}], "coverage": [{"switch": bad}, bad],
+                             "summary": bad},
+        vtp_safety_subject_scope=bad,
+        ipv6_routing_adjacency_baseline={"rows": [bad], "coverage": [{"switch": "h", "protocol": bad}, bad],
+                                         "summary": bad},
+        ipv6_routing_subject_scope=bad,
+        interface_index={"h": bad, bad: ["x"]} if not isinstance(bad, (dict, list)) else bad)
+    for row in rows:
+        assert row["evidence_basis"] in PUNCH_EVIDENCE_BASES
+        assert all(isinstance(d, str) for d in row["devices"])
+        for r in row["evidence_refs"]:
+            assert r["host"] is None or (isinstance(r["host"], str) and r["host"] in row["devices"])
+            assert isinstance(r["ref"], str) and r["ref"].startswith("/")
+            assert isinstance(r["cite"], str) and r["kind"] in PUNCH_EVIDENCE_REF_KINDS
+        if "evidence_refs_total" in row:
+            assert isinstance(row["evidence_refs_total"], int) and row["evidence_refs_total"] <= 2 ** 53

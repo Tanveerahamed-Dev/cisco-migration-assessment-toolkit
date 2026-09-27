@@ -15,6 +15,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
@@ -46,7 +47,7 @@ const click = (el: Element): void => {
 
 /** Let the flush scheduler's timeout run, inside `act` so the resulting render is flushed too. */
 const settle = async (): Promise<void> => {
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise((r) => setTimeout(r, 20));
   });
 };

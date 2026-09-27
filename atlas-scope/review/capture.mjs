@@ -6,7 +6,8 @@
  *   2. `node review/capture.mjs refs`   — capture the quality-bar reference products.
  *   3. `node review/capture.mjs reduced`— the `prefers-reduced-motion` evidence (acceptance D7).
  *   4. `node review/capture.mjs twice`  — capture, re-capture, byte-compare (acceptance F6).
- *   5. `node review/capture.mjs text`   — clipped/broken text, coverage, tab overflow per state (C2, B7, D4);
+ *   5. `node review/capture.mjs text`   — clipped/broken text, coverage, tab overflow, split forms and
+ *                                        controls sliced by a scroll port's edge, per state (C2, B7, D4);
  *                                        its verdict also carries 6 and 7.
  *   6. `node review/capture.mjs wrap`   — the static token-break licence scan of src/ (C2); no server.
  *   7. `node review/capture.mjs selftest` — the text/tab/wrap detectors on fixtures with a known
@@ -22,6 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /* `ATLAS_SHOTS` moves the output root. Two concurrent `twice` runs sharing review/shots/_twice each
@@ -780,6 +782,136 @@ function readFormReach() {
 const READ_FORM_REACH = `(${readFormReach.toString()})()`;
 
 /**
+ * C2: no control is SLICED by the edge of a scroll port in a captured state.
+ *
+ * MEASURED (acceptance report C2, 1440x900, both themes, state 06): the path panel's "Trace a flow |
+ * Verify an intent" strip sat at y65-97 against Rail A's port top at 84 (`scrollTop 19`,
+ * visibleFrac 0.406) and every detector here passed the frame. `readTextFidelity` stops its clip walk
+ * at the first scroll container (scrolled-away content is reachable, by design) and drops a line whose
+ * midline is outside the paint box as "not on screen"; `readTabOverflow` measures the x axis only;
+ * `readFormReach` measures forms only. So a control cut by a scroller's edge was neither "clipped" nor
+ * "on screen" to any of them.
+ *
+ * Per rendered control (a tab, button, link, field, summary, `[role=button|combobox]`) and per
+ * navigation strip (`[role=tablist|toolbar|menubar]`): its box is intersected with the viewport and
+ * with EVERY ancestor that clips on y, scroll containers included. A control wholly outside that
+ * window is absent, not sliced. What remains of a cut control must be PAINTED: a row under a sticky
+ * header inside the same scroller is covered, not sliced, so the remaining strip is hit-tested near
+ * both of its ends and a control is skipped only when every probe lands on something else. Then:
+ *   chrome-sliced          — ANY cut, top or bottom, of navigation (the strip or a control inside
+ *                            it): navigation is whole or absent. Fails the state.
+ *   moved-port-top-slice   — a TOP cut of any control by a port that has been scrolled (an element's
+ *                            scrollTop > 0, or the document's scrollY > 0 for the viewport). No reader
+ *                            scrolls in a captured state, so the app moved that port and stopped
+ *                            mid-control. Fails the state.
+ *   continuation           — a BOTTOM cut of ordinary content: a list running on past its port (the
+ *                            cut-row scrim's case). Informational; never a failure.
+ * Self-contained; serialised into the page.
+ */
+function readScrollEdge() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const out = [];
+  const seen = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) return false;
+      if (/inset\(50%\)/.test(cs.clipPath) || cs.clip === "rect(0px, 0px, 0px, 0px)") return false;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1;
+  };
+  const name = (el) => (el.getAttribute("aria-label") || el.textContent || el.tagName).replace(/\s+/g, " ").trim().slice(0, 40);
+  const sel = (a) => `${a.tagName.toLowerCase()}${a.id ? "#" + a.id : ""}${a.classList.length ? "." + [...a.classList].slice(0, 2).join(".") : ""}`;
+  const CHROME = '[role="tablist"], [role="toolbar"], [role="menubar"]';
+  const CONTROLS = '[role="tab"], button, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [role="combobox"], summary';
+  const SLACK = 1;
+  const docMoved = window.scrollY > 0 ? window.scrollY : false;
+  for (const c of document.querySelectorAll(`${CHROME}, ${CONTROLS}`)) {
+    if (!seen(c)) continue;
+    const b = c.getBoundingClientRect();
+    if (b.bottom <= 0 || b.top >= vh || b.right <= 0 || b.left >= vw) continue; // wholly off screen: absent
+    const chrome = c.matches(CHROME) || c.closest(CHROME) !== null;
+    let T = 0;
+    let B = vh;
+    let topBy = "the viewport";
+    let botBy = "the viewport";
+    let topMoved = docMoved;
+    for (let a = c.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+      const cs = getComputedStyle(a);
+      if (cs.display === "inline" || cs.display === "contents") continue;
+      if (cs.overflowY === "visible") continue;
+      const ab = a.getBoundingClientRect();
+      const t = ab.top + a.clientTop;
+      const bt = t + a.clientHeight;
+      if (t > T) {
+        T = t;
+        topBy = sel(a);
+        topMoved = (cs.overflowY === "auto" || cs.overflowY === "scroll") && a.scrollTop > 0 ? a.scrollTop : false;
+      }
+      if (bt < B) {
+        B = bt;
+        botBy = sel(a);
+      }
+    }
+    const visible = Math.min(b.bottom, B) - Math.max(b.top, T);
+    if (visible <= SLACK) continue; // wholly scrolled away: not on screen, not sliced
+    const cutTop = b.top < T - SLACK;
+    const cutBot = b.bottom > B + SLACK;
+    if (!cutTop && !cutBot) continue;
+    /* What is left must be PAINTED on top to be a slice: probe near both ends of the visible strip. */
+    const lo = Math.max(b.top, T);
+    const hi = Math.min(b.bottom, B);
+    const x = Math.min(Math.max((Math.max(b.left, 0) + Math.min(b.right, vw)) / 2, 0), vw - 1);
+    const painted = [lo + Math.min(1, (hi - lo) / 2), (lo + hi) / 2, hi - Math.min(1, (hi - lo) / 2)].some((y) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit !== null && (c.contains(hit) || hit.contains(c));
+    });
+    if (!painted) continue;
+    const kind = chrome ? "chrome-sliced" : cutTop && topMoved !== false ? "moved-port-top-slice" : "continuation";
+    out.push({
+      kind,
+      control: `${sel(c)} "${name(c)}"`,
+      box: `y${b.top.toFixed(1)}-${b.bottom.toFixed(1)}`,
+      cut: cutTop
+        ? `top by ${topBy} at y${T.toFixed(1)}${topMoved !== false ? ` (scrolled ${topMoved})` : ""}`
+        : `bottom by ${botBy} at y${B.toFixed(1)}`,
+      visibleFrac: +(visible / b.height).toFixed(3),
+    });
+  }
+  return out;
+}
+const READ_SCROLL_EDGE = `(${readScrollEdge.toString()})()`;
+/** The findings that fail a state, as problem lines. `continuation` is informational only. */
+function describeScrollEdge(findings) {
+  return findings
+    .filter((f) => f.kind !== "continuation")
+    .map((f) => (f.kind === "check-failed" ? `scroll-edge check failed: ${f.detail}` : `${f.kind} ${f.control} ${f.box} cut ${f.cut}, visibleFrac ${f.visibleFrac}`));
+}
+
+/**
+ * Wait until no scroll port moves: every scroller's scrollTop and the document's scrollY unchanged
+ * across two consecutive polls (bounded). DOM text stability does not cover a landing deferred past
+ * paint or a reveal a later commit runs, and the scroll-edge check is a question about where the app
+ * LEFT its ports. Returns false when the ports never went quiet within the bound (a state still
+ * scrolling is itself reported).
+ */
+async function awaitScrollQuiet(page, { polls = 30, everyMs = 150 } = {}) {
+  let last = null;
+  for (let i = 0; i < polls; i++) {
+    const sig = await page.evaluate(() => {
+      const parts = [String(window.scrollY)];
+      for (const el of document.querySelectorAll("*")) if (el.scrollTop !== 0) parts.push(`${el.tagName}#${el.id}.${el.className}:${el.scrollTop}`);
+      return parts.join("|");
+    });
+    if (sig === last) return true;
+    last = sig;
+    await page.waitForTimeout(everyMs);
+  }
+  return false;
+}
+
+/**
  * C2: a licence to break a token between two letters is granted in ONE kind of place only.
  *
  * `readTextFidelity` sees a mid-identifier break only where a captured state happens to lay one out
@@ -1112,7 +1244,7 @@ const UNSETTLED_SUFFIX = ".unsettled-diagnostic.png";
  * undefined moment is exactly what F6 cannot compare and F2's delegate cannot certify.
  */
 async function awaitSettledOnScreen(page, t0) {
-  const settle = { settledAtMs: null, waitedMs: null, lastFrameAdvanceMs: null, framesTimed: null };
+  const settle = { settledAtMs: null, waitedMs: null, lastFrameAdvanceMs: null, framesTimed: null, paletteWarm: null };
   let lastFrames = null;
   let lastAdvance = Date.now();
   let st = null;
@@ -1147,6 +1279,13 @@ async function awaitSettledOnScreen(page, t0) {
       return { settle, problems: [`render loop stalled: no new frame for ${SETTLE_STALL_MS} ms while not settled: ${describe()}`] };
     }
     await page.waitForTimeout(SETTLE_POLL_MS);
+  }
+  /* The command palette's pre-warm draws its frame at opacity 0.001 once the scene has converged; a
+     frame shot inside that window can differ by one colour step (review/palette-warm.mjs). */
+  try {
+    settle.paletteWarm = await awaitPaletteWarm(page);
+  } catch (err) {
+    return { settle, problems: [err instanceof Error ? err.message : String(err)] };
   }
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   const again = await page.evaluate(READ_SETTLE);
@@ -1240,6 +1379,13 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
         for (const c of coverage) problems.push(`coverage "${c.label}" ${c.problem}`);
         const tabOverflow = await page.evaluate(READ_TAB_OVERFLOW).catch((e) => [`tab overflow check failed: ${String(e).slice(0, 160)}`]);
         problems.push(...tabOverflow);
+        /* The y axis of the same question, and forms: every frame this mode shoots answers the same
+           C2 checks `text` does, so a width both modes cover cannot pass here and fail there. */
+        const formReach = await page.evaluate(READ_FORM_REACH).catch((e) => [`form reach check failed: ${String(e).slice(0, 160)}`]);
+        problems.push(...formReach);
+        if (prepareError === null && !(await awaitScrollQuiet(page).catch(() => false))) problems.push("scroll ports never went quiet: a port was still moving when the frame was checked");
+        const scrollEdge = await page.evaluate(READ_SCROLL_EDGE).catch((e) => [{ kind: "check-failed", detail: String(e).slice(0, 160) }]);
+        problems.push(...describeScrollEdge(scrollEdge));
         if (prepareError !== null) problems.push(`could not prepare the page in 3 attempts: ${prepareError}`);
         if (attempts > 0) problems.push(`the page reloaded under the harness; captured on attempt ${attempts + 1}`);
         if (consoleErrors.length) problems.push(`console: ${consoleErrors.slice(0, 3).join(" | ")}`);
@@ -1596,9 +1742,13 @@ async function captureReduced() {
  * shoots; this mode is not a substitute for that, it is the fast way to reach the same verdict.
  * Exit 3 on any finding.
  */
+/* One width inside every band of the layout ladder (src/app/shell.css: 48rem, 64rem, 80rem, 100rem):
+   < 768, 768-1023, 1024-1279, 1280-1599 and >= 1600. 1024 was the one band with no width here, and it
+   is where the evidence rail becomes a drawer — a different layout, not a narrower one. */
 const TEXT_VIEWPORTS = [
   { id: "390", width: 390, height: 844 },
   { id: "768", width: 768, height: 1024 },
+  { id: "1024", width: 1024, height: 768 },
   { id: "1440", width: 1440, height: 900 },
   { id: "1920", width: 1920, height: 1080 },
 ];
@@ -1625,6 +1775,8 @@ async function checkText() {
         let contrast = [];
         let tabOverflow = [];
         let formReach = [];
+        let scrollEdge = [];
+        let quiet = true;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             await page.goto(url, { waitUntil: "networkidle" });
@@ -1647,10 +1799,14 @@ async function checkText() {
               last = len;
               await page.waitForTimeout(250);
             }
+            /* ...and for every scroll port to stop moving: a landing deferred past paint or a
+               reveal run by a later commit changes no text but decides what a port's edge cuts. */
+            quiet = await awaitScrollQuiet(page);
             findings = await page.evaluate(READ_TEXT_FIDELITY);
             coverage = await page.evaluate(READ_COVERAGE_VISIBILITY);
             tabOverflow = await page.evaluate(READ_TAB_OVERFLOW);
             formReach = await page.evaluate(READ_FORM_REACH);
+            scrollEdge = await page.evaluate(READ_SCROLL_EDGE);
             if (st.contrastOf) {
               contrast = await page.evaluate(`(${readContrast.toString()})(${JSON.stringify(st.contrastOf)})`);
             }
@@ -1660,7 +1816,14 @@ async function checkText() {
           }
         }
         checked++;
-        const problems = [...describeTextFindings(findings), ...coverage.map((c) => `coverage "${c.label}" ${c.problem}`), ...tabOverflow, ...formReach];
+        const problems = [
+          ...describeTextFindings(findings),
+          ...coverage.map((c) => `coverage "${c.label}" ${c.problem}`),
+          ...tabOverflow,
+          ...formReach,
+          ...describeScrollEdge(scrollEdge),
+          ...(quiet ? [] : ["scroll ports never went quiet: a port was still moving when the state was checked"]),
+        ];
         for (const c of contrast) {
           if (c.error) problems.push(`contrast ${c.selector}: ${c.error}`);
           else if (c.backgroundImage) problems.push(`contrast "${c.text}" not measured: background image on ${c.backgroundImage}`);
@@ -1690,7 +1853,7 @@ async function checkText() {
   const live = await selfTest();
   const verdict = checked === 0 ? "NOT ESTABLISHED" : failures.length || !licences ? "FAIL" : !live ? "NOT ESTABLISHED" : "PASS";
   console.log(
-    `${verdict}  text  ${checked - failures.length} of ${checked} states free of clipped/broken text, with coverage wholly visible, no tab hidden off its strip and no form split by its scroll port` +
+    `${verdict}  text  ${checked - failures.length} of ${checked} states free of clipped/broken text, with coverage wholly visible, no tab hidden off its strip, no form split by its scroll port and no control sliced by a scroll port's edge` +
       `; wrap licences ${licences ? "all justified" : "UNJUSTIFIED (above)"}; detectors ${live ? "live on every known case" : "NOT LIVE (above)"}`,
   );
   if (verdict !== "PASS") process.exitCode = 3;
@@ -1844,6 +2007,55 @@ const SELFTEST_FORM_CASES = [
   },
 ];
 
+/* Controls at a scroll port's edge, with a known answer each. Scroll positions are set by an inline
+   script, which `setContent` executes, so each port is in the state an app would have left it in. The
+   first positive is the 2026-09-26 C2 state 06 in miniature (an outer rail scrolled 19 px slices the
+   panel's tab strip); the negatives pin what must NOT be reported: a list running on past its port,
+   a strip scrolled wholly away, a strip whole inside a scrolled port, and a row under a sticky header
+   (covered, not sliced). */
+const EDGE_TABS = `<div role="tablist" aria-label="Mode" style="display:flex;height:32px;flex:none"><button role="tab" style="height:32px">Trace a flow</button><button role="tab" style="height:32px">Verify an intent</button></div>`;
+const scrolledTo = (id, y) => `<script>document.getElementById("${id}").scrollTop=${y}</script>`;
+const SELFTEST_SCROLL_EDGE_CASES = [
+  {
+    name: "state 06 in miniature: an outer rail scrolled 19 px slices the panel's tab strip",
+    html: `<nav id="r" style="height:300px;overflow-y:scroll"><section style="display:flex;flex-direction:column;height:260px">${EDGE_TABS}<div style="flex:1;overflow-y:auto"><div style="height:900px">answer</div></div></section><div style="height:400px">queue</div></nav>${scrolledTo("r", 19)}`,
+    want: /^chrome-sliced .*"Trace a flow".*top by nav#r .*\(scrolled 19\)/,
+  },
+  {
+    name: "a tab strip cut by the bottom edge of an unmoved port is sliced",
+    html: `<div style="height:100px;overflow-y:auto"><div style="height:84px"></div>${EDGE_TABS}</div>`,
+    want: /^chrome-sliced .*bottom by/,
+  },
+  {
+    name: "a toolbar cut by a pane that clips without scrolling is sliced",
+    html: `<div style="height:100px;overflow:hidden"><div style="height:80px"></div><div role="toolbar" aria-label="Tools" style="height:40px"><button style="height:40px">Zoom</button></div></div>`,
+    want: /^chrome-sliced .*"Tools"/,
+  },
+  {
+    name: "a control top-sliced by a port the app moved",
+    html: `<div id="p" style="height:100px;overflow-y:auto">${"<button style='display:block;height:24px'>cite</button>".repeat(20)}</div>${scrolledTo("p", 10)}`,
+    want: /^moved-port-top-slice .*"cite".*\(scrolled 10\)/,
+  },
+  {
+    name: "a control top-sliced by the viewport of a document the app scrolled",
+    html: `${"<button style='display:block;height:24px;margin:0'>row</button>".repeat(80)}<script>scrollTo(0, 30)</script>`,
+    want: /^moved-port-top-slice .*"row".*top by the viewport .*\(scrolled 30\)/,
+  },
+  { name: "a list running past the bottom of its port is continuation, not a finding", html: `<div style="height:100px;overflow-y:auto">${"<button style='display:block;height:24px'>row</button>".repeat(20)}</div>`, want: null },
+  { name: "a tab strip scrolled wholly out of view is absent, not sliced", html: `<div id="p" style="height:100px;overflow-y:auto">${EDGE_TABS}<div style="height:600px"></div></div>${scrolledTo("p", 200)}`, want: null },
+  { name: "a tab strip wholly inside a scrolled port is not sliced", html: `<div id="p" style="height:200px;overflow-y:auto"><div style="height:40px"></div>${EDGE_TABS}<div style="height:600px"></div></div>${scrolledTo("p", 8)}`, want: null },
+  {
+    name: "a row under a sticky header in a scrolled grid is covered, not sliced",
+    html: `<div id="g" style="height:120px;overflow-y:auto"><div style="position:sticky;top:0;height:30px;background:#fff;z-index:1">head</div>${"<button style='display:block;height:24px'>row</button>".repeat(20)}</div>${scrolledTo("g", 12)}`,
+    want: null,
+  },
+  {
+    name: "a sticky tab strip inside a scrolled port stays whole",
+    html: `<div id="p" style="height:200px;overflow-y:auto"><div style="position:sticky;top:0;background:#fff;z-index:1">${EDGE_TABS}</div><div style="height:900px"></div></div>${scrolledTo("p", 19)}`,
+    want: null,
+  },
+];
+
 /* Stylesheets and modules with a known set of licences. Each BAD marker is a line the scan must
    name; everything else must pass. */
 const SELFTEST_WRAP_FIXTURES = {
@@ -1908,6 +2120,15 @@ async function selfTest() {
       problems.push(`${c.name}: expected ${c.want === null ? "no form finding" : c.want}, got ${said}`);
     }
   }
+  for (const c of SELFTEST_SCROLL_EDGE_CASES) {
+    await page.setContent(shell(c.html));
+    const findings = describeScrollEdge(await page.evaluate(READ_SCROLL_EDGE));
+    ran++;
+    const said = findings.join(" | ") || "nothing";
+    if (c.want === null ? findings.length > 0 : !findings.some((f) => c.want.test(f))) {
+      problems.push(`${c.name}: expected ${c.want === null ? "no scroll-edge finding" : c.want}, got ${said}`);
+    }
+  }
   await browser.close();
 
   const dir = mkdtempSync(join(tmpdir(), "atlas-wrap-selftest-"));
@@ -1934,7 +2155,7 @@ async function selfTest() {
 
   for (const p of problems) console.log(`  BAD  ${p}`);
   const verdict = ran === 0 ? "NOT ESTABLISHED" : problems.length ? "FAIL" : "PASS";
-  console.log(`${verdict}  selftest  ${ran - problems.length} of ${ran} detector cases gave their known answer (text breaks, tab overflow, split forms, wrap licences)`);
+  console.log(`${verdict}  selftest  ${ran - problems.length} of ${ran} detector cases gave their known answer (text breaks, tab overflow, split forms, scroll-edge slices, wrap licences)`);
   return verdict === "PASS";
 }
 

@@ -1,7 +1,7 @@
 /**
  * Atlas Scope domain model — the contract every surface builds against.
  *
- * These types mirror `tools/compile-snapshot.mjs` exactly. The rule that makes the whole app
+ * These types mirror `tools/lib/compile-model.mjs` (the one compiler) exactly. The rule that makes the whole app
  * trustworthy: `null` means NOT OBSERVED. It never means zero, healthy, or absent-therefore-fine.
  * Any renderer that turns a `null` into a green tick is a coverage-honesty defect.
  */
@@ -146,7 +146,58 @@ export interface Finding {
    * before the field existed stay valid; the compiler always emits it.
    */
   sourceCommand?: string | null;
+  /**
+   * Why the finding carries its severity (`punchlist[i].severity_basis`), and how confident its
+   * evidence is (`evidence_confidence`) — the producer's own words VERBATIM (even "N/A", "-" or ""), or
+   * null only where the producer did not emit the key. The engine writes both on every Multicast/Media
+   * row, with a non-empty "NOT published" sentence when it has no basis: that sentence is a DISCLOSURE,
+   * never a measurement. Optional so fixtures built before the fields existed stay valid; the compiler
+   * always emits them. Not yet rendered.
+   */
+  severityBasis?: string | null;
+  evidenceConfidence?: string | null;
+  /**
+   * The per-finding evidence contract (`evidence_basis`, `evidence_refs`, `evidence_refs_total`).
+   * `null` = the producer did not emit the key (an older snapshot) — never "no evidence". Every ref's
+   * `ref` is an RFC 6901 JSON Pointer that the compiler RESOLVED against this model's own source
+   * snapshot to a NON-NULL value; a pointer that did not stopped the build. `evidenceRefsTotal` is how many refs the
+   * producer had before it capped the list, so a capped list is never read as complete. Not yet rendered.
+   */
+  evidenceBasis?: EvidenceBasis | null;
+  evidenceRefs?: EvidenceRef[] | null;
+  evidenceRefsTotal?: number | null;
   cite: Cite;
+}
+
+/** What a finding's evidence rests on: a record, an analysis row, or an observed absence. */
+export const EVIDENCE_BASES = ["record", "row", "absence"] as const;
+export type EvidenceBasis = (typeof EVIDENCE_BASES)[number];
+/** What kind of record an evidence ref points at. The compiler refuses any other kind. */
+export const EVIDENCE_REF_KINDS = [
+  "interface",
+  "acl_line",
+  "route",
+  "config_text",
+  "device_fact",
+  "analysis_row",
+  "adjacency",
+  "absence_witness",
+] as const;
+export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
+/** How the pointed-at record relates to the finding. */
+export const EVIDENCE_REF_ROLES = ["derived_from", "subject", "witness"] as const;
+export type EvidenceRefRole = (typeof EVIDENCE_REF_ROLES)[number];
+
+/** One pointer from a finding to the snapshot record it rests on (`punchlist[i].evidence_refs[k]`). */
+export interface EvidenceRef {
+  kind: EvidenceRefKind;
+  /** The device the record belongs to, or null for a fabric-wide record. */
+  host: string | null;
+  /** An RFC 6901 JSON Pointer into the SOURCE snapshot, resolved at compile time. */
+  ref: string;
+  role: EvidenceRefRole;
+  /** The producer's short human label for the record. */
+  cite: string;
 }
 
 export interface CrossLayerFinding {
@@ -326,39 +377,75 @@ export interface Coverage {
   cite: Cite;
 }
 
+/** The byte form `sourceSha256` is taken over. */
+export type SourceDigestForm = "lf-normalised" | "assesshub-store-blob";
+/** Where the source bytes came from; it decides what "the exact bytes" are (tools/lib/compile-model.mjs `bindingPreimages`). */
+export type SourceOrigin = "repository-file" | "external-file" | "assesshub-store";
+
 /**
- * What binds a compiled file to the snapshot it was read from. Written by every `tools/compile-*.mjs`
- * through `tools/source-binding.mjs`, the one owner of the rule.
+ * What binds a compiled file to the snapshot it was read from. Written by the one compiler
+ * (`tools/lib/compile-model.mjs` `bindSourceWith`); in Node the hashes come from `tools/source-binding.mjs`.
  *
- * `sourceSha256` and `sourceBytes` are taken over the LF-NORMALISED bytes of `source` (every CR LF
- * read as LF, nothing else changed) — the form Git stores, so the digest equals
- * `git cat-file blob HEAD:<source> | sha256sum` and is the same from a CRLF or an LF checkout.
- * `sourceDigestForm` names that form; a digest without its form does not say which bytes it binds.
+ * - `source` / `sourceOrigin`: WHICH snapshot — a repository-relative path ("repository-file": a file
+ *   Git TRACKS in this repository), a bare file name ("external-file": any other file, including an
+ *   untracked or ignored one inside the repository), or `assesshub:snapshot/<id>` ("assesshub-store").
+ *   Never an absolute path. (Where Git does not own the tree — a copied package — containment decides.)
+ * - `sourceSha256` / `sourceBytes` / `sourceDigestForm`: the digest over the LF-NORMALISED bytes (every
+ *   CR LF read as LF, nothing else changed) — the form Git stores, so it equals
+ *   `git cat-file blob HEAD:<source> | sha256sum` and is the same from a CRLF or an LF checkout (O15);
+ *   or, form "assesshub-store-blob", over an AssessHub stored blob exactly. A digest without its form
+ *   does not say which bytes it binds.
+ * - `sourceExactSha256`: `"sha256:" + hex` over the exact bytes as the source's store holds them — the
+ *   ENGINE's own binding form (cisco_toolkit/protocol_assurance.py), so a model joins an engine receipt.
+ *   The store is Git for a "repository-file" (the blob, i.e. the LF form, never a CRLF checkout's
+ *   rendering of it — O15), the file itself for an "external-file" (its bytes as read), and the stored
+ *   blob for "assesshub-store". So for a repository file it equals `"sha256:" + sourceSha256`.
+ * - `sourceGitBlob`: the Git blob id of the LF-normalised bytes (`git hash-object`; for an unmodified
+ *   tracked source, `git rev-parse HEAD:<source>`).
  */
 export interface SourceBinding {
   source: string;
-  sourceDigestForm: "lf-normalised";
+  sourceOrigin: SourceOrigin;
+  sourceDigestForm: SourceDigestForm;
   sourceSha256: string;
   sourceBytes: number;
+  sourceExactSha256: string;
+  sourceGitBlob: string;
 }
 
 /**
- * Whether a sidecar's `meta` binds the SAME source bytes as `bound`. Every binding field must agree —
- * the form included, and a sidecar that states no form fails — so a digest taken over other bytes
- * (another snapshot, or the same snapshot in another byte form) can never be read as this build's.
+ * Every key of SourceBinding, in the order the compiler writes them. `SourceBindingKeysCoverTheType`
+ * below fails to compile if a key is added to SourceBinding and not here, so `sameSourceBinding` —
+ * which iterates this list — can never silently skip a binding field.
+ */
+export const SOURCE_BINDING_KEYS = [
+  "source",
+  "sourceOrigin",
+  "sourceDigestForm",
+  "sourceSha256",
+  "sourceBytes",
+  "sourceExactSha256",
+  "sourceGitBlob",
+] as const satisfies readonly (keyof SourceBinding)[];
+type AssertNever<T extends never> = T;
+/** Compile-time proof that SOURCE_BINDING_KEYS covers SourceBinding. */
+export type SourceBindingKeysCoverTheType = AssertNever<Exclude<keyof SourceBinding, (typeof SOURCE_BINDING_KEYS)[number]>>;
+
+/**
+ * Whether a sidecar's `meta` binds the SAME source bytes as `bound`. EVERY binding key must agree —
+ * the form and the origin included, and a sidecar that omits any key fails — so a digest taken over
+ * other bytes (another snapshot, or the same snapshot in another byte form) can never be read as this
+ * build's.
  */
 export function sameSourceBinding(meta: Partial<Record<keyof SourceBinding, unknown>> | null | undefined, bound: SourceBinding): boolean {
   if (meta === null || meta === undefined) return false;
-  return (
-    meta.source === bound.source &&
-    meta.sourceDigestForm === bound.sourceDigestForm &&
-    meta.sourceSha256 === bound.sourceSha256 &&
-    meta.sourceBytes === bound.sourceBytes
-  );
+  return SOURCE_BINDING_KEYS.every((k) => meta[k] !== undefined && meta[k] === bound[k]);
 }
 
 export interface SnapshotMeta extends SourceBinding {
   schema: string | null;
+  /** The schema a legacy (schema-less) snapshot was READ AS under --allow-legacy; null when the snapshot stated its own. */
+  schemaAssumed: string | null;
   scriptVersion: string | null;
   collectedAt: string | null;
   generatedAt: string | null;

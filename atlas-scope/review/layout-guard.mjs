@@ -45,6 +45,7 @@
  */
 import { readFileSync } from "node:fs";
 import { chromium } from "@playwright/test";
+import ts from "typescript";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4180";
 /** A flow that really traces on the shipped snapshot, carried in the URL envelope. */
@@ -67,12 +68,44 @@ const SNAP = process.env["ATLAS_SNAP"] ?? snapshotTag();
 const FLOW = encodeURIComponent("10.0.10.50>10.0.30.10>tcp>3389");
 /** The grid's own floor: its sticky header plus six rows. Fewer than this is a blanked queue. */
 const MIN_HITTABLE_ROWS = 4;
+/* THE DRAWER RUNG, READ FROM ITS OWNER (2026-09-26). Invariants 1-3 ran at 1920/1600/1440/1280 only —
+   every one of them at or above the reference rung — so the drawer rung (1024-1279 px), where Rail B
+   is an overlay over the stage, was never checked: not the page scroll, not the queue, and not one
+   evidence-rail citation. Its width is DERIVED from `LADDER_REM` in src/app/surfaces.tsx (parsed with
+   the TypeScript compiler, never restated): the rung's midpoint. There the drawer is OPENED with `e`
+   before the citation probe, as a reader opens it — a closed drawer is not an evidence rail anyone
+   can click in, and probing it would measure `visibility: hidden`, not the layout. */
+const readLadderRem = () => {
+  const sf = ts.createSourceFile("surfaces.tsx", readFileSync(new URL("../src/app/surfaces.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let found = null;
+  const visit = (n) => {
+    if (found === null && ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "LADDER_REM" && n.initializer) {
+      let init = n.initializer;
+      while (ts.isAsExpression(init) || ts.isSatisfiesExpression(init) || ts.isParenthesizedExpression(init)) init = init.expression;
+      if (ts.isObjectLiteralExpression(init)) {
+        found = {};
+        for (const p of init.properties) if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ts.isNumericLiteral(p.initializer)) found[p.name.text] = Number(p.initializer.text);
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  if (found === null || !Number.isFinite(found.drawer) || !Number.isFinite(found.reference)) {
+    throw new Error("layout-guard: LADDER_REM (drawer, reference) could not be read from src/app/surfaces.tsx");
+  }
+  return found;
+};
+const LADDER = readLadderRem();
+/** The drawer rung's midpoint, in px (a media query's rem is 16 px). */
+const DRAWER_W = Math.round(((LADDER.drawer + LADDER.reference) / 2) * 16);
 const VIEWPORTS = [
   [1920, 1080],
   [1600, 1000],
   [1440, 900],
   [1280, 800],
+  [DRAWER_W, 800],
 ];
+const isDrawerRung = (w) => w >= LADDER.drawer * 16 && w < LADDER.reference * 16;
 
 const probe = () => {
   const de = document.documentElement;
@@ -219,8 +252,17 @@ for (const [w, h] of ONLY === "hop" ? [] : VIEWPORTS) {
     await page.goto(`${APP}/?v=1&snap=${SNAP}&s=evidence&d=${encodeURIComponent(d)}`, { waitUntil: "load" });
     await page.waitForSelector("#rail-evidence button.ui-cite", { timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(1000);
-    const c = await page.evaluate(citeProbe);
     const at = `${w}x${h} / ${d} summary`;
+    if (isDrawerRung(w)) {
+      await page.keyboard.press("e");
+      await page.waitForTimeout(600);
+      const open = await page.evaluate(() => document.querySelector(".app")?.getAttribute("data-drawer") === "open");
+      if (!open) {
+        failures.push(`${at}: \`e\` did not open the evidence drawer at the drawer rung, so its citations could not be checked.`);
+        continue;
+      }
+    }
+    const c = await page.evaluate(citeProbe);
     if (c.checked === 0) failures.push(`${at}: no citation rendered in the evidence rail, so it could not be checked.`);
     for (const b of c.blocked) failures.push(`${at}: citation not clickable — ${b}.`);
     console.log(`${at}: ${c.checked - c.blocked.length}/${c.checked} citations hit-testable`);

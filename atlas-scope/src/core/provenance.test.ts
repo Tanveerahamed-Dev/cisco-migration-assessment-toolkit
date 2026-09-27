@@ -44,10 +44,15 @@ const PKG = resolve(HERE, "..", ".."); // atlas-scope/
 const COMPILER = resolve(PKG, "tools", "compile-snapshot.mjs");
 const MODEL = resolve(PKG, "src", "data", "fabric.json");
 
-/* The same resolution the compiler performs, written independently: `resolve(HERE, "../../webapp/
-   sample_data/sample_fleet.snapshot.json")` from `tools/`. Stated here so a change to either side
-   shows up as a disagreement rather than as both moving together. */
-const SOURCE = resolve(PKG, "..", "webapp", "sample_data", "sample_fleet.snapshot.json");
+/* WHICH snapshot the tracked model is compiled from. The TRACKED compiled files may only ever be the
+   sample's: they are committed, and compiling anything else into them would put client data one
+   `git add` from the history (tools/lib/compile-io.mjs refuses it). That scoping is asserted in the
+   first test below, against this literal, written independently of `tools/source-binding.mjs
+   SOURCE_REL` so a change to either side shows up as a disagreement rather than both moving together.
+   Everything else in this file reads the dataset under test — the file `meta.source` names — rather
+   than this path (R7). */
+const SAMPLE_REL = "webapp/sample_data/sample_fleet.snapshot.json";
+const REPO = resolve(PKG, "..");
 
 const sha256 = (buf: Buffer): string => createHash("sha256").update(buf).digest("hex");
 
@@ -65,10 +70,13 @@ const crlfOf = (buf: Buffer): Buffer => Buffer.from(lfNormalised(buf).toString("
 
 const meta = fabric.meta as {
   source: string;
+  sourceOrigin: string;
   sourceBytes: number;
   sourceSha256: string;
   sourceDigestForm: string;
 };
+/* The dataset under test: the file the shipped model names, resolved from the repository root. */
+const SOURCE = resolve(REPO, meta.source);
 
 const sandboxes: string[] = [];
 afterAll(() => {
@@ -94,10 +102,10 @@ function compileInSandbox(sourceBytes: Buffer): Buffer {
   const root = mkdtempSync(join(tmpdir(), "atlas-provenance-"));
   sandboxes.push(root);
   mkdirSync(join(root, "atlas-scope", "tools"), { recursive: true });
-  mkdirSync(join(root, "webapp", "sample_data"), { recursive: true });
+  mkdirSync(dirname(join(root, meta.source)), { recursive: true });
   cpSync(COMPILER, join(root, "atlas-scope", "tools", "compile-snapshot.mjs"));
-  for (const helper of HELPERS) cpSync(join(TOOLS, helper), join(root, "atlas-scope", "tools", helper));
-  writeFileSync(join(root, "webapp", "sample_data", "sample_fleet.snapshot.json"), sourceBytes);
+  for (const helper of HELPERS) cpSync(join(TOOLS, helper), join(root, "atlas-scope", "tools", helper), { recursive: true });
+  writeFileSync(join(root, meta.source), sourceBytes);
   execFileSync(process.execPath, [join(root, "atlas-scope", "tools", "compile-snapshot.mjs")], { stdio: "pipe" });
   const out = readFileSync(join(root, "atlas-scope", "src", "data", "fabric.json"));
   compiled.set(key, out);
@@ -132,8 +140,9 @@ describe("the source binding the whole product displays", () => {
         `Inspector's "recompile from a file with that digest and you reproduce this model" is\n` +
         `unverifiable. That is a failure, not a skip.`,
     ).toBe(true);
-    // ...and the model names the same file, relatively.
-    expect(meta.source).toBe("webapp/sample_data/sample_fleet.snapshot.json");
+    // ...and the TRACKED model names the sample, relatively, as a repository file — never client data.
+    expect(meta.source).toBe(SAMPLE_REL);
+    expect(meta.sourceOrigin).toBe("repository-file");
   });
 
   it("recomputes the displayed sha256 and byte length from the source bytes and gets the same answer", () => {
@@ -283,12 +292,13 @@ function runCompiler(name: string, sourceBytes: Buffer): Map<string, Buffer> {
     }
   };
   mirror(SRC_DIR, join(pkg, "src"));
-  mkdirSync(join(root, "webapp", "sample_data"), { recursive: true });
+  mkdirSync(dirname(join(root, meta.source)), { recursive: true });
   cpSync(join(TOOLS, name), join(pkg, "tools", name));
-  // The shared modules a compiler may import (the source-binding rule lives in one), never the
-  // OTHER compilers — each compiler's outputs are attributed to it alone.
-  for (const helper of HELPERS) cpSync(join(TOOLS, helper), join(pkg, "tools", helper));
-  writeFileSync(join(root, "webapp", "sample_data", "sample_fleet.snapshot.json"), sourceBytes);
+  // The shared modules a compiler may import (the source-binding rule lives in one; the one compiler
+  // and its I/O live under lib/), never the OTHER compilers — each compiler's outputs are attributed
+  // to it alone.
+  for (const helper of HELPERS) cpSync(join(TOOLS, helper), join(pkg, "tools", helper), { recursive: true });
+  writeFileSync(join(root, meta.source), sourceBytes);
   execFileSync(process.execPath, [join(pkg, "tools", name)], { stdio: "pipe" });
   const written = new Map<string, Buffer>();
   for (const f of walk(join(pkg, "src"), () => true)) written.set(posix(relative(join(pkg, "src"), f)), readFileSync(f));
@@ -296,7 +306,31 @@ function runCompiler(name: string, sourceBytes: Buffer): Map<string, Buffer> {
 }
 
 const COMPILERS = readdirSync(TOOLS).filter((f) => /^compile-.+\.mjs$/.test(f)).sort();
-const HELPERS = readdirSync(TOOLS).filter((f) => f.endsWith(".mjs") && !COMPILERS.includes(f)).sort();
+/* Everything in tools/ that is not a compiler: the top-level shared modules and, since 2026-09-26,
+   the lib/ directory that holds the one compiler (compile-model.mjs), its validator and its I/O.
+   Found by listing, not named, so a new shared module is copied into every sandbox automatically. */
+const HELPERS = readdirSync(TOOLS)
+  .filter((f) => !COMPILERS.includes(f) && (f.endsWith(".mjs") || statSync(join(TOOLS, f)).isDirectory()))
+  .sort();
+
+/** Every .mjs under tools/, recursively, as tools-relative POSIX paths. */
+const TOOL_MODULES = walk(TOOLS, (p) => p.endsWith(".mjs")).map((p) => posix(relative(TOOLS, p))).sort();
+
+/** The relative-import closure of one tools module (static `import`/`export … from` specifiers). */
+function importClosure(rel: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [rel];
+  while (queue.length > 0) {
+    const cur = queue.pop()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    const text = readFileSync(join(TOOLS, cur), "utf8");
+    for (const m of text.matchAll(/(?:import|export)\s[^;]*?from\s+["'](\.{1,2}\/[^"']+)["']/g)) {
+      queue.push(posix(relative(TOOLS, resolve(dirname(join(TOOLS, cur)), m[1]!))));
+    }
+  }
+  return seen;
+}
 
 /** Every JSON under src/ that claims a source binding — the denominator, found by content. */
 const SOURCED = walk(SRC_DIR, (p) => p.endsWith(".json"))
@@ -340,12 +374,25 @@ describe("every compiled data file is reproduced by its compiler from the named 
 
   it.each(COMPILERS)("%s takes its binding from tools/source-binding.mjs and hashes nothing itself", (name) => {
     /* One rule, not N copies of it: a compiler that hashes the source on its own can drift back to
-       the raw working-tree bytes without any other test noticing until a CRLF host compiles it. */
+       the raw working-tree bytes without any other test noticing until a CRLF host compiles it.
+       AMENDED 2026-09-26 (deliberately, and made stricter, not looser): the compilers became thin
+       wrappers over tools/lib/compile-io.mjs, which is what imports source-binding.mjs. So the rule is
+       now stated over the IMPORT GRAPH — every compiler must REACH source-binding.mjs — and the
+       no-hashing rule covers EVERY module under tools/ except source-binding.mjs itself (the test
+       below), where it used to cover only the files named compile-*.mjs. */
     const text = readFileSync(join(TOOLS, name), "utf8");
     expect(HELPERS, "the shared binding module must exist beside the compilers").toContain("source-binding.mjs");
-    expect(text, `tools/${name} must import the shared binding rule`).toMatch(/from\s+["']\.\/source-binding\.mjs["']/);
+    expect([...importClosure(name)], `tools/${name} must reach the shared binding rule through its imports`).toContain("source-binding.mjs");
     expect(text, `tools/${name} must not hash anything itself`).not.toMatch(/["']node:crypto["']|\bcreateHash\s*\(/);
     expect(text, `tools/${name} must not read the snapshot itself`).not.toMatch(/sample_fleet\.snapshot\.json["']/);
+  });
+
+  it("no module under tools/ hashes anything except tools/source-binding.mjs", () => {
+    expect(TOOL_MODULES, "the walk sees the one compiler and the binding module (not vacuous)").toEqual(
+      expect.arrayContaining(["lib/compile-model.mjs", "lib/compile-io.mjs", "source-binding.mjs"]),
+    );
+    const hashing = TOOL_MODULES.filter((rel) => /["']node:crypto["']|\bcreateHash\s*\(/.test(readFileSync(join(TOOLS, rel), "utf8")));
+    expect(hashing).toEqual(["source-binding.mjs"]);
   });
 
   it.each(COMPILERS)("%s writes the same bytes from a CRLF checkout as from an LF one (O15)", (name) => {

@@ -34,13 +34,30 @@
  *     CORRECTNESS; the latency budget is measured against the running application by
  *     `review/measure-inp.mjs` and `review/audit-e5-sweep.mjs`, which label themselves LABORATORY and
  *     gate acceptance on a quiet host.
+ *   - A timeout must cost ONE red, not a file. Vitest does not stop a body that times out: it
+ *     rejects the test and aborts the test's `signal`, and the body keeps running. At 85-100 % host
+ *     CPU (acceptance report F2) one 37 s timeout in `self-removing-focus.test.tsx` left its body
+ *     parked in an async `act()` scope that closed out of order with the next case's; React's
+ *     process-global act depth stuck at 1 and nothing committed again, so 277 later cases failed
+ *     blaming themselves. The class is any async act() scope that outlives its test, and it is closed
+ *     for every test, not in that file: every async act() in `src/` goes through
+ *     `src/test-support/act-turns.ts` (a checkpoint on the test's own signal on each side of the
+ *     scope; a scanning tripwire in `source-hygiene.test.ts` enforces it), `src/test-setup.ts` settles
+ *     every such scope after each test, and its act-scope canary then fails a test that leaves
+ *     React's act queue open, naming the cause. Proved by planted child runs in
+ *     `scripts-typecheck.test.ts`. This makes a load timeout honest, not impossible: the limits
+ *     below are unchanged, and a case can still exceed them on a saturated host.
  *   - `maxWorkers` capped below the core count, so the suite does not oversubscribe the machine it
  *     is measuring on. It cannot stop OTHER processes doing so: on the loaded run above, four test
  *     files never started because Vitest's fixed 60 s worker-start timeout expired
  *     ("[vitest-pool]: Failed to start forks worker"), which is the host, not the tests. Tests that
  *     carry their own explicit timeout at the call site (`blast.test.ts`'s 946 two-cable
  *     perturbations among them — 600 s there, and it took 319 s on that loaded run) are unaffected by
- *     this default; each such override is its owner's to justify.
+ *     this default; each such override is its owner's to justify. An override may only RAISE the
+ *     limit. One BELOW the hang detector is a wall-clock assertion under another name: on both loaded
+ *     F2 re-runs the only reds in the F2 files were `{ timeout: 15000 }`/`{ timeout: 20000 }` on
+ *     whole-App mounts, so those were removed and `source-hygiene.test.ts` now fails any test or
+ *     hook limit below `testTimeout`/`hookTimeout`, read from this file.
  *
  * It merges the app config rather than replacing it: vitest loads `vitest.config.ts` INSTEAD of
  * `vite.config.ts` when both exist, and the React plugin, the module resolution and the chunking

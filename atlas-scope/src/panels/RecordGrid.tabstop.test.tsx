@@ -13,6 +13,7 @@
  */
 import { act, type ReactNode, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { actAsync } from "../test-support/act-turns";
 import { afterEach, describe, expect, it } from "vitest";
 import { RecordGrid, type GridColumn } from "./DevicePane";
 
@@ -66,7 +67,7 @@ const stops = (c: HTMLElement): HTMLElement[] =>
 
 /** Deliver pending MutationObserver records: they are microtasks, as in a browser, where they are
  *  delivered before the next task — so before any key a reader can press. */
-const flush = (): Promise<void> => act(async () => {});
+const flush = (): Promise<void> => actAsync(async () => {});
 
 const keydown = (el: Element, key: string): void =>
   act(() => {

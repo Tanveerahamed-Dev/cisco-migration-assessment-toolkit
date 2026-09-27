@@ -34,6 +34,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { PriorityQueue } from "./PriorityQueue";
@@ -150,7 +151,7 @@ const deliverResize = (): void => {
 };
 /** The deferred half of a selection (`deferPastPaint`): one frame plus one task. */
 async function settle(): Promise<void> {
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });

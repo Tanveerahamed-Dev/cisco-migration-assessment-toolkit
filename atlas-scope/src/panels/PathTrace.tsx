@@ -909,6 +909,30 @@ export function runIntentSearch(intent: Intent, cap: number = INTENT_FLOW_CAP): 
 
 export const flowKey = (f: Flow): string => `${f.protocol}|${f.srcIp}|${f.dstIp}|${f.dstPort ?? ""}`;
 
+/**
+ * How far below the scroll port's top edge a landing may put `el`: at most `pad`, and never more than
+ * the empty space between `el` and whatever is laid out immediately before it inside `port`.
+ *
+ * Why (C2, 2026-09-26): the answer landing aligned its target `pad` (8 px) below the port's top edge
+ * whatever sat above it. MEASURED at 1920, 1440 and 768, in both path-result states: the 8 px band
+ * showed the bottom 23% of the preceding citation button ("Open source record routes.core1[6]"), a
+ * control sliced by a port the app itself had just moved. The edge must fall in a gap, so the inset
+ * is the gap when the gap is narrower than `pad`. "Immediately before" is the nearest laid-out
+ * previous sibling of `el` or of any of its ancestors below `port` — the content the reader would see
+ * directly above it; an element with nothing before it keeps the full `pad`.
+ */
+export function landingInset(el: HTMLElement, port: HTMLElement, pad: number): number {
+  const top = el.getBoundingClientRect().top;
+  for (let n: HTMLElement | null = el; n !== null && n !== port; n = n.parentElement) {
+    for (let prev = n.previousElementSibling; prev !== null; prev = prev.previousElementSibling) {
+      const r = prev.getBoundingClientRect();
+      if (r.height <= 0 && r.width <= 0) continue; // not laid out (hidden, display: none)
+      return Math.max(0, Math.min(pad, top - r.bottom));
+    }
+  }
+  return pad;
+}
+
 const PROTOCOL_OPTIONS = [
   { value: "tcp", label: "TCP" },
   { value: "udp", label: "UDP" },
@@ -1026,6 +1050,24 @@ export interface PathTraceProps {
   onOpenCite?: (cite: Cite) => void;
   /** The region id from the layout contract. Override only if the shell owns the element. */
   id?: string;
+}
+
+/**
+ * The mode panels' cut-row scrim is covered in the path surface's OWN ground (C2 verifier V4).
+ * shell.css's rule for the scrim is that its cover (`background-attachment: local`) is named as the
+ * fill of the surface it sits on, so it is invisible at rest; `.rail .scroll-scrim` names the rail's
+ * --surface-1, but this surface paints `var(--bg)` (PathTrace.css `.pathtrace`), so the cover painted
+ * a --surface-1 band where the path panel's list ends. TabPanel takes no style, so the section sets
+ * the fill on each scrim panel it holds when it mounts (the panels are always mounted; only `hidden`
+ * toggles). An inline custom property outranks the rail rule. The value is pinned to PathTrace.css by
+ * `PathTrace.c2-landing.test.tsx`, which reads both CSS owners.
+ */
+const PATH_SURFACE_GROUND = "var(--bg)";
+function groundModeScrims(section: HTMLElement | null): void {
+  if (section === null) return;
+  for (const panel of section.children) {
+    if (panel instanceof HTMLElement && panel.classList.contains("scroll-scrim")) panel.style.setProperty("--scroll-scrim-bg", PATH_SURFACE_GROUND);
+  }
 }
 
 export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): ReactElement {
@@ -1386,13 +1428,13 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
            line fit together, and when they do not, the deciding line wins and is put at the top. */
         const box = scroller.getBoundingClientRect();
         const PAD = 8;
-        const headDelta = target.getBoundingClientRect().top - box.top - PAD;
+        const headDelta = target.getBoundingClientRect().top - box.top - landingInset(target, scroller, PAD);
         const decided = target === root.firstElementChild ? null : target.querySelector<HTMLElement>("[data-decided]");
         let delta = headDelta;
         if (decided !== null) {
           const at = decided.getBoundingClientRect();
           if (at.bottom + PAD - headDelta > box.bottom) {
-            delta = at.top - box.top - PAD;
+            delta = at.top - box.top - landingInset(decided, scroller, PAD);
             aligned = decided;
           }
         }
@@ -1444,6 +1486,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
   return (
     <section
       id={id}
+      ref={groundModeScrims}
       className="pathtrace"
       aria-label="Path investigation"
       /* The panels clip horizontally (overflow-x: hidden), which still leaves them PROGRAMMATICALLY
@@ -1467,7 +1510,12 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
         ]}
       />
 
-      <TabPanel id={`${formId}-mode`} tabId="trace" active={mode === "trace"} className="pt-panel">
+      {/* `scroll-scrim` (shell.css, THE CUT-ROW SCRIM): this panel owns its own scroller, so it opts
+          into the house cue for a row cut by the port's bottom edge. MEASURED (acceptance report C2,
+          1440x900, state 06): `l3_forwarding[3]` was cut at this port's bottom edge (541.9-566.8
+          against 555) with the only cue 12 px lower, on the rail slot — the cut read as unfinished.
+          Both mode panels are the same kind of scroller, so both carry it. */}
+      <TabPanel id={`${formId}-mode`} tabId="trace" active={mode === "trace"} className="pt-panel scroll-scrim">
         <form className="pt-form" onSubmit={onSubmit} noValidate>
           <div className="pt-form__addresses">
             <Input
@@ -1585,7 +1633,7 @@ export function PathTrace({ onOpenCite, id = "rail-path" }: PathTraceProps): Rea
         )}
       </TabPanel>
 
-      <TabPanel id={`${formId}-mode`} tabId="intent" active={mode === "intent"} className="pt-panel">
+      <TabPanel id={`${formId}-mode`} tabId="intent" active={mode === "intent"} className="pt-panel scroll-scrim">
         <IntentMode onRunFlow={run} {...(onOpenCite ? { onOpenCite } : {})} />
       </TabPanel>
 

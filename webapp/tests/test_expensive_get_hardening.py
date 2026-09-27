@@ -257,6 +257,21 @@ _UNGUARDED_SURFACE: dict[str, tuple] = {
                           "the exact startup-indexed SPA assets, shell, and history fallback: a "
                           "user following a cross-site link must get the app, not a 403 (it reads "
                           "no store)"),
+    # Atlas Scope at /scope: registered whether or not a scope build exists (absent -> an honest
+    # 503, never AssessHub's shell), hence the constant predicate. Static only: exact
+    # startup-indexed bytes, no store read (webapp/tests/test_scope_mount.py trips every Store
+    # method to prove it), GET-only, and a build that embeds a stored snapshot's digest is refused.
+    # Client evidence reaches Atlas Scope at run time through the guarded /api/snapshots/{id}/raw.
+    "/scope/assets/{asset_path:path}": (lambda: True,
+                                        "Atlas Scope's startup-indexed static bundles: no client "
+                                        "data (a build embedding a stored snapshot's digest is "
+                                        "refused), reads no store"),
+    "/scope": (lambda: True,
+               "Atlas Scope's static shell (index.html only), or an honest 'not built' 503: no "
+               "client data, reads no store"),
+    "/scope/{rest:path}": (lambda: True,
+                           "Atlas Scope's history fallback to its static shell (index.html only), "
+                           "or an honest 'not built' 503: no client data, reads no store"),
 }
 
 #: GET routes that are legitimately outside the /api surface the guard derives from. The SPA shell

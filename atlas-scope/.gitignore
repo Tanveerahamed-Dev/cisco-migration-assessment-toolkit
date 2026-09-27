@@ -59,3 +59,9 @@ review/_*
 test-results/
 /d[0-9]_*.json
 /d[0-9]_*.png
+
+# A snapshot other than the tracked sample compiles here (tools/compile-all.mjs --source <file>). It is
+# the place a REAL assessment's compiled model lands — client hostnames, addresses, serials — so it is
+# ignored, and compile-all refuses to write such a compile anywhere under src/, whose four compiled
+# files are tracked.
+.local-data/

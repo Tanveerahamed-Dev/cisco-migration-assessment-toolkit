@@ -968,14 +968,16 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
             return False, "baseline_coverage_subject_mismatch"
         host_statuses = Counter(row["status"] for row in host_rows)
         if not expected_subject:
-            if cell["config_capture_status"] != "ok" or cell["runtime_capture_status"] not in {
-                    "ok", "not_observed"}:
-                expected_status = "not_verified"
-            elif cell["config_parser_status"] not in {"complete"} or cell["runtime_parser_status"] not in {
-                    "complete", "not_verified"}:
-                expected_status = "review"
-            else:
+            # A complete, integrity-ok running-config is what establishes that the configured-peer
+            # denominator is empty, so it alone decides not_applicable, whatever the runtime summary
+            # capture was (empty, a no-process banner, or absent). Otherwise the producer's
+            # _coverage_status rule applies unchanged.
+            if cell["config_capture_status"] == "ok" and cell["config_parser_status"] == "complete":
                 expected_status = "not_applicable"
+            elif cell["config_capture_status"] != "ok" or cell["runtime_capture_status"] != "ok":
+                expected_status = "not_verified"
+            else:
+                expected_status = "review"
         elif host_statuses["degraded"]:
             expected_status = "degraded"
         elif host_statuses["review"] or cell["unsupported_relevant_count"]:

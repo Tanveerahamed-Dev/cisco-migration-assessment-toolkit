@@ -192,7 +192,8 @@ def _golden(name, produced):
                 + "\nRemoving contract surface must be explicit: re-run with "
                   "ALLOW_GOLDEN_SHRINK=1 after review.", pytrace=False)
     os.makedirs(GOLDEN_DIR, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    # newline="\n": the tracked goldens are LF; a text-mode write on Windows would rewrite every line.
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         # sort_keys=False: preserve meaningful order (snapshot key order is
         # code-defined; Excel sheet order is the workbook tab order).
         json.dump(produced, f, indent=1, sort_keys=False)
@@ -234,6 +235,24 @@ def test_snapshot_matches_golden(golden_run):
     assert set(snap) == set(golden), "snapshot top-level keys changed"
     for key in golden:
         assert snap[key] == golden[key], f"snapshot section '{key}' changed vs golden"
+
+
+def test_every_punchlist_evidence_pointer_resolves_on_the_published_snapshot(golden_run):
+    """Per-finding evidence pointers (docs/ssot.md): over EVERY punch-list row of this real run --
+    never a named subset -- the basis is in the enum and allowed for the category, and every
+    RFC 6901 ref resolves to the record it claims (not merely a non-null node) in the snapshot AS
+    WRITTEN (sparsified, compact), after the whole-snapshot redaction, and in the explorer embed of
+    both (which re-filters lists). Re-reads the written file because `golden_run` strips
+    date-relative sections (device_dossiers) that compound-risk rows legitimately point into."""
+    from test_punchlist_evidence_refs import published_forms, punchlist_evidence_problems
+
+    _snap, xlsx = golden_run
+    with open(os.path.splitext(xlsx)[0] + ".snapshot.json", encoding="utf-8") as f:
+        written = json.load(f)
+    problems = []
+    for form, snap in published_forms(None, written):
+        problems += punchlist_evidence_problems(snap, f"golden {form}")
+    assert not problems, "\n".join(problems[:40])
 
 
 def test_stp_topology_owner_and_schema_census_ship_fail_closed(golden_run):

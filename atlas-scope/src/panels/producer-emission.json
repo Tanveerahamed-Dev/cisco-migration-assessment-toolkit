@@ -1,9 +1,12 @@
 {
  "meta": {
   "source": "webapp/sample_data/sample_fleet.snapshot.json",
+  "sourceOrigin": "repository-file",
   "sourceDigestForm": "lf-normalised",
   "sourceSha256": "9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
   "sourceBytes": 3072771,
+  "sourceExactSha256": "sha256:9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
+  "sourceGitBlob": "6478a1616e3ced5f1937c32c85856e94d3c0d9fe",
   "aclLineFields": {
    "unevaluable": "unevaluable",
    "unmodeledQualifiers": "unmodeled_qualifiers",

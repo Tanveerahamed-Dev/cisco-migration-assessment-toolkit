@@ -13,7 +13,8 @@
  *
  * Everything else belongs to the surface that renders it, and is called here with its own props.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { flushSync } from "react-dom";
 
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
@@ -30,6 +31,7 @@ import {
   formatFlow,
   parseFlowQuery,
   registerCommandTarget,
+  registerSurfaceReveal,
   runFlow,
   useAppCommands,
   useCommandAnnouncement,
@@ -187,6 +189,9 @@ function QueryBar(): ReactElement {
 
 /* ── the shell ─────────────────────────────────────────────────────────────── */
 
+/** How many frames `v` waits for the configuration button to be rendered visible (see config.open). */
+const CONFIG_OPEN_MAX_FRAMES = 6;
+
 export function App(): ReactElement {
   /* Both are ref-counted, and the palette and the help sheet ask for them too. Asking here means
      the bindings exist even in a build where one of those layers is not rendered. */
@@ -206,7 +211,10 @@ export function App(): ReactElement {
   const hopIndex = useInvestigation((s) => s.hopIndex);
 
   const ladder = useLadder();
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  /* The evidence drawer's open state lives in the store (so the one Escape binding can close it);
+     the frame owns what it MEANS: it is only ever true at the drawer rung (see the layout effect
+     below that clears it off-rung). */
+  const drawerOpen = useInvestigation((s) => s.evidenceDrawerOpen);
   /* Seeded from the ladder, NOT from `true`. `Stage` latches `mounted` the first time it is told
      the fabric is visible and never un-latches — so a first render that says "visible" and an
      effect that corrects it one commit later still triggers the lazy `import("../fabric3d/
@@ -375,8 +383,34 @@ export function App(): ReactElement {
   /* ── capabilities the frame owns ──
      Registered through a ref so the registration itself is stable: re-registering on every layout
      change would churn `useCommandTargets` and re-render the palette while it is open. */
-  const capabilities = useRef({ drawerOpen, ladder, evidenceView });
-  capabilities.current = { drawerOpen, ladder, evidenceView };
+  const capabilities = useRef({ ladder, evidenceView });
+  capabilities.current = { ladder, evidenceView };
+
+  /* THE DRAWER'S STATE MEANS NOTHING OFF ITS RUNG. It used to be local state that survived a resize:
+     open at 1100, resized to 900 and back, the drawer reopened by itself (acceptance D3 discovery,
+     2026-09-26). Cleared in the layout phase of the commit that left the rung. Where focus goes when
+     the rail stops being shown is not decided here: RailB releases it through the focus-return
+     owner on every shown -> hidden transition, whatever caused it. */
+  useLayoutEffect(() => {
+    if (!ladder.drawer && useInvestigation.getState().evidenceDrawerOpen) useInvestigation.getState().setEvidenceDrawerOpen(false);
+  }, [ladder.drawer]);
+
+  /* A LAYOUT CHANGE KEEPS FOCUS IN VIEW. A rung crossing re-flows every region; focus that survives
+     it (its region is still shown) can end up anywhere the new layout put it. MEASURED (review/
+     audit-d3-focus.mjs drawer pass, 1152 -> 390 px): the drawer's "Finding" radio kept focus, now in
+     the stacked evidence section far below the fold — "no part of it is on screen". Runs after the
+     rails' own release-on-hide (children's layout effects run first), so it scrolls whatever holds
+     focus once the crossing is settled. Not on the first render: nothing has moved yet. CENTRED,
+     not "nearest": measured with "nearest" at 390 px, the radio was scrolled to the bottom edge and
+     the sticky status bar painted over it (0/9 hit-test points on it, review/audit-d3-focus.mjs). */
+  const rung = ladder.stacked ? "stacked" : ladder.singleColumn ? "single" : ladder.drawer ? "drawer" : "reference";
+  const lastRung = useRef(rung);
+  useLayoutEffect(() => {
+    if (lastRung.current === rung) return;
+    lastRung.current = rung;
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && a !== document.body) a.scrollIntoView?.({ block: "center", inline: "nearest" });
+  }, [rung]);
 
   useEffect(() => {
     const release = [
@@ -393,10 +427,12 @@ export function App(): ReactElement {
       registerCommandTarget("evidence.toggle", () => {
         const { ladder: l } = capabilities.current;
         if (l.drawer) {
-          setDrawerOpen((v) => {
-            announce(v ? "Evidence drawer closed." : "Evidence drawer opened.");
-            return !v;
-          });
+          /* Read, write, then announce — never inside a state updater, which StrictMode may run
+             twice and which must stay pure. Where focus goes on close is RailB's release on hide. */
+          const s = useInvestigation.getState();
+          const next = !s.evidenceDrawerOpen;
+          s.setEvidenceDrawerOpen(next);
+          announce(next ? "Evidence drawer opened." : "Evidence drawer closed.");
           return;
         }
         if (l.singleColumn) {
@@ -418,12 +454,28 @@ export function App(): ReactElement {
           announce("No finding is selected, so there is no configuration evidence to open.");
           return;
         }
-        setEvidenceView("finding");
-        if (capabilities.current.ladder.drawer) setDrawerOpen(true);
-        if (capabilities.current.ladder.singleColumn) s.setSurface("evidence");
-        /* One frame, so the pane the button lives in has been committed. Activating the button the
-           mouse would activate keeps one behaviour behind one control. */
-        requestAnimationFrame(() => {
+        /* Committed NOW, not whenever React next renders: a closed drawer (or a rail hidden at the
+           single-column rung) is `inert` until the commit that shows it (focus-return.ts, third
+           door), so the frame below must never run ahead of that commit — from a key, from the
+           palette, or from anywhere else this target is called. */
+        flushSync(() => {
+          setEvidenceView("finding");
+          if (capabilities.current.ladder.drawer) s.setEvidenceDrawerOpen(true);
+          if (capabilities.current.ladder.singleColumn) s.setSurface("evidence");
+        });
+        /* A frame, so the pane the button lives in has been committed and styled. Activating the
+           button the mouse would activate keeps one behaviour behind one control.
+           NOT ALWAYS ONE FRAME. MEASURED (independent verifier, then this cluster, release build, 1100
+           px, prefers-reduced-motion: reduce): `v` opened the drawer and the overlay but focus stayed on
+           the grid cell. At that frame the rail itself was `visibility: visible`, yet the button's OWN
+           computed visibility was still `hidden`: EvidencePane.css's reduced-motion rule gives every
+           `.ev *` a 1 ms transition over `all`, so each descendant transitions the visibility it
+           inherits, and a hidden -> visible transition reads `hidden` at its start. focus() on it did
+           nothing, and neither did the overlay's own heading focus. So wait, a frame at a time and a
+           few frames at most, until the button is rendered visible; the stylesheet rule is routed to
+           its owner. */
+        let frames = 0;
+        const activate = (): void => {
           const btn = document.querySelector<HTMLElement>("#rail-evidence .ev-cfgactions button");
           if (btn === null) {
             announce(
@@ -431,15 +483,32 @@ export function App(): ReactElement {
             );
             return;
           }
+          const rendered = typeof btn.checkVisibility !== "function" || btn.checkVisibility({ visibilityProperty: true });
+          frames += 1;
+          if (!rendered && frames < CONFIG_OPEN_MAX_FRAMES) {
+            requestAnimationFrame(activate);
+            return;
+          }
           btn.focus();
           btn.click();
-        });
+        };
+        requestAnimationFrame(activate);
+      }),
+      /* "Go to the evidence rail" at the drawer rung: the rail is a closed overlay there, so the
+         move opens it first (commands.ts goToSurface commits this before it moves focus, and
+         announces a move only if focus landed). The opener is recorded by RailB as it is shown. */
+      registerSurfaceReveal((target) => {
+        if (target === "evidence" && capabilities.current.ladder.drawer) useInvestigation.getState().setEvidenceDrawerOpen(true);
       }),
     ];
     return () => {
       for (const r of release) r();
     };
   }, []);
+
+  /** Where focus goes when a rail stops being shown and neither its opener nor the place focus
+   *  came from can take it (focus-return.ts, third door, step c). */
+  const railFallbacks = useCallback(() => [document.getElementById("stage"), queryField()], []);
 
   const notice = urlProblem !== null && !noticeDismissed ? urlProblem : null;
 
@@ -523,9 +592,16 @@ export function App(): ReactElement {
           />
         ) : null}
 
-        <RailA hidden={railHidden.a} onOpenCite={openCite} />
+        <RailA hidden={railHidden.a} onOpenCite={openCite} fallbacks={railFallbacks} />
         <Stage fabricVisible={fabricVisible} />
-        <RailB hidden={railHidden.b} onOpenCite={openCite} view={evidenceView} onView={setEvidenceView} />
+        <RailB
+          hidden={railHidden.b}
+          closed={ladder.drawer && !drawerOpen}
+          onOpenCite={openCite}
+          view={evidenceView}
+          onView={setEvidenceView}
+          fallbacks={railFallbacks}
+        />
       </div>
 
       <ErrorBoundary surface="The status bar" onError={onSurfaceError}>

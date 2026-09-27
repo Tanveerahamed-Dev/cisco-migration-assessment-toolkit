@@ -62,7 +62,7 @@ import {
   type QueryToken,
   type SortSpec,
 } from "../core/query";
-import { handOffFocus, returnFocus } from "../app/focus-return";
+import { handOffFocus, returnFocus, useReleaseFocusOnHide } from "../app/focus-return";
 import { bandKey, bandKeyLabel } from "../core/band-qualification";
 import { useInvestigation } from "../core/store";
 import type { Cite, CrossLayerFinding, Finding } from "../core/types";
@@ -868,6 +868,9 @@ export function PriorityQueue({
   const [viewOpen, setViewOpen] = useState(false);
   const foldRef = useRef({ viewFolded, viewOpen });
   foldRef.current = { viewFolded, viewOpen };
+  /* Whatever hides the Group/Order/Display block while focus is inside it (the fold below keeps it open
+     for a resize, but not for every path), focus goes to the View disclosure that stands for it. */
+  useReleaseFocusOnHide(controlsRef, !(viewFolded && !viewOpen), () => [viewButtonRef.current]);
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (root === null || typeof ResizeObserver === "undefined") return;

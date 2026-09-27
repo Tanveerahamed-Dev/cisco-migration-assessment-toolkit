@@ -14,7 +14,10 @@ import { fabric } from "../core/data";
 import emission from "./producer-emission.json";
 import { PRODUCER_EMISSION_TRUSTED, producerFieldNotEmitted } from "./producer-emission";
 
-const SRC = resolve(__dirname, "../../../webapp/sample_data/sample_fleet.snapshot.json");
+/* The dataset under test: the file this sidecar names (`meta.source`, repository-relative), not a typed
+   path (R7). The critic's-line and AP-floor1 cases below are explicitly SAMPLE-scoped: they name records
+   of the tracked sample fleet, which is the only source the tracked sidecar may be compiled from. */
+const SRC = resolve(__dirname, "../../..", emission.meta.source);
 const raw = readFileSync(SRC);
 const snap = JSON.parse(raw.toString("utf8")) as Record<string, any>;
 

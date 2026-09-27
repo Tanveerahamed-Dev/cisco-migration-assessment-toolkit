@@ -55,6 +55,7 @@ import { fileURLToPath } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { fabric } from "../core/data";
 import { EVIDENCE_TABS, decodeInvestigation, useInvestigation } from "../core/store";
 import { counterexample, suggestedFlows, traceFlow } from "../forwarding/engine";
@@ -174,7 +175,7 @@ async function settle(): Promise<void> {
       changed = true;
     });
     mo.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
     mo.disconnect();

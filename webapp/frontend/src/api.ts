@@ -147,6 +147,15 @@ export interface Meta {
   app: AppIdentity;
 }
 
+// GET /api/snapshots/{id}/scope-view — whether this installation can show the snapshot in Atlas
+// Scope (served same-origin at /scope). The server owns `href`; it is null unless `available`.
+export interface ScopeView {
+  available: boolean;
+  status: "ready" | "not_built" | "invalid_build" | "refused_embeds_stored_snapshot" | string;
+  href: string | null;
+  detail: string;
+}
+
 export interface CurrentBaselineBlocker {
   device: string;
   wave: string;
@@ -1454,6 +1463,7 @@ export const api = {
   causalFlows: (id: number) => fetch(`/api/snapshots/${id}/causal_flows`).then((r) => j<CausalFlows>(r)),
   cableMap: (id: number) => fetch(`/api/snapshots/${id}/cable_map`).then((r) => j<CableMap>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
+  scopeView: (id: number) => fetch(`/api/snapshots/${id}/scope-view`).then((r) => j<ScopeView>(r)),
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (
     oldId: number,

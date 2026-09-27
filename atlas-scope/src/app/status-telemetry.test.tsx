@@ -42,6 +42,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 
 import type { SceneStatsEx } from "../fabric3d/scene";
 import { publishSceneStats, readSceneStats, releaseSceneStats } from "../fabric3d/telemetry";
@@ -104,7 +105,7 @@ function reading(over: Partial<SceneStatsEx> = {}): SceneStatsEx {
  */
 async function publishAndSettle(next: SceneStatsEx): Promise<void> {
   publishSceneStats(next);
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise((r) => setTimeout(r, 1100));
   });
 }
@@ -127,7 +128,7 @@ describe("the shell subscribes its status bar to the scene", () => {
        the readings on. Mounting the real shell and publishing on the real channel is the only
        assertion that fails if that wiring is removed again. */
     const container = mount(<App />);
-    await act(async () => {
+    await actAsync(async () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(container.querySelector(".sb__tier")).toBeNull();
@@ -248,7 +249,7 @@ describe("the readout does not put the fabric back on React's frame path", () =>
     observer.observe(container, { childList: true, subtree: true, characterData: true });
 
     // A burst at the scene's own emit rate, with every DRAWN value unchanged.
-    await act(async () => {
+    await actAsync(async () => {
       for (let i = 0; i < 10; i++) {
         publishSceneStats(reading({ fps: 60.04, frameMs: 16.7 + i / 100, drawCalls: 75 + i }));
         await new Promise((r) => setTimeout(r, 30));

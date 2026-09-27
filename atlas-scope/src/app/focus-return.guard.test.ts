@@ -7,7 +7,7 @@
  * class open — the next surface written with the same lines reintroduces it silently — and a grep
  * for `.blur()` both misses `el?.blur?.()` / `el["blur"]()` / `blur.call(el)` and cries wolf on
  * prose and strings. So every source file is compiled into ONE TypeScript program (the project's own
- * tsconfig, imports resolved, as `src/core/band-read.guard.test.ts` does) and three shapes are
+ * tsconfig, imports resolved, as `src/core/band-read.guard.test.ts` does) and four shapes are
  * rejected outside the owner:
  *
  *   1. `blur-call` — ANY call of a `blur` member. `blur()` never moves focus; it removes it, and the
@@ -26,6 +26,22 @@
  *      and lands on BODY in the running build (review/audit-d3-focus.mjs); shapes 1 and 2 alone did
  *      not see it. Provenance is resolved by SYMBOL, not by name, so an unrelated `el` in another
  *      function is not tainted by this one's `const el = document.activeElement`.
+ *   4. `hidden-without-release` — a JSX `hidden` or `inert` attribute on a DOM element whose value is
+ *      decided at run time (anything but an absent value, `true`, `false` or a literal), in a
+ *      component that never calls the owner's THIRD DOOR (`releaseFocusFrom` /
+ *      `useReleaseFocusOnHide`). Such an element can stop being rendered while focus is inside it,
+ *      and the browser then parks focus on <body> with no code of ours running at all. MEASURED
+ *      (acceptance report D3, overturned PASS to FAIL, 2026-09-26): the evidence drawer and a
+ *      resize to 900 px hid Rail B around its focused "Finding" radio, and shapes 1-3 could not see
+ *      it because the close path ran no focus code. The ELEMENT is the unit: the hide is released only
+ *      when the element carrying it passes its `ref` a value rooted at the same symbol as a third-door
+ *      call's container (`useReleaseFocusOnHide(railRef, …)` with `ref={railRef}`;
+ *      `releaseFocusFrom(panesRef.current[v], …)` with `ref={(el) => { panesRef.current.x = el; }}`).
+ *      A door called in the same component for a different element does not count. WHAT THIS SHAPE CANNOT SEE:
+ *      a hide made by a stylesheet keyed on some other attribute (the drawer's `data-drawer` ->
+ *      `visibility: hidden` in shell.css). That one is declared to the owner explicitly (RailB's
+ *      `closed`), and is measured, not parsed: `src/app/drawer-focus-return.test.tsx` and the
+ *      drawer pass of `review/audit-d3-focus.mjs --sweep`.
  * Owner calls are resolved by symbol too (an aliased import still counts; a local function that
  * merely shares a name does not).
  *
@@ -136,7 +152,7 @@ function makeProgram(rels: readonly string[], virtual: ReadonlyMap<string, strin
 export interface Violation {
   file: string;
   line: number;
-  kind: "blur-call" | "isConnected-fallback" | "captured-origin-focus";
+  kind: "blur-call" | "isConnected-fallback" | "captured-origin-focus" | "hidden-without-release";
   /** Whitespace-normalised source of the offending call or condition. */
   text: string;
 }
@@ -310,6 +326,61 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
     }
   }
 
+  /* ── shape 4: a state-driven hide on an element never handed to the third door ── */
+  const THIRD_DOOR = new Set(["releaseFocusFrom", "useReleaseFocusOnHide"]);
+  const callsThirdDoor = (n: ts.Node): boolean =>
+    ts.isCallExpression(n) &&
+    (resolved(calleeName(n))?.declarations ?? []).some(
+      (d) => relOf(d.getSourceFile().fileName) === OWNER && ts.isFunctionDeclaration(d) && d.name !== undefined && THIRD_DOOR.has(d.name.text),
+    );
+  const HIDING_ATTRIBUTES = new Set(["hidden", "inert"]);
+  const isConstant = (e: ts.Expression | undefined): boolean => {
+    if (e === undefined) return true;
+    const x = strip(e);
+    return x.kind === ts.SyntaxKind.TrueKeyword || x.kind === ts.SyntaxKind.FalseKeyword || ts.isStringLiteralLike(x) || ts.isNumericLiteral(x);
+  };
+  /* The door is bound to an ELEMENT, not to a component: the container a door call names (its first
+     argument — `ref`, `ref.current`, `panesRef.current[v.id]`) is reduced to the symbol it is rooted
+     at, and a hide is released only when the element carrying it hands that same symbol its `ref`.
+     A door called in the same component for some OTHER element releases nothing here. */
+  const rootSymbol = (e: ts.Expression | undefined): ts.Symbol | undefined => {
+    let x = e === undefined ? undefined : strip(e);
+    while (x !== undefined && (ts.isPropertyAccessExpression(x) || ts.isElementAccessExpression(x))) x = strip(x.expression);
+    return x !== undefined && ts.isIdentifier(x) ? resolved(x) : undefined;
+  };
+  const doorBound = new Set<ts.Symbol>();
+  const collectDoors = (n: ts.Node): void => {
+    if (callsThirdDoor(n) && ts.isCallExpression(n)) {
+      const s = rootSymbol(n.arguments[0]);
+      if (s !== undefined) doorBound.add(s);
+    }
+    n.forEachChild(collectDoors);
+  };
+  collectDoors(sf);
+  const refIsDoorBound = (el: ts.JsxOpeningElement | ts.JsxSelfClosingElement): boolean => {
+    const ref = el.attributes.properties.find((p) => ts.isJsxAttribute(p) && ts.isIdentifier(p.name) && p.name.text === "ref");
+    return (
+      ref !== undefined &&
+      ts.isJsxAttribute(ref) &&
+      contains(ref.initializer, (m) => ts.isIdentifier(m) && (() => {
+        const s = resolved(m);
+        return s !== undefined && doorBound.has(s);
+      })())
+    );
+  };
+  const flagHide = (attr: ts.JsxAttribute): void => {
+    if (!ts.isIdentifier(attr.name) || !HIDING_ATTRIBUTES.has(attr.name.text)) return;
+    const el = attr.parent.parent;
+    if (!(ts.isJsxOpeningElement(el) || ts.isJsxSelfClosingElement(el))) return;
+    /* A DOM element (lower-case tag); a component's `hidden` prop is judged where it reaches the DOM. */
+    if (!ts.isIdentifier(el.tagName) || !/^[a-z]/.test(el.tagName.text)) return;
+    const init = attr.initializer;
+    if (init === undefined || ts.isStringLiteral(init)) return;
+    if (ts.isJsxExpression(init) && isConstant(init.expression)) return;
+    if (refIsDoorBound(el)) return;
+    out.push({ file: rel, line: lineOf(attr), kind: "hidden-without-release", text: norm(attr.getText(sf)) });
+  };
+
   const flagBranch = (cond: ts.Expression, taken: ts.Node | undefined, other: ts.Node | undefined, at: ts.Node): void => {
     if (!contains(cond, (m) => readsLiveness(m))) return;
     /* Either polarity: `if (el.isConnected) el.focus(); else …` and
@@ -336,6 +407,7 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
         }
       }
     }
+    if (ts.isJsxAttribute(n)) flagHide(n);
     if (ts.isIfStatement(n)) flagBranch(n.expression, n.thenStatement, n.elseStatement, n);
     else if (ts.isConditionalExpression(n)) flagBranch(n.condition, n.whenTrue, n.whenFalse, n);
     else if (
@@ -365,8 +437,9 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
  * matching fails the suite until it is removed.
  */
 const PENDING_ROUTING: readonly { file: string; kind: Violation["kind"]; text: string }[] = [
-  /* Empty: every off-cluster site routed through the owner (merged-tree gate, wave 2c). A new entry
-     is debt, never an allowance. */
+  /* Shapes 1-4: none — every off-cluster site routed through the owner (shapes 1-3: merged-tree gate,
+     wave 2c; shape 4's three state-driven hides — the queue's Group/Order/Display block, TabPanel and
+     Disclosure — engine gate, 2026-09-27). A new entry is debt, never an allowance. */
 ];
 
 const key = (v: { file: string; kind: string; text: string }): string => `${v.file}|${v.kind}|${v.text}`;
@@ -442,6 +515,23 @@ describe("no surface decides focus return on its own (acceptance D3)", () => {
   it("routes Header.tsx and DataGrid.tsx through the owner", () => {
     for (const f of ["src/app/Header.tsx", "src/panels/DataGrid.tsx"]) {
       expect(analysisOf(f).ownerCalls, f).toBe(true);
+    }
+  });
+
+  it("shape 4 found what it guards: the rails' state-driven hides are scanned and route through the third door", () => {
+    /* Not vacuous: surfaces.tsx renders `hidden={hidden}` on both rails and on Rail B's panes, and
+       would be flagged if RailA/RailB did not call the third door (the planted cases below prove the
+       detector fires on exactly that shape). */
+    const a = analysisOf("src/app/surfaces.tsx");
+    expect(a.ownerCalls).toBe(true);
+    expect(a.violations.filter((v) => v.kind === "hidden-without-release")).toEqual([]);
+    /* Non-vacuity from the real tree, not from routing debt (verifier D3-R2-2: requiring a pending
+       entry made the fix of the last one turn this red): the files above really carry state-driven
+       hides that shape 4 inspected and found door-bound. */
+    for (const f of ["src/app/surfaces.tsx", "src/ui/primitives.tsx", "src/panels/PriorityQueue.tsx"]) {
+      const text = readFileSync(absOf(f), "utf8");
+      expect(/\bhidden=\{(?!\s*(?:true|false)\s*\})/.test(text), `${f} carries a state-driven hidden={…}`).toBe(true);
+      expect(analysisOf(f).violations.filter((v) => v.kind === "hidden-without-release"), f).toEqual([]);
     }
   });
 
@@ -525,6 +615,65 @@ describe("the guard is live (planted counterexamples, compiled with the real own
         export function a(): void { const target = document.activeElement; void target; }
         export function b(): void { const target = document.getElementById("x"); target?.focus(); }`,
       expect: [],
+    },
+    hiddenByState: {
+      /* The Rail B shape before the fix: a DOM element hidden by state, no third-door call. */
+      src: `export function Rail({ shown }: { shown: boolean }) {
+          return <aside hidden={!shown}><button>inside</button></aside>;
+        }
+        export function Busy({ busy }: { busy: boolean }) {
+          return <div inert={busy}><button>inside</button></div>;
+        }`,
+      expect: ["hidden-without-release", "hidden-without-release"],
+    },
+    hiddenWithTheThirdDoor: {
+      src: `import { useRef } from "react";
+        import { useReleaseFocusOnHide, releaseFocusFrom } from "./focus-return";
+        export function Rail({ shown }: { shown: boolean }) {
+          const ref = useRef<HTMLElement | null>(null);
+          useReleaseFocusOnHide(ref, shown);
+          return <aside ref={ref} hidden={!shown}><button>inside</button></aside>;
+        }
+        export function Panes({ view }: { view: string }) {
+          const panes = useRef<Record<string, HTMLDivElement | null>>({});
+          for (const v of ["a", "b"]) if (v !== view) releaseFocusFrom(panes.current[v], null);
+          return <div>{["a", "b"].map((v) => <div key={v} ref={(el) => { panes.current[v] = el; }} hidden={view !== v} />)}</div>;
+        }`,
+      expect: [],
+    },
+    hiddenWithTheDoorOnAnotherElement: {
+      /* The door is called in the component, but for a different element than the one hidden: the
+         hidden panes are never handed to it (verifier D3-V3). A component-granular check passed this. */
+      src: `import { useRef } from "react";
+        import { releaseFocusFrom, useReleaseFocusOnHide } from "./focus-return";
+        export function Panes({ view }: { view: string }) {
+          const box = useRef<HTMLDivElement | null>(null);
+          releaseFocusFrom(box.current, null);
+          return <div ref={box}>{["a", "b"].map((v) => <div key={v} hidden={view !== v} />)}</div>;
+        }
+        export function Rail({ shown }: { shown: boolean }) {
+          const ref = useRef<HTMLElement | null>(null);
+          const other = useRef<HTMLElement | null>(null);
+          useReleaseFocusOnHide(ref, shown);
+          return <div><section ref={ref} /><aside ref={other} hidden={!shown} /></div>;
+        }`,
+      expect: ["hidden-without-release", "hidden-without-release"],
+    },
+    hiddenConstantsAndComponents: {
+      /* A constant is not a hide that happens; a component's prop is judged where it reaches the DOM. */
+      src: `declare function Rail(p: { hidden: boolean }): null;
+        export function A({ x }: { x: boolean }) {
+          return <div><div hidden /><div hidden={true} /><div hidden={false} /><Rail hidden={x} /></div>;
+        }`,
+      expect: [],
+    },
+    hiddenWithANamesakeDoor: {
+      src: `function useReleaseFocusOnHide(_r: unknown, _s: boolean): void {}
+        export function Rail({ shown }: { shown: boolean }) {
+          useReleaseFocusOnHide(null, shown);
+          return <aside hidden={!shown} />;
+        }`,
+      expect: ["hidden-without-release"],
     },
     localNamesakeIsNotTheOwner: {
       src: `declare const el: HTMLElement;

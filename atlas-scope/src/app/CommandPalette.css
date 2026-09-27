@@ -93,7 +93,12 @@
    NEGATIVE offset draws it inside the row's own box — which is what makes it safe for the dialog
    body above to clip its overflow (design brief 7.4 rule 2 exists to stop clipped rings; an inset
    ring cannot be clipped by an ancestor). */
-.palette__search:focus-within {
+.palette__search:focus-within,
+/* The pre-warm (CommandPalette.tsx, acceptance E2/E3) draws what the first open draws, and the first
+   open draws this ring: focus lands in the search box. A pre-warm takes no focus, so the ring is
+   drawn here by the marking instead — otherwise its stroke is the one paint operation the first
+   open would still rasterise, and compile a GPU program for, on the interaction's path. */
+.ui-dialog.palette[data-dialog-prewarm] .palette__search {
   outline: var(--focus-ring-w) solid var(--focus);
   outline-offset: calc(-1 * var(--focus-ring-w));
 }

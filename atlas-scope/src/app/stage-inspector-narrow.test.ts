@@ -97,3 +97,28 @@ describe("the Inspector is shown wherever the stage is collapsed", () => {
     expect(missing.map((h) => `${h.file} ${h.media}`)).toEqual([]);
   });
 });
+
+describe("an open evidence drawer never covers the Inspector", () => {
+  /* THE DEFECT (D3 drawer pass, 1024–1279 px): Rail B becomes an overlay drawer over the stage, and the
+     Inspector is docked inside that stage, so an open drawer painted over it. MEASURED: the Inspector's
+     close button 0/9 hit-testable at 1024, 1152 and 1270, its tab panels 3/9 or 6/9. THE RULE, from the
+     stylesheets: in every media block where an open drawer is shown, the same block docks the Inspector
+     to the drawer's left edge — a margin equal to the drawer's own width. Layout proof is rendered
+     evidence (`node review/audit-d3-focus.mjs --vp=1152`), not this test. */
+  const prop = (r: Rule, name: string): string | null =>
+    new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(r.body)?.[1]?.trim() ?? null;
+  const openDrawer = all.filter((r) => selectors(r).includes('.app[data-drawer="open"] .rail--b') && /width/.test(r.media));
+
+  it("finds the drawer at all (positive control)", () => {
+    expect(openDrawer.length).toBeGreaterThan(0);
+  });
+
+  it("every block that opens the drawer docks the Inspector beside it, by the drawer's own width", () => {
+    const missing = openDrawer.filter((d) => {
+      const width = all.find((r) => r.media === d.media && selectors(r).includes(".rail--b") && prop(r, "width") !== null);
+      const dock = all.find((r) => r.media === d.media && selectors(r).includes('.app[data-drawer="open"] #inspector'));
+      return width === undefined || dock === undefined || prop(dock, "margin-inline-end") !== prop(width, "width");
+    });
+    expect(missing.map((d) => `${d.file} ${d.media}`)).toEqual([]);
+  });
+});

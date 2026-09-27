@@ -24,8 +24,33 @@
  * Installed through `setupFiles` in vitest.config.ts. The guard proves it is installed: it sets a
  * global marker that the guard's own test reads, and that test also runs a planted zero-assertion
  * test through a child Vitest with the real config and requires it to FAIL, naming the test.
+ *
+ * ── THE ACT-SCOPE CANARY (acceptance F2, the load cascade) ─────────────────────────────────────
+ *
+ * WHY. On a run at 85-100 % host CPU one 37 s timeout was followed by 277 failures that each blamed
+ * themselves ("the seeded flow had not been traced after 50 flush turns"). Vitest does not stop a
+ * timed-out body; the abandoned body's async act() scope closed out of order with the next case's,
+ * React's process-global act depth stuck at 1, and nothing committed for the rest of the file. The
+ * leak was a class — any async act() scope that outlives its test — so it is closed here, for every
+ * test, rather than in the one file where it was seen:
+ *
+ *   - every test (hooks and body) runs inside its own chain (`runInTestChain`), so the helper in
+ *     `src/test-support/act-turns.ts` can stop an abandoned body at its next act() instead of letting
+ *     it open a scope inside a later test;
+ *   - after each test, every scope the helper opened and every chain a test `track()`ed is settled
+ *     before anything else looks at React;
+ *   - then the canary reads React's act queue. Left open, it fails the test that left it, with a
+ *     message naming the cause instead of the symptom a later test would report. It fails CLOSED:
+ *     this file refuses to load if the React internals it reads are missing or no longer behave as
+ *     the canary assumes (proved against the running React below, before any test).
+ *
+ * WHAT IT DOES NOT DO. It does not make a wall-clock verdict load-proof: a case can still exceed the
+ * hang detector on a saturated host. What it guarantees is that such a timeout is ONE red that names
+ * itself. Proved by the planted child runs in `src/core/scripts-typecheck.test.ts`.
  */
-import { afterEach, expect } from "vitest";
+import { afterEach, aroundEach, expect } from "vitest";
+
+import { assertActScopeObservable, openActScope, runInTestChain, settleActTurns } from "./test-support/act-turns";
 
 /* Read by the guard's own test to prove this file ran in the worker executing it. */
 (globalThis as Record<symbol, unknown>)[Symbol.for("atlas-scope.assertion-guard.installed")] = true;
@@ -57,4 +82,24 @@ afterEach((ctx) => {
       `precondition (a non-empty input, an exact count, the element's presence) with an expect(); ` +
       `if the assertion really is "this does not throw", write expect(() => …).not.toThrow().`,
   );
+});
+
+/* ── the act-scope canary ── */
+
+/* The reader is proved against the running React before any test relies on it (fails closed). */
+await assertActScopeObservable();
+
+const ACT_SCOPE_GUARD_PREFIX = "[act-scope guard]";
+
+aroundEach(async (runTest, ctx) => {
+  await runInTestChain(ctx.signal, ctx.task.name, runTest);
+});
+
+/* Registered after the assertion guard, so it runs BEFORE it (after-each hooks run in reverse), and
+   after every after-each hook a test file registers: nothing the file's own clean-up does can reopen
+   a scope once this has checked. */
+afterEach(async () => {
+  await settleActTurns();
+  const leak = openActScope();
+  if (leak !== null) throw new Error(`${ACT_SCOPE_GUARD_PREFIX} ${leak}`);
 });

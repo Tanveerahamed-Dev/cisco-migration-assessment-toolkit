@@ -20,6 +20,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
 import { fabric } from "../core/data";
 import { decodeInvestigation, useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
@@ -60,7 +61,7 @@ async function mountPath(search: string): Promise<HTMLElement> {
   act(() => useInvestigation.getState().hydrate(decodeInvestigation(search)));
   const c = mount(<PathTrace />);
   /* The announcement and the split re-aim land a frame after the synchronous answer. */
-  await act(async () => {
+  await actAsync(async () => {
     await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
     await new Promise<void>((r) => setTimeout(r, 0));
   });

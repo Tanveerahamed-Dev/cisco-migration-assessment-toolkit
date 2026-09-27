@@ -5,6 +5,297 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **Phase 2 of the single-source-of-truth program (recorded 2026-09-27; an UNCOMMITTED working tree).**
+> Atlas Scope no longer lives in its own repository: it was imported with its history as the parent
+> repository's `atlas-scope/` directory (`f036ed77`), and its compilers bind to that tree's engine output
+> (`docs/acceptance.md`, F section, "Updated 2026-09-27"). Phase 2 ran seven clusters, each followed by an
+> independent verifier: **E1** (the engine publishes per-finding evidence pointers — the producer half
+> of A1), **E2** (a forwarding substrate in the engine's sample fleet, and the RIB-completeness rule),
+> **S1** (the compiler: one set, one binding, the evidence contract), **C2** (the state-06 tab strip cut
+> at 1440), **C5** (the stepped, capped tier cross-fade), **D3** (Escape and the evidence drawer) and
+> **E2E3** (the cold first palette open). Entries R109–R115 below record what they closed, and O50–O62
+> under Open what they left; O12, O13, O16 and O34 carry status notes. **Verdicts:** E1 and C2 upheld by
+> their verifiers; E2, S1, C5, D3 and E2E3 verified with defects, which are fixed where an entry says
+> FIXED and open where it says OPEN. E2, S1 and E2E3 closed PARTIAL. **Not a re-grade:** no criterion
+> moves here. **What the record step itself re-ran** (2026-09-27, one `vitest` invocation on this
+> working tree): the 14 atlas-scope test files the entries below cite as pins — 482 tests, 477 passed,
+> 5 failed, 0 skipped. The 5 failures are exactly `compile-all.test.ts`'s R6 block over the repository
+> golden, which S1 left strict and red until the owner decides (O51). It also re-ran the suites that read
+> these three documents (`journey-scope`, `motion-inventory`, `mock-classification`, `source-hygiene`,
+> `claim-lint`, `emphasis`, `acceptance-gates`); before this record two of them were red on
+> `acceptance.md` (the missing `J5-first-open-palette` bullet and the undeclared module-mocking
+> `src/forwarding/rib-completeness.test.ts`). After this record's edits, those seven plus every other
+> test file that reads these documents (16 files, 378 tests) passed in one invocation, 0 failed, 0
+> skipped — including §4.8's settle check, now exact for `TIER_FADE_MS`. **Reported, not re-run by the
+> record step:** every engine-side (Python) test, every browser
+> harness (`capture-motion.mjs`, `audit-d3-focus.mjs`, `capture.mjs`, `measure-inp.mjs`), the mutation
+> checks and every red-before-fix claim. **The input was cut short:** the record step's cluster reports
+> ended inside E2E3's second open item; anything after that point is not recorded here (O62). The
+> working tree also holds changes no report the record step received describes — for example the
+> act-scope and timeout-floor notes in `vitest.config.ts`, `src/test-setup.ts` and
+> `src/test-support/act-turns.ts` beyond D3-V2's use of it — so they are not recorded here either.
+
+### R109. A1, producer half — the engine published no per-finding pointer to the record a finding was derived from; it now publishes one on every punch-list row, and E1's verifier round fixed the pointers that did not survive publication — FIXED IN THE ENGINE; A1 does not move until Atlas Scope renders them (O12, O50)
+The gap O12 has carried since wave 1: "Closing A1 needs the engine to publish per-finding record
+pointers." **What the engine now publishes** (E1, reported): every punch-list row carries
+`evidence_basis` (`record` / `row` / `absence`) and `evidence_refs`, elements `{kind, host, ref, role,
+cite}` whose `ref` is an RFC 6901 pointer into the same snapshot, with `evidence_refs_total` only when a
+list is capped. **Census** (a scratch sample built by the HEAD builder, after the repair round): 146
+punch rows, every one with both keys; 572 refs, at most 28 on a row, none capped; basis `record` 52 (49
+through interface rows, 3 through `config_text`), `row` 88, `absence` 6 (five security absence checks
+and F142 "No QoS configured anywhere", absence-only with 18 `per_device` witnesses); 0 unresolved or
+wrong-record refs in the on-disk, redacted, explorer-embed and explorer-embed-redacted forms.
+**Defects the verifier found and E1 fixed:**
+- **V1 — an index into a list a published consumer re-filters.** The L1 fold cited
+  `/physical_health/<k>`; the explorer embed re-filters `physical_health`, so the index named another
+  row there. Fixed by dropping that ref (the key-addressed interface record already makes the row
+  `record`). The test now checks the REAL explorer embed extracted from `write_html_explorer`'s output,
+  not only `_slim_for_embed`, so any future index into a re-filtered list goes red.
+- **Receipt folds pointed at the raw current-run receipt, not at what is published.** The VTP and IPv6
+  folds now compute their pointers against `embedded_vtp_safety_baseline(receipt)` and
+  `embedded_ipv6_routing_adjacency_baseline(receipt)`, matching rows by value and ignoring only the
+  `projection_custody` stamp the embedding rewrites; on a rejected receipt the published projection is
+  empty, so no witness is emitted rather than a dangling one. On valid receipts the golden's refs are
+  unchanged (the only golden difference from round 1 is the two L1 `physical_health` refs).
+- **V4 — `deduction_refs`** keeps the list-of-refs shape S1 compiles against, with documented
+  subsequence semantics, rather than null placeholders (a null would break the `{kind, host, ref,
+  role, cite}` element contract).
+- **Identity is checked by class first:** the nearest device-owning node on the pointer path must name
+  `ref.host`, or the host must be a path token; an own-row table is an additional check only for each
+  fold's derived-from row, which the host check cannot tell from a same-host sibling.
+- **V5 — CL-02 honesty, no engine change:** a test pins that every record-kind ref on a `record` CL-02
+  row is `role: derived_from` and cites the graph cut.
+**Pinned by** `tests/test_punchlist_evidence_refs.py` (a real pipeline run in six forms with the
+identity checks; a real-producer fleet for Addressing, Trunk, Link L1, Inventory, VTP, Coverage,
+Timing-PTP and Multicast-Media; the rejected-receipt and IP-literal-hostname cases) and
+`tests/test_pipeline_golden.py::test_every_punchlist_evidence_pointer_resolves_on_the_published_snapshot`
+(reported). **MCP exposure** (E1's decision, reported): `get_finding` returns whole rows, so the keys
+reach MCP clients; they carry only pointers built from hostnames, port names, section names, VLAN ids
+and indexes, and cites of the same material — no config values, and no IP other than a hostname that is
+itself an IP literal (already a snapshot key, and rewritten consistently by redaction, which a test
+proves); a `config_text` pointer points AT a config line and does not copy it. The golden files
+`UPDATE_GOLDEN=1` wrote on Windows were CRLF and were normalised to LF; `sheet_schema.json` ends
+byte-identical to HEAD. **A1 does not move:** the committed sample is not yet regenerated, and Atlas
+Scope compiles the contract but does not render it (O50). The residuals are O52.
+
+### R110. E2 — a RIB-completeness rule checked each protocol FAMILY, so one family's routes vouched for a session whose link the table did not hold, and a denial read as decided — FIXED per session (`src/forwarding/rib-completeness.ts`), with the basis no longer listing a family a reason concerns (E2-V1, E2-V3)
+Found by E2's verifier (E2-V1), reproduced by the cluster: on the regenerated fleet, under the
+per-family rule, `tcp/443 10.0.30.50 -> 10.0.99.2` was a decided REFUTED denial, because dist1's OSPF
+routes let the rule treat core1's OSPF family as accounted for while core1's own FULL/DR adjacency with
+10.0.99.2 on the L2 trunk Po1 ran over a link core1's table does not hold — the B1 seed coming back.
+**Fix (reported).** Every session is checked individually: OSPF
+FULL/2WAY, EIGRP up, or an Established BGP peer (any numeric State/PfxRcd, 0 included) must run over a
+link the table holds — for a record that names an interface, a connected route on that interface
+covering the neighbour's link address (`address`; for EIGRP and BGP, whose records name the neighbour by
+address, `neighbor`); for a session with no interface (BGP), some route covering the peer. Interfaces
+match by structure (`Po1` = `Port-channel1`), not from a list. A family teaches a host no routes only at
+`captured_empty`; a record without its link fields leaves that session UNKNOWN, never complete. The kept
+per-family rule ("exchanging, but no route of its family") runs first, so each session gets exactly one
+reason. `ribCompletenessBasis` now leaves out every family any reason concerns — its row, its sessions'
+routes or links, or its overlay peers — and a reason that applies to all families empties the basis
+(E2-V3); the public `RibIncompleteness` shape `{label, cite}` is unchanged. The new label keeps the
+phrase "FULL/DR, yet the table…", so `PathTrace.claim-cites` B6(b) still passes on the regenerated data.
+Boundaries, stated in the rule: below-2WAY states imply no link; an unnumbered interface reads as
+incomplete (conservative); a BGP peer covered only by the scoped table's default route counts as
+reached (O54). **On the committed snapshot the change alters no label and no verdict** (reported: every
+label byte-identical). **Pinned by** `src/forwarding/rib-completeness.test.ts` — 23 of 23 re-run by the
+record step, including "every session a host holds implies the link it runs over — checked per
+adjacency, not per family (E2-V1)" and "the basis never lists a family whose own adjacency is what makes
+the table incomplete (E2-V3)" — and by `src/forwarding/rib-partial-route.test.ts` (2 of 2 re-run), the
+HEAD real-data B1 assertions restored plus a pin that `routing_neighbors.core1.ospf[0]` is among
+core1's reasons: green on both fleets, red with the per-family rule substituted (reported). The
+implementer's counterfactual block in that file is removed: under the per-session rule it was a no-op on
+both fleets, and it had hidden E2-V1. **Attribution of the regenerated-data reds** (reported): 41 tests
+fail across the 24-file set on the regenerated fleet under this rule — the identical 41 that fail there
+under the HEAD rule, so purely data-driven; the 14 the implementer called "premise" failures all pass
+again, and the label rephrase fixed one more, so 40 remain for phase 3's regeneration. The residuals
+(the fixed family vocabulary, the default-route boundary, the class sweep's unchecked half) are O54.
+
+### R111. E2 — the sample fleet's first forwarding substrate carried routes nothing originated, a BGP peer nothing reached, and running-configs that did not end, which hid an engine defect — FIXED at the source (`webapp/sample_data/build_sample.py`) (E2-V4, E2-V5)
+The substrate (`_add_forwarding_substrate`, reported) gives dist1/dist2 routing tables, ACLs and OSPF
+adjacencies, with no fabricated EIGRP or BGP. **E2-V4, fixed in deep copies:** dist1/dist2 now hold
+core1's VLANs 10.0.10/20/30 as `O E2 [110/20]` (core1 brings them into OSPF only by `redistribute
+connected`; its one area-0 interface is Gi1/0/40); core1's config gains `default-information originate`,
+so the dist pair's `O*E2` default has an originator; the BGP peer is eBGP multihop 2 behind core1's
+existing upstream next hop (`ip route 203.0.113.1 255.255.255.255 10.0.10.254`, and `S 203.0.113.1 [1/0]
+via 10.0.10.254` under a "203.0.113.0/32 is subnetted" header, which the parser handles). Deliberately
+NOT fixed: core1's EXSTART/DROTHER neighbour 10.0.40.9 on Vlan40, a pre-existing fixture seed of a stuck
+adjacency that the rule's boundary does not read (O54). **E2-V5:** `_dist_running_config` now ends with
+`end`. That exposed a real engine defect the truncated v1 configs had hidden — `bgp_intent.py`'s
+producer and validator disagree on a peerless host with an empty BGP summary (O54) — pinned as a strict
+xfail. **E2-V2 reconciled, not changed:** `capture_integrity`'s "empty" is the same whitespace-only
+observation `cmd_capture_state` classifies as empty and `compute_protocol_assessability` calls
+`captured_empty` — not an independent truncation or error tripwire — and the test pins that the only
+empty captures the substrate authors are the five intended neighbour tables. **Engine-side census**
+(scratch HEAD engine, reported): 36 of 117 sections change against no substrate; `cable_map`,
+`move_groups`, `wave_sequencing`, `failure_impact` and `link_centrality` byte-equal, `health_scores`
+unchanged; the punch list stays at 146 with two rows reworded (native VLAN 1 on 27 -> 26 ports; "No QoS
+configured anywhere" 18 -> 20 assessable devices); `capture_integrity` `n_incomplete` 18 (unchanged),
+`n_empty` 5 (the owner-directed empty EIGRP/BGP tables on dist1/dist2 and EIGRP on core1), the dist
+running-configs integrity-ok; the output has 0 CR bytes and 0 client-marker hits. **Pinned by**
+`tests/test_sample_fleet_substrate.py` (reported). What the substrate does NOT yet deliver — decided
+core1 outcomes — is O53.
+
+### R112. S1 — the compiler's verifier found ten defects: tests that compiled a fabricated shape, output that could land in tracked or bundled directories, a per-file command that could leave a mixed set, rollbacks that could lose the only copy, an input blamed for a compiler bug, untracked files labelled as repository files, and refs to null accepted as evidence — FIXED (S1-V1 to S1-V10)
+All reported by S1 and its verifier; the pins re-run by the record step (see the banner).
+- **S1-V1 — the table tests.** They are insulated by stripping ONLY the three evidence-contract keys
+  from the golden's punch rows — the pre-contract producer shape, not a fabricated fixture; the golden
+  AS PUBLISHED stays under one strict R6 test, red until the owner decides (O51). Resolving pointers
+  against a stripped document, or dropping unresolvable refs, was refused as a weakening.
+- **S1-V2/V4 — output placement.** `--out` is judged on the canonical path by whole segments; a path
+  component ending in a dot or a space is refused. For any non-sample source the refused class is "any
+  repository directory Git does not ignore"; `.local-data/` is special-cased so the rule does not depend
+  on Git being present; the sample keeps its freedom outside `src/` (`E_OUT_REFUSED`, exit 2). Pinned by
+  `compile-all.test.ts`, "in the real repository, a Git-ignored directory is accepted and a tracked one
+  refused (S1-V4)" and its neighbours.
+- **S1-V3 — mixed sets.** A per-file command refuses with `E_MIXED_SET` rather than silently writing all
+  four; an absent sibling is allowed (a missing file breaks the build loudly), which keeps provenance's
+  per-compiler sandboxes valid. Pinned by "a per-file command refuses to leave its file bound to a
+  different snapshot from its siblings (S1-V3)", with its positive control.
+- **S1-V5 — rollback.** Restore renames `.prev` over the new file in one step, guards each step, and
+  keeps the staging directory whenever a restore failed (`E_ROLLBACK_INCOMPLETE`, naming where the
+  previous files are). Pinned by "a rollback that cannot complete keeps the previous file and names where
+  it is (S1-V5)".
+- **S1-V8 — blame.** Only a `TypeError` is blamed on the input, as `E_SNAPSHOT_SHAPE` worded "input
+  shape or compiler defect", with the `TypeError` kept as its cause (`CompileError` gained
+  `options.cause`); any other error propagates unchanged. Pinned by `compile-validate.test.ts`, "only a
+  shape failure is blamed on the input (S1-V8)".
+- **S1-V9 — origin.** `sourceOrigin: "repository-file"` means a file Git TRACKS in this repository;
+  an untracked or ignored in-repository file is `"external-file"`, named by basename and bound to its
+  bytes as read. Origin is decided by Git tracking only where Git's top level IS this repository;
+  elsewhere (a copied package, a sandbox) by containment, which keeps O15's CRLF/LF sandbox tests
+  valid. For a repository file `sourceExactSha256` is over the Git-stored blob, the LF form, so it equals
+  `"sha256:" + sourceSha256` (O15; the conflict with R3's "exact bytes" is O55). Pinned by "an UNTRACKED
+  file inside the repository is an external file, bound to its bytes as read (S1-V9)" and its tracked
+  control, and by `compile-binding.test.ts`.
+- **S1-V10 — producer prose and null refs.** Producer prose is carried verbatim. A ref must resolve to
+  a NON-NULL value — the engine's own contract (`tests/test_punchlist_evidence_refs.py`,
+  `punchlist_evidence_problems`) — because citing a present key holding null would render absence as a
+  record; this supersedes the implementer's "null accepted". Pinned by `compile-evidence.test.ts`, "a
+  pointer to a null value is refused; the same pointer to a value compiles (control)".
+Carried forward as a contract note for E1: refs should point at records (`/interfaces/<h>/<port>`), not
+at sparsifiable fields — the engine's on-disk writer drops `''` fields and `run_config_observed: false`,
+and a pointer to a dropped field would not resolve in the compiled source. The residuals are O55.
+
+### R113. C2 — in state 06 at 1440, the tab strip above the findings grid was sliced by 19 px when the priority queue restored its act view — FIXED at the root cause, "fit first", with a class guard keyed by ARIA role (acceptance-report C2, state 06)
+**Cause** (C2, independently verified, reported): the queue's act-view restore went through
+`DataGrid`'s `revealBelowHeader` NESTED PORTS branch and scrolled Rail A 19 px, although the grid's own
+51.3 px band could hold the 40.4 px F001 row. **Fix:** the reveal fits first — the rail moves only when
+the grid's band cannot hold the row. **Class guard:** no ancestor or document half of a reveal leaves a
+`[role=tablist|toolbar|menubar]` partly visible — keyed by ARIA role, not by a list of panels.
+**Verifier follow-ups, each fixed with red-before evidence (reported):** (V1) the generated-family test
+is split into 54 per-group tests plus a denominator test, which runs any group not yet run so it is
+never vacuous under `-t`; the slowest C2 test took 1.7 s in a full loaded run. (V2) The remainder a
+reveal hands outward can no longer change sign — clamped, which keeps every existing case bit-for-bit —
+so taking the strip out never makes the document scroll back; the family now runs inside a scrolled
+document and includes the full-height rail shape, so "the document never moved" can fail. (V3) The
+`landOnAnswer` call sites of `landingInset` are pinned by an integration test over the real denied
+trace. (V4) The path mode panels' scrim cover is the path surface's own ground (`var(--bg)`, read from
+`PathTrace.css` by the test), not the rail's `--surface-1`. **Pinned by**
+`src/panels/DataGrid.c2-chrome-slice.test.tsx` (62 of 62 re-run by the record step) and
+`src/panels/PathTrace.c2-landing.test.tsx` (9 of 9 re-run), and by eight C2 mutations in
+`review/mutation-check.mjs` (`c2-reveal-rail-first`, `c2-reveal-cuts-nav-strip`,
+`c2-landing-slices-previous-control`, `c2-mode-panel-without-scrim`, `c2-reveal-overshoot-scrolls-back`,
+`c2-landing-head-fixed-pad`, `c2-landing-decided-fixed-pad`, `c2-scrim-cover-rail-fill`), all KILLED on
+2026-09-26 (reported). **Harness:** `review/capture.mjs`'s `readScrollEdge` (`chrome-sliced` and
+`moved-port-top-slice` blocking) runs in `text` and `app`; `text` covers one width in each ladder band,
+90 states. A release server another agent held on :4181 (an isolated E2E3 build without the fix) still
+showed "moved-port-top-slice routes.core1[6]", so the detector does catch the sliver (reported). The
+final browser checks ran on an isolated scratch build on :4195. The residuals are O56.
+
+### R114. C5 — the quality-tier cross-fade was a wall-clock CSS transition that one long host frame could cut; it is now frame-stepped with a per-frame cap, and the verifier's five findings are fixed — FIXED; the owner decided the cap wins (design brief §4.8)
+**Owner decision (C5, 2026-09-26):** tier fades are frame-stepped with a per-frame cap — no frame moves
+the overlay's opacity more than `FADE_MAX_STEP` = 0.2 — and where the cap and the 300 ms duration bar
+collide, the cap wins, on the terms below. The graded failure: the CSS model stepped 0.36 across one
+116.6 ms host frame (bar 0.25). **Verifier findings (all reported, all fixed):**
+- **C5-V1 CONFIRMED — the envelope claim was false.** An independent run failed 2 of 24 fades on the 300
+  ms bar (316.6 and 316.7 ms) because the cap bound on host stalls; the claim that only a host presenting
+  fewer than about five frames in 300 ms could overrun was wrong. Modelled offline on 60 Hz frames with
+  one long frame at every placement: a frame of 33 ms or more can bind the cap; it adds at most 1, 2 or
+  4 frames for 83–100, 116–133 or 200–250 ms stalls; and the uncapped wall-clock fade (the old CSS one)
+  already reaches 300 ms when one 50 ms frame lands among its last. The wrong wording is removed from
+  `emphasis.ts` and `scene.ts`. **Resolution, stricter rather than looser:** a fade over 300 ms with no
+  host stall inside it still FAILS; a fade with a host stall inside it (a frame over
+  `T.FADE_HOST_STALL_MS` = 25 ms, one missed vsync) may run past 300 ms only if every frame from 300 ms
+  on ends the fade or moves the full 0.2 — catching up passes, dawdling fails. The rule uses only the
+  harness's own 300 ms and 0.2, never the product's; stall-extended fades are listed apart with their
+  host frames, and the injected-stall item gets the same duration rule.
+- **C5-V2 — the driver was untestable inside `scene.ts`.** It moved into the ease owner as a pure
+  `createTierFadeDriver(host)` in `src/fabric3d/emphasis.ts`: it steps on the raw frame time through
+  `stepTierFade`, writes the opacity, calls `finish` exactly once on the frame the value reaches exactly
+  0, and owns the two-window no-frames watchdog; timers and the overlay are injected, so it runs under
+  vitest fake timers. `scene.ts` keeps only the wiring (`frame()` calls
+  `tierFade?.driver?.frame(raw, reducedMotion);` unconditionally, before its first early return); a
+  source-text tripwire pins that line, the host wiring, and that `scene.ts` steps or times no fade
+  itself — jsdom has no WebGL, so `frame()` cannot execute in a unit test.
+- **C5-V3 — a stalled fade could pass vacuously.** A pure `stalledFadeVerdict(tag, f)` counts an
+  injected-stall fade as established only when the stall was injected AND the next frame lasted at least
+  `FADE_STALL_MS` minus one 60 Hz frame (103.33 ms); otherwise the item is UNPROVEN, never a vacuous
+  PASS.
+- **C5-V4 — the harness's rationale was wrong.** A whole-canvas SHARE is a ratio that area does not
+  dilute; the real case is gradual change below 8/255 over the rest of the canvas carrying the
+  whole-canvas total, pulling a small cut's share under the bar. A known-answer fixture shows it (100 px
+  cut by 60/255 in one frame beside 1,500 px drifting 7/255 in 1/255 steps: the whole-canvas share
+  passes, only the masked share fails).
+- **C5-V5 — the settle check was driven by a hand-kept list.** The motion-inventory settle block now
+  iterates `OWNER_EASES`, every exported `EaseSpec`, cross-checked against the owner's source; the
+  `EASES` equality assertion is kept. `SETTLE_FIGURE_PENDING = {TIER_FADE_MS}` excused only the missing
+  settle-figure text in §4.8, which the record step owns; **this record adds it** ("settles in **283.4
+  ms** at 60 fps"), so the row is now checked exactly like the others. The entry itself is still in the
+  set, and removing it is the test owner's edit (O57).
+**Pinned by** `src/fabric3d/emphasis.test.ts` (48 of 48 re-run by the record step: "C5: every fade the
+ease owner steps moves at most FADE_MAX_STEP…", "C5: the tier-fade driver: step on raw, write, remove
+at exactly 0, and a two-window no-frames watchdog", "C5: when the per-frame cap delays the tier fade…"),
+`src/fabric3d/scene.test.ts` (45 of 45 re-run) and `src/core/motion-inventory.test.ts`. **Browser
+evidence, reported and conflicting:** C5's re-grade on a fresh stamped build on :4184 gave
+`capture-motion.mjs` exit 0, all 7 items PASS, 24 of 24 fades, largest step 0.2, 266.6–283.4 ms, none
+stall-extended (so the catch-up rule is exercised only by known answers), injected-stall 4 of 4 on
+116.6–116.7 ms frames, z-fighting 1,516 steps, popping 2,915 still pairs, AO 8 restores; the verifier's
+single final run exited 4 (UNPROVEN, 1 of 24 fades not established) — O57. `report.json` gained per-fade
+`hostStallFrames`, `stallExtended` and `pastBarFrames`. The residuals are O57.
+
+### R115. D3 — a closing evidence drawer could be re-entered during its slide, and four more verifier findings on the drawer's focus return — FIXED; Escape closes the drawer (owner decision, design brief §7.1)
+**Owner decision (2026-09-26):** at the drawer rung (1024–1279 px) Escape closes the evidence drawer
+when focus is inside it and no inner layer is open (the inner layer closes first); focus returns to the
+drawer's opener, or follows `focus-return.ts`'s third-door chain, never `<body>`; from the commit that
+closes it the drawer is `inert`; the persistent rail (≥ 1280 px) is never collapsed by Escape and never
+inert. **Verifier findings (all reported, all fixed):**
+- **D3-V1 — re-entry during the slide, fixed by class.** A container that is not shown is `inert` from
+  the commit that hides it, not 240 ms later. `useReleaseFocusOnHide` (`src/app/focus-return.ts`) owns
+  it — release focus first, then set `inert`, and remove only an `inert` it set — so Rail B's drawer
+  close, Rail B's hide and Rail A's single-column hide all get it. Red before: "a closing drawer cannot
+  be re-entered…" failed 3 of 3; in a release build with the `inert` line mutated out, "Tab x7 at once
+  during the slide: focus landed on BODY" and "focus() into the rail during the slide: focus landed on
+  BODY".
+- **D3-V2** — `settle()` in `drawer-focus-return.test.tsx` is `flushTurns(20, 8)` from
+  `src/test-support/act-turns.ts`, and the file is no longer a raw async `act()` offender in
+  source-hygiene.
+- **D3-V3 — guard shape 4 bound the door to the component, not the element.** The first argument of
+  each third-door call is reduced to its root symbol, and a hide is released only when the element
+  carrying it passes its `ref` a value rooted at that same symbol; new planted counterexample
+  `hiddenWithTheDoorOnAnotherElement`; `surfaces.tsx` passes with no ratchet entry.
+- **D3-V4 — under reduced motion the configuration button was unfocusable in its first frame.**
+  `EvidencePane.css`'s `.ev *` sets a 1 ms transition over `all`, so descendants transition the
+  visibility they inherit. `App.tsx`'s `config.open` now commits its store writes with `flushSync` and
+  waits up to `CONFIG_OPEN_MAX_FRAMES` = 6 frames for `checkVisibility` before activating the button;
+  the stylesheet fix is routed (O58).
+- **D3-V5** — if the marked invoker has left the page, the audit's `drawerCase` reports NOT DRIVEN (a
+  failure) instead of passing.
+**The audit** (`review/audit-d3-focus.mjs`, reported) keys `ensureRailShown` on the drawer rung and on
+`data-drawer`/`inert`/visibility; a new `focusOn()` makes each surface case prove focus reached its
+element or report NOT DRIVEN; new REENTRY cases and a reduced-motion drawer pass; `drawerOpen` waits 8
+animation frames on top of 500 ms (under load, `v`'s frame arrived 790 ms and 3.2 s after the key in 2
+of 8 runs); and `ensureInspectorFromCite` re-enters its state when the citation it opened from has left
+the page, so "inspector (citation)" cases no longer measure the `#stage` fallback. **Pinned by**
+`src/app/drawer-focus-return.test.tsx` (18 of 18 re-run by the record step) and
+`src/app/focus-return.guard.test.ts` (99 of 99 re-run). **Final checks** (this tree's release build on
+:4297, index sha256 `7305733b…c262ee` matching the build; :4181 was another agent's): `--sweep` exit 0,
+"DRAWER: 75 case(s) driven", 0 failures; the default `--vp=1152` run 135 of 135 cases with 0 failures,
+its remaining visibility failures being the drawer-over-Inspector layering (O58), and 141 cases, 0
+failed, 0 not visible with the routed rule applied in an isolated copy; `--vp=390` exit 1 only on the
+existing "SWEEP NEVER EXERCISED: offViewPointers" (148 cases, 0 failed, 292 stops, 0 not visible). The
+verdict belongs to the next independent grader. The residuals and the three routed fixes are O58.
+
 > **Repair wave 8, the last full repair wave of this effort (reconciled 2026-09-26, committed as
 > `7f67013`).** Entries R103–R108 below, the new O47–O49 under Open, and the status notes and
 > corrected headings on R42, R72, R79, R91, R94, O6–O9, O11–O14, O16, O17, O19–O23, O25, O27–O31,
@@ -3113,6 +3404,18 @@ corrected O41's stale manifest note (R108). Still open from that re-grade: A1 (O
 re-grade of `34bd435`: O6, O7, O8, O11, O29, O33, O42, O43 and O46; wave 8 changed none of the code the
 first six name (`git diff --stat fea2037 7f67013` touches no file under `src/forwarding/`,
 `src/analysis/` or `tools/`, nor `postfx.ts`, `claims.ts`, `commands.ts`, `store.ts` or `urlSync.ts`).
+Phase 2 of the single-source-of-truth program (recorded 2026-09-27, an uncommitted working tree in the
+parent repository): the engine now publishes per-finding evidence pointers (R109), the sample fleet has a
+forwarding substrate (R111) and the RIB-completeness rule is per session (R110), the compiler is one
+bound set (R112), and C2, C5 and D3 defects were fixed (R113–R115). Still open from it: A1's consumer
+half (O50) and the golden's R6 decision (O51); E1's residuals (O52); A2 and B8, now blocked on an owner
+decision rather than on data alone (O53); E2's residuals (O54); S1's (O55); C2's (O56); C5's (O57); D3's
+routed fixes and residuals (O58); the cold first palette open (O59), scene convergence under the harness
+(O60), INP elsewhere and the harness's cost (O61), and E2E3's residuals (O62). O12, O13, O16 and O34
+carry phase-2 status notes. No phase-2 report the record step received addresses the other open
+entries; phase 2 did change code several of them name (`DataGrid.tsx`, `PriorityQueue.tsx`,
+`PathTrace.tsx`, `CommandPalette.tsx`, `App.tsx`, `scene.ts`, `postfx.ts`, `store.ts`, the compilers
+and the compiled data among them), so their last status notes are not re-verified at this tree.
 
 ### O11. Should an earlier refused hop undercut a denial? — OWNER DECISION
 From R16. The claims-engine lane did not make the rule "every hop before the last must be RESOLVED"
@@ -3165,6 +3468,14 @@ context 133, none 1; F099 in 3 interactions with core1 unmoved; a first census w
 read F139 stale, O47). Wave 8 changed no evidence-route code (`EvidencePane.tsx`, the compiler and the
 data are not in `git diff --stat fea2037 7f67013`). Still NOT CLOSABLE IN ATLAS SCOPE: it needs, per
 finding, the interface, ACL line or config block it was derived from, from the producer.
+**Status at phase 2 (2026-09-27): the producer half is DONE; the heading's "not closable in Atlas
+Scope" no longer holds, and the grade still does not move.** The engine now publishes
+`evidence_basis`, `evidence_refs` and, when capped, `evidence_refs_total` on every punch-list row (R109:
+on a scratch sample, 52 rows `record`, 88 `row`, 6 `absence`), and the compiler carries them onto the
+finding (R112). Two things stand between that and A1: the committed sample is not yet regenerated, so
+the shipped `fabric.json` carries none of it, and nothing renders it (O50); and the repository golden
+cannot compile as published (O51). A1 is re-graded only after phase 3 renders the pointers under the
+contract in design brief §5.1.
 
 **B1 residual — FIXED (see R27).** Wave 1 left four surfaces printing the raw band without
 `presentBand` (`CommandPalette.tsx:194`, `query.ts:189`, `query.ts:219` — the `is:healthy` answer — and
@@ -3200,7 +3511,11 @@ CLOSABLE IN CODE on this data. **Confirmed by the re-grade of `34bd435`** (B8 UN
 462 denied or dropped, `counterexample().found = 0`, `isDefiniteDelivery = 0`; the negative state renders
 honestly; the positive state only under `vi.mock('./rib-completeness')` and `vi.mock('./bindings')`).
 Wave 8 changed nothing under `src/forwarding/`. Still UNPROVEN and NOT CLOSABLE IN CODE on this data: it
-needs a snapshot in which a denied or dropped flow has a decided nearby delivery.
+needs a snapshot in which a denied or dropped flow has a decided nearby delivery. **Status at phase 2
+(2026-09-27):** the data half is being built in the engine (R111's forwarding substrate), and on the
+regenerated fleet it still gives 0 counterexamples of 70, because core1's own table reads incomplete;
+forcing core1 complete as a counterfactual gives 26 of 70. What remains is an OWNER DECISION about the
+B1 seed, not missing data alone (O53).
 
 ### O14. `failureImpact(h).engine.record` aliases the compiled snapshot — OPEN (owner: `blast.ts` / `core/data.ts`)
 Found by the hollow-test repair (R19): the new `repeatable()` check wrote a junk key into the first
@@ -3222,6 +3537,12 @@ compiled `fabric` is not frozen, and its B grader spliced an ACL line in the pag
 OPEN.
 
 ### O16. C5 — motion render quality: every C5 motion item PASS at the re-grade of `70bea72`, in the wave-5 runs at `78bdba5` (reported) and at the re-grades of `8eac055` and `34bd435` (upheld); C5's one failing static item, the hairline, FIXED (R68); OPEN: a caller's tier change mid-motion still freezes the view for its re-warm-up (OWNER DECISION: the render owner) and the cluster-rule wording (OWNER DECISION: the C5 owner)
+**Status at phase 2 (2026-09-27).** The tier cross-fade is now frame-stepped with a per-frame cap of
+0.2 by owner decision, and the cap wins over the 300 ms bar on a host stall under a catch-up rule (R114;
+design brief §4.8). Neither residual in this heading was addressed — the mid-motion `setQuality` freeze
+and the cluster-rule wording remain OWNER DECISIONS — and phase 2 adds C5's own residuals (O57),
+including a tier change during a running fade that removes the overlay in one frame.
+
 **Status at `7f67013` (wave 8).** The re-grade of `34bd435` upheld C5: its grader's full `capture-motion`
 run exited 3 on one fade stall ("opacity fell 0.5 in one frame") under 93 % host CPU, and a quiet 2-leg
 re-run gave 24 of 24 fades at 266.6–266.8 ms; the refuter's full 4-leg run exited 0 (24 tier-held
@@ -3922,6 +4243,13 @@ unevaluable-suggestion branch, and a counterexample search with more than 48 can
   these defects; it does not reach the blast, layout, query and compiler guards, whose pre-fix code
   predates the root. A2 is NOT CLOSABLE IN CODE
   (it needs a snapshot with depth-2 flows); F3's remaining gap is history that does not exist.
+- **Status at phase 2 (2026-09-27).** A2's data now exists in scratch: E2's substrate (R111) regenerated
+  through the real compilers and engine gives, over `engine.test.ts`'s depth-ratchet set of 3,249
+  traces, hop depths {0: 2,574, 1: 343, 2: 332} and 332 resolved next hops (reported) — the first depth-2
+  flows — but 0 definite and 0 decided outcomes, so A2's "the route or ACL line that decided it" at hop
+  2 is still not reached; that is O53's owner decision. The committed snapshot, and so the ratchet's
+  `toBe(1)`, are unchanged until phase 3 regenerates it. F3 is unchanged; phase 2's clusters report
+  their new tests red before each fix, observed in working trees (R109–R115), and nothing is committed.
 
 ### O35. E5 — keystrokes of 240–464 ms after first paint during a cold load — NOT REPRODUCED in the acceptance-grade runs at `8eac055` or `34bd435` (worst 184 ms at each); kept OPEN as a margin watch (owner: the shell, surfaces and DataGrid/PriorityQueue owners; `src/fabric3d` for `createScene`); the cost is measured and attributed, and since R80 it can be measured on a quiet host
 **Status at `7f67013` (wave 8).** The re-grade of `34bd435` (acceptance-grade, on AC) did not reproduce
@@ -4369,6 +4697,289 @@ sequence at 1920 only, where R106 fixes it. Whether A4 ("re-aiming without losin
 requires the queue itself on screen at the stacked and single-column rungs after the reader chose
 another surface — or whether the selected row being kept inside its own port suffices there — is for
 the owner and the grader of `7f67013` to decide; the code does not force either reading.
+
+### O50. A1, consumer half — the evidence contract is compiled but NOT RENDERED — OPEN (owner: phase 3, the evidence pane)
+From S1 (reported; confirmed by the record step: outside tests, the five field names occur under `src/`
+only in `src/core/types.ts`). `Finding.severityBasis`, `evidenceConfidence`, `evidenceBasis`,
+`evidenceRefs` and `evidenceRefsTotal` are compiled and rendered nowhere. The rendering contract is design brief §5.1
+("Per-finding evidence pointers"): render by `evidence_basis` and each ref's `kind`/`role`, never by
+basis alone or by word matching; CL-02's interface refs are `role: derived_from` graph-cut links, not
+configuration, although the row's basis is `record`; `deduction_refs` pair with deductions by pointer
+and cite, not by index; `severityBasis` and `evidenceConfidence` are the producer's words verbatim, even
+`N/A`, `-` or `''` (null only when the key was not emitted) — disclosures, never measurements; a capped
+list (`evidenceRefsTotal` greater than the refs' length) never reads as complete; a null `evidenceRefs`
+means "not emitted", never "no evidence". The shipped `fabric.json` carries none of this until the
+sample is regenerated and recompiled (`src/data/fabric.json`'s `meta.sourceGitBlob` still equals the
+committed sample's blob, which carries no `evidence_refs` — the record step's `git rev-parse` and
+`grep`). A1 is re-graded only after both.
+
+### O51. R6 — the repository golden is a stripped derivative that cannot compile as published — OWNER DECISION
+From S1 (reported; the record step's run shows `compile-all.test.ts`'s R6 block red, 5 of 5 — "exits 0
+and writes the four files…", "names the golden file…", "all four outputs share one binding…", "compiles
+a real network…", "carries the evidence contract exactly where the golden carries it"). The golden
+(`tests/golden/snapshot.json`) cites `/device_dossiers/…` in its punch-list refs, a section the golden
+harness pops, while its `schema_census` still lists that section as published. The compiler refuses it
+with `E_EVIDENCE_REF_UNRESOLVED` and the plain-language reason "sections removed after the engine wrote
+it". **For the owner:** keep the cited sections in the golden, or compile the engine's real on-disk
+output instead. The R6 tests stay strict and red until then; resolving pointers against a stripped
+document or dropping unresolvable refs was refused as a weakening (R112, S1-V1).
+
+### O52. E1's residuals, and a likely CL-02 false-positive class in the engine — OPEN (owners: the engine's fold owners, `build_dependency_map`, `docs/ssot.md`, the COLLECT_PARSE wiring)
+All from E1's verifier (reported).
+- **A `record` basis the evidence does not support (R4 honesty).** The Config-hygiene fold makes a row
+  `record` through a `config_text` ref with `role: subject` and the cite "referencing configuration
+  line", but `config_hygiene[h].undefined[i].context` is the enclosing column-0 stanza header, cut to 60
+  characters, not the line that holds the reference; for any nested reference the pointer and its cite
+  name the wrong line. `software_risk` has the same shape: the ikev1 "evidence" is the synthesized text
+  `crypto isakmp policy ...`, typed `config_text` and cited as a configuration line.
+- **The identity check verifies an interface ref's HOST, never its PORT.** A fold pointing at the wrong
+  port on the right host passes in every published form. Exact-ref unit tests cover L1, Trunk, Link,
+  Addressing, CL-02/03 and health deductions; nothing pins the port for CL-01/05/06/07/08/09/10, the
+  drift temp-bridge/PoE/native-VLAN-1 refs, or the index-gated FHRP/STP/L3/IPv6 SVI refs. The null-host
+  `per_device` absence witnesses are checked only for resolution.
+- **A success path never executed in a real run.** `interface_index` is never passed by the production
+  pipeline, so the L3 SVI, STP gateway-SVI, FHRP member-SVI and IPv6 adjacency-interface refs exist only
+  in unit tests. E1 called the COLLECT_PARSE wiring "optional, recommended"; it is what the per-site list
+  needs for those four folds, and in the sample it would move FHRP (4 rows), L3 (1) and STP (1) from
+  `row` to `record` (core1/core2/dist1 carry Vlan10/20/30/40/41 interface keys).
+- **Two more upstream sections carry the contract unregistered.**
+  `multicast_intelligence.risks[*].evidence_refs` and `qos_audit.findings[*].evidence_basis` are not in
+  `docs/ssot.md`'s "Per-finding evidence pointers" row, and the checker's upstream-resolution loop
+  (`cross_layer` / `health_scores` / `operational_drift`) does not cover `multicast_intelligence.risks`.
+- **Two changes that must land together.** The always-published `deduction_refs` turns
+  `tests/test_package.py::test_analyze_reexported_and_functional` red in the default gate; E1 does not own
+  that file and routed it.
+- **Two unstated gaps.** The brief's per-site list named "protocol_health row plus the matching
+  routing_neighbors entry" for the Protocol fold; the producer does not hold `routing_neighbors`, and
+  nothing records the omission. `_evidence_basis_for` labels a row with ZERO refs `row`, asserting a
+  derived-from row that is not there — reached only by direct calls or poisoned inputs (a legacy
+  PTP/media row with no refs, L1 rows whose ports are all non-strings), never the golden or sample runs.
+- **CL-02 "only L2 transit to the gateway" — a likely false-positive class, pre-existing and unchanged.**
+  On the 146-row sample, 20 of 22 such rows are raised for hosts with no forwarding link carrying their
+  articulated VLANs: `build_dependency_map`'s articulation loop never compares the stranded set against
+  the baseline, so endpoints already stranded make every non-gateway host an "articulation". The fix
+  belongs in that predicate, and it changes the golden's and the sample's `cross_layer` and punch-list
+  rows.
+
+### O53. A2 and B8 — the forwarding substrate is in place, and decided core1 outcomes are blocked by core1's own FULL/DR OSPF neighbour on an L2 trunk — OWNER DECISION (E2's R3 BLOCKED)
+From E2 and its verifier (reported). Scratch end to end (HEAD engine plus E2's files, the real compilers
+publishing each adjacency's `address` and `interface`, the real forwarding engine, `engine.test.ts`'s
+depth-ratchet set of 3,249 traces): hop depths {0: 2,574, 1: 343, 2: 332}, 332 resolved next hops,
+**definite 0, decided 0, counterexamples 0 of 70.** core1's table is incomplete by its own FULL/DR OSPF
+neighbour 10.0.99.2 on the L2 trunk Po1, whose link the table does not hold
+(`routing_neighbors.core1.ospf[0]`) — the fixture's B1 seed — and that alone blocks decided core1
+outcomes: forcing only core1 complete, as a counterfactual, gives definite 9, decided 23, counterexamples
+26 of 70. The implementer's earlier 9/23/26 came from the per-family rule letting dist1's OSPF routes
+vouch for that session, which brought B1 back (R110). **The link fields:** the compiled
+`rib-evidence.json`'s adjacency records carried no `address` or `interface` at E2's close, and a session
+without them is unknown under the new rule (E2 measured all 4 regenerated tables incomplete that way);
+the compiler in this working tree publishes both, copied from the producer record or null
+(`compile-model.test.ts`, "the rib evidence carries the link each adjacency runs over", re-run green by
+the record step), and the figures above were taken with them published. **For the owner:** how the B1 seed and a decided
+core1 coexist — for example, whether the fixture's FULL/DR neighbour on Po1 is kept (and core1 stays
+undecided, honestly) or its link is modelled — without loosening the rule. Until then A2's hop-2 decider
+and B8's positive state stay unexercised on real data (O13, O34).
+
+### O54. E2's residuals — an unknown read as complete for protocols outside {ospf, eigrp, bgp}, and five more — OPEN (owners: `src/forwarding/rib-completeness.ts`, `webapp/sample_data/build_sample.py`, `cisco_toolkit/bgp_intent.py`, the owner)
+From E2's verifier (reported), except where an E2 record says otherwise.
+- **Absence rendered as health (the most serious).** A host whose table holds routes learned by a
+  protocol outside the fixed vocabulary {ospf, eigrp, bgp} — IS-IS, RIP, LISP, NHRP, mobile, which
+  `parse_ip_routes` emits as `isis`, `rip`, `lisp`, `nhrp` and `mobile`, none with a collection receipt —
+  is shown COMPLETE when all three vocabulary families are `captured_empty`, and `ribCompletenessBasis`
+  then states that no OSPF/EIGRP/BGP-learned route is missing. The owner's rule is that a protocol with no
+  positive empty-capture evidence "stays unknown"; here a family with no receipt reads complete, the
+  named-set defect in reverse. Under the HEAD rule the same host read incomplete.
+- **The BGP "reached by a route" check does nothing when the scoped table holds a default.** On the
+  regenerated fleet core1's peer 203.0.113.1 is reached only by 0.0.0.0/0: the engine's route scoping
+  drops the static /32 `build_sample.py` adds so the session would have "a route under it (not only the
+  default)". That comment, and the pytest pinning the /32, hold for the collected text but not for the
+  snapshot Atlas Scope reads. The rule's own boundary discloses it (R110).
+- **The substrate degrades a demo section once phase 3 regenerates the fleet.**
+  `bgp_configured_peer_baseline` goes from NOT_APPLICABLE (committed) to INDETERMINATE with rows `[]` and
+  "The current-run BGP configured-peer baseline was unavailable" (history: no substrate NOT_APPLICABLE;
+  v1 substrate INDETERMINATE with a core1 "BGP CONFIGURED PEER NOT VERIFIED — BLOCKER" row caused by
+  core1's config without `end`; v2 as stated). Cause: `cisco_toolkit/bgp_intent.py`
+  `compute_bgp_configured_peer_baseline` marks a non-subject host `not_applicable` when its config
+  capture is ok and complete, whatever the runtime capture, while `_structural_validation` expects
+  `not_verified` when the runtime capture is not in {ok, not_observed}; a peerless switch with an empty
+  `show ip bgp summary` fails the whole fleet's baseline with `baseline_coverage_status_mismatch`, and the
+  section projects as unavailable. Pinned as a strict xfail in `tests/test_sample_fleet_substrate.py`;
+  nothing in E2 stops phase 3 regenerating before the engine fix lands.
+- **Realism of the empty BGP capture (OWNER).** The owner directed an empty `show ip bgp summary` on a
+  switch with no BGP process; IOS/IOS-XE prints a "% BGP not active" banner, which `cmdio._CISCO_ERRORS`
+  does not screen, so a real capture would be usable, read as `captured_no_record`, and leave the table
+  unknown. On real fleets dist-style peerless switches would therefore never read complete under this
+  rule; the demo's decided dist tables are not field behaviour. Not verifiable here (no egress).
+- **Fixture inconsistencies left as they are, outside the rule's reach:** core1 lists an EXSTART
+  neighbour 10.0.40.9 on Vlan40, where it has no L3 interface; core1 Vlan30 is `vrf forwarding
+  TENANT_RED`, yet 10.0.30.0/24 sits in its global table.
+- **Two tests that pin less than they say.** The LF requirement is pinned only at the helper
+  (`test_snapshot_writer_emits_lf_only` calls `bs._write_snapshot`; no test drives `main()`, so reverting
+  its write to `open(out_path, 'w')` stays green). And `rib-completeness.test.ts`'s real-data sweep
+  "every adjacency in a session state is cited as a reason unless the table holds its link" asserts only
+  that an uncited session carries the address/interface keys, never that the table holds the link.
+
+### O55. S1's residuals — a sparsify test that sparsifies nothing, Git-ignored but published directories accepted, and a looser evidence contract than the engine's — OPEN (owners: `tools/lib/compile-io.mjs`, `tools/lib/compile-model.mjs`, their tests; one OWNER DECISION)
+From S1's verifier (reported).
+- **R4's "engine sparse compact form -> byte-identical content" does not test sparsification.** The
+  transform removes nothing from the test's base, and its only "the transform did something" check
+  (compact bytes under the golden's) passes on compaction alone; a compiler that renders a
+  sparsified-away field differently from the dense form still passes.
+- **A Git-ignored directory is not an unpublished one.** For a non-sample source `--out` accepts any
+  Git-ignored directory, including `atlas-scope/dist/` (Vite's build output, which the one-door design
+  serves unguarded at `/scope/assets` and bundles onto the portable stick), `node_modules/` and
+  `review/shots/`. `compile-io.mjs`'s header names the refused class "a location Git would track or Vite
+  would bundle"; Git-ignored is a proxy for "not committed", not for "not published".
+- **The digest form is not tied to the origin.** `checkLabel`/`bindingPreimages` let a
+  `"repository-file"` labelled `"assesshub-store-blob"` get `sourceSha256` over the raw CRLF bytes and
+  `sourceExactSha256` over the LF form (the "exact" digest the less exact one), and an
+  `"assesshub-store"` record in `"lf-normalised"` form show a digest that is not the store's binding —
+  without `E_SOURCE_LABEL`.
+- **R3 against O15 (OWNER DECISION).** R3 says `sourceExactSha256` is `"sha256:"` + hex over the EXACT
+  bytes; for a repository file it is over the LF-normalised Git blob, not the bytes read, so on a CRLF
+  checkout it is not the sha256 of the file on disk and only restates `sourceSha256`. The reason is
+  deliberate — keeping O15's CRLF/LF byte-identity test green, which R1 requires — but the two owner
+  requirements conflict and the implementer resolved it with no recorded owner decision.
+- **The `.d.mts` types are unchecked against the `.mjs`.** They state that `compileFabric`/`compileAll`
+  return the app's `Fabric` type, and the header says one contract binds a compiled document and the UI;
+  `compile-model.test.ts` compares export NAMES only, and the phase-3 loader will trust that assertion.
+- **The compiled evidence contract is looser than the engine's**
+  (`tests/test_punchlist_evidence_refs.py` `punchlist_evidence_problems`): the compiler accepts
+  `evidence_refs_total == refs.length` (the engine writes a total only when capped, with total > len),
+  refs with no `evidence_basis`, a ref whose host is not in the row's devices, and `record` with no
+  record-kind ref or `absence` carrying record kinds — so a model can state a `record` basis no record
+  ref backs.
+
+### O56. C2's residuals — OPEN (owners: `DataGrid.tsx`, the shell, `review/capture.mjs`)
+From C2's verifier (reported).
+- `keepNavWhole`'s check that the row stays visible during a take-out is tested by nothing: removing it
+  leaves every test green.
+- `bandHoldsRow`'s docstring promises an empty-band case ("An empty band … cannot hold anything: only an
+  ancestor can bring it back") that cannot be reached: `revealBelowHeader` returns earlier, because
+  `offsetFromView` uses `visibleBand`'s layout-box fallback, so a row whose grid is scrolled wholly out of
+  its rail is never revealed. Pre-existing (the same on the pre-fix build), and the same class of fault —
+  a queue left off screen (compare O49).
+- The navigation guard (`keepNavWhole`/`onScreenExtent`) and the harness detector (`readScrollEdge`)
+  measure clips only, not overlays. Below 48rem the sticky status bar (`shell.css` `.app__status {
+  position: sticky; bottom: 0 }`, about 85 px at 390) can cover part of a tablist or toolbar neither
+  counts as cut; the implementer's "not examined" named a top app bar, but the overlay that exists is at
+  the bottom.
+- The brief's test (b) — the real `PriorityQueue` mounted in the rail model, with the path content
+  growing until the row slides 19 px out of a 51 px band — was replaced by a pure geometric model of
+  `revealBelowHeader`; the act-view restore chain (`BeforeCommit`, `DataGrid.tsx`'s act-view restore,
+  `revealBelowHeader`) is pinned only end to end, by the browser capture.
+
+### O57. C5's residuals — a tier change during a running fade still cuts the overlay, and the harness's own honesty gaps — OPEN (owners: `src/fabric3d/scene.ts` / `emphasis.ts`, `review/capture-motion.mjs`, `src/core/motion-inventory.test.ts`)
+From C5's verifier (reported).
+- **A cut by removal, against the owner decision.** A tier change that lands while a cross-fade is
+  running removes the half-faded overlay in one frame. One trigger is a tab switch, which the decision
+  covers explicitly ("no frame — including after … a tab switch … — can step more than the cap"). The
+  driver caps its own value; the removal happens outside it. The `emphasis.ts` and `scene.ts` comments
+  claim no frame, "including the one after a stall or a returning tab", moves it more than 0.2, which is
+  false on this path.
+- **The step rule is unpinned.** The harness says it judges the step on the opacity at full precision
+  plus `FADE_STEP_EPS`; no test pins that, so judging the rounded figure with a looser tolerance passes
+  every known answer.
+- **"MOTION EXIT 0" did not reproduce.** The verifier's single final `capture-motion` run exited 4
+  (UNPROVEN): 1 of 24 fades not established. The same log shows a harness honesty gap: the sequence's
+  density was recorded as ok although the recording lost about 1.3 s of frames.
+- **Prose that contradicts the code, and a ratchet that is not one.** Prose claims in C5's owned files
+  contradict the code's own behaviour (the removal path above among them), and
+  `SETTLE_FIGURE_PENDING` is called a ratchet that "may only shrink" but nothing enforces that; with §4.8
+  now stating the settle figure (R114), its one entry excuses nothing and is the test owner's to remove.
+
+### O58. D3's routed fixes and residuals — OPEN (owners: `shell.css`, `EvidencePane.css`, `DevicePane.css`, `focus-return.ts` and its guard, `review/audit-d3-focus.mjs`; two OWNER calls)
+From D3 and its verifier (reported).
+- **Routed: the drawer paints over the Inspector at 1024–1279 px.** With the drawer open (z-overlay 30
+  over z-inspector 20) the Inspector's close button was 0 of 9 hit-testable at 1024, 1152 and 1270. The
+  fix is routed to `shell.css` — the Inspector docks to the drawer's left edge (design brief §2.5,
+  PROPOSED); verified in an isolated copy at 9 of 9 at all three widths, and the default `--vp=1152`
+  audit then 141 cases, 0 failed, 0 not visible. Until it lands the unnarrowed default audit stays red
+  at 1152 (13 not-visible Inspector stops), a real layering defect the drawer-rung width D3 added
+  exposed.
+- **Routed: under reduced motion, controls in a freshly opened drawer are unfocusable for their first
+  frame.** `EvidencePane.css`'s `.ev *` and `DevicePane.css`'s `.dp *` give every descendant a 1 ms
+  transition over `all`, including inherited `visibility`. Measured at 1100 and 1152 px, `v` left focus
+  on the grid cell (pre-existing, also on the pre-D3 build per the verifier). `App.tsx`'s `config.open`
+  now waits up to 6 frames (R115); the CSS fix is routed.
+- **Named subset, again: containers that UNMOUNT on a rung crossing drop focus to `<body>`.** The owner
+  decision names `releaseFocusFrom` as the one owner for every container that can close while holding
+  focus, "panels removed by a layout change or resize" included; only Rail A and Rail B were wired. The
+  audit's resize cases are drawer-only, and guard shape 4 parses only `hidden`/`inert` attributes, not
+  conditional unmounts — the class is "a container stops being rendered while it holds focus".
+- **The guard test asserts that routing debt EXISTS.** "shape 4 found what it guards" requires
+  `PENDING_ROUTING` to hold at least one hidden-without-release entry, while another case requires every
+  entry to still be found; once the owners apply the routed fixes and delete their entries, as they are
+  told to, it goes red.
+- **"Complete" overstates it.** Requirement D3-audit carries a non-empty "remaining" while marked done:
+  the `--vp=390` run exits 1 from the pre-existing `offViewPointers` zero-denominator rule, and the
+  unnarrowed default run stays red at 1152 until the `shell.css` rule is applied.
+- **Observation — the Inspector's fallback at the drawer rung.** When the Inspector was opened from a
+  citation inside the drawer and that citation leaves the page (another finding selected), closing the
+  Inspector falls back to the `#stage` landmark (never `<body>`); with the drawer open, `#stage` is then 6
+  of 9 hit-testable because the drawer covers its right part. WCAG 2.4.11 minimum-compliant (not entirely
+  hidden), stricter than the audit's visibility bar; the audit no longer mislabels this path "inspector
+  (citation)".
+- **OWNER call — no pointer control opens the drawer at 1024–1279 px** (keyboard `e` / `v` / `g e` and
+  the palette only; carried from the implementer). The `--vp=390` `offViewPointers` zero-denominator rule
+  makes that narrowed run exit 1; whether narrowed runs should exempt denominators that cannot exist at
+  the listed widths is for the owner.
+- **Harness note:** a narrowed audit run (`--vp` limited to widths ≥ 1024) always trips "SWEEP NEVER
+  EXERCISED: journeys", because the More -> Path journey needs the header's More popover (below 1024 px)
+  — the same shape as the 390/`offViewPointers` note.
+
+### O59. E2/E3 — the cold first palette open: a repair landed (pre-warm, then PARK); the verdict waits for a quiet host — OPEN (owners: `CommandPalette.tsx`, the E grader)
+From E2E3 (reported; the owner goal is design brief §8.2 journey 5). The palette's own frame is drawn
+once after the scene converges — in idle slices, in a transition, at opacity 0.001, `aria-hidden` and
+`inert`, for at least 3 frames and 250 ms (`WARM_MIN_HOLD_MS`; measured mounted -> done was 13–63 ms,
+shorter than the ~120 ms GPU compile the frame exists to trigger) — and then PARKED with
+`visibility: hidden` until the first Ctrl+K, which flips attributes on the same laid-out nodes; after
+that open closes, the palette renders nothing again. While parked its rows are frozen (`groupsEpoch =
+open ? targetEpoch : -1`), and the coverage line, command list, grammar examples and scope line — and
+`coverageFigures()`, found by a class-level probe counting every dataset read in the mounting slice —
+are computed in idle slices, so neither the pre-warm nor the first open reads the dataset. The brief's
+first design (unmount after raster) did not meet the goal: the verifier's trials showed the first open
+still building DOM and forcing layout in the keydown. **Evidence so far, NOT acceptance evidence:** a
+lab A/B at 1280x800 dark, default scale, 5 interleaved fresh browsers on a loaded host, worst
+interaction — base 208/216/248/288/424 ms; the unmount repair 96/96/112/128/832; parked
+80/96/120/120/552. The final tracked run, 10 trials per leg at 73 % busy: 1920 dark p95 200, 1920 light
+p95 160; both 1280 legs NOT MEASURED, because the scene did not converge within 60 s at scale 1.261
+(O60). **Residual on-path tasks:** the Escape inert-release restyle (close `onkeydown` 50–57 ms under
+load) and the deferred page-wide `inertOutside` task after an open — neither a first-mount cost, both
+waiting on the owner's decision on the brief's item 5 (`inert` -> `aria-hidden` in `inertOutside`),
+which E2E3 did not implement because it changes a D3 design decision. Measured on isolated `git archive
+f036ed77` trees plus the cluster's files, so the A/B compares only this change.
+
+### O60. Scene convergence under the harness window — OPEN, stated CONDITIONALLY (owners: the E harnesses, the render owner)
+From E2E3 (reported). With `measure-inp`'s forced 1.261 device scale on a 70–100 % busy host,
+`converged` was often reported only after the step-down to balanced, 8–42 s after load, or not within 60
+s — 17 of 20 1280x800 trials in the final run. At the default device scale the same build converged at
+tier high in 4.2–5.2 s (the verifier's probe, 3 loads). Every instrument that waits for convergence
+inherits this. Whether it is the host or the product at that scale is not established.
+
+### O61. "No INP regression elsewhere" is NOT yet demonstrated, and the default E run is now much longer — OPEN (owner: the E grader)
+From E2E3 (reported). The owner requires the palette repair to regress no other journey. The harness now
+names every timed rep that overlapped the pre-warm's drawn window, and keeps those reps counted
+(`docs/acceptance.md` E3). In one run at 80 % busy (not evidence): J1 rep 3 232 ms, J3 rep 0 56 ms and J4
+rep 1 208 ms overlapped; J2, J3b and J5 did not. A quiet-host full `measure-inp` run plus the E5
+cold-load and sweep audits are required. Until the first open, the parked frame adds about 320 hidden
+elements to every page-wide restyle; not measured. **Harness cost:** the default `node
+review/measure-inp.mjs` now also runs 80 fresh-browser palette trials — expect 40+ more minutes on a
+quiet host, and more where the scene is slow to converge.
+
+### O62. E2E3's residuals — the parked palette can open UNDER the keyboard-help dialog, and the cold case cannot measure 1280x800 — OPEN (owners: `CommandPalette.tsx` / `keyboard.ts`, `review/measure-inp.mjs`)
+From E2E3's verifier (reported).
+- **Focus obscured by design flow.** The palette is now parked in `document.body` long before its first
+  open. If the reader opens ShortcutHelp after parking and then presses Ctrl+K, the first palette open is
+  drawn UNDER the help dialog: both are `position: fixed` at z-index 60 (`--z-dialog`), whichever is later
+  in the DOM paints on top, and the help dialog now is. Focus lands in the palette's search box, which the
+  reader cannot see (WCAG 2.4.11), and the help dialog is inert, so it cannot be used either. On the base
+  build the palette portal was appended at open time and always painted on top. `keyboard.ts:570–577`
+  deliberately lets the palette's mod+k fire behind a modal, so this is a designed flow; no test covers
+  opening one dialog over another.
+- **The cold J5 case (`FIRST_PALETTE`) cannot measure 1280x800**, the viewport where E2/E3 failed (its
+  1280 legs were NOT MEASURED in the final run, O59–O60). The cluster's report of this item was cut short
+  in the record step's input; its remainder, and any open item or cluster after it, is not recorded here.
 
 ### O23. Clean-clone evidence — the re-grade of `78bdba5` ran F1, F2, F4 and F5 from a fresh clone of that commit (F1, F4, F5 PASS; F2 red, R85); the re-grade of `8eac055` ran F5 from a fresh clone of it (PASS); the re-grade of `34bd435` ran F1 in part, F4, F5 and F6 from a fresh clone of it; nothing has been run from a clone of `7f67013` — OPEN for A–E, F2, F3 and the scripts `tsc` project at `34bd435`, and for everything at `7f67013` (owner: the re-grade of `7f67013`)
 **Status at `7f67013` (wave 8).** The heading's old claim — "nothing has been run from a clone of

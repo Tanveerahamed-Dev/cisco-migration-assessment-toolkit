@@ -198,12 +198,23 @@ export const HISTORY_AA = Object.freeze({
   maxStepPerFrame: 0.125,
   /** A camera arrival known in advance (a tween) ramps the weight to zero over at least this long. */
   arrivalRampMs: 150,
+  /**
+   * A step below this (drawing-buffer px) is float noise, not motion: the camera is still. MEASURED
+   * (engine gate, 2026-09-27): OrbitControls re-derives the pose through spherical coordinates on
+   * every update(), and at some poses (a headed window at a forced 1.261 scale with the page at
+   * devicePixelRatio 0.9999999908) that moves the camera by ~2.3e-13 px every frame while the rig and
+   * OrbitControls both call it still. Weighted as a creep, it pinned the history at 8.6e-12 forever,
+   * so the scene owed a plain frame on every frame and never reported `converged`. The floor is 4+
+   * orders above that noise and 4 orders below `fullFromPx`, and the weight it withholds (3.75e-5)
+   * cannot move an 8-bit channel.
+   */
+  stillBelowPx: 1e-6,
 });
 
 /** The history weight for a camera that moved `stepPx` drawing-buffer pixels since the last render. */
 export function historyWeightFor(stepPx: number): number {
   const h = HISTORY_AA;
-  if (!(stepPx > 0) || stepPx >= h.offAtPx) return 0;
+  if (!(stepPx >= h.stillBelowPx) || stepPx >= h.offAtPx) return 0;
   if (stepPx < h.fullFromPx) return h.weight * (stepPx / h.fullFromPx);
   if (stepPx <= h.fullToPx) return h.weight;
   return h.weight * ((h.offAtPx - stepPx) / (h.offAtPx - h.fullToPx));
@@ -228,6 +239,9 @@ export function nextHistoryWeight(
   /* A history is only ever a previous picture of the SAME content, and never one a pixel or more
      away: those two are absolute, whatever the weight was. */
   if (contentChanged || !(stepPx >= 0) || stepPx >= h.offAtPx) return 0;
+  /* Float noise is a still camera (HISTORY_AA.stillBelowPx): it drains like one, and never carries
+     the moving-frame drop below. */
+  if (stepPx < h.stillBelowPx) stepPx = 0;
   const prev = previous > 0 ? Math.min(h.weight, previous) : 0;
   /* What the camera's motion asks for: the step rule, and, when the camera's arrival at rest is
      known in advance, a ramp to zero over the frames before it — at least `arrivalRampMs`, and at

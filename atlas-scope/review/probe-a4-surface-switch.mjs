@@ -22,6 +22,7 @@
  * Pinned in jsdom by src/panels/PriorityQueue.a4-surface-switch.test.tsx.
  */
 import { chromium } from "@playwright/test";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 
 const APP = process.env.ATLAS_URL ?? "http://localhost:4181";
 const VIEWPORTS = [
@@ -190,6 +191,8 @@ try {
     await page.goto(`${APP}/`, { waitUntil: "load" });
     await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 });
     await page.waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: 20000 }).catch(() => {});
+    /* A diagnostic probe: a pre-warm that never parks is printed, not waited through silently. */
+    await awaitPaletteWarm(page).catch((e) => console.log(`palette pre-warm: ${e instanceof Error ? e.message : String(e)}`));
     await page.waitForTimeout(800);
     // The reader scrolls the queue (wheel over it, as a reader does), then orbits.
     const grid = page.locator("#rail-queue .ag__grid");

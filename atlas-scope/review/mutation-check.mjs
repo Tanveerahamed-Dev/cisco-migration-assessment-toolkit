@@ -267,10 +267,12 @@ const MUTATIONS = [
         model, so a compiler mutation that is not rebuilt would test the shipped bytes. ─────────── */
   {
     id: "compiler-drops-unevaluable",
+    /* engine = refutation.md §5's attribution key (the denominator); the compile logic that CLI runs now
+       lives in tools/lib/compile-model.mjs, so the reverted guard is edited there. */
     engine: "tools/compile-snapshot.mjs",
     record: "refutation §5 (compiler-fidelity.test.ts: unevaluable)",
     what: "the producer's own `unevaluable` verdict is dropped at compilation again",
-    edits: [{ file: "tools/compile-snapshot.mjs", find: "      unevaluable: l.unevaluable === true,", replace: "      unevaluable: false," }],
+    edits: [{ file: "tools/lib/compile-model.mjs", find: "        unevaluable: l.unevaluable === true,", replace: "        unevaluable: false," }],
     rebuild: ["tools/compile-snapshot.mjs"],
     tests: ["src/core/compiler-fidelity.test.ts"],
     killedBy: /the producer marked this line unevaluable: expected false to be true/,
@@ -281,7 +283,7 @@ const MUTATIONS = [
     engine: "tools/compile-snapshot.mjs",
     record: "refutation §5 (compiler-fidelity.test.ts: established)",
     what: "`established`, a stateful match a forward model cannot decide, is dropped again",
-    edits: [{ file: "tools/compile-snapshot.mjs", find: "      established: l.established === true,", replace: "      established: false," }],
+    edits: [{ file: "tools/lib/compile-model.mjs", find: "        established: l.established === true,", replace: "        established: false," }],
     rebuild: ["tools/compile-snapshot.mjs"],
     tests: ["src/core/compiler-fidelity.test.ts"],
     killedBy: /keeps .established.[\s\S]*\.established\)\.toBe\(true\)/,
@@ -367,10 +369,10 @@ const MUTATIONS = [
         the documented engines, and a survivor still fails the run). ─────────────────────────────── */
   {
     id: "binding-raw-working-tree",
-    engine: "tools/source-binding.mjs",
+    engine: "tools/lib/compile-model.mjs",
     record: "open-issues O15 / acceptance F5 (the digest binds the LF-normalised form)",
     what: "every compiler hashes the raw working-tree bytes again, so a CRLF checkout binds another digest",
-    edits: [{ file: "tools/source-binding.mjs", find: "export function lfNormalise(raw) {\n", replace: "export function lfNormalise(raw) {\n  if (raw !== null) return raw;\n" }],
+    edits: [{ file: "tools/lib/compile-model.mjs", find: "export function lfNormalise(raw) {\n", replace: "export function lfNormalise(raw) {\n  if (raw !== null) return raw;\n" }],
     tests: ["src/core/provenance.test.ts"],
     killedBy: /CRLF or LF line endings \(O15\)[\s\S]*compileInSandbox\(crlf\)/,
     pattern: "O15",
@@ -390,6 +392,100 @@ const MUTATIONS = [
     tests: ["src/forwarding/bindings-trust.test.ts"],
     killedBy: /expect\(b\.BINDINGS_TRUSTED\)\.toBe\(false\)/,
     pattern: "same sourceSha256",
+  },
+
+  /* ── scroll-edge slices — acceptance C2 (2026-09-26 overturn: the path panel's tab strip cut by
+        Rail A's top edge at 1440, state 06). Not refutation.md engine sections; reported below the
+        documented engines, and a survivor still fails the run. ──────────────────────────────────── */
+  {
+    id: "c2-reveal-rail-first",
+    engine: "src/panels/DataGrid.tsx",
+    record: "acceptance C2 (fits first: the grid moves before a shared rail when its band holds the row)",
+    what: "a nested-port reveal moves the shared rail even when the grid's own band can show the row, cutting whatever else the rail carries",
+    edits: [
+      {
+        file: "src/panels/DataGrid.tsx",
+        find: "ownPortShows(scroller, head, el) && !bandHoldsRow(scroller, head, el)) {",
+        replace: "ownPortShows(scroller, head, el) && !((false as boolean) && bandHoldsRow(scroller, head, el))) {",
+      },
+    ],
+    tests: ["src/panels/DataGrid.c2-chrome-slice.test.tsx"],
+    killedBy: /the shared rail did not move \(the grid could show the row itself\)/,
+  },
+  {
+    id: "c2-reveal-cuts-nav-strip",
+    engine: "src/panels/DataGrid.tsx",
+    record: "acceptance C2 (navigation is whole or absent after any ancestor half of a reveal)",
+    what: "the ancestor or document half of a reveal leaves a tablist/toolbar/menubar partly visible",
+    edits: [{ file: "src/panels/DataGrid.tsx", find: "  if (moved === 0 || strips.length === 0) return;", replace: "  if (moved === 0 || strips.length === 0 || (true as boolean)) return;" }],
+    tests: ["src/panels/DataGrid.c2-chrome-slice.test.tsx"],
+    killedBy: /the (?:strip|toolbar) is whole or gone, not \d/,
+  },
+  {
+    id: "c2-landing-slices-previous-control",
+    engine: "src/panels/PathTrace.tsx",
+    record: "acceptance C2 (the answer landing's top edge falls in a gap, never through the control above)",
+    what: "the landing aligns its target a fixed 8 px below the port's edge and shows a sliver of the citation above it",
+    edits: [{ file: "src/panels/PathTrace.tsx", find: "      return Math.max(0, Math.min(pad, top - r.bottom));", replace: "      return pad;" }],
+    tests: ["src/panels/PathTrace.c2-landing.test.tsx"],
+    killedBy: /no sliver of the citation shows[\s\S]*expected 8 to be 4/,
+  },
+  {
+    id: "c2-mode-panel-without-scrim",
+    engine: "src/panels/PathTrace.tsx",
+    record: "acceptance C2 (a row cut at the path panel's own bottom edge carries the house cut-row cue)",
+    what: "the trace mode panel owns a scroller without the cut-row scrim",
+    edits: [{ file: "src/panels/PathTrace.tsx", find: 'tabId="trace" active={mode === "trace"} className="pt-panel scroll-scrim"', replace: 'tabId="trace" active={mode === "trace"} className="pt-panel"' }],
+    tests: ["src/panels/PathTrace.c2-landing.test.tsx"],
+    killedBy: /mode panels that own a scroller without the cut-row cue/,
+  },
+  {
+    id: "c2-reveal-overshoot-scrolls-back",
+    engine: "src/panels/DataGrid.tsx",
+    record: "acceptance C2 (a strip taken out past the row's remainder hands the outer scrollers nothing)",
+    what: "the take-out's overshoot is subtracted from the remainder, so the next scroller out (the document) scrolls back by it",
+    edits: [{ file: "src/panels/DataGrid.tsx", find: "    rest = Math.sign(left) === Math.sign(rest) ? left : 0;", replace: "    rest = left;" }],
+    tests: ["src/panels/DataGrid.c2-chrome-slice.test.tsx"],
+    killedBy: /the document must not move when the rail alone showed the row/,
+  },
+  {
+    id: "c2-landing-head-fixed-pad",
+    engine: "src/panels/PathTrace.tsx",
+    record: "acceptance C2 (the head landing uses the gap above the hop card, not a fixed pad)",
+    what: "landOnAnswer aligns the hop card a fixed 8 px below the port's edge, through the control above it",
+    edits: [
+      {
+        file: "src/panels/PathTrace.tsx",
+        find: "const headDelta = target.getBoundingClientRect().top - box.top - landingInset(target, scroller, PAD);",
+        replace: "const headDelta = target.getBoundingClientRect().top - box.top - PAD;",
+      },
+    ],
+    tests: ["src/panels/PathTrace.c2-landing.test.tsx"],
+    killedBy: /the port edge falls in the gap above the hop/,
+  },
+  {
+    id: "c2-landing-decided-fixed-pad",
+    engine: "src/panels/PathTrace.tsx",
+    record: "acceptance C2 (the decided-fact landing uses the gap above the fact, not a fixed pad)",
+    what: "landOnAnswer aligns the deciding fact a fixed 8 px below the port's edge, through the citation above it",
+    edits: [
+      {
+        file: "src/panels/PathTrace.tsx",
+        find: "delta = at.top - box.top - landingInset(decided, scroller, PAD);",
+        replace: "delta = at.top - box.top - PAD;",
+      },
+    ],
+    tests: ["src/panels/PathTrace.c2-landing.test.tsx"],
+    killedBy: /the port edge falls in the gap above the decided fact/,
+  },
+  {
+    id: "c2-scrim-cover-rail-fill",
+    engine: "src/panels/PathTrace.tsx",
+    record: "acceptance C2 (the mode panels' scrim cover is the path surface's own ground)",
+    what: "the mode panels' scrim cover keeps the rail's --surface-1 on a --bg surface and paints a band where the list ends",
+    edits: [{ file: "src/panels/PathTrace.tsx", find: "      ref={groundModeScrims}", replace: "      ref={undefined}" }],
+    tests: ["src/panels/PathTrace.c2-landing.test.tsx"],
+    killedBy: /scrim panels whose cover is not the path surface's ground/,
   },
 ];
 
